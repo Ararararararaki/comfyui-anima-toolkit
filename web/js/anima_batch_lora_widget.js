@@ -228,14 +228,13 @@
       // ── 工具栏 ──
       const toolbar = document.createElement("div");
       toolbar.className = "toolbar";
-      const verifyBtn = this._btn("✓ 验证", "btn-verify");
-      const refreshBtn = this._btn("↻ 刷新", "btn-browse");
-      const extractBtn = this._btn("📥 提取", "btn-verify");
-      const browseBtn = this._btn("📂 本地", "btn-browse");
-      const syncBtn = this._btn("📩 同步面板", "btn-verify");
-      const clearBtn = this._btn("✕ 清空", "btn-clear");
-      const panelBtn = this._btn("🌐 面板", "btn-verify");
-      toolbar.append(verifyBtn, refreshBtn, extractBtn, browseBtn, syncBtn, clearBtn, panelBtn);
+      const verifyBtn = this._btn("🔍 验证标签", "btn-verify", "检查输入框中的 <lora:...> 标签能否在本地找到对应文件");
+      const refreshBtn = this._btn("↻ 刷新列表", "btn-browse", "按输入框内容重新解析并刷新下方列表、提取触发词");
+      const extractBtn = this._btn("📥 提取触发词", "btn-verify", "批量查询当前列表所有 LoRA 的触发词");
+      const browseBtn = this._btn("📂 本地 LoRA", "btn-browse", "打开本地 LoRA 浏览窗：预览 C 站图、点击添加 / 分类 / 置顶");
+      const clearBtn = this._btn("✕ 清空列表", "btn-clear", "清空当前 LoRA 列表");
+      const panelBtn = this._btn("🌐 面板", "btn-verify", "打开本地管理面板（Anima Toolkit）");
+      toolbar.append(verifyBtn, refreshBtn, extractBtn, browseBtn, clearBtn, panelBtn);
 
       const statusEl = document.createElement("div");
       statusEl.className = "status";
@@ -252,9 +251,6 @@
       refreshBtn.onclick = () => this._forceRefresh(listEl);
       extractBtn.onclick = () => this._extractAllTriggerWords(listEl);
       browseBtn.onclick = () => { showToast("正在加载 LoRA 列表..."); this._browseModal(statusEl); };
-      syncBtn.onclick = () => {
-        this._syncFromBridge(listEl, false).then((n) => { if (!n) showToast("面板暂无新 LoRA"); });
-      };
       clearBtn.onclick = () => { this.loras = []; this._commit(); this._render(listEl); };
       panelBtn.onclick = () => window.open(PANEL_BASE, "_blank");
 
@@ -287,17 +283,18 @@
       };
     }
 
-    _btn(text, cls) {
+    _btn(text, cls, title) {
       const b = document.createElement("button");
       b.textContent = text;
       b.className = cls;
+      if (title) b.title = title; // 悬停显示按钮用途
       return b;
     }
 
     // ── 一键提取所有 LoRA 的触发词 ──
     async _extractAllTriggerWords(listEl) {
       if (!this.loras.length) {
-        showToast("⚠️ 当前没有 LoRA，请先输入标签或点击「📂 本地」添加");
+        showToast("⚠️ 当前没有 LoRA，请先输入标签或点击「📂 本地 LoRA」添加");
         return;
       }
       // 只提取尚未查询过的（triggerWordMap 无记录 或 标记为查询失败）
@@ -396,7 +393,7 @@
         this._autoFetchTriggerWords();
         showToast(`↻ 已刷新 ${parsed.length} 个 LoRA，正在提取触发词...`);
       } else {
-        showToast("⚠️ 标签为空，可用「📂 本地」添加 LoRA");
+        showToast("⚠️ 标签为空，可用「📂 本地 LoRA」添加 LoRA");
       }
     }
 
@@ -404,7 +401,7 @@
     _render(listEl) {
       listEl.innerHTML = "";
       if (!this.loras.length) {
-        listEl.innerHTML = '<div class="empty-msg">暂无 LoRA，点击「📂 本地」添加</div>';
+        listEl.innerHTML = '<div class="empty-msg">暂无 LoRA，点击「📂 本地 LoRA」添加</div>';
         return;
       }
       this.loras.forEach((l, i) => {
