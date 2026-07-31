@@ -1,9 +1,7 @@
 // Cross-platform build for the ComfyUI panel app.
-// Sets COMFYUI_BASE (vite base path), then typechecks + builds + deploys into ../app.
+// vite base stays './' (relative) so the built app works under ANY node directory name.
 // Works on Windows (npm on cmd) and Linux (GitHub Actions).
 import { execSync } from 'child_process'
-
-process.env.COMFYUI_BASE = '/extensions/ComfyUI-Anima-Batch-LoRA/app/'
 
 console.log('[build:comfyui] typecheck (tsc)...')
 execSync('npx tsc', { stdio: 'inherit' })

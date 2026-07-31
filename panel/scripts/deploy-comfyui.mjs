@@ -43,13 +43,8 @@ async function deploy() {
   await mkdir(target, { recursive: true })
   await cp(src, target, { recursive: true, force: true })
 
-  const indexPath = join(target, 'index.html')
-  if (existsSync(indexPath)) {
-    let html = await readFile(indexPath, 'utf-8')
-    html = html.replace(/src="\.\//g, 'src="/extensions/ComfyUI-Anima-Batch-LoRA/app/')
-    html = html.replace(/href="\.\//g, 'href="/extensions/ComfyUI-Anima-Batch-LoRA/app/')
-    await writeFile(indexPath, html, 'utf-8')
-  }
+  // index.html uses relative asset paths (vite base './'), so the app works
+  // under ANY node directory name — no path rewriting needed.
 
   console.log(`✅ Deployed to ${target}`)
   console.log(`📦 App available at: /extensions/ComfyUI-Anima-Batch-LoRA/app/`)

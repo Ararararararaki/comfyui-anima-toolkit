@@ -1,5 +1,5 @@
 const CACHE = 'anima-lora-v2'
-const PRECACHE = ['/', '/index.html']
+const PRECACHE = ['./', './index.html']
 
 self.addEventListener('install', (e) => {
   e.waitUntil(

@@ -18,18 +18,18 @@ ComfyUI 自定义节点：**批量 LoRA 加载器** + 内嵌的 **Anima 本地 L
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/<你的账号>/ComfyUI-Anima-Batch-LoRA.git
+git clone https://github.com/Ararararararaki/comfyui-local-manager.git
 ```
 
 然后**重启 ComfyUI**。
 
-> ⚠️ **必须保持目录名 `ComfyUI-Anima-Batch-LoRA` 不变**，否则面板资源路径（`/extensions/ComfyUI-Anima-Batch-LoRA/app/`）会失效。
+> 💡 面板使用**相对路径**加载资源，clone 后**目录名可任意**，ComfyUI 会自动识别该自定义节点。
 
 ## 🚀 使用
 
 - **节点**：ComfyUI 中搜索 `Anima Batch LoRA Loader`，粘贴 `<lora:name:weight>` 标签或点「📂 本地」从列表添加
-- **面板**：浏览器访问 `http://localhost:8188/extensions/ComfyUI-Anima-Batch-LoRA/app/`
-  （若 ComfyUI 端口不是 8188，替换为你的端口）
+- **面板**：浏览器访问 `http://localhost:8188/extensions/<目录名>/app/`
+  （`<目录名>` 即你在 custom_nodes 下的 clone 目录名；若 ComfyUI 端口不是 8188，替换为你的端口）
 
 ## 🔧 从源码重建面板
 
