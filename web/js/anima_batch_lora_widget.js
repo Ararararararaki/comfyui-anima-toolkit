@@ -1085,10 +1085,23 @@
       const onBMClick = (e) => {
         if (dragBox.boxed) { e.preventDefault(); e.stopPropagation(); dragBox.boxed = false; }
       };
+      // 拖拽中途失焦（切屏/alt-tab/切标签页）或鼠标离开页面 → mouseup 不派发，
+      // 需手动清理残留选框，否则虚线框会永久滞留页面。
+      const cancelBMDrag = () => {
+        if (!dragBox.active) return;
+        dragBox.active = false;
+        document.body.style.userSelect = "";
+        document.body.style.webkitUserSelect = "";
+        if (dragBox.rect) { dragBox.rect.remove(); dragBox.rect = null; }
+      };
+      const onBMVisibility = () => { if (document.hidden) cancelBMDrag(); };
       document.addEventListener("mousedown", onBMDown, true);
       document.addEventListener("mousemove", onBMMove, true);
       document.addEventListener("mouseup", onBMUp, true);
       document.addEventListener("click", onBMClick, true);
+      window.addEventListener("blur", cancelBMDrag);
+      document.addEventListener("visibilitychange", onBMVisibility);
+      document.addEventListener("mouseleave", cancelBMDrag);
 
       // ── 事件 ──
       const closeModal = () => {
@@ -1097,6 +1110,9 @@
         document.removeEventListener("mousemove", onBMMove, true);
         document.removeEventListener("mouseup", onBMUp, true);
         document.removeEventListener("click", onBMClick, true);
+        window.removeEventListener("blur", cancelBMDrag);
+        document.removeEventListener("visibilitychange", onBMVisibility);
+        document.removeEventListener("mouseleave", cancelBMDrag);
         overlay.remove();
       };
       closeBtn.onclick = closeModal;

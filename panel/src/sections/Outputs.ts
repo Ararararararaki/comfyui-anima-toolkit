@@ -1259,6 +1259,7 @@ function initDragSelect() {
   let isDragging = false
   let startPageX = 0, startPageY = 0
   let rectEl: HTMLElement | null = null
+  let _justBoxed = false
 
   function getCardIdsInRect(l: number, t: number, r: number, b: number): string[] {
     const ids: string[] = []
@@ -1280,7 +1281,8 @@ function initDragSelect() {
     const me = e as MouseEvent
     const target = e.target as HTMLElement
     if (!target.closest('#sectionOutputs')) return
-    if (target.closest('.outputs-card, .outputs-list-card, .outputs-list-header, button, input, .outputs-empty, .outputs-toolbar, .outputs-batch-bar')) return
+    // 允许以图片卡片为起点拖拽（与节点内拖拽行为一致），排除工具栏/头部等控件
+    if (target.closest('.outputs-list-header, button, input, .outputs-empty, .outputs-toolbar, .outputs-batch-bar')) return
     if (me.button !== 0) return
 
     isDragging = true
@@ -1337,9 +1339,19 @@ function initDragSelect() {
     document.body.style.userSelect = ''
     document.body.style.webkitUserSelect = ''
     if (rectEl) { rectEl.remove(); rectEl = null }
+    if (useOutputStore.getState().selectedIds.size > 0) _justBoxed = true
     syncSelectionUI()
     updateBatchBar()
   })
+
+  // 拖拽结束后的 click 不应触发卡片选中/预览（capture 阶段拦截，先于卡片点击逻辑）
+  document.addEventListener('click', (e: Event) => {
+    if (_justBoxed) {
+      _justBoxed = false
+      e.preventDefault()
+      e.stopPropagation()
+    }
+  }, true)
 
   // 拖拽中途失焦（切屏/alt-tab/切标签页）或鼠标离开页面 → mouseup 不派发，
   // 手动取消拖拽并清理残留选框，否则虚线框会永久滞留页面。
