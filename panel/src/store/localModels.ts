@@ -137,7 +137,7 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
   batchSelection: [],
   promptWeights: {},
   descriptions: Cache.load<Record<string, string>>(CAT_CACHE_KEY + '_desc', 365 * 24 * 60 * 60 * 1000) || {},
-  expandedCategories: Cache.load<string[]>(CAT_CACHE_KEY + '_exp', 365 * 24 * 60 * 60 * 1000) || ['人物', '风格', '背景', '姿势'],
+  expandedCategories: Cache.load<string[]>(CAT_CACHE_KEY + '_exp', 365 * 24 * 60 * 60 * 1000) || ['__uncategorized__', '人物', '风格', '背景', '姿势'],
   manifest: Cache.load<Record<string, ManifestEntry>>(MANIFEST_CACHE_KEY, 365 * 24 * 60 * 60 * 1000) || {},
   newFileCount: 0,
 
@@ -525,7 +525,11 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       const tagFreq = Cache.load<TagFreq[]>(TAG_CACHE_KEY, YEAR) || []
       const categories = Cache.load<string[]>(CAT_CACHE_KEY, YEAR) || ['人物', '风格', '背景', '姿势']
       const modelCategories = Cache.load<Record<string, string[]>>(CAT_CACHE_KEY + '_mc', YEAR) || {}
-      const expandedCategories = Cache.load<string[]>(CAT_CACHE_KEY + '_exp', YEAR) || categories
+      const expandedCategories = (() => {
+        const exp = Cache.load<string[]>(CAT_CACHE_KEY + '_exp', YEAR) || categories
+        // 未分类组默认展开，避免未分类的 LoRA 因折叠而看不到
+        return exp.includes('__uncategorized__') ? exp : ['__uncategorized__', ...exp]
+      })()
       const descriptions = Cache.load<Record<string, string>>(CAT_CACHE_KEY + '_desc', YEAR) || {}
       const manifest = Cache.load<Record<string, ManifestEntry>>(MANIFEST_CACHE_KEY, YEAR) || {}
       set({ pngs, tagFreq, categories, modelCategories, expandedCategories, descriptions, manifest, scanStatus: 'done' })
