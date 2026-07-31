@@ -113,9 +113,20 @@ function renderDirTree(dir: OutputDir | null) {
   el.innerHTML = renderDirTreeHtml(dir, currentPath)
 }
 
+/** 内存缩略图缓存：重渲染时同步填充，避免图片先空白再加载的闪烁 */
+const _thumbMemory = new Map<string, string>()
+
 function renderOutputsView() {
   const state = useOutputStore.getState()
   renderImageGrid(state)
+  // 同步填充已缓存的缩略图，避免操作后图片闪烁
+  document.querySelectorAll('.outputs-card img[data-file-path], .outputs-list-card-img img[data-file-path], .outputs-list-row img[data-file-path]').forEach(img => {
+    const p = (img as HTMLImageElement).dataset.filePath
+    if (p) {
+      const cached = _thumbMemory.get(p)
+      if (cached) (img as HTMLImageElement).src = cached
+    }
+  })
   updateOutputsStats(state)
   updateFilterPanel()
   syncSortOrderBtn()
@@ -1444,9 +1455,14 @@ async function loadImageThumbnail(img: HTMLImageElement, fileId: string, filePat
   if (!dh) return
 
   try {
-    // 尝试从缓存加载
+    // 内存缓存（同步）
+    const mem = _thumbMemory.get(filePath)
+    if (mem) { img.src = mem; return }
+
+    // 尝试从 IndexedDB 缓存加载
     const cached = await import('../services/outputThumbnail').then(m => m.getCachedThumbnail(filePath))
     if (cached) {
+      _thumbMemory.set(filePath, cached)
       img.src = cached
       return
     }
@@ -1462,6 +1478,7 @@ async function loadImageThumbnail(img: HTMLImageElement, fileId: string, filePat
 
     const thumbnail = await import('../services/outputThumbnail').then(m => m.getThumbnail(file, filePath))
     if (thumbnail) {
+      _thumbMemory.set(filePath, thumbnail)
       img.src = thumbnail
     }
   } catch {
