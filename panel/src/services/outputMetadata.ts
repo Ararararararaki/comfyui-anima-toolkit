@@ -154,6 +154,9 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
     // CLIPTextEncode
     if (inputs.text && typeof inputs.text === 'string' && inputs.text.length > 3) return inputs.text
     if (inputs.prompt && typeof inputs.prompt === 'string' && inputs.prompt.length > 3) return inputs.prompt
+    // UI 节点常把正面/负面 prompt 放在 positive / negative 字段（如 WeiLinPromptUI）
+    if (inputs.positive && typeof inputs.positive === 'string' && inputs.positive.length > 3) return inputs.positive
+    if (inputs.negative && typeof inputs.negative === 'string' && inputs.negative.length > 3) return inputs.negative
     // TextConcatenate: text1 + text2 + ...
     if (ct.includes('TextConcat') || ct.includes('Text Comb')) {
       let combined = ''
@@ -181,6 +184,8 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
     if (inputs.text && typeof inputs.text === 'string' && inputs.text.length > 5) return true
     if (inputs.prompt && typeof inputs.prompt === 'string' && inputs.prompt.length > 5) return true
     if (inputs.prompt_text && typeof inputs.prompt_text === 'string' && inputs.prompt_text.length > 5) return true
+    if (inputs.positive && typeof inputs.positive === 'string' && inputs.positive.length > 5) return true
+    if (inputs.negative && typeof inputs.negative === 'string' && inputs.negative.length > 5) return true
     return false
   }
 
