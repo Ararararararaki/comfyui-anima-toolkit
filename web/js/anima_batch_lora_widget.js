@@ -746,6 +746,10 @@
           ev.stopPropagation();
           this._showCatPicker(card, l.name, meta, saveMeta, () => { renderSidebar(); renderCurrent(); });
         };
+        card.oncontextmenu = (ev) => {
+          ev.preventDefault(); ev.stopPropagation();
+          this._showCatContextMenu(card, l.name, meta, saveMeta, () => { renderSidebar(); renderCurrent(); });
+        };
         card.onclick = (ev) => {
           if (ev.target.closest(".bm-fav") || ev.target.closest(".bm-pin") || ev.target.closest(".bm-catbtn") || ev.target.closest(".bm-cattags")) return;
           if (batchMode) {
@@ -812,6 +816,10 @@
         row.querySelector(".bm-catbtn").onclick = (ev) => {
           ev.stopPropagation();
           this._showCatPicker(row, l.name, meta, saveMeta, () => { renderSidebar(); renderCurrent(); });
+        };
+        row.oncontextmenu = (ev) => {
+          ev.preventDefault(); ev.stopPropagation();
+          this._showCatContextMenu(row, l.name, meta, saveMeta, () => { renderSidebar(); renderCurrent(); });
         };
         row.onclick = (ev) => {
           if (ev.target.closest(".bm-fav") || ev.target.closest(".bm-pin") || ev.target.closest(".bm-catbtn")) return;
@@ -907,9 +915,73 @@
         }
       };
 
+      // ── 拖拽框选（选中后右键可批量添加分类） ──
+      this._bmSelected = selected;
+      let dragBox = { active: false, startX: 0, startY: 0, rect: null, boxed: false };
+      const onBMDown = (e) => {
+        const target = e.target;
+        if (!listEl.contains(target)) return;
+        if (target.closest("button, input, select, .bm-fav, .bm-pin, .bm-catbtn, .bm-cattags")) return;
+        if (e.button !== 0) return;
+        dragBox.active = true; dragBox.boxed = false;
+        dragBox.startX = e.pageX; dragBox.startY = e.pageY;
+        document.body.style.userSelect = "none";
+        document.body.style.webkitUserSelect = "none";
+        e.preventDefault(); e.stopPropagation();
+        dragBox.rect = document.createElement("div");
+        dragBox.rect.style.cssText = `position:fixed;left:${e.clientX}px;top:${e.clientY}px;width:0;height:0;z-index:999999;background:rgba(99,102,241,0.12);border:2px dashed rgba(99,102,241,0.6);pointer-events:none;border-radius:4px`;
+        document.body.appendChild(dragBox.rect);
+      };
+      const onBMMove = (e) => {
+        if (!dragBox.active || !dragBox.rect) return;
+        const l = Math.min(dragBox.startX, e.pageX), t = Math.min(dragBox.startY, e.pageY);
+        const r = Math.max(dragBox.startX, e.pageX), b = Math.max(dragBox.startY, e.pageY);
+        const sx = window.scrollX, sy = window.scrollY;
+        dragBox.rect.style.cssText = `position:fixed;left:${l - sx}px;top:${t - sy}px;width:${r - l}px;height:${b - t}px;z-index:999999;background:rgba(99,102,241,0.12);border:2px dashed rgba(99,102,241,0.6);pointer-events:none;border-radius:4px`;
+        if (r - l > 6 || b - t > 6) {
+          dragBox.boxed = true;
+          const inRect = new Set();
+          listEl.querySelectorAll(".bm-card").forEach((el) => {
+            const cr = el.getBoundingClientRect();
+            const cl = cr.left + sx, ct = cr.top + sy, crr = cr.right + sx, cb = cr.bottom + sy;
+            if (l < crr && r > cl && t < cb && b > ct) {
+              const nm = el.dataset.name;
+              if (nm) inRect.add(nm);
+            }
+          });
+          selected.clear();
+          inRect.forEach((n) => selected.add(n));
+          listEl.querySelectorAll(".bm-card").forEach((el) => {
+            el.style.outline = selected.has(el.dataset.name) ? "2px solid #5E6AD2" : "";
+          });
+          updateBatchBar();
+        }
+      };
+      const onBMUp = () => {
+        if (!dragBox.active) return;
+        dragBox.active = false;
+        document.body.style.userSelect = "";
+        document.body.style.webkitUserSelect = "";
+        if (dragBox.rect) { dragBox.rect.remove(); dragBox.rect = null; }
+        if (dragBox.boxed && selected.size > 0) {
+          showToast(`已选中 ${selected.size} 个，右键可批量添加分类`);
+        }
+      };
+      const onBMClick = (e) => {
+        if (dragBox.boxed) { e.preventDefault(); e.stopPropagation(); dragBox.boxed = false; }
+      };
+      document.addEventListener("mousedown", onBMDown, true);
+      document.addEventListener("mousemove", onBMMove, true);
+      document.addEventListener("mouseup", onBMUp, true);
+      document.addEventListener("click", onBMClick, true);
+
       // ── 事件 ──
       const closeModal = () => {
         window.removeEventListener("resize", onResize);
+        document.removeEventListener("mousedown", onBMDown, true);
+        document.removeEventListener("mousemove", onBMMove, true);
+        document.removeEventListener("mouseup", onBMUp, true);
+        document.removeEventListener("click", onBMClick, true);
         overlay.remove();
       };
       closeBtn.onclick = closeModal;
@@ -992,6 +1064,50 @@
       document.body.appendChild(picker);
       let left = rect.right + 6;
       if (left + 220 > window.innerWidth) left = rect.left - 220 - 6;
+      picker.style.left = left + "px";
+      picker.style.top = Math.max(4, rect.top) + "px";
+      const rm = (e) => { if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener("mousedown", rm, true); } };
+      setTimeout(() => document.addEventListener("mousedown", rm, true), 10);
+    }
+
+    // ── 右键分类菜单（支持拖拽多选批量添加分类） ──
+    _showCatContextMenu(host, name, meta, saveMeta, onDone) {
+      document.querySelectorAll(".bm-catpicker").forEach((el) => el.remove());
+      // 拖拽/批量勾选多个时 → 批量分类
+      const sel = this._bmSelected && this._bmSelected.size > 1 && this._bmSelected.has(name)
+        ? [...this._bmSelected]
+        : null;
+      const targets = sel || [name];
+      const picker = document.createElement("div");
+      picker.className = "bm-catpicker";
+      picker.style.cssText = "position:fixed;z-index:100000;background:linear-gradient(180deg,#16161b,#101014);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:8px;min-width:200px;box-shadow:0 12px 40px rgba(0,0,0,0.6);";
+      const rect = host.getBoundingClientRect();
+      const apply = (cat) => {
+        targets.forEach((n) => {
+          const mm = meta.loraMeta[n] || (meta.loraMeta[n] = { categories: [], favorite: false, pinned: false });
+          if (!mm.categories.includes(cat)) mm.categories.push(cat);
+        });
+        saveMeta();
+        if (sel && this._bmSelected) this._bmSelected.clear();
+        onDone && onDone();
+      };
+      let html = `<div style="font-size:9px;color:rgba(255,255,255,0.4);margin-bottom:5px;">${sel ? `批量添加分类 (${targets.length} 个)` : "分配分类"}</div>`;
+      if (!meta.categories.length) html += '<div style="font-size:9px;color:#666;padding:4px 0;">暂无分类，先点顶部「➕ 分类」创建</div>';
+      meta.categories.forEach((cat) => {
+        const allOn = targets.every((n) => (meta.loraMeta[n] || {}).categories?.includes(cat));
+        html += `<button data-cat="${cat}" style="display:flex;align-items:center;gap:6px;width:100%;padding:4px 6px;margin-bottom:2px;background:${allOn ? "rgba(94,106,210,0.25)" : "transparent"};color:#C8C9CB;border:none;border-radius:4px;cursor:pointer;font-size:10px;text-align:left;">${allOn ? "☑" : "☐"} ${cat}</button>`;
+      });
+      picker.innerHTML = html;
+      picker.querySelectorAll("[data-cat]").forEach((btn) => {
+        btn.onclick = (ev) => {
+          ev.stopPropagation();
+          apply(btn.dataset.cat);
+          picker.remove();
+        };
+      });
+      document.body.appendChild(picker);
+      let left = rect.right + 6;
+      if (left + 200 > window.innerWidth) left = rect.left - 200 - 6;
       picker.style.left = left + "px";
       picker.style.top = Math.max(4, rect.top) + "px";
       const rm = (e) => { if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener("mousedown", rm, true); } };
