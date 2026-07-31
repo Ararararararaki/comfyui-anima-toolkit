@@ -1,6 +1,6 @@
-# ComfyUI-Anima-Batch-LoRA
+# Anima Toolkit · ComfyUI-Anima-Batch-LoRA
 
-ComfyUI 自定义节点：**批量 LoRA 加载器** + 内嵌的 **Anima 本地管理面板**（clone 即用，无需构建）。
+**Anima Toolkit**：ComfyUI 自定义节点（批量 LoRA 加载器）+ 内嵌本地管理面板，clone 即用、无需构建。
 
 浏览、搜索和收藏 Civitai 上的 Anima LoRA 模型，支持本地文件管理、画师系列、Prompt 库、Outputs 元数据解析。
 
@@ -75,7 +75,7 @@ ComfyUI 输出目录浏览，元数据提取，批量操作。可从图片直接
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/Ararararararaki/comfyui-local-manager.git
+git clone https://github.com/Ararararararaki/comfyui-anima-toolkit.git
 ```
 
 然后**重启 ComfyUI**。
