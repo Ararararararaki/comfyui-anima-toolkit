@@ -189,6 +189,36 @@
           .anima-lora-widget::-webkit-scrollbar { width:4px; }
           .anima-lora-widget::-webkit-scrollbar-track { background:transparent; }
           .anima-lora-widget::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:2px; }
+
+          /* ── ModernDark 设计系统 ── */
+          :root {
+            --bg-deep:#020203; --bg-base:#050506; --bg-elev:#0a0a0c;
+            --surface:rgba(255,255,255,0.05); --surface-hover:rgba(255,255,255,0.08);
+            --fg:#EDEDEF; --fg-muted:#8A8F98; --fg-subtle:rgba(255,255,255,0.60);
+            --accent:#5E6AD2; --accent-bright:#6872D9; --accent-glow:rgba(94,106,210,0.3);
+            --border:rgba(255,255,255,0.06); --border-hover:rgba(255,255,255,0.10);
+            --ease:cubic-bezier(0.16,1,0.3,1);
+          }
+          @keyframes bm-fade-up { from{opacity:0;transform:translateY(14px)} to{opacity:1;transform:none} }
+          @keyframes bm-scale-in { from{opacity:0;transform:scale(0.96)} to{opacity:1;transform:none} }
+          .bm-overlay-enter { animation:bm-fade-up 0.22s ease-out; }
+          .bm-modal-enter { animation:bm-scale-in 0.28s var(--ease); }
+          .bm-card { transition:transform 0.25s var(--ease), box-shadow 0.25s var(--ease), border-color 0.25s var(--ease); }
+          .bm-card:hover { transform:translateY(-3px); border-color:var(--border-hover); box-shadow:0 0 0 1px rgba(255,255,255,0.10), 0 8px 30px rgba(0,0,0,0.45), 0 0 40px rgba(94,106,210,0.08); }
+          .bm-card .bm-img img { transition:transform 0.35s var(--ease); }
+          .bm-card:hover .bm-img img { transform:scale(1.05); }
+          .bm-li { transition:background 0.15s var(--ease), border-color 0.15s var(--ease); }
+          .bm-li:hover { background:rgba(255,255,255,0.05); border-color:var(--border-hover); }
+          .bm-sidebar button { transition:background 0.15s var(--ease), color 0.15s var(--ease); }
+          .bm-sidebar button:hover { background:rgba(255,255,255,0.05); color:var(--fg); }
+          .bm-cats button { transition:all 0.15s var(--ease); }
+          .bm-cats button:hover { transform:translateY(-1px); }
+          .bm-modal input[type=text], .bm-modal select { transition:border-color 0.15s var(--ease), box-shadow 0.15s var(--ease); }
+          .bm-modal input[type=text]:focus, .bm-modal select:focus { border-color:var(--accent) !important; box-shadow:0 0 0 3px rgba(94,106,210,0.15) !important; outline:none; }
+          .bm-modal .bm-list::-webkit-scrollbar { width:6px; }
+          .bm-modal .bm-list::-webkit-scrollbar-track { background:transparent; }
+          .bm-modal .bm-list::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.10); border-radius:3px; }
+          .bm-modal .bm-list::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,0.18); }
         `;
 
       // ── 工具栏 ──
@@ -532,11 +562,11 @@
     _browseModal(statusEl) {
       try {
       const overlay = document.createElement("div");
-      overlay.className = "modal-overlay";
-      overlay.style.cssText = "position:fixed;inset:0;background:rgba(2,2,3,0.82);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);";
+      overlay.className = "modal-overlay bm-overlay-enter";
+      overlay.style.cssText = "position:fixed;inset:0;background:radial-gradient(ellipse at top,rgba(10,10,15,0.85) 0%,rgba(2,2,3,0.92) 60%,rgba(2,2,3,0.96) 100%);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);";
       const modal = document.createElement("div");
-      modal.className = "modal";
-      modal.style.cssText = "background:linear-gradient(180deg,#111116,#0a0a0c);border-radius:12px;padding:14px;width:94vw;max-width:980px;max-height:88vh;display:flex;flex-direction:column;border:1px solid rgba(255,255,255,0.1);box-shadow:0 0 0 1px rgba(255,255,255,0.04),0 24px 70px rgba(0,0,0,0.7);";
+      modal.className = "modal bm-modal-enter bm-modal";
+      modal.style.cssText = "background:linear-gradient(180deg,rgba(20,20,28,0.9),rgba(10,10,14,0.95)),radial-gradient(ellipse at top,rgba(94,106,210,0.06),transparent 60%);border-radius:14px;padding:16px;width:94vw;max-width:980px;max-height:88vh;display:flex;flex-direction:column;border:1px solid rgba(255,255,255,0.10);box-shadow:0 0 0 1px rgba(255,255,255,0.05),0 24px 70px rgba(0,0,0,0.7),0 0 100px rgba(94,106,210,0.08),inset 0 1px 0 0 rgba(255,255,255,0.06);";
       modal.innerHTML = `
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
           <h3 style="margin:0;font-size:13px;color:#EDEDEF;font-weight:600;">📂 本地 LoRA</h3>
@@ -699,6 +729,8 @@
         const left = (idx % cols) * (ITEM_W + GAP);
         const top = Math.floor(idx / cols) * ROW_H;
         card.style.cssText = `position:absolute;left:${left}px;top:${top}px;width:${ITEM_W}px;height:${ROW_H - GAP}px;border-radius:8px;overflow:hidden;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);cursor:pointer;`;
+        card.style.animation = "bm-fade-up 0.3s var(--ease) both";
+        card.style.animationDelay = `${Math.min(idx % cols, 8) * 0.03}s`;
         card.innerHTML = `
           <div class="bm-img" data-lora-name="${l.name}" style="position:relative;height:${IMG_H}px;background:rgba(255,255,255,0.04);overflow:hidden;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.15);font-size:22px;">🖼</div>
           <div class="bm-badge" style="position:absolute;top:4px;left:4px;display:${added ? "flex" : "none"};align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:rgba(94,106,210,0.9);color:#fff;font-size:10px;font-weight:700;">✓</div>
