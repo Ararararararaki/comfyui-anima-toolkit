@@ -887,6 +887,9 @@ function showExtractModal() {
           t.textContent = '已有'
           ;(t as HTMLButtonElement).disabled = true
         }
+        // 刷新主网格与侧边栏，让刚添加的画师立即显示
+        refreshArtists()
+        renderArtists()
       }
       if (t.id === 'extractAllBtn') {
         for (const item of extracted) {
