@@ -23,6 +23,7 @@ let _initDone = false
 // ── 拖拽框选选中的 LoRA（右键可批量添加分类） ──
 let _dragSelected = new Set<string>()
 let _dragInitDone = false
+let _justBoxed = false
 
 function clearDragHighlight() {
   document.querySelectorAll('#localFileList .local-list-item.local-drag-selected').forEach(el => {
@@ -106,8 +107,8 @@ function initDragSelect() {
     const target = e.target as HTMLElement
     if (!target.closest('#sectionLocal')) return
     if (!target.closest('#localFileList')) return
-    // 只在列表项之间的空白区域开始框选（列表项本身用于拖拽到分类）
-    if (target.closest('.local-list-item, .local-list-chk, button, input, select, .local-tree-cat-header')) return
+    // 列表项/空白处按住左键拖动 = 框选（preventDefault 阻止 HTML5 drag 到分类）
+    if (target.closest('.local-list-chk, button, input, select, .local-tree-cat-header')) return
     if (e.button !== 0) return
     isDragging = true
     document.body.style.userSelect = 'none'
@@ -157,17 +158,25 @@ function initDragSelect() {
     document.body.style.webkitUserSelect = ''
     if (rectEl) { rectEl.remove(); rectEl = null }
     if (_dragSelected.size > 0) {
+      _justBoxed = true
       showToast(`已选中 ${_dragSelected.size} 个，右键可批量添加分类`)
     }
   })
 
+  // capture 阶段拦截：框选结束后的 click 不应触发"选中详情"
   document.addEventListener('click', (e: MouseEvent) => {
+    if (_justBoxed) {
+      e.preventDefault()
+      e.stopPropagation()
+      _justBoxed = false
+      return
+    }
     const t = e.target as HTMLElement
     if (!t.closest('.local-drag-selected')) {
       _dragSelected.clear()
       clearDragHighlight()
     }
-  })
+  }, true)
 }
 
 
