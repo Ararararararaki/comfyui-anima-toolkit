@@ -166,8 +166,10 @@ export interface PromptEntry {
   images: string[]
   primaryImage: string
   tags: string[]
+  loras?: string[]
   categoryId: string
-  weight: number
+  /** 已废弃：新记录不再写入，仅兼容旧数据 */
+  weight?: number
   notes: string
   isFavorite: boolean
   createdAt: number

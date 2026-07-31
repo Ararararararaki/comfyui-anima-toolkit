@@ -35,7 +35,6 @@ export function renderPromptCard(p: PromptEntry, searchQuery = ''): string {
       <div class="prompt-card-prompt"><code>${highlightText(promptPreview, searchQuery)}${p.prompt.length > 120 ? '…' : ''}</code></div>
       <div class="prompt-card-meta">
         ${p.sourceModelName ? `<span class="pmeta-item" onclick="event.stopPropagation();window.__searchPromptsByModel(${p.sourceModelId})" title="查看该模型的所有 Prompt">📦 ${highlightText(p.sourceModelName, searchQuery)}</span>` : ''}
-        ${p.weight ? `<span class="pmeta-item">⚖️ ${p.weight.toFixed(1)}</span>` : ''}
         <span class="pmeta-item">📅 ${date}</span>
         ${p.images.length > 1 ? `<span class="pmeta-item">📷 ${p.images.length}图</span>` : ''}
       </div>

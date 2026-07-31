@@ -1,4 +1,4 @@
-import { getAllPrompts, searchPrompts, getPromptsByCategory, searchPromptsByCategory, getAllCategories, addCategory, deleteCategory, updateCategory, generateCategoryId, addPrompt, updatePrompt, deletePrompt, getPromptsByModel, getPrompt, generatePromptId } from '../store/prompts'
+import { getAllPrompts, countAllPrompts, countPromptsByCategory, searchPrompts, getPromptsByCategory, searchPromptsByCategory, getAllCategories, addCategory, deleteCategory, updateCategory, generateCategoryId, addPrompt, updatePrompt, deletePrompt, getPromptsByModel, getPrompt, generatePromptId } from '../store/prompts'
 import { renderPromptCard } from '../components/PromptCard'
 import { renderPromptEditor } from '../components/PromptEditor'
 import type { PromptEntry, PromptCategory } from '../types'
@@ -8,11 +8,19 @@ import { openModal, closeModal, promptModal, confirmModal } from '../components/
 let currentSearch = ''
 let currentCategory = ''
 
+// 列表缓存与竞态保护（需求 1：切分类不重查、不闪骨架）
+let hasRenderedList = false
+let listLoadSeq = 0
+const promptListCache = new Map<string, PromptEntry[]>()
+
 export async function renderPromptLibrary() {
   const container = document.getElementById('promptGrid')
   const sidebar = document.getElementById('promptCategoryList')
   const searchInput = document.getElementById('promptSearch') as HTMLInputElement
   if (!container) return
+
+  // 数据变更/切回 tab 时强制重取（覆盖 PromptFreq 保存等旁路写入）
+  promptListCache.clear()
 
   // Render categories
   await renderCategories(sidebar)
@@ -21,14 +29,27 @@ export async function renderPromptLibrary() {
   await renderPromptList()
 }
 
+function listCacheKey() { return currentCategory || 'all' }
+// 从 chips 容器收集文本（tags/loras 通用）
+function collectChips(id: string): string[] {
+  const el = document.getElementById(id)
+  if (!el) return []
+  const out: string[] = []
+  el.querySelectorAll('.tag').forEach(t => {
+    const v = t.textContent?.trim()
+    if (v) out.push(v)
+  })
+  return out
+}
+
+
 async function renderCategories(sidebar: HTMLElement | null) {
   if (!sidebar) return
   const cats = await getAllCategories()
-  const allCount = (await getAllPrompts()).length
+  const counts = await Promise.all([countAllPrompts(), ...cats.map(c => countPromptsByCategory(c.id))])
+  const allCount = counts[0]
   const catCounts: Record<string, number> = {}
-  for (const c of cats) {
-    catCounts[c.id] = (await getPromptsByCategory(c.id)).length
-  }
+  cats.forEach((c, i) => { catCounts[c.id] = counts[i + 1] })
 
   sidebar.innerHTML = `
     <button class="prompt-cat-item ${currentCategory === '' ? 'active' : ''}" data-catid="">
@@ -37,7 +58,7 @@ async function renderCategories(sidebar: HTMLElement | null) {
     ${cats.map(c => `
       <div class="prompt-cat-row">
         <button class="prompt-cat-item ${currentCategory === c.id ? 'active' : ''}" data-catid="${c.id}">
-          ${c.icon} ${c.name} <span class="count">${catCounts[c.id] || 0}</span>
+          ${c.icon ? c.icon + ' ' : ''}${c.name} <span class="count">${catCounts[c.id] || 0}</span>
         </button>
         ${c.id !== 'uncategorized' ? `<button class="prompt-cat-del" data-catid="${c.id}" title="删除分类">✕</button>` : ''}
       </div>
@@ -67,40 +88,62 @@ async function renderCategories(sidebar: HTMLElement | null) {
   })
 }
 
+function renderListContent(container: HTMLElement, prompts: PromptEntry[]) {
+  if (prompts.length === 0) {
+    container.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><div class="big">📖</div><p>${currentSearch ? '没有匹配的 Prompt' : 'Prompt 库为空'}</p><p class="sub">浏览 LoRA 列表，从卡片中提取触发词</p></div>`
+    return
+  }
+  container.innerHTML = prompts.map(p => renderPromptCard(p, currentSearch)).join('')
+}
+
 async function renderPromptList() {
   const container = document.getElementById('promptGrid')
   if (!container) return
+  const seq = ++listLoadSeq
+  const useCache = !currentSearch
+  const key = listCacheKey()
 
-  container.innerHTML = `
-    <div class="skeleton-card" style="grid-column:1/-1">
-      <div class="skeleton-img"></div>
-      <div class="skeleton-text"></div>
-      <div class="skeleton-text" style="width:75%"></div>
-      <div class="skeleton-text" style="width:55%"></div>
-      <div class="skeleton-badges">
-        <div class="skeleton-badge"></div>
-        <div class="skeleton-badge"></div>
+  // 缓存命中 → 同步渲染，无骨架
+  if (useCache && promptListCache.has(key)) {
+    renderListContent(container, promptListCache.get(key)!)
+    return
+  }
+
+  // 未命中：首次进入显示骨架；切分类保留旧内容 + 轻量加载态（不闪浅黄骨架）
+  if (!hasRenderedList) {
+    container.innerHTML = `
+      <div class="skeleton-card" style="grid-column:1/-1">
+        <div class="skeleton-img"></div>
+        <div class="skeleton-text"></div>
+        <div class="skeleton-text" style="width:75%"></div>
+        <div class="skeleton-text" style="width:55%"></div>
+        <div class="skeleton-badges">
+          <div class="skeleton-badge"></div>
+          <div class="skeleton-badge"></div>
+        </div>
       </div>
-    </div>
-    <div class="skeleton-card" style="grid-column:1/-1">
-      <div class="skeleton-img"></div>
-      <div class="skeleton-text"></div>
-      <div class="skeleton-text" style="width:60%"></div>
-      <div class="skeleton-badges">
-        <div class="skeleton-badge"></div>
+      <div class="skeleton-card" style="grid-column:1/-1">
+        <div class="skeleton-img"></div>
+        <div class="skeleton-text"></div>
+        <div class="skeleton-text" style="width:60%"></div>
+        <div class="skeleton-badges">
+          <div class="skeleton-badge"></div>
+        </div>
       </div>
-    </div>
-    <div class="skeleton-card" style="grid-column:1/-1">
-      <div class="skeleton-img"></div>
-      <div class="skeleton-text"></div>
-      <div class="skeleton-text" style="width:80%"></div>
-      <div class="skeleton-text" style="width:40%"></div>
-      <div class="skeleton-badges">
-        <div class="skeleton-badge"></div>
-        <div class="skeleton-badge"></div>
-        <div class="skeleton-badge"></div>
-      </div>
-    </div>`
+      <div class="skeleton-card" style="grid-column:1/-1">
+        <div class="skeleton-img"></div>
+        <div class="skeleton-text"></div>
+        <div class="skeleton-text" style="width:80%"></div>
+        <div class="skeleton-text" style="width:40%"></div>
+        <div class="skeleton-badges">
+          <div class="skeleton-badge"></div>
+          <div class="skeleton-badge"></div>
+          <div class="skeleton-badge"></div>
+        </div>
+      </div>`
+  } else {
+    container.classList.add('prompt-loading')
+  }
 
   let prompts: PromptEntry[]
   if (currentCategory) {
@@ -113,12 +156,12 @@ async function renderPromptList() {
       : await getAllPrompts()
   }
 
-  if (prompts.length === 0) {
-    container.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><div class="big">📖</div><p>${currentSearch ? '没有匹配的 Prompt' : 'Prompt 库为空'}</p><p class="sub">浏览 LoRA 列表，从卡片中提取触发词</p></div>`
-    return
-  }
-
-  container.innerHTML = prompts.map(p => renderPromptCard(p, currentSearch)).join('')
+  // 竞态保护：期间已切换分类则丢弃过期结果
+  if (seq !== listLoadSeq) return
+  if (useCache) promptListCache.set(key, prompts)
+  hasRenderedList = true
+  container.classList.remove('prompt-loading')
+  renderListContent(container, prompts)
 }
 
 // ── Global handlers exported for LoraExplorer ──
@@ -196,18 +239,11 @@ export function setupPromptHandlers() {
 
     const displayText = (document.getElementById('pe_displayText') as HTMLInputElement)?.value?.trim() || ''
     const prompt = (document.getElementById('pe_prompt') as HTMLTextAreaElement)?.value?.trim() || ''
-    const weight = parseFloat((document.getElementById('pe_weight') as HTMLInputElement)?.value || '1.0')
     const categoryId = (document.getElementById('pe_category') as HTMLSelectElement)?.value || 'uncategorized'
     const notes = (document.getElementById('pe_notes') as HTMLTextAreaElement)?.value?.trim() || ''
-    // Collect tags from DOM
-    const tagsContainer = document.getElementById('pe_tags')
-    const tags: string[] = []
-    if (tagsContainer) {
-      tagsContainer.querySelectorAll('.tag').forEach(el => {
-        const t = el.textContent?.trim()
-        if (t) tags.push(t)
-      })
-    }
+    // Collect tags + loras chips from DOM
+    const tags = collectChips('pe_tags')
+    const loras = collectChips('pe_loras')
 
     if (!prompt) { showToast('⚠️ Prompt 不能为空'); return }
 
@@ -229,8 +265,8 @@ export function setupPromptHandlers() {
         images: allImages,
         primaryImage: allImages[0] || '',
         tags,
+        loras,
         categoryId,
-        weight,
         notes,
         isFavorite: false,
         createdAt: Date.now(),
@@ -245,7 +281,7 @@ export function setupPromptHandlers() {
       // Update existing — use peImages if present
       let allImages: string[] = []
       if (modal?.dataset.peImages) allImages = JSON.parse(modal.dataset.peImages)
-      await updatePrompt(id, { displayText, prompt, weight, categoryId, notes, tags, images: allImages, primaryImage: allImages[0] || '' })
+      await updatePrompt(id, { displayText, prompt, categoryId, notes, tags, loras, images: allImages, primaryImage: allImages[0] || '' })
     }
 
     closeModal('promptEditModal')
@@ -264,6 +300,27 @@ export function setupPromptHandlers() {
     span.className = 'tag tag-editable'
     span.innerHTML = `${tag} <button class="tag-del-btn" onclick="this.parentElement.remove()">✕</button>`
     tagsContainer.appendChild(span)
+  }
+
+  w.__addPromptEditLora = () => {
+    const input = document.getElementById('pe_newLora') as HTMLInputElement
+    const lorasContainer = document.getElementById('pe_loras')
+    if (!input || !lorasContainer) return
+    const lora = input.value.trim()
+    if (!lora) return
+    input.value = ''
+    const span = document.createElement('span')
+    span.className = 'tag tag-editable'
+    span.innerHTML = `${lora} <button class="tag-del-btn" onclick="this.parentElement.remove()">✕</button>`
+    lorasContainer.appendChild(span)
+  }
+
+  w.__removePromptEditLora = (lora: string) => {
+    const lorasContainer = document.getElementById('pe_loras')
+    if (!lorasContainer) return
+    lorasContainer.querySelectorAll('.tag').forEach(el => {
+      if (el.textContent?.trim() === lora) el.remove()
+    })
   }
 
   w.__removePromptEditTag = (tag: string) => {
@@ -299,7 +356,7 @@ export function setupPromptHandlers() {
       modal.dataset.editId = 'new_' + Date.now()
       modal.dataset.peImages = '[]'
     }
-    renderPromptEditor({ id: 'prefill_new', prompt: '', displayText: '', tags: [], weight: 1.0, categoryId: 'uncategorized', notes: '', images: [], primaryImage: '' })
+    renderPromptEditor({ id: 'prefill_new', prompt: '', displayText: '', tags: [], loras: [], categoryId: 'uncategorized', notes: '', images: [], primaryImage: '' })
     openModal('promptEditModal')
   })
 

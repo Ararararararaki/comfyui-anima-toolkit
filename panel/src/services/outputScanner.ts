@@ -2,7 +2,7 @@ import type { OutputFile, OutputMetadata, OutputDir } from '../types/outputs'
 import { outputsDb } from '../db/outputsDb'
 import { useOutputStore } from '../store/outputStore'
 import { parseOutputMetadata } from './outputMetadata'
-import { getThumbnail } from './outputThumbnail'
+import { getThumbnail, deleteThumbnails } from './outputThumbnail'
 import {
   diffManifest,
   restoreFilesFromDb,
@@ -186,7 +186,7 @@ export async function reparseAllMetadata(dirHandle: FileSystemDirectoryHandle): 
           rawMetadata: meta.raw || {},
         }
         await outputsDb.metadata.put(outputMeta)
-        useOutputStore.getState().metadataCache.set(f.id, outputMeta)
+        useOutputStore.getState().putMetadata(outputMeta)
       }
     } catch {
       errors.push(f.filename)
@@ -263,6 +263,7 @@ export async function scanOutputDir(dirHandle: FileSystemDirectoryHandle): Promi
 
     // 阶段 4: 增量处理变更文件（分批处理）
     const newFiles: OutputFile[] = []
+    const metaUpdates: OutputMetadata[] = []
     const BATCH_SIZE = 10
     for (let i = 0; i < diff.changed.length; i += BATCH_SIZE) {
       const batch = diff.changed.slice(i, i + BATCH_SIZE)
@@ -317,6 +318,7 @@ export async function scanOutputDir(dirHandle: FileSystemDirectoryHandle): Promi
                 rawMetadata: meta.raw || {},
               }
               await outputsDb.metadata.put(outputMeta)
+              metaUpdates.push(outputMeta)
             }
 
             return outputFile
@@ -336,6 +338,13 @@ export async function scanOutputDir(dirHandle: FileSystemDirectoryHandle): Promi
         scanProgress: { done: processedCount, total: totalFiles },
       })
     }
+
+    // A1+C: 变更文件元数据同步到内存缓存，失效旧缩略图，清理孤儿缓存
+    if (metaUpdates.length > 0) useOutputStore.getState().putMetadataBatch(metaUpdates)
+    const changedPaths = diff.changed.map(c => c.path)
+    useOutputStore.getState().invalidateThumbnails(changedPaths)
+    await deleteThumbnails(changedPaths)
+    useOutputStore.getState().removeMetadata(diff.orphaned)
 
     // 阶段 5: 保存 manifest 快照
     const allManifests = [...diff.unchanged, ...diff.changed.map(c => {
@@ -410,6 +419,7 @@ export async function scanOutputDirIncremental(dirHandle: FileSystemDirectoryHan
     }
 
     // 增量处理变更的文件
+    const metaUpdates: OutputMetadata[] = []
     const BATCH_SIZE = 10
     for (let i = 0; i < diff.changed.length; i += BATCH_SIZE) {
       const batch = diff.changed.slice(i, i + BATCH_SIZE)
@@ -437,13 +447,15 @@ export async function scanOutputDirIncremental(dirHandle: FileSystemDirectoryHan
             } as OutputFile)
             await outputsDb.files.put(outputFile)
             if (meta) {
-              await outputsDb.metadata.put({
+              const outputMeta: OutputMetadata = {
                 imageId: entry.id, model: meta.model || '', seed: meta.seed || '',
                 steps: meta.steps || '', cfg: meta.cfg || '', sampler: meta.sampler || '',
                 vae: meta.vae || '', clipSkip: meta.clipSkip || 0,
                 prompt: meta.prompt || '', negativePrompt: meta.negativePrompt || '',
                 workflowJson: meta.workflowJson || '', rawMetadata: meta.raw || {},
-              })
+              }
+              await outputsDb.metadata.put(outputMeta)
+              metaUpdates.push(outputMeta)
             }
             return outputFile
           } catch (err) {
@@ -453,6 +465,12 @@ export async function scanOutputDirIncremental(dirHandle: FileSystemDirectoryHan
         })
       )
     }
+
+    // A1+C: 变更文件元数据同步到内存缓存，失效旧缩略图
+    if (metaUpdates.length > 0) useOutputStore.getState().putMetadataBatch(metaUpdates)
+    const changedPaths = diff.changed.map(c => c.path)
+    useOutputStore.getState().invalidateThumbnails(changedPaths)
+    await deleteThumbnails(changedPaths)
 
     // 清理 orphaned
     if (diff.orphaned.length > 0) {

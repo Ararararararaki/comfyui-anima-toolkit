@@ -96,6 +96,12 @@ interface OutputState {
   batchUnpin: (ids: string[]) => Promise<void>
 
   loadMetadata: (id: string) => Promise<OutputMetadata | null>
+  putMetadata: (meta: OutputMetadata) => void
+  putMetadataBatch: (metas: OutputMetadata[]) => void
+  removeMetadata: (ids: string[]) => void
+  thumbMemory: Map<string, string>
+  setThumbMemory: (path: string, dataUrl: string) => void
+  invalidateThumbnails: (paths?: string[]) => void
   loadMore: () => void
   applyFilters: () => void
 }
@@ -120,6 +126,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   filteredFiles: [],
   selectedIds: new Set(),
   metadataCache: new Map(),
+  thumbMemory: new Map(),
 
   viewMode: 'grid',
   sortKey: 'date',
@@ -280,6 +287,37 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     }
     return meta || null
   },
+
+  putMetadata: (meta) => set(s => {
+    const next = new Map(s.metadataCache)
+    next.set(meta.imageId, meta)
+    return { metadataCache: next }
+  }),
+  putMetadataBatch: (metas) => set(s => {
+    if (metas.length === 0) return {}
+    const next = new Map(s.metadataCache)
+    for (const m of metas) next.set(m.imageId, m)
+    return { metadataCache: next }
+  }),
+  removeMetadata: (ids) => set(s => {
+    if (ids.length === 0) return {}
+    const next = new Map(s.metadataCache)
+    let changed = false
+    for (const id of ids) { if (next.delete(id)) changed = true }
+    return changed ? { metadataCache: next } : {}
+  }),
+  setThumbMemory: (path, dataUrl) => set(s => {
+    const next = new Map(s.thumbMemory)
+    next.set(path, dataUrl)
+    return { thumbMemory: next }
+  }),
+  invalidateThumbnails: (paths) => set(s => {
+    if (!paths) return { thumbMemory: new Map() }
+    if (paths.length === 0) return {}
+    const next = new Map(s.thumbMemory)
+    for (const p of paths) next.delete(p)
+    return { thumbMemory: next }
+  }),
 
   loadMore: () => {
     set(s => ({ page: s.page + 1 }))

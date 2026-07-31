@@ -6,6 +6,7 @@ import { useOutputStore } from '../store/outputStore'
 import { outputsDb } from '../db/outputsDb'
 import { showToast } from '../utils'
 import { hashPath } from './outputManifest'
+import { deleteThumbnails } from './outputThumbnail'
 import type { OutputFile, OutputMetadata } from '../types/outputs'
 
 // ── 扫描编排 ──
@@ -64,6 +65,7 @@ export async function deleteFiles(ids: string[]): Promise<void> {
       await current.removeEntry(parts[parts.length - 1])
       await outputsDb.files.delete(id)
       await outputsDb.metadata.delete(id)
+      useOutputStore.getState().removeMetadata([id])
       deleted++
     } catch (err) {
       console.warn('[outputService] 删除文件失败:', id, file?.path, (err as Error)?.message)
@@ -136,6 +138,13 @@ export async function renameFile(id: string, newName: string): Promise<void> {
       await outputsDb.metadata.delete(id)
       await outputsDb.metadata.put({ ...meta, imageId: newId })
     }
+
+    // 同步内存缓存 + 失效缩略图
+    const st = useOutputStore.getState()
+    st.removeMetadata([id])
+    if (meta) st.putMetadata({ ...meta, imageId: newId })
+    st.invalidateThumbnails([oldPath, newPath])
+    await deleteThumbnails([oldPath, newPath])
 
     // 更新状态
     useOutputStore.setState(s => ({

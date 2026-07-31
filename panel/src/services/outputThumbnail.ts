@@ -108,6 +108,12 @@ export async function getCachedThumbnail(fileId: string): Promise<string | null>
   return null
 }
 
+/** 按文件路径删除缩略图缓存（文件变更后失效旧图） */
+export async function deleteThumbnails(paths: string[]): Promise<void> {
+  if (paths.length === 0) return
+  await outputsDb.thumbnails.bulkDelete(paths.map(hashPath))
+}
+
 export async function clearThumbnailCache(): Promise<void> {
   await outputsDb.thumbnails.clear()
   accessOrder = []

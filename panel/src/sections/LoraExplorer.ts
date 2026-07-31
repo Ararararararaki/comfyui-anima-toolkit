@@ -652,7 +652,7 @@ export function setupGlobalHandlers() {
         prompt: word,
         displayText: word,
         tags: m.tags || [],
-        weight: 0.8,
+        loras: [],
         categoryId: 'uncategorized',
         notes: count > 0 ? `📦 已从该模型提取 ${count + 1} 个 Prompt` : '',
         images: m.images || [],

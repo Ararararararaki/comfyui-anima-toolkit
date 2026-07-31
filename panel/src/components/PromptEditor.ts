@@ -11,6 +11,11 @@ export function renderPromptEditor(p: Partial<PromptEntry> & { id: string }) {
     tagsHtml = p.tags.map(t => `<span class="tag tag-editable">${esc(t)} <button class="tag-del-btn" onclick="window.__removePromptEditTag('${esc(t)}')">✕</button></span>`).join('')
   }
 
+  let lorasHtml = ''
+  if (p.loras) {
+    lorasHtml = p.loras.map(l => `<span class="tag tag-editable">${esc(l)} <button class="tag-del-btn" onclick="window.__removePromptEditLora('${esc(l)}')">✕</button></span>`).join('')
+  }
+
   const images = p.images || []
   const imgsHtml = images.length > 0
     ? `<div class="img-thumb-grid">${images.map((u, i) =>
@@ -24,13 +29,16 @@ export function renderPromptEditor(p: Partial<PromptEntry> & { id: string }) {
     <input type="text" id="pe_displayText" value="${esc(p.displayText || '')}" placeholder="显示名称（可选）" class="mb-8">
     <textarea id="pe_prompt" placeholder="Prompt 全文" class="textarea-md min-h-60 mb-8">${esc(p.prompt || '')}</textarea>
     <div class="form-row">
-      <input type="number" id="pe_weight" value="${p.weight || 1.0}" step="0.1" min="0.1" max="2.0" placeholder="权重" style="flex:1">
       <select id="pe_category" class="select-md" style="flex:2"></select>
     </div>
     <div class="form-row-stretch">
       <input type="text" id="pe_newTag" placeholder="添加标签后回车" style="flex:1" onkeydown="if(event.key==='Enter'){event.preventDefault();window.__addPromptEditTag()}">
     </div>
     <div id="pe_tags" class="form-row-stretch">${tagsHtml}</div>
+    <div class="form-row-stretch" style="margin-top:8px">
+      <input type="text" id="pe_newLora" placeholder="添加 LoRA 后回车（如 lora:foo:0.8）" style="flex:1" onkeydown="if(event.key==='Enter'){event.preventDefault();window.__addPromptEditLora()}">
+    </div>
+    <div id="pe_loras" class="form-row-stretch">${lorasHtml}</div>
     <div id="pe_images">${imgsHtml}</div>
     <div class="form-gap-sm">
       <button type="button" class="btn btn-ghost btn-md" onclick="document.getElementById('pe_fileInput').click()">📷 添加预览图</button>
@@ -76,6 +84,6 @@ export function renderPromptEditor(p: Partial<PromptEntry> & { id: string }) {
   getAllCategories().then(cats => {
     const sel = document.getElementById('pe_category') as HTMLSelectElement
     if (!sel) return
-    sel.innerHTML = cats.map(c => `<option value="${c.id}" ${(p.categoryId || 'uncategorized') === c.id ? 'selected' : ''}>${c.icon} ${c.name}</option>`).join('')
+    sel.innerHTML = cats.map(c => `<option value="${c.id}" ${(p.categoryId || 'uncategorized') === c.id ? 'selected' : ''}>${c.icon ? c.icon + ' ' : ''}${c.name}</option>`).join('')
   })
 }
