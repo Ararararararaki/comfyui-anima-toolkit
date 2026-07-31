@@ -506,7 +506,9 @@
   flex-wrap: wrap;
 }
 .outputs-copy-prompt-btn,
-.outputs-copy-lora-btn {
+.outputs-copy-lora-btn,
+.outputs-copy-wf-btn,
+.outputs-meta-btn {
   font-size: 10px;
   padding: 3px 8px;
   border: 1px solid var(--border);
@@ -518,7 +520,9 @@
   white-space: nowrap;
 }
 .outputs-copy-prompt-btn:hover,
-.outputs-copy-lora-btn:hover {
+.outputs-copy-lora-btn:hover,
+.outputs-copy-wf-btn:hover,
+.outputs-meta-btn:hover {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
