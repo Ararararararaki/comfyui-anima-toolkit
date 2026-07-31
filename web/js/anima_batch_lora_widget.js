@@ -790,6 +790,19 @@
             updateBatchBar();
             return;
           }
+          // 统一选择逻辑：非批量模式下，点击已选卡取消选中；点击未选卡清除整个选中再操作
+          if (selected.size > 0) {
+            if (selected.has(l.name)) {
+              selected.delete(l.name);
+              card.style.outline = "";
+              updateBatchBar();
+              if (selected.size === 0) showToast("已取消选中");
+              return;
+            }
+            selected.clear();
+            listEl.querySelectorAll(".bm-card").forEach((c) => { c.style.outline = ""; });
+            updateBatchBar();
+          }
           const existing = this.loras.find((e2) => e2.name.toLowerCase() === l.name.toLowerCase());
           const badge = card.querySelector(".bm-badge");
           if (existing) {
@@ -860,6 +873,19 @@
             else { selected.add(l.name); row.style.background = "rgba(94,106,210,0.15)"; }
             updateBatchBar();
             return;
+          }
+          // 统一选择逻辑：非批量模式下，点击已选行取消选中；点击未选行清除选中再操作
+          if (selected.size > 0) {
+            if (selected.has(l.name)) {
+              selected.delete(l.name);
+              row.style.background = "";
+              updateBatchBar();
+              if (selected.size === 0) showToast("已取消选中");
+              return;
+            }
+            selected.clear();
+            listEl.querySelectorAll(".bm-li").forEach((r) => { r.style.background = ""; });
+            updateBatchBar();
           }
           const existing = this.loras.find((e2) => e2.name.toLowerCase() === l.name.toLowerCase());
           const badge = row.querySelector(".bm-li-badge");
@@ -973,7 +999,7 @@
         if (r - l > 6 || b - t > 6) {
           dragBox.boxed = true;
           const inRect = new Set();
-          listEl.querySelectorAll(".bm-card").forEach((el) => {
+          listEl.querySelectorAll(".bm-card, .bm-li").forEach((el) => {
             const cr = el.getBoundingClientRect();
             const cl = cr.left + sx, ct = cr.top + sy, crr = cr.right + sx, cb = cr.bottom + sy;
             if (l < crr && r > cl && t < cb && b > ct) {
@@ -985,6 +1011,9 @@
           inRect.forEach((n) => selected.add(n));
           listEl.querySelectorAll(".bm-card").forEach((el) => {
             el.style.outline = selected.has(el.dataset.name) ? "2px solid #5E6AD2" : "";
+          });
+          listEl.querySelectorAll(".bm-li").forEach((el) => {
+            el.style.background = selected.has(el.dataset.name) ? "rgba(94,106,210,0.15)" : "";
           });
           updateBatchBar();
         }
