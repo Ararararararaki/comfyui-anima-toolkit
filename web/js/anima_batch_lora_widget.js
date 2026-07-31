@@ -619,6 +619,14 @@
       const loraMeta = (name) => meta.loraMeta[name] || { categories: [], favorite: false, pinned: false };
       const ensureMeta = (name) => meta.loraMeta[name] || (meta.loraMeta[name] = { categories: [], favorite: false, pinned: false });
       const getInfo = (name) => fetch("/anima/lora/info?name=" + encodeURIComponent(name)).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      // C 站图片走后端代理（浏览器无代理无法直连 image.civitai.com）；卡片用 400px 小图省流量
+      const imgProxy = (url) => {
+        if (!url || !url.startsWith("https://image.civitai.com/")) return url;
+        let u = url;
+        if (u.includes("original=true")) u = u.replace("original=true", "width=400");
+        if (u.includes("width=")) u = u.replace(/width=\d+/g, "width=400");
+        return "/anima/image?url=" + encodeURIComponent(u);
+      };
 
       const getMatched = () => {
         const q = (searchInput.value || "").toLowerCase();
@@ -675,7 +683,7 @@
             this._imgCache[name] = info;
             if (img.isConnected === false) return;
             if (info.previewUrl) {
-              img.innerHTML = `<img src="${info.previewUrl}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.innerHTML='<span style=font-size:22px>🖼</span>'">`;
+              img.innerHTML = `<img src="${imgProxy(info.previewUrl)}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.innerHTML='<span style=font-size:22px>🖼</span>'">`;
             } else {
               img.innerHTML = `<span style="font-size:22px;">${info.source === "not_on_civitai" ? "❌" : "🖼"}</span>`;
             }
@@ -711,7 +719,7 @@
       const paintThumb = (imgEl, name) => {
         const cached = this._imgCache[name];
         if (cached && cached.previewUrl) {
-          imgEl.innerHTML = `<img src="${cached.previewUrl}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;">`;
+          imgEl.innerHTML = `<img src="${imgProxy(cached.previewUrl)}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;">`;
         } else {
           io.observe(imgEl);
         }

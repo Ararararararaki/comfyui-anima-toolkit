@@ -39,6 +39,10 @@ export function thumbUrl(url: string, width = 400): string {
   let u = url
   if (u.includes('original=true')) u = u.replace('original=true', `width=${width}`)
   if (u.includes('width=')) u = u.replace(/width=\d+/g, `width=${width}`)
+  // C 站图走后端代理（浏览器无代理无法直连 image.civitai.com，ComfyUI 后端可走代理）
+  if (u.startsWith('https://image.civitai.com/')) {
+    return '/anima/image?url=' + encodeURIComponent(u)
+  }
   return u
 }
 

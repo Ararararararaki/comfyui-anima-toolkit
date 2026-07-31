@@ -104,6 +104,45 @@ def _creator_name(model: dict) -> str:
     return c or ""
 
 
+# ── Civitai 图片代理 ──
+# 浏览器（无代理）无法直连 image.civitai.com；改由后端 session（trust_env 走代理）下载后转发。
+_IMAGE_CACHE: dict[str, tuple[bytes, str]] = {}
+_IMAGE_CACHE_MAX = 200
+_IMAGE_ALLOW_PREFIX = "https://image.civitai.com/"
+_IMAGE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    "Referer": "https://civitai.com/",
+}
+
+
+@PromptServer.instance.routes.get("/anima/image")
+async def anima_image(request):
+    """Proxy Civitai preview images (browser cannot reach image.civitai.com without proxy)."""
+    url = request.query.get("url", "").strip()
+    if not url.startswith(_IMAGE_ALLOW_PREFIX):
+        return web.Response(status=403, text="forbidden: only image.civitai.com allowed")
+
+    cached = _IMAGE_CACHE.get(url)
+    if cached is not None:
+        body, ctype = cached
+        return web.Response(body=body, content_type=ctype, headers={"Cache-Control": "public, max-age=86400"})
+
+    try:
+        session = await _get_session()
+        async with session.get(url, headers=_IMAGE_HEADERS) as resp:
+            if resp.status != 200:
+                return web.Response(status=502, text=f"upstream http_{resp.status}")
+            body = await resp.read()
+            ctype = resp.headers.get("Content-Type", "image/jpeg")
+    except Exception as e:
+        return web.Response(status=502, text=f"proxy error: {e}")
+
+    if len(_IMAGE_CACHE) >= _IMAGE_CACHE_MAX:
+        _IMAGE_CACHE.pop(next(iter(_IMAGE_CACHE)))
+    _IMAGE_CACHE[url] = (body, ctype)
+    return web.Response(body=body, content_type=ctype, headers={"Cache-Control": "public, max-age=86400"})
+
+
 @PromptServer.instance.routes.get("/anima/lora/info")
 async def lora_info(request):
     """Get LoRA info from Civitai by file name (cached 5 min)."""
