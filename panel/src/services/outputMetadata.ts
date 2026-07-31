@@ -78,6 +78,30 @@ export async function decompressZlibAsync(data: Uint8Array): Promise<string> {
   }
 }
 
+/**
+ * 解析器版本：解析逻辑变更时递增，Outputs 借此自动失效旧的元数据缓存并重新解析。
+ */
+export const PARSER_VERSION = 2
+
+/**
+ * 安全 JSON 解析：ComfyUI 的 json.dumps 会把 NaN/Infinity 原样写入（如 is_changed:[NaN]），
+ * 这些不是合法 JSON，导致 JSON.parse 抛异常。先原样尝试，失败则清洗 NaN/Infinity 后重试。
+ */
+export function safeParseJSON(str: string): any | null {
+  try {
+    return JSON.parse(str)
+  } catch {
+    try {
+      return JSON.parse(str
+        .replace(/:\s*NaN/g, ': null')
+        .replace(/:\s*Infinity/g, ': null')
+        .replace(/:\s*-Infinity/g, ': null'))
+    } catch {
+      return null
+    }
+  }
+}
+
 export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
   const result: Partial<ParsedMetadata> = {
     raw: { workflow: JSON.stringify(workflow) },
@@ -572,13 +596,17 @@ export async function parseOutputMetadata(
     offset += 12 + len
   }
 
-  // 优先用 prompt 格式（inputs 为对象，易解析），其次 workflow 格式
-  const bestWorkflow = promptData || workflowData
+  // 与 PromptFreq 一致：优先 workflow chunk（UI format，节点带 widgets_values，文本最可靠），
+  // 其次 prompt chunk（API format，仅当其为合法 JSON；ComfyUI 可能写入 is_changed:[NaN] 等非法 JSON 需清洗）
+  let bestWorkflow = workflowData || ''
+  if (!bestWorkflow && promptData && safeParseJSON(promptData)) {
+    bestWorkflow = promptData
+  }
 
-  // 尝试解析工作流（优先 prompt 格式，inputs 为对象易解析）
+  // 尝试解析工作流
   if (bestWorkflow) {
-    try {
-      const workflow = JSON.parse(bestWorkflow)
+    const workflow = safeParseJSON(bestWorkflow)
+    if (workflow) {
       const parsed = parseComfyUIWorkflow(workflow)
       return {
         model: parsed.model || '',
@@ -593,8 +621,6 @@ export async function parseOutputMetadata(
         workflowJson: bestWorkflow,
         raw,
       }
-    } catch {
-      // 解析失败，继续尝试其他格式
     }
   }
 

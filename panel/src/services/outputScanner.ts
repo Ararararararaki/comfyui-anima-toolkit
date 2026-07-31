@@ -1,7 +1,7 @@
 import type { OutputFile, OutputMetadata, OutputDir } from '../types/outputs'
 import { outputsDb } from '../db/outputsDb'
 import { useOutputStore } from '../store/outputStore'
-import { parseOutputMetadata } from './outputMetadata'
+import { parseOutputMetadata, PARSER_VERSION } from './outputMetadata'
 import { getThumbnail, deleteThumbnails } from './outputThumbnail'
 import {
   diffManifest,
@@ -198,6 +198,37 @@ export async function reparseAllMetadata(dirHandle: FileSystemDirectoryHandle): 
   if (errors.length) showToast(`⚠️ 重解析完成 ${done} 个，${errors.length} 个失败`)
   else showToast(`✅ 已重新解析 ${done} 个文件元数据`)
   return done
+}
+
+const PARSER_VERSION_KEY = 'anima_output_parser_version'
+
+/**
+ * 解析逻辑升级后自动失效旧元数据缓存并重新解析。
+ * 增量扫描按 mtime+size 跳过未变更文件，解析器升级后旧缓存不会自动刷新，
+ * 故用版本号标记：不匹配时清空 metadata/缩略图缓存并强制重解析一次。
+ */
+export async function ensureMetadataFresh(dirHandle: FileSystemDirectoryHandle | null): Promise<boolean> {
+  try {
+    const saved = localStorage.getItem(PARSER_VERSION_KEY)
+    if (saved === String(PARSER_VERSION)) return false
+    localStorage.setItem(PARSER_VERSION_KEY, String(PARSER_VERSION))
+  } catch {
+    return false
+  }
+
+  // 清空旧缓存，避免读到解析逻辑变更前的错误结果
+  await outputsDb.metadata.clear()
+  await outputsDb.thumbnails.clear()
+  useOutputStore.setState({
+    metadataCache: new Map(),
+    thumbMemory: new Map(),
+  })
+
+  if (dirHandle) {
+    showToast('🔍 解析逻辑已升级，正在重新解析元数据…')
+    await reparseAllMetadata(dirHandle)
+  }
+  return true
 }
 
 async function scanDirectory(

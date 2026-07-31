@@ -2,7 +2,7 @@
 
 import { useOutputStore } from '../store/outputStore'
 import { deleteFiles, renameFile, batchFavorite, batchRate } from '../services/outputService'
-import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, ensureThumbnails, reparseAllMetadata } from '../services/outputScanner'
+import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, ensureThumbnails, reparseAllMetadata, ensureMetadataFresh } from '../services/outputScanner'
 import { outputsDb } from '../db/outputsDb'
 import { esc, escAttr, showToast, copyText } from '../utils'
 import { confirmModal, promptModal } from '../components/Modal'
@@ -34,14 +34,15 @@ export async function initOutputs() {
   _initDone = true
 
   // 尝试恢复目录句柄（内部已处理增量扫描）
-  const restored = await loadOutputDirHandle()
-  if (restored) {
+  await loadOutputDirHandle()
+
+  const dh = useOutputStore.getState().dirHandle
+  if (dh) {
+    // 解析逻辑升级时自动失效旧元数据缓存并重新解析（增量扫描按 mtime 会跳过未变更文件）
+    await ensureMetadataFresh(dh)
     // 构建目录树（buildDirTree 是轻量操作，仅遍历文件名）
-    const dh = useOutputStore.getState().dirHandle
-    if (dh) {
-      dirTree = await buildDirTree(dh)
-      renderDirTree(dirTree)
-    }
+    dirTree = await buildDirTree(dh)
+    renderDirTree(dirTree)
   }
 
   renderOutputsView()
@@ -582,8 +583,14 @@ function bindOutputsEvents() {
           useOutputStore.getState().toggleSelect(id)
           _lastClickedFileIndex = useOutputStore.getState().filteredFiles.findIndex(f => f.id === id)
         } else {
-          useOutputStore.getState().clearSelection()
-          useOutputStore.getState().toggleSelect(id)
+          const sel = useOutputStore.getState().selectedIds
+          if (sel.has(id)) {
+            // 点击已选中卡片 → 取消选中（再次点击可取消）
+            useOutputStore.getState().toggleSelect(id)
+          } else {
+            useOutputStore.getState().clearSelection()
+            useOutputStore.getState().toggleSelect(id)
+          }
           _lastClickedFileIndex = useOutputStore.getState().filteredFiles.findIndex(f => f.id === id)
         }
         syncSelectionUI()
@@ -603,8 +610,14 @@ function bindOutputsEvents() {
           useOutputStore.getState().toggleSelect(id)
           _lastClickedFileIndex = useOutputStore.getState().filteredFiles.findIndex(f => f.id === id)
         } else {
-          useOutputStore.getState().clearSelection()
-          useOutputStore.getState().toggleSelect(id)
+          const sel = useOutputStore.getState().selectedIds
+          if (sel.has(id)) {
+            // 点击已选中行 → 取消选中
+            useOutputStore.getState().toggleSelect(id)
+          } else {
+            useOutputStore.getState().clearSelection()
+            useOutputStore.getState().toggleSelect(id)
+          }
           _lastClickedFileIndex = useOutputStore.getState().filteredFiles.findIndex(f => f.id === id)
         }
         syncSelectionUI()
