@@ -88,12 +88,11 @@ function renderImageCard(file: OutputFile, meta: OutputMetadata | null, isSelect
         <span class="outputs-card-size">${fmtSize(file.size)}</span>
       </div>
       <div class="outputs-card-actions">
-        ${meta?.prompt ? `<button class="outputs-copy-prompt-btn" data-id="${escAttr(file.id)}" title="复制正面 Prompt">${icon('fileText', 12)} 正面 Prompt</button>` : ''}
-        ${meta?.workflowJson ? `<button class="outputs-copy-lora-btn" data-id="${escAttr(file.id)}" title="复制 LoRA 标签">${icon('tag', 12)} LoRA 标签</button>` : ''}
+        ${meta?.prompt ? `<button class="outputs-copy-prompt-btn" data-id="${escAttr(file.id)}" title="复制正面 Prompt">📝 正面</button>` : ''}
+        ${meta?.workflowJson ? `<button class="outputs-copy-lora-btn" data-id="${escAttr(file.id)}" title="复制 LoRA 标签">🏷️ LoRA</button>` : ''}
+        ${meta?.workflowJson ? `<button class="outputs-copy-wf-btn" data-id="${escAttr(file.id)}" title="复制工作流 JSON">📋 工作流</button>` : ''}
+        ${meta ? `<button class="outputs-meta-btn" data-id="${escAttr(file.id)}" title="查看元数据">ℹ️ 元数据</button>` : ''}
       </div>
-      ${loras && loras.length > 0
-        ? `<div class="outputs-card-loras">${loras.slice(0, 3).map(l => `<span class="outputs-lora-chip">${esc(l)}</span>`).join('')}${loras.length > 3 ? `<span class="outputs-lora-more">+${loras.length - 3}</span>` : ''}</div>`
-        : ''}
     </div>
   </div>`
 }

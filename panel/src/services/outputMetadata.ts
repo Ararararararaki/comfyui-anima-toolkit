@@ -143,8 +143,12 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
   // 判断文本是否为负面 prompt（启发式）
   function isNegativeText(t: string): boolean {
     const lower = t.toLowerCase()
-    const badWords = ['worst quality', 'low quality', 'score_1', 'score_2', 'score_3', 'bad anatomy', 'bad proportions', 'extra limbs', 'extra fingers', 'missing fingers', 'nsfw', 'ugly', 'blurry', 'jpeg artifacts']
-    return badWords.some(w => lower.includes(w))
+    // nsfw 常出现在正向 NSFW 提示词中，不作为负面判断词
+    const badWords = ['worst quality', 'low quality', 'score_1', 'score_2', 'score_3', 'bad anatomy', 'bad proportions', 'extra limbs', 'extra fingers', 'missing fingers', 'ugly', 'blurry', 'jpeg artifacts', 'lowres', 'cropped', 'watermark']
+    // 保守：需命中至少 2 个负面词才判负，避免把含 nsfw 的正向提示词误判为负向
+    let hits = 0
+    for (const w of badWords) { if (lower.includes(w)) hits++ }
+    return hits >= 2
   }
 
   // 从节点提取文本内容

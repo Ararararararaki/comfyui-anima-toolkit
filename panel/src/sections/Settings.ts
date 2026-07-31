@@ -178,11 +178,7 @@ function renderSettingsHTML(s: AppSettings): string {
             </div>
           </div>
           <div class="settings-row">
-            <span style="font-size:10px;color:var(--text3);line-height:1.5">桥接使用 HTTP API（POST /anima/bridge/update），无需文件系统权限，所有浏览器均支持。前端部署仍然需要通过 npm run setup:comfyui 配置路径。</span>
-          </div>
-          <div class="settings-row" style="margin-top:6px">
-            <button class="btn btn-sm btn-primary" id="comfyDeployBtn" style="margin-right:6px">🚀 部署到 ComfyUI</button>
-            <span id="comfyDeployStatus" style="font-size:11px;color:var(--text3)"></span>
+            <span style="font-size:10px;color:var(--text3);line-height:1.5">面板由 ComfyUI 直接提供（clone 即用），无需额外部署。数据通过 HTTP API 与节点桥接。</span>
           </div>
         </div>
 
@@ -358,7 +354,6 @@ function openSettings() {
   bindCSSEvents()
   bindShortcutEvents()
   bindImportExportEvents()
-  bindComfyEvents()
 }
 
 function bindBackgroundEvents() {
@@ -585,62 +580,5 @@ function bindImportExportEvents() {
   })
 }
 
-function bindComfyEvents() {
-  const statusEl = document.getElementById('comfyDirStatus')
-  const selBtn = document.getElementById('comfyDirSelectBtn')
-
-  selBtn?.addEventListener('click', async () => {
-    try {
-      if (!('showDirectoryPicker' in window)) {
-        showToast('⚠️ 当前浏览器不支持目录访问。请使用 Chrome/Edge。')
-        return
-      }
-      let dh: any = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
-      // Auto-create ComfyUI-Anima-Batch-LoRA subfolder if not already inside one
-      const NODE_DIR_NAME = 'ComfyUI-Anima-Batch-LoRA'
-      if (dh.name !== NODE_DIR_NAME) {
-        try {
-          dh = await dh.getDirectoryHandle(NODE_DIR_NAME, { create: true })
-        } catch {
-          showToast('⚠️ 无法在所选目录下创建 ' + NODE_DIR_NAME)
-          return
-        }
-      }
-      // Store handle via in-memory manager (no IndexedDB!)
-      const { setHandle, getStoredDirName } = await import('../store/handleManager')
-      setHandle('comfyBridge', dh)
-      saveSettings({ comfyUIPath: dh.name })
-      if (statusEl) statusEl.textContent = dh.name
-      statusEl?.classList.add('configured')
-      showToast(`✅ 已设置桥接目录: ${dh.name}`)
-    } catch (e: any) {
-      if (e.name !== 'AbortError') {
-        showToast(`❌ 选择目录失败: ${e.message || '未知错误'}`)
-      }
-    }
-  })
-
-  // ─── 部署按钮 ───
-  const deployBtn = document.getElementById('comfyDeployBtn')
-  const deployStatus = document.getElementById('comfyDeployStatus')
-  deployBtn?.addEventListener('click', async () => {
-    if (!deployStatus) return
-    deployStatus.textContent = '⏳ 构建+部署中...（请稍候）'
-    try {
-      const resp = await fetch('http://localhost:5166/deploy', { method: 'POST' })
-      const result = await resp.json()
-      if (result.ok) {
-        deployStatus.textContent = '✅ 部署完成！重启 ComfyUI 后即可使用'
-      } else {
-        deployStatus.textContent = `❌ 部署失败: ${result.error || '未知错误'}`
-      }
-    } catch (e: any) {
-      deployStatus.textContent = `❌ 部署失败: ${e.message}. 确保 npm run dev 和构建服务同时运行`
-    }
-  })
-}
-
-// Deploy is handled by the local deploy server (POST /deploy on port 5166).
-// Configure path via npm run setup:comfyui (creates .comfyui-path).
 
 

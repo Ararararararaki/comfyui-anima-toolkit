@@ -512,6 +512,32 @@ function bindOutputsEvents() {
       return
     }
 
+    // 复制工作流 JSON 按钮（卡片底部）
+    const copyWfBtn = target.closest('.outputs-copy-wf-btn') as HTMLElement
+    if (copyWfBtn) {
+      const id = copyWfBtn.dataset.id
+      if (id) {
+        const meta = useOutputStore.getState().metadataCache.get(id)
+        if (meta?.workflowJson) {
+          await navigator.clipboard.writeText(meta.workflowJson)
+          showToast('工作流 JSON 已复制')
+        } else {
+          showToast('该图片无工作流数据')
+        }
+      }
+      return
+    }
+
+    // 元数据按钮（卡片底部，独立弹窗，不依赖放大预览）
+    const metaBtn = target.closest('.outputs-meta-btn') as HTMLElement
+    if (metaBtn) {
+      const id = metaBtn.dataset.id
+      if (id) {
+        openMetaPanel(id)
+      }
+      return
+    }
+
     // 预览按钮
     const previewBtn = target.closest('.outputs-preview-btn') as HTMLElement
     if (previewBtn) {
@@ -1653,6 +1679,34 @@ async function downloadImagesAsZip(ids: string[]) {
   a.href = url; a.download = `outputs_${ts}.zip`; a.click()
   URL.revokeObjectURL(url)
   showToast(`已下载 ${added} 张图片${added < ids.length ? `（${ids.length - added} 张失败）` : ''}`)
+}
+
+/** 独立元数据弹窗（不放大图片，直接查看 prompt/参数/工作流） */
+function openMetaPanel(fileId: string) {
+  const state = useOutputStore.getState()
+  const file = state.files.find(f => f.id === fileId)
+  const meta = state.metadataCache.get(fileId)
+  if (!file) return
+
+  const overlay = document.createElement('div')
+  overlay.style.cssText = 'position:fixed;inset:0;background:radial-gradient(ellipse at top,rgba(10,10,15,0.85),rgba(2,2,3,0.95));z-index:99999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);'
+  const panel = document.createElement('div')
+  panel.style.cssText = 'background:linear-gradient(180deg,#111116,#0a0a0c);border-radius:12px;padding:16px;width:90vw;max-width:640px;max-height:85vh;overflow-y:auto;border:1px solid rgba(255,255,255,0.1);box-shadow:0 0 0 1px rgba(255,255,255,0.04),0 24px 70px rgba(0,0,0,0.7);'
+  panel.innerHTML = renderMetadataPanel(meta ?? null, file)
+  overlay.appendChild(panel)
+  document.body.appendChild(overlay)
+
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove() })
+  panel.querySelector('#outputsMetaCloseBtn')?.addEventListener('click', () => overlay.remove())
+  panel.querySelector('#outputsMetaCopyWorkflowBtn')?.addEventListener('click', async () => {
+    if (meta?.workflowJson) {
+      await navigator.clipboard.writeText(meta.workflowJson)
+      showToast('工作流 JSON 已复制')
+    }
+  })
+  // Esc 关闭
+  const escHandler = (e: KeyboardEvent) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escHandler) } }
+  document.addEventListener('keydown', escHandler)
 }
 
 async function openPreview(fileId: string) {
