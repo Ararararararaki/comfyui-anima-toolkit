@@ -94,6 +94,8 @@
       this.loraWidget = loraWidget;
       this.loras = this._parse(loraWidget.value || "");
       this.triggerWordMap = {};
+      this._lastBridgeTs = 0;   // 上次已应用的 bridge updated_at（避免重复同步）
+      this._bridgeTimer = null;
     }
 
     // ── 解析 <lora:name:weight> ──
@@ -226,9 +228,10 @@
       const refreshBtn = this._btn("↻ 刷新", "btn-browse");
       const extractBtn = this._btn("📥 提取", "btn-verify");
       const browseBtn = this._btn("📂 本地", "btn-browse");
+      const syncBtn = this._btn("📩 同步面板", "btn-verify");
       const clearBtn = this._btn("✕ 清空", "btn-clear");
       const panelBtn = this._btn("🌐 面板", "btn-verify");
-      toolbar.append(verifyBtn, refreshBtn, extractBtn, browseBtn, clearBtn, panelBtn);
+      toolbar.append(verifyBtn, refreshBtn, extractBtn, browseBtn, syncBtn, clearBtn, panelBtn);
 
       const statusEl = document.createElement("div");
       statusEl.className = "status";
@@ -245,6 +248,10 @@
       refreshBtn.onclick = () => this._forceRefresh(listEl);
       extractBtn.onclick = () => this._extractAllTriggerWords(listEl);
       browseBtn.onclick = () => { showToast("正在加载 LoRA 列表..."); this._browseModal(statusEl); };
+      syncBtn.onclick = () => {
+        showToast("⏳ 正在同步面板数据...");
+        this._syncFromBridge(listEl, false).then((n) => { if (!n) showToast("面板暂无新 LoRA"); });
+      };
       clearBtn.onclick = () => { this.loras = []; this._commit(); this._render(listEl); };
       panelBtn.onclick = () => window.open(PANEL_BASE, "_blank");
 
@@ -261,6 +268,17 @@
 
       const dw = this.node.addDOMWidget("anima_batch_ui", "custom", container, { serialize: false });
       dw.computeSize = (width) => [width || 280, Math.min(420, 72 + Math.max(1, this.loras.length) * 30)];
+
+      // 自动同步面板「发送到 ComfyUI」的 LoRA：发送后 ≤5s 内节点即可看到，无需手动操作
+      this._syncFromBridge(listEl, true);
+      if (this._bridgeTimer) clearInterval(this._bridgeTimer);
+      this._bridgeTimer = setInterval(() => this._syncFromBridge(listEl, true), 5000);
+      const ui = this;
+      const origRemoved = this.node.onRemoved;
+      this.node.onRemoved = function () {
+        if (ui._bridgeTimer) { clearInterval(ui._bridgeTimer); ui._bridgeTimer = null; }
+        if (typeof origRemoved === "function") return origRemoved.apply(this, arguments);
+      };
     }
 
     _btn(text, cls) {
@@ -551,6 +569,38 @@
       } catch (e) {
         statusEl.textContent = "❌ 验证失败: " + e.message;
         statusEl.style.color = "#f44";
+      }
+    }
+
+    // ── 从面板同步 LoRA（消费 /anima/bridge 数据，面板「发送到 ComfyUI」后节点即可看到） ──
+    async _syncFromBridge(listEl, silent) {
+      try {
+        const resp = await fetch("/anima/bridge/status");
+        if (!resp.ok) return 0;
+        const data = await resp.json();
+        if (!data || !data.bridge_found || !Array.isArray(data.loras) || !data.loras.length) return 0;
+        const ts = data.updated_at || 0;
+        if (this._lastBridgeTs && ts <= this._lastBridgeTs) return 0;
+        let added = 0;
+        data.loras.forEach((l) => {
+          if (!l || !l.name) return;
+          if (!this.loras.some((e) => e.name.toLowerCase() === l.name.toLowerCase())) {
+            this.loras.push({ name: l.name, weight: typeof l.model_strength === "number" ? l.model_strength : 0.8 });
+            added++;
+          }
+          if (l.trigger_words && l.trigger_words.length && !this.triggerWordMap[l.name]) {
+            this.triggerWordMap[l.name] = l.trigger_words;
+          }
+        });
+        this._lastBridgeTs = ts;
+        if (added > 0) {
+          this._commit();
+          if (listEl) this._render(listEl);
+          if (!silent) showToast(`📥 已从面板同步 ${added} 个 LoRA`);
+        }
+        return added;
+      } catch (e) {
+        return 0;
       }
     }
 
