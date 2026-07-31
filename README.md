@@ -28,7 +28,7 @@ git clone https://github.com/Ararararararaki/comfyui-local-manager.git
 ## 🚀 使用
 
 - **节点**：ComfyUI 中搜索 `Anima Batch LoRA Loader`，粘贴 `<lora:name:weight>` 标签或点「📂 本地」从列表添加
-- **面板**：**无需单独启动**——面板由 ComfyUI 直接提供。ComfyUI 启动后，点菜单栏的「🎨 Anima」按钮即在新标签页打开；也可直接访问 `http://localhost:8188/extensions/<目录名>/app/`（`<目录名>` 为你在 custom_nodes 下的 clone 目录名，端口非 8188 请替换）
+- **面板**：**无需单独启动**——面板由 ComfyUI 直接提供。ComfyUI 启动后，点菜单栏的「🎨 Anima」按钮或节点工具栏的「🌐 面板」按钮即在新标签页打开；也可直接访问 `http://localhost:8188/extensions/<目录名>/app/`（`<目录名>` 为你在 custom_nodes 下的 clone 目录名，端口非 8188 请替换）
 
 ## 🔧 从源码重建面板
 

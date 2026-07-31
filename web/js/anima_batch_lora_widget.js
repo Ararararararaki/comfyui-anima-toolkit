@@ -1,6 +1,13 @@
 // Anima Batch LoRA Widget — 中文界面 + 桥接自动加载 + 触发词复制
 (function () {
   const NODE_NAME = "Anima Batch LoRA Loader";
+  // 面板 URL：动态解析当前插件目录名（兼容任意 clone 目录名）
+  let PANEL_BASE = "/extensions/ComfyUI-Anima-Batch-LoRA/app/";
+  try {
+    const _src = document.currentScript && document.currentScript.src;
+    const _m = _src && _src.match(/\/extensions\/([^/]+)\/js\//);
+    if (_m) PANEL_BASE = "/extensions/" + _m[1] + "/app/";
+  } catch (e) {}
 
   function init() {
     const api = window.comfyAPI?.app?.app;
@@ -192,7 +199,8 @@
       const extractBtn = this._btn("📥 提取", "btn-verify");
       const browseBtn = this._btn("📂 本地", "btn-browse");
       const clearBtn = this._btn("✕ 清空", "btn-clear");
-      toolbar.append(verifyBtn, refreshBtn, extractBtn, browseBtn, clearBtn);
+      const panelBtn = this._btn("🌐 面板", "btn-verify");
+      toolbar.append(verifyBtn, refreshBtn, extractBtn, browseBtn, clearBtn, panelBtn);
 
       const statusEl = document.createElement("div");
       statusEl.className = "status";
@@ -210,6 +218,7 @@
       extractBtn.onclick = () => this._extractAllTriggerWords(listEl);
       browseBtn.onclick = () => { showToast("正在加载 LoRA 列表..."); this._browseModal(statusEl); };
       clearBtn.onclick = () => { this.loras = []; this._commit(); this._render(listEl); };
+      panelBtn.onclick = () => window.open(PANEL_BASE, "_blank");
 
       this._render(listEl);
       this.listEl = listEl;
