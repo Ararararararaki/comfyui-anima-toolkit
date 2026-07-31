@@ -74,7 +74,10 @@
     }
   }
 
+  let _toastEl = null;
   function showToast(msg) {
+    // 全局只保留一个 toast，新提示直接替换旧提示，避免多个 toast 重叠盖住
+    if (_toastEl) _toastEl.remove();
     const t = document.createElement("div");
     t.textContent = msg;
     Object.assign(t.style, {
@@ -84,7 +87,8 @@
       boxShadow: "0 2px 10px rgba(0,0,0,0.4)", transition: "opacity 0.3s",
     });
     document.body.appendChild(t);
-    setTimeout(() => { t.style.opacity = "0"; setTimeout(() => t.remove(), 300); }, 1500);
+    _toastEl = t;
+    setTimeout(() => { t.style.opacity = "0"; setTimeout(() => { t.remove(); if (_toastEl === t) _toastEl = null; }, 300); }, 1500);
   }
 
   // ── UI 状态 ──
@@ -249,7 +253,6 @@
       extractBtn.onclick = () => this._extractAllTriggerWords(listEl);
       browseBtn.onclick = () => { showToast("正在加载 LoRA 列表..."); this._browseModal(statusEl); };
       syncBtn.onclick = () => {
-        showToast("⏳ 正在同步面板数据...");
         this._syncFromBridge(listEl, false).then((n) => { if (!n) showToast("面板暂无新 LoRA"); });
       };
       clearBtn.onclick = () => { this.loras = []; this._commit(); this._render(listEl); };
