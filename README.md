@@ -6,70 +6,77 @@
 
 ## ✨ 功能一览
 
-### 🖼️ 本地 LoRA 管理
+### 🔧 LORA 加载节点
 
-扫描本地 LoRA 文件，Civitai 自动匹配，权重调节，一键复制标签，首页可读取 Outputs 图片的常用 LoRA，可点击跳转。
+- 支持 `<lora:name:weight>` 批量语法，一次加载多个 LoRA
+- 点击 lora 名可直接**复制触发词**
+- 点「📂 本地」按钮：通过预览本地 LoRA 的 **C 站预览图**直观添加，可点击加入节点，可分类、置顶等操作
+- 点「🌐 面板」按钮进入**功能强大的本地管理页面**
 
-![本地管理](screenshots/image-2.png)
+![节点本地 LoRA 弹窗](screenshots/image-3.webp)
 
-LoRA 详细页可看到 C 站预览图、本地文件名、版本号等数据，支持备注，以及查看从 Outputs 中的返图，可点击直接跳转。
+### 🖥️ 本地 LoRA 管理
 
-![详情](screenshots/image-5.png)
+参考 [hanbinhsh/SD-LoRA-Manager](https://github.com/hanbinhsh/SD-LoRA-Manager) 的设计，类似 Steam 的 UI 界面。
 
-![返图](screenshots/image-4.png)
+- 扫描本地 LoRA 文件，Civitai 自动匹配，权重调节，一键复制标签
+- 首页可读取 Outputs 图片的常用 LoRA，可点击跳转
+- 可预览**多张 C 站图片**，从 Outputs 中关联 LoRA 进行**返图**，点击复制触发词 / LoRA 标签
+- 右键分类 / 添加分类，收藏 / 置顶
 
-### 📦 LoRA 探索
+![本地 LoRA 管理](screenshots/image-2.webp)
 
-浏览 Civitai Anima 生态 LoRA，按下载量/点赞/分类筛选，可检测本地是否已有，可切换版本号，可直接在页面下载。
+![详情与返图](screenshots/image-5.webp)
 
-![LoRA 探索](screenshots/image-1.png)
+![返图](screenshots/image-4.webp)
 
-### 🖌️ 画师系列
+![右键分类](screenshots/image-7.webp)
 
-画师风格标签管理与组合，Danbooru 数据集成。
+### 🖼️ Outputs 管理
 
-![画师系列](screenshots/image-6.png)
+- 从本地图片快速进行**收藏、置顶、复制 prompt / lora 标签 / 工作流 / 元数据**等操作
+- 可进行拖拽批量选取，通过快捷键批量复制下载（选区多张时汇总为压缩包）
+- 点「元数据」查看完整信息
+
+![Outputs](screenshots/image-8.webp)
+
+![拖拽框选](screenshots/image-11.webp)
+
+![快捷键](screenshots/image-12.webp)
+
+![元数据面板](screenshots/image-10.webp)
+
+### 📝 图片 Prompt 解析
+
+- 从带有元数据的图片（ComfyUI 生成的原图）拖拽或上传，获取正负面 prompt、工作流
+- 可一键翻译全部，可对单个提示词点击复制
+- 可一键将图片提取的 prompt 发送到 Prompt 库 —— 1 秒抄走群友的作业
+- 可从 Outputs 提取最近 20/50/100 张生成图片的**高频词**，可点击复制
+
+![图片 Prompt 解析](screenshots/image-14.webp)
+
+![高频词统计](screenshots/image-13.webp)
 
 ### 📖 Prompt 库
 
 分类管理提示词，提取 LoRA 触发词。
 
-![Prompt 库](screenshots/image-7.png)
+### 🖌️ 画师系列（待优化）
 
-### 🖼️ Outputs 管理
+- 画师串管理，可分类，可组合多个画师提示词一键复制
+- 可从本地 LoRA 的触发词提取到画师串
 
-ComfyUI 输出目录浏览，元数据提取，批量操作。可从图片直接复制正面 Prompt / LoRA 标签 / 工作流，点「元数据」查看完整信息。
+![画师系列](screenshots/image-6.webp)
 
-![Outputs](screenshots/image-8.png)
+### 📦 LoRA 探索（待优化）
 
-支持拖拽框选批量操作。
+- 浏览 Civitai Anima 生态 LoRA，按下载量 / 点赞 / 分类筛选
+- 可手动通过 URL 添加、分类、检测本地是否已有
+- 卡片点击版本可直接下载
 
-![拖拽](screenshots/image-11.png)
+![LoRA 探索](screenshots/image-1.webp)
 
-快捷键。
-
-![快捷键](screenshots/image-12.png)
-
-### 📝 高频 Prompt
-
-从 Outputs 最近的图片中提取高频词，可点击复制。
-
-![高频 Prompt](screenshots/image-13.png)
-
-### 🔄 PNG 元数据导入
-
-上传带元数据的 PNG 获取 Prompt，可翻译（ComfyUI 生成的图一般带元数据）。
-
-![PNG 导入](screenshots/image-14.png)
-
-> 本项目的本地 LoRA 管理参考了 [hanbinhsh/SD-LoRA-Manager](https://github.com/hanbinhsh/SD-LoRA-Manager) 的设计，感谢大佬。
-
-## ⚙️ Anima Batch LoRA Loader 节点
-
-- 支持 `<lora:name:weight>` 批量语法，一次加载多个 LoRA
-- 可视化编辑器：权重滑块、拖拽排序、触发词提取/复制
-- 分类 / 收藏 / 置顶（元数据存插件目录 `anima_meta.json`，重启不丢）
-- 本地 LoRA 浏览弹窗：**列表 / 网格**切换、**虚拟滚动**、**拖拽框选批量添加分类**、C 站预览图懒加载、搜索排序
+> ⚠️ 已知问题：Outputs 复制 LoRA 标签功能待修复。
 
 ## 📦 安装（一键）
 
@@ -80,17 +87,17 @@ git clone https://github.com/Ararararararaki/comfyui-anima-toolkit.git
 
 然后**重启 ComfyUI**。
 
-> 💡 面板使用**相对路径**加载资源，clone 后**目录名可任意**。`app/` 已预构建，**无需 npm install / 构建**。
+> 💡 面板使用**相对路径**加载资源，clone 后**目录名可任意**。`app/` 已预构建，**无需 npm install / 构建**，clone 即用。
 
 ## 🚀 使用
 
 - **节点**：ComfyUI 中搜索 `Anima Batch LoRA Loader`，粘贴 `<lora:name:weight>` 标签或点「📂 本地」从列表添加
-- **面板**：**无需单独启动**——由 ComfyUI 直接提供。点菜单栏「🎨 Anima」或节点工具栏「🌐 面板」按钮打开；或访问 `http://localhost:8188/extensions/<目录名>/app/`
+- **面板**：**无需单独启动**——由 ComfyUI 直接提供。点顶部菜单或节点工具栏「🌐 面板」按钮打开；或访问 `http://localhost:8188/extensions/<目录名>/app/`
 - **首次使用**：在「本地 lora 管理」/「Outputs」选择一次目录（浏览器文件访问授权 + 扫描），数据保存在浏览器本域
 
 ## 🛠️ 从源码重建面板（开发者）
 
-`app/` 是已构建产物，日常使用无需构建。修改面板源码后重建：
+`app/` 是已构建产物，日常使用**无需构建**。修改面板源码后重建：
 
 ```bash
 cd panel
@@ -114,10 +121,14 @@ ComfyUI-Anima-Batch-LoRA/
 └── .github/workflows/    # 自动构建 app/ 的 CI
 ```
 
+## 支持
+
+觉得好用点个 star 谢谢喵～ 后续也会持续优化（可能还会做 CLIP 节点，不过现在有 weilin 大佬在，还轮不到我）。
+
 ## 依赖
 
 - ComfyUI（2024 之后版本，含 `folder_paths`、`PromptServer`）
-- 面板构建仅需 Node 18+（仅开发/重建时需要）
+- 面板构建仅需 Node 18+（仅开发 / 重建时需要）
 
 ## License
 
