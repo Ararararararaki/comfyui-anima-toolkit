@@ -908,15 +908,9 @@
             updateBatchBar();
             return;
           }
-          // 统一选择逻辑：非批量模式下，点击已选卡取消选中；点击未选卡清除整个选中再操作
+          // 非批量模式：点击卡片始终切换 lora 添加/移除；若存在拖拽框选残留则一并清除，
+          // 否则残留的 selected 会拦截点击，导致无法取消/添加
           if (selected.size > 0) {
-            if (selected.has(l.name)) {
-              selected.delete(l.name);
-              card.style.outline = "";
-              updateBatchBar();
-              if (selected.size === 0) showToast("已取消选中");
-              return;
-            }
             selected.clear();
             listEl.querySelectorAll(".bm-card").forEach((c) => { c.style.outline = ""; });
             updateBatchBar();
@@ -992,15 +986,8 @@
             updateBatchBar();
             return;
           }
-          // 统一选择逻辑：非批量模式下，点击已选行取消选中；点击未选行清除选中再操作
+          // 非批量模式：点击行始终切换 lora 添加/移除；清掉拖拽框选残留避免拦截点击
           if (selected.size > 0) {
-            if (selected.has(l.name)) {
-              selected.delete(l.name);
-              row.style.background = "";
-              updateBatchBar();
-              if (selected.size === 0) showToast("已取消选中");
-              return;
-            }
             selected.clear();
             listEl.querySelectorAll(".bm-li").forEach((r) => { r.style.background = ""; });
             updateBatchBar();
