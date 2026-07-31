@@ -1340,6 +1340,21 @@ function initDragSelect() {
     syncSelectionUI()
     updateBatchBar()
   })
+
+  // 拖拽中途失焦（切屏/alt-tab/切标签页）或鼠标离开页面 → mouseup 不派发，
+  // 手动取消拖拽并清理残留选框，否则虚线框会永久滞留页面。
+  const cancelDrag = () => {
+    if (!isDragging) return
+    isDragging = false
+    document.body.style.userSelect = ''
+    document.body.style.webkitUserSelect = ''
+    if (rectEl) { rectEl.remove(); rectEl = null }
+    syncSelectionUI()
+    updateBatchBar()
+  }
+  window.addEventListener('blur', cancelDrag)
+  document.addEventListener('visibilitychange', () => { if (document.hidden) cancelDrag() })
+  document.addEventListener('mouseleave', cancelDrag)
 }
 
 function setupInfiniteScroll() {
