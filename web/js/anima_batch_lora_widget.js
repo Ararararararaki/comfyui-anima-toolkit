@@ -3,13 +3,13 @@
   const NODE_NAME = "Anima Batch LoRA Loader";
   // 面板 URL / 图标：动态解析当前插件目录名（兼容任意 clone 目录名）
   let PANEL_BASE = "/extensions/ComfyUI-Anima-Batch-LoRA/app/";
-  let ICON_URL = "/extensions/ComfyUI-Anima-Batch-LoRA/img/anima-btn.png";
+  let ICON_URL = "/extensions/ComfyUI-Anima-Batch-LoRA/img/anima-btn.jpg";
   try {
     const _src = document.currentScript && document.currentScript.src;
     const _m = _src && _src.match(/\/extensions\/([^/]+)\/js\//);
     if (_m) {
       PANEL_BASE = "/extensions/" + _m[1] + "/app/";
-      ICON_URL = "/extensions/" + _m[1] + "/img/anima-btn.png";
+      ICON_URL = "/extensions/" + _m[1] + "/img/anima-btn.jpg";
     }
   } catch (e) {}
 
@@ -61,7 +61,7 @@
         }
       },
       setup() {
-        // 在 ComfyUI 顶部右侧加入「本地工具箱」图片按钮（直接用单张图作按钮，悬浮看提示）
+        // 顶部「本地工具箱」图片按钮：按用户指定坐标放置（left/top），点击打开面板，悬浮看提示
         const addBtn = () => {
           if (document.getElementById("anima-panel-btn")) return;
           const btn = document.createElement("button");
@@ -69,11 +69,11 @@
           btn.type = "button";
           btn.title = "打开 Anima 本地工具箱（面板）";
           Object.assign(btn.style, {
-            position: "fixed", top: "12px", right: "260px", zIndex: "100000",
-            padding: "0", border: "none", background: "none", cursor: "pointer",
-            borderRadius: "6px",
+            position: "fixed", left: "276px", top: "210px", zIndex: "100000",
+            width: "48px", height: "48px", padding: "0", border: "none",
+            background: "none", cursor: "pointer", borderRadius: "8px",
           });
-          btn.innerHTML = `<img src="${ICON_URL}" alt="本地工具箱" style="display:block;height:32px;width:auto;border-radius:6px;">`;
+          btn.innerHTML = `<img src="${ICON_URL}" alt="本地工具箱" style="display:block;width:48px;height:48px;object-fit:cover;border-radius:8px;">`;
           btn.addEventListener("click", () => window.open(PANEL_BASE, "_blank"));
           document.body.appendChild(btn);
         };
