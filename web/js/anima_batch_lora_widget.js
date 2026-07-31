@@ -269,6 +269,9 @@
       const dw = this.node.addDOMWidget("anima_batch_ui", "custom", container, { serialize: false });
       dw.computeSize = (width) => [width || 280, Math.min(420, 72 + Math.max(1, this.loras.length) * 30)];
 
+      // 让 lora_syntax 输入框多行/自适应高度
+      this._enhanceLoraInput();
+
       // 自动同步面板「发送到 ComfyUI」的 LoRA：发送后 ≤5s 内节点即可看到，无需手动操作
       this._syncFromBridge(listEl, true);
       if (this._bridgeTimer) clearInterval(this._bridgeTimer);
@@ -602,6 +605,36 @@
       } catch (e) {
         return 0;
       }
+    }
+
+    // ── 让 lora_syntax 多行输入框高度随内容自适应（容纳更多 LoRA 标签） ──
+    _enhanceLoraInput() {
+      let done = false;
+      const attempt = () => {
+        if (done) return;
+        const w = this.loraWidget;
+        if (!w) return;
+        const el = (w.inputEl) || (w.element && w.element.querySelector("textarea")) || (w.element && w.element.querySelector("input"));
+        if (!el) return;
+        done = true;
+        el.style.minHeight = "64px";
+        el.style.lineHeight = "1.45";
+        el.style.fontFamily = "monospace";
+        el.style.fontSize = "11px";
+        el.style.resize = "vertical";
+        el.style.overflowY = "auto";
+        el.style.whiteSpace = "pre-wrap";
+        const autosize = () => {
+          el.style.height = "auto";
+          el.style.height = Math.min(Math.max(el.scrollHeight + 4, 64), 220) + "px";
+        };
+        el.addEventListener("input", autosize);
+        autosize();
+        if (this.node.graph) this.node.graph.setDirtyCanvas(true, true);
+      };
+      attempt();
+      setTimeout(attempt, 100);
+      setTimeout(attempt, 500);
     }
 
     // ── 浏览 LoRA ──

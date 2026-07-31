@@ -111,7 +111,7 @@ class AnimaBatchLoRALoader:
                 "model": ("MODEL",),
                 "lora_syntax": ("STRING", {
                     "default": "",
-                    "multiline": False,
+                    "multiline": True,
                     "placeholder": "<lora:name:weight> <lora:name:weight> ...",
                     "tooltip": "LoRA tags synced with the visual editor below.",
                 }),
