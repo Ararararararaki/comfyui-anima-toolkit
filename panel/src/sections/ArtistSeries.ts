@@ -76,10 +76,16 @@ export function renderArtists() {
   else if (store.sortMode === 'hot') filtered.sort((a, b) => (b.danbooruCount || 0) - (a.danbooruCount || 0))
   else filtered.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
 
-  // 空状态
+  // 空状态（区分原因，友好提示）
   if (!filtered.length) {
     destroyArtistVS()
-    grid.innerHTML = '<div class="empty-state" style="padding:40px"><div class="big">📭</div><p>没有画师数据</p></div>'
+    const hasAny = artists.length > 0
+    const msg = !hasAny
+      ? '还没有画师，点击工具栏「➕ 添加」或「📊 提取」创建'
+      : q
+        ? '没有匹配的画师，换个关键词试试'
+        : '该分类下暂无画师'
+    grid.innerHTML = '<div class="empty-state" style="padding:40px"><div class="big">📭</div><p>' + msg + '</p></div>'
     renderSidebarLeft()
     renderSidebarRight()
     return
@@ -108,6 +114,12 @@ export function renderArtists() {
   })
   renderSidebarLeft()
   renderSidebarRight()
+}
+
+/** 统一刷新入口：数据变更后重置内存缓存并重渲染列表/侧边栏，避免漏刷新 */
+function updateView() {
+  refreshArtists()
+  renderArtists()
 }
 
 function renderArtistCard(a: ArtistData, store: ReturnType<typeof useArtistStore.getState>): string {
@@ -143,8 +155,11 @@ function renderArtistCard(a: ArtistData, store: ReturnType<typeof useArtistStore
       ).join('') + '</div>'
     : ''
 
-  // LoRA 标签
-  const loraHtml = hasLora ? '<span class="artist-card-badge">🎯 LoRA</span>' : ''
+  // LoRA 标签（显示数量，hover 查看名称）
+  const loras = a.loras || []
+  const loraHtml = hasLora
+    ? `<span class="artist-card-badge" title="${esc(loras.slice(0, 6).join(', '))}${loras.length > 6 ? '…' : ''}">🎯 LoRA${loras.length > 0 ? ' ×' + loras.length : ''}</span>`
+    : ''
 
   // 类名
   const classes = ['artist-card']
@@ -243,7 +258,7 @@ function renderSidebarRight() {
         '  <span class="artist-sel-tag">' + esc(tag) + '</span>\n' +
         '  <span class="artist-sel-name">' + esc(name) + '</span>\n' +
         '  <input type="range" class="artist-sel-weight" min="0.1" max="2" step="0.1" value="' + weight + '" data-tag="' + escAttr(tag) + '">\n' +
-        '  <span class="artist-sel-weight-val">' + weight.toFixed(1) + '</span>\n' +
+        '  <input type="number" class="artist-sel-weight-input" min="0.1" max="2" step="0.1" value="' + weight.toFixed(1) + '" data-tag="' + escAttr(tag) + '" title="直接输入权重 (0.1-2)">\n' +
         '  <button class="artist-sel-up" data-tag="' + escAttr(tag) + '" title="上移">↑</button>\n' +
         '  <button class="artist-sel-down" data-tag="' + escAttr(tag) + '" title="下移">↓</button>\n' +
         '  <button class="artist-sel-remove" data-tag="' + escAttr(tag) + '" title="移除">✕</button>\n' +
@@ -308,10 +323,10 @@ function bindGridEvents() {
 
     if (store.batchMode) {
       store.toggleBatchSelection(tag)
-      renderArtists()
+      updateView()
     } else {
       store.toggleArtist(tag)
-      renderArtists()
+      updateView()
     }
   })
 }
@@ -321,13 +336,36 @@ function bindPanelEvents() {
   const selList = document.getElementById('artistSelList')
   if (!selList) return
 
-  // 权重滑块
+  // 权重滑块 / 数值输入
   selList.addEventListener('input', (e) => {
     const target = e.target as HTMLElement
     if (target.classList.contains('artist-sel-weight')) {
       const tag = target.dataset.tag
       if (tag) {
         useArtistStore.getState().setWeight(tag, parseFloat((target as HTMLInputElement).value))
+        renderSidebarRight()
+      }
+    } else if (target.classList.contains('artist-sel-weight-input')) {
+      // 数值输入：仅同步滑块，不重建（避免击键失焦）
+      const tag = target.dataset.tag
+      if (tag) {
+        const v = parseFloat((target as HTMLInputElement).value)
+        if (!isNaN(v)) {
+          const r = selList.querySelector(`.artist-sel-weight[data-tag="${CSS.escape(tag)}"]`) as HTMLInputElement
+          if (r) r.value = String(Math.max(0.1, Math.min(2, v)))
+        }
+      }
+    }
+  })
+  // 数值输入提交（失焦/回车）
+  selList.addEventListener('change', (e) => {
+    const target = e.target as HTMLElement
+    if (target.classList.contains('artist-sel-weight-input')) {
+      const tag = target.dataset.tag
+      if (tag) {
+        const v = parseFloat((target as HTMLInputElement).value)
+        const clamped = isNaN(v) ? 0.8 : Math.max(0.1, Math.min(2, v))
+        useArtistStore.getState().setWeight(tag, clamped)
         renderSidebarRight()
       }
     }
@@ -343,7 +381,7 @@ function bindPanelEvents() {
 
     if (target.classList.contains('artist-sel-remove')) {
       store.removeFromCombo(tag)
-      renderArtists()
+      updateView()
     } else if (target.classList.contains('artist-sel-up')) {
       store.moveUp(tag)
       renderSidebarRight()
@@ -356,7 +394,7 @@ function bindPanelEvents() {
   // 清空按钮
   document.getElementById('artistClearBtn')?.addEventListener('click', () => {
     useArtistStore.getState().clearCombo()
-    renderArtists()
+    updateView()
   })
 
   // 复制按钮
@@ -370,7 +408,7 @@ function bindPanelEvents() {
     const store = useArtistStore.getState()
     if (store.selectedTags.length === 0) { showToast('请先选择画师'); return }
     const name = await promptModal('保存预设', '', '输入预设名称:')
-    if (name) { store.savePreset(name); renderArtists() }
+    if (name) { store.savePreset(name); updateView() }
   })
 
   // 格式切换
@@ -395,14 +433,14 @@ function bindPanelEvents() {
         const preset = store.presets.find(p => p.id === id)
         if (preset) {
           store.loadPreset(preset)
-          renderArtists()
+          updateView()
           showToast('已加载预设: ' + preset.name)
         }
       } else if (target.classList.contains('preset-del-btn')) {
         const id = target.dataset.id
         if (id && await confirmModal('删除预设', '确认删除该预设？')) {
           store.deletePreset(id)
-          renderArtists()
+          updateView()
         }
       }
     })
@@ -425,7 +463,7 @@ function bindSidebarEvents() {
     useArtistStore.setState({ batchMode: false, batchSelection: [] })
 
     if (cat === '__presets') renderPresets()
-    else renderArtists()
+    else updateView()
   })
 }
 
@@ -438,7 +476,7 @@ function bindToolbarEvents() {
     searchInput.oninput = () => {
       useArtistStore.getState().setSearch(searchInput.value)
       clearTimeout(timer)
-      timer = window.setTimeout(() => renderArtists(), 250)
+      timer = window.setTimeout(() => updateView(), 250)
     }
   }
 
@@ -451,7 +489,7 @@ function bindToolbarEvents() {
   // 批量模式
   document.getElementById('artistBatchToggleBtn')?.addEventListener('click', () => {
     useArtistStore.getState().toggleBatchMode()
-    renderArtists()
+    updateView()
   })
 
   // 排序
@@ -463,7 +501,7 @@ function bindToolbarEvents() {
     const labels: Record<string, string> = { default: '📅 默认', alpha: '🔤 字母', hot: '🔥 热度' }
     const btn = document.getElementById('artistSortBtn')
     if (btn) btn.textContent = labels[next]
-    renderArtists()
+    updateView()
   })
 
   // 导出
@@ -493,7 +531,7 @@ function bindToolbarEvents() {
           const artists = Array.isArray(json) ? json : (json.artists || [])
           const { added, updated } = importArtists(artists)
           refreshArtists()
-          renderArtists()
+          updateView()
           showToast('导入完成: 新增 ' + added + '，更新 ' + updated)
         } catch { showToast('导入失败: 文件格式错误') }
       }
@@ -516,7 +554,7 @@ function bindBatchEvents() {
       const allTags = getFilteredTags()
       const allSelected = allTags.every(t => store.batchSelection.includes(t))
       useArtistStore.setState({ batchSelection: allSelected ? [] : [...allTags] })
-      renderArtists()
+      updateView()
     } else if (target.id === 'artistBatchDelBtn') {
       const tags = store.batchSelection
       if (tags.length && await confirmModal('批量删除', `确认删除选中的 ${tags.length} 位画师？`)) {
@@ -536,7 +574,7 @@ function bindBatchEvents() {
           selectedTags: remaining,
           weights,
         })
-        renderArtists()
+        updateView()
       }
     } else if (target.id === 'artistBatchCatBtn') {
       const cat = await promptModal('批量分类', '', '输入分类名称 (用逗号分隔多个):')
@@ -553,11 +591,11 @@ function bindBatchEvents() {
       })
       refreshArtists()
       useArtistStore.setState({ batchMode: false, batchSelection: [] })
-      renderArtists()
+      updateView()
       showToast('分类已更新')
     } else if (target.id === 'artistBatchCancelBtn') {
       useArtistStore.setState({ batchMode: false, batchSelection: [] })
-      renderArtists()
+      updateView()
     }
   })
 }
@@ -611,7 +649,7 @@ function bindImportEvents() {
       }
     }
 
-    renderArtists()
+    updateView()
     showToast('导入完成: ' + found + ' 位已匹配' + (ghost > 0 ? '，' + ghost + ' 位占位' : ''))
   })
 }
@@ -682,7 +720,7 @@ function bindDanbooruEvents() {
     }, () => cancelled)
 
     refreshArtists()
-    renderArtists()
+    updateView()
     container.style.display = 'none'
     ;(btn as HTMLButtonElement).disabled = false
     btn.textContent = '🔄 Danbooru 更新'
@@ -720,7 +758,7 @@ function bindKeyboardNav() {
     const tag = target?.dataset.tag
     if (tag) {
       if (!store.isSelected(tag)) store.toggleArtist(tag)
-      renderArtists()
+      updateView()
       target?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     }
   })
@@ -823,7 +861,7 @@ function showAddArtistModal() {
     if (!result) { showToast('Tag 已存在!'); return }
     close()
     refreshArtists()
-    renderArtists()
+    updateView()
     showToast('添加成功')
   }
 }
@@ -889,14 +927,14 @@ function showExtractModal() {
         }
         // 刷新主网格与侧边栏，让刚添加的画师立即显示
         refreshArtists()
-        renderArtists()
+        updateView()
       }
       if (t.id === 'extractAllBtn') {
         for (const item of extracted) {
           addArtistFromExtraction(item.tag, item.count)
         }
         refreshArtists()
-        renderArtists()
+        updateView()
         close()
         showToast('添加了 ' + extracted.length + ' 位画师')
       }
