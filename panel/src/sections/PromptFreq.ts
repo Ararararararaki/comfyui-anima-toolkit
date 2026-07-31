@@ -1,11 +1,18 @@
 import { esc, showToast, copyText } from '../utils'
 import { useOutputStore } from '../store/outputStore'
+import { addPrompt, generatePromptId } from '../store/prompts'
+import type { PromptEntry } from '../types'
 
 let _limit = 50
+// 高频词区折叠状态（重渲染后保持）
+let _freqCollapsed = true
+// 翻译内存缓存（MyMemory 免费配额有限）
+const _transCache = new Map<string, string>()
 
 // ── PNG 元数据解析 ──
 
 interface UploadedPng {
+  id: string
   fileName: string
   positive: string
   negative: string
@@ -15,6 +22,15 @@ interface UploadedPng {
   sampler: string
   model: string
   loras: string[]
+  workflowJson: string
+  previewThumb: string
+  saved?: boolean
+}
+
+function genUploadedId(): string {
+  return typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : 'up_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
 }
 
 let _uploadedPngs: UploadedPng[] = []
@@ -26,7 +42,15 @@ function parsePngFile(file: File): Promise<UploadedPng | null> {
       const buf = reader.result as ArrayBuffer
       const meta = await parsePngChunks(buf)
       if (meta) {
+        // 生成压缩缩略图（保存到 Prompt 库用；失败不阻断解析）
+        let previewThumb = ''
+        try {
+          const { createThumbnailFromBlob } = await import('../services/outputThumbnail')
+          const thumb = await createThumbnailFromBlob(file)
+          previewThumb = thumb?.dataUrl || ''
+        } catch { /* 忽略缩略图失败 */ }
         resolve({
+          id: genUploadedId(),
           fileName: file.name,
           positive: meta.prompt || '',
           negative: meta.negativePrompt || '',
@@ -36,6 +60,8 @@ function parsePngFile(file: File): Promise<UploadedPng | null> {
           sampler: meta.sampler || '',
           model: meta.model || '',
           loras: meta.loras || [],
+          workflowJson: meta.workflowJson || '',
+          previewThumb,
         })
       } else {
         resolve(null)
@@ -48,7 +74,7 @@ function parsePngFile(file: File): Promise<UploadedPng | null> {
 
 async function parsePngChunks(buf: ArrayBuffer): Promise<{
   prompt: string; negativePrompt: string; seed: string; steps: string;
-  cfg: string; sampler: string; model: string; loras: string[]
+  cfg: string; sampler: string; model: string; loras: string[]; workflowJson: string
 } | null> {
   const view = new DataView(buf)
   const bytes = new Uint8Array(buf)
@@ -73,7 +99,8 @@ async function parsePngChunks(buf: ArrayBuffer): Promise<{
       if (type === 'zTXt') {
         try {
           const compData = bytes.slice(keyEnd + 2, dataEnd)
-          val = decompressZlib(compData)
+          const { decompressZlibAsync } = await import('../services/outputMetadata')
+          val = await decompressZlibAsync(compData)
         } catch { val = new TextDecoder().decode(bytes.slice(keyEnd + 1, dataEnd)) }
       } else {
         val = new TextDecoder().decode(bytes.slice(keyEnd + 1, dataEnd))
@@ -83,7 +110,13 @@ async function parsePngChunks(buf: ArrayBuffer): Promise<{
     offset += 12 + len
   }
 
-  const workflowJson = raw['workflow'] || raw['prompt'] || ''
+  // workflow：优先取 workflow chunk；prompt chunk 仅在是合法 JSON 时才视为 workflow（避免 A1111 parameters 纯文本）
+  let workflowJson = ''
+  if (raw['workflow']) {
+    workflowJson = raw['workflow']
+  } else if (raw['prompt']) {
+    try { JSON.parse(raw['prompt']); workflowJson = raw['prompt'] } catch { /* 非 JSON，跳过 */ }
+  }
   const params = raw['parameters'] || ''
   const userComment = raw['user_comment'] || ''
   const description = raw['Description'] || ''
@@ -149,26 +182,61 @@ async function parsePngChunks(buf: ArrayBuffer): Promise<{
     sampler: result.sampler || raw['sampler'] || '',
     model: result.model || raw['model'] || '',
     loras: [...new Set(loras)],
+    workflowJson,
   }
-}
-
-function decompressZlib(data: Uint8Array): string {
-  if (typeof (window as any).pako !== 'undefined') {
-    try { return (window as any).pako.inflate(data, { to: 'string' })
-    } catch { return new TextDecoder().decode(data) }
-  }
-  return new TextDecoder().decode(data)
 }
 
 // ── 翻译 ──
 
 async function translateText(text: string): Promise<string> {
+  if (!text) return ''
+  if (_transCache.has(text)) return _transCache.get(text)!
   try {
     const url = `/api/translate?q=${encodeURIComponent(text.slice(0, 500))}&langpair=en|zh-CN`
     const resp = await fetch(url)
     const data = await resp.json()
-    return data?.responseData?.translatedText || ''
+    const translated = data?.responseData?.translatedText || ''
+    _transCache.set(text, translated)
+    return translated
   } catch { return '' }
+}
+
+// ── 保存到 Prompt 库 ──
+
+async function savePngToLibrary(p: UploadedPng): Promise<void> {
+  if (!p.positive.trim()) { showToast('⚠️ 该图片未解析出 Prompt'); return }
+
+  const displayName = p.fileName.replace(/\.png$/i, '') || 'PNG Prompt'
+  const params = [
+    p.model && `模型: ${p.model}`,
+    p.seed && `Seed: ${p.seed}`,
+    p.steps && `Steps: ${p.steps}`,
+    p.cfg && `CFG: ${p.cfg}`,
+    p.sampler && `采样器: ${p.sampler}`,
+  ].filter(Boolean).join(' | ')
+  const notes = [
+    p.negative && `负 Prompt: ${p.negative}`,
+    params && `参数: ${params}`,
+  ].filter(Boolean).join('\n')
+
+  const entry: PromptEntry = {
+    id: generatePromptId(),
+    prompt: p.positive,
+    displayText: displayName,
+    images: p.previewThumb ? [p.previewThumb] : [],
+    primaryImage: p.previewThumb || '',
+    tags: p.loras.map(l => l.trim()).filter(Boolean),
+    categoryId: 'uncategorized',
+    weight: 1.0,
+    notes,
+    isFavorite: false,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }
+  await addPrompt(entry)
+  p.saved = true
+  renderPromptFreq()
+  showToast('✅ 已保存到 Prompt 库，可在「📖 Prompt 库」查看')
 }
 
 // ── 渲染 ──
@@ -202,14 +270,16 @@ export function renderPromptFreq() {
     if (freq.size > 0) {
       const sorted = [...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 100)
       const maxCount = sorted[0][1]
-      html += `<div class="prompt-freq-stats">共 ${sorted.length} 个高频词 · 基于最近 ${_limit || '全部'} 张图片</div>
+      html += `<details class="prompt-freq-freq" ${_freqCollapsed ? '' : 'open'}>
+        <summary>📊 高频词统计（${sorted.length} 个 · 基于最近 ${_limit || '全部'} 张图片）</summary>
         <div class="prompt-freq-tags">
           ${sorted.map(([tag, count]) => {
             const pct = count / maxCount
             const fs = 12 + pct * 10
             return `<span class="prompt-freq-tag" style="font-size:${fs.toFixed(1)}px" data-copy="${esc(tag)}" title="出现 ${count} 次 · 点击复制">${esc(tag)}, <small>${count}</small></span>`
           }).join('')}
-        </div>`
+        </div>
+      </details>`
     }
   }
 
@@ -217,14 +287,18 @@ export function renderPromptFreq() {
   if (_uploadedPngs.length > 0) {
     html += `<div class="prompt-freq-png-section"><h4>📤 上传的 PNG (${_uploadedPngs.length})</h4>`
     for (const p of _uploadedPngs) {
-      const pngId = esc(p.fileName.replace(/[^a-zA-Z0-9]/g, '_'))
+      const pngId = esc(p.id)
       const posSegments = p.positive ? p.positive.split(/[,，]/).map(t => t.trim()).filter(Boolean) : []
       const negSegments = p.negative ? p.negative.split(/[,，]/).map(t => t.trim()).filter(Boolean) : []
 
       html += `<div class="prompt-freq-png-card">
         <div class="prompt-freq-png-header">
-          <span>${esc(p.fileName)}</span>
-          <button class="prompt-freq-png-del" data-file="${esc(p.fileName)}" title="移除">✕</button>
+          ${p.previewThumb ? `<img class="prompt-freq-png-thumb" src="${esc(p.previewThumb)}" alt="">` : ''}
+          <span>${esc(p.fileName)}${p.workflowJson ? '<span class="prompt-freq-png-flow" title="已内嵌 ComfyUI 工作流"> 📄</span>' : ''}</span>
+          <span>
+            <button class="prompt-freq-png-save ${p.saved ? 'saved' : ''}" data-pid="${esc(p.id)}">${p.saved ? '✅ 已保存' : '💾 保存到 Prompt 库'}</button>
+            <button class="prompt-freq-png-del" data-pid="${esc(p.id)}" title="移除">✕</button>
+          </span>
         </div>`
 
       // 正面提示词 — 每个逗号片段独立卡片
@@ -241,7 +315,7 @@ export function renderPromptFreq() {
           </div>
           <div class="prompt-freq-png-actions">
             <button class="prompt-freq-png-copyall" data-text="${esc(p.positive)}">📋 复制全部</button>
-            <button class="prompt-freq-png-transall">🌐 翻译全部</button>
+            <button class="prompt-freq-png-transall" data-role="pos">🌐 翻译全部</button>
           </div>`
       }
 
@@ -259,13 +333,14 @@ export function renderPromptFreq() {
           </div>
           <div class="prompt-freq-png-actions">
             <button class="prompt-freq-png-copyall" data-text="${esc(p.negative)}">📋 复制全部</button>
-            <button class="prompt-freq-png-transall">🌐 翻译全部</button>
+            <button class="prompt-freq-png-transall" data-role="neg">🌐 翻译全部</button>
           </div>`
       }
 
-      // LoRA 标签
+      // LoRA 标签（点击复制）
       if (p.loras.length > 0) {
-        html += `<div class="prompt-freq-png-loras">${p.loras.map(l => `<code class="local-tw-item lora" data-copy="${esc(l)}">${esc(l)}</code>`).join('')}</div>`
+        html += `<div class="prompt-freq-png-label-bar" style="margin-top:8px">🧩 LoRA（点击复制）</div>
+          <div class="prompt-freq-png-loras">${p.loras.map(l => `<code class="local-tw-item lora" data-copy="${esc(l)}">${esc(l)}</code>`).join('')}</div>`
       }
 
       // 参数
@@ -276,6 +351,14 @@ export function renderPromptFreq() {
           ${p.steps ? `<span>👣 ${esc(p.steps)}</span>` : ''}
           ${p.cfg ? `<span>⚙️ CFG ${esc(p.cfg)}</span>` : ''}
           ${p.sampler ? `<span>🔬 ${esc(p.sampler)}</span>` : ''}
+        </div>`
+      }
+
+      // 工作流操作
+      if (p.workflowJson) {
+        html += `<div class="prompt-freq-png-actions" style="margin-top:8px">
+          <button class="prompt-freq-png-copyflow" data-pid="${esc(p.id)}">📄 复制工作流</button>
+          <button class="prompt-freq-png-golib" data-pid="${esc(p.id)}">📖 去 Prompt 库</button>
         </div>`
       }
 
@@ -301,6 +384,12 @@ export function renderPromptFreq() {
 
 export function bindPromptFreqEvents() {
   document.getElementById('promptFreqLimit')?.addEventListener('change', () => renderPromptFreq())
+
+  // 高频词折叠状态同步（重渲染后保持）
+  document.getElementById('promptFreqContent')?.addEventListener('toggle', (e) => {
+    const el = e.target as HTMLDetailsElement
+    if (el.classList.contains('prompt-freq-freq')) _freqCollapsed = !el.open
+  }, true)
 
   document.getElementById('promptFreqContent')?.addEventListener('click', async (e) => {
     const target = e.target as HTMLElement
@@ -329,21 +418,23 @@ export function bindPromptFreqEvents() {
       return
     }
 
-    // 翻译 — 填充到每个 segment 下方
+    // 翻译 — 只翻译当前区（正或负），不混翻译整卡
     const transAllBtn = target.closest('.prompt-freq-png-transall') as HTMLElement
     if (transAllBtn) {
-      const card = transAllBtn.closest('.prompt-freq-png-card')
-      if (!card) return
-      const slots = card.querySelectorAll<HTMLElement>('.prompt-freq-png-seg-trans')
+      const actions = transAllBtn.closest('.prompt-freq-png-actions') as HTMLElement | null
+      const segWrap = actions?.previousElementSibling as HTMLElement | null
+      if (!segWrap || !segWrap.classList.contains('prompt-freq-png-segments')) return
 
-      // 已有翻译 → 折叠/展开
-      if ((card as HTMLElement).dataset.translated === '1') {
+      const slots = segWrap.querySelectorAll<HTMLElement>('.prompt-freq-png-seg-trans')
+
+      // 本区已有翻译 → 只折叠/展开本区
+      if (segWrap.dataset.translated === '1') {
         slots.forEach(s => { s.style.display = s.style.display === 'none' ? 'block' : 'none' })
         return
       }
 
-      // 收集所有待翻译文本
-      const units = card.querySelectorAll<HTMLElement>('.prompt-freq-png-unit')
+      // 只收集本区片段
+      const units = segWrap.querySelectorAll<HTMLElement>('.prompt-freq-png-unit')
       const texts: string[] = []
       const els: HTMLElement[] = []
       for (const unit of units) {
@@ -360,7 +451,7 @@ export function bindPromptFreqEvents() {
 
       transAllBtn.textContent = '⏳'
 
-      // 并行翻译所有片段
+      // 并行翻译本区片段（带内存缓存，节省配额）
       const results = await Promise.all(texts.map(t => translateText(t)))
 
       for (let i = 0; i < results.length; i++) {
@@ -371,18 +462,54 @@ export function bindPromptFreqEvents() {
       }
 
       transAllBtn.textContent = '🌐 翻译全部'
-      ;(card as HTMLElement).dataset.translated = '1'
+      segWrap.dataset.translated = '1'
       return
     }
 
     // 删除 PNG
     const delBtn = target.closest('.prompt-freq-png-del') as HTMLElement
     if (delBtn) {
-      const fileName = delBtn.dataset.file
-      if (fileName) {
-        _uploadedPngs = _uploadedPngs.filter(p => p.fileName !== fileName)
+      const pid = delBtn.dataset.pid
+      if (pid) {
+        _uploadedPngs = _uploadedPngs.filter(p => p.id !== pid)
         renderPromptFreq()
       }
+      return
+    }
+
+    // 点击 LoRA 标签复制
+    const loraChip = target.closest('.prompt-freq-png-loras code[data-copy]') as HTMLElement
+    if (loraChip) {
+      const l = loraChip.dataset.copy
+      if (l) { copyText(l); showToast(`已复制 LoRA: ${l}`) }
+      return
+    }
+
+    // 保存到 Prompt 库
+    const saveBtn = target.closest('.prompt-freq-png-save') as HTMLElement
+    if (saveBtn) {
+      const p = _uploadedPngs.find(x => x.id === saveBtn.dataset.pid)
+      if (p && !p.saved) await savePngToLibrary(p)
+      return
+    }
+
+    // 复制工作流
+    const copyFlowBtn = target.closest('.prompt-freq-png-copyflow') as HTMLElement
+    if (copyFlowBtn) {
+      const p = _uploadedPngs.find(x => x.id === copyFlowBtn.dataset.pid)
+      if (p?.workflowJson) {
+        copyText(p.workflowJson)
+        showToast('📄 工作流已复制')
+      } else {
+        showToast('⚠️ 该图片无工作流数据')
+      }
+      return
+    }
+
+    // 去 Prompt 库
+    const goLibBtn = target.closest('.prompt-freq-png-golib') as HTMLElement
+    if (goLibBtn) {
+      ;(document.querySelector('.main-tab[data-section="prompt"]') as HTMLElement)?.click()
       return
     }
 

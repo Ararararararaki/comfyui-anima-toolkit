@@ -48,7 +48,7 @@ function decompressZlib(data: Uint8Array): string {
   }
 }
 
-async function decompressZlibAsync(data: Uint8Array): Promise<string> {
+export async function decompressZlibAsync(data: Uint8Array): Promise<string> {
   try {
     // zTXt 使用 zlib 格式（deflate + 2 字节头部 + 4 字节校验）
     // 跳过头部 2 字节（CMF + FLG）和尾部 4 字节（Adler-32）

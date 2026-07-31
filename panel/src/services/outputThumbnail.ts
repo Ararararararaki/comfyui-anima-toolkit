@@ -18,7 +18,7 @@ function hashPath(path: string): string {
   return Math.abs(hash).toString(36)
 }
 
-async function createThumbnailFromBlob(
+export async function createThumbnailFromBlob(
   blob: Blob,
   size: number = THUMBNAIL_SIZE
 ): Promise<{ dataUrl: string; width: number; height: number }> {
