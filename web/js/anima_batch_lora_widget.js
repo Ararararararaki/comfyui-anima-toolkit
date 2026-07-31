@@ -57,9 +57,8 @@
         }
       },
       setup() {
-        // 在 ComfyUI 顶部菜单栏加入「本地工具箱」入口，无需从节点打开面板
-        const addBtn = () => {
-          if (document.getElementById("anima-panel-btn")) return;
+        // 在 ComfyUI 顶部加入「本地工具箱」入口，无需从节点打开面板
+        const makeBtn = () => {
           const btn = document.createElement("button");
           btn.id = "anima-panel-btn";
           btn.type = "button";
@@ -71,21 +70,48 @@
             fontSize: "12px", fontWeight: "600", border: "none",
             color: "#EDEDEF", background: "linear-gradient(135deg,#5E6AD2,#6872D9)",
             boxShadow: "0 0 0 1px rgba(94,106,210,0.35),0 2px 10px rgba(94,106,210,0.3)",
-            margin: "0 2px", whiteSpace: "nowrap",
+            whiteSpace: "nowrap",
           });
           btn.addEventListener("click", () => window.open(PANEL_BASE, "_blank"));
-          const host = document.querySelector(".comfy-menu-btns") || document.querySelector(".comfy-menu");
+          return btn;
+        };
+        const addBtn = () => {
+          if (document.getElementById("anima-panel-btn")) return;
+          const btn = makeBtn();
+          // 优先注入顶部工作流标签栏（新版 ComfyUI 顶部总可见区域）；
+          // .comfy-menu 是 display:none 的隐藏浮层，注入进去看不到
+          const host = document.querySelector(".workflow-tabs-container");
           if (host) {
+            btn.style.marginLeft = "8px";
+            btn.style.alignSelf = "center";
             host.appendChild(btn);
           } else {
-            // 兜底：固定右上角
-            btn.style.position = "fixed"; btn.style.top = "10px"; btn.style.right = "60px";
-            btn.style.zIndex = "10000";
+            btn.style.position = "fixed";
+            btn.style.top = "16px";
+            btn.style.right = "10px";
+            btn.style.zIndex = "100000";
             document.body.appendChild(btn);
           }
         };
-        // 页面与菜单渲染是动态的，延迟重试注入
-        [0, 400, 1200].forEach((d) => setTimeout(addBtn, d));
+        // 等顶部标签栏渲染完成再注入；若按钮已 fixed，则随后移到标签栏原生位置
+        const observer = new MutationObserver(() => {
+          const host = document.querySelector(".workflow-tabs-container");
+          if (!host) return;
+          observer.disconnect();
+          const btn = document.getElementById("anima-panel-btn");
+          if (btn && btn.parentElement !== host) {
+            btn.style.position = "";
+            btn.style.top = "";
+            btn.style.right = "";
+            btn.style.zIndex = "";
+            btn.style.marginLeft = "8px";
+            btn.style.alignSelf = "center";
+            host.appendChild(btn);
+          }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+        addBtn();
+        setTimeout(() => { observer.disconnect(); if (!document.getElementById("anima-panel-btn")) addBtn(); }, 8000);
       },
     });
   }
