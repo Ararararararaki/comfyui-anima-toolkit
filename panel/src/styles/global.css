@@ -743,6 +743,8 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 .local-list-item { display: flex; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; align-items: center; transition: background .12s; margin-bottom: 1px; }
 .local-list-item:hover { background: var(--bg4); }
 .local-list-item.active { background: rgba(94,106,210,.12); outline: 1px solid rgba(94,106,210,.3); }
+.local-list-item.local-drag-selected { background: rgba(99,102,241,.18); outline: 2px solid rgba(99,102,241,.6); }
+.local-list-item.local-drag-selected:hover { background: rgba(99,102,241,.22); }
 .local-list-thumb { width: 36px; height: 36px; border-radius: 5px; object-fit: cover; flex-shrink: 0; background: var(--bg3); display: none; }
 .local-list-thumb-placeholder { display: block; }
 .local-list-info { flex: 1; min-width: 0; }

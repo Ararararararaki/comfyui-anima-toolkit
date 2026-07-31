@@ -4,6 +4,7 @@ import { esc, escAttr, copyText, showToast, fmtNum, thumbUrl } from '../utils'
 import type { PngMeta, LocalLoraFile, TagFreq } from '../types'
 import type { OutputMetadata } from '../types/outputs'
 import { promptModal, confirmModal } from '../components/Modal'
+import { openContextMenu } from '../components/ContextMenu'
 import { refreshLocalNames } from '../components/ModelCard'
 import { useOutputStore } from '../store/outputStore'
 import { extractLorasFromWorkflow } from '../services/outputMetadata'
@@ -18,6 +19,157 @@ function highlightText(text: string, query: string): string {
 }
 
 let _initDone = false
+
+// ── 拖拽框选选中的 LoRA（右键可批量添加分类） ──
+let _dragSelected = new Set<string>()
+let _dragInitDone = false
+
+function clearDragHighlight() {
+  document.querySelectorAll('#localFileList .local-list-item.local-drag-selected').forEach(el => {
+    el.classList.remove('local-drag-selected')
+  })
+}
+
+// 右键菜单：单个 LoRA 切换分类，或拖拽多选时批量添加分类
+function openLoraContextMenu(e: MouseEvent, name: string) {
+  const s = useLocalModelStore.getState()
+  const catActions = (existing: string[], apply: (cat: string) => void) => [
+    ...s.categories.map(cat => ({
+      label: existing.includes(cat) ? `☑ ${cat}` : `☐ ${cat}`,
+      handler: () => apply(cat),
+    })),
+    {
+      label: '➕ 新建分类…', icon: '',
+      handler: async () => {
+        const n = (await promptModal('新建分类'))?.trim()
+        if (!n) return
+        if (s.categories.includes(n)) { showToast('分类已存在'); return }
+        s.addCategory(n)
+        apply(n)
+        s.saveToCache()
+        renderLocalView()
+      },
+    },
+  ]
+
+  // 拖拽多选优先：右键在选中项上 → 批量添加分类
+  if (_dragSelected.size > 1 && _dragSelected.has(name)) {
+    const names = [..._dragSelected]
+    openContextMenu(e.clientX, e.clientY, [
+      {
+        label: `已选 ${names.length} 个 LoRA`,
+        items: [{
+          label: '添加到分类', icon: '🏷️', handler: () => {},
+          children: catActions([], (cat) => {
+            s.setBatchModelCategories(names, cat)
+            s.saveToCache()
+            _dragSelected.clear()
+            clearDragHighlight()
+            renderLocalView()
+            showToast(`✅ ${names.length} 个已添加到「${cat}」`)
+          }),
+        }],
+      },
+    ])
+    return
+  }
+
+  // 单个 LoRA：分类勾选/取消
+  const existing = s.modelCategories[name] || []
+  openContextMenu(e.clientX, e.clientY, [
+    {
+      label: name.replace(/\.\w+$/, ''),
+      items: [{
+        label: '分类', icon: '🏷️', handler: () => {},
+        children: catActions(existing, (cat) => {
+          const cur = s.modelCategories[name] || []
+          const next = cur.includes(cat) ? cur.filter(c => c !== cat) : [...cur, cat]
+          s.setModelCategories(name, next)
+          s.saveToCache()
+          renderLocalView()
+        }),
+      }],
+    },
+  ])
+}
+
+// 拖拽框选（复刻 Outputs）：在列表空白处按下并拖动，框选多个 LoRA
+function initDragSelect() {
+  if (_dragInitDone) return
+  _dragInitDone = true
+
+  let isDragging = false
+  let startX = 0, startY = 0
+  let rectEl: HTMLElement | null = null
+
+  document.addEventListener('mousedown', (e: MouseEvent) => {
+    const target = e.target as HTMLElement
+    if (!target.closest('#sectionLocal')) return
+    if (!target.closest('#localFileList')) return
+    // 只在列表项之间的空白区域开始框选（列表项本身用于拖拽到分类）
+    if (target.closest('.local-list-item, .local-list-chk, button, input, select, .local-tree-cat-header')) return
+    if (e.button !== 0) return
+    isDragging = true
+    document.body.style.userSelect = 'none'
+    document.body.style.webkitUserSelect = 'none'
+    e.preventDefault()
+    startX = e.pageX; startY = e.pageY
+    if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      _dragSelected.clear()
+      clearDragHighlight()
+    }
+    rectEl = document.createElement('div')
+    rectEl.className = 'local-selection-rect'
+    rectEl.style.cssText = `position:fixed;left:${e.clientX}px;top:${e.clientY}px;width:0;height:0;z-index:99999;background:rgba(99,102,241,0.12);border:2px dashed rgba(99,102,241,0.6);pointer-events:none;border-radius:4px`
+    document.body.appendChild(rectEl)
+  })
+
+  document.addEventListener('mousemove', (e: MouseEvent) => {
+    if (!isDragging || !rectEl) return
+    const l = Math.min(startX, e.pageX), t = Math.min(startY, e.pageY)
+    const r = Math.max(startX, e.pageX), b = Math.max(startY, e.pageY)
+    const sx = window.scrollX, sy = window.scrollY
+    rectEl.style.cssText = `position:fixed;left:${l - sx}px;top:${t - sy}px;width:${r - l}px;height:${b - t}px;z-index:99999;background:rgba(99,102,241,0.12);border:2px dashed rgba(99,102,241,0.6);pointer-events:none;border-radius:4px`
+    if (r - l > 5 || b - t > 5) {
+      const inRect = new Set<string>()
+      document.querySelectorAll('#localFileList .local-list-item').forEach(el => {
+        const cr = el.getBoundingClientRect()
+        const cardL = cr.left + sx, cardT = cr.top + sy
+        const cardR = cr.right + sx, cardB = cr.bottom + sy
+        if (l < cardR && r > cardL && t < cardB && b > cardT) {
+          const nm = (el as HTMLElement).dataset.name
+          if (nm) inRect.add(nm)
+        }
+      })
+      _dragSelected = inRect
+      clearDragHighlight()
+      document.querySelectorAll('#localFileList .local-list-item').forEach(el => {
+        const nm = (el as HTMLElement).dataset.name
+        if (nm && _dragSelected.has(nm)) (el as HTMLElement).classList.add('local-drag-selected')
+      })
+    }
+  })
+
+  document.addEventListener('mouseup', () => {
+    if (!isDragging) return
+    isDragging = false
+    document.body.style.userSelect = ''
+    document.body.style.webkitUserSelect = ''
+    if (rectEl) { rectEl.remove(); rectEl = null }
+    if (_dragSelected.size > 0) {
+      showToast(`已选中 ${_dragSelected.size} 个，右键可批量添加分类`)
+    }
+  })
+
+  document.addEventListener('click', (e: MouseEvent) => {
+    const t = e.target as HTMLElement
+    if (!t.closest('.local-drag-selected')) {
+      _dragSelected.clear()
+      clearDragHighlight()
+    }
+  })
+}
+
 
 export async function initLocalManager() {
   const store = useLocalModelStore.getState()
@@ -626,6 +778,16 @@ function updateStats(state: ReturnType<typeof useLocalModelStore.getState>) {
 }
 
 function bindLocalEvents() {
+  // 右键分类菜单 + 拖拽框选批量添加分类
+  $$('localFileList')?.addEventListener('contextmenu', (e) => {
+    const item = (e.target as HTMLElement).closest('.local-list-item') as HTMLElement
+    if (!item) return
+    e.preventDefault()
+    const name = item.dataset.name
+    if (name) openLoraContextMenu(e, name)
+  })
+  initDragSelect()
+
   $$('localScanBtn')?.addEventListener('click', async () => {
     await useLocalModelStore.getState().scanDir()
     refreshLocalNames()
