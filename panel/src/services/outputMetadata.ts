@@ -15,6 +15,12 @@ export interface ParsedMetadata {
   raw: Record<string, string>
 }
 
+// 判断文本是否纯 <lora:...> 标签（LoRA 序列节点文本，不是有效 prompt）
+function isPureLoraText(text: string): boolean {
+  if (!text) return false
+  return text.replace(/<lora:[^>]*>/gi, '').trim().length === 0
+}
+
 function decompressZlib(data: Uint8Array): string {
   // 浏览器环境没有原生 zlib，使用 DecompressionStream API
   // 如果浏览器不支持，尝试直接解码
@@ -297,12 +303,12 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
     let assigned = ''
     // 1. KSampler 引用
     const ref = nodeId ? posRefs.get(nodeId) : undefined
-    if (ref === 'positive') { result.prompt = text; assigned = 'posRefs→positive' }
+    if (ref === 'positive') { if (!isPureLoraText(text)) result.prompt = text; assigned = 'posRefs→positive' }
     else if (ref === 'negative') { result.negativePrompt = text; assigned = 'posRefs→negative' }
     // 2. 链路追踪（UI format）
     if (!assigned && node.id !== undefined && linkMap.size > 0) {
       const role = getPromptRole(node.id)
-      if (role === 'positive') { result.prompt = text; assigned = 'linkTrace→positive' }
+      if (role === 'positive') { if (!isPureLoraText(text)) result.prompt = text; assigned = 'linkTrace→positive' }
       else if (role === 'negative') { result.negativePrompt = text; assigned = 'linkTrace→negative' }
     }
     // 2.b 正向链路：文本节点的输出 → 下游节点 → 查 posRefs
@@ -315,7 +321,7 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
             const link = linkMap.get(lid)
             if (!link) continue
             const dnRef = posRefs.get(String(link.toNode))
-            if (dnRef === 'positive') { result.prompt = text; assigned = 'posRefsFwd→positive'; break }
+            if (dnRef === 'positive') { if (!isPureLoraText(text)) result.prompt = text; assigned = 'posRefsFwd→positive'; break }
             if (dnRef === 'negative') { result.negativePrompt = text; assigned = 'posRefsFwd→negative'; break }
           }
           if (assigned) break
@@ -327,7 +333,7 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
       if (isNegativeText(text)) {
         result.negativePrompt = text; assigned = 'heuristic→negative'
       } else {
-        result.prompt = text; assigned = 'heuristic→positive'
+        if (!isPureLoraText(text)) result.prompt = text; assigned = 'heuristic→positive'
       }
     }
     console.log(`[PromptFreq/debug] 分类 node=${nodeId} ${assigned} 文本前50字:`, text.slice(0, 50))
