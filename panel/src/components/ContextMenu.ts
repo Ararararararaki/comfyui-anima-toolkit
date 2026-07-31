@@ -18,6 +18,27 @@ export interface ContextMenuGroup {
 
 let _activeMenu: HTMLElement | null = null
 let _activeSubMenu: HTMLElement | null = null
+let _subMenuTimer: number | null = null
+
+/** 取消待执行的子菜单关闭 */
+function cancelCloseSubMenu() {
+  if (_subMenuTimer !== null) {
+    clearTimeout(_subMenuTimer)
+    _subMenuTimer = null
+  }
+}
+
+/**
+ * 延迟关闭子菜单：鼠标从父项移向子菜单时会经过两者间的间隙，
+ * 立即关闭会导致子菜单无法点击。延迟后在间隙时间内进入子菜单即取消关闭。
+ */
+function scheduleCloseSubMenu(delay = 160) {
+  cancelCloseSubMenu()
+  _subMenuTimer = window.setTimeout(() => {
+    _subMenuTimer = null
+    closeSubMenu()
+  }, delay)
+}
 
 /**
  * 打开右键菜单
@@ -75,10 +96,11 @@ export function openContextMenu(
 
         // 子菜单
         el.addEventListener('mouseenter', (e) => {
+          cancelCloseSubMenu()
           openSubMenu(el, item.children!, x, y)
         })
         el.addEventListener('mouseleave', () => {
-          closeSubMenu()
+          scheduleCloseSubMenu()
         })
       } else {
         el.innerHTML = `<span class="context-menu-item-label">${item.icon ? `${item.icon} ${item.label}` : item.label}</span>`
@@ -126,6 +148,7 @@ export function openContextMenu(
 }
 
 function openSubMenu(parentEl: HTMLElement, items: ContextMenuAction[], parentX: number, parentY: number) {
+  cancelCloseSubMenu()
   closeSubMenu()
 
   const sub = document.createElement('div')
@@ -150,6 +173,10 @@ function openSubMenu(parentEl: HTMLElement, items: ContextMenuAction[], parentX:
     })
     sub.appendChild(el)
   })
+
+  // 子菜单悬停时取消父项 mouseleave 的延迟关闭，允许鼠标跨间隙移入子菜单
+  sub.addEventListener('mouseenter', () => cancelCloseSubMenu())
+  sub.addEventListener('mouseleave', () => scheduleCloseSubMenu())
 
   // 定位子菜单位于父菜单右侧
   const parentRect = parentEl.getBoundingClientRect()
@@ -183,6 +210,7 @@ function closeSubMenu() {
  * 关闭右键菜单
  */
 export function closeContextMenu() {
+  cancelCloseSubMenu()
   closeSubMenu()
   if (_activeMenu) {
     _activeMenu.remove()
