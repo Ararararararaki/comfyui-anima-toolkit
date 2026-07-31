@@ -1,12 +1,16 @@
 // Anima Batch LoRA Widget — 中文界面 + 桥接自动加载 + 触发词复制
 (function () {
   const NODE_NAME = "Anima Batch LoRA Loader";
-  // 面板 URL：动态解析当前插件目录名（兼容任意 clone 目录名）
+  // 面板 URL / 图标：动态解析当前插件目录名（兼容任意 clone 目录名）
   let PANEL_BASE = "/extensions/ComfyUI-Anima-Batch-LoRA/app/";
+  let ICON_URL = "/extensions/ComfyUI-Anima-Batch-LoRA/img/anima-btn.png";
   try {
     const _src = document.currentScript && document.currentScript.src;
     const _m = _src && _src.match(/\/extensions\/([^/]+)\/js\//);
-    if (_m) PANEL_BASE = "/extensions/" + _m[1] + "/app/";
+    if (_m) {
+      PANEL_BASE = "/extensions/" + _m[1] + "/app/";
+      ICON_URL = "/extensions/" + _m[1] + "/img/anima-btn.png";
+    }
   } catch (e) {}
 
   function init() {
@@ -57,61 +61,24 @@
         }
       },
       setup() {
-        // 在 ComfyUI 顶部加入「本地工具箱」入口，无需从节点打开面板
-        const makeBtn = () => {
+        // 在 ComfyUI 顶部右侧加入「本地工具箱」图片按钮（直接用单张图作按钮，悬浮看提示）
+        const addBtn = () => {
+          if (document.getElementById("anima-panel-btn")) return;
           const btn = document.createElement("button");
           btn.id = "anima-panel-btn";
           btn.type = "button";
-          btn.textContent = "🎨 本地工具箱";
           btn.title = "打开 Anima 本地工具箱（面板）";
           Object.assign(btn.style, {
-            display: "inline-flex", alignItems: "center", gap: "5px",
-            padding: "6px 12px", borderRadius: "6px", cursor: "pointer",
-            fontSize: "12px", fontWeight: "600", border: "none",
-            color: "#EDEDEF", background: "linear-gradient(135deg,#5E6AD2,#6872D9)",
-            boxShadow: "0 0 0 1px rgba(94,106,210,0.35),0 2px 10px rgba(94,106,210,0.3)",
-            whiteSpace: "nowrap",
+            position: "fixed", top: "12px", right: "260px", zIndex: "100000",
+            padding: "0", border: "none", background: "none", cursor: "pointer",
+            borderRadius: "6px",
           });
+          btn.innerHTML = `<img src="${ICON_URL}" alt="本地工具箱" style="display:block;height:32px;width:auto;border-radius:6px;">`;
           btn.addEventListener("click", () => window.open(PANEL_BASE, "_blank"));
-          return btn;
+          document.body.appendChild(btn);
         };
-        const addBtn = () => {
-          if (document.getElementById("anima-panel-btn")) return;
-          const btn = makeBtn();
-          // 优先注入顶部工作流标签栏（新版 ComfyUI 顶部总可见区域）；
-          // .comfy-menu 是 display:none 的隐藏浮层，注入进去看不到
-          const host = document.querySelector(".workflow-tabs-container");
-          if (host) {
-            btn.style.marginLeft = "8px";
-            btn.style.alignSelf = "center";
-            host.appendChild(btn);
-          } else {
-            btn.style.position = "fixed";
-            btn.style.top = "16px";
-            btn.style.right = "10px";
-            btn.style.zIndex = "100000";
-            document.body.appendChild(btn);
-          }
-        };
-        // 等顶部标签栏渲染完成再注入；若按钮已 fixed，则随后移到标签栏原生位置
-        const observer = new MutationObserver(() => {
-          const host = document.querySelector(".workflow-tabs-container");
-          if (!host) return;
-          observer.disconnect();
-          const btn = document.getElementById("anima-panel-btn");
-          if (btn && btn.parentElement !== host) {
-            btn.style.position = "";
-            btn.style.top = "";
-            btn.style.right = "";
-            btn.style.zIndex = "";
-            btn.style.marginLeft = "8px";
-            btn.style.alignSelf = "center";
-            host.appendChild(btn);
-          }
-        });
-        observer.observe(document.body, { childList: true, subtree: true });
-        addBtn();
-        setTimeout(() => { observer.disconnect(); if (!document.getElementById("anima-panel-btn")) addBtn(); }, 8000);
+        // 页面渲染是动态的，延迟重试注入
+        [0, 300, 1000].forEach((d) => setTimeout(addBtn, d));
       },
     });
   }
