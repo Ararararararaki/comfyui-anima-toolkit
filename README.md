@@ -53,6 +53,8 @@ git clone https://github.com/Ararararararaki/comfyui-anima-toolkit.git
 
 然后**重启 ComfyUI**。`app/` 已预构建，**无需 npm install / 构建**，clone 即用。
 
+**打开面板**：重启后，ComfyUI 页面顶部菜单栏会出现「🎨 本地工具箱」按钮，点击即可进入本地管理面板（无需从节点进入）；也可以从节点的「🌐 面板」按钮打开。
+
 ## 具体展示
 
 ### LORA 加载节点：

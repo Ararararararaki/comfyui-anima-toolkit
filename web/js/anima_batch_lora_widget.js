@@ -56,6 +56,37 @@
           };
         }
       },
+      setup() {
+        // 在 ComfyUI 顶部菜单栏加入「本地工具箱」入口，无需从节点打开面板
+        const addBtn = () => {
+          if (document.getElementById("anima-panel-btn")) return;
+          const btn = document.createElement("button");
+          btn.id = "anima-panel-btn";
+          btn.type = "button";
+          btn.textContent = "🎨 本地工具箱";
+          btn.title = "打开 Anima 本地工具箱（面板）";
+          Object.assign(btn.style, {
+            display: "inline-flex", alignItems: "center", gap: "5px",
+            padding: "6px 12px", borderRadius: "6px", cursor: "pointer",
+            fontSize: "12px", fontWeight: "600", border: "none",
+            color: "#EDEDEF", background: "linear-gradient(135deg,#5E6AD2,#6872D9)",
+            boxShadow: "0 0 0 1px rgba(94,106,210,0.35),0 2px 10px rgba(94,106,210,0.3)",
+            margin: "0 2px", whiteSpace: "nowrap",
+          });
+          btn.addEventListener("click", () => window.open(PANEL_BASE, "_blank"));
+          const host = document.querySelector(".comfy-menu-btns") || document.querySelector(".comfy-menu");
+          if (host) {
+            host.appendChild(btn);
+          } else {
+            // 兜底：固定右上角
+            btn.style.position = "fixed"; btn.style.top = "10px"; btn.style.right = "60px";
+            btn.style.zIndex = "10000";
+            document.body.appendChild(btn);
+          }
+        };
+        // 页面与菜单渲染是动态的，延迟重试注入
+        [0, 400, 1200].forEach((d) => setTimeout(addBtn, d));
+      },
     });
   }
 
