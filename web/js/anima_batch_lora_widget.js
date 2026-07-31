@@ -70,10 +70,10 @@
           btn.title = "打开 Anima 本地工具箱（面板）";
           Object.assign(btn.style, {
             position: "fixed", left: "356px", top: "53px", zIndex: "100000",
-            width: "48px", height: "48px", padding: "0", border: "none",
+            width: "44px", height: "44px", padding: "0", border: "none",
             background: "none", cursor: "pointer", borderRadius: "8px",
           });
-          btn.innerHTML = `<img src="${ICON_URL}" alt="本地工具箱" style="display:block;width:48px;height:48px;object-fit:cover;border-radius:8px;">`;
+          btn.innerHTML = `<img src="${ICON_URL}" alt="本地工具箱" style="display:block;width:44px;height:44px;object-fit:cover;border-radius:8px;">`;
           btn.addEventListener("click", () => window.open(PANEL_BASE, "_blank"));
           document.body.appendChild(btn);
         };
