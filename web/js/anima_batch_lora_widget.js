@@ -69,7 +69,7 @@
           btn.type = "button";
           btn.title = "打开 Anima 本地工具箱（面板）";
           Object.assign(btn.style, {
-            position: "fixed", left: "276px", top: "210px", zIndex: "100000",
+            position: "fixed", left: "106px", top: "0px", zIndex: "100000",
             width: "48px", height: "48px", padding: "0", border: "none",
             background: "none", cursor: "pointer", borderRadius: "8px",
           });
