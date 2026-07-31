@@ -1,0 +1,27 @@
+{
+  "name": "anima-lora-explorer",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/deploy-server.mjs & vite --host",
+    "dev": "start /B node scripts/deploy-server.mjs && vite",
+    "dev:server": "node scripts/deploy-server.mjs",
+    "dev:host": "vite --host --port 5173",
+    "build": "tsc && vite build",
+    "setup:comfyui": "node scripts/setup-comfyui.mjs",
+    "build:comfyui": "node scripts/build-comfyui.mjs",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "dexie": "^4.4.4",
+    "jszip": "^3.10.1",
+    "lucide": "^1.27.0",
+    "zustand": "^4.5.0"
+  },
+  "devDependencies": {
+    "sharp": "^0.35.3",
+    "typescript": "^5.4.0",
+    "vite": "^5.4.0"
+  }
+}

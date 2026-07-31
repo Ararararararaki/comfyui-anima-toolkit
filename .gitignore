@@ -1,0 +1,21 @@
+# Python runtime
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime-generated data (per-install, not committed)
+anima_meta.json
+anima_bridge.json
+
+# Panel (frontend) — build artifacts & local config
+panel/node_modules/
+panel/dist/
+panel/.comfyui-path
+panel/vite_error.txt
+
+# Local dev tooling
+panel/src/skills-lock.json
+
+# OS
+.DS_Store
+Thumbs.db

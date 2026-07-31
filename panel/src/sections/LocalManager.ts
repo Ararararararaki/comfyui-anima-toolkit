@@ -1,0 +1,1470 @@
+import { useLocalModelStore } from '../store/localModels'
+import type { LocalSortKey, LocalFilterKey, LocalViewKey } from '../store/localModels'
+import { esc, escAttr, copyText, showToast, fmtNum, thumbUrl } from '../utils'
+import type { PngMeta, LocalLoraFile, TagFreq } from '../types'
+import type { OutputMetadata } from '../types/outputs'
+import { promptModal, confirmModal } from '../components/Modal'
+import { refreshLocalNames } from '../components/ModelCard'
+import { useOutputStore } from '../store/outputStore'
+import { extractLorasFromWorkflow } from '../services/outputMetadata'
+
+// ── 搜索高亮工具 ──
+function highlightText(text: string, query: string): string {
+  if (!query) return esc(text)
+  const escaped = esc(text)
+  const q = esc(query)
+  const regex = new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
+  return escaped.replace(regex, '<mark class="search-highlight">$1</mark>')
+}
+
+let _initDone = false
+
+export async function initLocalManager() {
+  const store = useLocalModelStore.getState()
+  store.loadFromCache()
+  store.rebuildTagFreq()
+  renderLocalView()
+  bindLocalEvents()
+  _initDone = true
+}
+
+export async function activateLocalManager() {
+  if (!_initDone) return
+  const store = useLocalModelStore.getState()
+  if (store.dirHandle) return
+  const hasCache = store.files.length > 0
+  if (hasCache) {
+    const restored = await store.loadDirHandle()
+    if (restored) {
+      const newCount = await store.detectNewFiles()
+      if (newCount > 0) {
+        store.setNewFileCount(newCount)
+        showToast(`📁 发现 ${newCount} 个新 LoRA 文件，点击扫描增量更新`)
+      } else {
+        showToast('🔄 已恢复上次扫描会话')
+      }
+    } else {
+      showToast('🔄 已恢复缓存数据')
+    }
+  }
+}
+
+function $$(s: string): HTMLElement | null {
+  return document.getElementById(s)
+}
+
+export function renderLocalView() {
+  const state = useLocalModelStore.getState()
+  renderSidebarList(state)
+  renderHome(state)
+  renderDetail(state)
+  updateStats(state)
+}
+
+function renderFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalModelStore.getState>): string {
+  const isSel = f.name === state.selectedModel
+  const thumb = f.matchData?.images?.[0]
+    ? `<img src="${esc(thumbUrl(f.matchData.images[0], 120))}" class="local-list-thumb" loading="lazy" onerror="this.style.display='none'" onload="this.style.display=''">`
+    : '<div class="local-list-thumb local-list-thumb-placeholder"></div>'
+  const badge = f.scanning
+    ? '<span class="local-list-badge scanning">⏳</span>'
+    : f.matched
+    ? '<span class="local-list-badge matched">✓</span>'
+    : f.matchError
+    ? '<span class="local-list-badge error">✗</span>'
+    : ''
+  const label = f.matchData?.modelName || f.name
+  const localSuffix = f.matchData?.modelName ? `<span class="local-list-localname">${esc(f.name.replace(/\.\w+$/, ''))}</span>` : ''
+  const creator = f.matchData?.creator || fmtSize(f.size)
+  const versionSuffix = f.matchData?.versionName ? ` <span style="color:var(--text2)">· v${esc(f.matchData.versionName)}</span>` : ''
+  const query = state.searchQuery || ''
+  const chk = state.batchMode
+    ? `<input type="checkbox" class="local-list-chk" data-name="${escAttr(f.name)}" ${state.batchSelection.includes(f.name) ? 'checked' : ''}>`
+    : ''
+  return `<div class="local-list-item ${isSel ? 'active' : ''}" data-name="${escAttr(f.name)}" draggable="true">
+    ${chk}
+    ${thumb}
+    <div class="local-list-info">
+      <div class="local-list-name">${highlightText(label, query)}${localSuffix}</div>
+      <div class="local-list-meta">${f.matchData ? highlightText(creator, query) : creator}${versionSuffix}</div>
+    </div>
+    <div class="local-list-actions">
+      ${badge}
+      <button class="local-list-del" data-name="${escAttr(f.name)}" title="从磁盘删除">🗑️</button>
+    </div>
+  </div>`
+}
+
+function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>) {
+  const el = $$('localFileList')
+  if (!el) return
+
+  let files = [...state.files]
+
+  if (state.searchQuery) {
+    const q = state.searchQuery.toLowerCase()
+    files = files.filter(f =>
+      f.name.toLowerCase().includes(q) ||
+      (f.matchData?.modelName || '').toLowerCase().includes(q) ||
+      (f.matchData?.creator || '').toLowerCase().includes(q)
+    )
+  }
+  if (state.filterKey === 'matched') files = files.filter(f => f.matched)
+  if (state.filterKey === 'unmatched') files = files.filter(f => !f.matched && !f.scanning)
+
+  switch (state.sortKey) {
+    case 'name': files.sort((a, b) => a.name.localeCompare(b.name)); break
+    case 'size': files.sort((a, b) => b.size - a.size); break
+    case 'date': files.sort((a, b) => b.lastModified - a.lastModified); break
+    case 'match': files.sort((a, b) => (a.matched === b.matched ? 0 : a.matched ? -1 : 1)); break
+  }
+
+  if (files.length === 0) {
+    el.innerHTML = '<div class="empty-state empty-state-wide"><div class="big">📭</div><p class="empty-state-text">没有匹配的文件</p></div>'
+    return
+  }
+
+  const cats = state.categories
+  const exp = state.expandedCategories || []
+  const mc = state.modelCategories || {}
+
+  const catByFile: Record<string, string[]> = {}
+  for (const f of files) {
+    const assigned = mc[f.name] || []
+    catByFile[f.name] = assigned
+  }
+
+  const categorized = new Set<string>()
+  let html = '<div class="local-tree-list">'
+
+  for (const cat of cats) {
+    const catFiles = files.filter(f => (mc[f.name] || []).includes(cat))
+    if (catFiles.length === 0 && state.searchQuery) continue
+    for (const f of catFiles) categorized.add(f.name)
+    const isExpanded = exp.includes(cat)
+    html += `<div class="local-tree-cat" data-cat="${escAttr(cat)}">
+      <div class="local-tree-cat-header" data-cat="${escAttr(cat)}">
+        <span class="local-tree-cat-arrow ${isExpanded ? 'expanded' : ''}">▶</span>
+        <span class="local-tree-cat-name">${esc(cat)}</span>
+        <span class="local-tree-cat-count">${catFiles.length}</span>
+        <button class="local-cat-rename-btn" data-cat="${escAttr(cat)}" title="重命名">✏️</button>
+        <button class="local-cat-del-btn" data-cat="${escAttr(cat)}" title="删除分类">✕</button>
+        <button class="local-new-cat-btn" title="新建分类">➕</button>
+      </div>
+      <div class="local-tree-cat-items ${isExpanded ? '' : 'collapsed'}">
+        ${catFiles.map(f => renderFileItem(f, state)).join('')}
+      </div>
+    </div>`
+  }
+
+  const uncatFiles = files.filter(f => !categorized.has(f.name))
+  if (uncatFiles.length > 0 || !state.searchQuery) {
+    const isExpanded = exp.includes('__uncategorized__')
+    html += `<div class="local-tree-cat" data-cat="__uncategorized__">
+      <div class="local-tree-cat-header" data-cat="__uncategorized__">
+        <span class="local-tree-cat-arrow ${isExpanded ? 'expanded' : ''}">▶</span>
+        <span class="local-tree-cat-name">未分类</span>
+        <span class="local-tree-cat-count">${uncatFiles.length}</span>
+      </div>
+      <div class="local-tree-cat-items ${isExpanded ? '' : 'collapsed'}">
+        ${uncatFiles.map(f => renderFileItem(f, state)).join('')}
+      </div>
+    </div>`
+  }
+
+  html += '</div>'
+  el.innerHTML = html
+  updateBatchBar(state)
+}
+
+function updateBatchBar(state: ReturnType<typeof useLocalModelStore.getState>) {
+  const bar = $$('localBatchBar')
+  const count = $$('localBatchCount')
+  if (!bar || !count) return
+  if (!state.batchMode || state.batchSelection.length === 0) {
+    bar.style.display = 'none'
+    return
+  }
+  bar.style.display = 'flex'
+  count.textContent = `已选 ${state.batchSelection.length} 项`
+}
+
+function renderPromptTab(state: ReturnType<typeof useLocalModelStore.getState>) {
+  const el = $$('promptLoraList')
+  if (!el) return
+  const files = state.files.filter(f => f.matched || state.modelCategories[f.name])
+  if (files.length === 0) {
+    el.innerHTML = '<div class="empty-state empty-state-compact"><p>暂无可用的 LoRA，请先扫描并匹配</p></div>'
+    return
+  }
+  const pw = state.promptWeights || {}
+  const lines = files.map(f => {
+    const name = f.name.replace(/\.\w+$/, '')
+    const w = pw[f.name] ?? 0.8
+    return `<div class="prompt-lora-row" data-name="${escAttr(f.name)}">
+      <div class="prompt-lora-info">
+        <span class="prompt-lora-label" title="${esc(f.name)}">${esc(trunc(name, 30))}</span>
+        ${f.matchData?.modelName ? '<span class="prompt-lora-localname">' + esc(f.name.replace(/\.\w+$/, '')) + '</span>' : ''}
+      </div>
+      <input type="range" class="prompt-lora-slider" min="0" max="2" step="0.05" value="${w}" data-name="${escAttr(f.name)}">
+      <input type="number" class="prompt-lora-input" min="0" max="2" step="0.05" value="${w.toFixed(2)}" data-name="${escAttr(f.name)}">
+      <button class="btn btn-ghost prompt-lora-copy btn-xs" data-tag="${esc(name)}" data-w="${w}">📋</button>
+    </div>`
+  }).join('')
+  el.innerHTML = lines + `
+    <div class="prompt-lora-toolbar">
+      <button class="btn btn-ghost btn-sm" id="promptCopyAllBtn">📋 复制全部</button>
+      <button class="btn btn-ghost btn-sm" id="promptSendComfyBtn">📤 发送到 ComfyUI</button>
+    </div>`
+}
+
+function renderHome(state: ReturnType<typeof useLocalModelStore.getState>) {
+  const el = $$('pageLocalHome')
+  if (!el) return
+
+  // Stats
+  const totalFiles = state.files.length
+  const matchedFiles = state.files.filter(f => f.matched).length
+
+  // Analyze outputs for lora usage
+  const outputState = useOutputStore.getState()
+  const outputTotal = outputState.files.length
+  const loraUsage = new Map<string, number>()  // lora_name → count
+  const coocMap = new Map<string, Map<string, number>>()  // loraA → { loraB → count }
+
+  // Also collect which loras are in our local files for cross-ref
+  const localLoraNames = new Set(state.files.map(f => f.name.replace(/\.\w+$/, '').toLowerCase()))
+
+  // Track how many outputs reference each local lora
+  let outputWithLocalLora = 0
+  const recentOutputs: { id: string; loras: string[]; mtime: number }[] = []
+
+  for (const meta of outputState.metadataCache.values()) {
+    if (!meta.workflowJson) continue
+    const loras = extractLorasFromWorkflow(meta.workflowJson, meta.rawMetadata)
+    if (loras.length === 0) continue
+
+    // Check if any lora is local
+    const hasLocal = loras.some(l => localLoraNames.has(l.toLowerCase()))
+    if (!hasLocal) continue
+
+    outputWithLocalLora++
+    // Build global co-occurrence from ALL extracted loras (not just local)
+    for (let i = 0; i < loras.length; i++) {
+      const a = loras[i]
+      loraUsage.set(a, (loraUsage.get(a) || 0) + 1)
+      for (let j = i + 1; j < loras.length; j++) {
+        const b = loras[j]
+        if (!coocMap.has(a)) coocMap.set(a, new Map())
+        coocMap.get(a)!.set(b, (coocMap.get(a)!.get(b) || 0) + 1)
+        if (!coocMap.has(b)) coocMap.set(b, new Map())
+        coocMap.get(b)!.set(a, (coocMap.get(b)!.get(a) || 0) + 1)
+      }
+    }
+  }
+
+  // Sort loras by usage
+  const sortedLoras = [...loraUsage.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10)
+
+  let html = `
+    <div class="local-home-summary">
+      <div class="local-stat-card"><div class="local-stat-num">${totalFiles}</div><div class="local-stat-label">LoRA 总数</div></div>
+      <div class="local-stat-card"><div class="local-stat-num">${matchedFiles}</div><div class="local-stat-label">已匹配</div></div>
+      <div class="local-stat-card"><div class="local-stat-num">${outputTotal}</div><div class="local-stat-label">Outputs 总数</div></div>
+      <div class="local-stat-card"><div class="local-stat-num">${outputWithLocalLora}</div><div class="local-stat-label">关联 LoRA</div></div>
+    </div>`
+
+  // Top loras section
+  if (sortedLoras.length > 0) {
+    html += `<div class="local-section"><h4>🏆 最常用 LoRA</h4><div class="local-top-loras">`
+    for (const [name, count] of sortedLoras) {
+      const file = state.files.find(f => f.name.replace(/\.\w+$/, '').toLowerCase() === name.toLowerCase())
+      const label = file?.matchData?.modelName || name
+      const matched = file?.matched ? 'matched' : ''
+      html += `<div class="local-top-lora-item ${matched}" data-lora="${escAttr(name)}">
+        <span class="local-top-lora-name">${esc(label)}</span>
+        <span class="local-top-lora-count">${count} 次</span>
+      </div>`
+    }
+    html += `</div></div>`
+  }
+
+  // Common combinations
+  if (sortedLoras.length > 0) {
+    html += `<div class="local-section"><h4>🔗 常搭配组合</h4><div class="local-combos">`
+    for (const [name,] of sortedLoras.slice(0, 5)) {
+      const cooc = coocMap.get(name)
+      if (!cooc) continue
+      const partners = [...cooc.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3)
+      if (partners.length === 0) continue
+      const total = loraUsage.get(name) || 1
+      html += `<div class="local-combo-row" data-lora="${escAttr(name)}">
+        <span class="local-combo-main">${esc(name)}</span>
+        <span class="local-combo-with">搭配:</span>
+        ${partners.map(([pName, pCount]) =>
+          `<span class="local-combo-chip">${esc(pName)} <small>${Math.round(pCount / total * 100)}%</small></span>`
+        ).join('')}
+      </div>`
+    }
+    html += `</div></div>`
+  }
+
+  if (!outputWithLocalLora) {
+    html += `<div class="empty-state"><div class="big">📊</div><p>暂无使用数据，扫描 Outputs 目录后自动生成</p></div>`
+  }
+
+  el.innerHTML = html
+
+  // Bind click: click lora item → switch to detail
+  el.querySelectorAll('.local-top-lora-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const name = (item as HTMLElement).dataset.lora
+      if (!name) return
+      // Find the file by name
+      const f = state.files.find(ff => ff.name.replace(/\.\w+$/, '').toLowerCase() === name.toLowerCase())
+      if (f) {
+        useLocalModelStore.getState().selectModel(f.name)
+        renderSidebarList(useLocalModelStore.getState())
+        renderDetail(useLocalModelStore.getState())
+        document.querySelectorAll('.local-view-tab').forEach(t => t.classList.remove('active'))
+        document.querySelectorAll('.local-page').forEach(p => p.classList.remove('active'))
+        const dt = document.querySelector('.local-view-tab[data-view="detail"]')
+        if (dt) dt.classList.add('active')
+        const dp = $$('pageLocalDetail')
+        if (dp) dp.classList.add('active')
+      }
+    })
+  })
+}
+
+function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
+  const empty = $$('detailEmpty')
+  const content = $$('detailContent')
+  if (!empty || !content) return
+
+  if (!state.selectedModel) {
+    empty.style.display = ''
+    content.style.display = 'none'
+    return
+  }
+
+  const f = state.files.find(x => x.name === state.selectedModel)
+  if (!f) {
+    empty.style.display = ''
+    content.style.display = 'none'
+    return
+  }
+
+  empty.style.display = 'none'
+  content.style.display = 'block'
+
+  const d = f.matchData
+  const imgHtml = d?.images?.[0]
+    ? `<img src="${esc(thumbUrl(d.images[0], 400))}" class="detail-hero-img" loading="lazy" onerror="this.style.display='none'">`
+    : '<div class="detail-no-img">📦</div>'
+
+  const statusBadge = f.scanning
+    ? '<span class="local-badge scanning">⏳ 匹配中…</span>'
+    : f.matched
+    ? '<span class="local-badge matched">✅ 已匹配</span>'
+    : f.matchError
+    ? `<span class="local-badge error">❌ ${esc(f.matchError)}</span>`
+    : '<span class="local-badge idle">⏸ 未匹配</span>'
+
+  const actionBtn = !f.matched && !f.scanning
+    ? `<button class="btn btn-ghost detail-match-btn btn-md" data-name="${escAttr(f.name)}">🔍 匹配</button>`
+    : ''
+
+  const trainedWords = d?.trainedWords?.length
+    ? `<div class="detail-section"><h4>触发词</h4><div class="detail-tw-list">${d.trainedWords.map(w => `<code class="local-tw-item" data-copy="${esc(w + ',')}">${esc(w)},</code>`).join('')}</div></div>`
+    : ''
+
+  const tags = d?.tags?.length
+    ? `<div class="detail-section"><h4>模型标签</h4><div class="detail-tags">${d.tags.map(t => `<span class="detail-tag" data-copy="${esc(t)}">${esc(t)}</span>`).join('')}</div></div>`
+    : ''
+
+  const description = d?.description
+    ? `<div class="detail-section"><h4>简介</h4><p class="detail-desc">${esc(d.description.slice(0, 300))}${d.description.length > 300 ? '…' : ''}</p></div>`
+    : ''
+
+  const modelCats = state.modelCategories[f.name] || []
+  const catHtml = `<div class="detail-section"><h4>分类</h4>
+    <div class="detail-cats" id="detailCats">
+      ${modelCats.map(c => `<span class="detail-cat-chip" data-cat="${escAttr(c)}">${esc(c)} <span class="detail-cat-rm" data-name="${escAttr(f.name)}" data-cat="${escAttr(c)}">✕</span></span>`).join('')}
+      <div class="detail-cat-add-wrap">
+        <button class="btn btn-ghost btn-sm" id="detailCatAddBtn">+ 分类</button>
+        <div class="local-catfilter-dropdown detail-cat-dd" id="detailCatDropdown" style="display:none"></div>
+      </div>
+    </div></div>`
+
+  // LoRA 标签构建器（权重滑块 + 复制）
+  const localBase = f.name.replace(/\.\w+$/, '')
+  const loraWeight = state.promptWeights?.[f.name] ?? 0.8
+  const loraTagHtml = `<div class="detail-section"><h4>🏷️ LoRA 标签</h4>
+    <div class="detail-lora-builder" data-name="${escAttr(f.name)}">
+      <div class="detail-lora-preview" id="loraPreview_${escAttr(f.name)}"><code>&lt;lora:${esc(localBase)}:${loraWeight.toFixed(2)}&gt;</code></div>
+      <div class="detail-lora-controls">
+        <input type="range" class="detail-lora-slider" min="0" max="2" step="0.05" value="${loraWeight}" data-name="${escAttr(f.name)}">
+        <input type="number" class="detail-lora-input" min="0" max="2" step="0.05" value="${loraWeight.toFixed(2)}" data-name="${escAttr(f.name)}" style="width:56px;padding:2px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:12px;text-align:center">
+        <button class="btn btn-ghost btn-sm detail-lora-copy" data-tag="${esc(localBase)}" data-w="${loraWeight.toFixed(2)}">📋 复制</button>
+      </div>
+    </div></div>`
+
+  const manualMatchHtml = !f.matched && !f.scanning
+    ? `<div class="detail-section"><h4>🔗 手动匹配</h4>
+      <div class="detail-manual-match">
+        <input type="text" id="manualMatchUrl" placeholder="粘贴 Civitai 链接 (https://civitai.com/models/...)" class="input-sm">
+        <button class="btn btn-primary btn-sm" id="manualMatchBtn" data-name="${escAttr(f.name)}">确认</button>
+      </div></div>`
+    : ''
+
+  const descText = state.descriptions[f.name] || ''
+  const descHtml = `<div class="detail-section"><h4>📝 我的备注</h4>
+    <textarea class="detail-desc-edit" data-name="${escAttr(f.name)}" placeholder="写下你对此 LoRA 的使用心得、推荐搭配、注意事项…" rows="4">${esc(descText)}</textarea>
+    <div class="detail-desc-save" id="descSave_${escAttr(f.name)}">已保存</div></div>`
+
+  const html = `<div class="detail-hero">${imgHtml}</div>
+    <div class="detail-actions">
+      ${statusBadge}
+      <span class="detail-name">${esc(d?.modelName || f.name)}</span>
+      <span class="detail-sep">|</span>
+      <span class="detail-creator">${esc(d?.creator || '')}</span>
+      <div class="detail-actions-right">
+        ${d ? `<button class="btn btn-ghost detail-open-url btn-sm" data-id="${d.modelId}">🌐 Civitai</button>` : ''}
+        ${actionBtn}
+        <button class="btn btn-ghost btn-sm detail-send-comfy" data-name="${escAttr(f.name)}">📤 ComfyUI</button>
+        <button class="btn btn-ghost detail-del-btn btn-sm btn-red">🗑️ 删除文件</button>
+      </div>
+    </div>
+    <div class="detail-body">
+      <div class="detail-body-left">
+        ${d?.images?.length ? `<div class="detail-section"><h4>图片预览</h4><div class="detail-gallery">${d.images.slice(1, 6).map(im => `<img src="${esc(thumbUrl(im, 200))}" class="detail-gallery-thumb" loading="lazy" onerror="this.style.display='none'">`).join('')}</div></div>` : ''}
+        ${trainedWords}
+        ${tags}
+        ${catHtml}
+        ${loraTagHtml}
+        ${manualMatchHtml}
+      </div>
+      <div class="detail-body-right">
+        ${description}
+        <div class="detail-section"><h4>文件信息</h4>
+          <div class="detail-fileinfo">
+            <div class="detail-fi-row"><span>文件名</span><span>${esc(f.name)}</span></div>
+            <div class="detail-fi-row"><span>大小</span><span>${fmtSize(f.size)}</span></div>
+            <div class="detail-fi-row"><span>SHA256</span><span class="detail-sha" title="${esc(f.sha256)}">${esc(f.sha256.slice(0, 20))}…</span></div>
+            ${d ? `<div class="detail-fi-row"><span>基座模型</span><span>${esc(d.baseModel)}</span></div>` : ''}
+            ${d?.versionName ? `<div class="detail-fi-row"><span>版本</span><span>v${esc(d.versionName)} <span style="color:var(--text3);font-size:10px">(ID: ${d.versionId})</span></span></div>` : ''}
+            ${d ? `<div class="detail-fi-row"><span>下载</span><span>${fmtNum(d.downloadCount)}</span></div>` : ''}
+            ${d ? `<div class="detail-fi-row"><span>点赞</span><span>${fmtNum(d.thumbsUpCount)}</span></div>` : ''}
+          </div>
+        </div>
+        ${descHtml}
+        ${renderRelatedOutputs(f)}
+      </div>
+    </div>`
+
+  content.innerHTML = html
+
+  // Load related output thumbnails eagerly
+  loadRelatedOutputThumbnails()
+}
+
+function renderRelatedOutputs(f: LocalLoraFile): string {
+  const loraBase = f.name.replace(/\.\w+$/, '').toLowerCase()
+  const outputState = useOutputStore.getState()
+  const matches: { id: string; filePath: string; mtime: number; meta: OutputMetadata | null }[] = []
+
+  for (const meta of outputState.metadataCache.values()) {
+    if (!meta.workflowJson) continue
+    const loras = extractLorasFromWorkflow(meta.workflowJson, meta.rawMetadata)
+    const match = loras.find(l => l.toLowerCase() === loraBase)
+    if (!match) continue
+
+    const file = outputState.files.find(f2 => f2.id === meta.imageId)
+    matches.push({
+      id: meta.imageId,
+      filePath: file?.path || meta.imageId,
+      mtime: file?.mtime || 0,
+      meta,
+    })
+  }
+
+  if (matches.length === 0) {
+    return '<div class="detail-section"><h4>🖼️ 关联出图</h4><p style="font-size:11px;color:var(--text3)">暂无关联出图</p></div>'
+  }
+
+  matches.sort((a, b) => b.mtime - a.mtime)
+  const top = matches.slice(0, 12)
+
+  const items = top.map(m => {
+    const dateStr = m.mtime ? new Date(m.mtime).toLocaleDateString() : ''
+    return `<div class="detail-output-item" data-id="${escAttr(m.id)}" data-path="${escAttr(m.filePath)}">
+      <div class="detail-output-thumb" data-path="${escAttr(m.filePath)}">
+        <div class="detail-thumb-placeholder">⏳</div>
+      </div>
+      <div class="detail-output-info">
+        <span class="detail-output-date">${dateStr}</span>
+      </div>
+    </div>`
+  }).join('')
+
+  return `<div class="detail-section"><h4>🖼️ 关联出图 <small>${matches.length} 张</small></h4>
+    <div class="detail-output-grid">${items}</div></div>`
+}
+
+/** 在 detail 渲染后，加载关联出图的缩略图 */
+async function loadRelatedOutputThumbnails() {
+  const dh = useOutputStore.getState().dirHandle
+  if (!dh) return
+  const items = document.querySelectorAll('.detail-output-thumb[data-path]')
+  for (const el of items) {
+    const filePath = (el as HTMLElement).dataset.path
+    if (!filePath) continue
+
+    try {
+      // Try cache first
+      const { getCachedThumbnail, getThumbnail } = await import('../services/outputThumbnail')
+      const cached = await getCachedThumbnail(filePath)
+      if (cached) {
+        el.innerHTML = `<img src="${escAttr(cached)}" alt="" style="width:100%;height:100%;object-fit:cover">`
+        continue
+      }
+
+      // Load from filesystem
+      const parts = filePath.split('/')
+      let current = dh
+      for (let i = 0; i < parts.length - 1; i++) {
+        current = await current.getDirectoryHandle(parts[i])
+      }
+      const fileHandle = await current.getFileHandle(parts[parts.length - 1])
+      const file = await fileHandle.getFile()
+      const thumb = await getThumbnail(file, filePath)
+      if (thumb) {
+        el.innerHTML = `<img src="${escAttr(thumb)}" alt="" style="width:100%;height:100%;object-fit:cover">`
+      } else {
+        el.innerHTML = '<div style="color:var(--text3);font-size:20px;text-align:center;padding:20% 0">🖼️</div>'
+      }
+    } catch {
+      el.innerHTML = '<div style="color:var(--text3);font-size:20px;text-align:center;padding:20% 0">🖼️</div>'
+    }
+  }
+}
+
+function renderGallery(state: ReturnType<typeof useLocalModelStore.getState>) {
+  const el = $$('localPngList')
+  if (!el) return
+  const pngs = state.pngs
+  if (pngs.length === 0) {
+    el.innerHTML = '<div class="empty-state"><div class="big">🖼️</div><p>尚未添加 PNG 图片，点击上方区域选择或拖入图片</p></div>'
+    return
+  }
+  el.innerHTML = pngs.map(p => {
+    const tags = extractTagsFromPrompt(p.positive).slice(0, 20)
+    return `<div class="local-png-card">
+      <div class="local-png-header">
+        <span class="local-png-name">${esc(p.fileName)}</span>
+        <span class="local-png-size">${fmtSize(p.fileSize)}</span>
+      </div>
+      ${p.positive ? `<div class="local-png-field"><label>正 Prompt</label><div class="local-png-text" data-copy="${esc(p.positive)}">${esc(trunc(p.positive, 200))}</div></div>` : ''}
+      ${p.negative ? `<div class="local-png-field"><label>负 Prompt</label><div class="local-png-text" data-copy="${esc(p.negative)}">${esc(trunc(p.negative, 150))}</div></div>` : ''}
+      <div class="local-png-params">
+        ${p.seed ? `<span>🌰 ${esc(p.seed)}</span>` : ''}
+        ${p.steps ? `<span>👣 ${esc(p.steps)}</span>` : ''}
+        ${p.cfg ? `<span>⚙️ CFG ${esc(p.cfg)}</span>` : ''}
+        ${p.sampler ? `<span>🔬 ${esc(p.sampler)}</span>` : ''}
+        ${p.model ? `<span>🧠 ${esc(trunc(p.model, 30))}</span>` : ''}
+      </div>
+      ${tags.length > 0 ? `<div class="local-png-tags">${tags.map(t => `<code class="local-tw-item" data-copy="${esc(t)}">${esc(t)}</code>`).join('')}</div>` : ''}
+      ${p.loras.length > 0 ? `<div class="local-png-loras">${p.loras.map(l => `<code class="local-tw-item lora" data-copy="${esc(l)}">${esc(l)}</code>`).join('')}</div>` : ''}
+    </div>`
+  }).join('')
+}
+
+function renderTagFreq(tags: TagFreq[]) {
+  const el = $$('localTagList')
+  if (!el) return
+  if (tags.length === 0) {
+    el.innerHTML = '<div class="empty-state"><div class="big">🏷️</div><p>暂无数据，扫描 LoRA 或添加 PNG 后自动生成</p></div>'
+    return
+  }
+  const maxCount = tags[0]?.count || 1
+  el.innerHTML = tags.slice(0, 100).map(t => {
+    const pct = (t.count / maxCount) * 100
+    const fontSize = 11 + pct * 0.06
+    return `<span class="local-tag-item" style="font-size:${fontSize.toFixed(1)}px" data-copy="${esc(t.tag)}" title="出现 ${t.count} 次">
+      ${esc(t.tag)} <small>${t.count}</small>
+    </span>`
+  }).join('')
+}
+
+function updateStats(state: ReturnType<typeof useLocalModelStore.getState>) {
+  const el = $$('localScanStats')
+  if (el) {
+    const matched = state.files.filter(f => f.matched).length
+    el.innerHTML = `📦 ${state.files.length} 个文件 · ✅ ${matched} 已匹配`
+  }
+  const fc = $$('statFileCount')
+  const mc = $$('statMatchedCount')
+  const pc = $$('statPngCount')
+  const tc = $$('statTagCount')
+  if (fc) fc.textContent = String(state.files.length)
+  if (mc) mc.textContent = String(state.files.filter(f => f.matched).length)
+  if (pc) pc.textContent = String(state.pngs.length)
+  if (tc) tc.textContent = String(state.tagFreq.length)
+
+  const badge = $$('localNewFileBadge')
+  if (badge) {
+    const n = state.newFileCount
+    if (n > 0 && state.files.length === 0) {
+      badge.style.display = 'inline-block'
+      badge.textContent = `🆕 发现 ${n} 个新文件，点击扫描`
+      badge.onclick = () => useLocalModelStore.getState().scanDir()
+    } else {
+      badge.style.display = 'none'
+    }
+  }
+}
+
+function bindLocalEvents() {
+  $$('localScanBtn')?.addEventListener('click', async () => {
+    await useLocalModelStore.getState().scanDir()
+    refreshLocalNames()
+    renderLocalView()
+  })
+
+  $$('localMatchAllBtn')?.addEventListener('click', async () => {
+    const btn = $$('localMatchAllBtn') as HTMLButtonElement
+    btn.disabled = true
+    btn.textContent = '⏳ 匹配中…'
+    await useLocalModelStore.getState().matchAll()
+    btn.disabled = false
+    btn.textContent = '🔍 全部匹配'
+    renderLocalView()
+  })
+
+  $$('localClearBtn')?.addEventListener('click', () => {
+    useLocalModelStore.setState({ files: [], scanStatus: 'idle' })
+    useLocalModelStore.getState().saveToCache()
+    renderLocalView()
+  })
+
+  $$('localPngClearBtn')?.addEventListener('click', () => {
+    useLocalModelStore.setState({ pngs: [] })
+    useLocalModelStore.getState().saveToCache()
+    renderLocalView()
+  })
+
+  $$('localPngDropZone')?.addEventListener('click', () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.png'
+    input.multiple = true
+    input.onchange = async (e) => {
+      const files = (e.target as HTMLInputElement).files
+      if (!files) return
+      for (const f of Array.from(files)) {
+        const png = await parsePngFile(f)
+        if (png) useLocalModelStore.getState().addPng(png)
+      }
+      useLocalModelStore.getState().saveToCache()
+      useLocalModelStore.getState().rebuildTagFreq()
+      renderLocalView()
+    }
+    input.click()
+  })
+
+  $$('localPngDropZone')?.addEventListener('dragover', (e) => {
+    e.preventDefault()
+    $$('localPngDropZone')!.classList.add('drag-over')
+  })
+
+  $$('localPngDropZone')?.addEventListener('dragleave', () => {
+    $$('localPngDropZone')!.classList.remove('drag-over')
+  })
+
+  $$('localPngDropZone')?.addEventListener('drop', async (e) => {
+    e.preventDefault()
+    $$('localPngDropZone')!.classList.remove('drag-over')
+    const items = e.dataTransfer?.files
+    if (!items) return
+    for (const f of Array.from(items)) {
+      if (!f.name.toLowerCase().endsWith('.png')) continue
+      const png = await parsePngFile(f)
+      if (png) useLocalModelStore.getState().addPng(png)
+    }
+    useLocalModelStore.getState().saveToCache()
+    useLocalModelStore.getState().rebuildTagFreq()
+    renderLocalView()
+  })
+
+  $$('localSearch')?.addEventListener('input', () => {
+    const q = ($$('localSearch') as HTMLInputElement).value
+    useLocalModelStore.getState().setSearchQuery(q)
+    renderSidebarList(useLocalModelStore.getState())
+  })
+
+  $$('localSort')?.addEventListener('change', () => {
+    const v = ($$('localSort') as HTMLSelectElement).value as LocalSortKey
+    useLocalModelStore.getState().setSortKey(v)
+    renderSidebarList(useLocalModelStore.getState())
+  })
+
+  $$('localFilter')?.addEventListener('change', () => {
+    const v = ($$('localFilter') as HTMLSelectElement).value as LocalFilterKey
+    useLocalModelStore.getState().setFilterKey(v)
+    renderSidebarList(useLocalModelStore.getState())
+  })
+
+  document.querySelectorAll('.local-view-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      const view = (tab as HTMLElement).dataset.view as LocalViewKey
+      useLocalModelStore.getState().setCurrentView(view)
+      document.querySelectorAll('.local-view-tab').forEach(t => t.classList.remove('active'))
+      tab.classList.add('active')
+      document.querySelectorAll('.local-page').forEach(p => p.classList.remove('active'))
+      const target = $$('pageLocal' + view.charAt(0).toUpperCase() + view.slice(1))
+      if (target) target.classList.add('active')
+      if (view === 'home') renderHome(useLocalModelStore.getState())
+      if (view === 'detail') renderDetail(useLocalModelStore.getState())
+      if (view === 'gallery') renderGallery(useLocalModelStore.getState())
+      if (view === 'prompt') renderPromptTab(useLocalModelStore.getState())
+    })
+  })
+
+  $$('localBatchToggleBtn')?.addEventListener('click', () => {
+    const s = useLocalModelStore.getState()
+    s.setBatchMode(!s.batchMode)
+    renderSidebarList(useLocalModelStore.getState())
+  })
+
+  const fileList = $$('localFileList')
+
+  fileList?.addEventListener('dragstart', (e) => {
+    const item = (e.target as HTMLElement).closest('.local-list-item') as HTMLElement
+    if (item && item.dataset.name) {
+      e.dataTransfer?.setData('text/plain', item.dataset.name)
+      e.dataTransfer!.effectAllowed = 'move'
+    }
+  })
+
+  fileList?.addEventListener('dragover', (e) => {
+    const header = (e.target as HTMLElement).closest('.local-tree-cat-header') as HTMLElement
+    if (!header) return
+    e.preventDefault()
+    header.classList.add('drag-over')
+  })
+
+  fileList?.addEventListener('dragleave', (e) => {
+    const header = (e.target as HTMLElement).closest('.local-tree-cat-header') as HTMLElement
+    if (header) header.classList.remove('drag-over')
+  })
+
+  fileList?.addEventListener('drop', (e) => {
+    const header = (e.target as HTMLElement).closest('.local-tree-cat-header') as HTMLElement
+    if (!header) return
+    header.classList.remove('drag-over')
+    const cat = header.dataset.cat
+    const fileName = e.dataTransfer?.getData('text/plain')
+    if (!cat || !fileName || cat === '__uncategorized__') return
+    const s = useLocalModelStore.getState()
+    const existing = s.modelCategories[fileName] || []
+    if (!existing.includes(cat)) {
+      s.setModelCategories(fileName, [...existing, cat])
+      s.saveToCache()
+      renderSidebarList(s)
+    }
+  })
+
+  fileList?.addEventListener('keydown', (e) => {
+    // 在输入框中输入时不触发导航
+    const target = e.target as HTMLElement
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+    const items = Array.from(fileList.querySelectorAll('.local-list-item'))
+    if (items.length === 0) return
+
+    const currentIdx = items.findIndex(item => item.classList.contains('active'))
+    let nextIdx = currentIdx
+
+    switch (e.key) {
+      case 'ArrowDown':
+      case 'j':
+        e.preventDefault()
+        nextIdx = currentIdx < items.length - 1 ? currentIdx + 1 : 0
+        break
+      case 'ArrowUp':
+      case 'k':
+        e.preventDefault()
+        nextIdx = currentIdx > 0 ? currentIdx - 1 : items.length - 1
+        break
+      case 'Enter':
+      case ' ':
+        e.preventDefault()
+        if (currentIdx >= 0) {
+          const name = (items[currentIdx] as HTMLElement).dataset.name
+          if (name) {
+            useLocalModelStore.getState().selectModel(name)
+            renderSidebarList(useLocalModelStore.getState())
+            renderDetail(useLocalModelStore.getState())
+            document.querySelectorAll('.local-view-tab').forEach(t => t.classList.remove('active'))
+            document.querySelectorAll('.local-page').forEach(p => p.classList.remove('active'))
+            const dt = document.querySelector('.local-view-tab[data-view="detail"]')
+            if (dt) dt.classList.add('active')
+            const dp = $$('pageLocalDetail')
+            if (dp) dp.classList.add('active')
+          }
+        }
+        return
+      case 'Delete':
+      case 'Backspace':
+        e.preventDefault()
+        if (currentIdx >= 0) {
+          const name = (items[currentIdx] as HTMLElement).dataset.name
+          if (name) {
+            const delBtn = items[currentIdx].querySelector('.local-list-del') as HTMLElement
+            if (delBtn) delBtn.click()
+          }
+        }
+        return
+      case 'Escape':
+        e.preventDefault()
+        useLocalModelStore.getState().selectModel(null)
+        renderSidebarList(useLocalModelStore.getState())
+        renderDetail(useLocalModelStore.getState())
+        return
+      case 'a':
+        if (e.ctrlKey || e.metaKey) {
+          e.preventDefault()
+          const state = useLocalModelStore.getState()
+          if (state.batchMode) {
+            items.forEach(item => {
+              const name = (item as HTMLElement).dataset.name
+              if (name && !state.batchSelection.includes(name)) {
+                state.toggleBatchSelection(name)
+              }
+            })
+            renderSidebarList(state)
+          }
+        }
+        return
+      default:
+        return
+    }
+
+    if (nextIdx !== currentIdx) {
+      items.forEach((item, i) => {
+        item.classList.toggle('active', i === nextIdx)
+      })
+      const name = (items[nextIdx] as HTMLElement).dataset.name
+      if (name) {
+        useLocalModelStore.getState().selectModel(name)
+        renderDetail(useLocalModelStore.getState())
+        document.querySelectorAll('.local-view-tab').forEach(t => t.classList.remove('active'))
+        document.querySelectorAll('.local-page').forEach(p => p.classList.remove('active'))
+        const dt = document.querySelector('.local-view-tab[data-view="detail"]')
+        if (dt) dt.classList.add('active')
+        const dp = $$('pageLocalDetail')
+        if (dp) dp.classList.add('active')
+      }
+      items[nextIdx]?.scrollIntoView({ block: 'nearest' })
+    }
+  })
+
+  fileList?.setAttribute('tabindex', '0')
+
+  document.addEventListener('click', (e) => {
+    const bd = $$('localBatchDropdown')
+    if (bd && bd.style.display === 'block' && !(e.target as HTMLElement).closest('#localBatchDDWrap, #localBatchAssignBtn')) {
+      bd.style.display = 'none'
+    }
+    const dd = $$('detailCatDropdown')
+    if (dd && dd.style.display === 'block' && !(e.target as HTMLElement).closest('#detailCatDropdown, #detailCatAddBtn')) {
+      dd.style.display = 'none'
+    }
+  })
+
+  fileList?.addEventListener('dblclick', async (e) => {
+    const nameEl = (e.target as HTMLElement).closest('.local-tree-cat-name') as HTMLElement
+    if (!nameEl) return
+    const header = nameEl.closest('.local-tree-cat-header') as HTMLElement
+    if (!header) return
+    const cat = header.dataset.cat
+    if (!cat || cat === '__uncategorized__') return
+    const newName = await promptModal('重命名分类', nameEl.textContent || '')
+    if (!newName || !newName.trim() || newName.trim() === nameEl.textContent) return
+    const s = useLocalModelStore.getState()
+    if (s.categories.includes(newName.trim())) { showToast('⚠️ 分类名已存在'); return }
+    s.renameCategory(cat, newName.trim())
+    s.saveToCache()
+    renderSidebarList(s)
+  })
+
+  $$('sectionLocal')?.addEventListener('change', (e) => {
+    const ta = (e.target as HTMLElement).closest('.detail-desc-edit') as HTMLTextAreaElement
+    if (ta) {
+      const name = ta.dataset.name
+      if (name) {
+        useLocalModelStore.getState().setDescription(name, ta.value)
+        useLocalModelStore.getState().saveToCache()
+      }
+      return
+    }
+
+    // Number input blur/Enter: save store, sync slider, update detail preview
+    const numInput = (e.target as HTMLElement).closest('.prompt-lora-input, .detail-lora-input') as HTMLInputElement
+    if (numInput) {
+      const name = numInput.dataset.name
+      const val = parseFloat(numInput.value)
+      if (!name || isNaN(val)) return
+      const clamped = Math.max(0, Math.min(2, val))
+      numInput.value = clamped.toFixed(2)
+
+      const row = numInput.closest('.prompt-lora-row, .detail-lora-builder')
+      const slider = row?.querySelector('.prompt-lora-slider, .detail-lora-slider') as HTMLInputElement
+      if (slider) slider.value = String(clamped)
+
+      const s = useLocalModelStore.getState()
+      s.setPromptWeights({ ...s.promptWeights, [name]: clamped })
+
+      const detailBuilder = numInput.closest('.detail-lora-builder') as HTMLElement
+      if (detailBuilder) {
+        const previewEl = detailBuilder.querySelector('.detail-lora-preview code')
+        if (previewEl) {
+          const localBase = name.replace(/\.\w+$/, '')
+          previewEl.textContent = `<lora:${localBase}:${clamped.toFixed(2)}>`
+        }
+        // Sync copy button data-w
+        const copyBtn = detailBuilder.querySelector('.detail-lora-copy') as HTMLElement
+        if (copyBtn) copyBtn.dataset.w = clamped.toFixed(2)
+      }
+      return
+    }
+  })
+
+  // 滑块拖拽实时更新数字 + 详情页预览
+  $$('sectionLocal')?.addEventListener('input', (e) => {
+    const target = e.target as HTMLElement
+
+    // Slider drag: sync number, save store, update detail preview
+    const slider = target.closest('.prompt-lora-slider, .detail-lora-slider') as HTMLInputElement
+    if (slider) {
+      const val = parseFloat(slider.value)
+      const name = slider.dataset.name
+      if (!name) return
+      const row = slider.closest('.prompt-lora-row, .detail-lora-builder')
+      const numInput = row?.querySelector('.prompt-lora-input, .detail-lora-input') as HTMLInputElement
+      if (numInput) numInput.value = val.toFixed(2)
+
+      // Save store
+      const s = useLocalModelStore.getState()
+      s.setPromptWeights({ ...s.promptWeights, [name]: val })
+
+      // Update detail page lora preview live (DOM only, no re-render)
+      const detailBuilder = slider.closest('.detail-lora-builder') as HTMLElement
+      if (detailBuilder) {
+        const previewEl = detailBuilder.querySelector('.detail-lora-preview code')
+        if (previewEl) {
+          const localBase = name.replace(/\.\w+$/, '')
+          previewEl.textContent = `<lora:${localBase}:${val.toFixed(2)}>`
+        }
+        // Sync copy button data-w
+        const copyBtn = detailBuilder.querySelector('.detail-lora-copy') as HTMLElement
+        if (copyBtn) copyBtn.dataset.w = val.toFixed(2)
+      }
+      return
+    }
+
+    // Number input typing: sync slider position (no store save, wait change)
+    const numInput = target.closest('.prompt-lora-input, .detail-lora-input') as HTMLInputElement
+    if (numInput) {
+      const val = parseFloat(numInput.value)
+      if (!isNaN(val)) {
+        const clamped = Math.max(0, Math.min(2, val))
+        const row = numInput.closest('.prompt-lora-row, .detail-lora-builder')
+        const slider = row?.querySelector('.prompt-lora-slider, .detail-lora-slider') as HTMLInputElement
+        if (slider) slider.value = String(clamped)
+      }
+    }
+  })
+
+  $$('sectionLocal')?.addEventListener('click', async (e) => {
+    const target = e.target as HTMLElement
+
+    const chk = target.closest('.local-list-chk') as HTMLInputElement
+    if (chk) {
+      const name = chk.dataset.name
+      if (name) useLocalModelStore.getState().toggleBatchSelection(name)
+      renderSidebarList(useLocalModelStore.getState())
+      return
+    }
+
+    const delCatBtn = target.closest('.local-cat-del-btn') as HTMLElement
+    if (delCatBtn) {
+      const cat = delCatBtn.dataset.cat
+      if (cat && await confirmModal('删除分类', `确认删除分类「${cat}」？\n已归入该分类的 LoRA 不会被删除，仅移除分类标记。`)) {
+        useLocalModelStore.getState().removeCategory(cat)
+        useLocalModelStore.getState().saveToCache()
+        renderSidebarList(useLocalModelStore.getState())
+      }
+      return
+    }
+
+    const renameBtn = target.closest('.local-cat-rename-btn') as HTMLElement
+    if (renameBtn) {
+      const cat = renameBtn.dataset.cat
+      if (!cat) return
+      const s = useLocalModelStore.getState()
+      const newName = await promptModal('重命名分类', cat)
+      if (!newName || !newName.trim() || newName.trim() === cat) return
+      if (s.categories.includes(newName.trim())) { showToast('⚠️ 分类名已存在'); return }
+      s.renameCategory(cat, newName.trim())
+      s.saveToCache()
+      renderSidebarList(s)
+      return
+    }
+
+    const catHeader = target.closest('.local-tree-cat-header') as HTMLElement
+    if (catHeader && !target.closest('.local-new-cat-btn') && !target.closest('.local-cat-del-btn') && !target.closest('.local-cat-rename-btn')) {
+      const cat = catHeader.dataset.cat
+      if (cat) {
+        useLocalModelStore.getState().toggleCategoryExpanded(cat)
+        renderSidebarList(useLocalModelStore.getState())
+      }
+      return
+    }
+
+    const newCatBtn = target.closest('.local-new-cat-btn') as HTMLElement
+    if (newCatBtn) {
+      const cat = await promptModal('新建分类')
+      if (!cat || !cat.trim()) return
+      const s = useLocalModelStore.getState()
+      if (s.categories.includes(cat.trim())) { showToast('⚠️ 分类已存在'); return }
+      s.addCategory(cat.trim())
+      s.saveToCache()
+      renderSidebarList(s)
+      return
+    }
+
+    const delBtn = target.closest('.local-list-del, .detail-del-btn') as HTMLElement
+    if (delBtn) {
+      const name = delBtn.dataset.name
+      if (name && await confirmModal('删除文件', `确认从磁盘删除「${name}」？\n此操作不可撤销！`)) {
+        await useLocalModelStore.getState().deleteFile(name)
+        const state = useLocalModelStore.getState()
+        if (state.selectedModel === name) state.selectModel(null)
+        renderLocalView()
+      }
+      return
+    }
+
+    const listItem = target.closest('.local-list-item') as HTMLElement
+    if (listItem) {
+      const name = listItem.dataset.name
+      if (name) {
+        useLocalModelStore.getState().selectModel(name)
+        renderSidebarList(useLocalModelStore.getState())
+        renderDetail(useLocalModelStore.getState())
+        document.querySelectorAll('.local-view-tab').forEach(t => t.classList.remove('active'))
+        document.querySelectorAll('.local-page').forEach(p => p.classList.remove('active'))
+        const dt = document.querySelector('.local-view-tab[data-view="detail"]')
+        if (dt) dt.classList.add('active')
+        const dp = $$('pageLocalDetail')
+        if (dp) dp.classList.add('active')
+      }
+      return
+    }
+
+    const matchBtn = target.closest('.detail-match-btn') as HTMLElement
+    if (matchBtn) {
+      const name = matchBtn.dataset.name
+      if (!name) return
+      await useLocalModelStore.getState().matchOne(name)
+      renderLocalView()
+      return
+    }
+
+    const copyEl = target.closest('[data-copy]') as HTMLElement
+    if (copyEl) {
+      copyText(copyEl.dataset.copy || '', copyEl)
+      return
+    }
+
+    const openUrl = target.closest('.detail-open-url') as HTMLElement
+    if (openUrl) {
+      const id = openUrl.dataset.id
+      if (id) window.open(`https://civitai.com/models/${id}`, '_blank')
+      return
+    }
+
+    // Send single LoRA to ComfyUI from detail page
+    const sendComfy = target.closest('.detail-send-comfy') as HTMLElement
+    if (sendComfy) {
+      const name = sendComfy.dataset.name
+      if (!name) return
+      const f = useLocalModelStore.getState().files.find(ff => ff.name === name)
+      if (!f) { showToast('⚠️ LoRA 未找到'); return }
+      const loraName = f.name.replace(/\.\w+$/, '')
+      const w = useLocalModelStore.getState().promptWeights?.[f.name] ?? 0.8
+      const bridgeData = {
+        loras: `<lora:${loraName}:${w.toFixed(2)}>`,
+        lora_list: [{ name: loraName, model_strength: parseFloat(w.toFixed(2)), trigger_words: f.matchData?.trainedWords || [] }],
+        updatedAt: Date.now(),
+      }
+      try {
+        const csrf = document.cookie.replace(/(?:(?:^|.*;\s*)csrftoken\s*=\s*([^;]*).*$)|^.*$/, "$1")
+        const resp = await fetch('/anima/bridge/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+          body: JSON.stringify(bridgeData),
+        })
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+        showToast('✅ 已发送到 ComfyUI')
+      } catch (e: any) {
+        showToast('❌ 发送失败: ' + e.message + '，请确认 ComfyUI 已重启')
+      }
+      return
+    }
+
+    if (target.id === 'localBatchClearBtn') {
+      useLocalModelStore.getState().clearBatchSelection()
+      renderSidebarList(useLocalModelStore.getState())
+      return
+    }
+
+    if (target.id === 'localBatchAssignBtn') {
+      const dd = $$('localBatchDropdown')
+      if (!dd) return
+      const cats = useLocalModelStore.getState().categories
+      dd.innerHTML = cats.map(c => `<div class="td-opt" data-cat="${escAttr(c)}">${esc(c)}</div>`).join('')
+      dd.style.display = dd.style.display === 'block' ? 'none' : 'block'
+      return
+    }
+
+    const batchOpt = target.closest('#localBatchDropdown .td-opt') as HTMLElement
+    if (batchOpt) {
+      const cat = batchOpt.dataset.cat
+      if (!cat) return
+      const s = useLocalModelStore.getState()
+      s.setBatchModelCategories(s.batchSelection, cat)
+      s.saveToCache()
+      s.clearBatchSelection()
+      $$('localBatchDropdown')!.style.display = 'none'
+      renderLocalView()
+      return
+    }
+
+    if (target.id === 'detailCatAddBtn') {
+      const dd = $$('detailCatDropdown')
+      if (!dd) return
+      const s = useLocalModelStore.getState()
+      const fname = s.selectedModel
+      if (!fname) return
+      const existing = s.modelCategories[fname] || []
+      const available = s.categories.filter(c => !existing.includes(c))
+      dd.innerHTML = available.length
+        ? available.map(c => `<div class="td-opt" data-cat="${escAttr(c)}">${esc(c)}</div>`).join('')
+        : '<div class="td-opt dropdown-empty">无更多分类</div>'
+      dd.style.display = dd.style.display === 'block' ? 'none' : 'block'
+      return
+    }
+
+    const detailCatSel = target.closest('#detailCatDropdown .td-opt') as HTMLElement
+    if (detailCatSel) {
+      const cat = detailCatSel.dataset.cat
+      if (!cat) return
+      const s = useLocalModelStore.getState()
+      const fname = s.selectedModel
+      if (fname) {
+        const existing = s.modelCategories[fname] || []
+        s.setModelCategories(fname, [...existing, cat])
+        s.saveToCache()
+      }
+      $$('detailCatDropdown')!.style.display = 'none'
+      renderDetail(useLocalModelStore.getState())
+      return
+    }
+
+    const catRm = target.closest('.detail-cat-rm') as HTMLElement
+    if (catRm) {
+      const fname = catRm.dataset.name
+      const cat = catRm.dataset.cat
+      if (fname && cat) {
+        const s = useLocalModelStore.getState()
+        const existing = s.modelCategories[fname] || []
+        s.setModelCategories(fname, existing.filter((c: string) => c !== cat))
+        s.saveToCache()
+        renderDetail(s)
+      }
+      return
+    }
+
+    if (target.id === 'manualMatchBtn') {
+      const name = (target as HTMLElement).dataset.name
+      const url = ($$('manualMatchUrl') as HTMLInputElement)?.value
+      if (!name || !url) return
+      await useLocalModelStore.getState().matchByUrl(name, url.trim())
+      renderLocalView()
+      return
+    }
+
+    if (target.id === 'promptCopyAllBtn') {
+      const state = useLocalModelStore.getState()
+      const pw = state.promptWeights || {}
+      const tags = state.files
+        .filter(f => f.matched || state.modelCategories[f.name])
+        .map(f => {
+          const name = f.name.replace(/\.\w+$/, '')
+          const w = pw[f.name] ?? 0.8
+          return `<lora:${name}:${w.toFixed(2)}>`
+        })
+        .join(' ')
+      copyText(tags)
+      return
+    }
+
+    if (target.id === 'promptSendComfyBtn') {
+      const state = useLocalModelStore.getState()
+      const pw = state.promptWeights || {}
+      const loraList = state.files
+        .filter(f => f.matched || state.modelCategories[f.name])
+        .map(f => {
+          const name = f.name.replace(/\.\w+$/, '')
+          const w = pw[f.name] ?? 0.8
+          return {
+            name,
+            model_strength: parseFloat(w.toFixed(2)),
+            trigger_words: f.matchData?.trainedWords || [],
+          }
+        })
+      if (!loraList.length) { showToast('⚠️ 没有可用的 LoRA'); return }
+      const bridgeData = {
+        loras: loraList.map(l => `<lora:${l.name}:${l.model_strength}>`).join(' '),
+        lora_list: loraList,
+        updatedAt: Date.now(),
+      }
+      // Send via HTTP API (no File System Access required, works in all browsers)
+      try {
+        const csrf = document.cookie.replace(/(?:(?:^|.*;\s*)csrftoken\s*=\s*([^;]*).*$)|^.*$/, "$1")
+        const resp = await fetch('/anima/bridge/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+          body: JSON.stringify(bridgeData),
+        })
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}))
+          throw new Error(err.error || `HTTP ${resp.status}`)
+        }
+        showToast('✅ 已发送到 ComfyUI（HTTP 桥接）')
+      } catch (e: any) {
+        console.error('[Anima] Bridge send failed:', e)
+        if (e.name === 'TypeError' && e.message.includes('fetch')) {
+          showToast('⚠️ 无法连接 ComfyUI，请确认 ComfyUI 正在运行')
+        } else {
+          showToast(`❌ 发送失败: ${e.message}，请确认 ComfyUI 已重启`)
+        }
+      }
+      return
+    }
+
+    // Click related output → switch to Outputs tab
+    const outputItem = target.closest('.detail-output-item') as HTMLElement
+    if (outputItem) {
+      const id = outputItem.dataset.id
+      if (id) {
+        // Switch to outputs tab
+        const outputsTab = document.querySelector('.main-tab[data-section="outputs"]') as HTMLElement
+        if (outputsTab) outputsTab.click()
+        // Focus the image after a short delay
+        setTimeout(() => {
+          const card = document.querySelector(`.outputs-card[data-id="${escAttr(id)}"]`) as HTMLElement
+          if (card) {
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            card.classList.add('highlight-flash')
+            setTimeout(() => card.classList.remove('highlight-flash'), 2000)
+          }
+        }, 300)
+      }
+      return
+    }
+
+    const copyLora = target.closest('.prompt-lora-copy, .detail-lora-copy') as HTMLElement
+    if (copyLora) {
+      const tag = copyLora.dataset.tag
+      const w = copyLora.dataset.w
+      if (tag) {
+        copyText(`<lora:${tag}:${w}>`)
+        showToast('✅ 已复制')
+      }
+      return
+    }
+  })
+}
+
+function parsePngFile(file: File): Promise<PngMeta | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const buf = reader.result as ArrayBuffer
+      const meta = parsePngMetadata(buf)
+      if (meta) {
+        resolve({
+          fileName: file.name,
+          fileSize: file.size,
+          ...meta,
+        })
+      } else {
+        resolve(null)
+      }
+    }
+    reader.onerror = () => resolve(null)
+    reader.readAsArrayBuffer(file)
+  })
+}
+
+function parsePngMetadata(buf: ArrayBuffer): Omit<PngMeta, 'fileName' | 'fileSize'> | null {
+  const view = new DataView(buf)
+  const bytes = new Uint8Array(buf)
+
+  const pngSig = [137, 80, 78, 71, 13, 10, 26, 10]
+  for (let i = 0; i < 8; i++) {
+    if (bytes[i] !== pngSig[i]) return null
+  }
+
+  const raw: Record<string, string> = {}
+  let offset = 8
+  while (offset < bytes.length) {
+    if (offset + 8 > bytes.length) break
+    const len = view.getUint32(offset)
+    const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7])
+
+    const isText = type === 'tEXt' || type === 'zTXt' || type === 'iTXt'
+    if (isText) {
+      const dataStart = offset + 8
+      const dataEnd = dataStart + len
+      if (dataEnd > bytes.length) break
+
+      let keyEnd = dataStart
+      while (keyEnd < dataEnd && bytes[keyEnd] !== 0) keyEnd++
+      const key = String.fromCharCode(...bytes.slice(dataStart, keyEnd))
+
+      let val: string
+      if (type === 'zTXt') {
+        try {
+          const compData = bytes.slice(keyEnd + 2, dataEnd)
+          val = decompressZlib(compData)
+        } catch {
+          val = new TextDecoder().decode(bytes.slice(keyEnd + 1, dataEnd))
+        }
+      } else {
+        val = new TextDecoder().decode(bytes.slice(keyEnd + 1, dataEnd))
+      }
+      raw[key] = val
+    }
+    offset += 12 + len
+  }
+
+  const prompt = raw['prompt'] || raw['parameters'] || raw['user_comment'] || raw['Description'] || ''
+  const params = raw['parameters'] || ''
+
+  let positive = prompt
+  let negative = ''
+  const loras: string[] = []
+
+  if (params) {
+    const parts = params.split('\n')
+    const posParts: string[] = []
+    let inNeg = false
+    for (const line of parts) {
+      if (line.startsWith('Negative prompt:')) {
+        inNeg = true
+        posParts.push(line.replace('Negative prompt:', '').trim())
+        continue
+      }
+      if (inNeg) {
+        const negMatch = line.match(/^Negative prompt:\s*(.+)/i)
+        if (negMatch) {
+          negative += line.replace(/^Negative prompt:\s*/i, '').trim() + ' '
+        } else if (/^Steps:|^Sampler:|^CFG scale:|^Seed:|^Model:|^Size:|^Model hash:|^Hashes:/.test(line)) {
+          break
+        } else {
+          negative += line.trim() + ' '
+        }
+      } else {
+        posParts.push(line)
+      }
+    }
+    positive = posParts.join('\n').trim()
+
+    const paramLines = params.split('\n')
+    for (const line of paramLines) {
+      if (/^Negative prompt:/i.test(line)) {
+        const negText = line.replace(/^Negative prompt:\s*/i, '').trim()
+        if (negText && negText !== positive) negative = negText
+      }
+    }
+
+    const loraMatch = positive.match(/<lora:([^:>]+)/g)
+    if (loraMatch) loras.push(...loraMatch.map((l: string) => l.replace('<lora:', '')))
+  }
+
+  const loraMatch2 = positive.match(/<lora:([^:>]+)/g)
+  if (loraMatch2) loras.push(...loraMatch2.map((l: string) => l.replace('<lora:', '')))
+
+  function extractParam(line: string): string {
+    for (const l of params.split('\n')) {
+      if (l.startsWith(line)) {
+        return l.replace(line, '').trim()
+      }
+    }
+    return ''
+  }
+
+  const negativeRaw = extractParam('Negative prompt:')
+
+  return {
+    positive: positive || prompt,
+    negative: negative || raw['negative_prompt'] || negativeRaw,
+    seed: raw['seed'] || extractParam('Seed:'),
+    steps: raw['steps'] || extractParam('Steps:'),
+    cfg: raw['cfg'] || extractParam('CFG scale:'),
+    sampler: raw['sampler'] || extractParam('Sampler:'),
+    model: raw['model'] || extractParam('Model:'),
+    loras: [...new Set(loras)],
+    raw,
+  }
+}
+
+function decompressZlib(data: Uint8Array): string {
+  if (typeof (window as any).pako !== 'undefined') {
+    try {
+      return (window as any).pako.inflate(data, { to: 'string' })
+    } catch {
+      return new TextDecoder().decode(data)
+    }
+  }
+  return new TextDecoder().decode(data)
+}
+
+function extractTagsFromPrompt(prompt: string): string[] {
+  const tags = prompt.split(/[,，、\n]+/).map(t => t.trim()).filter(Boolean)
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const t of tags) {
+    const clean = t.replace(/^\(|\):\d+(\.\d+)?|\)$/g, '').trim().toLowerCase()
+    if (clean && !seen.has(clean) && clean.length > 1) {
+      seen.add(clean)
+      result.push(clean)
+    }
+  }
+  return result
+}
+
+function fmtSize(bytes: number): string {
+  if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + ' GB'
+  if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB'
+  if (bytes >= 1024) return (bytes / 1024).toFixed(0) + ' KB'
+  return bytes + ' B'
+}
+
+function trunc(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + '…' : s
+}

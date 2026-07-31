@@ -1,0 +1,302 @@
+# ComfyUI-Anima-Batch-LoRA
+# Batch LoRA loader node + embedded Anima web app.
+# App available at: /extensions/ComfyUI-Anima-Batch-LoRA/app/
+
+import os
+import time
+import json
+import hashlib
+import threading
+import aiohttp
+import asyncio
+import folder_paths
+from aiohttp import web
+from server import PromptServer
+
+from .anima_batch_lora import (
+    NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS,
+    BRIDGE_DATA, BRIDGE_LOCK, _find_lora_path,
+)
+
+WEB_DIRECTORY = "./web"
+
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
+
+PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_DIR = os.path.join(PLUGIN_DIR, "app")
+INDEX_HTML = None
+
+# ── Reusable aiohttp client session (connection pool) ──
+_PROXY_SESSION: aiohttp.ClientSession | None = None
+_PROXY_CACHE: dict = {}
+_CACHE_TTL = 60
+
+def _cache_key(url, qs):
+    return hashlib.md5(f"{url}?{qs}".encode()).hexdigest()
+
+async def _get_session():
+    global _PROXY_SESSION
+    if _PROXY_SESSION is None or _PROXY_SESSION.closed:
+        _PROXY_SESSION = aiohttp.ClientSession(
+            headers={"User-Agent": "AnimaExplorer/2.0"},
+            timeout=aiohttp.ClientTimeout(total=15),
+            # 尊重 HTTP_PROXY/HTTPS_PROXY 环境变量（Civitai 需走代理）
+            trust_env=True,
+        )
+    return _PROXY_SESSION
+
+
+async def _load_index():
+    global INDEX_HTML
+    path = os.path.join(APP_DIR, "index.html")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            INDEX_HTML = f.read()
+
+
+async def _proxy(url, request):
+    qs = request.query_string
+    full = url + ("?" + qs if qs else "")
+    skip = request.method == "GET" and qs.startswith("page=")
+    ck = _cache_key(url, qs) if request.method == "GET" and not skip else None
+    if ck:
+        cached = _PROXY_CACHE.get(ck)
+        if cached and cached[0] > time.time():
+            return web.Response(body=cached[3], status=cached[1], headers=cached[2])
+    try:
+        session = await _get_session()
+        async with session.request(request.method, full) as resp:
+            body = await resp.read()
+            headers = {"Content-Type": resp.content_type}
+            if ck and resp.status == 200:
+                _PROXY_CACHE[ck] = (time.time() + _CACHE_TTL, resp.status, headers, body)
+            return web.Response(body=body, status=resp.status, headers=headers)
+    except asyncio.TimeoutError:
+        return web.json_response({"error": "proxy timeout"}, status=504)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=502)
+
+
+# ── LoRA info cache (SHA256 → Civitai data, 5 min TTL) ──
+_LORA_INFO_CACHE: dict[str, tuple[float, dict]] = {}
+_LORA_INFO_TTL = 300
+
+
+def _sha256_file(filepath: str) -> str:
+    h = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        while True:
+            chunk = f.read(65536)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _creator_name(model: dict) -> str:
+    """Extract creator username from a Civitai model object (may be str or dict)."""
+    if not isinstance(model, dict):
+        return ""
+    c = model.get("creator")
+    if isinstance(c, dict):
+        return c.get("username") or ""
+    return c or ""
+
+
+@PromptServer.instance.routes.get("/anima/lora/info")
+async def lora_info(request):
+    """Get LoRA info from Civitai by file name (cached 5 min)."""
+    name = request.query.get("name", "").strip()
+    if not name:
+        return web.json_response({"error": "name required"}, status=400)
+
+    # Check cache
+    now = time.time()
+    cached = _LORA_INFO_CACHE.get(name)
+    if cached and cached[0] > now:
+        return web.json_response(cached[1])
+
+    # Find file
+    lora_path = _find_lora_path(name)
+    if lora_path is None:
+        return web.json_response({"name": name, "trainedWords": [], "modelName": None, "previewUrl": None, "source": "not_found"})
+
+    # Compute SHA256 (run in thread pool so large files don't block the event loop)
+    try:
+        loop = asyncio.get_event_loop()
+        sha256 = await loop.run_in_executor(None, _sha256_file, lora_path)
+    except Exception as e:
+        return web.json_response({"error": f"SHA256 failed: {e}"}, status=500)
+
+    # Query Civitai API
+    try:
+        session = await _get_session()
+        url = f"https://civitai.com/api/v1/model-versions/by-hash/{sha256}"
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                result = {
+                    "name": name,
+                    "trainedWords": data.get("trainedWords", []) or [],
+                    "modelName": data.get("model", {}).get("name") or data.get("modelName") or "",
+                    "versionName": data.get("name") or "",
+                    "creator": _creator_name(data.get("model", {})),
+                    "previewUrl": (data.get("images") or [{}])[0].get("url") if data.get("images") else None,
+                    "source": "civitai",
+                }
+            elif resp.status == 404:
+                result = {"name": name, "trainedWords": [], "modelName": None, "previewUrl": None, "source": "not_on_civitai"}
+            else:
+                result = {"name": name, "trainedWords": [], "modelName": None, "previewUrl": None, "source": f"http_{resp.status}"}
+    except Exception as e:
+        result = {"name": name, "trainedWords": [], "modelName": None, "previewUrl": None, "source": f"error_{e}"}
+
+    _LORA_INFO_CACHE[name] = (now + _LORA_INFO_TTL, result)
+    return web.json_response(result)
+
+
+# ── Bridge HTTP API (replaces file-based bridge) ──
+
+@PromptServer.instance.routes.post("/anima/bridge/update")
+async def bridge_update(request):
+    """Receive bridge data from the frontend via POST."""
+    try:
+        data = await request.json()
+        data["_receivedAt"] = time.time()
+        with BRIDGE_LOCK:
+            BRIDGE_DATA.clear()
+            BRIDGE_DATA.update(data)
+        return web.json_response({"ok": True, "receivedAt": data["_receivedAt"]})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+
+@PromptServer.instance.routes.delete("/anima/bridge/update")
+async def bridge_clear(request):
+    """Clear the in-memory bridge data."""
+    with BRIDGE_LOCK:
+        BRIDGE_DATA.clear()
+    return web.json_response({"ok": True})
+
+
+# ── Serve the built web app ───
+
+@PromptServer.instance.routes.get("/extensions/ComfyUI-Anima-Batch-LoRA/app/")
+async def serve_index(request):
+    global INDEX_HTML
+    if INDEX_HTML is None:
+        await _load_index()
+        if INDEX_HTML is None:
+            return web.Response(
+                text="App not built yet. Run: cd anima-lora-explorer && npm run build:comfyui",
+                content_type="text/plain", status=404,
+            )
+    return web.Response(
+        text=INDEX_HTML, content_type="text/html",
+        headers={"Cache-Control": "no-cache"},  # revalidate on reload
+    )
+
+
+@PromptServer.instance.routes.get("/extensions/ComfyUI-Anima-Batch-LoRA/app/{path:.+}")
+async def serve_asset(request):
+    path = request.match_info["path"]
+    filepath = os.path.normpath(os.path.join(APP_DIR, path))
+    if not filepath.startswith(os.path.normpath(APP_DIR)):
+        return web.Response(status=403)
+    if not os.path.isfile(filepath):
+        return web.Response(status=404)
+    ext = os.path.splitext(filepath)[1]
+    mime = {
+        ".js": "application/javascript",
+        ".css": "text/css",
+        ".html": "text/html",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".json": "application/json",
+        ".ico": "image/x-icon",
+        ".svg": "image/svg+xml",
+    }
+    # Asynchronous file read to avoid blocking the event loop
+    try:
+        loop = asyncio.get_event_loop()
+        with open(filepath, "rb") as f:
+            body = await loop.run_in_executor(None, f.read)
+    except OSError:
+        return web.Response(status=404)
+
+    # Cache control: JS/CSS assets get long TTL, HTML/no-ext gets no-cache
+    if ext in (".js", ".css", ".png", ".jpg", ".svg", ".ico"):
+        cache = "public, max-age=31536000, immutable"
+    else:
+        cache = "no-cache"
+
+    return web.Response(
+        body=body,
+        content_type=mime.get(ext, "application/octet-stream"),
+        headers={"Cache-Control": cache},
+    )
+
+
+# ─── API Proxy (same paths as Vite dev proxy, so frontend code works unmodified) ───
+
+@PromptServer.instance.routes.get("/api/civitai/{path:.+}")
+async def proxy_civitai(request):
+    return await _proxy("https://civitai.com/api/v1/" + request.match_info["path"], request)
+
+
+@PromptServer.instance.routes.get("/api/danbooru/{path:.+}")
+async def proxy_danbooru(request):
+    return await _proxy("https://danbooru.donmai.us/" + request.match_info["path"], request)
+
+
+@PromptServer.instance.routes.get("/api/translate")
+async def proxy_translate(request):
+    return await _proxy("https://api.mymemory.translated.net/get", request)
+
+
+# ─── LoRA metadata persistence (categories / favorite / pinned) ───
+
+META_PATH = os.path.join(PLUGIN_DIR, "anima_meta.json")
+META_LOCK = threading.Lock()
+
+
+def _load_meta() -> dict:
+    with META_LOCK:
+        try:
+            if os.path.exists(META_PATH):
+                with open(META_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        return data
+        except Exception:
+            pass
+    return {"categories": [], "loraMeta": {}}
+
+
+def _save_meta(data: dict):
+    with META_LOCK:
+        with open(META_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+@PromptServer.instance.routes.get("/anima/meta")
+async def get_meta(request):
+    """Get LoRA metadata (categories / favorite / pinned)."""
+    return web.json_response(_load_meta())
+
+
+@PromptServer.instance.routes.post("/anima/meta")
+async def set_meta(request):
+    """Persist LoRA metadata (categories / favorite / pinned)."""
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("body must be an object")
+        meta = {
+            "categories": list(body.get("categories", []) or []),
+            "loraMeta": body.get("loraMeta", {}) or {},
+        }
+        _save_meta(meta)
+        return web.json_response({"ok": True})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=400)

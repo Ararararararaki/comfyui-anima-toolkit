@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.local
+.DS_Store
+*.docx
+CLAUDE.md
+*阶段一*
+*执行要点*
+loras/
+vite_output.txt
+.comfyui-path
+.aider*
