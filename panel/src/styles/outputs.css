@@ -981,17 +981,17 @@
 
 .outputs-meta-prompt {
   padding: 8px;
-  background: var(--bg);
+  background: #f0f0f2;
   border-radius: 6px;
   font-size: 12px;
   line-height: 1.5;
-  color: var(--text);
+  color: #1a1a1c;
   word-break: break-all;
   cursor: pointer;
 }
 
 .outputs-meta-prompt:hover {
-  background: var(--bg3);
+  background: #e2e2e6;
 }
 
 .outputs-meta-empty {
@@ -1003,17 +1003,17 @@
 
 .outputs-meta-prompt {
   padding: 8px;
-  background: var(--bg);
+  background: #f0f0f2;
   border-radius: 6px;
   font-size: 12px;
   line-height: 1.5;
-  color: var(--text);
+  color: #1a1a1c;
   word-break: break-all;
   cursor: pointer;
 }
 
 .outputs-meta-prompt:hover {
-  background: var(--bg3);
+  background: #e2e2e6;
 }
 
 /* 滚动哨兵 */

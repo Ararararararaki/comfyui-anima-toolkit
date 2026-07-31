@@ -1691,7 +1691,7 @@ function openMetaPanel(fileId: string) {
   const overlay = document.createElement('div')
   overlay.style.cssText = 'position:fixed;inset:0;background:radial-gradient(ellipse at top,rgba(10,10,15,0.85),rgba(2,2,3,0.95));z-index:99999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);'
   const panel = document.createElement('div')
-  panel.style.cssText = 'background:linear-gradient(180deg,#111116,#0a0a0c);border-radius:12px;padding:16px;width:90vw;max-width:640px;max-height:85vh;overflow-y:auto;border:1px solid rgba(255,255,255,0.1);box-shadow:0 0 0 1px rgba(255,255,255,0.04),0 24px 70px rgba(0,0,0,0.7);'
+  panel.style.cssText = 'background:var(--bg2);color:var(--text);border-radius:12px;padding:16px;width:90vw;max-width:640px;max-height:85vh;overflow-y:auto;border:1px solid var(--border);box-shadow:0 0 0 1px rgba(0,0,0,0.2),0 24px 70px rgba(0,0,0,0.5);'
   panel.innerHTML = renderMetadataPanel(meta ?? null, file)
   overlay.appendChild(panel)
   document.body.appendChild(overlay)
