@@ -25,6 +25,7 @@ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.join(PLUGIN_DIR, "app")
 INDEX_HTML = None
+_INDEX_MTIME = 0
 
 # ── Reusable aiohttp client session (connection pool) ──
 _PROXY_SESSION: aiohttp.ClientSession | None = None
@@ -183,14 +184,20 @@ async def bridge_clear(request):
 
 @PromptServer.instance.routes.get("/extensions/ComfyUI-Anima-Batch-LoRA/app/")
 async def serve_index(request):
-    global INDEX_HTML
+    global INDEX_HTML, _INDEX_MTIME
+    path = os.path.join(APP_DIR, "index.html")
+    mtime = os.path.getmtime(path) if os.path.exists(path) else 0
+    # 检测文件变化自动重载，避免修改 app/ 后需重启 ComfyUI
+    if INDEX_HTML is None or mtime != _INDEX_MTIME:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                INDEX_HTML = f.read()
+            _INDEX_MTIME = mtime
     if INDEX_HTML is None:
-        await _load_index()
-        if INDEX_HTML is None:
-            return web.Response(
-                text="App not built yet. Run: cd anima-lora-explorer && npm run build:comfyui",
-                content_type="text/plain", status=404,
-            )
+        return web.Response(
+            text="App not built yet. Run: cd anima-lora-explorer && npm run build:comfyui",
+            content_type="text/plain", status=404,
+        )
     return web.Response(
         text=INDEX_HTML, content_type="text/html",
         headers={"Cache-Control": "no-cache"},  # revalidate on reload
