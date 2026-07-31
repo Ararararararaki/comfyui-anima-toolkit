@@ -103,17 +103,28 @@ function initDragSelect() {
   let startX = 0, startY = 0
   let rectEl: HTMLElement | null = null
 
+  // 右键菜单：document 捕获阶段接管，防止浏览器默认菜单/扩展抢先
+  document.addEventListener('contextmenu', (e: MouseEvent) => {
+    const item = (e.target as HTMLElement).closest('#localFileList .local-list-item') as HTMLElement
+    if (!item) return
+    e.preventDefault()
+    e.stopPropagation()
+    const name = item.dataset.name
+    if (name) openLoraContextMenu(e, name)
+  }, true)
+
   document.addEventListener('mousedown', (e: MouseEvent) => {
     const target = e.target as HTMLElement
     if (!target.closest('#sectionLocal')) return
     if (!target.closest('#localFileList')) return
-    // 列表项/空白处按住左键拖动 = 框选（preventDefault 阻止 HTML5 drag 到分类）
+    // 列表项/空白处按住左键拖动 = 框选（preventDefault 阻止浏览器文字选择/HTML5 drag）
     if (target.closest('.local-list-chk, button, input, select, .local-tree-cat-header')) return
     if (e.button !== 0) return
     isDragging = true
     document.body.style.userSelect = 'none'
     document.body.style.webkitUserSelect = 'none'
     e.preventDefault()
+    e.stopPropagation()
     startX = e.pageX; startY = e.pageY
     if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
       _dragSelected.clear()
@@ -123,7 +134,7 @@ function initDragSelect() {
     rectEl.className = 'local-selection-rect'
     rectEl.style.cssText = `position:fixed;left:${e.clientX}px;top:${e.clientY}px;width:0;height:0;z-index:99999;background:rgba(99,102,241,0.12);border:2px dashed rgba(99,102,241,0.6);pointer-events:none;border-radius:4px`
     document.body.appendChild(rectEl)
-  })
+  }, true)
 
   document.addEventListener('mousemove', (e: MouseEvent) => {
     if (!isDragging || !rectEl) return
@@ -787,14 +798,7 @@ function updateStats(state: ReturnType<typeof useLocalModelStore.getState>) {
 }
 
 function bindLocalEvents() {
-  // 右键分类菜单 + 拖拽框选批量添加分类
-  $$('localFileList')?.addEventListener('contextmenu', (e) => {
-    const item = (e.target as HTMLElement).closest('.local-list-item') as HTMLElement
-    if (!item) return
-    e.preventDefault()
-    const name = item.dataset.name
-    if (name) openLoraContextMenu(e, name)
-  })
+  // 右键分类菜单 + 拖拽框选（capture 阶段在 initDragSelect 绑定，防止浏览器默认行为/扩展抢先）
   initDragSelect()
 
   $$('localScanBtn')?.addEventListener('click', async () => {
