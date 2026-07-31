@@ -203,10 +203,8 @@
           @keyframes bm-scale-in { from{opacity:0;transform:scale(0.96)} to{opacity:1;transform:none} }
           .bm-overlay-enter { animation:bm-fade-up 0.22s ease-out; }
           .bm-modal-enter { animation:bm-scale-in 0.28s var(--ease); }
-          .bm-card { transition:transform 0.25s var(--ease), box-shadow 0.25s var(--ease), border-color 0.25s var(--ease); }
-          .bm-card:hover { transform:translateY(-3px); border-color:var(--border-hover); box-shadow:0 0 0 1px rgba(255,255,255,0.10), 0 8px 30px rgba(0,0,0,0.45), 0 0 40px rgba(94,106,210,0.08); }
-          .bm-card .bm-img img { transition:transform 0.35s var(--ease); }
-          .bm-card:hover .bm-img img { transform:scale(1.05); }
+          .bm-card { transition:box-shadow 0.2s var(--ease), border-color 0.2s var(--ease); }
+          .bm-card:hover { border-color:var(--border-hover); box-shadow:0 0 0 1px rgba(255,255,255,0.10), 0 6px 24px rgba(0,0,0,0.40), 0 0 30px rgba(94,106,210,0.06); }
           .bm-li { transition:background 0.15s var(--ease), border-color 0.15s var(--ease); }
           .bm-li:hover { background:rgba(255,255,255,0.05); border-color:var(--border-hover); }
           .bm-sidebar button { transition:background 0.15s var(--ease), color 0.15s var(--ease); }
@@ -729,8 +727,6 @@
         const left = (idx % cols) * (ITEM_W + GAP);
         const top = Math.floor(idx / cols) * ROW_H;
         card.style.cssText = `position:absolute;left:${left}px;top:${top}px;width:${ITEM_W}px;height:${ROW_H - GAP}px;border-radius:8px;overflow:hidden;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);cursor:pointer;`;
-        card.style.animation = "bm-fade-up 0.3s var(--ease) both";
-        card.style.animationDelay = `${Math.min(idx % cols, 8) * 0.03}s`;
         card.innerHTML = `
           <div class="bm-img" data-lora-name="${l.name}" style="position:relative;height:${IMG_H}px;background:rgba(255,255,255,0.04);overflow:hidden;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.15);font-size:22px;">🖼</div>
           <div class="bm-badge" style="position:absolute;top:4px;left:4px;display:${added ? "flex" : "none"};align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:rgba(94,106,210,0.9);color:#fff;font-size:10px;font-weight:700;">✓</div>
