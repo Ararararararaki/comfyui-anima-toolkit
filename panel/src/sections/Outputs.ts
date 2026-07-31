@@ -2,7 +2,7 @@
 
 import { useOutputStore } from '../store/outputStore'
 import { deleteFiles, renameFile, batchFavorite, batchRate } from '../services/outputService'
-import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, ensureThumbnails } from '../services/outputScanner'
+import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, ensureThumbnails, reparseAllMetadata } from '../services/outputScanner'
 import { outputsDb } from '../db/outputsDb'
 import { esc, escAttr, showToast, copyText } from '../utils'
 import { confirmModal, promptModal } from '../components/Modal'
@@ -339,6 +339,15 @@ function bindOutputsEvents() {
         renderDirTree(dirTree)
         renderOutputsView()
       }
+      return
+    }
+
+    // 强制重新解析元数据（解析逻辑升级后，旧的 prompt/workflow 缓存需重扫才会更新）
+    if (target.closest('.outputs-reparse-btn')) {
+      const dh = useOutputStore.getState().dirHandle
+      if (!dh) { showToast('请先选择目录'); return }
+      await reparseAllMetadata(dh)
+      renderOutputsView()
       return
     }
 

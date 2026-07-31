@@ -151,6 +151,55 @@ async function processFile(
   }
 }
 
+/** 强制重新解析所有文件的元数据（解析逻辑升级后，旧缓存不会被增量扫描刷新） */
+export async function reparseAllMetadata(dirHandle: FileSystemDirectoryHandle): Promise<number> {
+  const files = useOutputStore.getState().files
+  const total = files.length
+  useOutputStore.setState({ scanStatus: 'scanning', scanProgress: { done: 0, total }, loading: true })
+  let done = 0
+  const errors: string[] = []
+  for (const f of files) {
+    try {
+      const parts = f.path.split('/')
+      let current = dirHandle
+      for (let i = 0; i < parts.length - 1; i++) {
+        current = await current.getDirectoryHandle(parts[i])
+      }
+      const handle = await current.getFileHandle(parts[parts.length - 1])
+      const file = await handle.getFile()
+      const buf = await readFileAsArrayBuffer(file)
+      const ext = f.extension || (f.filename.split('.').pop() || '')
+      const meta = await parseOutputMetadata(buf, ext)
+      if (meta) {
+        const outputMeta: OutputMetadata = {
+          imageId: f.id,
+          model: meta.model || '',
+          seed: meta.seed || '',
+          steps: meta.steps || '',
+          cfg: meta.cfg || '',
+          sampler: meta.sampler || '',
+          vae: meta.vae || '',
+          clipSkip: meta.clipSkip || 0,
+          prompt: meta.prompt || '',
+          negativePrompt: meta.negativePrompt || '',
+          workflowJson: meta.workflowJson || '',
+          rawMetadata: meta.raw || {},
+        }
+        await outputsDb.metadata.put(outputMeta)
+        useOutputStore.getState().metadataCache.set(f.id, outputMeta)
+      }
+    } catch {
+      errors.push(f.filename)
+    }
+    done++
+    useOutputStore.setState({ scanProgress: { done, total } })
+  }
+  useOutputStore.setState({ scanStatus: 'done', loading: false, scanProgress: { done, total } })
+  if (errors.length) showToast(`⚠️ 重解析完成 ${done} 个，${errors.length} 个失败`)
+  else showToast(`✅ 已重新解析 ${done} 个文件元数据`)
+  return done
+}
+
 async function scanDirectory(
   dirHandle: FileSystemDirectoryHandle,
   relativePath: string,
