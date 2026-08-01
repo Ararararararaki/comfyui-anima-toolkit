@@ -546,14 +546,16 @@
         const update = () => {
           l.weight = clamp(parseFloat(slider.value), 0, 2);
           valSpan.value = l.weight.toFixed(2);
-          this._commit();
         };
         function clamp(v, min, max) { return isNaN(v) ? 0 : Math.max(min, Math.min(max, v)); }
 
-        slider.oninput = () => { valSpan.value = parseFloat(slider.value).toFixed(2); update(); };
+        // oninput 只更新数值；onchange（松开滑块）才 commit。
+        // 否则每次 input 触发 graph.change() 重建 DOM widget，滑块被替换导致拖动中断。
+        slider.oninput = update;
+        slider.onchange = () => { update(); this._commit(); };
         valSpan.onchange = () => {
           const v = parseFloat(valSpan.value);
-          if (!isNaN(v) && v >= 0 && v <= 2) { slider.value = String(v); update(); }
+          if (!isNaN(v) && v >= 0 && v <= 2) { slider.value = String(v); update(); this._commit(); }
           else { valSpan.value = l.weight.toFixed(2); }
         };
         valSpan.onkeydown = (e) => { if (e.key === "Enter") valSpan.blur(); };
