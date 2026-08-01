@@ -518,7 +518,8 @@ export function renderPromptFreq() {
       // 工作流操作
       if (p.uiWorkflow || p.workflowJson) {
         html += `<div class="prompt-freq-png-actions" style="margin-top:8px">
-          <button class="prompt-freq-png-copyflow" data-pid="${esc(p.id)}">📄 复制工作流</button>
+          <button class="prompt-freq-png-copyflow" data-pid="${esc(p.id)}" title="复制后请在 ComfyUI 用 Load 或拖入 .json 导入（画布 Ctrl+V 无效）">📄 复制工作流</button>
+          <button class="prompt-freq-png-dlflow" data-pid="${esc(p.id)}" title="保存为 .json 文件，拖入 ComfyUI 画布即可导入">⬇️ 下载 .json</button>
           <button class="prompt-freq-png-golib" data-pid="${esc(p.id)}">📖 去 Prompt 库</button>
         </div>`
       }
@@ -679,7 +680,7 @@ export function bindPromptFreqEvents() {
       // 有 UI 格式（workflow chunk）→ 直接复制；仅 API 参数 → 尝试转换为 UI，失败则明确提示（不再误导可还原）
       if (p.uiWorkflow) {
         copyText(p.uiWorkflow)
-        showToast('📄 工作流已复制（导入 ComfyUI 可还原该图工作流）')
+        showToast('📄 工作流已复制；ComfyUI 请用 Load 或拖入 .json 导入（画布 Ctrl+V 无效）')
       } else if (p.workflowJson) {
         try {
           const { apiWorkflowToUI } = await import('../services/outputMetadata')
@@ -697,6 +698,28 @@ export function bindPromptFreqEvents() {
         }
       } else {
         showToast('⚠️ 该图片无工作流数据')
+      }
+      return
+    }
+
+    // 下载工作流 .json（ComfyUI 用 Load 或拖入画布导入）
+    const dlFlowBtn = target.closest('.prompt-freq-png-dlflow') as HTMLElement
+    if (dlFlowBtn) {
+      const p = _uploadedPngs.find(x => x.id === dlFlowBtn.dataset.pid)
+      const wf = p?.uiWorkflow || p?.workflowJson
+      if (!p || !wf) { showToast('⚠️ 该图片无工作流数据'); return }
+      try {
+        const baseName = (p.fileName || 'workflow').replace(/\.png$/i, '')
+        const blob = new Blob([wf], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = baseName + '.json'
+        a.click()
+        URL.revokeObjectURL(url)
+        showToast('⬇️ 工作流 .json 已下载，拖入 ComfyUI 画布即可导入')
+      } catch {
+        showToast('⚠️ 下载失败')
       }
       return
     }
