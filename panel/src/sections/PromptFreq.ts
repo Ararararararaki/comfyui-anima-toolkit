@@ -30,6 +30,7 @@ interface UploadedPng {
   workflowJson: string
   previewThumb: string
   file: File
+  hasMeta?: boolean
   saved?: boolean
   sent?: boolean
 }
@@ -71,6 +72,7 @@ function parsePngFile(file: File): Promise<UploadedPng | null> {
           workflowJson: meta.workflowJson || '',
           previewThumb,
           file,
+          hasMeta: !!(meta.prompt || meta.negativePrompt || meta.workflowJson || meta.seed || meta.steps || meta.cfg || meta.sampler || meta.model || (meta.loras || []).length),
           sent: false,
         })
       } else {
@@ -439,7 +441,8 @@ export function renderPromptFreq() {
             <button class="prompt-freq-png-save ${p.saved ? 'saved' : ''}" data-pid="${esc(p.id)}">${p.saved ? '✅ 已保存' : '💾 保存到 Prompt 库'}</button>
             <button class="prompt-freq-png-del" data-pid="${esc(p.id)}" title="移除">✕</button>
           </span>
-        </div>`
+        </div>
+        ${p.hasMeta === false ? '<div class="prompt-freq-png-nometa" style="padding:10px;text-align:center;color:#8A8F98;font-size:12px;background:rgba(255,255,255,0.03);border-radius:6px;margin-top:6px;">⚠️ 该 PNG 无元数据，无法提取 Prompt / 工作流</div>' : ''}`
 
       // 正面提示词 — 每个逗号片段独立卡片
       if (posSegments.length > 0) {
@@ -678,6 +681,8 @@ export function bindPromptFreqEvents() {
       input.onchange = async (e) => {
         const files = (e.target as HTMLInputElement).files
         if (!files) return
+        // 新批次上传时清空之前上传的 PNG，避免残留上一张的 prompt
+        _uploadedPngs = []
         for (const f of Array.from(files)) {
           const png = await parsePngFile(f)
           if (png) _uploadedPngs.push(png)
@@ -705,6 +710,8 @@ export function bindPromptFreqEvents() {
     if (zone) zone.classList.remove('drag-over')
     const items = e.dataTransfer?.files
     if (!items) return
+    // 新批次拖入时清空之前上传的 PNG，避免残留上一张的 prompt
+    _uploadedPngs = []
     for (const f of Array.from(items)) {
       if (!f.name.toLowerCase().endsWith('.png')) continue
       const png = await parsePngFile(f)
