@@ -68,17 +68,22 @@ export async function initOutputs() {
     // 构建目录树（buildDirTree 是轻量操作，仅遍历文件名）
     dirTree = await buildDirTree(dh)
     renderDirTree(dirTree)
-    // 权限正常：自动增量扫描，发现重启期间新增的图
-    if (useOutputStore.getState().files.length > 0) {
-      try { await scanOutputDirIncremental(dh) } catch { /* 静默 */ }
-      renderOutputsView()
-    }
   } else if (dh) {
     // 权限降级（prompt/denied，如浏览器重启后）：显示重新授权横幅，避免被迫重新「选择目录」
     showReauthBanner()
   }
 
+  // 首次渲染（恢复缓存后的网格）
   renderOutputsView()
+
+  // 权限正常且有缓存时，后台增量扫描（仅发现新文件才重建网格，避免无变化也重建导致闪烁）
+  if (dh && loadResult.permission === 'granted' && useOutputStore.getState().files.length > 0) {
+    try {
+      const count = await scanOutputDirIncremental(dh)
+      if (count > 0) { dirTree = await buildDirTree(dh); renderDirTree(dirTree); renderOutputsView() }
+    } catch { /* 静默 */ }
+  }
+
   bindOutputsEvents()
 
   // ── 自动检测新图：窗口获得焦点 / 页面重新可见 / 60s 轮询 ──
@@ -393,6 +398,15 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
     el.innerHTML = renderGrid(files, state.selectedIds, state.metadataCache, lorasCache)
   } else {
     el.innerHTML = renderList(files, state.selectedIds, state.metadataCache)
+  }
+
+  // 同步回填已缓存的缩略图，避免重建 DOM 时图片从灰图重新闪烁
+  for (const img of el.querySelectorAll('img[data-file-path]')) {
+    const p = (img as HTMLImageElement).dataset.filePath
+    if (p) {
+      const cached = state.thumbMemory.get(p)
+      if (cached) (img as HTMLImageElement).src = cached
+    }
   }
 }
 
@@ -1460,9 +1474,11 @@ async function preloadMetadataBatch(files: OutputFile[], cache: Map<string, Outp
       const metas = await outputsDb.metadata.bulkGet(batch)
       const valid = metas.filter((m): m is OutputMetadata => !!m)
       if (valid.length > 0) {
+        const before = useOutputStore.getState().metadataCache.size
         useOutputStore.getState().putMetadataBatch(valid)
-        if (i + BATCH >= ids.length || ids.length <= BATCH) {
-          // 最后一批或少量数据时，一次性刷新
+        const after = useOutputStore.getState().metadataCache.size
+        // 仅当缓存确实新增了元数据时才重渲染网格，避免每次进入页面都重建导致图片闪烁
+        if (after !== before && (i + BATCH >= ids.length || ids.length <= BATCH)) {
           renderOutputsView()
         }
       }

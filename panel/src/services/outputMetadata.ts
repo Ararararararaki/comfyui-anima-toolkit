@@ -475,6 +475,12 @@ export function extractLorasFromWorkflow(
           if (typeof w === 'string' && /\.(safetensors|pt|bin)$/i.test(w)) cands.push(w)
         }
       }
+      // 通用：widgets_values 里可能含 <lora:name:...> 标签文本（LoraManager 等把 lora 标签放在 widget 中）
+      if (Array.isArray(node.widgets_values)) {
+        for (const w of node.widgets_values) {
+          if (typeof w === 'string') cands.push(...tagsOf(w))
+        }
+      }
       if (Array.isArray(inputs)) {
         for (const entry of inputs) {
           if (!entry || typeof entry !== 'object') continue
@@ -570,6 +576,14 @@ export function extractLoraTagsFromWorkflow(
         const n0 = node.widgets_values[0]
         const numVals = node.widgets_values.filter((x: any) => typeof x === 'number')
         if (typeof n0 === 'string' && /\.(safetensors|pt|bin)$/i.test(n0)) addTag(n0, numVals[0] ?? 0.8)
+      }
+      // 通用：widgets_values 里可能含 <lora:name:weight> 标签（LoraManager 等把 lora 标签放在 widget 中）
+      if (Array.isArray(node.widgets_values)) {
+        for (const w of node.widgets_values) {
+          if (typeof w !== 'string') continue
+          let m: RegExpExecArray | null
+          while ((m = LORA_TAG_RE.exec(w)) !== null) addTag(m[1], parseFloat(m[2]))
+        }
       }
       if (Array.isArray(inputs)) {
         for (const entry of inputs) {
