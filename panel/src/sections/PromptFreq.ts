@@ -391,7 +391,7 @@ function showCategoryPick(onPick: (cat: string) => void) {
 
 // ── 渲染 ──
 
-/** 进入图片 Prompt 解析页面：清空上次上传的 PNG，避免残留旧数据 */
+/** 进入图片解析页面：清空上次上传的 PNG，避免残留旧数据 */
 export function activatePromptFreq() {
   _uploadedPngs = []
   renderPromptFreq()
