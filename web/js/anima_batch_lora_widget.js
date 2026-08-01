@@ -258,7 +258,9 @@
       const browseBtn = this._btn("📂 本地 LoRA", "btn-browse", "打开本地 LoRA 浏览窗：预览 C 站图、点击添加 / 分类 / 置顶");
       const clearBtn = this._btn("✕ 清空列表", "btn-clear", "清空当前 LoRA 列表");
       const panelBtn = this._btn("🌐 面板", "btn-verify", "打开本地管理面板（Anima Toolkit）");
-      toolbar.append(verifyBtn, refreshBtn, extractBtn, browseBtn, clearBtn, panelBtn);
+      const saveGroupBtn = this._btn("💾 保存组", "btn-verify", "把当前 LoRA 列表保存为组，可一键切换");
+      const groupsBtn = this._btn("📁 组", "btn-browse", "LoRA 组管理：一键切换 / 删除");
+      toolbar.append(verifyBtn, refreshBtn, extractBtn, browseBtn, saveGroupBtn, groupsBtn, clearBtn, panelBtn);
 
       const statusEl = document.createElement("div");
       statusEl.className = "status";
@@ -277,6 +279,18 @@
       browseBtn.onclick = () => { showToast("正在加载 LoRA 列表..."); this._browseModal(statusEl); };
       clearBtn.onclick = () => { this.loras = []; this._commit(); this._render(listEl); };
       panelBtn.onclick = () => window.open(PANEL_BASE, "_blank");
+      saveGroupBtn.onclick = async () => {
+        if (!this.loras.length) { showToast("⚠️ 当前列表为空，先添加 LoRA 再保存组"); return; }
+        const name = window.prompt("保存 LoRA 组：输入组名", "");
+        if (!name || !name.trim()) return;
+        const metaData = await fetch("/anima/meta").then((r) => r.json()).catch(() => ({}));
+        const groups = metaData.loraGroups || [];
+        groups.push({ name: name.trim(), loras: this.loras.map((l) => ({ name: l.name, weight: l.weight })) });
+        metaData.loraGroups = groups;
+        await fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(metaData) }).catch(() => {});
+        showToast(`✅ 已保存组「${name.trim()}」（${this.loras.length} 个 LoRA）`);
+      };
+      groupsBtn.onclick = () => this._groupsModal(listEl);
 
       this._render(listEl);
       this.listEl = listEl;
@@ -566,7 +580,16 @@
         del.textContent = "×";
         del.onclick = () => { this.loras.splice(i, 1); this._commit(); this._render(listEl); };
 
-        row.append(dragArea, name, twHint, slider, valSpan, del);
+        // ── 分类 / 常用次数小标签 ──
+        const metaBadge = document.createElement("span");
+        metaBadge.className = "lora-meta-badge";
+        const _m = (this.meta && this.meta.loraMeta && this.meta.loraMeta[l.name]) || {};
+        const _cats = (_m.categories || []).slice(0, 1).join("");
+        const _cnt = _m.count || 0;
+        metaBadge.textContent = (_cats ? "🏷" + _cats : "") + (_cnt ? " " + _cnt + "次" : "");
+        metaBadge.style.cssText = "font-size:9px;color:#8A8F98;opacity:0.85;white-space:nowrap;flex-shrink:0;";
+
+        row.append(dragArea, name, metaBadge, twHint, slider, valSpan, del);
         listEl.appendChild(row);
       });
     }
@@ -663,6 +686,61 @@
       setTimeout(attempt, 500);
     }
 
+    // ── LoRA 组管理（一键切换 / 删除） ──
+    _groupsModal(listEl) {
+      fetch("/anima/meta").then((r) => r.json()).catch(() => ({ loraGroups: [] }))
+        .then((metaData) => {
+          const groups = metaData.loraGroups || [];
+          const overlay = document.createElement("div");
+          overlay.className = "modal-overlay";
+          overlay.style.cssText = "position:fixed;inset:0;background:rgba(10,10,15,0.85);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);";
+          const modal = document.createElement("div");
+          modal.style.cssText = "background:#14141c;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;width:340px;max-height:75vh;overflow-y:auto;color:#EDEDEF;";
+          const title = document.createElement("h3");
+          title.style.cssText = "margin:0 0 8px;font-size:13px;";
+          title.textContent = `📁 LoRA 组（${groups.length}）`;
+          modal.appendChild(title);
+          if (!groups.length) {
+            const empty = document.createElement("p");
+            empty.style.cssText = "color:#8A8F98;font-size:11px;margin:8px 0;";
+            empty.textContent = "暂无组，点「💾 保存组」创建";
+            modal.appendChild(empty);
+          }
+          groups.forEach((g) => {
+            const row = document.createElement("div");
+            row.style.cssText = "display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.06);";
+            const label = document.createElement("span");
+            label.style.cssText = "flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+            label.textContent = `📁 ${g.name}（${(g.loras || []).length}）`;
+            const loadBtn = document.createElement("button");
+            loadBtn.textContent = "切换";
+            loadBtn.style.cssText = "padding:3px 8px;border:1px solid rgba(94,106,210,0.4);border-radius:5px;cursor:pointer;font-size:11px;background:rgba(94,106,210,0.15);color:#9aa5ff;";
+            loadBtn.onclick = () => {
+              this.loras = (g.loras || []).map((l) => ({ name: l.name, weight: l.weight }));
+              this._commit();
+              if (listEl) this._render(listEl);
+              overlay.remove();
+              showToast(`✅ 已切换组「${g.name}」（${this.loras.length} 个 LoRA）`);
+            };
+            const delBtn = document.createElement("button");
+            delBtn.textContent = "删除";
+            delBtn.style.cssText = "padding:3px 8px;border:1px solid rgba(255,80,80,0.3);border-radius:5px;cursor:pointer;font-size:11px;background:transparent;color:#f66;";
+            delBtn.onclick = async () => {
+              if (!window.confirm(`删除组「${g.name}」？`)) return;
+              metaData.loraGroups = metaData.loraGroups.filter((x) => x.name !== g.name);
+              await fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(metaData) }).catch(() => {});
+              overlay.remove();
+              this._groupsModal(listEl);
+            };
+            row.append(label, loadBtn, delBtn);
+            modal.appendChild(row);
+          });
+          overlay.appendChild(modal);
+          overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+          document.body.appendChild(overlay);
+        });
+    }
+
     // ── 浏览 LoRA ──
     // ── 浏览 LoRA（大图网格：收藏/置顶/分类） ──
     // ── 浏览 LoRA（列表/网格 + 收藏/置顶/分类 + 虚拟滚动） ──
@@ -712,7 +790,8 @@
       const closeBtn = modal.querySelector(".bm-close");
       const newCatBtn = modal.querySelector(".bm-newcat");
 
-      let meta = { categories: [], loraMeta: {} };
+      let meta = { categories: [], loraMeta: {}, loraGroups: [] };
+      this.meta = meta;
       let allLoras = [];
       let mode = "grid";
       let batchMode = false;
@@ -725,8 +804,9 @@
       const saveMeta = () => {
         fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(meta) }).catch(() => {});
       };
-      const loraMeta = (name) => meta.loraMeta[name] || { categories: [], favorite: false, pinned: false };
-      const ensureMeta = (name) => meta.loraMeta[name] || (meta.loraMeta[name] = { categories: [], favorite: false, pinned: false });
+      const loraMeta = (name) => meta.loraMeta[name] || { categories: [], favorite: false, pinned: false, count: 0 };
+      const ensureMeta = (name) => meta.loraMeta[name] || (meta.loraMeta[name] = { categories: [], favorite: false, pinned: false, count: 0 });
+      const bumpCount = (name) => { const em = ensureMeta(name); em.count = (em.count || 0) + 1; saveMeta(); };
       const getInfo = (name) => fetch("/anima/lora/info?name=" + encodeURIComponent(name)).then((r) => (r.ok ? r.json() : null)).catch(() => null);
       // C 站图片走后端代理（浏览器无代理无法直连 image.civitai.com）；卡片用 400px 小图省流量
       const imgProxy = (url) => {
@@ -759,6 +839,10 @@
             const fa = loraMeta(a.name).favorite ? 1 : 0;
             const fb = loraMeta(b.name).favorite ? 1 : 0;
             if (fa !== fb) return fb - fa;
+            // 常用次数优先
+            const ca = loraMeta(a.name).count || 0;
+            const cb = loraMeta(b.name).count || 0;
+            if (ca !== cb) return cb - ca;
             const k = sortEl.value;
             if (k === "size") return (b.size || 0) - (a.size || 0);
             if (k === "date") return (b.lastModified || 0) - (a.lastModified || 0);
@@ -923,6 +1007,7 @@
             showToast("已移除: " + l.name);
           } else {
             this.loras.push({ name: l.name, weight: 0.8 });
+            bumpCount(l.name);
             this._commit(); this._render(this.listEl);
             if (badge) badge.style.display = "flex";
             showToast("已添加: " + l.name);
@@ -1000,6 +1085,7 @@
             showToast("已移除: " + l.name);
           } else {
             this.loras.push({ name: l.name, weight: 0.8 });
+            bumpCount(l.name);
             this._commit(); this._render(this.listEl);
             if (badge) { badge.textContent = "✓"; badge.style.color = "#4caf50"; }
             showToast("已添加: " + l.name);
@@ -1066,7 +1152,7 @@
           batchBar.querySelector(".bm-batch-add").onclick = () => {
             const toAdd = Array.from(selected).filter((n) => !this.loras.some((e) => e.name.toLowerCase() === n.toLowerCase()));
             if (!toAdd.length) { showToast("没有新的 LoRA 可添加"); return; }
-            toAdd.forEach((n) => this.loras.push({ name: n, weight: 0.8 }));
+            toAdd.forEach((n) => { this.loras.push({ name: n, weight: 0.8 }); bumpCount(n); });
             this._commit(); this._render(this.listEl);
             showToast(`✅ 已添加 ${toAdd.length} 个 LoRA`);
             selected.clear(); updateBatchBar(); renderCurrent();
@@ -1199,10 +1285,10 @@
       // ── 加载数据 ──
       Promise.all([
         fetch("/anima/loras").then((r) => r.json()).catch(() => ({ loras: [] })),
-        fetch("/anima/meta").then((r) => r.json()).catch(() => ({ categories: [], loraMeta: {} })),
+        fetch("/anima/meta").then((r) => r.json()).catch(() => ({ categories: [], loraMeta: {}, loraGroups: [] })),
       ]).then(([lData, mData]) => {
         allLoras = (lData.loras || []).map((l) => ({ ...l }));
-        meta = { categories: mData.categories || [], loraMeta: mData.loraMeta || {} };
+        meta = this.meta = { categories: mData.categories || [], loraMeta: mData.loraMeta || {}, loraGroups: mData.loraGroups || [] };
         totalEl.textContent = `共 ${allLoras.length} 个`;
         renderSidebar();
         renderCurrent();

@@ -316,7 +316,7 @@ def _load_meta() -> dict:
                         return data
         except Exception:
             pass
-    return {"categories": [], "loraMeta": {}}
+    return {"categories": [], "loraMeta": {}, "loraGroups": []}
 
 
 def _save_meta(data: dict):
@@ -341,6 +341,7 @@ async def set_meta(request):
         meta = {
             "categories": list(body.get("categories", []) or []),
             "loraMeta": body.get("loraMeta", {}) or {},
+            "loraGroups": body.get("loraGroups", []) or [],
         }
         _save_meta(meta)
         return web.json_response({"ok": True})

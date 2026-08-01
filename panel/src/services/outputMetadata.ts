@@ -500,6 +500,97 @@ export function extractLorasFromWorkflow(
   return loras
 }
 
+/** 从 workflow 提取 LoRA 标签 `<lora:name:weight>`（含权重，可直接粘贴到节点 lora_syntax） */
+export function extractLoraTagsFromWorkflow(
+  workflowJson: string,
+  rawMetadata?: Record<string, string>,
+): string[] {
+  if (!workflowJson) return []
+
+  const LORA_TAG_RE = /<lora:([^:>]+):([^:>]+)(?::([^:>]+))?>/gi
+  const tags: string[] = []
+  const seen = new Set<string>()
+
+  function addTag(name: string, weight: number) {
+    const clean = String(name || '').replace(/\.(safetensors|pt|bin)$/i, '').trim()
+    if (!clean || seen.has(clean)) return
+    seen.add(clean)
+    const w = isNaN(weight) ? 0.8 : weight
+    tags.push(`<lora:${clean}:${Number(w).toFixed(2)}>`)
+  }
+
+  function resolveName(v: any, nodeMap: Map<any, any>): string {
+    if (typeof v === 'string') return v
+    if (Array.isArray(v) && v.length) {
+      const srcNode = nodeMap.get(v[0]) || nodeMap.get(Number(v[0]))
+      if (srcNode) {
+        if (srcNode.inputs?.lora_name) return resolveName(srcNode.inputs.lora_name, nodeMap)
+        if (Array.isArray(srcNode.widgets_values)) {
+          for (const w of srcNode.widgets_values) if (typeof w === 'string' && /\.(safetensors|pt|bin)$/i.test(w)) return w
+        }
+      }
+    }
+    return ''
+  }
+
+  function extractWorkflow(wf: any) {
+    const iterNodes: any[] = wf?.nodes || (Array.isArray(wf) ? wf : typeof wf === 'object' ? Object.entries(wf).map(([k, v]) => ({ id: k, ...(v as any) })) : [])
+    const nodeMap = new Map<any, any>()
+    for (const n of iterNodes) {
+      if (n && n.id !== undefined) { nodeMap.set(String(n.id), n); nodeMap.set(Number(n.id), n) }
+    }
+    for (const node of iterNodes) {
+      if (!node || typeof node !== 'object') continue
+      const ct = node.class_type || node.type || ''
+      const inputs = node.inputs || {}
+      if (inputs && typeof inputs === 'object' && !Array.isArray(inputs)) {
+        if (inputs.lora_name) {
+          const name = resolveName(inputs.lora_name, nodeMap)
+          const w = typeof inputs.strength_model === 'number' ? inputs.strength_model : 0.8
+          if (name) addTag(name, w)
+        }
+        if (typeof inputs.text === 'string') {
+          let m: RegExpExecArray | null
+          while ((m = LORA_TAG_RE.exec(inputs.text)) !== null) addTag(m[1], parseFloat(m[2]))
+        }
+        if (inputs.loras && typeof inputs.loras === 'object') {
+          const arr = Array.isArray(inputs.loras) ? inputs.loras : (inputs.loras as any).__value__
+          const list = Array.isArray(arr) ? arr : Object.values(inputs.loras)
+          for (const e of list) {
+            if (e && typeof e === 'object') {
+              const name = e.name || e.lora_name || ''
+              const w = parseFloat(e.strength ?? e.model_strength ?? 0.8)
+              if (name) addTag(name, w)
+            }
+          }
+        }
+      }
+      // UI format：Lora 节点 widgets_values（[lora_name, strength, ...]）
+      if (/Lora/i.test(ct) && Array.isArray(node.widgets_values)) {
+        const n0 = node.widgets_values[0]
+        const numVals = node.widgets_values.filter((x: any) => typeof x === 'number')
+        if (typeof n0 === 'string' && /\.(safetensors|pt|bin)$/i.test(n0)) addTag(n0, numVals[0] ?? 0.8)
+      }
+      if (Array.isArray(inputs)) {
+        for (const entry of inputs) {
+          if (!entry || typeof entry !== 'object') continue
+          if (entry.name === 'lora_name' && typeof entry.value === 'string') addTag(entry.value, 0.8)
+          if (entry.name === 'text' && typeof entry.value === 'string') {
+            let m: RegExpExecArray | null
+            while ((m = LORA_TAG_RE.exec(entry.value)) !== null) addTag(m[1], parseFloat(m[2]))
+          }
+        }
+      }
+    }
+  }
+
+  try { extractWorkflow(safeParseJSON(workflowJson)) } catch { /* skip */ }
+  if (tags.length === 0 && rawMetadata?.prompt && rawMetadata.prompt !== workflowJson) {
+    try { extractWorkflow(safeParseJSON(rawMetadata.prompt)) } catch { /* skip */ }
+  }
+  return tags
+}
+
 function parseA1111Parameters(params: string): Partial<ParsedMetadata> {
   const result: Partial<ParsedMetadata> = {
     raw: { parameters: params },

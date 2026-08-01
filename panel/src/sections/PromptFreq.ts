@@ -26,6 +26,7 @@ interface UploadedPng {
   sampler: string
   model: string
   loras: string[]
+  loraTags: string[]
   workflowJson: string
   previewThumb: string
   file: File
@@ -66,6 +67,7 @@ function parsePngFile(file: File): Promise<UploadedPng | null> {
           sampler: meta.sampler || '',
           model: meta.model || '',
           loras: meta.loras || [],
+          loraTags: meta.loraTags || [],
           workflowJson: meta.workflowJson || '',
           previewThumb,
           file,
@@ -82,7 +84,7 @@ function parsePngFile(file: File): Promise<UploadedPng | null> {
 
 async function parsePngChunks(buf: ArrayBuffer): Promise<{
   prompt: string; negativePrompt: string; seed: string; steps: string;
-  cfg: string; sampler: string; model: string; loras: string[]; workflowJson: string
+  cfg: string; sampler: string; model: string; loras: string[]; loraTags: string[]; workflowJson: string
 } | null> {
   const view = new DataView(buf)
   const bytes = new Uint8Array(buf)
@@ -179,16 +181,21 @@ async function parsePngChunks(buf: ArrayBuffer): Promise<{
   // 最终 fallback
   if (!result.prompt) {
     result.prompt = userComment || description || ''
-  }  // 提取 LoRA 名：优先从工作流节点提取（适配各工作流），兜底从提示词文本提取 <lora:...> 标签
+  }  // 提取 LoRA：名称 + <lora:name:weight> 标签（含权重）；兜底从提示词文本提取 <lora:...> 标签
   let loras: string[] = []
+  let loraTags: string[] = []
   if (workflowJson) {
-    const { extractLorasFromWorkflow } = await import('../services/outputMetadata')
+    const { extractLorasFromWorkflow, extractLoraTagsFromWorkflow } = await import('../services/outputMetadata')
     loras = extractLorasFromWorkflow(workflowJson)
+    loraTags = extractLoraTagsFromWorkflow(workflowJson)
   }
   if (loras.length === 0) {
     const allText = (result.prompt || '') + ' ' + (result.negativePrompt || '')
     const loraMatches = allText.match(/<lora:([^:>]+)/g)
     if (loraMatches) loras.push(...loraMatches.map((l: string) => l.replace('<lora:', '')))
+  }
+  if (loraTags.length === 0 && loras.length) {
+    loraTags = loras.map((n) => `<lora:${n}:0.80>`)
   }
 
   return {
@@ -200,6 +207,7 @@ async function parsePngChunks(buf: ArrayBuffer): Promise<{
     sampler: result.sampler || raw['sampler'] || '',
     model: result.model || raw['model'] || '',
     loras: [...new Set(loras)],
+    loraTags: [...new Set(loraTags)],
     workflowJson,
   }
 }
@@ -465,8 +473,8 @@ export function renderPromptFreq() {
 
       // LoRA 标签（点击复制）
       if (p.loras.length > 0) {
-        html += `<div class="prompt-freq-png-label-bar" style="margin-top:8px">🧩 LoRA（点击复制）</div>
-          <div class="prompt-freq-png-loras">${p.loras.map(l => `<code class="local-tw-item lora" data-copy="${esc(l)}">${esc(l)}</code>`).join('')}</div>`
+        html += `<div class="prompt-freq-png-label-bar" style="margin-top:8px">🧩 LoRA（点击复制 ${p.loraTags?.length ? '标签' : '名称'}）</div>
+          <div class="prompt-freq-png-loras">${(p.loraTags?.length ? p.loraTags : p.loras).map(l => `<code class="local-tw-item lora" data-copy="${esc(l)}">${esc(l)}</code>`).join('')}</div>`
       }
 
       // 参数
