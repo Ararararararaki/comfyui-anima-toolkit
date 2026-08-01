@@ -500,8 +500,12 @@ export function renderPromptFreq() {
 
       // LoRA 标签（点击复制）
       if (p.loras.length > 0) {
+        const loraList = p.loraTags?.length ? p.loraTags : p.loras
         html += `<div class="prompt-freq-png-label-bar" style="margin-top:8px">🧩 LoRA（点击复制 ${p.loraTags?.length ? '标签' : '名称'}）</div>
-          <div class="prompt-freq-png-loras">${(p.loraTags?.length ? p.loraTags : p.loras).map(l => `<code class="local-tw-item lora" data-copy="${esc(l)}">${esc(l)}</code>`).join('')}</div>`
+          <div class="prompt-freq-png-loras">${loraList.map(l => `<code class="local-tw-item lora" data-copy="${esc(l)}">${esc(l)}</code>`).join('')}</div>
+          <div class="prompt-freq-png-actions">
+            <button class="prompt-freq-png-copyall-lora" data-text="${esc(loraList.join(', '))}">📋 复制全部 LoRA</button>
+          </div>`
       }
 
       // 参数
@@ -515,11 +519,10 @@ export function renderPromptFreq() {
         </div>`
       }
 
-      // 工作流操作
+      // 工作流操作（下载 .json 拖入 ComfyUI 导入最稳妥，不再提供复制——画布 Ctrl+V 易误导）
       if (p.uiWorkflow || p.workflowJson) {
         html += `<div class="prompt-freq-png-actions" style="margin-top:8px">
-          <button class="prompt-freq-png-copyflow" data-pid="${esc(p.id)}" title="复制后请在 ComfyUI 用 Load 或拖入 .json 导入（画布 Ctrl+V 无效）">📄 复制工作流</button>
-          <button class="prompt-freq-png-dlflow" data-pid="${esc(p.id)}" title="保存为 .json 文件，拖入 ComfyUI 画布即可导入">⬇️ 下载 .json</button>
+          <button class="prompt-freq-png-dlflow" data-pid="${esc(p.id)}" title="保存为 .json 文件，拖入 ComfyUI 画布即可导入">⬇️ 下载工作流 .json</button>
           <button class="prompt-freq-png-golib" data-pid="${esc(p.id)}">📖 去 Prompt 库</button>
         </div>`
       }
@@ -672,33 +675,11 @@ export function bindPromptFreqEvents() {
       return
     }
 
-    // 复制工作流
-    const copyFlowBtn = target.closest('.prompt-freq-png-copyflow') as HTMLElement
-    if (copyFlowBtn) {
-      const p = _uploadedPngs.find(x => x.id === copyFlowBtn.dataset.pid)
-      if (!p) return
-      // 有 UI 格式（workflow chunk）→ 直接复制；仅 API 参数 → 尝试转换为 UI，失败则明确提示（不再误导可还原）
-      if (p.uiWorkflow) {
-        copyText(p.uiWorkflow)
-        showToast('📄 工作流已复制；ComfyUI 请用 Load 或拖入 .json 导入（画布 Ctrl+V 无效）')
-      } else if (p.workflowJson) {
-        try {
-          const { apiWorkflowToUI } = await import('../services/outputMetadata')
-          const ui = apiWorkflowToUI(p.workflowJson)
-          if (ui) {
-            copyText(ui)
-            showToast('📄 已从 API 参数转换为 UI 工作流并复制（布局可能需微调）')
-          } else {
-            copyText(p.workflowJson)
-            showToast('⚠️ 该图仅 API 执行参数、无画布工作流，ComfyUI 前端导入会被忽略')
-          }
-        } catch {
-          copyText(p.workflowJson)
-          showToast('⚠️ 该图仅 API 执行参数、无画布工作流，ComfyUI 前端导入会被忽略')
-        }
-      } else {
-        showToast('⚠️ 该图片无工作流数据')
-      }
+    // 复制全部 LoRA 标签
+    const copyAllLora = target.closest('.prompt-freq-png-copyall-lora') as HTMLElement
+    if (copyAllLora) {
+      const txt = copyAllLora.dataset.text || ''
+      if (txt) { copyText(txt); showToast('📋 已复制全部 LoRA 标签') }
       return
     }
 

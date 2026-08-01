@@ -7,7 +7,7 @@ import { outputsDb } from '../db/outputsDb'
 import { esc, escAttr, showToast, copyText } from '../utils'
 import { confirmModal, promptModal } from '../components/Modal'
 import type { OutputFile, OutputMetadata, OutputDir, OutputScanStatus } from '../types/outputs'
-import { extractLorasFromWorkflow, apiWorkflowToUI, hasUiWorkflow } from '../services/outputMetadata'
+import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow, apiWorkflowToUI, hasUiWorkflow } from '../services/outputMetadata'
 import { backfillPrompts } from '../services/outputMetadataService'
 import JSZip from 'jszip'
 
@@ -543,93 +543,19 @@ function bindOutputsEvents() {
       return
     }
 
-    // 复制 LoRA 标签按钮
+    // 复制 LoRA 标签按钮（复用统一提取逻辑，与图片解析一致，兼容 UI/API/LoraManager）
     const copyLoraBtn = target.closest('.outputs-copy-lora-btn') as HTMLElement
     if (copyLoraBtn) {
       const id = copyLoraBtn.dataset.id
       if (id) {
         const meta = useOutputStore.getState().metadataCache.get(id)
         if (meta?.workflowJson) {
-          try {
-            const workflow = JSON.parse(meta.workflowJson)
-            const loras: string[] = []
-            const LORA_TAG_RE = /<lora:([^:>]+):([^:>]+)(?::([^:>]+))?>/gi
-            const added = new Set<string>()
-
-            function addFromNode(node: any) {
-              const inputs = node?.inputs
-              if (!inputs || typeof inputs !== 'object') return
-
-              // Standard LoraLoader
-              if (inputs.lora_name && typeof inputs.lora_name === 'string') {
-                const clean = inputs.lora_name.replace(/\.(safetensors|pt|bin)$/i, '').trim()
-                const weight = inputs.strength_model ?? 1.0
-                if (clean && !added.has(clean)) {
-                  added.add(clean)
-                  loras.push(`<lora:${clean}:${Number(weight).toFixed(2)}>`)
-                }
-                return
-              }
-
-              // LoraManager: inputs.text = "<lora:name:w> <lora:name:w> ..."
-              if (inputs.text && typeof inputs.text === 'string') {
-                let m: RegExpExecArray | null
-                while ((m = LORA_TAG_RE.exec(inputs.text)) !== null) {
-                  const name = m[1].trim()
-                  const w = parseFloat(m[2])
-                  if (name && !added.has(name)) {
-                    added.add(name)
-                    loras.push(`<lora:${name}:${isNaN(w) ? '0.80' : w.toFixed(2)}>`)
-                  }
-                }
-                return
-              }
-
-              // LoraManager widget object
-              if (inputs.loras && typeof inputs.loras === 'object' && !Array.isArray(inputs.loras)) {
-                for (const k of Object.keys(inputs.loras)) {
-                  const entry = inputs.loras[k]
-                  if (entry && typeof entry === 'object') {
-                    const name = (entry.name || entry.lora_name || '').trim()
-                    const w = parseFloat(entry.strength ?? entry.model_strength ?? 0.8)
-                    if (name && !added.has(name)) {
-                      added.add(name)
-                      loras.push(`<lora:${name}:${isNaN(w) ? '0.80' : w.toFixed(2)}>`)
-                    }
-                  }
-                }
-              }
-            }
-
-            // Workflow format
-            for (const node of (workflow.nodes || [])) addFromNode(node)
-            // Prompt format
-            if (typeof workflow === 'object') {
-              for (const key of Object.keys(workflow)) addFromNode(workflow[key])
-            }
-
-            if (loras.length > 0) {
-              await navigator.clipboard.writeText(loras.join(', '))
-              showToast(`已复制 ${loras.length} 个 LoRA 标签`)
-            } else if (meta?.rawMetadata?.prompt && meta.rawMetadata.prompt !== meta.workflowJson) {
-              // Fallback: try raw prompt format (stored alongside UI workflow in old scans)
-              try {
-                const promptWorkflow = JSON.parse(meta.rawMetadata.prompt)
-                for (const key of Object.keys(promptWorkflow)) addFromNode(promptWorkflow[key])
-                if (loras.length > 0) {
-                  await navigator.clipboard.writeText(loras.join(', '))
-                  showToast(`已复制 ${loras.length} 个 LoRA 标签`)
-                } else {
-                  showToast('未检测到 LoRA 节点')
-                }
-              } catch {
-                showToast('未检测到 LoRA 节点')
-              }
-            } else {
-              showToast('未检测到 LoRA 节点')
-            }
-          } catch {
-            showToast('解析 workflow 失败')
+          const tags = extractLoraTagsFromWorkflow(meta.workflowJson, meta.rawMetadata)
+          if (tags.length > 0) {
+            await navigator.clipboard.writeText(tags.join(', '))
+            showToast(`已复制 ${tags.length} 个 LoRA 标签`)
+          } else {
+            showToast('未检测到 LoRA 节点')
           }
         } else {
           showToast('该图片无 LoRA 数据')

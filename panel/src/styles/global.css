@@ -2373,8 +2373,8 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 .prompt-freq-png-save { font-size: 10px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg3); color: var(--text2); cursor: pointer; transition: all .12s; margin-right: 6px; }
 .prompt-freq-png-save:hover { border-color: var(--accent); color: var(--accent); }
 .prompt-freq-png-save.saved { color: #22c55e; border-color: currentColor; cursor: default; }
-.prompt-freq-png-copyflow, .prompt-freq-png-golib { font-size: 10px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg3); color: var(--text2); cursor: pointer; transition: all .12s; }
-.prompt-freq-png-copyflow:hover, .prompt-freq-png-golib:hover { border-color: var(--accent); color: var(--accent); }
+.prompt-freq-png-golib { font-size: 10px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg3); color: var(--text2); cursor: pointer; transition: all .12s; }
+.prompt-freq-png-golib:hover { border-color: var(--accent); color: var(--accent); }
 
 /* 高频词折叠块 */
 .prompt-freq-freq { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; background: rgba(255,255,255,0.02); }
