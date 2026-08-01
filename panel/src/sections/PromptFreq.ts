@@ -451,7 +451,10 @@ export function renderPromptFreq() {
             <button class="prompt-freq-png-del" data-pid="${esc(p.id)}" title="移除">✕</button>
           </span>
         </div>
-        ${p.hasMeta === false ? '<div class="prompt-freq-png-nometa" style="padding:10px;text-align:center;color:#8A8F98;font-size:12px;background:rgba(255,255,255,0.03);border-radius:6px;margin-top:6px;">⚠️ 该 PNG 无元数据，无法提取 Prompt / 工作流</div>' : ''}`
+        ${p.hasMeta === false ? `<div class="prompt-freq-png-nometa" style="padding:10px;text-align:center;color:#8A8F98;font-size:12px;background:rgba(255,255,255,0.03);border-radius:6px;margin-top:6px;">
+          ⚠️ 该 PNG 无元数据，无法提取 Prompt / 工作流<br>
+          <small style="color:rgba(255,255,255,0.35);line-height:1.7">原因：图片经 QQ/微信传输、截图或二次保存后，内嵌的生成数据会被清除。<br>想要别人的工作流，需让对方发送 <b>未压缩的原始 PNG</b>（直接发原图/文件）。</small>
+        </div>` : ''}`
 
       // 正面提示词 — 每个逗号片段独立卡片
       if (posSegments.length > 0) {
