@@ -747,6 +747,10 @@
             return true;
           })
           .sort((a, b) => {
+            // 已添加到节点的 LoRA 置顶（优先于置顶/收藏/名称排序）
+            const addedA = this.loras.some((e) => e.name.toLowerCase() === a.name.toLowerCase()) ? 1 : 0;
+            const addedB = this.loras.some((e) => e.name.toLowerCase() === b.name.toLowerCase()) ? 1 : 0;
+            if (addedA !== addedB) return addedB - addedA;
             const pa = loraMeta(a.name).pinned ? 1 : 0;
             const pb = loraMeta(b.name).pinned ? 1 : 0;
             if (pa !== pb) return pb - pa;
