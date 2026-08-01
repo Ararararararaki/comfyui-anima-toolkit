@@ -45,41 +45,50 @@ let _uploadedPngs: UploadedPng[] = []
 
 function parsePngFile(file: File): Promise<UploadedPng | null> {
   return new Promise((resolve) => {
+    // 兜底定时器：解析卡住（异常/未知浏览器行为）时也放行，避免界面永久残留旧卡片
+    const timer = setTimeout(() => resolve(null), 8000)
+    const done = (v: UploadedPng | null) => { clearTimeout(timer); resolve(v) }
+
     const reader = new FileReader()
     reader.onload = async () => {
-      const buf = reader.result as ArrayBuffer
-      const meta = await parsePngChunks(buf)
-      if (meta) {
-        // 生成压缩缩略图（保存到 Prompt 库用；失败不阻断解析）
-        let previewThumb = ''
-        try {
-          const { createThumbnailFromBlob } = await import('../services/outputThumbnail')
-          const thumb = await createThumbnailFromBlob(file)
-          previewThumb = thumb?.dataUrl || ''
-        } catch { /* 忽略缩略图失败 */ }
-        resolve({
-          id: genUploadedId(),
-          fileName: file.name,
-          positive: meta.prompt || '',
-          negative: meta.negativePrompt || '',
-          seed: meta.seed || '',
-          steps: meta.steps || '',
-          cfg: meta.cfg || '',
-          sampler: meta.sampler || '',
-          model: meta.model || '',
-          loras: meta.loras || [],
-          loraTags: meta.loraTags || [],
-          workflowJson: meta.workflowJson || '',
-          previewThumb,
-          file,
-          hasMeta: !!(meta.prompt || meta.negativePrompt || meta.workflowJson || meta.seed || meta.steps || meta.cfg || meta.sampler || meta.model || (meta.loras || []).length),
-          sent: false,
-        })
-      } else {
-        resolve(null)
+      try {
+        const buf = reader.result as ArrayBuffer
+        const meta = await parsePngChunks(buf)
+        if (meta) {
+          // 生成压缩缩略图（保存到 Prompt 库用；失败不阻断解析）
+          let previewThumb = ''
+          try {
+            const { createThumbnailFromBlob } = await import('../services/outputThumbnail')
+            const thumb = await createThumbnailFromBlob(file)
+            previewThumb = thumb?.dataUrl || ''
+          } catch { /* 忽略缩略图失败 */ }
+          done({
+            id: genUploadedId(),
+            fileName: file.name,
+            positive: meta.prompt || '',
+            negative: meta.negativePrompt || '',
+            seed: meta.seed || '',
+            steps: meta.steps || '',
+            cfg: meta.cfg || '',
+            sampler: meta.sampler || '',
+            model: meta.model || '',
+            loras: meta.loras || [],
+            loraTags: meta.loraTags || [],
+            workflowJson: meta.workflowJson || '',
+            previewThumb,
+            file,
+            hasMeta: !!(meta.prompt || meta.negativePrompt || meta.workflowJson || meta.seed || meta.steps || meta.cfg || meta.sampler || meta.model || (meta.loras || []).length),
+            sent: false,
+          })
+        } else {
+          done(null)
+        }
+      } catch (e) {
+        console.warn('[PromptFreq] parsePngFile 解析异常，跳过该文件:', file.name, e)
+        done(null)
       }
     }
-    reader.onerror = () => resolve(null)
+    reader.onerror = () => done(null)
     reader.readAsArrayBuffer(file)
   })
 }
@@ -510,13 +519,14 @@ export function renderPromptFreq() {
     html += `</div>`
   }
 
-  // PNG 上传区域
+  // PNG 上传区域（无论有无数据都渲染，保证上传入口始终可用）
   html += `<div class="prompt-freq-upload" id="promptFreqUpload">
     <span>📤 拖拽或点击上传 PNG 图片</span>
   </div>`
 
   if (!html && state.files.length === 0 && _uploadedPngs.length === 0) {
-    el.innerHTML = '<div class="prompt-freq-empty"><div class="big">📝</div><p>暂无数据</p><p class="sub">请先在 Outputs 中扫描图片目录，或上传 PNG 文件</p></div>'
+    // 无任何数据：显示空态提示 + 上传区
+    el.innerHTML = '<div class="prompt-freq-empty"><div class="big">📝</div><p>暂无数据</p><p class="sub">请先在 Outputs 中扫描图片目录，或上传 PNG 文件</p></div>' + html
     return
   }
 
@@ -681,14 +691,19 @@ export function bindPromptFreqEvents() {
       input.onchange = async (e) => {
         const files = (e.target as HTMLInputElement).files
         if (!files) return
-        // 新批次上传时清空之前上传的 PNG，避免残留上一张的 prompt
-        _uploadedPngs = []
-        for (const f of Array.from(files)) {
-          const png = await parsePngFile(f)
-          if (png) _uploadedPngs.push(png)
+        try {
+          // 新批次上传时清空之前上传的 PNG，避免残留上一张的 prompt
+          _uploadedPngs = []
+          for (const f of Array.from(files)) {
+            const png = await parsePngFile(f)
+            if (png) _uploadedPngs.push(png)
+          }
+          showToast(`已上传 ${files.length} 个 PNG`)
+        } catch (err) {
+          console.warn('[PromptFreq] 上传解析出错:', err)
+        } finally {
+          renderPromptFreq()
         }
-        renderPromptFreq()
-        showToast(`已上传 ${files.length} 个 PNG`)
       }
       input.click()
     }
@@ -710,14 +725,19 @@ export function bindPromptFreqEvents() {
     if (zone) zone.classList.remove('drag-over')
     const items = e.dataTransfer?.files
     if (!items) return
-    // 新批次拖入时清空之前上传的 PNG，避免残留上一张的 prompt
-    _uploadedPngs = []
-    for (const f of Array.from(items)) {
-      if (!f.name.toLowerCase().endsWith('.png')) continue
-      const png = await parsePngFile(f)
-      if (png) _uploadedPngs.push(png)
+    try {
+      // 新批次拖入时清空之前上传的 PNG，避免残留上一张的 prompt
+      _uploadedPngs = []
+      for (const f of Array.from(items)) {
+        if (!f.name.toLowerCase().endsWith('.png')) continue
+        const png = await parsePngFile(f)
+        if (png) _uploadedPngs.push(png)
+      }
+      showToast(`已上传 PNG 文件`)
+    } catch (err) {
+      console.warn('[PromptFreq] 拖拽解析出错:', err)
+    } finally {
+      renderPromptFreq()
     }
-    renderPromptFreq()
-    showToast(`已上传 PNG 文件`)
   })
 }
