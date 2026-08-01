@@ -692,11 +692,12 @@ export function bindPromptFreqEvents() {
         const files = (e.target as HTMLInputElement).files
         if (!files) return
         try {
-          // 新批次上传时清空之前上传的 PNG，避免残留上一张的 prompt
-          _uploadedPngs = []
+          // 追加到已有列表（多张 PNG 共存）；按文件名去重，重复拖入同一张不重复添加
+          const existingNames = new Set(_uploadedPngs.map(p => p.fileName))
           for (const f of Array.from(files)) {
+            if (existingNames.has(f.name)) continue
             const png = await parsePngFile(f)
-            if (png) _uploadedPngs.push(png)
+            if (png) { _uploadedPngs.push(png); existingNames.add(f.name) }
           }
           showToast(`已上传 ${files.length} 个 PNG`)
         } catch (err) {
@@ -726,12 +727,13 @@ export function bindPromptFreqEvents() {
     const items = e.dataTransfer?.files
     if (!items) return
     try {
-      // 新批次拖入时清空之前上传的 PNG，避免残留上一张的 prompt
-      _uploadedPngs = []
+      // 追加到已有列表（多张 PNG 共存）；按文件名去重
+      const existingNames = new Set(_uploadedPngs.map(p => p.fileName))
       for (const f of Array.from(items)) {
         if (!f.name.toLowerCase().endsWith('.png')) continue
+        if (existingNames.has(f.name)) continue
         const png = await parsePngFile(f)
-        if (png) _uploadedPngs.push(png)
+        if (png) { _uploadedPngs.push(png); existingNames.add(f.name) }
       }
       showToast(`已上传 PNG 文件`)
     } catch (err) {
