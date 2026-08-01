@@ -591,6 +591,91 @@ export function extractLoraTagsFromWorkflow(
   return tags
 }
 
+/** 判断 PNG 元数据是否含真实 UI 格式工作流（workflow chunk） */
+export function hasUiWorkflow(raw: Record<string, string>): boolean {
+  return !!(raw && raw['workflow'])
+}
+
+/**
+ * 将 ComfyUI API 格式工作流（prompt chunk：键为节点 id、值为 {class_type, inputs}）转换为
+ * UI 格式（workflow chunk：nodes + links），使只有 API 参数的图也能在 ComfyUI 前端导入。
+ * API 不含节点坐标/布局，转换后节点按顺序错开排列；任何异常或非 API 输入返回 null（调用方回退提示）。
+ */
+export function apiWorkflowToUI(apiJson: string): string | null {
+  try {
+    const api = safeParseJSON(apiJson)
+    if (!api || typeof api !== 'object' || Array.isArray(api)) return null
+
+    const entries = Object.entries(api)
+    if (entries.length === 0) return null
+    // 校验是 API 格式（值含 class_type）；UI 格式（nodes 数组）等返回 null
+    const isApi = entries.every(([, v]) => v && typeof v === 'object' && typeof (v as any).class_type === 'string')
+    if (!isApi) return null
+
+    // API key → UI 数字 id
+    const idMap = new Map<string, number>()
+    let maxId = 0
+    for (const [key] of entries) {
+      const num = Number(key)
+      const uiId = Number.isInteger(num) ? num : maxId + 1
+      idMap.set(key, uiId)
+      if (uiId > maxId) maxId = uiId
+    }
+
+    const nodes: any[] = []
+    const links: any[] = []
+    let linkCounter = 1
+    entries.forEach(([key, val], idx) => {
+      const uiId = idMap.get(key)!
+      const inputs: any[] = []
+      const widgets_values: any[] = []
+      const rawInputs = (val as any).inputs || {}
+      for (const [iname, ival] of Object.entries(rawInputs)) {
+        // 数组链接 [srcId, srcSlot]
+        const isLink = Array.isArray(ival) && ival.length >= 2
+          && (typeof ival[0] === 'number' || /^\d+$/.test(String(ival[0])))
+          && idMap.has(String(ival[0]))
+        if (isLink) {
+          const linkId = linkCounter++
+          const fromNode = idMap.get(String(ival[0]))!
+          links.push([linkId, fromNode, Number(ival[1]) || 0, uiId, inputs.length, '*'])
+          inputs.push({ name: iname, type: '*', link: linkId })
+        } else {
+          inputs.push({ name: iname, type: '*', value: ival })
+          // 简单值进入 widgets_values（对象/数组值不入，避免污染 widget 顺序）
+          if (ival === null || typeof ival !== 'object') widgets_values.push(ival)
+        }
+      }
+      nodes.push({
+        id: uiId,
+        type: (val as any).class_type,
+        pos: [idx * 20, idx * 20],
+        size: [200, 100],
+        flags: {},
+        order: idx,
+        mode: 0,
+        inputs,
+        outputs: [],
+        properties: {},
+        widgets_values,
+      })
+    })
+
+    return JSON.stringify({
+      last_node_id: maxId,
+      last_link_id: linkCounter - 1,
+      nodes,
+      links,
+      groups: [],
+      config: {},
+      extra: {},
+      version: 0.4,
+    })
+  } catch {
+    return null
+  }
+}
+
 function parseA1111Parameters(params: string): Partial<ParsedMetadata> {
   const result: Partial<ParsedMetadata> = {
     raw: { parameters: params },

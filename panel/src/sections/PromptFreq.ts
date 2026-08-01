@@ -143,8 +143,9 @@ async function parsePngChunks(buf: ArrayBuffer): Promise<{
   if (!workflowJson && raw['workflow']) {
     workflowJson = raw['workflow']
   }
-  // 复制工作流用 UI 格式（workflow chunk）——ComfyUI 前端「导入工作流」只认 UI 格式
-  const uiWorkflow = raw['workflow'] || workflowJson
+  // 复制工作流必须用真正 UI 格式（workflow chunk）——ComfyUI 前端「导入工作流」只认 UI 格式；
+  // 无 workflow chunk 时留空，由复制按钮走 API 转换/明确提示，避免把 API 格式当 UI 复制导致粘贴被忽略
+  const uiWorkflow = raw['workflow'] || ''
   const params = raw['parameters'] || ''
   const userComment = raw['user_comment'] || ''
   const description = raw['Description'] || ''
@@ -449,7 +450,7 @@ export function renderPromptFreq() {
       html += `<div class="prompt-freq-png-card">
         <div class="prompt-freq-png-header">
           ${p.previewThumb ? `<img class="prompt-freq-png-thumb" src="${esc(p.previewThumb)}" alt="" data-pid="${esc(p.id)}" title="点击放大预览">` : ''}
-          <span>${esc(p.fileName)}${(p.uiWorkflow || p.workflowJson) ? '<span class="prompt-freq-png-flow" title="已内嵌 ComfyUI 工作流"> 📄</span>' : ''}</span>
+          <span>${esc(p.fileName)}${p.uiWorkflow ? '<span class="prompt-freq-png-flow" title="已内嵌 UI 格式工作流，可导入 ComfyUI"> 📄UI</span>' : (p.workflowJson ? '<span class="prompt-freq-png-flow" title="仅 API 执行参数，无画布工作流"> 📄API</span>' : '')}</span>
           <span>
             <button class="prompt-freq-png-send ${p.sent ? 'sent' : ''}" data-pid="${esc(p.id)}" title="发送到 Outputs">${p.sent ? '✅ 已发送' : '📤 发送到 Outputs'}</button>
             <button class="prompt-freq-png-save ${p.saved ? 'saved' : ''}" data-pid="${esc(p.id)}">${p.saved ? '✅ 已保存' : '💾 保存到 Prompt 库'}</button>
@@ -674,11 +675,26 @@ export function bindPromptFreqEvents() {
     const copyFlowBtn = target.closest('.prompt-freq-png-copyflow') as HTMLElement
     if (copyFlowBtn) {
       const p = _uploadedPngs.find(x => x.id === copyFlowBtn.dataset.pid)
-      // 复制 UI 格式工作流（ComfyUI 前端「导入工作流」可识别），API 格式会导入失败/显示当前画布
-      const wf = p?.uiWorkflow || p?.workflowJson
-      if (wf) {
-        copyText(wf)
+      if (!p) return
+      // 有 UI 格式（workflow chunk）→ 直接复制；仅 API 参数 → 尝试转换为 UI，失败则明确提示（不再误导可还原）
+      if (p.uiWorkflow) {
+        copyText(p.uiWorkflow)
         showToast('📄 工作流已复制（导入 ComfyUI 可还原该图工作流）')
+      } else if (p.workflowJson) {
+        try {
+          const { apiWorkflowToUI } = await import('../services/outputMetadata')
+          const ui = apiWorkflowToUI(p.workflowJson)
+          if (ui) {
+            copyText(ui)
+            showToast('📄 已从 API 参数转换为 UI 工作流并复制（布局可能需微调）')
+          } else {
+            copyText(p.workflowJson)
+            showToast('⚠️ 该图仅 API 执行参数、无画布工作流，ComfyUI 前端导入会被忽略')
+          }
+        } catch {
+          copyText(p.workflowJson)
+          showToast('⚠️ 该图仅 API 执行参数、无画布工作流，ComfyUI 前端导入会被忽略')
+        }
       } else {
         showToast('⚠️ 该图片无工作流数据')
       }
@@ -702,12 +718,13 @@ export function bindPromptFreqEvents() {
         const files = (e.target as HTMLInputElement).files
         if (!files) return
         try {
-          // 追加到已有列表（多张 PNG 共存）；按文件名去重，重复拖入同一张不重复添加
-          const existingNames = new Set(_uploadedPngs.map(p => p.fileName))
+          // 追加到已有列表（多张 PNG 共存）；按 文件名+大小 去重，同名不同内容不重复跳过
+          const existingKeys = new Set(_uploadedPngs.map(p => `${p.fileName}:${p.file?.size ?? ''}`))
           for (const f of Array.from(files)) {
-            if (existingNames.has(f.name)) continue
+            const key = `${f.name}:${f.size}`
+            if (existingKeys.has(key)) continue
             const png = await parsePngFile(f)
-            if (png) { _uploadedPngs.push(png); existingNames.add(f.name) }
+            if (png) { _uploadedPngs.push(png); existingKeys.add(key) }
           }
           showToast(`已上传 ${files.length} 个 PNG`)
         } catch (err) {
@@ -737,13 +754,14 @@ export function bindPromptFreqEvents() {
     const items = e.dataTransfer?.files
     if (!items) return
     try {
-      // 追加到已有列表（多张 PNG 共存）；按文件名去重
-      const existingNames = new Set(_uploadedPngs.map(p => p.fileName))
+      // 追加到已有列表（多张 PNG 共存）；按 文件名+大小 去重
+      const existingKeys = new Set(_uploadedPngs.map(p => `${p.fileName}:${p.file?.size ?? ''}`))
       for (const f of Array.from(items)) {
         if (!f.name.toLowerCase().endsWith('.png')) continue
-        if (existingNames.has(f.name)) continue
+        const key = `${f.name}:${f.size}`
+        if (existingKeys.has(key)) continue
         const png = await parsePngFile(f)
-        if (png) { _uploadedPngs.push(png); existingNames.add(f.name) }
+        if (png) { _uploadedPngs.push(png); existingKeys.add(key) }
       }
       showToast(`已上传 PNG 文件`)
     } catch (err) {

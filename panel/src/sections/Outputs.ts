@@ -7,7 +7,7 @@ import { outputsDb } from '../db/outputsDb'
 import { esc, escAttr, showToast, copyText } from '../utils'
 import { confirmModal, promptModal } from '../components/Modal'
 import type { OutputFile, OutputMetadata, OutputDir, OutputScanStatus } from '../types/outputs'
-import { extractLorasFromWorkflow } from '../services/outputMetadata'
+import { extractLorasFromWorkflow, apiWorkflowToUI } from '../services/outputMetadata'
 import { backfillPrompts } from '../services/outputMetadataService'
 import JSZip from 'jszip'
 
@@ -28,6 +28,32 @@ let dirTree: OutputDir | null = null
 let _lastClickedFileIndex = -1
 let _currentPreviewFileId = ''
 let _focusMode = false
+
+/**
+ * 复制工作流：有 UI 格式（workflow chunk）直接复制；仅 API 参数（prompt chunk）尝试转换为 UI，
+ * 失败则复制 API 并明确提示——避免用户把 API 格式粘贴到 ComfyUI 被忽略后误以为是自己的旧工作流。
+ */
+async function copyOutputWorkflow(meta: OutputMetadata | undefined) {
+  try {
+    if (!meta?.workflowJson) { showToast('该图片无工作流数据'); return }
+    const hasUi = !!(meta.rawMetadata && meta.rawMetadata['workflow'])
+    if (hasUi) {
+      await navigator.clipboard.writeText(meta.workflowJson)
+      showToast('工作流 JSON 已复制（可导入 ComfyUI）')
+      return
+    }
+    const ui = apiWorkflowToUI(meta.workflowJson)
+    if (ui) {
+      await navigator.clipboard.writeText(ui)
+      showToast('已从 API 参数转换为 UI 工作流并复制（布局可能需微调）')
+    } else {
+      await navigator.clipboard.writeText(meta.workflowJson)
+      showToast('⚠️ 该图仅 API 执行参数、无画布工作流，ComfyUI 前端导入会被忽略')
+    }
+  } catch {
+    showToast('复制失败')
+  }
+}
 
 export async function initOutputs() {
   if (_initDone) return
@@ -538,12 +564,7 @@ function bindOutputsEvents() {
       const id = copyWfBtn.dataset.id
       if (id) {
         const meta = useOutputStore.getState().metadataCache.get(id)
-        if (meta?.workflowJson) {
-          await navigator.clipboard.writeText(meta.workflowJson)
-          showToast('工作流 JSON 已复制')
-        } else {
-          showToast('该图片无工作流数据')
-        }
+        await copyOutputWorkflow(meta)
       }
       return
     }
@@ -823,13 +844,7 @@ function bindOutputsEvents() {
     // 复制工作流 JSON
     if (target.closest('#outputsMetaCopyWorkflowBtn')) {
       const meta = useOutputStore.getState().metadataCache.get(_currentPreviewFileId)
-      if (meta?.workflowJson) {
-        navigator.clipboard.writeText(meta.workflowJson).then(() => {
-          showToast('工作流 JSON 已复制')
-        }).catch(() => {
-          showToast('复制失败')
-        })
-      }
+      copyOutputWorkflow(meta)
       return
     }
 
