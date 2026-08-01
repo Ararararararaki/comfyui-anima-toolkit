@@ -1,5 +1,31 @@
 /* ── Outputs 模块样式 ── */
 
+/* 目录权限过期重新授权横幅（浏览器重启后 FS Access 授权回到 prompt） */
+.outputs-reauth-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 12px 16px 0;
+  padding: 10px 16px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: var(--radius);
+  font-size: 13px;
+  color: var(--text);
+}
+.outputs-reauth-btn {
+  padding: 5px 14px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--accent, #5E6AD2);
+  color: #fff;
+}
+.outputs-reauth-btn:hover { opacity: 0.9; }
+
 /* 主布局 */
 .outputs-layout {
   display: flex;

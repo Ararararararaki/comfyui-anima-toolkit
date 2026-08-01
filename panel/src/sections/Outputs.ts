@@ -58,20 +58,33 @@ export async function initOutputs() {
   if (_initDone) return
   _initDone = true
 
-  // 尝试恢复目录句柄（内部已处理增量扫描）
-  await loadOutputDirHandle()
+  // 尝试恢复目录句柄与权限状态（句柄引用始终恢复；权限降级时用横幅引导一键重新授权）
+  const loadResult = await loadOutputDirHandle()
 
   const dh = useOutputStore.getState().dirHandle
-  if (dh) {
+  if (dh && loadResult.permission === 'granted') {
     // 解析逻辑升级时自动失效旧元数据缓存并重新解析（增量扫描按 mtime 会跳过未变更文件）
     await ensureMetadataFresh(dh)
     // 构建目录树（buildDirTree 是轻量操作，仅遍历文件名）
     dirTree = await buildDirTree(dh)
     renderDirTree(dirTree)
+    // 权限正常：自动增量扫描，发现重启期间新增的图
+    if (useOutputStore.getState().files.length > 0) {
+      try { await scanOutputDirIncremental(dh) } catch { /* 静默 */ }
+      renderOutputsView()
+    }
+  } else if (dh) {
+    // 权限降级（prompt/denied，如浏览器重启后）：显示重新授权横幅，避免被迫重新「选择目录」
+    showReauthBanner()
   }
 
   renderOutputsView()
   bindOutputsEvents()
+
+  // ── 自动检测新图：窗口获得焦点 / 页面重新可见 / 60s 轮询 ──
+  startOutputsAutoScan()
+  window.addEventListener('focus', triggerOutputsIncrementalScan)
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) triggerOutputsIncrementalScan() })
 
   // ── 后台预加载元数据（让筛选器拿到 Model/LoRA 列表） ──
   const { files, metadataCache } = useOutputStore.getState()
@@ -87,6 +100,68 @@ export async function initOutputs() {
       updateScanProgress(state.scanStatus, state.scanProgress)
     }
   })
+}
+
+// ── 目录权限过期横幅 ──
+
+function showReauthBanner() {
+  const el = document.getElementById('outputsReauthBanner')
+  if (el) el.style.display = 'flex'
+}
+
+function hideReauthBanner() {
+  const el = document.getElementById('outputsReauthBanner')
+  if (el) el.style.display = 'none'
+}
+
+/** 一键重新授权上次目录：浏览器重启后 FS Access 授权回到 prompt，点击恢复即可继续用增量扫描 */
+async function reauthorizeOutputs() {
+  const dh = useOutputStore.getState().dirHandle
+  if (!dh) { showToast('⚠️ 没有可恢复的目录，请重新选择'); return }
+  try {
+    const perm = await (dh as any).requestPermission({ mode: 'readwrite' })
+    if (perm === 'granted') {
+      hideReauthBanner()
+      // 清除灰图缩略图缓存，强制从文件系统重新加载
+      useOutputStore.getState().invalidateThumbnails()
+      await scanOutputDirIncremental(dh)
+      dirTree = await buildDirTree(dh)
+      renderDirTree(dirTree)
+      renderOutputsView()
+      updateFilterPanel()
+      showToast('✅ 目录已重新授权')
+    } else {
+      showToast('⚠️ 授权未完成，请点击按钮重新授权')
+    }
+  } catch {
+    showToast('⚠️ 授权失败，请重新选择目录')
+  }
+}
+
+// ── 自动增量扫描：生成一张新图后无需手动刷新 ──
+
+let _outputsPollTimer: number | null = null
+
+function isOutputsActive() {
+  const sec = document.getElementById('sectionOutputs')
+  return !!sec && !sec.classList.contains('section-hidden')
+}
+
+function startOutputsAutoScan() {
+  if (_outputsPollTimer !== null) return
+  _outputsPollTimer = window.setInterval(() => {
+    triggerOutputsIncrementalScan()
+  }, 60_000)
+}
+
+async function triggerOutputsIncrementalScan() {
+  const s = useOutputStore.getState()
+  if (s.dirHandle && s.files.length > 0 && isOutputsActive() && s.scanStatus !== 'scanning') {
+    try {
+      const count = await scanOutputDirIncremental(s.dirHandle)
+      if (count > 0) { renderOutputsView(); updateFilterPanel() }
+    } catch { /* 静默 */ }
+  }
 }
 
 export async function activateOutputs() {
@@ -354,6 +429,12 @@ function bindOutputsEvents() {
   // 事件委托 - 单一 click handler
   document.addEventListener('click', async (e) => {
     const target = e.target as HTMLElement
+
+    // 重新授权目录（浏览器重启后权限降级）
+    if (target.closest('.outputs-reauth-btn')) {
+      await reauthorizeOutputs()
+      return
+    }
 
     // 选择目录
     if (target.closest('.outputs-select-btn')) {

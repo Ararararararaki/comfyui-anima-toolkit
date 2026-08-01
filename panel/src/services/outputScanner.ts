@@ -574,7 +574,15 @@ async function resolveFileInDir(
   }
 }
 
-export async function loadOutputDirHandle(): Promise<boolean> {
+export interface LoadDirHandleResult {
+  /** 是否恢复了缓存文件列表（即使句柄权限未恢复，列表仍显示） */
+  restored: boolean
+  /** 句柄权限状态：none=无保存句柄；granted=可直接读写；prompt/denied=需重新授权 */
+  permission: 'granted' | 'prompt' | 'denied' | 'none'
+}
+
+export async function loadOutputDirHandle(): Promise<LoadDirHandleResult> {
+  const result: LoadDirHandleResult = { restored: false, permission: 'none' }
   try {
     const record = await outputsDb.dirHandles.get('current')
     console.log('🔍 [loadOutputDirHandle] dirHandle 记录:', !!record)
@@ -590,25 +598,24 @@ export async function loadOutputDirHandle(): Promise<boolean> {
         // 直接全量展示，绕过 page=1 的 50 条限制
         useOutputStore.setState({ files: deduped, page: Math.ceil(deduped.length / 50) })
         useOutputStore.getState().applyFilters()
-        const after = useOutputStore.getState()
-        console.log('🔍 [loadOutputDirHandle] 路径一：after.files:', after.files.length, 'after.filteredFiles:', after.filteredFiles.length)
-        return true
+        result.restored = true
       }
-      return false
+      return result
     }
 
     // 兼容新旧存储格式：新版直接存原始 handle，旧版存 { id, handle } wrapper
     const dh = (record as any).handle || record
+    // 始终恢复句柄引用——即使权限降级（浏览器重启后 FS Access 授权会回到 prompt），
+    // 后续可一键重新授权恢复图片，避免被迫重新「选择目录」而触发全量扫描
+    useOutputStore.getState().setDirHandle(dh)
 
-    // 尝试恢复权限
     try {
-      const ok = await (dh as any).requestPermission({ mode: 'readwrite' })
-      if (ok === 'granted') {
-        useOutputStore.getState().setDirHandle(dh)
-      }
+      const perm = await (dh as any).queryPermission({ mode: 'readwrite' })
+      result.permission = (perm === 'granted' || perm === 'prompt' || perm === 'denied') ? perm : 'prompt'
     } catch {
-      // 权限恢复失败，继续用缓存
+      result.permission = 'denied'
     }
+    console.log('🔍 [loadOutputDirHandle] 句柄权限:', result.permission)
 
     // 从 DB 加载已索引的文件（核心：无论如何都尝试加载）
     const files = await outputsDb.files.toArray()
@@ -621,14 +628,11 @@ export async function loadOutputDirHandle(): Promise<boolean> {
       // 缓存文件全量展示（绕过初始 page=1 的 50 条限制）
       useOutputStore.setState({ files: deduped, page: Math.ceil(deduped.length / 50) })
       useOutputStore.getState().applyFilters()
-      const after = useOutputStore.getState()
-      console.log('🔍 [loadOutputDirHandle] 路径二：after.files:', after.files.length, 'after.filteredFiles:', after.filteredFiles.length)
-      return true
+      result.restored = true
     }
-
-    return false
+    return result
   } catch {
-    return false
+    return result
   }
 }
 
