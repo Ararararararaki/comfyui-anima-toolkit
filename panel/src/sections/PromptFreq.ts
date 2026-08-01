@@ -118,12 +118,15 @@ async function parsePngChunks(buf: ArrayBuffer): Promise<{
     offset += 12 + len
   }
 
-  // workflow：优先取 workflow chunk；prompt chunk 仅在是合法 JSON 时才视为 workflow（避免 A1111 parameters 纯文本）
+  // workflow：优先 prompt chunk（API 格式，图实际执行的提示词）；workflow chunk（UI）兜底。
+  // prompt 仅在是合法 JSON（含 NaN 清洗）时才视为 workflow，避免 A1111 parameters 纯文本
+  const { safeParseJSON } = await import('../services/outputMetadata')
   let workflowJson = ''
-  if (raw['workflow']) {
+  if (raw['prompt'] && safeParseJSON(raw['prompt'])) {
+    workflowJson = raw['prompt']
+  }
+  if (!workflowJson && raw['workflow']) {
     workflowJson = raw['workflow']
-  } else if (raw['prompt']) {
-    try { JSON.parse(raw['prompt']); workflowJson = raw['prompt'] } catch { /* 非 JSON，跳过 */ }
   }
   const params = raw['parameters'] || ''
   const userComment = raw['user_comment'] || ''
@@ -133,10 +136,10 @@ async function parsePngChunks(buf: ArrayBuffer): Promise<{
 
   // 复用 Outputs 的解析引擎
   try {
-    const { parseComfyUIWorkflow } = await import('../services/outputMetadata')
+    const { parseComfyUIWorkflow, safeParseJSON } = await import('../services/outputMetadata')
     if (workflowJson) {
-      const wf = JSON.parse(workflowJson)
-      result = parseComfyUIWorkflow(wf)
+      const wf = safeParseJSON(workflowJson)
+      if (wf) result = parseComfyUIWorkflow(wf)
       console.log('[PromptFreq] parseComfyUIWorkflow result:', {
         promptLen: result.prompt?.length,
         negativeLen: result.negativePrompt?.length,
@@ -154,8 +157,9 @@ async function parsePngChunks(buf: ArrayBuffer): Promise<{
   // 手动兜底：仅当解析引擎完全没提取到时，从 workflow 原始节点取第一个文本
   if (!result.prompt && workflowJson) {
     try {
-      const wf = JSON.parse(workflowJson)
-      const nodes: any[] = wf.nodes || (Array.isArray(wf) ? wf : Object.values(wf))
+      const { safeParseJSON: sp } = await import('../services/outputMetadata')
+      const wf = sp(workflowJson)
+      const nodes: any[] = wf?.nodes || (Array.isArray(wf) ? wf : Object.values(wf || {}))
       for (const node of nodes) {
         if (!node) continue
         if (node.class_type !== 'CLIPTextEncode' && node.type !== 'CLIPTextEncode') continue
@@ -175,11 +179,17 @@ async function parsePngChunks(buf: ArrayBuffer): Promise<{
   // 最终 fallback
   if (!result.prompt) {
     result.prompt = userComment || description || ''
-  }  // 提取 LoRA 名
-  const loras: string[] = []
-  const allText = (result.prompt || '') + ' ' + (result.negativePrompt || '')
-  const loraMatches = allText.match(/<lora:([^:>]+)/g)
-  if (loraMatches) loras.push(...loraMatches.map((l: string) => l.replace('<lora:', '')))
+  }  // 提取 LoRA 名：优先从工作流节点提取（适配各工作流），兜底从提示词文本提取 <lora:...> 标签
+  let loras: string[] = []
+  if (workflowJson) {
+    const { extractLorasFromWorkflow } = await import('../services/outputMetadata')
+    loras = extractLorasFromWorkflow(workflowJson)
+  }
+  if (loras.length === 0) {
+    const allText = (result.prompt || '') + ' ' + (result.negativePrompt || '')
+    const loraMatches = allText.match(/<lora:([^:>]+)/g)
+    if (loraMatches) loras.push(...loraMatches.map((l: string) => l.replace('<lora:', '')))
+  }
 
   return {
     prompt: result.prompt || '',

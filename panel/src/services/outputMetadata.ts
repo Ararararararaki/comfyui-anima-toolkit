@@ -94,6 +94,8 @@ export function safeParseJSON(str: string): any | null {
     try {
       return JSON.parse(str
         .replace(/:\s*NaN/g, ': null')
+        .replace(/\[\s*NaN/g, '[null')
+        .replace(/,\s*NaN/g, ', null')
         .replace(/:\s*Infinity/g, ': null')
         .replace(/:\s*-Infinity/g, ': null'))
     } catch {
@@ -109,11 +111,17 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
 
   if (!workflow || typeof workflow !== 'object') return result
 
-  // 构建 node_id → node 映射
-  const nodeMap = new Map<number, any>()
-  const uiNodes: any[] = workflow.nodes || (Array.isArray(workflow) ? workflow : [])
-  for (const n of uiNodes) {
-    if (n && typeof n === 'object' && n.id !== undefined) nodeMap.set(n.id, n)
+  // 归一化节点列表：UI format（nodes 数组）/ API format（nodeId 键对象）
+  const iterNodes: any[] = workflow.nodes || (Array.isArray(workflow) ? workflow : typeof workflow === 'object' ? Object.entries(workflow).map(([k, v]) => ({ id: k, ...(v as any) })) : [])
+
+  // 构建 node_id → node 映射（同时注册 string / number 键，兼容 UI format 数字 id 与 API format 字符串 id）
+  const nodeMap = new Map<any, any>()
+  for (const n of iterNodes) {
+    if (n && typeof n === 'object' && n.id !== undefined) {
+      nodeMap.set(n.id, n)
+      const numId = Number(n.id)
+      if (!isNaN(numId)) nodeMap.set(numId, n)
+    }
   }
 
   // 构建 link 映射：link_id → { to_node, to_slot }
@@ -175,16 +183,15 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
     return hits >= 2
   }
 
-  // 从节点提取文本内容
-  function getNodeText(node: any): string {
+  // 从节点提取文本内容（API format 的文本字段可能是数组链接 [srcId, slot]，递归解析上游文本）
+  function getNodeText(node: any, visited = new Set<string>()): string {
     const inputs = node.inputs || {}
     const ct = node.class_type || node.type || ''
-    // CLIPTextEncode
-    if (inputs.text && typeof inputs.text === 'string' && inputs.text.length > 3) return inputs.text
-    if (inputs.prompt && typeof inputs.prompt === 'string' && inputs.prompt.length > 3) return inputs.prompt
-    // UI 节点常把正面/负面 prompt 放在 positive / negative 字段（如 WeiLinPromptUI）
-    if (inputs.positive && typeof inputs.positive === 'string' && inputs.positive.length > 3) return inputs.positive
-    if (inputs.negative && typeof inputs.negative === 'string' && inputs.negative.length > 3) return inputs.negative
+    // 直接文本字段（含 preview_text / prompt_text，如 PreviewAny / DanbooruTextPassthrough）
+    for (const key of ['text', 'prompt', 'positive', 'negative', 'prompt_text', 'preview_text', 'preview_markdown']) {
+      const v = inputs[key]
+      if (typeof v === 'string' && v.length > 3) return v
+    }
     // TextConcatenate: text1 + text2 + ...
     if (ct.includes('TextConcat') || ct.includes('Text Comb')) {
       let combined = ''
@@ -200,6 +207,20 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
         if (typeof w === 'string' && w.length > 5) return w
       }
     }
+    // API format：输入值为数组链接 [srcId, slot] → 递归解析源节点文本
+    const nodeId = node.id !== undefined ? String(node.id) : ''
+    if (visited.has(nodeId)) return ''
+    visited.add(nodeId)
+    for (const key of Object.keys(inputs)) {
+      const v = inputs[key]
+      if (!Array.isArray(v) || v.length === 0) continue
+      const srcVal = v[0]
+      if (typeof srcVal !== 'number' && (typeof srcVal !== 'string' || isNaN(Number(srcVal)))) continue
+      const srcNode = nodeMap.get(srcVal) || nodeMap.get(Number(srcVal))
+      if (!srcNode || srcNode === node) continue
+      const t = getNodeText(srcNode, visited)
+      if (t) return t
+    }
     return ''
   }
 
@@ -212,6 +233,7 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
     if (inputs.text && typeof inputs.text === 'string' && inputs.text.length > 5) return true
     if (inputs.prompt && typeof inputs.prompt === 'string' && inputs.prompt.length > 5) return true
     if (inputs.prompt_text && typeof inputs.prompt_text === 'string' && inputs.prompt_text.length > 5) return true
+    if (inputs.preview_text && typeof inputs.preview_text === 'string' && inputs.preview_text.length > 5) return true
     if (inputs.positive && typeof inputs.positive === 'string' && inputs.positive.length > 5) return true
     if (inputs.negative && typeof inputs.negative === 'string' && inputs.negative.length > 5) return true
     return false
@@ -219,7 +241,6 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
 
   // 收集所有文本节点
   const textNodes: { node: any; text: string }[] = []
-  const iterNodes: any[] = workflow.nodes || (Array.isArray(workflow) ? workflow : typeof workflow === 'object' ? Object.entries(workflow).map(([k, v]) => ({ id: k, ...(v as any) })) : [])
 
   for (const n of iterNodes) {
     if (!n || typeof n !== 'object') continue
@@ -330,19 +351,22 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
     }
   }
 
-  // 确定每个文本节点是正/负向
+  // 确定每个文本节点是正/负向。权威引用（KSampler/链路）优先，启发式仅补漏，
+  // 防止 CR Prompt Text、PreviewAny 等旁路文本覆盖已确定的真实 prompt。
+  let authoritativePrompt = false
+  let authoritativeNegative = false
   for (const { node, text } of textNodes) {
     const nodeId = node.id !== undefined ? String(node.id) : ''
     let assigned = ''
     // 1. KSampler 引用
     const ref = nodeId ? posRefs.get(nodeId) : undefined
-    if (ref === 'positive') { if (!isPureLoraText(text)) result.prompt = text; assigned = 'posRefs→positive' }
-    else if (ref === 'negative') { result.negativePrompt = text; assigned = 'posRefs→negative' }
+    if (ref === 'positive') { if (!isPureLoraText(text)) { result.prompt = text; authoritativePrompt = true } assigned = 'posRefs→positive' }
+    else if (ref === 'negative') { result.negativePrompt = text; authoritativeNegative = true; assigned = 'posRefs→negative' }
     // 2. 链路追踪（UI format）
     if (!assigned && node.id !== undefined && linkMap.size > 0) {
       const role = getPromptRole(node.id)
-      if (role === 'positive') { if (!isPureLoraText(text)) result.prompt = text; assigned = 'linkTrace→positive' }
-      else if (role === 'negative') { result.negativePrompt = text; assigned = 'linkTrace→negative' }
+      if (role === 'positive') { if (!isPureLoraText(text)) { result.prompt = text; authoritativePrompt = true } assigned = 'linkTrace→positive' }
+      else if (role === 'negative') { result.negativePrompt = text; authoritativeNegative = true; assigned = 'linkTrace→negative' }
     }
     // 2.b 正向链路：文本节点的输出 → 下游节点 → 查 posRefs
     if (!assigned && node.id !== undefined && posRefs.size > 0) {
@@ -354,19 +378,19 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
             const link = linkMap.get(lid)
             if (!link) continue
             const dnRef = posRefs.get(String(link.toNode))
-            if (dnRef === 'positive') { if (!isPureLoraText(text)) result.prompt = text; assigned = 'posRefsFwd→positive'; break }
-            if (dnRef === 'negative') { result.negativePrompt = text; assigned = 'posRefsFwd→negative'; break }
+            if (dnRef === 'positive') { if (!isPureLoraText(text)) { result.prompt = text; authoritativePrompt = true } assigned = 'posRefsFwd→positive'; break }
+            if (dnRef === 'negative') { result.negativePrompt = text; authoritativeNegative = true; assigned = 'posRefsFwd→negative'; break }
           }
           if (assigned) break
         }
       }
     }
-    // 3. 启发式判定
+    // 3. 启发式判定（仅当无权威结果时补漏；无权威时保留"后者覆盖"旧行为）
     if (!assigned) {
       if (isNegativeText(text)) {
-        result.negativePrompt = text; assigned = 'heuristic→negative'
+        if (!authoritativeNegative) { result.negativePrompt = text; assigned = 'heuristic→negative' }
       } else {
-        if (!isPureLoraText(text)) result.prompt = text; assigned = 'heuristic→positive'
+        if (!authoritativePrompt && !isPureLoraText(text)) { result.prompt = text; assigned = 'heuristic→positive' }
       }
     }
     console.log(`[PromptFreq/debug] 分类 node=${nodeId} ${assigned} 文本前50字:`, text.slice(0, 50))
@@ -382,8 +406,7 @@ export function extractLorasFromWorkflow(
 ): string[] {
   if (!workflowJson) return []
 
-  // Regex to parse <lora:name:weight> from LoraManager's text input
-  const LORA_TAG_RE = /<lora:([^:>]+):([^:>]+)(?::([^:>]+))?>/gi
+  const LORA_TAG_RE = /<lora:([^:>]+):[^:>]*(?::[^:>]*)?>/gi
   const loras: string[] = []
   const seen = new Set<string>()
 
@@ -391,54 +414,87 @@ export function extractLorasFromWorkflow(
     if (name && !seen.has(name)) { seen.add(name); loras.push(name) }
   }
 
-  function extractFromNode(node: any) {
-    const inputs = node?.inputs
-    if (!inputs || typeof inputs !== 'object') return
+  // 解析 <lora:name:...> 标签
+  function tagsOf(str: string): string[] {
+    const out: string[] = []
+    if (typeof str !== 'string') return out
+    let m: RegExpExecArray | null
+    while ((m = LORA_TAG_RE.exec(str)) !== null) out.push(m[1])
+    return out
+  }
 
-    // Standard ComfyUI LoraLoader: inputs.lora_name (string)
-    if (inputs.lora_name && typeof inputs.lora_name === 'string') {
-      add(inputs.lora_name.replace(/\.(safetensors|pt|bin)$/i, '').trim())
-      return
-    }
-
-    // LoraManager: inputs.text contains <lora:name:w> syntax
-    if (inputs.text && typeof inputs.text === 'string') {
-      let m: RegExpExecArray | null
-      while ((m = LORA_TAG_RE.exec(inputs.text)) !== null) {
-        const name = m[1].trim()
-        if (name) add(name)
-      }
-      return
-    }
-
-    // LoraManager widget object
-    if (inputs.loras && typeof inputs.loras === 'object' && !Array.isArray(inputs.loras)) {
-      for (const key of Object.keys(inputs.loras)) {
-        const entry = inputs.loras[key]
-        if (entry && typeof entry === 'object') {
-          const name = (entry.name || entry.lora_name || '').trim()
-          if (name) add(name)
+  // 解析 API 数组链接 [srcId, slot] → 源节点的 lora 名
+  function resolveName(v: any, nodeMap: Map<any, any>): string {
+    if (typeof v === 'string') return v
+    if (Array.isArray(v) && v.length) {
+      const src = v[0]
+      const srcNode = nodeMap.get(src) || nodeMap.get(Number(src))
+      if (srcNode) {
+        const iv = srcNode.inputs?.lora_name
+        if (iv) return resolveName(iv, nodeMap)
+        if (Array.isArray(srcNode.widgets_values)) {
+          for (const w of srcNode.widgets_values) if (typeof w === 'string' && /\.(safetensors|pt|bin)$/i.test(w)) return w
         }
       }
     }
+    return ''
   }
 
-  function parseJsonAndExtract(jsonStr: string) {
-    try {
-      const workflow = JSON.parse(jsonStr)
-      for (const node of (workflow.nodes || [])) extractFromNode(node)
-      if (typeof workflow === 'object') {
-        for (const key of Object.keys(workflow)) extractFromNode(workflow[key])
+  function extractWorkflow(wf: any) {
+    const iterNodes: any[] = wf?.nodes || (Array.isArray(wf) ? wf : typeof wf === 'object' ? Object.entries(wf).map(([k, v]) => ({ id: k, ...(v as any) })) : [])
+    const nodeMap = new Map<any, any>()
+    for (const n of iterNodes) {
+      if (n && n.id !== undefined) { nodeMap.set(String(n.id), n); nodeMap.set(Number(n.id), n) }
+    }
+    for (const node of iterNodes) {
+      if (!node || typeof node !== 'object') continue
+      const ct = node.class_type || node.type || ''
+      const isLoraNode = /Lora/i.test(ct)
+      const inputs = node.inputs || {}
+      const cands: string[] = []
+
+      if (inputs && typeof inputs === 'object' && !Array.isArray(inputs)) {
+        if (inputs.lora_name) cands.push(resolveName(inputs.lora_name, nodeMap))
+        if (typeof inputs.text === 'string') cands.push(...tagsOf(inputs.text))
+        if (inputs.loras && typeof inputs.loras === 'object') {
+          const arr = Array.isArray(inputs.loras) ? inputs.loras : (inputs.loras as any).__value__
+          if (Array.isArray(arr)) {
+            for (const e of arr) if (e && typeof e === 'object') cands.push(e.name || e.lora_name || '')
+          } else {
+            for (const k of Object.keys(inputs.loras)) {
+              const e = (inputs.loras as any)[k]
+              if (e && typeof e === 'object') cands.push(e.name || e.lora_name || '')
+            }
+          }
+        }
       }
-    } catch { /* skip */ }
+
+      // UI format：widgets_values 里的 lora 文件名（仅 Lora 节点），及数组 inputs
+      if (isLoraNode && Array.isArray(node.widgets_values)) {
+        for (const w of node.widgets_values) {
+          if (typeof w === 'string' && /\.(safetensors|pt|bin)$/i.test(w)) cands.push(w)
+        }
+      }
+      if (Array.isArray(inputs)) {
+        for (const entry of inputs) {
+          if (!entry || typeof entry !== 'object') continue
+          if (entry.name === 'lora_name' && typeof entry.value === 'string') cands.push(entry.value)
+          if (entry.name === 'text' && typeof entry.value === 'string') cands.push(...tagsOf(entry.value))
+        }
+      }
+
+      for (const c of cands) {
+        const name = String(c || '').replace(/\.(safetensors|pt|bin)$/i, '').trim()
+        if (name) add(name)
+      }
+    }
   }
 
-  // Primary: try workflowJson
-  parseJsonAndExtract(workflowJson)
+  try { extractWorkflow(safeParseJSON(workflowJson)) } catch { /* skip */ }
 
   // Fallback: try raw prompt metadata (for old cached scans where workflowJson is UI format)
   if (loras.length === 0 && rawMetadata?.prompt && rawMetadata.prompt !== workflowJson) {
-    parseJsonAndExtract(rawMetadata.prompt)
+    try { extractWorkflow(safeParseJSON(rawMetadata.prompt)) } catch { /* skip */ }
   }
 
   return loras
@@ -598,9 +654,14 @@ export async function parseOutputMetadata(
 
   // 与 PromptFreq 一致：优先 workflow chunk（UI format，节点带 widgets_values，文本最可靠），
   // 其次 prompt chunk（API format，仅当其为合法 JSON；ComfyUI 可能写入 is_changed:[NaN] 等非法 JSON 需清洗）
-  let bestWorkflow = workflowData || ''
-  if (!bestWorkflow && promptData && safeParseJSON(promptData)) {
+  // prompt chunk（API 格式）是图实际执行的提示词，最准确，优先；
+  // workflow chunk（UI 格式）是编辑器状态，可能含未执行分支/多采样器导致选错，仅作兜底
+  let bestWorkflow = ''
+  if (promptData && safeParseJSON(promptData)) {
     bestWorkflow = promptData
+  }
+  if (!bestWorkflow && workflowData) {
+    bestWorkflow = workflowData
   }
 
   // 尝试解析工作流
