@@ -9,9 +9,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script type="module" crossorigin src="./assets/index-BzSAwsUp.js"></script>
+  <script type="module" crossorigin src="./assets/index-CXQURyvJ.js"></script>
   <link rel="modulepreload" crossorigin href="./assets/vendor-D6eCwX_v.js">
-  <link rel="stylesheet" crossorigin href="./assets/index-AEXE_SUL.css">
+  <link rel="stylesheet" crossorigin href="./assets/index-p2VlDVxo.css">
 </head>
 <body>
 
@@ -23,7 +23,7 @@
       <button class="main-tab" data-section="lora" role="tab" aria-selected="false">📦 LoRA 探索 <span class="badge-tab" id="loraBadge">0</span></button>
       <button class="main-tab" data-section="artist" role="tab" aria-selected="false">🖌️ 画师系列 <span class="badge-tab">8</span></button>
       <button class="main-tab" data-section="prompt" role="tab" aria-selected="false">📖 Prompt 库</button>
-      <button class="main-tab" data-section="prompt-freq" role="tab" aria-selected="false">📝 图片 Prompt 解析</button>
+      <button class="main-tab" data-section="prompt-freq" role="tab" aria-selected="false">🖼️ 图片解析</button>
       <button class="main-tab" data-section="outputs" role="tab" aria-selected="false">🖼️ Outputs</button>
     </nav>
     <div class="theme-switcher" id="themeSwitcher" title="切换主题">
@@ -192,7 +192,7 @@
 <div id="sectionPromptFreq" class="section-hidden">
   <div class="container">
     <div class="prompt-freq-toolbar">
-      <h2>📝 图片 Prompt 解析</h2>
+      <h2>🖼️ 图片解析</h2>
       <div class="prompt-freq-controls">
         <span style="font-size:12px;color:var(--text2)">基于最近</span>
         <select id="promptFreqLimit">
@@ -308,6 +308,10 @@
 </div>
 
 <div id="sectionOutputs" class="section-hidden">
+  <div class="outputs-reauth-banner" id="outputsReauthBanner" style="display:none">
+    <span>🔑 上次的目录访问权限已过期，图片暂时无法加载</span>
+    <button class="outputs-reauth-btn" type="button">点击重新授权恢复图片</button>
+  </div>
   <div class="outputs-layout">
     <aside class="outputs-sidebar">
       <div class="outputs-sidebar-header">
