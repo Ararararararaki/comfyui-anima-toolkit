@@ -7,7 +7,7 @@ import { outputsDb } from '../db/outputsDb'
 import { esc, escAttr, showToast, copyText } from '../utils'
 import { confirmModal, promptModal } from '../components/Modal'
 import type { OutputFile, OutputMetadata, OutputDir, OutputScanStatus } from '../types/outputs'
-import { extractLorasFromWorkflow, apiWorkflowToUI } from '../services/outputMetadata'
+import { extractLorasFromWorkflow, apiWorkflowToUI, hasUiWorkflow } from '../services/outputMetadata'
 import { backfillPrompts } from '../services/outputMetadataService'
 import JSZip from 'jszip'
 
@@ -36,8 +36,7 @@ let _focusMode = false
 async function copyOutputWorkflow(meta: OutputMetadata | undefined) {
   try {
     if (!meta?.workflowJson) { showToast('该图片无工作流数据'); return }
-    const hasUi = !!(meta.rawMetadata && meta.rawMetadata['workflow'])
-    if (hasUi) {
+    if (hasUiWorkflow(meta.rawMetadata)) {
       await navigator.clipboard.writeText(meta.workflowJson)
       showToast('工作流 JSON 已复制（可导入 ComfyUI）')
       return
