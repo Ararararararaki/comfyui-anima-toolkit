@@ -541,6 +541,20 @@
   max-width: 100px;
 }
 
+.outputs-card-category {
+  display: inline-block;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 11px;
+  background: rgba(94, 106, 210, 0.18);
+  color: #9aa5ff;
+  border: 1px solid rgba(94, 106, 210, 0.3);
+}
+
 
 /* 列表视图 — 紧凑多列卡片 */
 .outputs-list {

@@ -84,6 +84,7 @@ function renderImageCard(file: OutputFile, meta: OutputMetadata | null, isSelect
     <div class="outputs-card-info">
       <div class="outputs-card-name" title="${esc(file.filename)}">${esc(file.filename)}</div>
       <div class="outputs-card-meta">
+        ${file.category ? `<span class="outputs-card-category" title="分类：${esc(file.category)}">🏷 ${esc(file.category)}</span>` : ''}
         ${meta?.model ? `<span class="outputs-card-model" title="${esc(meta.model)}">${esc(meta.model.slice(0, 20))}</span>` : ''}
         <span class="outputs-card-size">${fmtSize(file.size)}</span>
       </div>
@@ -121,6 +122,7 @@ function renderListCard(file: OutputFile, selectedIds: Set<string>, metadataCach
     <div class="outputs-list-card-body">
       <div class="outputs-list-card-name" title="${esc(file.filename)}">${esc(file.filename)}</div>
       <div class="outputs-list-card-meta">
+        ${file.category ? `<span class="outputs-card-category" title="分类：${esc(file.category)}">🏷 ${esc(file.category)}</span>` : ''}
         <span>${meta?.model ? esc(meta.model.slice(0, 20)) : '-'}</span>
         <span>${fmtSize(file.size)}</span>
         <span>${new Date(file.mtime).toLocaleDateString()}</span>

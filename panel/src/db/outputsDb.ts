@@ -31,6 +31,13 @@ export class OutputsDB extends Dexie {
       dirHandles: '',
       manifest: '&id, path, mtime, orphaned',
     })
+    this.version(3).stores({
+      files: '&id, path, filename, favorite, rating, createdAt, mtime',
+      metadata: '&imageId',
+      thumbnails: '&id',
+      dirHandles: '',
+      manifest: '&id, path, mtime, orphaned',
+    })
   }
 }
 

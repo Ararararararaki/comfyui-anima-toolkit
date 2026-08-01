@@ -263,6 +263,7 @@ export function createOutputContextMenu(
     onBatchPin?: (ids: string[], pinned: boolean) => void
     onBatchCopyImage?: (ids: string[]) => void
     onBatchDownloadImage?: (ids: string[]) => void
+    onSetCategory?: (ids: string[]) => void
   }
 ): ContextMenuGroup[] {
   const groups: ContextMenuGroup[] = []
@@ -275,6 +276,7 @@ export function createOutputContextMenu(
         { label: '收藏', icon: '⭐', handler: () => handlers.onFavorite?.(id) },
         { label: '评分', icon: '🌟', handler: () => handlers.onRate?.(id) },
         { label: '置顶', icon: '📍', handler: () => handlers.onPin?.(id, true) },
+        { label: '设置分类', icon: '🏷️', handler: () => handlers.onSetCategory?.([id]) },
         { label: '复制', icon: '📋', handler: () => handlers.onCopyImage?.(id) },
         { label: '下载', icon: '⬇️', handler: () => handlers.onDownloadImage?.(id) },
         { label: '重命名', icon: '✏️', handler: () => handlers.onRename?.(id), shortcut: 'F2' },
@@ -298,6 +300,7 @@ export function createOutputContextMenu(
         { label: '批量收藏', icon: '⭐', handler: () => handlers.onBatchFavorite?.(fileIds) },
         { label: '批量评分', icon: '🌟', handler: () => handlers.onBatchRate?.(fileIds) },
         { label: '批量置顶', icon: '📍', handler: () => handlers.onBatchPin?.(fileIds, true) },
+        { label: '批量设置分类', icon: '🏷️', handler: () => handlers.onSetCategory?.(fileIds) },
         { label: '批量复制', icon: '📋', handler: () => handlers.onBatchCopyImage?.(fileIds) },
         { label: '批量下载', icon: '⬇️', handler: () => handlers.onBatchDownloadImage?.(fileIds) },
         { label: '批量删除', icon: '🗑️', handler: () => handlers.onBatchDelete?.(fileIds), danger: true },

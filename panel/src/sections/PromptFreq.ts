@@ -2,6 +2,10 @@ import { esc, showToast, copyText } from '../utils'
 import { useOutputStore } from '../store/outputStore'
 import { addPrompt, generatePromptId } from '../store/prompts'
 import type { PromptEntry } from '../types'
+import { openLightbox } from '../components/Lightbox'
+import { outputsDb } from '../db/outputsDb'
+import { hashPath } from '../services/outputManifest'
+import type { OutputFile, OutputMetadata } from '../types/outputs'
 
 let _limit = 50
 // 高频词区折叠状态（重渲染后保持）
@@ -24,7 +28,9 @@ interface UploadedPng {
   loras: string[]
   workflowJson: string
   previewThumb: string
+  file: File
   saved?: boolean
+  sent?: boolean
 }
 
 function genUploadedId(): string {
@@ -62,6 +68,8 @@ function parsePngFile(file: File): Promise<UploadedPng | null> {
           loras: meta.loras || [],
           workflowJson: meta.workflowJson || '',
           previewThumb,
+          file,
+          sent: false,
         })
       } else {
         resolve(null)
@@ -239,6 +247,113 @@ async function savePngToLibrary(p: UploadedPng): Promise<void> {
   showToast('✅ 已保存到 Prompt 库，可在「📖 Prompt 库」查看')
 }
 
+// ── 发送到 Outputs ──
+
+/** 发送 PNG 到 Outputs：先选分类，再保存文件到输出目录并注册记录 */
+function sendPngToOutputs(p: UploadedPng) {
+  const state = useOutputStore.getState()
+  if (!state.dirHandle) {
+    showToast('⚠️ 请先在 Outputs 中选择输出目录')
+    return
+  }
+  showCategoryPick(async (cat) => {
+    try {
+      await doSendPngToOutputs(p, cat)
+      p.sent = true
+      renderPromptFreq()
+      showToast(cat ? `✅ 已发送到 Outputs（分类：${cat}）` : '✅ 已发送到 Outputs')
+    } catch (e: any) {
+      showToast('❌ 发送失败: ' + (e?.message || e))
+    }
+  })
+}
+
+async function doSendPngToOutputs(p: UploadedPng, category: string): Promise<void> {
+  const dirHandle = useOutputStore.getState().dirHandle
+  if (!dirHandle) throw new Error('未选择输出目录')
+
+  // 文件名去重（避免覆盖已有文件）
+  const used = new Set(useOutputStore.getState().files.map(f => f.filename))
+  let name = p.fileName
+  let i = 1
+  while (used.has(name)) {
+    const dot = p.fileName.lastIndexOf('.')
+    name = dot > 0 ? p.fileName.slice(0, dot) + '_' + i + p.fileName.slice(dot) : p.fileName + '_' + i
+    i++
+  }
+
+  const handle = await dirHandle.getFileHandle(name, { create: true })
+  const writable = await handle.createWritable()
+  await writable.write(p.file)
+  await writable.close()
+
+  const path = name
+  const id = hashPath(path)
+  const ext = name.split('.').pop()?.toLowerCase() || ''
+  const outputFile: OutputFile = {
+    id, path, filename: name, extension: ext,
+    size: p.file.size, mtime: Date.now(), width: 0, height: 0,
+    favorite: false, rating: 0, notes: '', tags: [], category,
+    status: '', pinned: false, createdAt: Date.now(),
+  }
+  await outputsDb.files.put(outputFile)
+  const outputMeta: OutputMetadata = {
+    imageId: id, model: p.model, seed: p.seed, steps: p.steps, cfg: p.cfg,
+    sampler: p.sampler, vae: '', clipSkip: 0,
+    prompt: p.positive, negativePrompt: p.negative, workflowJson: p.workflowJson,
+    rawMetadata: {},
+  }
+  await outputsDb.metadata.put(outputMeta)
+  try {
+    const { createThumbnailFromBlob } = await import('../services/outputThumbnail')
+    const thumb = await createThumbnailFromBlob(p.file)
+    if (thumb?.dataUrl) {
+      await outputsDb.thumbnails.put({ id, dataUrl: thumb.dataUrl, width: thumb.width, height: thumb.height, createdAt: Date.now() })
+    }
+  } catch { /* 缩略图失败不阻断 */ }
+
+  useOutputStore.setState(s => ({ files: [...s.files, outputFile] }))
+  useOutputStore.getState().applyFilters()
+}
+
+/** 分类选择弹窗（发送到 Outputs 时选择分类：已有分类 / 未分类 / 新建） */
+function showCategoryPick(onPick: (cat: string) => void) {
+  const s = useOutputStore.getState()
+  const cats = Array.from(new Set(s.files.map(f => f.category).filter(Boolean))).sort()
+  const overlay = document.createElement('div')
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;'
+  const panel = document.createElement('div')
+  panel.style.cssText = 'background:#1b1d22;color:#e6e6e6;border:1px solid #333;border-radius:10px;padding:14px;width:250px;max-height:70vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.5);'
+  panel.innerHTML = '<h4 style="margin:0 0 8px;font-size:13px">选择分类</h4>'
+  const mk = (label: string, val: string) => {
+    const btn = document.createElement('button')
+    btn.textContent = label
+    btn.style.cssText = 'display:block;width:100%;padding:7px 10px;margin-bottom:4px;border:1px solid #333;border-radius:6px;cursor:pointer;font-size:12px;background:transparent;color:#e6e6e6;text-align:left;'
+    btn.onmouseenter = () => { btn.style.background = '#262a32' }
+    btn.onmouseleave = () => { btn.style.background = 'transparent' }
+    btn.onclick = () => { overlay.remove(); onPick(val) }
+    panel.appendChild(btn)
+  }
+  mk('未分类', '')
+  cats.forEach(c => mk(c, c))
+  const newWrap = document.createElement('div')
+  newWrap.style.cssText = 'display:flex;gap:6px;margin-top:8px;'
+  const input = document.createElement('input')
+  input.placeholder = '新建分类…'
+  input.style.cssText = 'flex:1;padding:6px;background:#0f1013;color:#e6e6e6;border:1px solid #333;border-radius:6px;font-size:12px;outline:none;'
+  const addBtn = document.createElement('button')
+  addBtn.textContent = '新建'
+  addBtn.style.cssText = 'padding:6px 10px;border:none;border-radius:6px;cursor:pointer;font-size:12px;background:#5E6AD2;color:#fff;'
+  addBtn.onclick = () => { const v = input.value.trim(); if (v) { overlay.remove(); onPick(v) } }
+  input.onkeydown = (e) => { if (e.key === 'Enter') addBtn.click() }
+  newWrap.append(input, addBtn)
+  panel.appendChild(newWrap)
+  overlay.appendChild(panel)
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove() }
+  document.body.appendChild(overlay)
+  input.focus()
+}
+
 // ── 渲染 ──
 
 export function renderPromptFreq() {
@@ -293,9 +408,10 @@ export function renderPromptFreq() {
 
       html += `<div class="prompt-freq-png-card">
         <div class="prompt-freq-png-header">
-          ${p.previewThumb ? `<img class="prompt-freq-png-thumb" src="${esc(p.previewThumb)}" alt="">` : ''}
+          ${p.previewThumb ? `<img class="prompt-freq-png-thumb" src="${esc(p.previewThumb)}" alt="" data-pid="${esc(p.id)}" title="点击放大预览">` : ''}
           <span>${esc(p.fileName)}${p.workflowJson ? '<span class="prompt-freq-png-flow" title="已内嵌 ComfyUI 工作流"> 📄</span>' : ''}</span>
           <span>
+            <button class="prompt-freq-png-send ${p.sent ? 'sent' : ''}" data-pid="${esc(p.id)}" title="发送到 Outputs">${p.sent ? '✅ 已发送' : '📤 发送到 Outputs'}</button>
             <button class="prompt-freq-png-save ${p.saved ? 'saved' : ''}" data-pid="${esc(p.id)}">${p.saved ? '✅ 已保存' : '💾 保存到 Prompt 库'}</button>
             <button class="prompt-freq-png-del" data-pid="${esc(p.id)}" title="移除">✕</button>
           </span>
@@ -474,6 +590,22 @@ export function bindPromptFreqEvents() {
         _uploadedPngs = _uploadedPngs.filter(p => p.id !== pid)
         renderPromptFreq()
       }
+      return
+    }
+
+    // 点击缩略图放大预览
+    const thumbImg = target.closest('.prompt-freq-png-thumb') as HTMLElement
+    if (thumbImg) {
+      const p = _uploadedPngs.find(x => x.id === thumbImg.dataset.pid)
+      if (p?.file) openLightbox([URL.createObjectURL(p.file)], 0)
+      return
+    }
+
+    // 发送到 Outputs
+    const sendBtn = target.closest('.prompt-freq-png-send') as HTMLElement
+    if (sendBtn) {
+      const p = _uploadedPngs.find(x => x.id === sendBtn.dataset.pid)
+      if (p && !p.sent) sendPngToOutputs(p)
       return
     }
 

@@ -53,6 +53,7 @@ interface OutputState {
   filterQuickPeriod: string
   filterStatusFlags: string[]
   filterTag: string
+  filterCategory: string
 
   // 分页
   page: number
@@ -80,6 +81,11 @@ interface OutputState {
   setFilterQuickPeriod: (period: string) => void
   setFilterStatusFlags: (flags: string[]) => void
   setFilterTag: (tag: string) => void
+  setFilterCategory: (category: string) => void
+  setCategory: (id: string, category: string) => Promise<void>
+  batchSetCategory: (ids: string[], category: string) => Promise<void>
+  deleteCategory: (category: string) => Promise<void>
+  renameCategory: (oldName: string, newName: string) => Promise<void>
   clearAdvancedFilters: () => void
 
   toggleSelect: (id: string) => void
@@ -141,6 +147,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   filterQuickPeriod: '',
   filterStatusFlags: [],
   filterTag: '',
+  filterCategory: '',
 
   page: 1,
   hasMore: false,
@@ -190,8 +197,35 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   setFilterQuickPeriod: (filterQuickPeriod) => { set({ filterQuickPeriod, page: 1 }); get().applyFilters() },
   setFilterStatusFlags: (filterStatusFlags) => { set({ filterStatusFlags, page: 1 }); get().applyFilters() },
   setFilterTag: (filterTag) => { set({ filterTag, page: 1 }); get().applyFilters() },
+  setFilterCategory: (filterCategory) => { set({ filterCategory, page: 1 }); get().applyFilters() },
+  setCategory: async (id, category) => {
+    try {
+      await outputsDb.files.update(id, { category })
+      set(s => ({ files: s.files.map(f => f.id === id ? { ...f, category } : f) }))
+      get().applyFilters()
+    } catch (err) { console.warn('[outputStore] setCategory 失败:', err) }
+  },
+  batchSetCategory: async (ids, category) => {
+    for (const id of ids) await outputsDb.files.update(id, { category })
+    set(s => ({ files: s.files.map(f => ids.includes(f.id) ? { ...f, category } : f) }))
+    get().applyFilters()
+  },
+  deleteCategory: async (category) => {
+    if (!category) return
+    const ids = get().files.filter(f => f.category === category).map(f => f.id)
+    for (const id of ids) await outputsDb.files.update(id, { category: '' })
+    set(s => ({ files: s.files.map(f => f.category === category ? { ...f, category: '' } : f) }))
+    get().applyFilters()
+  },
+  renameCategory: async (oldName, newName) => {
+    if (!oldName || !newName) return
+    const ids = get().files.filter(f => f.category === oldName).map(f => f.id)
+    for (const id of ids) await outputsDb.files.update(id, { category: newName })
+    set(s => ({ files: s.files.map(f => f.category === oldName ? { ...f, category: newName } : f) }))
+    get().applyFilters()
+  },
   clearAdvancedFilters: () => {
-    set({ filterModel: '', filterLora: '', filterDateMin: '', filterDateMax: '', filterQuickPeriod: '', filterStatusFlags: [], filterTag: '', page: 1 })
+    set({ filterModel: '', filterLora: '', filterDateMin: '', filterDateMax: '', filterQuickPeriod: '', filterStatusFlags: [], filterTag: '', filterCategory: '', page: 1 })
     get().applyFilters()
   },
 
@@ -326,7 +360,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
 
   applyFilters: () => {
     const { files, filterKey, searchQuery, sortKey, sortOrder, currentPath, metadataCache, page,
-      filterModel, filterLora, filterDateMin, filterDateMax, filterQuickPeriod, filterStatusFlags, filterTag } = get()
+      filterModel, filterLora, filterDateMin, filterDateMax, filterQuickPeriod, filterStatusFlags, filterTag, filterCategory } = get()
 
     let filtered = [...files]
 
@@ -351,7 +385,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     }
 
     // 高级筛选
-    const hasAdvanced = filterModel || filterLora || filterDateMin || filterDateMax || filterQuickPeriod || filterStatusFlags.length > 0 || filterTag
+    const hasAdvanced = filterModel || filterLora || filterDateMin || filterDateMax || filterQuickPeriod || filterStatusFlags.length > 0 || filterTag || filterCategory
     if (hasAdvanced) {
       const periodStart = filterQuickPeriod ? getPeriodStart(filterQuickPeriod) : 0
       filtered = filtered.filter(f => {
@@ -375,6 +409,12 @@ export const useOutputStore = create<OutputState>((set, get) => ({
           if (filterStatusFlags.includes('favorite') && !f.favorite) return false
           if (filterStatusFlags.includes('rated') && !(f.rating > 0)) return false
           if (filterStatusFlags.includes('status') && !f.status) return false
+        }
+
+        // 自定义分类筛选（挂在文件上，无需元数据）
+        if (filterCategory) {
+          if (filterCategory === '__none__' && f.category !== '') return false
+          if (filterCategory !== '__none__' && f.category !== filterCategory) return false
         }
 
         // 需要元数据的筛选

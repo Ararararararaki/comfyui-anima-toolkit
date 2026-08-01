@@ -204,7 +204,7 @@ function updateFilterPanel() {
   if (!body) return
   const s = useOutputStore.getState()
   const hasMeta = s.metadataCache.size > 0
-  const hasAny = s.filterModel || s.filterLora || s.filterDateMin || s.filterDateMax || s.filterQuickPeriod || s.filterStatusFlags.length > 0 || s.filterTag
+  const hasAny = s.filterModel || s.filterLora || s.filterDateMin || s.filterDateMax || s.filterQuickPeriod || s.filterStatusFlags.length > 0 || s.filterTag || s.filterCategory
 
   // 同步输入框值
   const setVal = (cls: string, val: string) => {
@@ -215,6 +215,17 @@ function updateFilterPanel() {
   setVal('outputs-filter-lora', s.filterLora)
   setVal('outputs-filter-date-min', s.filterDateMin)
   setVal('outputs-filter-date-max', s.filterDateMax)
+
+  // 填充分类下拉选项（从文件分类去重），并同步选中值
+  const catEl = document.querySelector('.outputs-filter-category') as HTMLSelectElement
+  if (catEl) {
+    const cats = Array.from(new Set(s.files.map(f => f.category).filter(Boolean))).sort()
+    const current = catEl.value
+    catEl.innerHTML = '<option value="">全部</option><option value="__none__">未分类</option>' +
+      cats.map(c => `<option value="${escAttr(c)}">${esc(c)}</option>`).join('')
+    if (s.filterCategory) catEl.value = s.filterCategory
+    else catEl.value = current && cats.includes(current) ? current : ''
+  }
 
   // 同步快捷时间段按钮状态
   document.querySelectorAll('.outputs-period-btn').forEach(b => {
@@ -967,6 +978,7 @@ function bindOutputsEvents() {
       onDownloadImage: (id) => { downloadImage(id) },
       onBatchCopyImage: (ids) => { copyImagesToClipboard(ids) },
       onBatchDownloadImage: (ids) => { downloadImagesAsZip(ids) },
+      onSetCategory: (ids) => { showCategoryPicker(ids) },
     })
 
     openContextMenu(e.clientX, e.clientY, groups)
@@ -1230,6 +1242,17 @@ function bindOutputsEvents() {
     })
     document.querySelector('.outputs-filter-clear')?.setAttribute('style', 'display:none;margin-top:8px;width:100%')
     renderOutputsView()
+  })
+
+  // 分类筛选下拉
+  document.querySelector('.outputs-filter-category')?.addEventListener('change', (e) => {
+    useOutputStore.getState().setFilterCategory((e.target as HTMLSelectElement).value)
+    renderOutputsView()
+  })
+
+  // 管理分类按钮
+  document.querySelector('.outputs-category-manage-btn')?.addEventListener('click', () => {
+    showCategoryManager()
   })
 
   // ── Copy 事件兜底（防止浏览器默认复制选中 DOM，避免与 keydown 重复执行） ──
@@ -1872,4 +1895,120 @@ function showStarPicker(idOrIds: string | string[], anchorEl?: HTMLElement) {
     }
   }
   setTimeout(() => document.addEventListener('click', closeOnClick), 0)
+}
+
+/** 分类选择器：列出已有分类 / 未分类 / 新建，应用到指定文件 */
+function showCategoryPicker(ids: string[]) {
+  const existing = document.querySelector('.outputs-category-picker')
+  if (existing) existing.remove()
+
+  const s = useOutputStore.getState()
+  const cats = Array.from(new Set(s.files.map(f => f.category).filter(Boolean))).sort()
+
+  const overlay = document.createElement('div')
+  overlay.className = 'outputs-category-picker'
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;'
+  const panel = document.createElement('div')
+  panel.style.cssText = 'background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:14px;width:260px;max-height:70vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.5);'
+  panel.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;"><h4 style="margin:0;font-size:13px">设置分类（${ids.length} 个文件）</h4></div>`
+
+  const mkCat = (label: string, val: string) => {
+    const btn = document.createElement('button')
+    btn.textContent = label
+    btn.style.cssText = 'display:block;width:100%;padding:7px 10px;margin-bottom:4px;border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:12px;background:transparent;color:var(--text);text-align:left;'
+    btn.onmouseenter = () => { btn.style.background = 'var(--bg3)' }
+    btn.onmouseleave = () => { btn.style.background = 'transparent' }
+    btn.onclick = () => apply(val)
+    panel.appendChild(btn)
+  }
+  mkCat('未分类', '')
+
+  const apply = async (cat: string) => {
+    overlay.remove()
+    if (ids.length === 1) {
+      await useOutputStore.getState().setCategory(ids[0], cat)
+      showToast(cat ? `已设置分类「${cat}」` : '已清除分类')
+    } else {
+      await useOutputStore.getState().batchSetCategory(ids, cat)
+      showToast(cat ? `${ids.length} 个文件已设分类「${cat}」` : `${ids.length} 个文件已清除分类`)
+    }
+    renderOutputsView()
+    updateFilterPanel()
+  }
+
+  cats.forEach(c => mkCat(c, c))
+
+  const newWrap = document.createElement('div')
+  newWrap.style.cssText = 'display:flex;gap:6px;margin-top:8px;'
+  const input = document.createElement('input')
+  input.placeholder = '新建分类…'
+  input.style.cssText = 'flex:1;padding:6px;background:var(--bg1);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;outline:none;'
+  const addBtn = document.createElement('button')
+  addBtn.textContent = '新建'
+  addBtn.style.cssText = 'padding:6px 10px;border:none;border-radius:6px;cursor:pointer;font-size:12px;background:var(--accent);color:#fff;'
+  addBtn.onclick = () => { const v = input.value.trim(); if (v) apply(v) }
+  input.onkeydown = (e) => { if (e.key === 'Enter') addBtn.click() }
+  newWrap.append(input, addBtn)
+  panel.appendChild(newWrap)
+
+  overlay.appendChild(panel)
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove() }
+  document.body.appendChild(overlay)
+  input.focus()
+}
+
+/** 分类管理：列出所有分类，支持删除/重命名 */
+function showCategoryManager() {
+  const s = useOutputStore.getState()
+  const cats = Array.from(new Set(s.files.map(f => f.category).filter(Boolean))).sort()
+
+  const overlay = document.createElement('div')
+  overlay.className = 'outputs-category-picker'
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;'
+  const panel = document.createElement('div')
+  panel.style.cssText = 'background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:14px;width:300px;max-height:70vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.5);'
+  panel.innerHTML = `<h4 style="margin:0 0 8px;font-size:13px">分类管理（${cats.length} 个分类）</h4>`
+
+  if (cats.length === 0) {
+    panel.innerHTML += `<p style="color:var(--text-dim);font-size:12px;margin:12px 0;">暂无分类，右键图片 → 设置分类即可创建</p>`
+  }
+
+  for (const c of cats) {
+    const count = s.files.filter(f => f.category === c).length
+    const row = document.createElement('div')
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid var(--border);'
+    row.innerHTML = `<span style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">🏷 ${esc(c)} <small style="color:var(--text-dim)">(${count})</small></span>`
+    const renameBtn = document.createElement('button')
+    renameBtn.textContent = '重命名'
+    renameBtn.style.cssText = 'padding:3px 8px;border:1px solid var(--border);border-radius:5px;cursor:pointer;font-size:11px;background:transparent;color:var(--text);'
+    renameBtn.onclick = async () => {
+      const n = (await promptModal('重命名分类', c, '输入新分类名'))?.trim()
+      if (n && n !== c) {
+        await useOutputStore.getState().renameCategory(c, n)
+        overlay.remove()
+        renderOutputsView()
+        updateFilterPanel()
+        showToast(`已重命名「${c}」→「${n}」`)
+      }
+    }
+    const delBtn = document.createElement('button')
+    delBtn.textContent = '删除'
+    delBtn.style.cssText = 'padding:3px 8px;border:1px solid var(--danger, #f44);border-radius:5px;cursor:pointer;font-size:11px;background:transparent;color:#f66;'
+    delBtn.onclick = async () => {
+      const ok = await confirmModal('删除分类', `删除分类「${c}」？${count} 个文件将变为未分类`)
+      if (ok) {
+        await useOutputStore.getState().deleteCategory(c)
+        overlay.remove()
+        renderOutputsView()
+        updateFilterPanel()
+        showToast(`已删除分类「${c}」`)
+      }
+    }
+    row.append(renameBtn, delBtn)
+    panel.appendChild(row)
+  }
+
+  overlay.appendChild(panel)
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove() }
+  document.body.appendChild(overlay)
 }

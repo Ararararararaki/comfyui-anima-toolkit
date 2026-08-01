@@ -13,6 +13,7 @@ export interface OutputFile {
   rating: number                // 0-5
   notes: string
   tags: string[]
+  category: string              // 自定义分类（空字符串=未分类）
   status: string                // '' | 'approved' | 'review' | 'edit' | 'rejected' | 'select'
   pinned: boolean               // 是否置顶
   createdAt: number
