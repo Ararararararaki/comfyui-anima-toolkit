@@ -743,23 +743,17 @@ export async function parseOutputMetadata(
     offset += 12 + len
   }
 
-  // 与 PromptFreq 一致：优先 workflow chunk（UI format，节点带 widgets_values，文本最可靠），
-  // 其次 prompt chunk（API format，仅当其为合法 JSON；ComfyUI 可能写入 is_changed:[NaN] 等非法 JSON 需清洗）
-  // prompt chunk（API 格式）是图实际执行的提示词，最准确，优先；
-  // workflow chunk（UI 格式）是编辑器状态，可能含未执行分支/多采样器导致选错，仅作兜底
-  let bestWorkflow = ''
-  if (promptData && safeParseJSON(promptData)) {
-    bestWorkflow = promptData
-  }
-  if (!bestWorkflow && workflowData) {
-    bestWorkflow = workflowData
-  }
+  // 提示词解析：prompt chunk（API，图实际执行的提示词）优先；workflow chunk（UI）兜底
+  // 但返回的 workflowJson 用 workflow chunk（UI 格式）优先 —— ComfyUI 前端「导入工作流」只认 UI 格式，
+  // API 格式粘贴会被忽略导致复制到"当前工作流"
+  const parseSrc = (promptData && safeParseJSON(promptData)) ? promptData : workflowData
 
   // 尝试解析工作流
-  if (bestWorkflow) {
-    const workflow = safeParseJSON(bestWorkflow)
+  if (parseSrc) {
+    const workflow = safeParseJSON(parseSrc)
     if (workflow) {
       const parsed = parseComfyUIWorkflow(workflow)
+      const workflowJson = workflowData || promptData || ''
       return {
         model: parsed.model || '',
         seed: parsed.seed || '',
@@ -770,7 +764,7 @@ export async function parseOutputMetadata(
         clipSkip: parsed.clipSkip || 0,
         prompt: parsed.prompt || '',
         negativePrompt: parsed.negativePrompt || '',
-        workflowJson: bestWorkflow,
+        workflowJson,
         raw,
       }
     }

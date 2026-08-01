@@ -28,6 +28,7 @@ interface UploadedPng {
   loras: string[]
   loraTags: string[]
   workflowJson: string
+  uiWorkflow: string
   previewThumb: string
   file: File
   hasMeta?: boolean
@@ -75,6 +76,7 @@ function parsePngFile(file: File): Promise<UploadedPng | null> {
             loras: meta.loras || [],
             loraTags: meta.loraTags || [],
             workflowJson: meta.workflowJson || '',
+            uiWorkflow: meta.uiWorkflow || '',
             previewThumb,
             file,
             hasMeta: !!(meta.prompt || meta.negativePrompt || meta.workflowJson || meta.seed || meta.steps || meta.cfg || meta.sampler || meta.model || (meta.loras || []).length),
@@ -95,7 +97,7 @@ function parsePngFile(file: File): Promise<UploadedPng | null> {
 
 async function parsePngChunks(buf: ArrayBuffer): Promise<{
   prompt: string; negativePrompt: string; seed: string; steps: string;
-  cfg: string; sampler: string; model: string; loras: string[]; loraTags: string[]; workflowJson: string
+  cfg: string; sampler: string; model: string; loras: string[]; loraTags: string[]; workflowJson: string; uiWorkflow: string
 } | null> {
   const view = new DataView(buf)
   const bytes = new Uint8Array(buf)
@@ -132,8 +134,8 @@ async function parsePngChunks(buf: ArrayBuffer): Promise<{
   }
 
   // workflow：优先 prompt chunk（API 格式，图实际执行的提示词）；workflow chunk（UI）兜底。
-  // prompt 仅在是合法 JSON（含 NaN 清洗）时才视为 workflow，避免 A1111 parameters 纯文本
   const { safeParseJSON } = await import('../services/outputMetadata')
+  // 提示词解析源：prompt chunk（API，图实际执行的提示词）优先；workflow chunk（UI）兜底
   let workflowJson = ''
   if (raw['prompt'] && safeParseJSON(raw['prompt'])) {
     workflowJson = raw['prompt']
@@ -141,6 +143,8 @@ async function parsePngChunks(buf: ArrayBuffer): Promise<{
   if (!workflowJson && raw['workflow']) {
     workflowJson = raw['workflow']
   }
+  // 复制工作流用 UI 格式（workflow chunk）——ComfyUI 前端「导入工作流」只认 UI 格式
+  const uiWorkflow = raw['workflow'] || workflowJson
   const params = raw['parameters'] || ''
   const userComment = raw['user_comment'] || ''
   const description = raw['Description'] || ''
@@ -220,6 +224,7 @@ async function parsePngChunks(buf: ArrayBuffer): Promise<{
     loras: [...new Set(loras)],
     loraTags: [...new Set(loraTags)],
     workflowJson,
+    uiWorkflow,
   }
 }
 
@@ -329,7 +334,7 @@ async function doSendPngToOutputs(p: UploadedPng, category: string): Promise<voi
   const outputMeta: OutputMetadata = {
     imageId: id, model: p.model, seed: p.seed, steps: p.steps, cfg: p.cfg,
     sampler: p.sampler, vae: '', clipSkip: 0,
-    prompt: p.positive, negativePrompt: p.negative, workflowJson: p.workflowJson,
+    prompt: p.positive, negativePrompt: p.negative, workflowJson: p.uiWorkflow || p.workflowJson,
     rawMetadata: {},
   }
   await outputsDb.metadata.put(outputMeta)
@@ -444,7 +449,7 @@ export function renderPromptFreq() {
       html += `<div class="prompt-freq-png-card">
         <div class="prompt-freq-png-header">
           ${p.previewThumb ? `<img class="prompt-freq-png-thumb" src="${esc(p.previewThumb)}" alt="" data-pid="${esc(p.id)}" title="点击放大预览">` : ''}
-          <span>${esc(p.fileName)}${p.workflowJson ? '<span class="prompt-freq-png-flow" title="已内嵌 ComfyUI 工作流"> 📄</span>' : ''}</span>
+          <span>${esc(p.fileName)}${(p.uiWorkflow || p.workflowJson) ? '<span class="prompt-freq-png-flow" title="已内嵌 ComfyUI 工作流"> 📄</span>' : ''}</span>
           <span>
             <button class="prompt-freq-png-send ${p.sent ? 'sent' : ''}" data-pid="${esc(p.id)}" title="发送到 Outputs">${p.sent ? '✅ 已发送' : '📤 发送到 Outputs'}</button>
             <button class="prompt-freq-png-save ${p.saved ? 'saved' : ''}" data-pid="${esc(p.id)}">${p.saved ? '✅ 已保存' : '💾 保存到 Prompt 库'}</button>
@@ -510,7 +515,7 @@ export function renderPromptFreq() {
       }
 
       // 工作流操作
-      if (p.workflowJson) {
+      if (p.uiWorkflow || p.workflowJson) {
         html += `<div class="prompt-freq-png-actions" style="margin-top:8px">
           <button class="prompt-freq-png-copyflow" data-pid="${esc(p.id)}">📄 复制工作流</button>
           <button class="prompt-freq-png-golib" data-pid="${esc(p.id)}">📖 去 Prompt 库</button>
@@ -669,9 +674,11 @@ export function bindPromptFreqEvents() {
     const copyFlowBtn = target.closest('.prompt-freq-png-copyflow') as HTMLElement
     if (copyFlowBtn) {
       const p = _uploadedPngs.find(x => x.id === copyFlowBtn.dataset.pid)
-      if (p?.workflowJson) {
-        copyText(p.workflowJson)
-        showToast('📄 工作流已复制')
+      // 复制 UI 格式工作流（ComfyUI 前端「导入工作流」可识别），API 格式会导入失败/显示当前画布
+      const wf = p?.uiWorkflow || p?.workflowJson
+      if (wf) {
+        copyText(wf)
+        showToast('📄 工作流已复制（导入 ComfyUI 可还原该图工作流）')
       } else {
         showToast('⚠️ 该图片无工作流数据')
       }
