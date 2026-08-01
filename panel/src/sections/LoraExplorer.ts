@@ -20,7 +20,7 @@ import { renderLocalView as renderLocal, activateLocalManager } from './LocalMan
 import { useLocalModelStore } from '../store/localModels'
 import { initPromptDB, getPromptCountByModel } from '../store/prompts'
 import { renderPromptLibrary, setupPromptHandlers } from './PromptLibrary'
-import { renderPromptFreq, bindPromptFreqEvents } from './PromptFreq'
+import { activatePromptFreq, bindPromptFreqEvents } from './PromptFreq'
 
 const MAX_PAGES = 20
 const galleryPos: Record<number, number> = {}
@@ -119,7 +119,7 @@ export function switchSection(id: 'lora' | 'artist' | 'prompt' | 'prompt-freq' |
   if (id === 'artist') renderArtists()
   if (id === 'lora') renderGrid()
   if (id === 'prompt') renderPromptLibrary()
-  if (id === 'prompt-freq') renderPromptFreq()
+  if (id === 'prompt-freq') activatePromptFreq()
   if (id === 'local') { renderLocal(); activateLocalManager() }
   if (id === 'outputs') { /* Outputs handles its own activation */ }
   window.scrollTo({ top: 0, behavior: 'smooth' })

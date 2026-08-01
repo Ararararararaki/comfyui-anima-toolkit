@@ -201,11 +201,13 @@ export function setupPromptHandlers() {
     const p = await getPrompt(id)
     if (!p) return
     await updatePrompt(id, { isFavorite: !p.isFavorite })
+    promptListCache.clear()
     await renderPromptList()
   }
 
   w.__deletePrompt = async (id: string) => {
     await deletePrompt(id)
+    promptListCache.clear()
     await renderPromptList()
     showToast('🗑️ Prompt 已删除')
   }
