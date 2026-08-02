@@ -438,10 +438,9 @@ export async function scanOutputDirIncremental(dirHandle: FileSystemDirectoryHan
     const diff = await diffManifest(filesInDir)
 
     if (diff.changed.length === 0 && diff.orphaned.length === 0) {
-      // 完全无变化 — 直接恢复缓存
-      const restored = await restoreFilesFromDb(diff.unchanged)
-      useOutputStore.getState().setFiles(restored)
-      return restored.length
+      // 完全无变化 — 返回 0（表示无变化；调用方据此不重建网格，
+      // 避免自动轮询 / 焦点触发时反复重建导致所有图片闪烁）
+      return 0
     }
 
     // 有变化但已有文件缓存 → 增量更新
