@@ -567,6 +567,7 @@
         const name = document.createElement("span");
         name.className = "lora-name";
         name.textContent = l.name.length > 16 ? l.name.slice(0, 13) + "..." : l.name;
+        name.title = l.name; // 原生悬浮提示完整名（兜底，不依赖弹窗逻辑）
         let tooltipTimer = null;
         name.onmouseenter = () => {
           clearTimeout(tooltipTimer);
