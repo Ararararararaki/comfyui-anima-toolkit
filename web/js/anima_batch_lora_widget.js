@@ -656,8 +656,13 @@
         }
         const total = data.loras.length;
         const found = data.loras.filter((l) => l.status === "found").length;
+        const missing = data.loras.filter((l) => l.status === "not_found");
         const src = data.source === "memory" ? "HTTP" : data.source === "inline" ? "内联" : data.source === "file" ? "文件" : "?";
-        statusEl.innerHTML = `🔍 ${total} 个 LoRA，${found} 个已找到 / ${total - found} 个缺失 (${src})`;
+        statusEl.innerHTML = `🔍 ${total} 个 LoRA，${found} 个已找到 / ${missing.length} 个缺失 (${src})`;
+        if (missing.length) {
+          statusEl.innerHTML += ` <button class="verify-missing-btn" style="padding:2px 8px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:5px;cursor:pointer;font-size:9px;margin-left:4px;box-shadow:0 0 0 1px rgba(94,106,210,0.3);">🔎 查找缺失 LoRA</button>`;
+          statusEl.querySelector(".verify-missing-btn").onclick = () => this._showMissingSearch(missing);
+        }
         statusEl.style.color = found === total ? "#4caf50" : found > 0 ? "#ff9800" : "#f44";
 
         // 验证端点不返回触发词，不能覆盖已提取到的数据（否则已查到的触发词会变"无触发词"）
@@ -670,6 +675,95 @@
         statusEl.textContent = "❌ 验证失败: " + e.message;
         statusEl.style.color = "#f44";
       }
+    }
+
+    // ── 缺失 LoRA 的 C 站查找弹窗：预览图 + 进 C 站 + 下载 ──
+    async _showMissingSearch(missingList) {
+      const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+      // 与浏览弹窗一致的图片代理（C 站图走后端）
+      const imgProxy = (url) => {
+        if (!url || !url.startsWith("https://image.civitai.com/")) return url;
+        const u = url.replace(/\/width=\d+/, "") + "/width=400";
+        return "/anima/image?url=" + encodeURIComponent(u);
+      };
+
+      const overlay = document.createElement("div");
+      overlay.className = "modal-overlay";
+      const modal = document.createElement("div");
+      modal.className = "modal";
+      modal.style.cssText = "max-width:460px;max-height:75vh;";
+      modal.innerHTML = `<h3>🔎 缺失 LoRA — C 站查找</h3>
+        <div style="flex:1;overflow-y:auto;">${missingList.map((m) => `
+          <div class="ms-item" style="margin-bottom:8px;padding:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:8px;">
+            <div class="ms-head" style="display:flex;align-items:center;gap:6px;">
+              <span style="flex:1;font-size:11px;color:#EDEDEF;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(m.name)}</span>
+              <button class="ms-find" data-name="${esc(m.name)}" style="padding:3px 10px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:5px;cursor:pointer;font-size:10px;box-shadow:0 0 0 1px rgba(94,106,210,0.3);">🔎 查找</button>
+            </div>
+            <div class="ms-result"></div>
+          </div>`).join("")}</div>
+        <button class="close-btn">关闭</button>`;
+      overlay.appendChild(modal);
+      document.body.appendChild(overlay);
+      const close = () => overlay.remove();
+      overlay.onclick = (e) => { if (e.target === overlay) close(); };
+      modal.querySelector(".close-btn").onclick = close;
+      document.addEventListener("keydown", function h(e) { if (e.key === "Escape") { close(); document.removeEventListener("keydown", h); } });
+
+      modal.addEventListener("click", async (e) => {
+        const findBtn = e.target.closest(".ms-find");
+        if (findBtn) {
+          const name = findBtn.dataset.name;
+          const resultEl = findBtn.closest(".ms-item").querySelector(".ms-result");
+          findBtn.disabled = true; findBtn.textContent = "查找中...";
+          try {
+            const resp = await fetch(`/api/civitai/models?query=${encodeURIComponent(name)}&types=LORA&limit=5`);
+            const data = await resp.json();
+            const items = data.items || [];
+            if (!items.length) { resultEl.innerHTML = '<div style="font-size:10px;color:#8A8F98;padding:4px 0;">未在 C 站找到匹配模型</div>'; return; }
+            resultEl.innerHTML = items.map((it) => {
+              const v = (it.modelVersions || [])[0];
+              const img = v && v.images && v.images[0] && v.images[0].url;
+              return `<div style="display:flex;gap:8px;align-items:center;margin-top:6px;padding:6px;background:rgba(255,255,255,0.02);border-radius:6px;">
+                <div style="width:44px;height:44px;border-radius:5px;overflow:hidden;flex-shrink:0;background:#0a0a0c;">
+                  ${img ? `<img src="${imgProxy(img)}" style="width:100%;height:100%;object-fit:cover;">` : '<span style="display:flex;width:100%;height:100%;align-items:center;justify-content:center;font-size:16px;">🖼</span>'}
+                </div>
+                <div style="flex:1;min-width:0;">
+                  <div style="font-size:10px;color:#EDEDEF;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(it.name)}</div>
+                  <div style="font-size:9px;color:#8A8F98;">${v ? esc(v.name || "") + (v.baseModel ? " · " + esc(v.baseModel) : "") : ""}</div>
+                </div>
+                <button class="ms-open" data-id="${it.id}" style="padding:3px 8px;background:rgba(255,255,255,0.08);color:#EDEDEF;border:1px solid rgba(255,255,255,0.1);border-radius:5px;cursor:pointer;font-size:10px;">🔗 进C站</button>
+                ${v ? `<button class="ms-dl" data-vid="${v.id}" data-name="${esc(name)}" style="padding:3px 8px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:5px;cursor:pointer;font-size:10px;">⬇ 下载</button>` : ""}
+              </div>`;
+            }).join("");
+          } catch (err) {
+            resultEl.innerHTML = '<div style="font-size:10px;color:#f44;">查找失败: ' + esc(err.message) + '</div>';
+          } finally {
+            findBtn.disabled = false; findBtn.textContent = "🔎 查找";
+          }
+          return;
+        }
+        const openBtn = e.target.closest(".ms-open");
+        if (openBtn) { window.open("https://civitai.com/models/" + openBtn.dataset.id, "_blank"); return; }
+        const dlBtn = e.target.closest(".ms-dl");
+        if (dlBtn) {
+          dlBtn.disabled = true; dlBtn.textContent = "下载中...";
+          try {
+            const resp = await fetch(`/anima/lora/download?versionId=${encodeURIComponent(dlBtn.dataset.vid)}&name=${encodeURIComponent(dlBtn.dataset.name)}`);
+            const j = await resp.json();
+            if (j.ok) {
+              dlBtn.textContent = "✅ 已下载";
+              showToast(`✅ 已下载 ${j.filename}`);
+              if (this.listEl) this._forceRefresh(this.listEl);
+            } else {
+              dlBtn.textContent = "⬇ 下载";
+              showToast("❌ 下载失败: " + (j.error || ""));
+            }
+          } catch {
+            dlBtn.textContent = "⬇ 下载";
+            showToast("❌ 下载失败");
+          }
+        }
+      });
     }
 
     // ── 从面板同步 LoRA（消费 /anima/bridge 数据，面板「发送到 ComfyUI」后节点即可看到） ──
@@ -959,6 +1053,12 @@
           if (info.creator) parts.push(info.creator);
           if (parts.length) { metaEl.textContent = parts.join(" · "); metaEl.style.display = "block"; }
         }
+        // C 站链接按钮：有 modelId 才显示
+        if (info.modelId) {
+          host.dataset.modelId = info.modelId;
+          const cs = host.querySelector(".bm-csite");
+          if (cs) cs.style.display = "flex";
+        }
       };
 
       const paintThumb = (imgEl, name) => {
@@ -987,6 +1087,7 @@
             <button class="bm-fav" title="收藏" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:${m.favorite ? "rgba(255,180,0,0.25)" : "rgba(0,0,0,0.4)"};color:${m.favorite ? "#ffb400" : "rgba(255,255,255,0.4)"};">${m.favorite ? "★" : "☆"}</button>
             <button class="bm-pin" title="置顶" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:${m.pinned ? "rgba(94,106,210,0.3)" : "rgba(0,0,0,0.4)"};color:${m.pinned ? "#8c9bff" : "rgba(255,255,255,0.4)"};">📌</button>
             <button class="bm-catbtn" title="分配分类" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:rgba(0,0,0,0.4);color:rgba(255,255,255,0.4);">🏷️</button>
+            <button class="bm-csite" title="打开 C 站页面" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:rgba(0,0,0,0.4);color:rgba(255,255,255,0.4);display:none;">🔗</button>
           </div>
           <div style="position:absolute;bottom:0;left:0;right:0;padding:5px 6px;background:linear-gradient(180deg,transparent,rgba(0,0,0,0.85));">
             <div class="bm-mname" style="font-size:10px;color:#EDEDEF;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${l.name}</div>
@@ -1027,12 +1128,18 @@
           ev.stopPropagation();
           this._showCatPicker(card, l.name, meta, saveMeta, () => { renderSidebar(); renderCurrent(); });
         };
+        card.querySelector(".bm-csite").onclick = (ev) => {
+          ev.stopPropagation();
+          const mid = card.dataset.modelId;
+          if (mid) window.open("https://civitai.com/models/" + mid, "_blank");
+          else showToast("该 LoRA 未匹配到 C 站模型");
+        };
         card.oncontextmenu = (ev) => {
           ev.preventDefault(); ev.stopPropagation();
           this._showCatContextMenu(card, l.name, meta, saveMeta, () => { renderSidebar(); renderCurrent(); });
         };
         card.onclick = (ev) => {
-          if (ev.target.closest(".bm-fav") || ev.target.closest(".bm-pin") || ev.target.closest(".bm-catbtn") || ev.target.closest(".bm-cattags")) return;
+          if (ev.target.closest(".bm-fav") || ev.target.closest(".bm-pin") || ev.target.closest(".bm-catbtn") || ev.target.closest(".bm-csite") || ev.target.closest(".bm-cattags")) return;
           if (batchMode) {
             if (selected.has(l.name)) { selected.delete(l.name); card.style.outline = ""; }
             else { selected.add(l.name); card.style.outline = "2px solid #5E6AD2"; }
@@ -1086,6 +1193,7 @@
           <button class="bm-fav" title="收藏" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:transparent;color:${m.favorite ? "#ffb400" : "rgba(255,255,255,0.35)"};">${m.favorite ? "★" : "☆"}</button>
           <button class="bm-pin" title="置顶" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:transparent;color:${m.pinned ? "#8c9bff" : "rgba(255,255,255,0.35)"};">📌</button>
           <button class="bm-catbtn" title="分配分类" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:transparent;color:rgba(255,255,255,0.35);">🏷️</button>
+          <button class="bm-csite" title="打开 C 站页面" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:transparent;color:rgba(255,255,255,0.35);display:none;">🔗</button>
           <span class="bm-li-badge" style="color:${added ? "#4caf50" : "rgba(255,255,255,0.2)"};font-size:11px;font-weight:700;">${added ? "✓" : ""}</span>
         `;
         row.querySelector(".bm-fav").onclick = (ev) => {
@@ -1106,12 +1214,18 @@
           ev.stopPropagation();
           this._showCatPicker(row, l.name, meta, saveMeta, () => { renderSidebar(); renderCurrent(); });
         };
+        row.querySelector(".bm-csite").onclick = (ev) => {
+          ev.stopPropagation();
+          const mid = row.dataset.modelId;
+          if (mid) window.open("https://civitai.com/models/" + mid, "_blank");
+          else showToast("该 LoRA 未匹配到 C 站模型");
+        };
         row.oncontextmenu = (ev) => {
           ev.preventDefault(); ev.stopPropagation();
           this._showCatContextMenu(row, l.name, meta, saveMeta, () => { renderSidebar(); renderCurrent(); });
         };
         row.onclick = (ev) => {
-          if (ev.target.closest(".bm-fav") || ev.target.closest(".bm-pin") || ev.target.closest(".bm-catbtn")) return;
+          if (ev.target.closest(".bm-fav") || ev.target.closest(".bm-pin") || ev.target.closest(".bm-catbtn") || ev.target.closest(".bm-csite")) return;
           if (batchMode) {
             if (selected.has(l.name)) { selected.delete(l.name); row.style.background = ""; }
             else { selected.add(l.name); row.style.background = "rgba(94,106,210,0.15)"; }

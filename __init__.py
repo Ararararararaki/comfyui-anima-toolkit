@@ -181,6 +181,7 @@ async def lora_info(request):
                     "modelName": data.get("model", {}).get("name") or data.get("modelName") or "",
                     "versionName": data.get("name") or "",
                     "creator": _creator_name(data.get("model", {})),
+                    "modelId": (data.get("model", {}) or {}).get("id") or data.get("modelId"),
                     "previewUrl": (data.get("images") or [{}])[0].get("url") if data.get("images") else None,
                     "source": "civitai",
                 }
@@ -193,6 +194,51 @@ async def lora_info(request):
 
     _LORA_INFO_CACHE[name] = (now + _LORA_INFO_TTL, result)
     return web.json_response(result)
+
+
+@PromptServer.instance.routes.get("/anima/lora/download")
+async def lora_download(request):
+    """Download a Civitai LoRA by modelVersion id into the local loras folder.
+
+    Civitai download endpoint (/api/download/models/{id}) returns a 307 redirect;
+    aiohttp 默认不跟随重定向，需显式 allow_redirects=True（session 走系统代理）。
+    """
+    version_id = request.query.get("versionId", "").strip()
+    fallback_name = request.query.get("name", "").strip()
+    if not version_id:
+        return web.json_response({"ok": False, "error": "versionId required"}, status=400)
+
+    lora_dirs = folder_paths.get_folder_paths("loras")
+    if not lora_dirs:
+        return web.json_response({"ok": False, "error": "loras folder not found"}, status=500)
+    lora_dir = lora_dirs[0]
+    os.makedirs(lora_dir, exist_ok=True)
+
+    try:
+        session = await _get_session()
+        url = f"https://civitai.com/api/download/models/{version_id}"
+        async with session.get(url, allow_redirects=True) as resp:
+            if resp.status != 200:
+                return web.json_response({"ok": False, "error": f"download http_{resp.status}"}, status=502)
+
+            # 文件名：Content-Disposition 优先，否则 fallback name
+            filename = fallback_name
+            cd = resp.headers.get("Content-Disposition", "")
+            m = __import__("re").search(r'filename="?([^";]+)"?', cd) if "filename=" in cd else None
+            if m and m.group(1):
+                filename = m.group(1)
+            filename = os.path.basename(filename or "lora.safetensors")
+            if not os.path.splitext(filename)[1]:
+                filename += ".safetensors"
+            target = os.path.join(lora_dir, filename)
+
+            with open(target, "wb") as f:
+                async for chunk in resp.content.iter_chunked(64 * 1024):
+                    f.write(chunk)
+
+            return web.json_response({"ok": True, "filename": filename, "path": target})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
 # ── Bridge HTTP API (replaces file-based bridge) ──
