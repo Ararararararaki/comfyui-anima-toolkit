@@ -138,8 +138,11 @@
           disabled: false,
         });
       }
-      // 被禁用的 LoRA 不在 lora_syntax 里，但保留在节点上：从 node.properties 恢复显示
-      const disabledMap = (this.node && this.node.properties && this.node.properties.animaLoraDisabled) || {};
+      // 被禁用的 LoRA 不在 lora_syntax 里，但保留在节点上：优先从 node.properties（随工作流）恢复，localStorage 兜底
+      let disabledMap = (this.node && this.node.properties && this.node.properties.animaLoraDisabled);
+      if (!disabledMap) {
+        try { disabledMap = JSON.parse(localStorage.getItem("anima_lora_disabled") || "{}"); } catch { disabledMap = {}; }
+      }
       for (const [name, weight] of Object.entries(disabledMap)) {
         const existing = items.find((e) => e.name.toLowerCase() === name.toLowerCase());
         if (existing) {
@@ -158,15 +161,21 @@
         .join(" ");
     }
 
-    _commit() {
-      this.loraWidget.value = this._serialize();
-      // 持久化禁用状态到 node.properties（随工作流 JSON 保存/加载）
+    _persistDisabled() {
       const disabledMap = {};
       for (const l of this.loras) {
         if (l.disabled) disabledMap[l.name] = l.weight;
       }
       if (!this.node.properties) this.node.properties = {};
       this.node.properties.animaLoraDisabled = disabledMap;
+      try { localStorage.setItem("anima_lora_disabled", JSON.stringify(disabledMap)); } catch { /* 忽略 */ }
+    }
+
+    _commit() {
+      // 必须先持久化禁用状态再写 lora_syntax：lora_syntax 值变化会触发 widget 的
+      // callback（this.loras = this._parse(v)），若 node.properties 尚未设置，禁用项会被覆盖丢失
+      this._persistDisabled();
+      this.loraWidget.value = this._serialize();
       if (this.node.graph) this.node.graph.change();
     }
 
