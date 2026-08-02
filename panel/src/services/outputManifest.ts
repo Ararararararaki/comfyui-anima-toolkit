@@ -54,7 +54,9 @@ export async function diffManifest(
     const path = rawPath.startsWith('/') ? rawPath.slice(1) : rawPath
 
     const cached = cachedMap.get(path)
-    if (cached && cached.mtime === fileInfo.mtime && cached.size === fileInfo.size) {
+    // mtime 用 1s 容差：FileSystem API 的 lastModified 可能有毫秒级抖动，
+    // 严格相等会导致「无变化」误判为「有变化」，增量扫描每次轮询都重建网格、图片闪烁
+    if (cached && Math.abs(cached.mtime - fileInfo.mtime) < 1000 && cached.size === fileInfo.size) {
       // 文件未变 —— 直接复用
       unchanged.push(cached)
       cachedMap.delete(path)
