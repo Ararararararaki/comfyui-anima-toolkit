@@ -288,8 +288,19 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
         if (Array.isArray(inputs.negative)) posRefs.set(String(inputs.negative[0]), 'negative')
       }
     }
-    if (ct.includes('CheckpointLoader')) {
-      if (n.inputs?.ckpt_name) result.model = String(n.inputs.ckpt_name)
+    if (ct.includes('CheckpointLoader') || ct.includes('DiffusionModelLoader') || ct.includes('UNETLoader')) {
+      // 底模：CheckpointLoader→ckpt_name，UNETLoader/DiffusionModelLoader→unet_name
+      const key = ct.includes('UNETLoader') || ct.includes('DiffusionModelLoader') ? 'unet_name' : 'ckpt_name'
+      let name: any = n.inputs?.[key]
+      if (Array.isArray(name) && name.length) {
+        // API 数组链接 [srcId, slot] → 递归源节点（loader 的输出可能是链接）
+        const src = nodeMap.get(name[0]) || nodeMap.get(Number(name[0]))
+        name = src && (src.inputs?.ckpt_name || src.inputs?.unet_name)
+        if (!name && src && Array.isArray(src.widgets_values)) {
+          name = src.widgets_values.find((w: any) => typeof w === 'string' && /\.(safetensors|ckpt|pt|bin)$/i.test(w)) || ''
+        }
+      }
+      if (name && typeof name === 'string') result.model = String(name)
     }
     if (ct.includes('VAELoader')) {
       if (n.inputs?.vae_name) result.vae = String(n.inputs.vae_name)
