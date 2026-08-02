@@ -145,7 +145,8 @@
     modal.innerHTML = `<h3 style="margin:0 0 8px;font-size:13px;">🔗 从 C 站链接批量下载 LoRA</h3>
       <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">每行一个链接（civitai.com/models/...），可带可不带 modelVersionId</div>
       <textarea class="bd-urls" rows="6" placeholder="https://civitai.com/models/2658471/denia-wuthering-wavesanima&#10;https://civitai.com/models/2529695/xxx?modelVersionId=3094753" style="flex:1;padding:8px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;font-family:monospace;resize:vertical;outline:none;"></textarea>
-      <div class="bd-list" style="margin-top:8px;max-height:160px;overflow-y:auto;"></div>
+      <input class="bd-cookie" type="password" value="${(function(){ try { return localStorage.getItem('anima_civitai_cookie') || ''; } catch(e){ return ''; } })()}" placeholder="C 站 Cookie（可选）——下载需登录的模型时填：登录 C 站后按 F12 → Application → Cookies → 选 civitai.com → 复制 cookie 那一长串" style="margin-top:8px;padding:7px 9px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:10px;outline:none;width:100%;box-sizing:border-box;">
+      <div class="bd-list" style="margin-top:8px;max-height:150px;overflow-y:auto;"></div>
       <div class="bd-log" style="margin-top:8px;max-height:60px;overflow-y:auto;font-size:10px;color:#8A8F98;white-space:pre-wrap;"></div>
       <div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end;">
         <button class="bd-cancel" style="padding:5px 12px;background:rgba(255,255,255,0.08);color:#8A8F98;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;font-size:11px;">取消</button>
@@ -206,7 +207,10 @@
             } catch {}
           }, 400);
 
-          fetch(`/anima/lora/download?${qs}&progressId=${progressId}`)
+          const cookieVal = (modal.querySelector(".bd-cookie")?.value || "").trim();
+          if (cookieVal) { try { localStorage.setItem("anima_civitai_cookie", cookieVal); } catch {} }
+          const cookieQ = cookieVal ? `&cookie=${encodeURIComponent(cookieVal)}` : "";
+          fetch(`/anima/lora/download?${qs}&progressId=${progressId}${cookieQ}`)
             .then((r) => r.json())
             .then((j) => {
               stop();

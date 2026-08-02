@@ -215,6 +215,7 @@ async def lora_download(request):
     model_id = request.query.get("modelId", "").strip()
     fallback_name = request.query.get("name", "").strip()
     progress_id = request.query.get("progressId", "").strip()
+    cookie = request.query.get("cookie", "").strip()
 
     if progress_id:
         with _DOWNLOAD_PROGRESS_LOCK:
@@ -263,10 +264,14 @@ async def lora_download(request):
     try:
         session = await _get_session()
         url = f"https://civitai.com/api/download/models/{version_id}"
-        async with session.get(url, allow_redirects=True) as resp:
+        hdrs = {"Cookie": cookie} if cookie else {}
+        async with session.get(url, allow_redirects=True, headers=hdrs) as resp:
+            # 检测重定向到 C 站登录页（需登录的模型，未带有效 Cookie 时）
+            if "auth.civitai.com/login" in str(resp.url):
+                return web.json_response({"ok": False, "error": "该模型需登录 C 站才能下载：请在下载弹窗的 Cookie 栏填写浏览器里 civitai.com 的 Cookie 后重试，或在浏览器手动下载", "needLogin": True}, status=502)
             if resp.status != 200:
                 if resp.status in (401, 403):
-                    return web.json_response({"ok": False, "error": "该模型需登录 C 站才能下载，请在浏览器打开链接手动下载", "needLogin": True}, status=502)
+                    return web.json_response({"ok": False, "error": "该模型需登录 C 站才能下载（HTTP 401/403）：请在下载弹窗填 Cookie 或浏览器手动下载", "needLogin": True}, status=502)
                 return web.json_response({"ok": False, "error": f"download http_{resp.status}"}, status=502)
 
             # 文件名：C 站 API 的 files[0].name 优先，其次 Content-Disposition，最后 fallback
