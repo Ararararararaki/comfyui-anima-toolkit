@@ -822,6 +822,32 @@ function bindLocalEvents() {
     renderLocalView()
   })
 
+  // 从 C 站链接下载 LoRA（复用后端 /anima/lora/download，需含 modelVersionId）
+  $$('localUrlBtn')?.addEventListener('click', async () => {
+    const url = prompt('粘贴 C 站 LoRA 链接（需含 modelVersionId）', '')
+    if (!url) return
+    const m = url.match(/modelVersionId=(\d+)/)
+    if (!m) { showToast('⚠️ 未找到 modelVersionId，请用带 ?modelVersionId= 的链接'); return }
+    showToast('⬇️ 正在下载...')
+    try {
+      const resp = await fetch('/anima/lora/download?versionId=' + m[1])
+      const j = await resp.json()
+      if (j.ok) {
+        showToast(`✅ 已下载 ${j.filename}`)
+        // 已选本地目录则重新扫描以显示新文件
+        if (useLocalModelStore.getState().dirHandle) {
+          await useLocalModelStore.getState().scanDir()
+          refreshLocalNames()
+          renderLocalView()
+        }
+      } else {
+        showToast('❌ 下载失败: ' + (j.error || ''))
+      }
+    } catch (e: any) {
+      showToast('❌ 下载失败: ' + e.message)
+    }
+  })
+
   $$('localMatchAllBtn')?.addEventListener('click', async () => {
     const btn = $$('localMatchAllBtn') as HTMLButtonElement
     btn.disabled = true

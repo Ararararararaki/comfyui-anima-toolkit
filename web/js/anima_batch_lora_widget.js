@@ -907,6 +907,7 @@
           <span style="font-size:10px;color:rgba(255,255,255,0.35);" class="bm-total"></span>
           <span style="flex:1"></span>
           <button class="bm-mode" style="padding:3px 8px;background:rgba(94,106,210,0.2);color:#9aa5ff;border:1px solid rgba(94,106,210,0.3);border-radius:5px;cursor:pointer;font-size:9px;">☰ 列表</button>
+          <button class="bm-url" title="从 C 站链接下载 LoRA 到本地" style="padding:3px 8px;background:rgba(94,106,210,0.2);color:#9aa5ff;border:1px solid rgba(94,106,210,0.3);border-radius:5px;cursor:pointer;font-size:9px;">🔗 URL 下载</button>
           <button class="bm-newcat" style="padding:3px 8px;background:rgba(255,255,255,0.06);color:#8A8F98;border:1px solid rgba(255,255,255,0.08);border-radius:5px;cursor:pointer;font-size:9px;">➕ 分类</button>
           <button class="bm-batch-toggle" style="padding:3px 8px;background:rgba(255,255,255,0.06);color:#8A8F98;border:1px solid rgba(255,255,255,0.08);border-radius:5px;cursor:pointer;font-size:9px;">☑ 批量</button>
           <button class="bm-close" style="padding:3px 10px;background:rgba(255,80,80,0.12);color:#ff6b6b;border:1px solid rgba(255,80,80,0.2);border-radius:5px;cursor:pointer;font-size:9px;">✕ 关闭</button>
@@ -938,6 +939,34 @@
       const batchBar = modal.querySelector(".bm-batchbar");
       const closeBtn = modal.querySelector(".bm-close");
       const newCatBtn = modal.querySelector(".bm-newcat");
+
+      // ── 从 C 站链接下载 LoRA（需含 modelVersionId）──
+      const urlBtn = modal.querySelector(".bm-url");
+      urlBtn?.addEventListener("click", async () => {
+        const url = window.prompt("粘贴 C 站 LoRA 链接（需含 modelVersionId）", "");
+        if (!url) return;
+        const m = url.match(/modelVersionId=(\d+)/);
+        if (!m) { showToast("⚠️ 未找到 modelVersionId，请用带 ?modelVersionId= 的链接"); return; }
+        showToast("⬇️ 正在下载...");
+        try {
+          const resp = await fetch("/anima/lora/download?versionId=" + m[1]);
+          const j = await resp.json();
+          if (j.ok) {
+            showToast(`✅ 已下载 ${j.filename}`);
+            // 刷新浏览列表
+            fetch("/anima/loras").then((r) => r.json()).then((d) => {
+              allLoras = (d.loras || []).map((l) => ({ ...l }));
+              totalEl.textContent = `共 ${allLoras.length} 个`;
+              renderSidebar();
+              renderCurrent();
+            }).catch(() => {});
+          } else {
+            showToast("❌ 下载失败: " + (j.error || ""));
+          }
+        } catch (e) {
+          showToast("❌ 下载失败: " + e.message);
+        }
+      });
 
       let meta = { categories: [], loraMeta: {}, loraGroups: [] };
       this.meta = meta;
