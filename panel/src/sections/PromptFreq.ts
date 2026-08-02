@@ -391,9 +391,8 @@ function showCategoryPick(onPick: (cat: string) => void) {
 
 // ── 渲染 ──
 
-/** 进入图片解析页面：清空上次上传的 PNG，避免残留旧数据 */
+/** 进入图片解析页面：重渲染。上传的 PNG 卡片常驻（切 tab 不丢），刷新页面才清空 */
 export function activatePromptFreq() {
-  _uploadedPngs = []
   renderPromptFreq()
 }
 
