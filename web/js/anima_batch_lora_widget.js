@@ -1580,7 +1580,8 @@
         wordHtml = '<span class="tw-empty">该 LoRA 无触发词</span>';
       }
 
-      popover.innerHTML = `<div class="tw-title">📝 触发词</div><div style="display:flex;flex-wrap:wrap;gap:2px;">${wordHtml}</div>`;
+      const safeName = String(loraName).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+      popover.innerHTML = `<div class="tw-title" style="font-size:11px;color:#EDEDEF;">📄 ${safeName}</div><div class="tw-title">📝 触发词</div><div style="display:flex;flex-wrap:wrap;gap:2px;">${wordHtml}</div>`;
       document.body.appendChild(popover);
 
       // 定位
