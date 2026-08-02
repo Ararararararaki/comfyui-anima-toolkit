@@ -23,6 +23,32 @@ function progressHide() {
   bar.style.width = '0%'
 }
 
+/** 兜底：showDirectoryPicker 不可用时（Firefox/Safari、夸克旧版、或通过局域网 IP 访问），
+ *  用 <input webkitdirectory> 让用户选文件夹扫描 */
+function pickDirFiles(): Promise<{ name: string; file: File }[]> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.setAttribute('webkitdirectory', '')
+    input.multiple = true
+    input.onchange = () => {
+      const files = Array.from(input.files || [])
+      resolve(
+        files
+          .filter((f) => /\.(safetensors|pt|ckpt|pth)$/i.test(f.name))
+          .map((f) => ({ name: f.name, file: f }))
+      )
+    }
+    input.oncancel = () => resolve([])
+    input.click()
+  })
+}
+
+/** 提示目录访问不可用，需 localhost/HTTPS 或回退文件选择 */
+function showCompatScanHint() {
+  showToast('⚠️ 当前浏览器/访问方式不支持目录选择，已改用文件选择方式；建议用 Chrome/Edge/夸克 并通过 localhost 访问')
+}
+
 export type LocalSortKey = 'name' | 'size' | 'date' | 'match'
 export type LocalFilterKey = 'all' | 'matched' | 'unmatched'
 export type LocalViewKey = 'home' | 'detail' | 'gallery' | 'prompt'
@@ -302,23 +328,39 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
 
   scanDir: async () => {
     try {
-      if (!('showDirectoryPicker' in window)) {
-        showToast('⚠️ 当前浏览器不支持目录访问。请使用 Chrome/Edge。')
-        return
-      }
-      const dirHandle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
-      set({ dirHandle, scanStatus: 'scanning', scanProgress: { done: 0, total: 0 } })
-      get().saveDirHandle()
-      const dirName = dirHandle.name
-      const entries: { name: string; handle: FileSystemFileHandle }[] = []
-      const iter = dirHandle.entries()
-      for (;;) {
-        const next = await iter.next()
-        if (next.done) break
-        const [name, handle] = next.value as [string, FileSystemFileHandle]
-        if ((handle as any).kind === 'file' && /\.(safetensors|pt|ckpt|pth)$/i.test(name)) {
-          entries.push({ name, handle })
+      let dirName = ''
+      let entries: { name: string; file: File }[] = []
+
+      if ('showDirectoryPicker' in window) {
+        // 主路径：File System Access API（Chrome/Edge/夸克 + localhost/HTTPS）
+        try {
+          const dirHandle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
+          set({ dirHandle, scanStatus: 'scanning', scanProgress: { done: 0, total: 0 } })
+          get().saveDirHandle()
+          dirName = dirHandle.name
+          const iter = dirHandle.entries()
+          for (;;) {
+            const next = await iter.next()
+            if (next.done) break
+            const [name, handle] = next.value as [string, FileSystemFileHandle]
+            if ((handle as any).kind === 'file' && /\.(safetensors|pt|ckpt|pth)$/i.test(name)) {
+              const file = await handle.getFile()
+              entries.push({ name, file })
+            }
+          }
+        } catch (e) {
+          if ((e as Error).name === 'AbortError' || (e as Error).message?.includes('abort')) {
+            set({ scanStatus: 'idle' })
+            return
+          }
+          throw e
         }
+      } else {
+        // 回退：<input webkitdirectory> 文件选择（Firefox/Safari、夸克旧版、局域网 IP 访问）
+        showCompatScanHint()
+        entries = await pickDirFiles()
+        if (!entries.length) { set({ scanStatus: 'idle' }); return }
+        dirName = '已选文件夹'
       }
       if (entries.length === 0) {
         progressHide()
@@ -340,8 +382,7 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       set({ scanProgress: { done: 0, total }, scanningDir: dirName })
 
       for (let i = 0; i < entries.length; i++) {
-        const { name, handle } = entries[i]
-        const file = await handle.getFile()
+        const { name, file } = entries[i]
         const key = `${name}|${file.size}|${file.lastModified}`
 
         const cached = oldManifest[name]
