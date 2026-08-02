@@ -678,15 +678,9 @@
     }
 
     // ── 缺失 LoRA 的 C 站查找弹窗：预览图 + 进 C 站 + 下载 ──
-    async _showMissingSearch(missingList) {
+    // ── 缺失 LoRA 弹窗：复制名称 + 前往 C 站搜索（把搜索交给用户，绕开 API 匹配不准） ──
+    _showMissingSearch(missingList) {
       const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-      // 与浏览弹窗一致的图片代理（C 站图走后端）
-      const imgProxy = (url) => {
-        if (!url || !url.startsWith("https://image.civitai.com/")) return url;
-        const u = url.replace(/\/width=\d+/, "") + "/width=400";
-        return "/anima/image?url=" + encodeURIComponent(u);
-      };
-
       const overlay = document.createElement("div");
       overlay.className = "modal-overlay";
       // 弹窗追加到 document.body，widget 内联样式不作用，必须用内联样式保证可见
@@ -694,14 +688,13 @@
       const modal = document.createElement("div");
       modal.className = "modal";
       modal.style.cssText = "background:linear-gradient(180deg,#0f0f12,#0a0a0c);border-radius:14px;padding:16px;width:94vw;max-width:460px;max-height:80vh;display:flex;flex-direction:column;border:1px solid rgba(255,255,255,0.10);box-shadow:0 0 0 1px rgba(255,255,255,0.04),0 20px 60px rgba(0,0,0,0.6);";
-      modal.innerHTML = `<h3 style="margin:0 0 10px;font-size:12px;color:#EDEDEF;font-weight:600;">🔎 缺失 LoRA — C 站查找</h3>
+      modal.innerHTML = `<h3 style="margin:0 0 6px;font-size:12px;color:#EDEDEF;font-weight:600;">🔎 缺失 LoRA — 前往 C 站查找</h3>
+        <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">先复制 lora 名称，再前往 C 站搜索下载</div>
         <div style="flex:1;overflow-y:auto;">${missingList.map((m) => `
-          <div class="ms-item" style="margin-bottom:8px;padding:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:8px;">
-            <div class="ms-head" style="display:flex;align-items:center;gap:6px;">
-              <span style="flex:1;font-size:11px;color:#EDEDEF;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(m.name)}</span>
-              <button class="ms-find" data-name="${esc(m.name)}" style="padding:3px 10px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:5px;cursor:pointer;font-size:10px;box-shadow:0 0 0 1px rgba(94,106,210,0.3);">🔎 查找</button>
-            </div>
-            <div class="ms-result"></div>
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;padding:7px 8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:8px;">
+            <span style="flex:1;font-size:11px;color:#EDEDEF;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(m.name)}">${esc(m.name)}</span>
+            <button class="ms-copy" data-name="${esc(m.name)}" style="padding:3px 8px;background:rgba(255,255,255,0.08);color:#EDEDEF;border:1px solid rgba(255,255,255,0.1);border-radius:5px;cursor:pointer;font-size:10px;flex-shrink:0;">📋 复制</button>
+            <button class="ms-cs" data-name="${esc(m.name)}" style="padding:3px 8px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:5px;cursor:pointer;font-size:10px;flex-shrink:0;">🔗 前往 C 站搜索</button>
           </div>`).join("")}</div>
         <button class="close-btn" style="margin-top:10px;padding:5px 14px;align-self:flex-end;background:rgba(255,255,255,0.06);color:#8A8F98;border:1px solid rgba(255,255,255,0.06);border-radius:6px;cursor:pointer;font-size:10px;">关闭</button>`;
       overlay.appendChild(modal);
@@ -710,61 +703,11 @@
       overlay.onclick = (e) => { if (e.target === overlay) close(); };
       modal.querySelector(".close-btn").onclick = close;
       document.addEventListener("keydown", function h(e) { if (e.key === "Escape") { close(); document.removeEventListener("keydown", h); } });
-
-      modal.addEventListener("click", async (e) => {
-        const findBtn = e.target.closest(".ms-find");
-        if (findBtn) {
-          const name = findBtn.dataset.name;
-          const resultEl = findBtn.closest(".ms-item").querySelector(".ms-result");
-          findBtn.disabled = true; findBtn.textContent = "查找中...";
-          try {
-            const resp = await fetch(`/api/civitai/models?query=${encodeURIComponent(name)}&types=LORA&limit=5`);
-            const data = await resp.json();
-            const items = data.items || [];
-            if (!items.length) { resultEl.innerHTML = '<div style="font-size:10px;color:#8A8F98;padding:4px 0;">未在 C 站找到匹配模型</div>'; return; }
-            resultEl.innerHTML = items.map((it) => {
-              const v = (it.modelVersions || [])[0];
-              const img = v && v.images && v.images[0] && v.images[0].url;
-              return `<div style="display:flex;gap:8px;align-items:center;margin-top:6px;padding:6px;background:rgba(255,255,255,0.02);border-radius:6px;">
-                <div style="width:44px;height:44px;border-radius:5px;overflow:hidden;flex-shrink:0;background:#0a0a0c;">
-                  ${img ? `<img src="${imgProxy(img)}" style="width:100%;height:100%;object-fit:cover;">` : '<span style="display:flex;width:100%;height:100%;align-items:center;justify-content:center;font-size:16px;">🖼</span>'}
-                </div>
-                <div style="flex:1;min-width:0;">
-                  <div style="font-size:10px;color:#EDEDEF;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(it.name)}</div>
-                  <div style="font-size:9px;color:#8A8F98;">${v ? esc(v.name || "") + (v.baseModel ? " · " + esc(v.baseModel) : "") : ""}</div>
-                </div>
-                <button class="ms-open" data-id="${it.id}" style="padding:3px 8px;background:rgba(255,255,255,0.08);color:#EDEDEF;border:1px solid rgba(255,255,255,0.1);border-radius:5px;cursor:pointer;font-size:10px;">🔗 进C站</button>
-                ${v ? `<button class="ms-dl" data-vid="${v.id}" data-name="${esc(name)}" style="padding:3px 8px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:5px;cursor:pointer;font-size:10px;">⬇ 下载</button>` : ""}
-              </div>`;
-            }).join("");
-          } catch (err) {
-            resultEl.innerHTML = '<div style="font-size:10px;color:#f44;">查找失败: ' + esc(err.message) + '</div>';
-          } finally {
-            findBtn.disabled = false; findBtn.textContent = "🔎 查找";
-          }
-          return;
-        }
-        const openBtn = e.target.closest(".ms-open");
-        if (openBtn) { window.open("https://civitai.com/models/" + openBtn.dataset.id, "_blank"); return; }
-        const dlBtn = e.target.closest(".ms-dl");
-        if (dlBtn) {
-          dlBtn.disabled = true; dlBtn.textContent = "下载中...";
-          try {
-            const resp = await fetch(`/anima/lora/download?versionId=${encodeURIComponent(dlBtn.dataset.vid)}&name=${encodeURIComponent(dlBtn.dataset.name)}`);
-            const j = await resp.json();
-            if (j.ok) {
-              dlBtn.textContent = "✅ 已下载";
-              showToast(`✅ 已下载 ${j.filename}`);
-              if (this.listEl) this._forceRefresh(this.listEl);
-            } else {
-              dlBtn.textContent = "⬇ 下载";
-              showToast("❌ 下载失败: " + (j.error || ""));
-            }
-          } catch {
-            dlBtn.textContent = "⬇ 下载";
-            showToast("❌ 下载失败");
-          }
-        }
+      modal.addEventListener("click", (e) => {
+        const copyBtn = e.target.closest(".ms-copy");
+        if (copyBtn) { copyText(copyBtn.dataset.name); showToast("已复制: " + copyBtn.dataset.name); return; }
+        const cs = e.target.closest(".ms-cs");
+        if (cs) window.open("https://civitai.com/search/models?query=" + encodeURIComponent(cs.dataset.name) + "&type=LORA", "_blank");
       });
     }
 
