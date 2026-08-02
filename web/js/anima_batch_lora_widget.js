@@ -689,10 +689,12 @@
 
       const overlay = document.createElement("div");
       overlay.className = "modal-overlay";
+      // 弹窗追加到 document.body，widget 内联样式不作用，必须用内联样式保证可见
+      overlay.style.cssText = "position:fixed;inset:0;background:rgba(2,2,3,0.72);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);";
       const modal = document.createElement("div");
       modal.className = "modal";
-      modal.style.cssText = "max-width:460px;max-height:75vh;";
-      modal.innerHTML = `<h3>🔎 缺失 LoRA — C 站查找</h3>
+      modal.style.cssText = "background:linear-gradient(180deg,#0f0f12,#0a0a0c);border-radius:14px;padding:16px;width:94vw;max-width:460px;max-height:80vh;display:flex;flex-direction:column;border:1px solid rgba(255,255,255,0.10);box-shadow:0 0 0 1px rgba(255,255,255,0.04),0 20px 60px rgba(0,0,0,0.6);";
+      modal.innerHTML = `<h3 style="margin:0 0 10px;font-size:12px;color:#EDEDEF;font-weight:600;">🔎 缺失 LoRA — C 站查找</h3>
         <div style="flex:1;overflow-y:auto;">${missingList.map((m) => `
           <div class="ms-item" style="margin-bottom:8px;padding:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:8px;">
             <div class="ms-head" style="display:flex;align-items:center;gap:6px;">
@@ -701,7 +703,7 @@
             </div>
             <div class="ms-result"></div>
           </div>`).join("")}</div>
-        <button class="close-btn">关闭</button>`;
+        <button class="close-btn" style="margin-top:10px;padding:5px 14px;align-self:flex-end;background:rgba(255,255,255,0.06);color:#8A8F98;border:1px solid rgba(255,255,255,0.06);border-radius:6px;cursor:pointer;font-size:10px;">关闭</button>`;
       overlay.appendChild(modal);
       document.body.appendChild(overlay);
       const close = () => overlay.remove();
