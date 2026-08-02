@@ -1,5 +1,5 @@
 /* ── Settings Panel ── */
-import { loadSettings, saveSettings, getSettings, resetSettings, exportSettings, importSettings, type AppSettings } from '../store/settings'
+import { loadSettings, saveSettings, getSettings, resetSettings, exportSettings, importSettings, saveBgImageDB, loadBgImageDB, clearBgImageDB, type AppSettings } from '../store/settings'
 import { openModal, closeModal, confirmModal, promptModal } from '../components/Modal'
 import { showToast } from '../utils'
 import { icon } from '../utils/icon'
@@ -178,6 +178,10 @@ function renderSettingsHTML(s: AppSettings): string {
             </div>
           </div>
           <div class="settings-row">
+            <label class="settings-label">C 站 API Key</label>
+            <input type="password" id="civitaiApiKey" value="${(() => { try { return localStorage.getItem('anima_civitai_token') || '' } catch { return '' } })()}" placeholder="只读权限即可，下载需登录的模型用" style="flex:1;padding:6px 8px;background:var(--bg1);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:11px;outline:none;">
+          </div>
+          <div class="settings-row">
             <span style="font-size:10px;color:var(--text3);line-height:1.5">面板由 ComfyUI 直接提供（clone 即用），无需额外部署。数据通过 HTTP API 与节点桥接。</span>
           </div>
         </div>
@@ -204,7 +208,26 @@ export function applySettings(s?: AppSettings) {
 
   // Background overlay — direct style manipulation (bypass CSS variable inheritance issues)
   let overlay = document.getElementById('bg-overlay')
-  if (st.bgImage) {
+  if (st.bgImage === '__idb__') {
+    // 大背景图存在 IndexedDB（避免 localStorage 5MB 超限静默失败），异步加载
+    loadBgImageDB().then((url) => {
+      if (!url) return
+      let ov = document.getElementById('bg-overlay')
+      if (!ov) {
+        ov = document.createElement('div')
+        ov.id = 'bg-overlay'
+        document.body.prepend(ov)
+      }
+      ov.style.backgroundImage = `url("${url}")`
+      ov.style.backgroundSize = st.bgMode
+      ov.style.backgroundPosition = 'center'
+      ov.style.backgroundRepeat = 'no-repeat'
+      ov.style.backgroundAttachment = 'fixed'
+      ov.style.opacity = String(st.bgOpacity)
+      ov.style.filter = `blur(${st.bgBlur}px)`
+      ov.style.display = 'block'
+    }).catch(() => {})
+  } else if (st.bgImage) {
     if (!overlay) {
       overlay = document.createElement('div')
       overlay.id = 'bg-overlay'
@@ -354,6 +377,14 @@ function openSettings() {
   bindCSSEvents()
   bindShortcutEvents()
   bindImportExportEvents()
+
+  // C 站 API Key 统一管理（下载弹窗自动用）
+  document.getElementById('civitaiApiKey')?.addEventListener('change', (e) => {
+    const v = ((e.target as HTMLInputElement).value || '').trim()
+    if (v) localStorage.setItem('anima_civitai_token', v)
+    else localStorage.removeItem('anima_civitai_token')
+    showToast(v ? '✅ C 站 API Key 已保存' : '已清除 C 站 API Key')
+  })
 }
 
 function bindBackgroundEvents() {
@@ -369,18 +400,21 @@ function bindBackgroundEvents() {
   // Upload
   const fileInput = document.getElementById('bgFileInput') as HTMLInputElement
   document.getElementById('bgUploadBtn')?.addEventListener('click', () => fileInput?.click())
-  fileInput?.addEventListener('change', () => {
+  fileInput?.addEventListener('change', async () => {
     const file = fileInput.files?.[0]
     if (!file) return
     const reader = new FileReader()
-    reader.onload = () => {
+    reader.onload = async () => {
       const dataUrl = reader.result as string
-      console.log('[背景图] 上传 DataURL 长度:', dataUrl.length)
-      saveSettings({ bgImage: dataUrl })
-      applySettings()
-      // 验证
-      const overlay = document.getElementById('bg-overlay')
-      console.log('[背景图] overlay 存在:', !!overlay, 'backgroundImage:', overlay?.style.backgroundImage?.slice(0,60))
+      // 存 IndexedDB（localStorage 5MB 上限，大图会静默失败）
+      try {
+        await saveBgImageDB(dataUrl)
+        saveSettings({ bgImage: '__idb__' })
+        applySettings()
+      } catch (e) {
+        console.error('[背景图] IndexedDB 保存失败:', e)
+        showToast('⚠️ 背景图保存失败，请换一张较小的图片')
+      }
     }
     reader.readAsDataURL(file)
   })
@@ -396,9 +430,9 @@ function bindBackgroundEvents() {
 
   // Clear
   document.getElementById('bgClearBtn')?.addEventListener('click', () => {
+    clearBgImageDB().catch(() => {})
     saveSettings({ bgImage: '' })
     applySettings()
-    console.log('[背景图] 已清除，overlay 已移除')
   })
 
   // Mode
