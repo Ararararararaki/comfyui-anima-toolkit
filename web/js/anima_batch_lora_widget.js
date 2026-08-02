@@ -60,25 +60,47 @@
           };
         }
       },
-      setup() {
-        // 顶部「本地工具箱」图片按钮：按用户指定坐标放置（left/top），点击打开面板，悬浮看提示
-        const addBtn = () => {
-          if (document.getElementById("anima-panel-btn")) return;
-          const btn = document.createElement("button");
-          btn.id = "anima-panel-btn";
-          btn.type = "button";
-          btn.title = "打开 Anima 本地工具箱（面板）";
-          Object.assign(btn.style, {
-            position: "fixed", left: "391px", top: "60px", zIndex: "100000",
-            width: "44px", height: "44px", padding: "0", border: "none",
-            background: "none", cursor: "pointer", borderRadius: "8px",
-          });
-          btn.innerHTML = `<img src="${ICON_URL}" alt="本地工具箱" style="display:block;width:44px;height:44px;object-fit:cover;border-radius:8px;">`;
-          btn.addEventListener("click", () => window.open(PANEL_BASE, "_blank"));
-          document.body.appendChild(btn);
+      async setup(app) {
+        // 用 ComfyUI 标准菜单 API 把「工具箱」按钮放进顶栏（设置齿轮左侧），替代固定定位
+        // 参考 Lora-Manager 的做法：ComfyButton + ComfyButtonGroup + settingsGroup.element.before()
+        const attach = (attempt = 0) => {
+          const settingsGroup = app?.menu?.settingsGroup;
+          if (!settingsGroup?.element?.parentElement) {
+            if (attempt > 120) return; // 最多重试约 2s
+            requestAnimationFrame(() => attach(attempt + 1));
+            return;
+          }
+          const img = document.createElement("img");
+          img.src = ICON_URL;
+          img.alt = "工具箱";
+          img.style.cssText = "display:block;width:20px;height:20px;border-radius:4px;object-fit:cover;";
+          (async () => {
+            try {
+              const { ComfyButton } = await import("/scripts/ui/components/button.js");
+              const { ComfyButtonGroup } = await import("/scripts/ui/components/buttonGroup.js");
+              const btn = new ComfyButton({
+                content: img,
+                tooltip: "打开 Anima 本地工具箱（面板）",
+                action: () => window.open(PANEL_BASE, "_blank"),
+                classList: "comfyui-button comfyui-menu-mobile-collapse primary",
+              });
+              const group = new ComfyButtonGroup(btn);
+              group.element.classList.add("anima-menu-group");
+              settingsGroup.element.before(group.element);
+            } catch {
+              // 回退：追加到旧式侧边菜单（.comfy-menu）
+              const menu = document.querySelector(".comfy-menu");
+              if (!menu) return;
+              const fb = document.createElement("button");
+              fb.innerHTML = `<img src="${ICON_URL}" alt="工具箱" style="width:18px;height:18px;border-radius:4px;vertical-align:middle;">`;
+              fb.title = "打开 Anima 本地工具箱（面板）";
+              fb.style.cssText = "background:none;border:none;cursor:pointer;padding:4px;";
+              fb.onclick = () => window.open(PANEL_BASE, "_blank");
+              menu.prepend(fb);
+            }
+          })();
         };
-        // 页面渲染是动态的，延迟重试注入
-        [0, 300, 1000].forEach((d) => setTimeout(addBtn, d));
+        attach();
       },
     });
   }
