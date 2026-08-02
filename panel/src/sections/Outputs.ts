@@ -7,7 +7,7 @@ import { outputsDb } from '../db/outputsDb'
 import { esc, escAttr, showToast, copyText } from '../utils'
 import { confirmModal, promptModal } from '../components/Modal'
 import type { OutputFile, OutputMetadata, OutputDir, OutputScanStatus } from '../types/outputs'
-import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow, apiWorkflowToUI, hasUiWorkflow } from '../services/outputMetadata'
+import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow } from '../services/outputMetadata'
 import { backfillPrompts } from '../services/outputMetadataService'
 import JSZip from 'jszip'
 
@@ -18,6 +18,8 @@ import {
   renderEmpty,
   renderStats,
   renderMetadataPanel,
+  renderImageCard,
+  cardSignature,
   STATUS_DEFS,
 } from '../renderers/outputRenderer'
 
@@ -30,27 +32,22 @@ let _currentPreviewFileId = ''
 let _focusMode = false
 
 /**
- * 复制工作流：有 UI 格式（workflow chunk）直接复制；仅 API 参数（prompt chunk）尝试转换为 UI，
- * 失败则复制 API 并明确提示——避免用户把 API 格式粘贴到 ComfyUI 被忽略后误以为是自己的旧工作流。
+ * 下载工作流 .json（ComfyUI 用 Load 或拖入画布导入最稳妥，替代复制——画布 Ctrl+V 易误导）
  */
-async function copyOutputWorkflow(meta: OutputMetadata | undefined) {
+async function downloadOutputWorkflow(meta: OutputMetadata | undefined, baseName: string) {
+  if (!meta?.workflowJson) { showToast('该图片无工作流数据'); return }
   try {
-    if (!meta?.workflowJson) { showToast('该图片无工作流数据'); return }
-    if (hasUiWorkflow(meta.rawMetadata)) {
-      await navigator.clipboard.writeText(meta.workflowJson)
-      showToast('工作流 JSON 已复制（可导入 ComfyUI）')
-      return
-    }
-    const ui = apiWorkflowToUI(meta.workflowJson)
-    if (ui) {
-      await navigator.clipboard.writeText(ui)
-      showToast('已从 API 参数转换为 UI 工作流并复制（布局可能需微调）')
-    } else {
-      await navigator.clipboard.writeText(meta.workflowJson)
-      showToast('⚠️ 该图仅 API 执行参数、无画布工作流，ComfyUI 前端导入会被忽略')
-    }
+    const safeName = (baseName || 'workflow').replace(/\.png$/i, '').replace(/[\\/:*?"<>|]/g, '_')
+    const blob = new Blob([meta.workflowJson], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = safeName + '.json'
+    a.click()
+    URL.revokeObjectURL(url)
+    showToast('⬇️ 工作流 .json 已下载，拖入 ComfyUI 画布即可导入')
   } catch {
-    showToast('复制失败')
+    showToast('⚠️ 下载失败')
   }
 }
 
@@ -395,19 +392,82 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
         if (extracted.length > 0) lorasCache.set(f.id, extracted)
       }
     }
-    el.innerHTML = renderGrid(files, state.selectedIds, state.metadataCache, lorasCache)
+
+    // 增量渲染：数据未变的卡片复用已有 DOM（img 保持已加载的 src），
+    // 只新建新增/变化的卡片 → 新图出现时旧图不再重新加载闪烁
+    const existing = new Map<string, HTMLElement>()
+    for (const card of Array.from(el.querySelectorAll<HTMLElement>('.outputs-card'))) {
+      const id = card.dataset.id
+      if (id) existing.set(id, card)
+    }
+
+    const fragment = document.createDocumentFragment()
+    for (const f of files) {
+      const meta = state.metadataCache.get(f.id)
+      const sig = cardSignature(f)
+      const old = existing.get(f.id)
+      if (old && old.dataset.sig === sig) {
+        // 数据未变 → 复用 DOM（图片保持已加载状态）；只同步 meta 相关显示，不重建图片
+        syncCardMeta(old, f, meta ?? null)
+        fragment.appendChild(old)
+      } else {
+        const html = renderImageCard(f, meta ?? null, state.selectedIds.has(f.id), lorasCache.get(f.id), sig)
+        const tmp = document.createElement('div')
+        tmp.innerHTML = html
+        const node = tmp.firstElementChild as HTMLElement
+        // 命中内存缓存缩略图 → 直接回填 src，避免新卡片从空 src 闪一下
+        const img = node.querySelector('img[data-file-path]') as HTMLImageElement | null
+        const p = img?.dataset.filePath
+        if (img && p) {
+          const cached = state.thumbMemory.get(p)
+          if (cached) img.src = cached
+        }
+        fragment.appendChild(node)
+      }
+    }
+    el.replaceChildren(fragment)
   } else {
     el.innerHTML = renderList(files, state.selectedIds, state.metadataCache)
-  }
-
-  // 同步回填已缓存的缩略图，避免重建 DOM 时图片从灰图重新闪烁
-  for (const img of el.querySelectorAll('img[data-file-path]')) {
-    const p = (img as HTMLImageElement).dataset.filePath
-    if (p) {
-      const cached = state.thumbMemory.get(p)
-      if (cached) (img as HTMLImageElement).src = cached
+    // 同步回填已缓存的缩略图，避免重建 DOM 时图片从灰图重新闪烁
+    for (const img of el.querySelectorAll('img[data-file-path]')) {
+      const p = (img as HTMLImageElement).dataset.filePath
+      if (p) {
+        const cached = state.thumbMemory.get(p)
+        if (cached) (img as HTMLImageElement).src = cached
+      }
     }
   }
+}
+
+/** 复用卡片时同步 meta 相关显示（model 文本 / prompt / LoRA / 工作流按钮），不重建图片 */
+function syncCardMeta(card: HTMLElement, file: OutputFile, meta: OutputMetadata | null) {
+  const metaRow = card.querySelector<HTMLElement>('.outputs-card-meta')
+  let modelEl = card.querySelector<HTMLElement>('.outputs-card-model')
+  if (meta?.model) {
+    if (modelEl) {
+      modelEl.textContent = `🏷 ${meta.model.slice(0, 20)}`
+      modelEl.title = meta.model
+    } else if (metaRow) {
+      const span = document.createElement('span')
+      span.className = 'outputs-card-model'
+      span.title = meta.model
+      span.textContent = `🏷 ${meta.model.slice(0, 20)}`
+      metaRow.prepend(span)
+    }
+  } else if (modelEl) {
+    modelEl.remove()
+  }
+
+  const actionsEl = card.querySelector<HTMLElement>('.outputs-card-actions')
+  if (!actionsEl) return
+  const hasPrompt = !!meta?.prompt
+  const hasWf = !!meta?.workflowJson
+  const id = file.id
+  actionsEl.innerHTML =
+    (hasPrompt ? `<button class="outputs-copy-prompt-btn" data-id="${id}" title="复制正面 Prompt">📝 正面</button>` : '') +
+    (hasWf ? `<button class="outputs-copy-lora-btn" data-id="${id}" title="复制 LoRA 标签">🏷️ LoRA</button>` : '') +
+    (hasWf ? `<button class="outputs-dl-wf-btn" data-id="${id}" title="保存为 .json 文件，拖入 ComfyUI 画布即可导入">⬇️ 下载工作流</button>` : '') +
+    (meta ? `<button class="outputs-meta-btn" data-id="${id}" title="查看元数据">ℹ️ 元数据</button>` : '')
 }
 
 function updateOutputsStats(state: ReturnType<typeof useOutputStore.getState>) {
@@ -470,14 +530,15 @@ function bindOutputsEvents() {
       return
     }
 
-    // 刷新目录
+    // 刷新目录 —— 用增量扫描：只处理新增/变更文件，已加载的图片不动
     if (target.closest('.outputs-refresh-btn')) {
       const dh = useOutputStore.getState().dirHandle
       if (dh) {
-        await scanOutputDir(dh)
+        const count = await scanOutputDirIncremental(dh)
         dirTree = await buildDirTree(dh)
         renderDirTree(dirTree)
         renderOutputsView()
+        showToast(count > 0 ? `✅ 已刷新：${count} 个文件有变化` : 'ℹ️ 没有新图片')
       }
       return
     }
@@ -578,13 +639,14 @@ function bindOutputsEvents() {
       return
     }
 
-    // 复制工作流 JSON 按钮（卡片底部）
-    const copyWfBtn = target.closest('.outputs-copy-wf-btn') as HTMLElement
-    if (copyWfBtn) {
-      const id = copyWfBtn.dataset.id
+    // 下载工作流 JSON 按钮（卡片底部）
+    const dlWfBtn = target.closest('.outputs-dl-wf-btn') as HTMLElement
+    if (dlWfBtn) {
+      const id = dlWfBtn.dataset.id
       if (id) {
         const meta = useOutputStore.getState().metadataCache.get(id)
-        await copyOutputWorkflow(meta)
+        const file = useOutputStore.getState().files.find(f => f.id === id)
+        await downloadOutputWorkflow(meta, file?.filename || 'workflow')
       }
       return
     }
@@ -861,10 +923,11 @@ function bindOutputsEvents() {
       return
     }
 
-    // 复制工作流 JSON
+    // 下载工作流 JSON
     if (target.closest('#outputsMetaCopyWorkflowBtn')) {
       const meta = useOutputStore.getState().metadataCache.get(_currentPreviewFileId)
-      copyOutputWorkflow(meta)
+      const file = useOutputStore.getState().files.find(f => f.id === _currentPreviewFileId)
+      downloadOutputWorkflow(meta, file?.filename || 'workflow')
       return
     }
 
@@ -1805,10 +1868,7 @@ function openMetaPanel(fileId: string) {
   overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove() })
   panel.querySelector('#outputsMetaCloseBtn')?.addEventListener('click', () => overlay.remove())
   panel.querySelector('#outputsMetaCopyWorkflowBtn')?.addEventListener('click', async () => {
-    if (meta?.workflowJson) {
-      await navigator.clipboard.writeText(meta.workflowJson)
-      showToast('工作流 JSON 已复制')
-    }
+    await downloadOutputWorkflow(meta, file?.filename || 'workflow')
   })
   // Esc 关闭
   const escHandler = (e: KeyboardEvent) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escHandler) } }

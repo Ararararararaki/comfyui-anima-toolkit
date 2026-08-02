@@ -531,6 +531,12 @@
   font-size: 11px;
   color: var(--text3);
 }
+.outputs-card-date {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text3);
+  opacity: 0.85;
+}
 .outputs-card-actions {
   display: flex;
   gap: 4px;
@@ -539,7 +545,7 @@
 }
 .outputs-copy-prompt-btn,
 .outputs-copy-lora-btn,
-.outputs-copy-wf-btn,
+.outputs-dl-wf-btn,
 .outputs-meta-btn {
   font-size: 10px;
   padding: 3px 8px;
@@ -553,7 +559,7 @@
 }
 .outputs-copy-prompt-btn:hover,
 .outputs-copy-lora-btn:hover,
-.outputs-copy-wf-btn:hover,
+.outputs-dl-wf-btn:hover,
 .outputs-meta-btn:hover {
   background: var(--accent);
   color: #fff;

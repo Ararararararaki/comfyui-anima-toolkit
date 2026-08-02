@@ -10,6 +10,7 @@ import {
   purgeDeletedFiles,
   fileToManifest,
   hashPath,
+  resetDiffObserver,
 } from './outputManifest'
 import { showToast } from '../utils'
 
@@ -260,6 +261,7 @@ async function scanDirectory(
 export async function scanOutputDir(dirHandle: FileSystemDirectoryHandle): Promise<void> {
   const store = useOutputStore.getState()
   store.setDirHandle(dirHandle)
+  resetDiffObserver()
   useOutputStore.setState({ scanStatus: 'scanning', scanProgress: { done: 0, total: 0 }, loading: true })
 
   try {
@@ -516,7 +518,8 @@ export async function scanOutputDirIncremental(dirHandle: FileSystemDirectoryHan
     // 从 DB 重新加载完整列表
     const allFiles = await outputsDb.files.toArray()
     useOutputStore.getState().setFiles(allFiles)
-    return allFiles.length
+    // 返回变化的文件数量（新增/变更/删除），调用方据此判断是否有更新可提示
+    return diff.changed.length + diff.orphaned.length
   } catch {
     return 0
   }

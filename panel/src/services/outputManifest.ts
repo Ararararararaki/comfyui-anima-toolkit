@@ -35,6 +35,18 @@ export async function saveManifest(entries: OutputManifest[]): Promise<void> {
 }
 
 /**
+ * 记录上一次增量扫描观察到的文件 size，用于识别"仍在写入"的同名文件：
+ * ComfyUI 写图时文件 size 逐步变大，若每次轮询都把这种抖动判为「变更」，
+ * 会反复删缩略图 + 重建网格，导致所有图片重新加载闪烁。
+ */
+let lastObservedSize = new Map<string, number>()
+
+/** 切换目录或首次全量扫描时清空写入中观察状态 */
+export function resetDiffObserver(): void {
+  lastObservedSize.clear()
+}
+
+/**
  * 与文件系统目录条目比对，识别变化的文件
  * @param filesInDir 文件系统中当前存在的文件：Map<relativePath, { mtime: number, size: number }>
  * @returns 需要更新和清理的文件列表
@@ -60,8 +72,28 @@ export async function diffManifest(
       // 文件未变 —— 直接复用
       unchanged.push(cached)
       cachedMap.delete(path)
+      lastObservedSize.delete(path)
+    } else if (cached && fileInfo.size > cached.size) {
+      // 同名文件疑似仍在写入（size 变大）。本次不判变更、不删缩略图，
+      // 避免写图抖动反复重建网格导致图片闪烁；等 size 稳定（连续两次相同）后再确认变更
+      const prev = lastObservedSize.get(path)
+      lastObservedSize.set(path, fileInfo.size)
+      cachedMap.delete(path)
+      if (prev === fileInfo.size) {
+        changed.push({
+          id: hashPath(path),
+          path,
+          mtime: fileInfo.mtime,
+          size: fileInfo.size,
+          metadataHash: '',
+          orphaned: false,
+        })
+      } else {
+        // 仍在写入 —— 保留旧记录，不删缩略图
+        unchanged.push(cached)
+      }
     } else {
-      // 新增或变更文件
+      // 新增文件或确定变更
       changed.push({
         id: hashPath(path),
         path,
@@ -71,6 +103,7 @@ export async function diffManifest(
         orphaned: false,
       })
       cachedMap.delete(path)
+      lastObservedSize.delete(path)
     }
   }
 

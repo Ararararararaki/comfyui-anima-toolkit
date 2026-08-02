@@ -62,9 +62,26 @@ export function renderGrid(
   }).join('')
 }
 
-function renderImageCard(file: OutputFile, meta: OutputMetadata | null, isSelected: boolean, loras?: string[]): string {
+/**
+ * 卡片数据签名：内容未变的卡片在增量渲染时复用 DOM（img 保持已加载的 src，避免闪烁）。
+ * 只含文件自身字段，不含 meta：元数据是异步分批加载的，若把 meta 计入签名，
+ * 每次进入页面 meta 从空→有都会让全部卡片签名变化 → 整页重建 → 图片全部重载。
+ */
+export function cardSignature(file: OutputFile): string {
+  return [
+    file.filename,
+    file.size,
+    file.mtime,
+    file.category || '',
+    file.favorite ? 1 : 0,
+    file.pinned ? 1 : 0,
+    file.rating || 0,
+  ].join('|')
+}
+
+export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, isSelected: boolean, loras?: string[], sig?: string): string {
   const st = file.status ? STATUS_DEFS[file.status] : null
-  return `<div class="outputs-card ${isSelected ? 'selected' : ''}${file.status ? ` status-${file.status}` : ''}" data-id="${escAttr(file.id)}" data-path="${escAttr(file.path)}">
+  return `<div class="outputs-card ${isSelected ? 'selected' : ''}${file.status ? ` status-${file.status}` : ''}" data-id="${escAttr(file.id)}" data-path="${escAttr(file.path)}"${sig ? ` data-sig="${escAttr(sig)}"` : ''}>
     <div class="outputs-card-img">
       ${st ? `<div class="outputs-card-status-tag" style="background:${st.color}">${st.label}</div>` : ''}
       <img src="" data-file-id="${escAttr(file.id)}" data-file-path="${escAttr(file.path)}" alt="${esc(file.filename)}" loading="lazy">
@@ -88,10 +105,11 @@ function renderImageCard(file: OutputFile, meta: OutputMetadata | null, isSelect
         ${meta?.model ? `<span class="outputs-card-model" title="${esc(meta.model)}">${esc(meta.model.slice(0, 20))}</span>` : ''}
         <span class="outputs-card-size">${fmtSize(file.size)}</span>
       </div>
+      <div class="outputs-card-date">${fmtDate(file.mtime)}</div>
       <div class="outputs-card-actions">
         ${meta?.prompt ? `<button class="outputs-copy-prompt-btn" data-id="${escAttr(file.id)}" title="复制正面 Prompt">📝 正面</button>` : ''}
         ${meta?.workflowJson ? `<button class="outputs-copy-lora-btn" data-id="${escAttr(file.id)}" title="复制 LoRA 标签">🏷️ LoRA</button>` : ''}
-        ${meta?.workflowJson ? `<button class="outputs-copy-wf-btn" data-id="${escAttr(file.id)}" title="复制工作流 JSON">📋 工作流</button>` : ''}
+        ${meta?.workflowJson ? `<button class="outputs-dl-wf-btn" data-id="${escAttr(file.id)}" title="保存为 .json 文件，拖入 ComfyUI 画布即可导入">⬇️ 下载工作流</button>` : ''}
         ${meta ? `<button class="outputs-meta-btn" data-id="${escAttr(file.id)}" title="查看元数据">ℹ️ 元数据</button>` : ''}
       </div>
     </div>
@@ -162,7 +180,7 @@ export function renderMetadataPanel(meta: OutputMetadata | null, file: OutputFil
   const hasWorkflow = !!meta?.workflowJson
   const header = `<div class="outputs-meta-header">
     <h3>元数据</h3>
-    ${hasWorkflow ? `<button class="outputs-meta-copy-btn" id="outputsMetaCopyWorkflowBtn" title="复制工作流 JSON">📋</button>` : ''}
+    ${hasWorkflow ? `<button class="outputs-meta-copy-btn" id="outputsMetaCopyWorkflowBtn" title="下载工作流 JSON">⬇️</button>` : ''}
     <button class="outputs-meta-close-btn" id="outputsMetaCloseBtn" title="关闭面板">✕</button>
   </div>`
 
@@ -368,4 +386,12 @@ function fmtSize(bytes: number): string {
   if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB'
   if (bytes >= 1024) return (bytes / 1024).toFixed(0) + ' KB'
   return bytes + ' B'
+}
+
+/** 文件创建时间 → `YYYY-MM-DD HH:mm` */
+function fmtDate(ts: number): string {
+  if (!ts) return ''
+  const d = new Date(ts)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
