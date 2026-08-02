@@ -204,9 +204,25 @@ async def lora_download(request):
     aiohttp 默认不跟随重定向，需显式 allow_redirects=True（session 走系统代理）。
     """
     version_id = request.query.get("versionId", "").strip()
+    model_id = request.query.get("modelId", "").strip()
     fallback_name = request.query.get("name", "").strip()
+
+    # 只有 modelId 时：查 C 站模型详情，取默认（第一个）版本的 id
+    if not version_id and model_id:
+        try:
+            session = await _get_session()
+            u = f"https://civitai.com/api/v1/models/{model_id}"
+            async with session.get(u) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    versions = data.get("modelVersions") or []
+                    if versions:
+                        version_id = str(versions[0].get("id") or "")
+        except Exception:
+            version_id = ""
+
     if not version_id:
-        return web.json_response({"ok": False, "error": "versionId required"}, status=400)
+        return web.json_response({"ok": False, "error": "versionId or modelId required"}, status=400)
 
     lora_dirs = folder_paths.get_folder_paths("loras")
     if not lora_dirs:

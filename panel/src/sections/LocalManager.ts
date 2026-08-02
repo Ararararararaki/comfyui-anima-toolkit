@@ -822,30 +822,55 @@ function bindLocalEvents() {
     renderLocalView()
   })
 
-  // 从 C 站链接下载 LoRA（复用后端 /anima/lora/download，需含 modelVersionId）
-  $$('localUrlBtn')?.addEventListener('click', async () => {
-    const url = prompt('粘贴 C 站 LoRA 链接（需含 modelVersionId）', '')
-    if (!url) return
-    const m = url.match(/modelVersionId=(\d+)/)
-    if (!m) { showToast('⚠️ 未找到 modelVersionId，请用带 ?modelVersionId= 的链接'); return }
-    showToast('⬇️ 正在下载...')
-    try {
-      const resp = await fetch('/anima/lora/download?versionId=' + m[1])
-      const j = await resp.json()
-      if (j.ok) {
-        showToast(`✅ 已下载 ${j.filename}`)
-        // 已选本地目录则重新扫描以显示新文件
-        if (useLocalModelStore.getState().dirHandle) {
-          await useLocalModelStore.getState().scanDir()
-          refreshLocalNames()
-          renderLocalView()
-        }
-      } else {
-        showToast('❌ 下载失败: ' + (j.error || ''))
+  // 从 C 站链接批量下载 LoRA（复用后端 /anima/lora/download，支持 modelId 或 modelVersionId）
+  $$('localUrlBtn')?.addEventListener('click', () => {
+    const overlay = document.createElement('div')
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(2,2,3,0.72);z-index:99999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);'
+    const modal = document.createElement('div')
+    modal.style.cssText = 'background:#14141c;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:16px;width:94vw;max-width:520px;max-height:80vh;display:flex;flex-direction:column;color:#EDEDEF;box-shadow:0 0 0 1px rgba(255,255,255,0.05),0 20px 60px rgba(0,0,0,0.6);'
+    modal.innerHTML = `<h3 style="margin:0 0 8px;font-size:13px;">🔗 从 C 站链接批量下载 LoRA</h3>
+      <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">每行一个链接（civitai.com/models/...），可带可不带 modelVersionId</div>
+      <textarea class="ld-urls" rows="8" placeholder="https://civitai.com/models/2658471/denia-wuthering-wavesanima&#10;https://civitai.com/models/2529695/xxx?modelVersionId=3094753" style="flex:1;padding:8px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;font-family:monospace;resize:vertical;outline:none;"></textarea>
+      <div class="ld-log" style="margin-top:8px;max-height:140px;overflow-y:auto;font-size:10px;color:#8A8F98;white-space:pre-wrap;"></div>
+      <div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end;">
+        <button class="ld-cancel" style="padding:5px 12px;background:rgba(255,255,255,0.08);color:#8A8F98;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;font-size:11px;">取消</button>
+        <button class="ld-start" style="padding:5px 14px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:6px;cursor:pointer;font-size:11px;">⬇️ 开始下载</button>
+      </div>`
+    overlay.appendChild(modal)
+    document.body.appendChild(overlay)
+    const close = () => overlay.remove()
+    overlay.onclick = (e) => { if (e.target === overlay) close() }
+    modal.querySelector('.ld-cancel')?.addEventListener('click', close)
+    modal.querySelector('.ld-start')?.addEventListener('click', async () => {
+      const ta = modal.querySelector('.ld-urls') as HTMLTextAreaElement
+      const urls = (ta?.value || '').split('\n').map(s => s.trim()).filter(Boolean)
+      if (!urls.length) { showToast('请输入链接'); return }
+      const logEl = modal.querySelector('.ld-log') as HTMLElement
+      const startBtn = modal.querySelector('.ld-start') as HTMLButtonElement
+      startBtn.disabled = true
+      let ok = 0, fail = 0
+      for (const url of urls) {
+        const vm = url.match(/modelVersionId=(\d+)/)
+        const mm = url.match(/civitai\.com\/models\/(\d+)/)
+        const qs = vm ? `versionId=${vm[1]}` : mm ? `modelId=${mm[1]}` : null
+        if (!qs) { fail++; logEl.textContent += `✗ 无法解析: ${url.slice(0, 50)}\n`; continue }
+        logEl.textContent += `⬇ ${url.slice(0, 50)}...\n`
+        try {
+          const resp = await fetch(`/anima/lora/download?${qs}`)
+          const j = await resp.json()
+          if (j.ok) { ok++; logEl.textContent += `✓ ${j.filename}\n` }
+          else { fail++; logEl.textContent += `✗ ${j.error || '失败'}\n` }
+        } catch (e: any) { fail++; logEl.textContent += `✗ ${e.message}\n` }
+        logEl.scrollTop = logEl.scrollHeight
       }
-    } catch (e: any) {
-      showToast('❌ 下载失败: ' + e.message)
-    }
+      startBtn.disabled = false
+      logEl.textContent += `\n✅ 完成: ${ok} 成功 / ${fail} 失败\n`
+      if (useLocalModelStore.getState().dirHandle) {
+        await useLocalModelStore.getState().scanDir()
+        refreshLocalNames()
+        renderLocalView()
+      }
+    })
   })
 
   $$('localMatchAllBtn')?.addEventListener('click', async () => {

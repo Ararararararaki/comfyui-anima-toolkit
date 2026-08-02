@@ -127,6 +127,60 @@
     }
   }
 
+  // ── 解析 C 站 URL → {versionId} 或 {modelId} ──
+  function parseCivitaiUrl(url) {
+    const vm = url.match(/modelVersionId=(\d+)/);
+    if (vm) return { versionId: vm[1] };
+    const mm = url.match(/civitai\.com\/models\/(\d+)/);
+    if (mm) return { modelId: mm[1] };
+    return null;
+  }
+
+  // ── 批量下载弹窗（每行一个 C 站链接） ──
+  function showBatchDownloadDialog(onDone) {
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(2,2,3,0.72);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);";
+    const modal = document.createElement("div");
+    modal.style.cssText = "background:#14141c;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:16px;width:94vw;max-width:520px;max-height:80vh;display:flex;flex-direction:column;color:#EDEDEF;box-shadow:0 0 0 1px rgba(255,255,255,0.05),0 20px 60px rgba(0,0,0,0.6);";
+    modal.innerHTML = `<h3 style="margin:0 0 8px;font-size:13px;">🔗 从 C 站链接批量下载 LoRA</h3>
+      <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">每行一个链接（civitai.com/models/...），可带可不带 modelVersionId</div>
+      <textarea class="bd-urls" rows="8" placeholder="https://civitai.com/models/2658471/denia-wuthering-wavesanima&#10;https://civitai.com/models/2529695/xxx?modelVersionId=3094753" style="flex:1;padding:8px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;font-family:monospace;resize:vertical;outline:none;"></textarea>
+      <div class="bd-log" style="margin-top:8px;max-height:140px;overflow-y:auto;font-size:10px;color:#8A8F98;white-space:pre-wrap;"></div>
+      <div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end;">
+        <button class="bd-cancel" style="padding:5px 12px;background:rgba(255,255,255,0.08);color:#8A8F98;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;font-size:11px;">取消</button>
+        <button class="bd-start" style="padding:5px 14px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:6px;cursor:pointer;font-size:11px;">⬇️ 开始下载</button>
+      </div>`;
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    overlay.onclick = (e) => { if (e.target === overlay) close(); };
+    modal.querySelector(".bd-cancel").onclick = close;
+    modal.querySelector(".bd-start").onclick = async () => {
+      const urls = modal.querySelector(".bd-urls").value.split("\n").map((s) => s.trim()).filter(Boolean);
+      if (!urls.length) { showToast("请输入链接"); return; }
+      const logEl = modal.querySelector(".bd-log");
+      const startBtn = modal.querySelector(".bd-start");
+      startBtn.disabled = true;
+      let ok = 0, fail = 0;
+      for (const url of urls) {
+        const p = parseCivitaiUrl(url);
+        if (!p) { fail++; logEl.textContent += `✗ 无法解析: ${url.slice(0,50)}\n`; continue; }
+        const qs = p.versionId ? `versionId=${p.versionId}` : `modelId=${p.modelId}`;
+        logEl.textContent += `⬇ ${url.slice(0,50)}...\n`;
+        try {
+          const resp = await fetch(`/anima/lora/download?${qs}`);
+          const j = await resp.json();
+          if (j.ok) { ok++; logEl.textContent += `✓ ${j.filename}\n`; }
+          else { fail++; logEl.textContent += `✗ ${j.error || "失败"}\n`; }
+        } catch (e) { fail++; logEl.textContent += `✗ ${e.message}\n`; }
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+      startBtn.disabled = false;
+      logEl.textContent += `\n✅ 完成: ${ok} 成功 / ${fail} 失败\n`;
+      if (typeof onDone === "function") onDone();
+    };
+  }
+
   let _toastEl = null;
   function showToast(msg) {
     // 全局只保留一个 toast，新提示直接替换旧提示，避免多个 toast 重叠盖住
@@ -940,32 +994,17 @@
       const closeBtn = modal.querySelector(".bm-close");
       const newCatBtn = modal.querySelector(".bm-newcat");
 
-      // ── 从 C 站链接下载 LoRA（需含 modelVersionId）──
+      // ── 从 C 站链接批量下载 LoRA ──
       const urlBtn = modal.querySelector(".bm-url");
-      urlBtn?.addEventListener("click", async () => {
-        const url = window.prompt("粘贴 C 站 LoRA 链接（需含 modelVersionId）", "");
-        if (!url) return;
-        const m = url.match(/modelVersionId=(\d+)/);
-        if (!m) { showToast("⚠️ 未找到 modelVersionId，请用带 ?modelVersionId= 的链接"); return; }
-        showToast("⬇️ 正在下载...");
-        try {
-          const resp = await fetch("/anima/lora/download?versionId=" + m[1]);
-          const j = await resp.json();
-          if (j.ok) {
-            showToast(`✅ 已下载 ${j.filename}`);
-            // 刷新浏览列表
-            fetch("/anima/loras").then((r) => r.json()).then((d) => {
-              allLoras = (d.loras || []).map((l) => ({ ...l }));
-              totalEl.textContent = `共 ${allLoras.length} 个`;
-              renderSidebar();
-              renderCurrent();
-            }).catch(() => {});
-          } else {
-            showToast("❌ 下载失败: " + (j.error || ""));
-          }
-        } catch (e) {
-          showToast("❌ 下载失败: " + e.message);
-        }
+      urlBtn?.addEventListener("click", () => {
+        showBatchDownloadDialog(() => {
+          fetch("/anima/loras").then((r) => r.json()).then((d) => {
+            allLoras = (d.loras || []).map((l) => ({ ...l }));
+            totalEl.textContent = `共 ${allLoras.length} 个`;
+            renderSidebar();
+            renderCurrent();
+          }).catch(() => {});
+        });
       });
 
       let meta = { categories: [], loraMeta: {}, loraGroups: [] };
