@@ -298,14 +298,27 @@ async def lora_download(request):
 
             total = int(resp.headers.get("Content-Length", 0) or 0)
             done = 0
+            cancelled = False
             with open(target, "wb") as f:
                 async for chunk in resp.content.iter_chunked(64 * 1024):
+                    # 支持取消：下载中前端调 cancel 端点，置 cancel 标记
+                    if progress_id and _DOWNLOAD_PROGRESS.get(progress_id, {}).get("cancel"):
+                        cancelled = True
+                        break
                     f.write(chunk)
                     done += len(chunk)
                     if progress_id and total:
                         with _DOWNLOAD_PROGRESS_LOCK:
                             _DOWNLOAD_PROGRESS[progress_id]["done"] = done
                             _DOWNLOAD_PROGRESS[progress_id]["total"] = total
+
+            if cancelled:
+                # 取消：删除部分下载的文件
+                try:
+                    os.remove(target)
+                except Exception:
+                    pass
+                return web.json_response({"ok": False, "error": "已取消", "cancelled": True})
 
             if progress_id:
                 with _DOWNLOAD_PROGRESS_LOCK:
@@ -328,6 +341,16 @@ async def download_status(request):
     if not p:
         return web.json_response({"status": "not_found"})
     return web.json_response(p)
+
+
+@PromptServer.instance.routes.get("/anima/lora/download/cancel")
+async def download_cancel(request):
+    pid = request.query.get("progressId", "").strip()
+    with _DOWNLOAD_PROGRESS_LOCK:
+        if pid in _DOWNLOAD_PROGRESS:
+            _DOWNLOAD_PROGRESS[pid]["cancel"] = True
+            _DOWNLOAD_PROGRESS[pid]["status"] = "cancelled"
+    return web.json_response({"ok": True})
 
 
 def _version_tuple(v: str) -> tuple:

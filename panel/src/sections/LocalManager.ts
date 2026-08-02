@@ -831,11 +831,11 @@ function bindLocalEvents() {
     modal.innerHTML = `<h3 style="margin:0 0 8px;font-size:13px;">🔗 从 C 站链接批量下载 LoRA</h3>
       <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">每行一个链接（civitai.com/models/...），可带可不带 modelVersionId</div>
       <textarea class="ld-urls" rows="6" placeholder="https://civitai.com/models/2658471/denia-wuthering-wavesanima&#10;https://civitai.com/models/2529695/xxx?modelVersionId=3094753" style="flex:1;padding:8px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;font-family:monospace;resize:vertical;outline:none;"></textarea>
-      <input class="ld-cookie" type="password" value="${(() => { try { return localStorage.getItem('anima_civitai_cookie') || '' } catch { return '' } })()}" placeholder="只需 __Secure-civ-token 的值：登录 C 站 → F12 → Application → Cookies → 选 civitai.com → 复制 __Secure-civ-token 那一长串" style="margin-top:8px;padding:7px 9px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:10px;outline:none;width:100%;box-sizing:border-box;">
-      <div style="display:flex;gap:6px;margin-top:6px;">
-        <input class="ld-token" type="password" value="${(() => { try { return localStorage.getItem('anima_civitai_token') || '' } catch { return '' } })()}" placeholder="C 站 API Key（推荐，下载需登录的模型用）" style="flex:1;padding:7px 9px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:10px;outline:none;min-width:0;">
-        <button class="ld-tokenlink" title="打开 C 站设置页（登录后在设置里找 API Keys 生成）" style="padding:7px 10px;background:rgba(94,106,210,0.2);color:#9aa5ff;border:1px solid rgba(94,106,210,0.3);border-radius:6px;cursor:pointer;font-size:10px;flex-shrink:0;white-space:nowrap;">🔑 生成 API Key</button>
+      <div style="display:flex;gap:6px;margin-top:8px;">
+        <input class="ld-token" type="password" value="${(() => { try { return localStorage.getItem('anima_civitai_token') || '' } catch { return '' } })()}" placeholder="C 站 API Key（只读权限即可，下载需登录的模型用）" style="flex:1;padding:7px 9px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:10px;outline:none;min-width:0;">
+        <button class="ld-tokenlink" title="打开 C 站账号设置（账号 → API Keys 生成，选只读权限）" style="padding:7px 10px;background:rgba(94,106,210,0.2);color:#9aa5ff;border:1px solid rgba(94,106,210,0.3);border-radius:6px;cursor:pointer;font-size:10px;flex-shrink:0;white-space:nowrap;">🔑 生成 API Key</button>
       </div>
+      <div style="font-size:9px;color:#8A8F98;margin-top:4px;">只读权限的 API Key 即可下载需登录的模型</div>
       <div class="ld-list" style="margin-top:8px;max-height:130px;overflow-y:auto;"></div>
       <div class="ld-log" style="margin-top:8px;max-height:60px;overflow-y:auto;font-size:10px;color:#8A8F98;white-space:pre-wrap;"></div>
       <div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end;">
@@ -845,9 +845,12 @@ function bindLocalEvents() {
     overlay.appendChild(modal)
     document.body.appendChild(overlay)
     const close = () => overlay.remove()
-    overlay.onclick = (e) => { if (e.target === overlay) close() }
+    // 修复：拖拽选中文本时鼠标在弹窗外松开也会误关——只有按下和松开都在遮罩上才关闭
+    let downOnOverlay = false
+    overlay.addEventListener('mousedown', (e) => { downOnOverlay = (e.target === overlay) })
+    overlay.addEventListener('click', (e) => { if (e.target === overlay && downOnOverlay) close() })
     modal.querySelector('.ld-cancel')?.addEventListener('click', close)
-    modal.querySelector('.ld-tokenlink')?.addEventListener('click', () => window.open('https://civitai.com/user/settings', '_blank'))
+    modal.querySelector('.ld-tokenlink')?.addEventListener('click', () => window.open('https://civitai.com/user/account', '_blank'))
     modal.querySelector('.ld-start')?.addEventListener('click', async () => {
       const ta = modal.querySelector('.ld-urls') as HTMLTextAreaElement
       const urls = (ta?.value || '').split('\n').map(s => s.trim()).filter(Boolean)
@@ -877,13 +880,26 @@ function bindLocalEvents() {
         const pctEl = document.createElement('span')
         pctEl.style.cssText = 'width:36px;text-align:right;color:#8A8F98;flex-shrink:0;'
         pctEl.textContent = '0%'
-        row.append(nameEl, barWrap, pctEl)
+        const cancelBtn = document.createElement('button')
+        cancelBtn.textContent = '✕'
+        cancelBtn.title = '取消下载'
+        cancelBtn.style.cssText = 'padding:2px 6px;background:rgba(255,80,80,0.15);color:#ff6b6b;border:1px solid rgba(255,80,80,0.3);border-radius:4px;cursor:pointer;font-size:10px;flex-shrink:0;line-height:1;'
+        row.append(nameEl, barWrap, pctEl, cancelBtn)
         listEl.appendChild(row)
         listEl.scrollTop = listEl.scrollHeight
 
         await new Promise<void>((resolve) => {
           let cleared = false
           const stop = () => { if (!cleared) { cleared = true; clearInterval(timer) } }
+          cancelBtn.onclick = async () => {
+            cancelBtn.disabled = true
+            try { await fetch(`/anima/lora/download/cancel?progressId=${progressId}`) } catch { /* ignore */ }
+            stop()
+            fail++
+            logEl.textContent += `✗ ${url.slice(0, 40)} 已取消\n`
+            pctEl.textContent = '已取消'
+            resolve()
+          }
           const timer = setInterval(async () => {
             try {
               const sr = await fetch(`/anima/lora/download/status?progressId=${progressId}`)
@@ -894,17 +910,14 @@ function bindLocalEvents() {
                 pctEl.textContent = pc + '%'
               }
               if (s.status === 'done') { stop(); bar.style.width = '100%'; pctEl.textContent = '✓' }
-              else if (s.status === 'error') { stop(); pctEl.textContent = '✗' }
+              else if (s.status === 'error' || s.status === 'cancelled') { stop(); pctEl.textContent = '✗' }
             } catch { /* ignore */ }
           }, 400)
 
-          const cookieVal = (modal.querySelector('.ld-cookie') as HTMLInputElement)?.value?.trim() || ''
-          if (cookieVal) { try { localStorage.setItem('anima_civitai_cookie', cookieVal) } catch { /* ignore */ } }
           const tokenVal = (modal.querySelector('.ld-token') as HTMLInputElement)?.value?.trim() || ''
           if (tokenVal) { try { localStorage.setItem('anima_civitai_token', tokenVal) } catch { /* ignore */ } }
           const tokenQ = tokenVal ? `&token=${encodeURIComponent(tokenVal)}` : ''
-          const cookieQ = cookieVal ? `&cookie=${encodeURIComponent(cookieVal)}` : ''
-          fetch(`/anima/lora/download?${qs}&progressId=${progressId}${tokenQ}${cookieQ}`)
+          fetch(`/anima/lora/download?${qs}&progressId=${progressId}${tokenQ}`)
             .then((r) => r.json())
             .then((j) => {
               stop()
