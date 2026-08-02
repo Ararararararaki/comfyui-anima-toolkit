@@ -237,6 +237,23 @@ async def lora_download(request):
     if not version_id:
         return web.json_response({"ok": False, "error": "versionId or modelId required"}, status=400)
 
+    # 查 model-version 详情拿正确文件名（files[0].name，如 qingxiao_v1.safetensors）
+    # 重定向响应的 Content-Disposition 常缺失/格式不同，导致下载名变成 lora.safetensors
+    api_filename = ""
+    try:
+        session = await _get_session()
+        u = f"https://civitai.com/api/v1/model-versions/{version_id}"
+        async with session.get(u) as resp:
+            if resp.status == 200:
+                d = await resp.json()
+                files = d.get("files") or []
+                if files:
+                    fn = str(files[0].get("name") or "")
+                    if fn and fn.lower().endswith((".safetensors", ".pt", ".bin")):
+                        api_filename = fn
+    except Exception:
+        api_filename = ""
+
     lora_dirs = folder_paths.get_folder_paths("loras")
     if not lora_dirs:
         return web.json_response({"ok": False, "error": "loras folder not found"}, status=500)
@@ -252,12 +269,13 @@ async def lora_download(request):
                     return web.json_response({"ok": False, "error": "该模型需登录 C 站才能下载，请在浏览器打开链接手动下载", "needLogin": True}, status=502)
                 return web.json_response({"ok": False, "error": f"download http_{resp.status}"}, status=502)
 
-            # 文件名：Content-Disposition 优先，否则 fallback name
-            filename = fallback_name
-            cd = resp.headers.get("Content-Disposition", "")
-            m = __import__("re").search(r'filename="?([^";]+)"?', cd) if "filename=" in cd else None
-            if m and m.group(1):
-                filename = m.group(1)
+            # 文件名：C 站 API 的 files[0].name 优先，其次 Content-Disposition，最后 fallback
+            filename = api_filename or fallback_name
+            if not api_filename:
+                cd = resp.headers.get("Content-Disposition", "")
+                m = __import__("re").search(r'filename="?([^";]+)"?', cd) if "filename=" in cd else None
+                if m and m.group(1):
+                    filename = m.group(1)
             filename = os.path.basename(filename or "lora.safetensors")
             if not os.path.splitext(filename)[1]:
                 filename += ".safetensors"
