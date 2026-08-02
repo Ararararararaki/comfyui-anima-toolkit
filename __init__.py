@@ -3,6 +3,7 @@
 # App available at: /extensions/ComfyUI-Anima-Batch-LoRA/app/
 
 import os
+import re
 import time
 import json
 import hashlib
@@ -19,6 +20,8 @@ from .anima_batch_lora import (
 )
 
 WEB_DIRECTORY = "./web"
+
+__version__ = "2.0.0"  # 与仓库根 VERSION 文件保持一致，发布更新时同步递增
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
@@ -255,6 +258,41 @@ async def lora_download(request):
             return web.json_response({"ok": True, "filename": filename, "path": target})
     except Exception as e:
         return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+def _version_tuple(v: str) -> tuple:
+    nums = [int(x) for x in re.split(r"[^0-9]+", v) if x.isdigit()][:3]
+    while len(nums) < 3:
+        nums.append(0)
+    return tuple(nums)
+
+
+@PromptServer.instance.routes.get("/anima/version")
+async def anima_version(request):
+    """Compare local plugin version against GitHub VERSION file."""
+    latest = ""
+    try:
+        session = await _get_session()
+        url = "https://raw.githubusercontent.com/Ararararararaki/comfyui-anima-toolkit/main/VERSION"
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+            if resp.status == 200:
+                latest = (await resp.text()).strip()
+    except Exception:
+        latest = ""
+
+    behind = False
+    if latest:
+        try:
+            behind = _version_tuple(__version__) < _version_tuple(latest)
+        except Exception:
+            behind = False
+
+    return web.json_response({
+        "version": __version__,
+        "latest": latest or None,
+        "behind": behind,
+        "url": "https://github.com/Ararararararaki/comfyui-anima-toolkit",
+    })
 
 
 # ── Bridge HTTP API (replaces file-based bridge) ──

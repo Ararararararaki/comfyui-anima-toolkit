@@ -378,7 +378,26 @@
       const clearBtn = this._btn("✕ 清空列表", "btn-clear", "清空当前 LoRA 列表");
       const panelBtn = this._btn("🌐 面板", "btn-verify", "打开本地管理面板（Anima Toolkit）");
       const groupsBtn = this._btn("📁 组", "btn-browse", "LoRA 组：保存当前列表 / 切换 / 删除");
-      toolbar.append(verifyBtn, extractBtn, copyAllTwBtn, browseBtn, groupsBtn, clearBtn, panelBtn);
+      const updateBtn = this._btn("🔄 更新", "btn-browse", "检查插件版本更新");
+      toolbar.append(verifyBtn, extractBtn, copyAllTwBtn, browseBtn, groupsBtn, clearBtn, panelBtn, updateBtn);
+
+      // 检查更新：点击手动检查；build 后自动查一次，有新版时按钮高亮成「有新版本」
+      updateBtn.onclick = () => {
+        fetch("/anima/version").then((r) => r.json()).then((v) => {
+          if (v && v.behind) showToast(`🔄 有新版本 ${v.latest}（当前 ${v.version}），可点按钮前往 GitHub 更新`);
+          else if (v && v.latest) showToast(`当前已是最新版本 ${v.version}`);
+          else showToast("⚠️ 无法检查更新（网络或 GitHub 不可达）");
+        }).catch(() => showToast("⚠️ 无法检查更新"));
+      };
+      setTimeout(() => {
+        fetch("/anima/version").then((r) => r.json()).then((v) => {
+          if (v && v.behind) {
+            updateBtn.textContent = "🔄 有新版本";
+            updateBtn.title = `当前 ${v.version}，最新 ${v.latest}，点击前往 GitHub 更新`;
+            updateBtn.onclick = () => window.open(v.url, "_blank");
+          }
+        }).catch(() => {});
+      }, 2000);
 
       const statusEl = document.createElement("div");
       statusEl.className = "status";
