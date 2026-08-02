@@ -216,6 +216,7 @@ async def lora_download(request):
     fallback_name = request.query.get("name", "").strip()
     progress_id = request.query.get("progressId", "").strip()
     cookie = request.query.get("cookie", "").strip()
+    token = request.query.get("token", "").strip()  # C 站 API Key（设置页生成），比 cookie 持久省事
 
     if progress_id:
         with _DOWNLOAD_PROGRESS_LOCK:
@@ -264,8 +265,17 @@ async def lora_download(request):
     try:
         session = await _get_session()
         url = f"https://civitai.com/api/download/models/{version_id}"
-        hdrs = {"Cookie": cookie} if cookie else {}
-        async with session.get(url, allow_redirects=True, headers=hdrs) as resp:
+        hdrs = {}
+        if cookie:
+            # 容错：用户可能只填了 __Secure-civ-token 的值（JWT 长串，不含 =）
+            if "=" not in cookie and not cookie.lower().startswith("__secure-"):
+                hdrs["Cookie"] = "__Secure-civ-token=" + cookie
+            else:
+                hdrs["Cookie"] = cookie
+        params = {}
+        if token:
+            params["token"] = token  # C 站下载接口认 ?token=<api-key>
+        async with session.get(url, allow_redirects=True, headers=hdrs, params=params) as resp:
             # 检测重定向到 C 站登录页（需登录的模型，未带有效 Cookie 时）
             if "auth.civitai.com/login" in str(resp.url):
                 return web.json_response({"ok": False, "error": "该模型需登录 C 站才能下载：请在下载弹窗的 Cookie 栏填写浏览器里 civitai.com 的 Cookie 后重试，或在浏览器手动下载", "needLogin": True}, status=502)
