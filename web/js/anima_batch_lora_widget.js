@@ -319,11 +319,12 @@
       toolbar.className = "toolbar";
       const verifyBtn = this._btn("🔍 验证标签", "btn-verify", "检查输入框中的 <lora:...> 标签能否在本地找到对应文件");
       const extractBtn = this._btn("📥 提取触发词", "btn-verify", "批量查询当前列表所有 LoRA 的触发词（自动刷新列表）");
+      const copyAllTwBtn = this._btn("📋 全部触发词", "btn-verify", "一键复制已启用 LoRA 的所有触发词（英文逗号连接）");
       const browseBtn = this._btn("📂 本地 LoRA", "btn-browse", "打开本地 LoRA 浏览窗：预览 C 站图、点击添加 / 分类 / 置顶");
       const clearBtn = this._btn("✕ 清空列表", "btn-clear", "清空当前 LoRA 列表");
       const panelBtn = this._btn("🌐 面板", "btn-verify", "打开本地管理面板（Anima Toolkit）");
       const groupsBtn = this._btn("📁 组", "btn-browse", "LoRA 组：保存当前列表 / 切换 / 删除");
-      toolbar.append(verifyBtn, extractBtn, browseBtn, groupsBtn, clearBtn, panelBtn);
+      toolbar.append(verifyBtn, extractBtn, copyAllTwBtn, browseBtn, groupsBtn, clearBtn, panelBtn);
 
       const statusEl = document.createElement("div");
       statusEl.className = "status";
@@ -338,6 +339,7 @@
 
       verifyBtn.onclick = () => this._verify(statusEl, listEl, triggerEl);
       extractBtn.onclick = () => this._extractAllTriggerWords(listEl);
+      copyAllTwBtn.onclick = () => this._copyAllTriggerWords();
       browseBtn.onclick = () => { showToast("正在加载 LoRA 列表..."); this._browseModal(statusEl); };
       clearBtn.onclick = () => { this.loras = []; this._commit(); this._render(listEl); };
       panelBtn.onclick = () => window.open(PANEL_BASE, "_blank");
@@ -451,6 +453,34 @@
         });
     }
 
+    // ── 一键复制已启用 LoRA 的所有触发词（英文逗号连接，句末带逗号匹配后续提示词） ──
+    async _copyAllTriggerWords() {
+      const enabled = this.loras.filter((l) => !l.disabled);
+      if (!enabled.length) { showToast("当前没有启用的 LoRA"); return; }
+      const parts = [];
+      for (const l of enabled) {
+        let tw = this.triggerWordMap[l.name];
+        if (!Array.isArray(tw)) {
+          // 未查询过 → 现查（复用 /anima/lora/info）
+          try {
+            const resp = await fetch("/anima/lora/info?name=" + encodeURIComponent(l.name));
+            const data = await resp.json();
+            const src = data.source || "";
+            if (data.error || src.startsWith("error") || src.startsWith("http")) throw new Error(src);
+            tw = data.trainedWords || [];
+            this.triggerWordMap[l.name] = tw;
+          } catch {
+            this.triggerWordMap[l.name] = null;
+            tw = null;
+          }
+        }
+        if (tw && tw.length) parts.push(tw.join(", "));
+      }
+      if (!parts.length) { showToast("这些 LoRA 都没有触发词"); return; }
+      copyText(parts.join(", ") + ",");
+      showToast(`已复制 ${parts.length} 个 LoRA 的触发词（逗号连接）`);
+    }
+
     // 加载工作流/同步后自动提取所有 LoRA 的触发词，逐个更新行内提示，不重渲染整个列表
     _autoFetchTriggerWords() {
       this.loras.forEach((l) => {
@@ -553,14 +583,14 @@
           const ww = this.triggerWordMap[l.name];
           if (ww && ww.length) {
             // 有触发词 → 复制
-            copyText(ww.join(", "));
+            copyText(ww.join(", ") + ",");
             showToast(`已复制触发词: ${ww[0]}${ww.length > 1 ? " 等" + ww.length + "个" : ""}`);
           } else if (ww === null) {
             // 上次查询失败 → 重试
             showToast("⏳ 重新获取触发词...");
             this._fetchTw(l.name, (tw) => {
               if (tw.length) {
-                copyText(tw.join(", "));
+                copyText(tw.join(", ") + ",");
                 showToast(`已复制触发词: ${tw[0]}${tw.length > 1 ? " 等" + tw.length + "个" : ""}`);
               } else {
                 showToast("该 LoRA 无触发词");
@@ -574,7 +604,7 @@
             showToast("⏳ 获取触发词...");
             this._fetchTw(l.name, (tw) => {
               if (tw.length) {
-                copyText(tw.join(", "));
+                copyText(tw.join(", ") + ",");
                 showToast(`已复制触发词: ${tw[0]}${tw.length > 1 ? " 等" + tw.length + "个" : ""}`);
               } else {
                 showToast("该 LoRA 无触发词");
@@ -1564,7 +1594,7 @@
         const copyAllBtn = e.target.closest(".tw-copy-all");
         if (copyAllBtn) {
           e.stopPropagation();
-          const allText = words ? words.join(", ") : "";
+          const allText = words ? words.join(", ") + "," : "";
           copyText(allText);
           showToast("已复制全部触发词");
         }
