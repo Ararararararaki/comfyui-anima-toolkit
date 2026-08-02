@@ -1189,7 +1189,7 @@
           const item = document.createElement("button");
           item.style.cssText = `display:flex;align-items:center;gap:6px;width:100%;padding:5px 8px;margin-bottom:2px;border-radius:6px;cursor:pointer;font-size:10px;text-align:left;border:none;background:${curFilter === key ? "rgba(94,106,210,0.25)" : "transparent"};color:${curFilter === key ? "#EDEDEF" : "#8A8F98"};`;
           item.innerHTML = `<span>${icon || ""}${label}</span><span style="margin-left:auto;color:rgba(255,255,255,0.3);font-size:9px;">${count}</span>`;
-          item.onclick = () => { curFilter = key; renderSidebar(); renderCurrent(); };
+          item.onclick = () => { curFilter = (curFilter === key) ? "all" : key; renderSidebar(); renderCurrent(); };
           sidebarEl.appendChild(item);
         };
         mk("all", "全部", allLoras.length, "");
@@ -1702,9 +1702,12 @@
       picker.style.cssText = "position:fixed;z-index:100000;background:linear-gradient(180deg,#16161b,#101014);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:8px;min-width:200px;box-shadow:0 12px 40px rgba(0,0,0,0.6);";
       const rect = host.getBoundingClientRect();
       const apply = (cat) => {
+        // toggle：所有目标都已选该分类 → 取消；否则 → 添加（单个与批量都适用）
+        const allOn = targets.every((n) => (meta.loraMeta[n] || {}).categories?.includes(cat));
         targets.forEach((n) => {
           const mm = meta.loraMeta[n] || (meta.loraMeta[n] = { categories: [], favorite: false, pinned: false });
-          if (!mm.categories.includes(cat)) mm.categories.push(cat);
+          if (allOn) mm.categories = mm.categories.filter((c) => c !== cat);
+          else if (!mm.categories.includes(cat)) mm.categories.push(cat);
         });
         saveMeta();
         if (sel && this._bmSelected) this._bmSelected.clear();
