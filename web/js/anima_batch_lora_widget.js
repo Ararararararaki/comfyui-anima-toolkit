@@ -321,9 +321,8 @@
       const browseBtn = this._btn("📂 本地 LoRA", "btn-browse", "打开本地 LoRA 浏览窗：预览 C 站图、点击添加 / 分类 / 置顶");
       const clearBtn = this._btn("✕ 清空列表", "btn-clear", "清空当前 LoRA 列表");
       const panelBtn = this._btn("🌐 面板", "btn-verify", "打开本地管理面板（Anima Toolkit）");
-      const saveGroupBtn = this._btn("💾 保存组", "btn-verify", "把当前 LoRA 列表保存为组，可一键切换");
-      const groupsBtn = this._btn("📁 组", "btn-browse", "LoRA 组管理：一键切换 / 删除");
-      toolbar.append(verifyBtn, extractBtn, browseBtn, saveGroupBtn, groupsBtn, clearBtn, panelBtn);
+      const groupsBtn = this._btn("📁 组", "btn-browse", "LoRA 组：保存当前列表 / 切换 / 删除");
+      toolbar.append(verifyBtn, extractBtn, browseBtn, groupsBtn, clearBtn, panelBtn);
 
       const statusEl = document.createElement("div");
       statusEl.className = "status";
@@ -341,18 +340,6 @@
       browseBtn.onclick = () => { showToast("正在加载 LoRA 列表..."); this._browseModal(statusEl); };
       clearBtn.onclick = () => { this.loras = []; this._commit(); this._render(listEl); };
       panelBtn.onclick = () => window.open(PANEL_BASE, "_blank");
-      saveGroupBtn.onclick = async () => {
-        if (!this.loras.length) { showToast("⚠️ 当前列表为空，先添加 LoRA 再保存组"); return; }
-        const name = window.prompt("保存 LoRA 组：输入组名", "");
-        if (!name || !name.trim()) return;
-        const metaData = await fetch("/anima/meta").then((r) => r.json()).catch(() => ({}));
-        const groups = metaData.loraGroups || [];
-        const active = this.loras.filter((l) => !l.disabled); // 组只保存启用项，避免加载组时意外启用禁用 LoRA
-        groups.push({ name: name.trim(), loras: active.map((l) => ({ name: l.name, weight: l.weight })) });
-        metaData.loraGroups = groups;
-        await fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(metaData) }).catch(() => {});
-        showToast(`✅ 已保存组「${name.trim()}」（${active.length} 个 LoRA）`);
-      };
       groupsBtn.onclick = () => this._groupsModal(listEl);
 
       this._render(listEl);
@@ -799,10 +786,41 @@
           title.style.cssText = "margin:0 0 8px;font-size:13px;";
           title.textContent = `📁 LoRA 组（${groups.length}）`;
           modal.appendChild(title);
+
+          // ── 保存当前列表为新组（合并「保存组」按钮功能） ──
+          const active = this.loras.filter((l) => !l.disabled);
+          if (active.length) {
+            const saveWrap = document.createElement("div");
+            saveWrap.style.cssText = "display:flex;gap:6px;margin-bottom:8px;";
+            const nameInput = document.createElement("input");
+            nameInput.type = "text";
+            nameInput.placeholder = `保存当前 ${active.length} 个 LoRA 为新组...`;
+            nameInput.style.cssText = "flex:1;padding:6px 8px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;outline:none;";
+            const saveBtn = document.createElement("button");
+            saveBtn.textContent = "💾 保存";
+            saveBtn.style.cssText = "padding:5px 12px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:6px;cursor:pointer;font-size:11px;box-shadow:0 0 0 1px rgba(94,106,210,0.3);";
+            const doSave = async () => {
+              const name = nameInput.value.trim();
+              if (!name) { showToast("请输入组名"); return; }
+              const meta = await fetch("/anima/meta").then((r) => r.json()).catch(() => ({ loraGroups: [] }));
+              const gs = meta.loraGroups || [];
+              gs.push({ name, loras: active.map((l) => ({ name: l.name, weight: l.weight })) });
+              meta.loraGroups = gs;
+              await fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(meta) }).catch(() => {});
+              showToast(`✅ 已保存组「${name}」（${active.length} 个 LoRA）`);
+              overlay.remove();
+              this._groupsModal(listEl);
+            };
+            saveBtn.onclick = doSave;
+            nameInput.onkeydown = (e) => { if (e.key === "Enter") doSave(); };
+            saveWrap.append(nameInput, saveBtn);
+            modal.appendChild(saveWrap);
+          }
+
           if (!groups.length) {
             const empty = document.createElement("p");
             empty.style.cssText = "color:#8A8F98;font-size:11px;margin:8px 0;";
-            empty.textContent = "暂无组，点「💾 保存组」创建";
+            empty.textContent = "暂无组，在上方输入组名保存当前列表";
             modal.appendChild(empty);
           }
           groups.forEach((g) => {
