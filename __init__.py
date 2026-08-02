@@ -42,8 +42,9 @@ async def _get_session():
     global _PROXY_SESSION
     if _PROXY_SESSION is None or _PROXY_SESSION.closed:
         _PROXY_SESSION = aiohttp.ClientSession(
-            headers={"User-Agent": "AnimaExplorer/2.0"},
-            timeout=aiohttp.ClientTimeout(total=15),
+            # 用浏览器 UA：CivItai/Cloudflare 对非浏览器 UA 的下载请求会返回 401
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"},
+            timeout=aiohttp.ClientTimeout(total=30),
             # 尊重 HTTP_PROXY/HTTPS_PROXY 环境变量（Civitai 需走代理）
             trust_env=True,
         )
@@ -238,6 +239,8 @@ async def lora_download(request):
         url = f"https://civitai.com/api/download/models/{version_id}"
         async with session.get(url, allow_redirects=True) as resp:
             if resp.status != 200:
+                if resp.status in (401, 403):
+                    return web.json_response({"ok": False, "error": "该模型需登录 C 站才能下载，请在浏览器打开链接手动下载", "needLogin": True}, status=502)
                 return web.json_response({"ok": False, "error": f"download http_{resp.status}"}, status=502)
 
             # 文件名：Content-Disposition 优先，否则 fallback name
