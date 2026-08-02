@@ -200,6 +200,10 @@ async def lora_info(request):
     return web.json_response(result)
 
 
+# 下载进度：progressId -> {done, total, status, filename}（供前端进度条轮询）
+_DOWNLOAD_PROGRESS: dict = {}
+_DOWNLOAD_PROGRESS_LOCK = threading.Lock()
+
 @PromptServer.instance.routes.get("/anima/lora/download")
 async def lora_download(request):
     """Download a Civitai LoRA by modelVersion id into the local loras folder.
@@ -210,6 +214,11 @@ async def lora_download(request):
     version_id = request.query.get("versionId", "").strip()
     model_id = request.query.get("modelId", "").strip()
     fallback_name = request.query.get("name", "").strip()
+    progress_id = request.query.get("progressId", "").strip()
+
+    if progress_id:
+        with _DOWNLOAD_PROGRESS_LOCK:
+            _DOWNLOAD_PROGRESS[progress_id] = {"done": 0, "total": 0, "status": "downloading", "filename": ""}
 
     # 只有 modelId 时：查 C 站模型详情，取默认（第一个）版本的 id
     if not version_id and model_id:
@@ -254,13 +263,38 @@ async def lora_download(request):
                 filename += ".safetensors"
             target = os.path.join(lora_dir, filename)
 
+            total = int(resp.headers.get("Content-Length", 0) or 0)
+            done = 0
             with open(target, "wb") as f:
                 async for chunk in resp.content.iter_chunked(64 * 1024):
                     f.write(chunk)
+                    done += len(chunk)
+                    if progress_id and total:
+                        with _DOWNLOAD_PROGRESS_LOCK:
+                            _DOWNLOAD_PROGRESS[progress_id]["done"] = done
+                            _DOWNLOAD_PROGRESS[progress_id]["total"] = total
+
+            if progress_id:
+                with _DOWNLOAD_PROGRESS_LOCK:
+                    _DOWNLOAD_PROGRESS[progress_id]["status"] = "done"
+                    _DOWNLOAD_PROGRESS[progress_id]["filename"] = filename
 
             return web.json_response({"ok": True, "filename": filename, "path": target})
     except Exception as e:
+        if progress_id:
+            with _DOWNLOAD_PROGRESS_LOCK:
+                _DOWNLOAD_PROGRESS[progress_id]["status"] = "error"
         return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.get("/anima/lora/download/status")
+async def download_status(request):
+    pid = request.query.get("progressId", "").strip()
+    with _DOWNLOAD_PROGRESS_LOCK:
+        p = dict(_DOWNLOAD_PROGRESS.get(pid, {}))
+    if not p:
+        return web.json_response({"status": "not_found"})
+    return web.json_response(p)
 
 
 def _version_tuple(v: str) -> tuple:

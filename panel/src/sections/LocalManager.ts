@@ -830,8 +830,9 @@ function bindLocalEvents() {
     modal.style.cssText = 'background:#14141c;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:16px;width:94vw;max-width:520px;max-height:80vh;display:flex;flex-direction:column;color:#EDEDEF;box-shadow:0 0 0 1px rgba(255,255,255,0.05),0 20px 60px rgba(0,0,0,0.6);'
     modal.innerHTML = `<h3 style="margin:0 0 8px;font-size:13px;">🔗 从 C 站链接批量下载 LoRA</h3>
       <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">每行一个链接（civitai.com/models/...），可带可不带 modelVersionId</div>
-      <textarea class="ld-urls" rows="8" placeholder="https://civitai.com/models/2658471/denia-wuthering-wavesanima&#10;https://civitai.com/models/2529695/xxx?modelVersionId=3094753" style="flex:1;padding:8px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;font-family:monospace;resize:vertical;outline:none;"></textarea>
-      <div class="ld-log" style="margin-top:8px;max-height:140px;overflow-y:auto;font-size:10px;color:#8A8F98;white-space:pre-wrap;"></div>
+      <textarea class="ld-urls" rows="6" placeholder="https://civitai.com/models/2658471/denia-wuthering-wavesanima&#10;https://civitai.com/models/2529695/xxx?modelVersionId=3094753" style="flex:1;padding:8px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;font-family:monospace;resize:vertical;outline:none;"></textarea>
+      <div class="ld-list" style="margin-top:8px;max-height:160px;overflow-y:auto;"></div>
+      <div class="ld-log" style="margin-top:8px;max-height:60px;overflow-y:auto;font-size:10px;color:#8A8F98;white-space:pre-wrap;"></div>
       <div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end;">
         <button class="ld-cancel" style="padding:5px 12px;background:rgba(255,255,255,0.08);color:#8A8F98;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;font-size:11px;">取消</button>
         <button class="ld-start" style="padding:5px 14px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:6px;cursor:pointer;font-size:11px;">⬇️ 开始下载</button>
@@ -846,6 +847,7 @@ function bindLocalEvents() {
       const urls = (ta?.value || '').split('\n').map(s => s.trim()).filter(Boolean)
       if (!urls.length) { showToast('请输入链接'); return }
       const logEl = modal.querySelector('.ld-log') as HTMLElement
+      const listEl = modal.querySelector('.ld-list') as HTMLElement
       const startBtn = modal.querySelector('.ld-start') as HTMLButtonElement
       startBtn.disabled = true
       let ok = 0, fail = 0
@@ -854,13 +856,52 @@ function bindLocalEvents() {
         const mm = url.match(/civitai\.com\/models\/(\d+)/)
         const qs = vm ? `versionId=${vm[1]}` : mm ? `modelId=${mm[1]}` : null
         if (!qs) { fail++; logEl.textContent += `✗ 无法解析: ${url.slice(0, 50)}\n`; continue }
-        logEl.textContent += `⬇ ${url.slice(0, 50)}...\n`
-        try {
-          const resp = await fetch(`/anima/lora/download?${qs}`)
-          const j = await resp.json()
-          if (j.ok) { ok++; logEl.textContent += `✓ ${j.filename}\n` }
-          else { fail++; logEl.textContent += `✗ ${j.error || '失败'}\n` }
-        } catch (e: any) { fail++; logEl.textContent += `✗ ${e.message}\n` }
+        const progressId = 'dl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
+
+        const row = document.createElement('div')
+        row.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:10px;color:#EDEDEF;'
+        const nameEl = document.createElement('span')
+        nameEl.style.cssText = 'width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;'
+        nameEl.textContent = url.slice(0, 36)
+        const barWrap = document.createElement('div')
+        barWrap.style.cssText = 'flex:1;height:8px;background:rgba(255,255,255,0.08);border-radius:4px;overflow:hidden;'
+        const bar = document.createElement('div')
+        bar.style.cssText = 'height:100%;width:0%;background:linear-gradient(135deg,#5E6AD2,#6872D9);transition:width 0.2s;'
+        barWrap.appendChild(bar)
+        const pctEl = document.createElement('span')
+        pctEl.style.cssText = 'width:36px;text-align:right;color:#8A8F98;flex-shrink:0;'
+        pctEl.textContent = '0%'
+        row.append(nameEl, barWrap, pctEl)
+        listEl.appendChild(row)
+        listEl.scrollTop = listEl.scrollHeight
+
+        await new Promise<void>((resolve) => {
+          let cleared = false
+          const stop = () => { if (!cleared) { cleared = true; clearInterval(timer) } }
+          const timer = setInterval(async () => {
+            try {
+              const sr = await fetch(`/anima/lora/download/status?progressId=${progressId}`)
+              const s = await sr.json()
+              if (s.total) {
+                const pc = Math.round(s.done / s.total * 100)
+                bar.style.width = pc + '%'
+                pctEl.textContent = pc + '%'
+              }
+              if (s.status === 'done') { stop(); bar.style.width = '100%'; pctEl.textContent = '✓' }
+              else if (s.status === 'error') { stop(); pctEl.textContent = '✗' }
+            } catch { /* ignore */ }
+          }, 400)
+
+          fetch(`/anima/lora/download?${qs}&progressId=${progressId}`)
+            .then((r) => r.json())
+            .then((j) => {
+              stop()
+              if (j.ok) { ok++; logEl.textContent += `✓ ${j.filename}\n`; bar.style.width = '100%'; pctEl.textContent = '✓' }
+              else { fail++; logEl.textContent += `✗ ${j.error || '失败'}\n`; pctEl.textContent = '✗' }
+              resolve()
+            })
+            .catch((e: any) => { stop(); fail++; logEl.textContent += `✗ ${e.message}\n`; pctEl.textContent = '✗'; resolve() })
+        })
         logEl.scrollTop = logEl.scrollHeight
       }
       startBtn.disabled = false
