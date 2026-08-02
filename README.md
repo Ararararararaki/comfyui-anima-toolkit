@@ -1,171 +1,71 @@
 # Anima Toolkit · ComfyUI-Anima-Batch-LoRA
 
-本项目旨在解决 ComfyUI 在各种情况下使用的便利，集成了以下功能：
+一个 ComfyUI 自定义节点，带一个配套的本地管理面板。用来方便地管理 LoRA、查看图片参数、整理提示词。
 
-## 🔧 LORA 加载节点
+## 功能
 
-- 可直接点击 lora 名复制触发词
-- 可从节点的「📂 本地」按钮，通过预览本地的 lora 的 C 站预览图直观地对 lora 进行添加，可点击加入节点，可对 lora 分类、置顶等操作
-- 点击「🌐 面板」按钮进入功能强大的本地管理页面
+### LoRA 加载节点
 
-## ꧁༺ 本地管理页面 ༻꧂
+把 LoRA 批量挂到节点上，配合可视化操作：
 
-### 🖼️ Outputs 管理
+- 点 LoRA 名字能复制它的触发词
+- 点「本地 LoRA」按钮打开浏览窗，能看到本地 LoRA 的 C 站预览图，点图就能加入节点，还能分类、置顶、收藏
+- 每个 LoRA 有一个开关，关掉的不参与生成但还留在列表里，方便以后重新打开
+- 每个 LoRA 能单独调权重、拖拽排序、删除
+- 「验证标签」会检查输入里的 LoRA 本地有没有，缺的可以一键复制名称去 C 站搜
+- 「组」可以把常用的 LoRA 组合存起来，一键切换
+- 点「面板」按钮进入本地管理面板
 
-- 从本地图片快速进行收藏、置顶、复制 prompt、lora 标签、工作流等功能
+### 本地管理面板
 
-### 📝 图片 Prompt 解析
+打开方式：ComfyUI 顶部菜单会有一个菲比图标按钮，点它就能进；或者从节点的「面板」按钮进。
 
-- 从带有元数据的图片（由 ComfyUI 生成的原图）拖拽或从本地上传，获取正负面 prompt、工作流
-- prompt 可直接点击全部翻译按钮进行翻译，可对单个提示词点击复制
-- 可一键将图片提取出的 prompt 发送到 prompt 库 —— 1 秒抄走群友的作业
-- 可从 outputs 提取出最近 20/50/100 张生成图片的高频出现词，可点击复制
+- Outputs 图片管理：浏览 ComfyUI 输出目录的图片，可以收藏、置顶、打分、重命名、删除、复制 prompt / LoRA 标签 / 工作流，支持拖拽框选批量操作和快捷键
+- 图片解析：拖入一张带元数据的图（ComfyUI 生成的原图），能解析出正负面 prompt、参数、生图模型、LoRA 标签、工作流，可以翻译、复制，还能一键存进 Prompt 库
+- Prompt 库：存提示词，可以分类
+- 本地 LoRA 管理：Steam 风格界面，扫描本地 LoRA，自动匹配 C 站信息，看预览图、复制触发词、从 Outputs 返图
+- 画师系列：管理画师风格标签，组合成画师串复制（待优化）
+- LoRA 探索：浏览 C 站 LoRA，手动用 URL 添加、分类、检测本地是否已有，可以在卡片上直接下载（待优化）
 
-### 📖 Prompt 库
+## 部署
 
-- 普通的存储 prompt 的模块，可以分类
-
-### 🖥️ 本地 LORA 管理
-
-- 参考了 [hanbinhsh/SD-LoRA-Manager](https://github.com/hanbinhsh/SD-LoRA-Manager) 大佬的设计
-- 类似于 Steam 的 UI 界面
-- 可预览多张 C 站图片，从 outputs 中关联 lora 进行返图，点击复制触发词、点击复制 lora 标签等功能
-
-### 🖌️ 画师系列（待优化）
-
-- 普通的画师串管理，可以分类，可以点击多个画师提示词组成画师串，然后点击进行复制
-- 可从本地 lora 中的触发词提取到画师串
-
-### 📦 LoRA 探索（待优化）
-
-- 普通的探索 C 站中的 lora，可手动通过 URL 添加，进行分类，检测本地是否已有，可以在卡片点击版本直接进行下载
-
-觉得好用点个 star 谢谢喵～ 后续也会进行优化的，以及可能后续会做 CLIP 节点，不过现在有 weilin 大佬在，还轮不到我（
-
-## 📦 部署方式
-
-直接 git clone 到 ComfyUI 的 `custom_nodes` 文件目录下就可以了喵
+把仓库克隆到 ComfyUI 的 custom_nodes 目录：
 
 ```bash
 cd ComfyUI/custom_nodes
 git clone https://github.com/Ararararararaki/comfyui-anima-toolkit.git
 ```
 
-然后**重启 ComfyUI**。`app/` 已预构建，**无需 npm install / 构建**，clone 即用。
+然后重启 ComfyUI。app 目录已经预先构建好，不用装依赖也不用重新构建，克隆完就能用。
 
-**打开面板**：重启后，ComfyUI 页面顶部会出现一个「菲比」角色图标按钮，**点击菲比图标即可快捷进入本地管理面板**（无需从节点进入）；也可以从节点的「🌐 面板」按钮打开。
+## 开发者：从源码重建面板
 
-## 具体展示
-
-### LORA 加载节点：
-
-![alt text](screenshots/node.webp)
-
-### 触发词复制：
-
-![alt text](screenshots/trigger.webp)
-
-### lora 选区页面：
-
-网格 UI
-
-![alt text](screenshots/grid.webp)
-
-列表 UI
-
-![alt text](screenshots/list.webp)
-
-拖拽框选批量分类（不会添加到节点）
-
-![alt text](screenshots/dragcat.webp)
-
-单点 lora 添加到节点，再次点击移除
-
-### 本地 LORA 管理
-
-扫描本地 LoRA 文件，Civitai 自动匹配，权重调节，一键复制标签，首页可读取 outputs 图片的常用 lora，可点击跳转
-
-![alt text](screenshots/image-2.webp)
-
-在 lora 详细页面可以看到 c 站的预览图以及本地文件名、版本号等数据，可以进行备注以及查看从 outputs 中的返图，可以点击直接跳转到 outputs 的对应图片位置
-
-![alt text](screenshots/image-5.webp)
-
-![alt text](screenshots/image-4.webp)
-
-可以右键进行分类且添加分类
-
-![alt text](screenshots/ctxmenu.webp)
-
-或从 ![alt text](screenshots/addcat.webp) 点击加号进行添加分类
-
-### 画师系列
-
-画师风格标签管理与组合，Danbooru 数据集成，可保存预设
-
-![alt text](screenshots/artist.webp)
-
-### Prompt 库
-
-分类管理提示词，提取 LoRA 触发词
-
-![alt text](screenshots/image-7.webp)
-
-### Outputs 管理
-
-ComfyUI 输出目录浏览，元数据提取，批量操作，可以从图片直接复制正面 prompt、工作流等。复制 lora 功能目前有一些问题（待修复）
-
-可进行拖拽批量选取，通过快捷键进行批量复制下载等操作
-
-![alt text](screenshots/batchselect.webp)
-
-下载功能在选区多个图片时会汇总为压缩包
-
-快捷键
-
-![alt text](screenshots/image-12.webp)
-
-### 图片 Prompt 解析
-
-高频词统计
-
-![alt text](screenshots/freq.webp)
-
-获取元数据
-
-![alt text](screenshots/meta.webp)
-
-## 🛠️ 从源码重建面板（开发者）
-
-`app/` 是已构建产物，日常使用**无需构建**。修改面板源码后重建：
+app 目录是构建产物，日常使用不用管它。改面板源码后需要重建：
 
 ```bash
 cd panel
 npm install
-npm run build:comfyui   # 类型检查 → vite build → 部署到 ../app
+npm run build:comfyui   # 类型检查 → 打包 → 部署到 ../app
 ```
 
-- **开发模式**：`cd panel && npm run dev`（Vite 热更新，API 代理到 `http://localhost:8188`）
-- **CI 自动构建**：push 到 `panel/` 的改动会由 GitHub Actions 自动重建并提交 `app/`
+开发模式用 `cd panel && npm run dev`（Vite 热更新，接口代理到本地 ComfyUI）。推送到 panel 目录的改动由 GitHub Actions 自动重建 app。
 
-## 📁 目录结构
+## 目录结构
 
 ```
 ComfyUI-Anima-Batch-LoRA/
-├── __init__.py           # 后端路由（/anima/* API、元数据持久化）
-├── anima_batch_lora.py   # 节点逻辑 + LoRA 列表/桥接 API
-├── web/js/               # 节点前端 widget（无需构建）
-├── app/                  # 面板构建产物（clone 即用，勿手改）
+├── __init__.py           # 后端接口（/anima/*，存元数据）
+├── anima_batch_lora.py   # 节点逻辑
+├── web/js/               # 节点前端（不用构建）
+├── app/                  # 面板构建产物（克隆即用，别手改）
 ├── panel/                # 面板源码（Vite + TypeScript）
-├── screenshots/          # README 截图
-└── .github/workflows/    # 自动构建 app/ 的 CI
+├── screenshots/          # 截图
+└── .github/workflows/    # 自动构建 app
 ```
 
 ## 依赖
 
-- ComfyUI（2024 之后版本，含 `folder_paths`、`PromptServer`）
-- 面板构建仅需 Node 18+（仅开发 / 重建时需要）
+- ComfyUI（2024 年之后的版本）
+- 只有重建面板时才需要 Node 18+
 
-## License
-
-MIT
+觉得好用的话点个 star 支持一下，后续还会继续优化。
