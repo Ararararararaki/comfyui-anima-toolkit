@@ -249,6 +249,34 @@
     };
   }
 
+  // ── 更新指引弹窗：有新版时显示两种更新方式 ──
+  function showUpdateGuide(v) {
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(2,2,3,0.72);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);";
+    const modal = document.createElement("div");
+    modal.style.cssText = "background:#14141c;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:16px;width:94vw;max-width:520px;max-height:80vh;overflow-y:auto;color:#EDEDEF;box-shadow:0 0 0 1px rgba(255,255,255,0.05),0 20px 60px rgba(0,0,0,0.6);";
+    modal.innerHTML = `<h3 style="margin:0 0 6px;font-size:13px;">🔄 发现新版本 ${v.latest || "?"}（当前 ${v.version || "?"}）</h3>
+      <div style="font-size:10px;color:#8A8F98;margin-bottom:10px;">任选一种方式更新，完成后重启 ComfyUI。</div>
+      <div style="font-weight:600;font-size:11px;margin-bottom:4px;">方式 1（增量，推荐）</div>
+      <div style="color:#C8C9CB;background:#0a0a0c;border:1px solid rgba(255,255,255,0.06);border-radius:6px;padding:8px;font-family:monospace;font-size:10px;margin-bottom:8px;line-height:1.6;">
+        打开 custom_nodes/ComfyUI-Anima-Batch-LoRA 目录 → 右键在终端打开 → 输入：<br><b>git pull</b><br>然后重启 ComfyUI
+      </div>
+      <div style="font-weight:600;font-size:11px;margin-bottom:4px;">方式 2（小白友好）</div>
+      <div style="color:#C8C9CB;background:#0a0a0c;border:1px solid rgba(255,255,255,0.06);border-radius:6px;padding:8px;font-size:10px;margin-bottom:10px;line-height:1.6;">
+        GitHub 仓库页 → 绿色 Code → Download ZIP → 解压并覆盖到 custom_nodes/ComfyUI-Anima-Batch-LoRA → 重启 ComfyUI
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button class="ug-close" style="padding:5px 12px;background:rgba(255,255,255,0.08);color:#8A8F98;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;font-size:11px;">关闭</button>
+        <button class="ug-goto" style="padding:5px 14px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:6px;cursor:pointer;font-size:11px;">前往 GitHub</button>
+      </div>`;
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    overlay.onclick = (e) => { if (e.target === overlay) close(); };
+    modal.querySelector(".ug-close").onclick = close;
+    modal.querySelector(".ug-goto").onclick = () => window.open(v.url || "https://github.com/Ararararararaki/comfyui-anima-toolkit", "_blank");
+  }
+
   let _toastEl = null;
   function showToast(msg) {
     // 全局只保留一个 toast，新提示直接替换旧提示，避免多个 toast 重叠盖住
@@ -461,8 +489,8 @@
         fetch("/anima/version").then((r) => r.json()).then((v) => {
           if (v && v.behind) {
             updateBtn.textContent = "🔄 有新版本";
-            updateBtn.title = `当前 ${v.version}，最新 ${v.latest}，点击前往 GitHub 更新`;
-            updateBtn.onclick = () => window.open(v.url, "_blank");
+            updateBtn.title = `当前 ${v.version}，最新 ${v.latest}，点击查看更新方式`;
+            updateBtn.onclick = () => showUpdateGuide(v);
           }
         }).catch(() => {});
       }, 2000);
