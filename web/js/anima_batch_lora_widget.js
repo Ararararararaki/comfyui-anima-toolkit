@@ -3,13 +3,13 @@
   const NODE_NAME = "Anima Batch LoRA Loader";
   // 面板 URL / 图标：动态解析当前插件目录名（兼容任意 clone 目录名）
   let PANEL_BASE = "/extensions/ComfyUI-Anima-Batch-LoRA/app/";
-  let ICON_URL = "/extensions/ComfyUI-Anima-Batch-LoRA/img/anima-btn.jpg";
+  let ICON_URL = "/extensions/ComfyUI-Anima-Batch-LoRA/web/img/anima-btn.jpg";
   try {
     const _src = document.currentScript && document.currentScript.src;
     const _m = _src && _src.match(/\/extensions\/([^/]+)\/js\//);
     if (_m) {
       PANEL_BASE = "/extensions/" + _m[1] + "/app/";
-      ICON_URL = "/extensions/" + _m[1] + "/img/anima-btn.jpg";
+      ICON_URL = "/extensions/" + _m[1] + "/web/img/anima-btn.jpg";
     }
   } catch (e) {}
 
