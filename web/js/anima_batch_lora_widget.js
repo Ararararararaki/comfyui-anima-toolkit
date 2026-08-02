@@ -213,6 +213,17 @@
       const container = document.createElement("div");
       container.className = "anima-lora-widget";
 
+      // DOM widget 容器会吞掉点击事件导致画布不选中节点，Ctrl+C 就复制不到；
+      // 点击容器任意位置时强制把节点标记为画布选中
+      container.addEventListener("mousedown", (e) => {
+        try {
+          const canvas = this.node.graph && this.node.graph.canvas;
+          if (canvas && canvas.selectNode && !canvas.selected_nodes[this.node.id]) {
+            canvas.selectNode(this.node);
+          }
+        } catch { /* 忽略 */ }
+      });
+
       // ── 注入样式（每次都写入完整样式，防止旧样式缺失导致弹窗/卡片不可见） ──
       const styleId = "anima-widget-style";
       let styleEl = document.getElementById(styleId);
