@@ -73,7 +73,14 @@
           const img = document.createElement("img");
           img.src = ICON_URL;
           img.alt = "工具箱";
-          img.style.cssText = "display:block;width:20px;height:20px;border-radius:4px;object-fit:cover;";
+          img.style.cssText = "display:block;width:100%;height:100%;object-fit:cover;";
+          // 让菲比图片撑满整个按钮（固定按钮尺寸 + 去 padding）
+          if (!document.getElementById("anima-menu-style")) {
+            const bstyle = document.createElement("style");
+            bstyle.id = "anima-menu-style";
+            bstyle.textContent = ".anima-menu-group.comfyui-button-group .comfyui-button { width:30px; height:30px; padding:0; } .anima-menu-group.comfyui-button-group img { border-radius:6px; }";
+            document.head.appendChild(bstyle);
+          }
           (async () => {
             try {
               const { ComfyButton } = await import("/scripts/ui/components/button.js");
@@ -310,14 +317,13 @@
       const toolbar = document.createElement("div");
       toolbar.className = "toolbar";
       const verifyBtn = this._btn("🔍 验证标签", "btn-verify", "检查输入框中的 <lora:...> 标签能否在本地找到对应文件");
-      const refreshBtn = this._btn("↻ 刷新列表", "btn-browse", "按输入框内容重新解析并刷新下方列表、提取触发词");
-      const extractBtn = this._btn("📥 提取触发词", "btn-verify", "批量查询当前列表所有 LoRA 的触发词");
+      const extractBtn = this._btn("📥 提取触发词", "btn-verify", "批量查询当前列表所有 LoRA 的触发词（自动刷新列表）");
       const browseBtn = this._btn("📂 本地 LoRA", "btn-browse", "打开本地 LoRA 浏览窗：预览 C 站图、点击添加 / 分类 / 置顶");
       const clearBtn = this._btn("✕ 清空列表", "btn-clear", "清空当前 LoRA 列表");
       const panelBtn = this._btn("🌐 面板", "btn-verify", "打开本地管理面板（Anima Toolkit）");
       const saveGroupBtn = this._btn("💾 保存组", "btn-verify", "把当前 LoRA 列表保存为组，可一键切换");
       const groupsBtn = this._btn("📁 组", "btn-browse", "LoRA 组管理：一键切换 / 删除");
-      toolbar.append(verifyBtn, refreshBtn, extractBtn, browseBtn, saveGroupBtn, groupsBtn, clearBtn, panelBtn);
+      toolbar.append(verifyBtn, extractBtn, browseBtn, saveGroupBtn, groupsBtn, clearBtn, panelBtn);
 
       const statusEl = document.createElement("div");
       statusEl.className = "status";
@@ -331,7 +337,6 @@
       container.append(toolbar, statusEl, listEl, triggerEl);
 
       verifyBtn.onclick = () => this._verify(statusEl, listEl, triggerEl);
-      refreshBtn.onclick = () => this._forceRefresh(listEl);
       extractBtn.onclick = () => this._extractAllTriggerWords(listEl);
       browseBtn.onclick = () => { showToast("正在加载 LoRA 列表..."); this._browseModal(statusEl); };
       clearBtn.onclick = () => { this.loras = []; this._commit(); this._render(listEl); };
@@ -476,21 +481,6 @@
           });
         });
       });
-    }
-
-    // ── 刷新：重新解析节点标签 + 重新提取触发词（可重试之前失败的触发词） ──
-    _forceRefresh(listEl) {
-      const v = (this.loraWidget && this.loraWidget.value) || "";
-      const parsed = this._parse(v);
-      this.loras = parsed;
-      this._render(listEl);
-      if (parsed.length) {
-        this.triggerWordMap = {};
-        this._autoFetchTriggerWords();
-        showToast(`↻ 已刷新 ${parsed.length} 个 LoRA，正在提取触发词...`);
-      } else {
-        showToast("⚠️ 标签为空，可用「📂 本地 LoRA」添加 LoRA");
-      }
     }
 
     // ── 渲染 LoRA 卡片 ──
