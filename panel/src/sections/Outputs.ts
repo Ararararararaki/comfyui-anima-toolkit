@@ -1577,7 +1577,7 @@ async function loadImageThumbnail(img: HTMLImageElement, fileId: string, filePat
 }
 
 function showCompatMessage() {
-  showToast('⚠️ 当前浏览器不支持目录访问权限。请使用 Chrome/Edge，或检查浏览器设置中是否允许 "存储访问" 权限。')
+  showToast('⚠️ 当前浏览器/访问方式不支持目录选择：请用 Chrome/Edge/夸克，并通过 localhost 或 HTTPS 访问（局域网 IP 访问不支持目录权限），或检查浏览器是否允许 "存储访问"')
 }
 
 /**
