@@ -222,7 +222,8 @@
         document.head.appendChild(styleEl);
       }
       styleEl.textContent = `
-          .anima-lora-widget { padding:6px; max-height:420px; overflow-y:auto; background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01)); border-radius:8px; font-family:"Inter","Geist Sans",system-ui,sans-serif; border:1px solid rgba(255,255,255,0.05); box-shadow:inset 0 1px 0 0 rgba(255,255,255,0.04); }
+          .anima-lora-widget { display:flex; flex-direction:column; padding:6px; max-height:420px; background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01)); border-radius:8px; font-family:"Inter","Geist Sans",system-ui,sans-serif; border:1px solid rgba(255,255,255,0.05); box-shadow:inset 0 1px 0 0 rgba(255,255,255,0.04); }
+          .anima-lora-widget .list { flex:1; overflow-y:auto; min-height:0; }
           .anima-lora-widget .toolbar { display:flex; gap:5px; margin-bottom:6px; flex-wrap:wrap; }
           .anima-lora-widget .toolbar button { padding:4px 10px; border:none; border-radius:6px; cursor:pointer; font-size:9px; font-weight:600; color:#EDEDEF; white-space:nowrap; letter-spacing:0.02em; transition:all 0.2s ease-out; box-shadow:0 0 0 1px rgba(255,255,255,0.06),0 2px 8px rgba(0,0,0,0.3); }
           .anima-lora-widget .toolbar .btn-verify { background:linear-gradient(135deg,#5E6AD2,#6872D9); box-shadow:0 0 0 1px rgba(94,106,210,0.3),0 2px 12px rgba(94,106,210,0.2),inset 0 1px 0 0 rgba(255,255,255,0.15); }
@@ -259,7 +260,7 @@
           .anima-lora-widget .lora-toggle.on::after { left:14px; background:#fff; }
           .anima-lora-widget .lora-toggle:hover { opacity:0.9; }
           .anima-lora-widget .lora-row.disabled { opacity:0.45; filter:grayscale(0.6); }
-          .anima-lora-widget .lora-row.disabled .lora-name { color:rgba(255,255,255,0.45); text-decoration:line-through; }
+          .anima-lora-widget .lora-row.disabled .lora-name { color:rgba(255,255,255,0.55); }
           .anima-lora-widget .modal-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(2,2,3,0.7); z-index:9999; display:flex; align-items:center; justify-content:center; backdrop-filter:blur(8px); }
           .anima-lora-widget .modal { background:linear-gradient(180deg,#0f0f12,#0a0a0c); border-radius:12px; padding:16px; max-width:480px; width:90%; max-height:70vh; display:flex; flex-direction:column; border:1px solid rgba(255,255,255,0.08); box-shadow:0 0 0 1px rgba(255,255,255,0.04),0 20px 60px rgba(0,0,0,0.6),0 0 80px rgba(94,106,210,0.06); }
           .anima-lora-widget .modal h3 { margin:0 0 10px; font-size:12px; color:#EDEDEF; font-weight:600; letter-spacing:0.01em; }
