@@ -148,7 +148,7 @@
         if (existing) {
           existing.disabled = true; // 同名项在 lora_syntax 里 → 标记禁用
         } else {
-          items.push({ name, weight: Number(weight) || 0.8, disabled: true });
+          items.push({ name, weight: Number(weight) || 1.0, disabled: true });
         }
       }
       return items;
@@ -779,7 +779,7 @@
         data.loras.forEach((l) => {
           if (!l || !l.name) return;
           if (!this.loras.some((e) => e.name.toLowerCase() === l.name.toLowerCase())) {
-            this.loras.push({ name: l.name, weight: typeof l.model_strength === "number" ? l.model_strength : 0.8 });
+            this.loras.push({ name: l.name, weight: typeof l.model_strength === "number" ? l.model_strength : 1.0 });
             added++;
           }
           if (l.trigger_words && l.trigger_words.length && !this.triggerWordMap[l.name]) {
@@ -1161,7 +1161,7 @@
             if (badge) badge.style.display = "none";
             showToast("已移除: " + l.name);
           } else {
-            this.loras.push({ name: l.name, weight: 0.8 });
+            this.loras.push({ name: l.name, weight: 1.0 });
             bumpCount(l.name);
             this._commit(); this._render(this.listEl);
             if (badge) badge.style.display = "flex";
@@ -1246,7 +1246,7 @@
             if (badge) { badge.textContent = ""; badge.style.color = "rgba(255,255,255,0.2)"; }
             showToast("已移除: " + l.name);
           } else {
-            this.loras.push({ name: l.name, weight: 0.8 });
+            this.loras.push({ name: l.name, weight: 1.0 });
             bumpCount(l.name);
             this._commit(); this._render(this.listEl);
             if (badge) { badge.textContent = "✓"; badge.style.color = "#4caf50"; }
@@ -1314,7 +1314,7 @@
           batchBar.querySelector(".bm-batch-add").onclick = () => {
             const toAdd = Array.from(selected).filter((n) => !this.loras.some((e) => e.name.toLowerCase() === n.toLowerCase()));
             if (!toAdd.length) { showToast("没有新的 LoRA 可添加"); return; }
-            toAdd.forEach((n) => { this.loras.push({ name: n, weight: 0.8 }); bumpCount(n); });
+            toAdd.forEach((n) => { this.loras.push({ name: n, weight: 1.0 }); bumpCount(n); });
             this._commit(); this._render(this.listEl);
             showToast(`✅ 已添加 ${toAdd.length} 个 LoRA`);
             selected.clear(); updateBatchBar(); renderCurrent();

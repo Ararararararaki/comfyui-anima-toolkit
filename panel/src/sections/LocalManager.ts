@@ -387,7 +387,7 @@ function renderPromptTab(state: ReturnType<typeof useLocalModelStore.getState>) 
   const pw = state.promptWeights || {}
   const lines = files.map(f => {
     const name = f.name.replace(/\.\w+$/, '')
-    const w = pw[f.name] ?? 0.8
+    const w = pw[f.name] ?? 1.0
     return `<div class="prompt-lora-row" data-name="${escAttr(f.name)}">
       <div class="prompt-lora-info">
         <span class="prompt-lora-label" title="${esc(f.name)}">${esc(trunc(name, 30))}</span>
@@ -586,7 +586,7 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
 
   // LoRA 标签构建器（权重滑块 + 复制）
   const localBase = f.name.replace(/\.\w+$/, '')
-  const loraWeight = state.promptWeights?.[f.name] ?? 0.8
+  const loraWeight = state.promptWeights?.[f.name] ?? 1.0
   const loraTagHtml = `<div class="detail-section"><h4>🏷️ LoRA 标签</h4>
     <div class="detail-lora-builder" data-name="${escAttr(f.name)}">
       <div class="detail-lora-preview" id="loraPreview_${escAttr(f.name)}"><code>&lt;lora:${esc(localBase)}:${loraWeight.toFixed(2)}&gt;</code></div>
@@ -1293,7 +1293,7 @@ function bindLocalEvents() {
       const f = useLocalModelStore.getState().files.find(ff => ff.name === name)
       if (!f) { showToast('⚠️ LoRA 未找到'); return }
       const loraName = f.name.replace(/\.\w+$/, '')
-      const w = useLocalModelStore.getState().promptWeights?.[f.name] ?? 0.8
+      const w = useLocalModelStore.getState().promptWeights?.[f.name] ?? 1.0
       const bridgeData = {
         loras: `<lora:${loraName}:${w.toFixed(2)}>`,
         lora_list: [{ name: loraName, model_strength: parseFloat(w.toFixed(2)), trigger_words: f.matchData?.trainedWords || [] }],
@@ -1403,7 +1403,7 @@ function bindLocalEvents() {
         .filter(f => f.matched || state.modelCategories[f.name])
         .map(f => {
           const name = f.name.replace(/\.\w+$/, '')
-          const w = pw[f.name] ?? 0.8
+          const w = pw[f.name] ?? 1.0
           return `<lora:${name}:${w.toFixed(2)}>`
         })
         .join(' ')
@@ -1418,7 +1418,7 @@ function bindLocalEvents() {
         .filter(f => f.matched || state.modelCategories[f.name])
         .map(f => {
           const name = f.name.replace(/\.\w+$/, '')
-          const w = pw[f.name] ?? 0.8
+          const w = pw[f.name] ?? 1.0
           return {
             name,
             model_strength: parseFloat(w.toFixed(2)),

@@ -561,7 +561,7 @@ export function setupGlobalHandlers() {
     const m = useModelStore.getState().processed.find(p => p.id === modelId)
     if (!m || !m.trainedWords?.length) return
     const words = m.trainedWords.join(', ')
-    const weight = '0.8'
+    const weight = '1.0'
     const comfyui = m.trainedWords.map(w => `<lora:${m.name.replace(/[^a-zA-Z0-9_]/g, '_')}:${weight}>`).join(' ')
     const prompt = `${words}, masterpiece, best quality, high quality, ${comfyui}`
     copyText(prompt, btn)

@@ -71,7 +71,7 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
         }<div class="prompt-actions">
           <button class="pa-btn pa-btn-cpy" data-copy="${esc(m.trainedWords.join(', '))}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">📋 复制全部</button>
           <button class="pa-btn pa-btn-cf" data-copy="${esc(m.trainedWords.join(', ') + ', masterpiece, best quality')}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">🎨 +质量词</button>
-          <button class="pa-btn pa-btn-sd" data-copy="${esc(m.trainedWords.map(w => '<lora:' + m.name.replace(/[^a-zA-Z0-9_]/g, '_') + ':' + w.replace(/^@/, '') + ':0.8>').join(' '))}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">⚡ ComfyUI 格式</button>
+          <button class="pa-btn pa-btn-sd" data-copy="${esc(m.trainedWords.map(w => '<lora:' + m.name.replace(/[^a-zA-Z0-9_]/g, '_') + ':' + w.replace(/^@/, '') + ':1.0>').join(' '))}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">⚡ ComfyUI 格式</button>
         </div></div>
       </details>`
     : ''
