@@ -126,7 +126,7 @@
       this._bridgeTimer = null;
     }
 
-    // ── 解析 <lora:name:weight> ──
+    // ── 解析 <lora:name:weight>（并合并 node.properties 里保留的禁用项） ──
     _parse(text) {
       const re = /<lora:([^:>]+):([^:>]+)(?::([^:>]+))?>/gi;
       const items = [];
@@ -135,19 +135,38 @@
         items.push({
           name: m[1],
           weight: parseFloat(m[2]),
+          disabled: false,
         });
+      }
+      // 被禁用的 LoRA 不在 lora_syntax 里，但保留在节点上：从 node.properties 恢复显示
+      const disabledMap = (this.node && this.node.properties && this.node.properties.animaLoraDisabled) || {};
+      for (const [name, weight] of Object.entries(disabledMap)) {
+        const existing = items.find((e) => e.name.toLowerCase() === name.toLowerCase());
+        if (existing) {
+          existing.disabled = true; // 同名项在 lora_syntax 里 → 标记禁用
+        } else {
+          items.push({ name, weight: Number(weight) || 0.8, disabled: true });
+        }
       }
       return items;
     }
 
     _serialize() {
       return this.loras
+        .filter((l) => !l.disabled) // 禁用的不写入 lora_syntax，后端不应用
         .map((l) => `<lora:${l.name}:${l.weight.toFixed(2)}>`)
         .join(" ");
     }
 
     _commit() {
       this.loraWidget.value = this._serialize();
+      // 持久化禁用状态到 node.properties（随工作流 JSON 保存/加载）
+      const disabledMap = {};
+      for (const l of this.loras) {
+        if (l.disabled) disabledMap[l.name] = l.weight;
+      }
+      if (!this.node.properties) this.node.properties = {};
+      this.node.properties.animaLoraDisabled = disabledMap;
       if (this.node.graph) this.node.graph.change();
     }
 
@@ -178,7 +197,7 @@
           .anima-lora-widget .status { font-size:10px; padding:3px 6px; margin-bottom:4px; min-height:18px; color:#8A8F98; border-radius:4px; background:rgba(255,255,255,0.02); }
           .anima-lora-widget .trigger-box { font-size:10px; padding:6px 8px; margin-top:6px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.05); border-radius:6px; display:none; line-height:1.6; color:#8A8F98; }
           .anima-lora-widget .empty-msg { font-size:10px; color:#8A8F98; padding:16px 8px; text-align:center; line-height:1.6; }
-          .anima-lora-widget .lora-row { display:flex; align-items:center; gap:5px; padding:5px 6px; border-radius:6px; transition:all 0.2s ease-out; background:rgba(255,255,255,0.02); margin-bottom:2px; border:1px solid transparent; }
+          .anima-lora-widget .lora-row { display:flex; align-items:center; gap:6px; padding:5px 6px; border-radius:6px; transition:all 0.2s ease-out; background:rgba(255,255,255,0.02); margin-bottom:2px; border:1px solid transparent; }
           .anima-lora-widget .lora-row:hover { background:linear-gradient(135deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02)); border-color:rgba(255,255,255,0.06); box-shadow:0 2px 12px rgba(0,0,0,0.2); }
           .anima-lora-widget .lora-row.drag-over { padding-top:8px; border-top:2px solid #5E6AD2; background:rgba(94,106,210,0.06); }
           .anima-lora-widget .lora-row.dragging { opacity:0.3; }
@@ -187,7 +206,7 @@
           .anima-lora-widget .drag-area .drag-hint { color:rgba(255,255,255,0.15); font-size:11px; line-height:1; }
           .anima-lora-widget .lora-name { font-size:10px; min-width:50px; max-width:90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#C8C9CB; flex-shrink:0; cursor:pointer; padding:2px 4px; border-radius:4px; transition:all 0.15s ease-out; }
           .anima-lora-widget .lora-name:hover { background:rgba(94,106,210,0.12); color:#EDEDEF; }
-          .anima-lora-widget .lora-tw-hint { font-size:8px; color:rgba(255,255,255,0.25); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:70px; flex-shrink:0; min-width:0; }
+          .anima-lora-widget .lora-tw-hint { font-size:8px; color:rgba(255,255,255,0.25); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:58px; flex-shrink:0; min-width:0; }
           .anima-lora-widget .weight-group { display:flex; align-items:center; gap:3px; flex:1; }
           .anima-lora-widget .weight-group input[type=range] { -webkit-appearance:none; appearance:none; flex:1; height:3px; cursor:pointer; min-width:40px; background:rgba(255,255,255,0.08); border-radius:2px; outline:none; }
           .anima-lora-widget .weight-group input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:12px; height:12px; border-radius:50%; background:linear-gradient(135deg,#5E6AD2,#7B83E0); cursor:pointer; border:2px solid #0a0a0c; box-shadow:0 0 0 1px rgba(94,106,210,0.3),0 2px 6px rgba(0,0,0,0.4); transition:all 0.15s ease-out; }
@@ -196,6 +215,13 @@
           .anima-lora-widget .weight-val { width:32px; font-size:9px; text-align:center; background:transparent; color:#EDEDEF; border:none; padding:1px 0; font-family:"Geist Mono","JetBrains Mono",monospace; outline:none; }
           .anima-lora-widget .del-btn { background:none; border:none; color:rgba(255,80,80,0.4); cursor:pointer; font-size:13px; padding:0 4px; flex-shrink:0; transition:all 0.15s ease-out; border-radius:3px; line-height:1; }
           .anima-lora-widget .del-btn:hover { color:#ff6b6b; background:rgba(255,80,80,0.1); }
+          .anima-lora-widget .lora-toggle { width:26px; height:14px; border-radius:7px; background:rgba(255,255,255,0.10); position:relative; cursor:pointer; flex-shrink:0; transition:all 0.2s var(--ease); box-shadow:inset 0 1px 2px rgba(0,0,0,0.4); }
+          .anima-lora-widget .lora-toggle::after { content:""; position:absolute; top:2px; left:2px; width:10px; height:10px; border-radius:50%; background:#6b7280; transition:left 0.2s var(--ease), background 0.2s var(--ease); }
+          .anima-lora-widget .lora-toggle.on { background:linear-gradient(135deg,#5E6AD2,#6872D9); box-shadow:inset 0 1px 2px rgba(0,0,0,0.2),0 0 8px rgba(94,106,210,0.35); }
+          .anima-lora-widget .lora-toggle.on::after { left:14px; background:#fff; }
+          .anima-lora-widget .lora-toggle:hover { opacity:0.9; }
+          .anima-lora-widget .lora-row.disabled { opacity:0.45; filter:grayscale(0.6); }
+          .anima-lora-widget .lora-row.disabled .lora-name { color:rgba(255,255,255,0.45); text-decoration:line-through; }
           .anima-lora-widget .modal-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(2,2,3,0.7); z-index:9999; display:flex; align-items:center; justify-content:center; backdrop-filter:blur(8px); }
           .anima-lora-widget .modal { background:linear-gradient(180deg,#0f0f12,#0a0a0c); border-radius:12px; padding:16px; max-width:480px; width:90%; max-height:70vh; display:flex; flex-direction:column; border:1px solid rgba(255,255,255,0.08); box-shadow:0 0 0 1px rgba(255,255,255,0.04),0 20px 60px rgba(0,0,0,0.6),0 0 80px rgba(94,106,210,0.06); }
           .anima-lora-widget .modal h3 { margin:0 0 10px; font-size:12px; color:#EDEDEF; font-weight:600; letter-spacing:0.01em; }
@@ -285,10 +311,11 @@
         if (!name || !name.trim()) return;
         const metaData = await fetch("/anima/meta").then((r) => r.json()).catch(() => ({}));
         const groups = metaData.loraGroups || [];
-        groups.push({ name: name.trim(), loras: this.loras.map((l) => ({ name: l.name, weight: l.weight })) });
+        const active = this.loras.filter((l) => !l.disabled); // 组只保存启用项，避免加载组时意外启用禁用 LoRA
+        groups.push({ name: name.trim(), loras: active.map((l) => ({ name: l.name, weight: l.weight })) });
         metaData.loraGroups = groups;
         await fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(metaData) }).catch(() => {});
-        showToast(`✅ 已保存组「${name.trim()}」（${this.loras.length} 个 LoRA）`);
+        showToast(`✅ 已保存组「${name.trim()}」（${active.length} 个 LoRA）`);
       };
       groupsBtn.onclick = () => this._groupsModal(listEl);
 
@@ -445,6 +472,7 @@
       this.loras.forEach((l, i) => {
         const row = document.createElement("div");
         row.className = "lora-row";
+        row.classList.toggle("disabled", !!l.disabled);
         row.dataset.loraName = l.name;
 
         // ── 拖拽区域（仅在 drag-area 上可拖拽） ──
@@ -452,6 +480,17 @@
         dragArea.className = "drag-area";
         dragArea.draggable = true;
         dragArea.innerHTML = `<span class="drag-hint">⠿</span>`;
+
+        // ── 启用/禁用开关（关闭则失效但保留在列表） ──
+        const toggle = document.createElement("div");
+        toggle.className = "lora-toggle" + (l.disabled ? "" : " on");
+        toggle.title = l.disabled ? "已禁用（不参与生成），点击启用" : "点击禁用（暂时不参与生成）";
+        toggle.onclick = (e) => {
+          e.stopPropagation();
+          l.disabled = !l.disabled;
+          this._commit();
+          this._render(listEl);
+        };
 
         dragArea.ondragstart = (e) => {
           e.dataTransfer.effectAllowed = "move";
@@ -589,7 +628,7 @@
         metaBadge.textContent = (_cats ? "🏷" + _cats : "") + (_cnt ? " " + _cnt + "次" : "");
         metaBadge.style.cssText = "font-size:9px;color:#8A8F98;opacity:0.85;white-space:nowrap;flex-shrink:0;";
 
-        row.append(dragArea, name, metaBadge, twHint, slider, valSpan, del);
+        row.append(dragArea, toggle, name, metaBadge, twHint, slider, valSpan, del);
         listEl.appendChild(row);
       });
     }
