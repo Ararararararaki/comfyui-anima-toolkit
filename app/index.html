@@ -9,9 +9,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script type="module" crossorigin src="./assets/index-BldHtFIk.js"></script>
+  <script type="module" crossorigin src="./assets/index-PIviBDEq.js"></script>
   <link rel="modulepreload" crossorigin href="./assets/vendor-D6eCwX_v.js">
-  <link rel="stylesheet" crossorigin href="./assets/index-CnGrkZ8p.css">
+  <link rel="stylesheet" crossorigin href="./assets/index-Zmzkw4Zw.css">
 </head>
 <body>
 
@@ -434,11 +434,6 @@
       <button class="btn btn-ghost outputs-load-more" style="display:none;margin:16px auto">加载更多</button>
     </main>
   </div>
-
-  <div class="outputs-metadata-panel" id="outputsMetadataPanel">
-    <h3>元数据</h3>
-    <div class="outputs-meta-empty">选择图片查看元数据</div>
-  </div>
 </div>
 
 <div class="modal-overlay" id="addArtistModal">
@@ -521,6 +516,25 @@
   <button class="close" aria-label="关闭">✕</button>
   <button class="lb-nav prev" aria-label="上一张">‹</button>
   <button class="lb-nav next" aria-label="下一张">›</button>
+  <div class="lb-editbar" id="lbEditBar">
+    <button data-act="rotl" title="向左旋转 90°">↺ 左转</button>
+    <button data-act="rotr" title="向右旋转 90°">↻ 右转</button>
+    <button data-act="fliph" title="水平翻转">⇋ 水平</button>
+    <button data-act="flipv" title="垂直翻转">⇵ 垂直</button>
+    <button data-act="crop" title="框选保留区域">✂ 裁剪</button>
+    <button data-act="save" title="保存为副本（不覆盖原图）">💾 保存</button>
+    <button data-act="reset" title="重置编辑">↩ 重置</button>
+  </div>
+  <div class="lb-edit-wrap" id="lbEditWrap" style="display:none">
+    <canvas id="lbEditCanvas"></canvas>
+    <div class="lb-crop-layer" id="lbCropLayer">
+      <div class="lb-crop-rect" id="lbCropRect"></div>
+      <div class="lb-crop-btns">
+        <button class="lb-crop-confirm" id="lbCropConfirm">✓ 确认裁剪</button>
+        <button class="lb-crop-cancel" id="lbCropCancel">✕ 取消</button>
+      </div>
+    </div>
+  </div>
   <img id="lbImg" src="" alt="">
   <span class="lb-counter" id="lbCounter"></span>
 </div>
