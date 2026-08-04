@@ -3,15 +3,26 @@
   const NODE_NAME = "Anima Batch LoRA Loader";
   // 面板 URL / 图标：动态解析当前插件目录名（兼容任意 clone 目录名）
   let PANEL_BASE = "/extensions/ComfyUI-Anima-Batch-LoRA/app/";
-  let ICON_URL = "/extensions/ComfyUI-Anima-Batch-LoRA/web/img/anima-btn.jpg";
+  let ICON_URL = "/extensions/ComfyUI-Anima-Batch-LoRA/img/anima-btn.jpg";
   try {
     const _src = document.currentScript && document.currentScript.src;
     const _m = _src && _src.match(/\/extensions\/([^/]+)\/js\//);
     if (_m) {
       PANEL_BASE = "/extensions/" + _m[1] + "/app/";
-      ICON_URL = "/extensions/" + _m[1] + "/web/img/anima-btn.jpg";
+      ICON_URL = "/extensions/" + _m[1] + "/img/anima-btn.jpg";
     }
   } catch (e) {}
+  // 图标 URL 适配：ComfyUI 0.30+ 的 /extensions/{name}/ 已映射到插件 web/ 目录（无需 web/ 前缀），
+  // 旧版映射到插件根（需 web/ 前缀）。用 onerror 自动回退，保证新旧版本都能显示菲比图标。
+  function setAnimaIcon(img) {
+    img.onerror = () => {
+      if (!img.dataset.animaFallback) {
+        img.dataset.animaFallback = "1";
+        img.src = ICON_URL.replace("/img/anima-btn.jpg", "/web/img/anima-btn.jpg");
+      }
+    };
+    img.src = ICON_URL;
+  }
 
   function init() {
     const api = window.comfyAPI?.app?.app;
@@ -71,7 +82,7 @@
             return;
           }
           const img = document.createElement("img");
-          img.src = ICON_URL;
+          setAnimaIcon(img);
           img.alt = "工具箱";
           img.style.cssText = "display:block;width:100%;height:100%;object-fit:cover;";
           // 让菲比图片撑满整个按钮（固定按钮尺寸 + 去 padding）
@@ -99,7 +110,11 @@
               const menu = document.querySelector(".comfy-menu");
               if (!menu) return;
               const fb = document.createElement("button");
-              fb.innerHTML = `<img src="${ICON_URL}" alt="工具箱" style="width:18px;height:18px;border-radius:4px;vertical-align:middle;">`;
+              const fbImg = document.createElement("img");
+              fbImg.alt = "工具箱";
+              fbImg.style.cssText = "width:18px;height:18px;border-radius:4px;vertical-align:middle;";
+              setAnimaIcon(fbImg);
+              fb.appendChild(fbImg);
               fb.title = "打开 Anima 本地工具箱（面板）";
               fb.style.cssText = "background:none;border:none;cursor:pointer;padding:4px;";
               fb.onclick = () => window.open(PANEL_BASE, "_blank");
@@ -330,6 +345,11 @@
           items.push({ name, weight: Number(weight) || 1.0, disabled: true });
         }
       }
+      // 补充：后端持久化的"通常隐藏"偏好——即使 disabledMap 丢失（移除后重加/跨工作流粘贴），也能恢复关闭状态
+      this._ensureMeta();
+      for (const it of items) {
+        if (!it.disabled && this._prefDisabled(it.name)) it.disabled = true;
+      }
       return items;
     }
 
@@ -350,6 +370,24 @@
       try { localStorage.setItem("anima_lora_disabled", JSON.stringify(disabledMap)); } catch { /* 忽略 */ }
     }
 
+    // 从后端持久化的 loraMeta 读取"该 LoRA 通常被隐藏"的偏好（跨工作流/粘贴也能恢复）
+    _prefDisabled(name) {
+      try {
+        const m = this.meta && this.meta.loraMeta && this.meta.loraMeta[name];
+        return !!(m && m.disabled);
+      } catch { return false; }
+    }
+
+    // 预加载后端 loraMeta 到 this.meta（供 _parse / 添加路径恢复隐藏偏好）
+    _ensureMeta() {
+      if (this.meta) return;
+      this.meta = { categories: [], loraMeta: {}, loraGroups: [] };
+      fetch("/anima/meta")
+        .then((r) => r.json())
+        .then((d) => { this.meta = d || { categories: [], loraMeta: {}, loraGroups: [] }; })
+        .catch(() => {});
+    }
+
     _commit() {
       // 必须先持久化禁用状态再写 lora_syntax：lora_syntax 值变化会触发 widget 的
       // callback（this.loras = this._parse(v)），若 node.properties 尚未设置，禁用项会被覆盖丢失
@@ -360,6 +398,7 @@
 
     // ── 构建 DOM ──
     build() {
+      this._ensureMeta();
       const container = document.createElement("div");
       container.className = "anima-lora-widget";
 
@@ -470,7 +509,7 @@
       const verifyBtn = this._btn("🔍 验证标签", "btn-verify", "检查输入框中的 <lora:...> 标签能否在本地找到对应文件");
       const extractBtn = this._btn("📥 提取触发词", "btn-verify", "批量查询当前列表所有 LoRA 的触发词（自动刷新列表）");
       const copyAllTwBtn = this._btn("📋 全部触发词", "btn-verify", "一键复制已启用 LoRA 的所有触发词（英文逗号连接）");
-      const browseBtn = this._btn("📂 本地 LoRA", "btn-browse", "打开本地 LoRA 浏览窗：预览 C 站图、点击添加 / 分类 / 置顶");
+      const browseBtn = this._btn("📂 本地 LoRA", "btn-browse", "打开本地 LoRA 浏览窗：预览 C 站图、点击添加 / 分类");
       const clearBtn = this._btn("✕ 清空列表", "btn-clear", "清空当前 LoRA 列表");
       const panelBtn = this._btn("🌐 面板", "btn-verify", "打开本地管理面板（Anima Toolkit）");
       const groupsBtn = this._btn("📁 组", "btn-browse", "LoRA 组：保存当前列表 / 切换 / 删除");
@@ -696,6 +735,12 @@
         toggle.onclick = (e) => {
           e.stopPropagation();
           l.disabled = !l.disabled;
+          // 同步"通常隐藏"偏好到后端 loraMeta：跨工作流 / 移除后再加 / 粘贴时都能恢复关闭状态
+          this._ensureMeta();
+          const mm = this.meta.loraMeta;
+          if (!mm[l.name]) mm[l.name] = { categories: [], favorite: false, pinned: false, count: 0 };
+          mm[l.name].disabled = !!l.disabled;
+          fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(this.meta) }).catch(() => {});
           this._commit();
           this._render(listEl);
         };
@@ -924,7 +969,7 @@
         data.loras.forEach((l) => {
           if (!l || !l.name) return;
           if (!this.loras.some((e) => e.name.toLowerCase() === l.name.toLowerCase())) {
-            this.loras.push({ name: l.name, weight: typeof l.model_strength === "number" ? l.model_strength : 1.0 });
+            this.loras.push({ name: l.name, weight: typeof l.model_strength === "number" ? l.model_strength : 1.0, disabled: this._prefDisabled(l.name) });
             added++;
           }
           if (l.trigger_words && l.trigger_words.length && !this.triggerWordMap[l.name]) {
@@ -1034,7 +1079,7 @@
             loadBtn.textContent = "切换";
             loadBtn.style.cssText = "padding:3px 8px;border:1px solid rgba(94,106,210,0.4);border-radius:5px;cursor:pointer;font-size:11px;background:rgba(94,106,210,0.15);color:#9aa5ff;";
             loadBtn.onclick = () => {
-              this.loras = (g.loras || []).map((l) => ({ name: l.name, weight: l.weight }));
+              this.loras = (g.loras || []).map((l) => ({ name: l.name, weight: l.weight, disabled: this._prefDisabled(l.name) }));
               this._commit();
               if (listEl) this._render(listEl);
               overlay.remove();
@@ -1139,7 +1184,17 @@
       const loraMeta = (name) => meta.loraMeta[name] || { categories: [], favorite: false, pinned: false, count: 0 };
       const ensureMeta = (name) => meta.loraMeta[name] || (meta.loraMeta[name] = { categories: [], favorite: false, pinned: false, count: 0 });
       const bumpCount = (name) => { const em = ensureMeta(name); em.count = (em.count || 0) + 1; saveMeta(); };
-      const getInfo = (name) => fetch("/anima/lora/info?name=" + encodeURIComponent(name)).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      // C 站匹配请求：可取消 + 10s 超时，避免慢请求占满浏览器连接池导致二次打开列表加载不出
+      const _infoControllers = new Set();
+      const getInfo = (name) => {
+        const ctrl = new AbortController();
+        _infoControllers.add(ctrl);
+        const timer = setTimeout(() => ctrl.abort(), 10000);
+        return fetch("/anima/lora/info?name=" + encodeURIComponent(name), { signal: ctrl.signal })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null)
+          .finally(() => { clearTimeout(timer); _infoControllers.delete(ctrl); });
+      };
       // C 站图片走后端代理（浏览器无代理无法直连 image.civitai.com）；卡片用 400px 小图省流量
       const imgProxy = (url) => {
         if (!url || !url.startsWith("https://image.civitai.com/")) return url;
@@ -1154,23 +1209,15 @@
         return allLoras
           .filter((l) => {
             const m = loraMeta(l.name);
-            if (curFilter === "fav" && !m.favorite) return false;
-            if (curFilter === "pin" && !m.pinned) return false;
             if (meta.categories.includes(curFilter) && !m.categories.includes(curFilter)) return false;
             if (q && !l.name.toLowerCase().includes(q)) return false;
             return true;
           })
           .sort((a, b) => {
-            // 已添加到节点的 LoRA 置顶（优先于置顶/收藏/名称排序）
+            // 已添加到节点的 LoRA 置顶
             const addedA = this.loras.some((e) => e.name.toLowerCase() === a.name.toLowerCase()) ? 1 : 0;
             const addedB = this.loras.some((e) => e.name.toLowerCase() === b.name.toLowerCase()) ? 1 : 0;
             if (addedA !== addedB) return addedB - addedA;
-            const pa = loraMeta(a.name).pinned ? 1 : 0;
-            const pb = loraMeta(b.name).pinned ? 1 : 0;
-            if (pa !== pb) return pb - pa;
-            const fa = loraMeta(a.name).favorite ? 1 : 0;
-            const fb = loraMeta(b.name).favorite ? 1 : 0;
-            if (fa !== fb) return fb - fa;
             // 常用次数优先
             const ca = loraMeta(a.name).count || 0;
             const cb = loraMeta(b.name).count || 0;
@@ -1193,8 +1240,6 @@
           sidebarEl.appendChild(item);
         };
         mk("all", "全部", allLoras.length, "");
-        mk("fav", "收藏", allLoras.filter((l) => loraMeta(l.name).favorite).length, "⭐");
-        mk("pin", "置顶", allLoras.filter((l) => loraMeta(l.name).pinned).length, "📌");
         meta.categories.forEach((cat) => {
           mk(cat, cat, allLoras.filter((l) => loraMeta(l.name).categories.includes(cat)).length, "🏷️");
         });
@@ -1243,12 +1288,8 @@
           if (info.creator) parts.push(info.creator);
           if (parts.length) { metaEl.textContent = parts.join(" · "); metaEl.style.display = "block"; }
         }
-        // C 站链接按钮：有 modelId 才显示
-        if (info.modelId) {
-          host.dataset.modelId = info.modelId;
-          const cs = host.querySelector(".bm-csite");
-          if (cs) cs.style.display = "flex";
-        }
+        // C 站 modelId：有则点按钮直接进模型页，无则点按钮跳名称搜索
+        if (info.modelId) host.dataset.modelId = info.modelId;
       };
 
       const paintThumb = (imgEl, name) => {
@@ -1274,10 +1315,8 @@
           <div class="bm-img" data-lora-name="${l.name}" style="position:relative;height:${IMG_H}px;background:rgba(255,255,255,0.04);overflow:hidden;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.15);font-size:22px;">🖼</div>
           <div class="bm-badge" style="position:absolute;top:4px;left:4px;display:${added ? "flex" : "none"};align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:rgba(94,106,210,0.9);color:#fff;font-size:10px;font-weight:700;">✓</div>
           <div style="position:absolute;top:3px;right:3px;display:flex;gap:3px;">
-            <button class="bm-fav" title="收藏" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:${m.favorite ? "rgba(255,180,0,0.25)" : "rgba(0,0,0,0.4)"};color:${m.favorite ? "#ffb400" : "rgba(255,255,255,0.4)"};">${m.favorite ? "★" : "☆"}</button>
-            <button class="bm-pin" title="置顶" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:${m.pinned ? "rgba(94,106,210,0.3)" : "rgba(0,0,0,0.4)"};color:${m.pinned ? "#8c9bff" : "rgba(255,255,255,0.4)"};">📌</button>
             <button class="bm-catbtn" title="分配分类" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:rgba(0,0,0,0.4);color:rgba(255,255,255,0.4);">🏷️</button>
-            <button class="bm-csite" title="打开 C 站页面" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:rgba(0,0,0,0.4);color:rgba(255,255,255,0.4);display:none;">🔗</button>
+            <button class="bm-csite" title="打开 C 站页面" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:rgba(0,0,0,0.4);color:rgba(255,255,255,0.4);">🔗</button>
           </div>
           <div style="position:absolute;bottom:0;left:0;right:0;padding:5px 6px;background:linear-gradient(180deg,transparent,rgba(0,0,0,0.85));">
             <div class="bm-mname" style="font-size:10px;color:#EDEDEF;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${l.name}</div>
@@ -1300,20 +1339,6 @@
           };
           catTagsEl.appendChild(t);
         });
-        card.querySelector(".bm-fav").onclick = (ev) => {
-          ev.stopPropagation();
-          const mm = ensureMeta(l.name);
-          mm.favorite = !mm.favorite;
-          saveMeta(); renderSidebar(); renderCurrent();
-          showToast(mm.favorite ? "⭐ 已收藏: " + l.name : "已取消收藏: " + l.name);
-        };
-        card.querySelector(".bm-pin").onclick = (ev) => {
-          ev.stopPropagation();
-          const mm = ensureMeta(l.name);
-          mm.pinned = !mm.pinned;
-          saveMeta(); renderSidebar(); renderCurrent();
-          showToast(mm.pinned ? "📌 已置顶: " + l.name : "已取消置顶: " + l.name);
-        };
         card.querySelector(".bm-catbtn").onclick = (ev) => {
           ev.stopPropagation();
           this._showCatPicker(card, l.name, meta, saveMeta, () => { renderSidebar(); renderCurrent(); });
@@ -1322,14 +1347,14 @@
           ev.stopPropagation();
           const mid = card.dataset.modelId;
           if (mid) window.open("https://civitai.com/models/" + mid, "_blank");
-          else showToast("该 LoRA 未匹配到 C 站模型");
+          else window.open("https://civitai.com/search/models?query=" + encodeURIComponent(l.name) + "&type=LORA", "_blank");
         };
         card.oncontextmenu = (ev) => {
           ev.preventDefault(); ev.stopPropagation();
           this._showCatContextMenu(card, l.name, meta, saveMeta, () => { renderSidebar(); renderCurrent(); });
         };
         card.onclick = (ev) => {
-          if (ev.target.closest(".bm-fav") || ev.target.closest(".bm-pin") || ev.target.closest(".bm-catbtn") || ev.target.closest(".bm-csite") || ev.target.closest(".bm-cattags")) return;
+          if (ev.target.closest(".bm-catbtn") || ev.target.closest(".bm-csite") || ev.target.closest(".bm-cattags")) return;
           if (batchMode) {
             if (selected.has(l.name)) { selected.delete(l.name); card.style.outline = ""; }
             else { selected.add(l.name); card.style.outline = "2px solid #5E6AD2"; }
@@ -1351,7 +1376,7 @@
             if (badge) badge.style.display = "none";
             showToast("已移除: " + l.name);
           } else {
-            this.loras.push({ name: l.name, weight: 1.0 });
+            this.loras.push({ name: l.name, weight: 1.0, disabled: this._prefDisabled(l.name) });
             bumpCount(l.name);
             this._commit(); this._render(this.listEl);
             if (badge) badge.style.display = "flex";
@@ -1380,26 +1405,10 @@
             <div class="bm-meta" style="font-size:8px;color:rgba(255,255,255,0.3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none;"></div>
             <div class="bm-tw" style="font-size:8px;color:rgba(255,255,255,0.35);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
           </div>
-          <button class="bm-fav" title="收藏" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:transparent;color:${m.favorite ? "#ffb400" : "rgba(255,255,255,0.35)"};">${m.favorite ? "★" : "☆"}</button>
-          <button class="bm-pin" title="置顶" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:transparent;color:${m.pinned ? "#8c9bff" : "rgba(255,255,255,0.35)"};">📌</button>
           <button class="bm-catbtn" title="分配分类" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:transparent;color:rgba(255,255,255,0.35);">🏷️</button>
-          <button class="bm-csite" title="打开 C 站页面" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:transparent;color:rgba(255,255,255,0.35);display:none;">🔗</button>
+          <button class="bm-csite" title="打开 C 站页面" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:transparent;color:rgba(255,255,255,0.35);">🔗</button>
           <span class="bm-li-badge" style="color:${added ? "#4caf50" : "rgba(255,255,255,0.2)"};font-size:11px;font-weight:700;">${added ? "✓" : ""}</span>
         `;
-        row.querySelector(".bm-fav").onclick = (ev) => {
-          ev.stopPropagation();
-          const mm = ensureMeta(l.name);
-          mm.favorite = !mm.favorite;
-          saveMeta(); renderSidebar(); renderCurrent();
-          showToast(mm.favorite ? "⭐ 已收藏: " + l.name : "已取消收藏: " + l.name);
-        };
-        row.querySelector(".bm-pin").onclick = (ev) => {
-          ev.stopPropagation();
-          const mm = ensureMeta(l.name);
-          mm.pinned = !mm.pinned;
-          saveMeta(); renderSidebar(); renderCurrent();
-          showToast(mm.pinned ? "📌 已置顶: " + l.name : "已取消置顶: " + l.name);
-        };
         row.querySelector(".bm-catbtn").onclick = (ev) => {
           ev.stopPropagation();
           this._showCatPicker(row, l.name, meta, saveMeta, () => { renderSidebar(); renderCurrent(); });
@@ -1408,14 +1417,14 @@
           ev.stopPropagation();
           const mid = row.dataset.modelId;
           if (mid) window.open("https://civitai.com/models/" + mid, "_blank");
-          else showToast("该 LoRA 未匹配到 C 站模型");
+          else window.open("https://civitai.com/search/models?query=" + encodeURIComponent(l.name) + "&type=LORA", "_blank");
         };
         row.oncontextmenu = (ev) => {
           ev.preventDefault(); ev.stopPropagation();
           this._showCatContextMenu(row, l.name, meta, saveMeta, () => { renderSidebar(); renderCurrent(); });
         };
         row.onclick = (ev) => {
-          if (ev.target.closest(".bm-fav") || ev.target.closest(".bm-pin") || ev.target.closest(".bm-catbtn") || ev.target.closest(".bm-csite")) return;
+          if (ev.target.closest(".bm-catbtn") || ev.target.closest(".bm-csite")) return;
           if (batchMode) {
             if (selected.has(l.name)) { selected.delete(l.name); row.style.background = ""; }
             else { selected.add(l.name); row.style.background = "rgba(94,106,210,0.15)"; }
@@ -1436,7 +1445,7 @@
             if (badge) { badge.textContent = ""; badge.style.color = "rgba(255,255,255,0.2)"; }
             showToast("已移除: " + l.name);
           } else {
-            this.loras.push({ name: l.name, weight: 1.0 });
+            this.loras.push({ name: l.name, weight: 1.0, disabled: this._prefDisabled(l.name) });
             bumpCount(l.name);
             this._commit(); this._render(this.listEl);
             if (badge) { badge.textContent = "✓"; badge.style.color = "#4caf50"; }
@@ -1504,7 +1513,7 @@
           batchBar.querySelector(".bm-batch-add").onclick = () => {
             const toAdd = Array.from(selected).filter((n) => !this.loras.some((e) => e.name.toLowerCase() === n.toLowerCase()));
             if (!toAdd.length) { showToast("没有新的 LoRA 可添加"); return; }
-            toAdd.forEach((n) => { this.loras.push({ name: n, weight: 1.0 }); bumpCount(n); });
+            toAdd.forEach((n) => { this.loras.push({ name: n, weight: 1.0, disabled: this._prefDisabled(n) }); bumpCount(n); });
             this._commit(); this._render(this.listEl);
             showToast(`✅ 已添加 ${toAdd.length} 个 LoRA`);
             selected.clear(); updateBatchBar(); renderCurrent();
@@ -1521,7 +1530,7 @@
       const onBMDown = (e) => {
         const target = e.target;
         if (!listEl.contains(target)) return;
-        if (target.closest("button, input, select, .bm-fav, .bm-pin, .bm-catbtn, .bm-cattags")) return;
+        if (target.closest("button, input, select, .bm-catbtn, .bm-cattags")) return;
         if (e.button !== 0) return;
         dragBox.active = true; dragBox.boxed = false;
         dragBox.startX = e.pageX; dragBox.startY = e.pageY;
@@ -1593,6 +1602,13 @@
 
       // ── 事件 ──
       const closeModal = () => {
+        // 释放资源：断开图片观察器、取消在途 C 站匹配请求（避免占满连接池导致二次打开列表加载不出）、恢复拖拽选中态、清理分类弹层
+        io.disconnect();
+        _infoControllers.forEach((c) => c.abort());
+        _infoControllers.clear();
+        document.body.style.userSelect = "";
+        document.body.style.webkitUserSelect = "";
+        document.querySelectorAll(".bm-catpicker").forEach((el) => el.remove());
         window.removeEventListener("resize", onResize);
         document.removeEventListener("mousedown", onBMDown, true);
         document.removeEventListener("mousemove", onBMMove, true);
