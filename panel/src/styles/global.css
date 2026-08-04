@@ -392,6 +392,84 @@ h1 small { font-size: 12px; color: var(--text2); font-weight: 400; margin-left: 
 .lightbox .lb-nav.prev { left: 10px; }
 .lightbox .lb-nav.next { right: 10px; }
 .lightbox .lb-counter { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); color: rgba(255, 255, 255, .5); font-size: 13px; background: rgba(0, 0, 0, .45); padding: 3px 10px; border-radius: 4px; }
+/* ── 预览图片编辑（旋转/翻转/裁剪/保存） ── */
+.lb-editbar {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  background: rgba(10, 10, 15, .72);
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
+  z-index: 20;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 90vw;
+}
+.lb-editbar button {
+  font-size: 11px;
+  color: #EDEDEF;
+  background: rgba(255, 255, 255, .06);
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 5px;
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.lb-editbar button:hover { background: var(--accent); color: #fff; }
+.lb-edit-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 92vw;
+  max-height: 88vh;
+}
+.lb-edit-wrap canvas {
+  display: block;
+  max-width: 92vw;
+  max-height: 88vh;
+  border-radius: 8px;
+  box-shadow: 0 0 60px rgba(0, 0, 0, .5);
+  background: #000;
+}
+.lb-crop-layer {
+  position: absolute;
+  inset: 0;
+  display: none;
+  cursor: crosshair;
+  z-index: 10;
+}
+.lb-crop-rect {
+  position: absolute;
+  display: none;
+  border: 1.5px solid #6b6fcf;
+  background: rgba(107, 111, 207, .18);
+  box-shadow: 0 0 0 9999px rgba(2, 2, 3, .45);
+  pointer-events: none;
+}
+.lb-crop-btns {
+  position: absolute;
+  bottom: -44px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  z-index: 12;
+}
+.lb-crop-confirm,
+.lb-crop-cancel {
+  font-size: 11px;
+  padding: 4px 12px;
+  border-radius: 5px;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, .15);
+  color: #fff;
+}
+.lb-crop-confirm { background: #5a5ecf; }
+.lb-crop-cancel { background: rgba(255, 255, 255, .18); }
 
 /* ── TOAST ── */
 .toast {

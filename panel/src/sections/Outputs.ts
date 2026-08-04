@@ -3,11 +3,13 @@
 import { useOutputStore } from '../store/outputStore'
 import { deleteFiles, renameFile, batchFavorite, batchRate } from '../services/outputService'
 import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, ensureThumbnails, reparseAllMetadata, ensureMetadataFresh } from '../services/outputScanner'
+import { hashPath } from '../services/outputManifest'
 import { outputsDb } from '../db/outputsDb'
 import { esc, escAttr, showToast, copyText } from '../utils'
 import { confirmModal, promptModal } from '../components/Modal'
 import type { OutputFile, OutputMetadata, OutputDir, OutputScanStatus } from '../types/outputs'
 import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow } from '../services/outputMetadata'
+import { extractPngTextChunks, injectPngTextChunks } from '../services/pngChunks'
 import { backfillPrompts } from '../services/outputMetadataService'
 import JSZip from 'jszip'
 
@@ -499,6 +501,8 @@ function rangeSelectTo(id: string) {
 function bindOutputsEvents() {
   // 初始化拖拽框选（放在最前面，避免被后续代码的运行时错误阻断）
   initDragSelect()
+  // 预览图片编辑工具栏（旋转/裁剪/保存）
+  bindEditToolbar()
 
   // 事件委托 - 单一 click handler
   document.addEventListener('click', async (e) => {
@@ -534,11 +538,15 @@ function bindOutputsEvents() {
     if (target.closest('.outputs-refresh-btn')) {
       const dh = useOutputStore.getState().dirHandle
       if (dh) {
-        const count = await scanOutputDirIncremental(dh)
-        dirTree = await buildDirTree(dh)
-        renderDirTree(dirTree)
-        renderOutputsView()
-        showToast(count > 0 ? `✅ 已刷新：${count} 个文件有变化` : 'ℹ️ 没有新图片')
+        try {
+          const count = await scanOutputDirIncremental(dh)
+          dirTree = await buildDirTree(dh)
+          renderDirTree(dirTree)
+          renderOutputsView()
+          showToast(count > 0 ? `✅ 已刷新：${count} 个文件有变化` : 'ℹ️ 没有新图片')
+        } catch {
+          showToast('⚠️ 刷新失败')
+        }
       }
       return
     }
@@ -914,23 +922,6 @@ function bindOutputsEvents() {
   document.addEventListener('click', (e) => {
     const target = e.target as HTMLElement
 
-    // 关闭元数据面板
-    if (target.closest('#outputsMetaCloseBtn')) {
-      const panel = document.querySelector('.outputs-metadata-panel') as HTMLElement
-      const lightbox = document.getElementById('lightbox')
-      if (panel) panel.classList.remove('open')
-      if (lightbox) lightbox.classList.remove('open')
-      return
-    }
-
-    // 下载工作流 JSON
-    if (target.closest('#outputsMetaCopyWorkflowBtn')) {
-      const meta = useOutputStore.getState().metadataCache.get(_currentPreviewFileId)
-      const file = useOutputStore.getState().files.find(f => f.id === _currentPreviewFileId)
-      downloadOutputWorkflow(meta, file?.filename || 'workflow')
-      return
-    }
-
     // 查看全部节点
     if (target.closest('#outputsNodeMoreBtn')) {
       document.querySelectorAll('.outputs-node-item.node-hidden').forEach(el => el.classList.remove('node-hidden'))
@@ -955,7 +946,7 @@ function bindOutputsEvents() {
     // 空白区域点击：取消选中（不触发重绘）
     // 排除所有交互元素：卡片、按钮、输入框、目录树节点、筛选控件等
     if (target.closest('.outputs-main, .outputs-grid, .outputs-sidebar, .outputs-filter-panel, #outputsDirTree')
-      && !target.closest('button, input, select, textarea, .outputs-card, .outputs-list-row, .outputs-card-btn, .outputs-list-chk, .outputs-dir-node, .outputs-toolbar-btn, .outputs-batch-btn, .outputs-filter-input, .outputs-filter-clear, .outputs-shortcuts-btn, .outputs-select-btn, .outputs-refresh-btn, .outputs-search, .outputs-workflow-toggle, #outputsMetaCopyWorkflowBtn, #outputsMetaCloseBtn, .outputs-meta-close-btn, .lb-nav, #outputsNodeMoreBtn, .outputs-sort-btn, .outputs-filter-btn, .outputs-view-grid, .outputs-view-list')) {
+      && !target.closest('button, input, select, textarea, .outputs-card, .outputs-list-row, .outputs-card-btn, .outputs-list-chk, .outputs-dir-node, .outputs-toolbar-btn, .outputs-batch-btn, .outputs-filter-input, .outputs-filter-clear, .outputs-shortcuts-btn, .outputs-select-btn, .outputs-refresh-btn, .outputs-search, .outputs-workflow-toggle, .outputs-meta-close-btn, .lb-nav, #outputsNodeMoreBtn, .outputs-sort-btn, .outputs-filter-btn, .outputs-view-grid, .outputs-view-list')) {
       const s = useOutputStore.getState()
       if (s.selectedIds.size > 0) {
         s.clearSelection()
@@ -980,7 +971,7 @@ function bindOutputsEvents() {
     const target = e.target as HTMLElement
 
     // 只处理 outputs 模块内部
-    if (!target.closest('#sectionOutputs') && !target.closest('.outputs-metadata-panel')) return
+    if (!target.closest('#sectionOutputs')) return
 
     // 找到被右键的图片卡片或列表行
     const card = target.closest('.outputs-card') as HTMLElement
@@ -1620,12 +1611,8 @@ async function loadImageThumbnail(img: HTMLImageElement, fileId: string, filePat
     }
 
     // 从文件系统加载
-    const parts = filePath.split('/')
-    let current = dh
-    for (let i = 0; i < parts.length - 1; i++) {
-      current = await current.getDirectoryHandle(parts[i])
-    }
-    const fileHandle = await current.getFileHandle(parts[parts.length - 1])
+    const current = await resolveDirEntry(dh, filePath)
+    const fileHandle = await current.getFileHandle(filePath.split('/').pop()!)
     const file = await fileHandle.getFile()
 
     const thumbnail = await import('../services/outputThumbnail').then(m => m.getThumbnail(file, filePath))
@@ -1667,10 +1654,8 @@ async function getFileBlob(fileId: string): Promise<{ name: string; blob: Blob }
   const file = useOutputStore.getState().files.find(f => f.id === fileId)
   if (!dh || !file) return null
   try {
-    const parts = file.path.split('/')
-    let current = dh
-    for (let i = 0; i < parts.length - 1; i++) current = await current.getDirectoryHandle(parts[i])
-    const handle = await current.getFileHandle(parts[parts.length - 1])
+    const current = await resolveDirEntry(dh, file.path)
+    const handle = await current.getFileHandle(file.filename)
     const blob = await handle.getFile()
     return { name: file.filename, blob }
   } catch {
@@ -1875,12 +1860,335 @@ function openMetaPanel(fileId: string) {
   document.addEventListener('keydown', escHandler)
 }
 
+// ══ 预览图片编辑（旋转/翻转/框选裁剪，保存为副本，不覆盖原图） ══
+// 状态模型：_editBase 是「当前编辑结果」基准画布。每个操作（旋转/翻转/裁剪）都把结果固化到基准，
+// 后续操作总是基于最新结果继续，因此任意顺序组合都不会出现坐标错位。
+
+/** 扩展名 → canvas.toBlob 的 MIME 类型 */
+const EXT_MIME: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  bmp: 'image/bmp',
+}
+
+let _editFileId = ''
+let _editSrcImg: HTMLImageElement | null = null
+let _editBase: HTMLCanvasElement | null = null
+let _editCropping = false
+let _cropStartX = 0
+let _cropStartY = 0
+let _saving = false
+
+/** 导航到文件所在目录，返回目录句柄 */
+async function resolveDirEntry(dirHandle: FileSystemDirectoryHandle, path: string): Promise<FileSystemDirectoryHandle> {
+  const parts = path.split('/')
+  let current = dirHandle
+  for (let i = 0; i < parts.length - 1; i++) {
+    current = await current.getDirectoryHandle(parts[i])
+  }
+  return current
+}
+
+/** 懒加载原始图像，并初始化编辑基准画布（切图时重新加载并重置编辑状态） */
+async function ensureEditSrc(fileId: string): Promise<boolean> {
+  if (_editFileId === fileId && _editBase) return true
+  const blob = await getFileBlob(fileId)
+  if (!blob) return false
+  const url = URL.createObjectURL(blob.blob)
+  const img = new Image()
+  await new Promise<void>((res, rej) => { img.onload = () => res(); img.onerror = () => rej(); img.src = url })
+  URL.revokeObjectURL(url)
+  _editFileId = fileId
+  _editSrcImg = img
+  _editBase = canvasFromImage(img)
+  _editCropping = false
+  return true
+}
+
+/** 把 Image 绘制为独立 canvas */
+function canvasFromImage(img: HTMLImageElement): HTMLCanvasElement {
+  const base = document.createElement('canvas')
+  base.width = img.naturalWidth
+  base.height = img.naturalHeight
+  base.getContext('2d')!.drawImage(img, 0, 0)
+  return base
+}
+
+/** 返回当前编辑结果的独立副本（供导出，避免后续编辑污染已生成的 blob） */
+function buildEditedCanvas(): HTMLCanvasElement {
+  const src = _editBase!
+  const out = document.createElement('canvas')
+  out.width = src.width
+  out.height = src.height
+  out.getContext('2d')!.drawImage(src, 0, 0)
+  return out
+}
+
+/** 把当前编辑基准渲染到预览画布（隐藏原 img） */
+function renderEdit() {
+  const wrap = document.getElementById('lbEditWrap')
+  const cv = document.getElementById('lbEditCanvas') as HTMLCanvasElement
+  const imgEl = document.getElementById('lbImg') as HTMLImageElement
+  if (!wrap || !cv || !imgEl || !_editBase) return
+  cv.width = _editBase.width
+  cv.height = _editBase.height
+  cv.getContext('2d')!.drawImage(_editBase, 0, 0)
+  imgEl.style.display = 'none'
+  wrap.style.display = 'inline-block'
+  hideCropUI()
+}
+
+function hideCropUI() {
+  const layer = document.getElementById('lbCropLayer')
+  const rect = document.getElementById('lbCropRect')
+  if (layer) layer.style.display = 'none'
+  if (rect) rect.style.display = 'none'
+}
+
+function rotateEdit(delta: number) {
+  if (!_editBase) return
+  const src = _editBase
+  const rot = ((delta % 360) + 360) % 360
+  const swap = rot === 90 || rot === 270
+  const out = document.createElement('canvas')
+  out.width = swap ? src.height : src.width
+  out.height = swap ? src.width : src.height
+  const ctx = out.getContext('2d')!
+  ctx.translate(out.width / 2, out.height / 2)
+  ctx.rotate(rot * Math.PI / 180)
+  ctx.drawImage(src, -src.width / 2, -src.height / 2)
+  _editBase = out
+  renderEdit()
+}
+
+function toggleFlip(axis: 'h' | 'v') {
+  if (!_editBase) return
+  const src = _editBase
+  const out = document.createElement('canvas')
+  out.width = src.width
+  out.height = src.height
+  const ctx = out.getContext('2d')!
+  ctx.translate(axis === 'h' ? src.width : 0, axis === 'v' ? src.height : 0)
+  ctx.scale(axis === 'h' ? -1 : 1, axis === 'v' ? -1 : 1)
+  ctx.drawImage(src, 0, 0)
+  _editBase = out
+  renderEdit()
+}
+
+function enterCropMode() {
+  if (!_editBase) return
+  renderEdit() // 确保编辑画布显示——否则裁剪层位于隐藏的 wrap 里，点击裁剪看起来"无效"
+  _editCropping = true
+  const layer = document.getElementById('lbCropLayer')
+  const rect = document.getElementById('lbCropRect')
+  const wrap = document.getElementById('lbEditWrap')
+  if (layer) layer.style.display = 'block'
+  if (rect) rect.style.display = 'none'
+  if (wrap) wrap.style.cursor = 'crosshair'
+}
+
+function confirmCrop() {
+  if (!_editBase) return
+  const rect = document.getElementById('lbCropRect') as HTMLElement
+  const layer = document.getElementById('lbCropLayer') as HTMLElement
+  const cv = document.getElementById('lbEditCanvas') as HTMLCanvasElement
+  const wrap = document.getElementById('lbEditWrap')
+  if (wrap) wrap.style.cursor = ''
+  _editCropping = false
+  if (rect.style.display === 'none' || !cv) { hideCropUI(); return }
+  const lw = parseFloat(rect.style.width)
+  const lh = parseFloat(rect.style.height)
+  const lx = parseFloat(rect.style.left)
+  const ly = parseFloat(rect.style.top)
+  if (!lw || !lh) { hideCropUI(); return }
+  // 显示坐标 → canvas 像素坐标（考虑缩放），并 clamp 到画布边界（选框拖出画布时兜底）
+  const layerRect = layer.getBoundingClientRect()
+  const scaleX = cv.width / layerRect.width
+  const scaleY = cv.height / layerRect.height
+  const x = Math.max(0, Math.min(_editBase.width - 1, lx * scaleX))
+  const y = Math.max(0, Math.min(_editBase.height - 1, ly * scaleY))
+  const cw = Math.min(_editBase.width - x, lw * scaleX)
+  const ch = Math.min(_editBase.height - y, lh * scaleY)
+  if (cw < 2 || ch < 2) { hideCropUI(); return }
+  const out = document.createElement('canvas')
+  out.width = Math.max(1, Math.round(cw))
+  out.height = Math.max(1, Math.round(ch))
+  out.getContext('2d')!.drawImage(_editBase, x, y, cw, ch, 0, 0, out.width, out.height)
+  _editBase = out
+  hideCropUI()
+  renderEdit()
+}
+
+function resetEdit() {
+  _editSrcImg = null
+  _editFileId = ''
+  _editBase = null
+  _editCropping = false
+  const wrap = document.getElementById('lbEditWrap')
+  const imgEl = document.getElementById('lbImg') as HTMLImageElement
+  if (wrap) wrap.style.display = 'none'
+  if (imgEl) imgEl.style.display = ''
+  hideCropUI()
+}
+
+/** 保存编辑结果为副本文件（原名 + _edited），不覆盖原图 */
+async function saveEditedImage() {
+  if (!_editBase) { showToast('请先编辑再保存'); return }
+  if (_saving) return
+  const file = useOutputStore.getState().files.find(f => f.id === _editFileId)
+  const dh = useOutputStore.getState().dirHandle
+  if (!file || !dh) { showToast('请先选择目录'); return }
+
+  // 仍处于裁剪模式且有选框时，先应用裁剪，确保保存结果与所见一致
+  if (_editCropping) confirmCrop()
+
+  _saving = true
+  showToast('⏳ 正在保存副本...')
+  try {
+    const ext = file.extension || 'png'
+    const mime = EXT_MIME[ext] || 'image/png'
+    const cv = buildEditedCanvas()
+    const blob = await new Promise<Blob | null>(res => cv.toBlob(b => res(b), mime))
+    if (!blob) { showToast('⚠️ 导出失败'); return }
+
+    // PNG 副本保留原始 prompt/workflow 元数据（写入导出 PNG 的 tEXt chunks）
+    let bytes: Uint8Array<ArrayBuffer>
+    if (ext === 'png') {
+      const original = await getFileBlob(_editFileId)
+      bytes = injectPngTextChunks(
+        new Uint8Array(await blob.arrayBuffer()),
+        original ? extractPngTextChunks(new Uint8Array(await original.blob.arrayBuffer())) : []
+      )
+    } else {
+      bytes = new Uint8Array(await blob.arrayBuffer())
+    }
+    const savedBlob = new Blob([bytes], { type: mime })
+
+    const base = file.filename.replace(/\.[^.]+$/, '')
+    const newName = `${base}_edited.${ext}`
+    const dir = await resolveDirEntry(dh, file.path)
+    const newHandle = await dir.getFileHandle(newName, { create: true })
+    const writable = await newHandle.createWritable()
+    await writable.write(savedBlob)
+    await writable.close()
+
+    // 新副本加入列表：手动入库 + store，确保网格即时显示，不依赖增量扫描的可见性
+    const parts = file.path.split('/')
+    const newPath = parts.length > 1 ? parts.slice(0, -1).concat(newName).join('/') : newName
+    const newId = hashPath(newPath)
+    const meta = useOutputStore.getState().metadataCache.get(_editFileId)
+    const newFile: OutputFile = {
+      id: newId, path: newPath, filename: newName, extension: ext,
+      size: savedBlob.size, mtime: Date.now(), width: cv.width, height: cv.height,
+      favorite: false, rating: 0, notes: '', tags: [], category: '', status: '', pinned: false,
+      createdAt: Date.now(),
+    }
+    await outputsDb.files.put(newFile)
+    if (meta) {
+      const copyMeta = { ...meta, imageId: newId }
+      await outputsDb.metadata.put(copyMeta)
+      useOutputStore.getState().putMetadata(copyMeta)
+    }
+    useOutputStore.setState(s => ({ files: [newFile, ...s.files.filter(f => f.id !== newId)] }))
+    useOutputStore.getState().applyFilters()
+    renderOutputsView()
+
+    // 后台增量扫描：同步 manifest / 缩略图（失败静默，不影响已显示的副本）
+    try { await scanOutputDirIncremental(dh) } catch { /* 静默 */ }
+
+    showToast(`✅ 已保存为 ${newName}`)
+    // 切换预览到新副本，让用户立即看到编辑结果
+    openPreview(newId).catch(() => {})
+  } catch {
+    showToast('⚠️ 保存失败')
+  } finally {
+    _saving = false
+  }
+}
+
+/** 绑定编辑工具栏与裁剪交互（一次性） */
+function bindEditToolbar() {
+  const bar = document.getElementById('lbEditBar')
+  bar?.addEventListener('click', async (e) => {
+    const btn = (e.target as HTMLElement).closest('button[data-act]') as HTMLElement
+    if (!btn) return
+    const act = btn.dataset.act
+    const fileId = _currentPreviewFileId
+    if (!fileId) return
+    if (act === 'save') {
+      // 未编辑也允许保存原图副本：先确保原图已加载
+      if (!_editBase && !(await ensureEditSrc(fileId))) { showToast('⚠️ 读取图片失败'); return }
+      saveEditedImage()
+      return
+    }
+    if (act === 'reset') { resetEdit(); return }
+    if (!_editBase && !(await ensureEditSrc(fileId))) { showToast('⚠️ 读取图片失败'); return }
+    switch (act) {
+      case 'rotl': rotateEdit(-90); break
+      case 'rotr': rotateEdit(90); break
+      case 'fliph': toggleFlip('h'); break
+      case 'flipv': toggleFlip('v'); break
+      case 'crop': enterCropMode(); break
+    }
+  })
+
+  const layer = document.getElementById('lbCropLayer')
+  if (layer) {
+    let dragging = false
+    layer.addEventListener('mousedown', (e) => {
+      if (!_editCropping) return
+      // 点击「确认/取消」按钮时 mousedown 会冒泡到这里，不能启动拖拽，
+      // 否则会把已拖好的选框重置为 0，导致 confirmCrop 读到空框而裁剪失效
+      if ((e.target as HTMLElement).closest('.lb-crop-btns')) return
+      e.stopPropagation()
+      dragging = true
+      const r = layer.getBoundingClientRect()
+      _cropStartX = e.clientX - r.left
+      _cropStartY = e.clientY - r.top
+      const rect = document.getElementById('lbCropRect') as HTMLElement
+      rect.style.left = _cropStartX + 'px'
+      rect.style.top = _cropStartY + 'px'
+      rect.style.width = '0px'
+      rect.style.height = '0px'
+      rect.style.display = 'block'
+    })
+    layer.addEventListener('mousemove', (e) => {
+      if (!dragging || !_editCropping) return
+      const r = layer.getBoundingClientRect()
+      const x = e.clientX - r.left
+      const y = e.clientY - r.top
+      const rect = document.getElementById('lbCropRect') as HTMLElement
+      const lx = Math.min(_cropStartX, x)
+      const ly = Math.min(_cropStartY, y)
+      rect.style.left = lx + 'px'
+      rect.style.top = ly + 'px'
+      rect.style.width = Math.abs(x - _cropStartX) + 'px'
+      rect.style.height = Math.abs(y - _cropStartY) + 'px'
+    })
+    layer.addEventListener('mouseup', () => { dragging = false })
+    layer.addEventListener('mouseleave', () => { dragging = false })
+  }
+
+  document.getElementById('lbCropConfirm')?.addEventListener('click', (e) => { e.stopPropagation(); confirmCrop() })
+  document.getElementById('lbCropCancel')?.addEventListener('click', (e) => {
+    e.stopPropagation()
+    _editCropping = false
+    hideCropUI()
+    const wrap = document.getElementById('lbEditWrap')
+    if (wrap) wrap.style.cursor = ''
+  })
+}
+
 async function openPreview(fileId: string) {
   _currentPreviewFileId = fileId
   const file = useOutputStore.getState().files.find(f => f.id === fileId)
   if (!file) return
 
-  const meta = await useOutputStore.getState().loadMetadata(fileId)
+  // 预加载元数据到缓存（供「ℹ️ 元数据」按钮弹窗等使用）
+  await useOutputStore.getState().loadMetadata(fileId)
 
   // 获取图片 URL
   const dh = useOutputStore.getState().dirHandle
@@ -1888,12 +2196,8 @@ async function openPreview(fileId: string) {
 
   let imgUrl = ''
   try {
-    const parts = file.path.split('/')
-    let current = dh
-    for (let i = 0; i < parts.length - 1; i++) {
-      current = await current.getDirectoryHandle(parts[i])
-    }
-    const fileHandle = await current.getFileHandle(parts[parts.length - 1])
+    const current = await resolveDirEntry(dh, file.path)
+    const fileHandle = await current.getFileHandle(file.filename)
     const f = await fileHandle.getFile()
     imgUrl = URL.createObjectURL(f)
   } catch {
@@ -1905,6 +2209,7 @@ async function openPreview(fileId: string) {
   const img = document.getElementById('lbImg') as HTMLImageElement
   const counter = document.getElementById('lbCounter')
 
+  resetEdit()
   if (img) img.src = imgUrl
   if (counter) {
     const total = useOutputStore.getState().filteredFiles.length
@@ -1917,16 +2222,6 @@ async function openPreview(fileId: string) {
   document.querySelectorAll('.lightbox .lb-nav').forEach(b => {
     (b as HTMLElement).style.display = ''
   })
-
-  // 显示元数据面板
-  showMetadataPanel(meta, file)
-  document.querySelector('.outputs-metadata-panel')?.classList.add('open')
-}
-
-function showMetadataPanel(meta: OutputMetadata | null, file: OutputFile) {
-  const panel = document.querySelector('.outputs-metadata-panel') as HTMLElement
-  if (!panel) return
-  panel.innerHTML = renderMetadataPanel(meta, file)
 }
 
 /**
