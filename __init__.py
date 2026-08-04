@@ -34,20 +34,51 @@ _INDEX_MTIME = 0
 _PROXY_SESSION: aiohttp.ClientSession | None = None
 _PROXY_CACHE: dict = {}
 _CACHE_TTL = 60
+# Civitai 被墙需走代理：优先 ANIMA_PROXY 环境变量，否则自动探测本机 Clash/V2ray 常见端口
+_PROXY_OVERRIDE: str | None = None
 
 def _cache_key(url, qs):
     return hashlib.md5(f"{url}?{qs}".encode()).hexdigest()
 
+def _detect_proxy():
+    """探测本地代理端口（Clash 7890 / 7897 / V2ray 10809）是否可用，返回地址或 None"""
+    import socket
+    candidates = [
+        os.environ.get("ANIMA_PROXY"),
+        "http://127.0.0.1:7890",
+        "http://127.0.0.1:7897",
+        "http://127.0.0.1:10809",
+    ]
+    for addr in candidates:
+        if not addr:
+            continue
+        m = re.match(r"https?://([^:/]+):(\d+)", addr)
+        if not m:
+            continue
+        host, port = m.group(1), int(m.group(2))
+        try:
+            s = socket.create_connection((host, port), timeout=0.8)
+            s.close()
+            return addr
+        except Exception:
+            continue
+    return None
+
 async def _get_session():
-    global _PROXY_SESSION
+    global _PROXY_SESSION, _PROXY_OVERRIDE
     if _PROXY_SESSION is None or _PROXY_SESSION.closed:
-        _PROXY_SESSION = aiohttp.ClientSession(
+        if _PROXY_OVERRIDE is None:
+            _PROXY_OVERRIDE = _detect_proxy()
+        kwargs = dict(
             # 用浏览器 UA：CivItai/Cloudflare 对非浏览器 UA 的下载请求会返回 401
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"},
             timeout=aiohttp.ClientTimeout(total=30),
-            # 尊重 HTTP_PROXY/HTTPS_PROXY 环境变量（Civitai 需走代理）
+            # 尊重 HTTP_PROXY/HTTPS_PROXY 环境变量
             trust_env=True,
         )
+        if _PROXY_OVERRIDE:
+            kwargs["proxy"] = _PROXY_OVERRIDE
+        _PROXY_SESSION = aiohttp.ClientSession(**kwargs)
     return _PROXY_SESSION
 
 
