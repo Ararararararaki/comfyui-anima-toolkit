@@ -48,7 +48,7 @@ async function runAuto() {
   if (!autoFetching) return
   const store = useModelStore.getState()
   if (store.hasMore && store.page < MAX_PAGES) {
-    await fetchPage(store.page + 1, { quietError: true })
+    await fetchPage(store.page + 1, { quietError: true, append: true })
   }
   const store2 = useModelStore.getState()
   if (!store2.hasMore || store2.page >= MAX_PAGES) {
@@ -126,7 +126,7 @@ export function switchSection(id: 'lora' | 'artist' | 'prompt' | 'prompt-freq' |
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
-async function fetchPage(p: number, options?: { quietError?: boolean }) {
+async function fetchPage(p: number, options?: { quietError?: boolean; append?: boolean }) {
   const store = useModelStore.getState()
   if (store.loading) return
 
@@ -142,7 +142,7 @@ async function fetchPage(p: number, options?: { quietError?: boolean }) {
     store.appendRaw(items)
     store.setPagination(p, maxPage, hasMore)
     store.rebuild()
-    refreshView()
+    refreshView(!!options?.append)
 
     Cache.save('models_' + store.period, store.raw)
     return items
@@ -161,7 +161,8 @@ export async function loadMore() {
   if (store.loading || !store.hasMore) return
   const next = store.page + 1
   if (next > MAX_PAGES) { showToast('⚠️ 已达最大页数'); return }
-  await fetchPage(next)
+  // append: true — 增量追加渲染，不重建已渲染的卡片 DOM
+  await fetchPage(next, { append: true })
 }
 
 export async function fetchAll() {
@@ -174,7 +175,7 @@ export async function fetchAll() {
   if (store.raw.length === 0) await fetchPage(1)
   let p = store.page + 1
   while (p <= MAX_PAGES && store.hasMore) {
-    const ok = await fetchPage(p, { quietError: true })
+    const ok = await fetchPage(p, { quietError: true, append: true })
     if (!ok) break
     p = store.page + 1
     await sleep(400)
@@ -196,10 +197,10 @@ export function setPeriod(period: 'AllTime' | 'Month' | 'Week') {
   fetchPage(1)
 }
 
-export function refreshView() {
+export function refreshView(append = false) {
   updateStats()
   updateTabs()
-  renderGrid()
+  renderGrid(append)
 }
 
 function updateStats() {
@@ -262,7 +263,7 @@ function renderColTabs() {
     `<button class="tab" id="manageColBtn" role="tab" style="border-color:var(--accent);color:var(--accent);font-size:11px">⚙️ 管理</button>`
 }
 
-function renderGrid() {
+function renderGrid(append = false) {
   refreshLocalNames()
   const grid = document.getElementById('grid')
   if (!grid) return
@@ -283,7 +284,17 @@ function renderGrid() {
   const wrap = document.getElementById('loadMoreWrap')
   if (wrap) wrap.style.display = store.hasMore ? 'flex' : 'none'
 
-  grid.innerHTML = list.map(m => renderCard(m, store.category)).join('')
+  if (!append) {
+    // 全量渲染（首次加载/筛选/排序/切页触发）
+    grid.innerHTML = list.map(m => renderCard(m, store.category)).join('')
+    return
+  }
+
+  // 增量追加（翻页/自动翻页/抓取全部）：只渲染尚未在 DOM 的卡片，避免 1000+ 卡片反复重建
+  const existing = new Set<string>()
+  grid.querySelectorAll('.card[data-uid]').forEach(el => existing.add((el as HTMLElement).dataset.uid || ''))
+  const html = list.filter(m => !existing.has(String(m.uid))).map(m => renderCard(m, store.category)).join('')
+  if (html) grid.insertAdjacentHTML('beforeend', html)
 }
 
 function setText(id: string, text: string) {
@@ -681,6 +692,22 @@ export function setupGlobalHandlers() {
     setText('artistImgStatus', '')
     openModal('artistImgModal')
   }
+
+  // 「➕ 添加」按钮(artistImgAddBtn)此前无 click 绑定,输入框回车白触发(Modal.ts 只绑定 Enter→click)
+  document.getElementById('artistImgAddBtn')?.addEventListener('click', () => {
+    const modal = document.getElementById('artistImgModal')
+    const tag = modal?.getAttribute('data-artist-tag') || ''
+    const input = document.getElementById('artistImgUrl') as HTMLInputElement
+    const url = (input?.value || '').trim()
+    if (!tag) { showToast('⚠️ 请先打开某位画师的「管理预览图」'); return }
+    if (!url) { showToast('⚠️ 请粘贴图片 URL'); return }
+    addArtistImage(tag, url)
+    if (input) input.value = ''
+    setText('artistImgStatus', '✅ 已添加')
+    renderArtistImgList(tag)
+    renderArtists()
+    showToast('✅ 已添加预览图')
+  })
 
   w.__removeArtistImg = (tag: string, url: string) => {
     removeArtistImage(tag, url)

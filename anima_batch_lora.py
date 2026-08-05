@@ -91,11 +91,16 @@ def _parse_lora_syntax(text: str) -> list[dict]:
     matches = re.findall(pattern, text, re.IGNORECASE)
     loras = []
     for match in matches:
-        ms = float(match[1])
+        try:
+            ms = float(match[1])
+            cs = float(match[2]) if match[2] else ms
+        except ValueError:
+            print(f"[AnimaBatchLoRA] 跳过非法权重: name={match[0]!r} weight={match[1]!r}")
+            continue
         loras.append({
             "name": match[0],
             "model_strength": ms,
-            "clip_strength": float(match[2]) if match[2] else ms,
+            "clip_strength": cs,
         })
     return loras
 
@@ -293,9 +298,20 @@ async def list_loras(request):
     loras = []
     for f in all_loras:
         name_no_ext = os.path.splitext(f)[0]
+        # 补 size/lastModified：widget 前端「按大小/按日期」排序依赖这两个字段
+        size, mtime = 0, 0.0
+        full = folder_paths.get_full_path("loras", f)
+        if full and os.path.isfile(full):
+            try:
+                st = os.stat(full)
+                size, mtime = st.st_size, st.st_mtime
+            except OSError:
+                pass
         loras.append({
             "filename": f,
             "name": name_no_ext,
             "ext": os.path.splitext(f)[1],
+            "size": size,
+            "lastModified": mtime,
         })
     return web.json_response({"loras": loras, "total": len(loras)})

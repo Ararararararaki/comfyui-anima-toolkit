@@ -68,13 +68,35 @@ async function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
   })
 }
 
-async function getDimensions(dataUrl: string): Promise<{ width: number; height: number }> {
+async function getDimensionsByImage(dataUrl: string): Promise<{ width: number; height: number }> {
   return new Promise((resolve) => {
     const img = new Image()
     img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight })
     img.onerror = () => resolve({ width: 0, height: 0 })
     img.src = dataUrl
   })
+}
+
+/** 获取图片尺寸：PNG 直接从 IHDR chunk 读取（避免完整解码 4K 大图），其他格式回退完整解码 */
+async function getDimensions(buf: ArrayBuffer, extension: string): Promise<{ width: number; height: number }> {
+  if (extension === 'png') {
+    const bytes = new Uint8Array(buf)
+    // PNG 签名 8 字节 + IHDR chunk(长度4+类型4+宽4+高4) => 宽高在偏移 16/20
+    if (bytes.length >= 24) {
+      const sig = [137, 80, 78, 71, 13, 10, 26, 10]
+      let ok = true
+      for (let i = 0; i < 8; i++) if (bytes[i] !== sig[i]) { ok = false; break }
+      if (ok && String.fromCharCode(bytes[12], bytes[13], bytes[14], bytes[15]) === 'IHDR') {
+        const dv = new DataView(buf)
+        return { width: dv.getUint32(16), height: dv.getUint32(20) }
+      }
+    }
+  }
+  const blob = new Blob([buf], { type: `image/${extension}` })
+  const dataUrl = URL.createObjectURL(blob)
+  const dims = await getDimensionsByImage(dataUrl)
+  URL.revokeObjectURL(dataUrl)
+  return dims
 }
 
 async function processFile(
@@ -101,11 +123,8 @@ async function processFile(
     const buf = await readFileAsArrayBuffer(file)
     const meta = await parseOutputMetadata(buf, extension)
 
-    // 创建缩略图用于获取尺寸
-    const blob = new Blob([buf], { type: `image/${extension}` })
-    const dataUrl = URL.createObjectURL(blob)
-    const dims = await getDimensions(dataUrl)
-    URL.revokeObjectURL(dataUrl)
+    // 获取尺寸（PNG 走 IHDR 免解码，其余格式解码回退）
+    const dims = await getDimensions(buf, extension)
 
     const outputFile: OutputFile = {
       id,
@@ -317,10 +336,7 @@ export async function scanOutputDir(dirHandle: FileSystemDirectoryHandle): Promi
             const buf = await readFileAsArrayBuffer(file)
             const meta = await parseOutputMetadata(buf, extension)
 
-            const blob = new Blob([buf], { type: `image/${extension}` })
-            const dataUrl = URL.createObjectURL(blob)
-            const dims = await getDimensions(dataUrl)
-            URL.revokeObjectURL(dataUrl)
+            const dims = await getDimensions(buf, extension)
 
             const outputFile = await withUserMetadata({
               id: entry.id,
@@ -469,10 +485,7 @@ export async function scanOutputDirIncremental(dirHandle: FileSystemDirectoryHan
 
             const buf = await readFileAsArrayBuffer(file)
             const meta = await parseOutputMetadata(buf, extension)
-            const blob = new Blob([buf], { type: `image/${extension}` })
-            const dataUrl = URL.createObjectURL(blob)
-            const dims = await getDimensions(dataUrl)
-            URL.revokeObjectURL(dataUrl)
+            const dims = await getDimensions(buf, extension)
 
             const outputFile = await withUserMetadata({
               id: entry.id, path: entry.path, filename: file.name,

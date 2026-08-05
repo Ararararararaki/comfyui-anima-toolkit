@@ -257,6 +257,10 @@ export const useModelStore = create<ModelState>((set, get) => ({
   },
 
   setRaw(raw) { set({ raw }) },
-  appendRaw(items) { set(s => ({ raw: [...s.raw, ...items.filter(m => !s.raw.some(x => x.id === m.id))] })) },
+  // 去重从 O(n²) 优化为 O(n)：先收集已有 id 到 Set 再过滤
+  appendRaw(items) { set(s => {
+    const known = new Set(s.raw.map(m => m.id))
+    return { raw: [...s.raw, ...items.filter(m => !known.has(m.id))] }
+  }) },
   setPagination(page, maxPage, hasMore) { set({ page, maxPage, hasMore }) },
 }))

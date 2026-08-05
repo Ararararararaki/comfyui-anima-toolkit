@@ -89,6 +89,9 @@ body {
   background-color: var(--bg);
   color: var(--text); font-family: var(--font); min-height: 100vh;
   position: relative; z-index: 0; overflow-y: auto;
+  /* Settings 字号/行高生效(默认 14px/1.6 与现状一致) */
+  font-size: var(--font-size-base, 14px);
+  line-height: var(--line-height, 1.6);
 }
 #bg-overlay {
   position: fixed; inset: 0; z-index: -1; pointer-events: none;
@@ -108,6 +111,19 @@ body::after {
   content: ''; position: fixed; inset: 0; z-index: 0; pointer-events: none;
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
   opacity: 0.015;
+}
+/* mono 主题禁用紫色氛围光与噪点（单色设计意图，避免透着紫光） */
+html[data-theme="mono"] body::before,
+html[data-theme="mono-light"] body::before {
+  background: none;
+}
+html[data-theme="mono"] body::after,
+html[data-theme="mono-light"] body::after {
+  display: none;
+}
+/* Settings「动画速度」生效：主要交互元素的过渡时长统一走变量（fast=speed*0.6，默认150ms与现状一致） */
+button, .btn, .card, .tab, .main-tab, .theme-dot, input, select, textarea {
+  transition-duration: var(--transition-fast, 150ms);
 }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -175,12 +191,6 @@ h1 small { font-size: 12px; color: var(--text2); font-weight: 400; margin-left: 
 .btn-primary { background: var(--accent); color: #fff; }
 .btn-primary:hover { background: var(--accent2); transform: translateY(-1px); box-shadow: 0 4px 16px var(--accent-glow); }
 .btn-primary:active { transform: scale(0.97) translateY(0); box-shadow: none; }
-.btn-ghost { background: var(--bg4); color: var(--text2); border: 1px solid var(--border); }
-.btn-ghost:hover { background: var(--bg3); color: var(--text); border-color: var(--border-hover); }
-.btn-danger { background: var(--red); color: #fff; }
-.btn-danger:hover { opacity: .9; transform: translateY(-1px); }
-.btn-primary { background: var(--accent); color: #fff; }
-.btn-primary:hover { background: var(--accent2); transform: translateY(-1px); box-shadow: 0 4px 16px var(--accent-glow); }
 .btn-primary:disabled { opacity: .35; cursor: not-allowed; transform: none; box-shadow: none; }
 .btn-ghost { background: var(--bg4); color: var(--text2); border: 1px solid var(--border); }
 .btn-ghost:hover { background: rgba(255,255,255,0.08); color: var(--text); border-color: var(--border-hover); }
@@ -2463,3 +2473,25 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 .prompt-freq-freq[open] summary { border-bottom: 1px solid var(--border); }
 .prompt-freq-freq[open] .prompt-freq-tags { padding: 10px 12px; }
 .prompt-freq-upload.drag-over { border-color: var(--accent); background: rgba(99,102,241,0.08); color: var(--accent); }
+
+/* ── LocalManager URL 下载弹窗（主题化，替代行内硬编码深色 #14141c/#0a0a0c） ── */
+.ld-modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 16px; width: 94vw; max-width: 520px; max-height: 80vh; display: flex; flex-direction: column; color: var(--text); box-shadow: 0 0 0 1px rgba(0,0,0,0.05), 0 20px 60px rgba(0,0,0,0.6); }
+.ld-modal h3 { margin: 0 0 8px; font-size: 13px; }
+.ld-sub { font-size: 10px; color: var(--text3); margin-bottom: 8px; }
+.ld-urls, .ld-token { padding: 8px; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font-size: 11px; outline: none; }
+.ld-urls { flex: 1; font-family: monospace; resize: vertical; }
+.ld-token { flex: 1; min-width: 0; font-size: 10px; }
+.ld-tokenlink { padding: 7px 10px; background: var(--accent-glow); color: var(--accent2); border: 1px solid transparent; border-radius: 6px; cursor: pointer; font-size: 10px; flex-shrink: 0; white-space: nowrap; }
+.ld-tokenlink:hover { border-color: var(--accent); }
+.ld-list { margin-top: 8px; max-height: 130px; overflow-y: auto; }
+.ld-log { margin-top: 8px; max-height: 60px; overflow-y: auto; font-size: 10px; color: var(--text3); white-space: pre-wrap; }
+.ld-actions { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; }
+.ld-cancel { padding: 5px 12px; background: var(--bg4); color: var(--text2); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 11px; }
+.ld-cancel:hover { color: var(--text); border-color: var(--border-hover); }
+.ld-start { padding: 5px 14px; background: var(--accent); color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 11px; }
+.ld-start:hover { background: var(--accent2); }
+.ld-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 10px; color: var(--text); }
+.ld-name { width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+.ld-bar-wrap { flex: 1; height: 8px; background: var(--bg4); border-radius: 4px; overflow: hidden; }
+.ld-bar { height: 100%; width: 0%; background: var(--accent); transition: width 0.2s; }
+.ld-pct { width: 36px; text-align: right; color: var(--text3); flex-shrink: 0; }

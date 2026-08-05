@@ -1,13 +1,13 @@
 import { useLocalModelStore } from '../store/localModels'
 import type { LocalSortKey, LocalFilterKey, LocalViewKey } from '../store/localModels'
-import { esc, escAttr, copyText, showToast, fmtNum, thumbUrl } from '../utils'
+import { esc, escAttr, copyText, showToast, fmtNum, thumbUrl, debounce } from '../utils'
 import type { PngMeta, LocalLoraFile, TagFreq } from '../types'
 import type { OutputMetadata } from '../types/outputs'
 import { promptModal, confirmModal } from '../components/Modal'
 import { openContextMenu } from '../components/ContextMenu'
 import { refreshLocalNames } from '../components/ModelCard'
 import { useOutputStore } from '../store/outputStore'
-import { extractLorasFromWorkflow } from '../services/outputMetadata'
+import { extractLorasFromWorkflow, decompressZlibAsync } from '../services/outputMetadata'
 
 // ── 搜索高亮工具 ──
 function highlightText(text: string, query: string): string {
@@ -315,19 +315,27 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
   const exp = state.expandedCategories || []
   const mc = state.modelCategories || {}
 
-  const catByFile: Record<string, string[]> = {}
+  // 一次遍历按分类分组(O(n)),替代每分类 filter 的 O(cats×files)
+  const byCat: Record<string, LocalLoraFile[]> = {}
+  const uncat: LocalLoraFile[] = []
+  const categorized = new Set<string>()
   for (const f of files) {
     const assigned = mc[f.name] || []
-    catByFile[f.name] = assigned
+    if (assigned.length === 0) {
+      uncat.push(f)
+    } else {
+      for (const c of assigned) {
+        ;(byCat[c] ||= []).push(f)
+        categorized.add(f.name)
+      }
+    }
   }
 
-  const categorized = new Set<string>()
   let html = '<div class="local-tree-list">'
 
   for (const cat of cats) {
-    const catFiles = files.filter(f => (mc[f.name] || []).includes(cat))
+    const catFiles = byCat[cat] || []
     if (catFiles.length === 0 && state.searchQuery) continue
-    for (const f of catFiles) categorized.add(f.name)
     const isExpanded = exp.includes(cat)
     html += `<div class="local-tree-cat" data-cat="${escAttr(cat)}">
       <div class="local-tree-cat-header" data-cat="${escAttr(cat)}">
@@ -344,7 +352,7 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
     </div>`
   }
 
-  const uncatFiles = files.filter(f => !categorized.has(f.name))
+  const uncatFiles = uncat.filter(f => !categorized.has(f.name))
   if (uncatFiles.length > 0 || !state.searchQuery) {
     const isExpanded = exp.includes('__uncategorized__')
     html += `<div class="local-tree-cat" data-cat="__uncategorized__">
@@ -827,20 +835,20 @@ function bindLocalEvents() {
     const overlay = document.createElement('div')
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(2,2,3,0.72);z-index:99999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);'
     const modal = document.createElement('div')
-    modal.style.cssText = 'background:#14141c;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:16px;width:94vw;max-width:520px;max-height:80vh;display:flex;flex-direction:column;color:#EDEDEF;box-shadow:0 0 0 1px rgba(255,255,255,0.05),0 20px 60px rgba(0,0,0,0.6);'
-    modal.innerHTML = `<h3 style="margin:0 0 8px;font-size:13px;">🔗 从 C 站链接批量下载 LoRA</h3>
-      <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">每行一个链接（civitai.com/models/...），可带可不带 modelVersionId</div>
-      <textarea class="ld-urls" rows="6" placeholder="https://civitai.com/models/2658471/denia-wuthering-wavesanima&#10;https://civitai.com/models/2529695/xxx?modelVersionId=3094753" style="flex:1;padding:8px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;font-family:monospace;resize:vertical;outline:none;"></textarea>
+    modal.className = 'ld-modal'
+    modal.innerHTML = `<h3>🔗 从 C 站链接批量下载 LoRA</h3>
+      <div class="ld-sub">每行一个链接（civitai.com/models/...），可带可不带 modelVersionId</div>
+      <textarea class="ld-urls" rows="6" placeholder="https://civitai.com/models/2658471/denia-wuthering-wavesanima&#10;https://civitai.com/models/2529695/xxx?modelVersionId=3094753"></textarea>
       <div style="display:flex;gap:6px;margin-top:8px;">
-        <input class="ld-token" type="password" value="${(() => { try { return localStorage.getItem('anima_civitai_token') || '' } catch { return '' } })()}" placeholder="C 站 API Key（只读权限即可，下载需登录的模型用）" style="flex:1;padding:7px 9px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:10px;outline:none;min-width:0;">
-        <button class="ld-tokenlink" title="打开 C 站账号设置（账号 → API Keys 生成，选只读权限）" style="padding:7px 10px;background:rgba(94,106,210,0.2);color:#9aa5ff;border:1px solid rgba(94,106,210,0.3);border-radius:6px;cursor:pointer;font-size:10px;flex-shrink:0;white-space:nowrap;">🔑 生成 API Key</button>
+        <input class="ld-token" type="password" value="${(() => { try { return localStorage.getItem('anima_civitai_token') || '' } catch { return '' } })()}" placeholder="C 站 API Key（只读权限即可，下载需登录的模型用）">
+        <button class="ld-tokenlink" title="打开 C 站账号设置（账号 → API Keys 生成，选只读权限）">🔑 生成 API Key</button>
       </div>
-      <div style="font-size:9px;color:#8A8F98;margin-top:4px;">只读权限的 API Key 即可下载需登录的模型</div>
-      <div class="ld-list" style="margin-top:8px;max-height:130px;overflow-y:auto;"></div>
-      <div class="ld-log" style="margin-top:8px;max-height:60px;overflow-y:auto;font-size:10px;color:#8A8F98;white-space:pre-wrap;"></div>
-      <div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end;">
-        <button class="ld-cancel" style="padding:5px 12px;background:rgba(255,255,255,0.08);color:#8A8F98;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;font-size:11px;">取消</button>
-        <button class="ld-start" style="padding:5px 14px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:6px;cursor:pointer;font-size:11px;">⬇️ 开始下载</button>
+      <div class="ld-sub" style="margin-top:4px;">只读权限的 API Key 即可下载需登录的模型</div>
+      <div class="ld-list"></div>
+      <div class="ld-log"></div>
+      <div class="ld-actions">
+        <button class="ld-cancel">取消</button>
+        <button class="ld-start">⬇️ 开始下载</button>
       </div>`
     overlay.appendChild(modal)
     document.body.appendChild(overlay)
@@ -868,17 +876,17 @@ function bindLocalEvents() {
         const progressId = 'dl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
 
         const row = document.createElement('div')
-        row.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:10px;color:#EDEDEF;'
+        row.className = 'ld-row'
         const nameEl = document.createElement('span')
-        nameEl.style.cssText = 'width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;'
+        nameEl.className = 'ld-name'
         nameEl.textContent = url.slice(0, 36)
         const barWrap = document.createElement('div')
-        barWrap.style.cssText = 'flex:1;height:8px;background:rgba(255,255,255,0.08);border-radius:4px;overflow:hidden;'
+        barWrap.className = 'ld-bar-wrap'
         const bar = document.createElement('div')
-        bar.style.cssText = 'height:100%;width:0%;background:linear-gradient(135deg,#5E6AD2,#6872D9);transition:width 0.2s;'
+        bar.className = 'ld-bar'
         barWrap.appendChild(bar)
         const pctEl = document.createElement('span')
-        pctEl.style.cssText = 'width:36px;text-align:right;color:#8A8F98;flex-shrink:0;'
+        pctEl.className = 'ld-pct'
         pctEl.textContent = '0%'
         const cancelBtn = document.createElement('button')
         cancelBtn.textContent = '✕'
@@ -1004,11 +1012,13 @@ function bindLocalEvents() {
     renderLocalView()
   })
 
-  $$('localSearch')?.addEventListener('input', () => {
+  // 搜索防抖：每次按键全量重建文件树代价高，150ms 合并连续输入
+  const debouncedLocalSearch = debounce(() => {
     const q = ($$('localSearch') as HTMLInputElement).value
     useLocalModelStore.getState().setSearchQuery(q)
     renderSidebarList(useLocalModelStore.getState())
-  })
+  }, 150)
+  $$('localSearch')?.addEventListener('input', debouncedLocalSearch)
 
   $$('localSort')?.addEventListener('change', () => {
     const v = ($$('localSort') as HTMLSelectElement).value as LocalSortKey
@@ -1609,9 +1619,9 @@ function bindLocalEvents() {
 function parsePngFile(file: File): Promise<PngMeta | null> {
   return new Promise((resolve) => {
     const reader = new FileReader()
-    reader.onload = () => {
+    reader.onload = async () => {
       const buf = reader.result as ArrayBuffer
-      const meta = parsePngMetadata(buf)
+      const meta = await parsePngMetadata(buf)
       if (meta) {
         resolve({
           fileName: file.name,
@@ -1627,7 +1637,7 @@ function parsePngFile(file: File): Promise<PngMeta | null> {
   })
 }
 
-function parsePngMetadata(buf: ArrayBuffer): Omit<PngMeta, 'fileName' | 'fileSize'> | null {
+async function parsePngMetadata(buf: ArrayBuffer): Promise<Omit<PngMeta, 'fileName' | 'fileSize'> | null> {
   const view = new DataView(buf)
   const bytes = new Uint8Array(buf)
 
@@ -1657,7 +1667,8 @@ function parsePngMetadata(buf: ArrayBuffer): Omit<PngMeta, 'fileName' | 'fileSiz
       if (type === 'zTXt') {
         try {
           const compData = bytes.slice(keyEnd + 2, dataEnd)
-          val = decompressZlib(compData)
+          // 复用 outputMetadata 的 DecompressionStream 解压(项目无 pako 依赖,原实现必失败输出乱码)
+          val = await decompressZlibAsync(compData)
         } catch {
           val = new TextDecoder().decode(bytes.slice(keyEnd + 1, dataEnd))
         }
@@ -1738,17 +1749,6 @@ function parsePngMetadata(buf: ArrayBuffer): Omit<PngMeta, 'fileName' | 'fileSiz
     loras: [...new Set(loras)],
     raw,
   }
-}
-
-function decompressZlib(data: Uint8Array): string {
-  if (typeof (window as any).pako !== 'undefined') {
-    try {
-      return (window as any).pako.inflate(data, { to: 'string' })
-    } catch {
-      return new TextDecoder().decode(data)
-    }
-  }
-  return new TextDecoder().decode(data)
 }
 
 function extractTagsFromPrompt(prompt: string): string[] {

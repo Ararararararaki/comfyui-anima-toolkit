@@ -7,6 +7,9 @@ export interface ParsedMetadata {
   steps: string
   cfg: string
   sampler: string
+  scheduler?: string
+  denoise?: string
+  noiseSeed?: string
   vae: string
   clipSkip: number
   prompt: string
@@ -256,6 +259,9 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
           if (entry.name === 'steps' && entry.value !== undefined) result.steps = String(entry.value)
           if (entry.name === 'cfg' && entry.value !== undefined) result.cfg = String(entry.value)
           if (entry.name === 'sampler_name' && entry.value !== undefined) result.sampler = String(entry.value)
+          if (entry.name === 'scheduler' && entry.value !== undefined) result.scheduler = String(entry.value)
+          if (entry.name === 'denoise' && entry.value !== undefined) result.denoise = String(entry.value)
+          if (entry.name === 'noise_seed' && entry.value !== undefined) result.noiseSeed = String(entry.value)
           if (entry.name === 'positive' && entry.link !== undefined) {
             // link entry.link → find (fromNode) in links array
             if (Array.isArray(links)) {
@@ -284,6 +290,9 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
         if (inputs.steps !== undefined) result.steps = String(inputs.steps)
         if (inputs.cfg !== undefined) result.cfg = String(inputs.cfg)
         if (inputs.sampler_name) result.sampler = String(inputs.sampler_name)
+        if (inputs.scheduler) result.scheduler = String(inputs.scheduler)
+        if (inputs.denoise !== undefined) result.denoise = String(inputs.denoise)
+        if (inputs.noise_seed !== undefined) result.noiseSeed = String(inputs.noise_seed)
         if (Array.isArray(inputs.positive)) posRefs.set(String(inputs.positive[0]), 'positive')
         if (Array.isArray(inputs.negative)) posRefs.set(String(inputs.negative[0]), 'negative')
       }
@@ -310,7 +319,6 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
       const text = getNodeText(n)
       if (text) {
         textNodes.push({ node: n, text })
-        console.log(`[parser] 文本节点 id=${n.id} type=${ct} 文本前40字:`, text.slice(0, 40))
       }
     }
   }
@@ -343,25 +351,7 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
     }
   }
 
-  // debug: 打印解析上下文
-  console.log('[PromptFreq/debug] textNodes:', textNodes.map(n => ({
-    id: n.node.id, type: n.node.class_type || n.node.type,
-    textPreview: n.text.slice(0, 60),
-    textLen: n.text.length,
-  })))
-  console.log('[PromptFreq/debug] posRefs:', Object.fromEntries(posRefs))
-  console.log('[PromptFreq/debug] linkMap size:', linkMap.size,
-    'links raw:', Array.isArray(links) ? links.length : 'none',
-    'links format:', Array.isArray(links) && links.length > 0 ? JSON.stringify(links[0]).slice(0, 120) : '')
-  // debug: 打印 KSampler inputs 结构
-  for (const n of iterNodes) {
-    const ct = n.class_type || n.type || ''
-    if (ct.includes('KSampler')) {
-      console.log('[PromptFreq/debug] KSampler id=' + n.id, 'inputs type:', Array.isArray(n.inputs) ? 'array' : typeof n.inputs,
-        'inputs:', JSON.stringify(n.inputs).slice(0, 300))
-    }
-  }
-
+  // posRefs 迭代回溯：posRefs 节点无文本时沿 inputs 链路上溯，直到找到有文本的节点
   // 确定每个文本节点是正/负向。权威引用（KSampler/链路）优先，启发式仅补漏，
   // 防止 CR Prompt Text、PreviewAny 等旁路文本覆盖已确定的真实 prompt。
   let authoritativePrompt = false
@@ -404,11 +394,14 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
         if (!authoritativePrompt && !isPureLoraText(text)) { result.prompt = text; assigned = 'heuristic→positive' }
       }
     }
-    console.log(`[PromptFreq/debug] 分类 node=${nodeId} ${assigned} 文本前50字:`, text.slice(0, 50))
   }
 
   return result
 }
+
+// LoRA 提取结果缓存：同一 workflowJson 只解析一次，避免每次渲染/筛选重复 JSON.parse + 正则（主要卡顿源）
+const _loraExtractCache = new Map<string, string[]>()
+const _LORA_CACHE_MAX = 2000
 
 /** 从 ComfyUI workflow JSON 中提取所有 LoRA 名称 */
 export function extractLorasFromWorkflow(
@@ -416,6 +409,9 @@ export function extractLorasFromWorkflow(
   rawMetadata?: Record<string, string>,
 ): string[] {
   if (!workflowJson) return []
+  const _loraKey = workflowJson.length + ':' + workflowJson.slice(0, 256) + ':' + (rawMetadata?.prompt ? rawMetadata.prompt.length : 0)
+  const _loraHit = _loraExtractCache.get(_loraKey)
+  if (_loraHit) return _loraHit
 
   const LORA_TAG_RE = /<lora:([^:>]+):[^:>]*(?::[^:>]*)?>/gi
   const loras: string[] = []
@@ -514,6 +510,12 @@ export function extractLorasFromWorkflow(
     try { extractWorkflow(safeParseJSON(rawMetadata.prompt)) } catch { /* skip */ }
   }
 
+  // 写入缓存（LRU 简单淘汰）
+  if (_loraExtractCache.size >= _LORA_CACHE_MAX) {
+    const firstKey = _loraExtractCache.keys().next().value
+    if (firstKey !== undefined) _loraExtractCache.delete(firstKey)
+  }
+  _loraExtractCache.set(_loraKey, loras)
   return loras
 }
 
@@ -870,6 +872,9 @@ export async function parseOutputMetadata(
         steps: parsed.steps || '',
         cfg: parsed.cfg || '',
         sampler: parsed.sampler || '',
+        scheduler: parsed.scheduler || '',
+        denoise: parsed.denoise || '',
+        noiseSeed: parsed.noiseSeed || '',
         vae: parsed.vae || '',
         clipSkip: parsed.clipSkip || 0,
         prompt: parsed.prompt || '',

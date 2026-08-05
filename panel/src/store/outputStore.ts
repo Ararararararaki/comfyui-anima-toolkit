@@ -342,7 +342,14 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   }),
   setThumbMemory: (path, dataUrl) => set(s => {
     const next = new Map(s.thumbMemory)
+    // 已存在则先删除再插入：移到队尾，配合队首淘汰近似 LRU
+    if (next.has(path)) next.delete(path)
     next.set(path, dataUrl)
+    // 内存上限 500 条：超出淘汰最早缓存的 dataURL（200px JPEG，约几十 MB 封顶）
+    if (next.size > 500) {
+      const oldest = next.keys().next().value
+      if (oldest !== undefined) next.delete(oldest)
+    }
     return { thumbMemory: next }
   }),
   invalidateThumbnails: (paths) => set(s => {
@@ -437,9 +444,9 @@ export const useOutputStore = create<OutputState>((set, get) => ({
       if (a.pinned && !b.pinned) return -1
       if (!a.pinned && b.pinned) return 1
       switch (sortKey) {
-        case 'date': return a.pinned && b.pinned || !a.pinned && !b.pinned ? (b.mtime - a.mtime) * dir : 0
-        case 'name': return (a.pinned && b.pinned || !a.pinned && !b.pinned) ? b.filename.localeCompare(a.filename) * dir : 0
-        case 'size': return (a.pinned && b.pinned || !a.pinned && !b.pinned) ? (b.size - a.size) * dir : 0
+        case 'date': return a.pinned && b.pinned || !a.pinned && !b.pinned ? (a.mtime - b.mtime) * dir : 0
+        case 'name': return (a.pinned && b.pinned || !a.pinned && !b.pinned) ? a.filename.localeCompare(b.filename) * dir : 0
+        case 'size': return (a.pinned && b.pinned || !a.pinned && !b.pinned) ? (a.size - b.size) * dir : 0
         default: return 0
       }
     })

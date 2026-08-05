@@ -26,6 +26,9 @@ export interface OutputMetadata {
   steps: string
   cfg: string
   sampler: string
+  scheduler?: string
+  denoise?: string
+  noiseSeed?: string
   vae: string
   clipSkip: number
   prompt: string                // 正向提示词

@@ -7,39 +7,7 @@ import { outputsDb } from '../db/outputsDb'
 import { showToast } from '../utils'
 import { hashPath } from './outputManifest'
 import { deleteThumbnails } from './outputThumbnail'
-import type { OutputFile, OutputMetadata } from '../types/outputs'
-
-// ── 扫描编排 ──
-
-/**
- * 选择目录并执行全量扫描
- */
-export async function pickAndScan(): Promise<void> {
-  // TODO: 调 window.showDirectoryPicker + outputScanner.scanOutputDir
-}
-
-/**
- * 刷新当前目录（重新全量扫描）
- */
-export async function refresh(): Promise<void> {
-  // TODO: 从 store 取 dirHandle → outputScanner.scanOutputDir
-}
-
-/**
- * 增量扫描（启动时轻量检测新文件）
- */
-export async function incrementalScan(): Promise<number> {
-  // TODO: 从 store 取 dirHandle → outputScanner.scanOutputDirIncremental
-  return 0
-}
-
-/**
- * 从 IndexedDB 缓存恢复（刷新页面时先显示缓存）
- */
-export async function restoreFromCache(): Promise<boolean> {
-  // TODO: 调 outputScanner.loadOutputDirHandle
-  return false
-}
+import type { OutputFile } from '../types/outputs'
 
 // ── 文件操作 ──
 
@@ -161,34 +129,6 @@ export async function renameFile(id: string, newName: string): Promise<void> {
 // ── 元数据操作 ──
 
 /**
- * 切换收藏状态
- */
-export async function toggleFavorite(id: string): Promise<void> {
-  // TODO: outputsDb.files.update + store setState
-}
-
-/**
- * 设置评分
- */
-export async function setRating(id: string, rating: number): Promise<void> {
-  // TODO: outputsDb.files.update + store setState
-}
-
-/**
- * 设置笔记
- */
-export async function setNotes(id: string, notes: string): Promise<void> {
-  // TODO: outputsDb.files.update + store setState
-}
-
-/**
- * 设置标签
- */
-export async function setTags(id: string, tags: string[]): Promise<void> {
-  // TODO: outputsDb.files.update + store setState
-}
-
-/**
  * 批量收藏/取消收藏
  */
 export async function batchFavorite(ids: string[], favorite: boolean): Promise<void> {
@@ -215,46 +155,4 @@ export async function batchRate(ids: string[], rating: number): Promise<void> {
   useOutputStore.getState().applyFilters()
 }
 
-/**
- * 加载元数据（带缓存）
- */
-export async function loadMetadata(id: string): Promise<OutputMetadata | null> {
-  // TODO: 检查 store.metadataCache → outputsDb.metadata.get
-  return null
-}
-
-/**
- * 批量预加载元数据
- */
-export async function preloadMetadataBatch(): Promise<void> {
-  // TODO: 从 store 取 files + metadataCache 交集 → outputsDb.metadata.bulkGet
-}
-
 // ── 缩略图 ──
-
-/**
- * 加载图片缩略图
- */
-export async function loadThumbnail(
-  img: HTMLImageElement,
-  fileId: string,
-  filePath: string
-): Promise<void> {
-  // TODO: outputThumbnail.getCachedThumbnail → 若空则读文件系统 → outputThumbnail.getThumbnail
-}
-
-/**
- * 打开预览（大图 + 元数据面板）
- */
-export async function openPreview(fileId: string): Promise<void> {
-  // TODO: 读文件系统生成 blob URL → 显示 lightbox + 元数据面板
-}
-
-// ── 目录树 ──
-
-/**
- * 构建目录树
- */
-export async function buildDirTree(): Promise<void> {
-  // TODO: outputScanner.buildDirTree → store/渲染
-}

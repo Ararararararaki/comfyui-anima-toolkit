@@ -433,20 +433,7 @@
   </div>
 </div>
 
-<div class="modal-overlay" id="addArtistModal">
-  <div class="modal-box">
-    <h3>➕ 添加画师</h3>
-    <p class="sub">添加新的画师风格标签到参考列表中</p>
-    <input type="text" id="artistTagInput" placeholder="@tag (如 @newartist)" class="mb-8">
-    <input type="text" id="artistNameInput" placeholder="名称 (如 New Artist)" class="mb-8">
-    <textarea id="artistDescInput" placeholder="风格描述" class="textarea-md min-h-60"></textarea>
-    <div class="modal-actions">
-      <button class="btn btn-primary" id="addArtistConfirmBtn">✅ 确认添加</button>
-      <button class="btn btn-ghost" id="addArtistCancelBtn">取消</button>
-    </div>
-    <div class="modal-status" id="addArtistStatus"></div>
-  </div>
-</div>
+<div class="modal-overlay" id="addArtistModal"></div>
 
 <div class="modal-overlay" id="artistImgModal">
   <div class="modal-box modal-sm">
@@ -545,7 +532,6 @@
   <button class="btn btn-ghost batch-bar-item" id="batchCopyBtn">📋 复制触发词</button>
   <button class="btn btn-ghost batch-bar-item" id="batchCloseBtn">✕ 退出</button>
 </div>
-<div class="modal-overlay hidden" id="addArtistModal"></div>
 <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

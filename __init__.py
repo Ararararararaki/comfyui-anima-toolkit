@@ -40,6 +40,14 @@ _PROXY_OVERRIDE: str | None = None
 def _cache_key(url, qs):
     return hashlib.md5(f"{url}?{qs}".encode()).hexdigest()
 
+
+def _cleanup_cache(cache: dict, ttl: float):
+    """清理过期缓存项，防止长期运行内存持续增长。"""
+    now = time.time()
+    expired = [k for k, v in cache.items() if v[0] < now]
+    for k in expired:
+        cache.pop(k, None)
+
 def _detect_proxy():
     """探测本地代理端口（Clash 7890 / 7897 / V2ray 10809）是否可用，返回地址或 None"""
     import socket
@@ -68,7 +76,8 @@ async def _get_session():
     global _PROXY_SESSION, _PROXY_OVERRIDE
     if _PROXY_SESSION is None or _PROXY_SESSION.closed:
         if _PROXY_OVERRIDE is None:
-            _PROXY_OVERRIDE = _detect_proxy()
+            # 同步 socket 探测放线程池执行,避免阻塞 ComfyUI 事件循环(3 端口最坏 ~2.4s)
+            _PROXY_OVERRIDE = await asyncio.get_running_loop().run_in_executor(None, _detect_proxy)
         kwargs = dict(
             # 用浏览器 UA：CivItai/Cloudflare 对非浏览器 UA 的下载请求会返回 401
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"},
@@ -106,6 +115,7 @@ async def _proxy(url, request):
             headers = {"Content-Type": resp.content_type}
             if ck and resp.status == 200:
                 _PROXY_CACHE[ck] = (time.time() + _CACHE_TTL, resp.status, headers, body)
+                _cleanup_cache(_PROXY_CACHE, _CACHE_TTL)
             return web.Response(body=body, status=resp.status, headers=headers)
     except asyncio.TimeoutError:
         return web.json_response({"error": "proxy timeout"}, status=504)
@@ -228,12 +238,22 @@ async def lora_info(request):
         result = {"name": name, "trainedWords": [], "modelName": None, "previewUrl": None, "source": f"error_{e}"}
 
     _LORA_INFO_CACHE[name] = (now + _LORA_INFO_TTL, result)
+    _cleanup_cache(_LORA_INFO_CACHE, _LORA_INFO_TTL)
     return web.json_response(result)
 
 
 # 下载进度：progressId -> {done, total, status, filename}（供前端进度条轮询）
 _DOWNLOAD_PROGRESS: dict = {}
 _DOWNLOAD_PROGRESS_LOCK = threading.Lock()
+
+
+def _cleanup_progress(max_age: float = 600):
+    """清理超过 max_age 秒未更新的下载进度记录，防止长期运行内存增长。"""
+    now = time.time()
+    with _DOWNLOAD_PROGRESS_LOCK:
+        expired = [k for k, v in _DOWNLOAD_PROGRESS.items() if now - v.get("ts", now) > max_age]
+        for k in expired:
+            _DOWNLOAD_PROGRESS.pop(k, None)
 
 @PromptServer.instance.routes.get("/anima/lora/download")
 async def lora_download(request):
@@ -249,9 +269,11 @@ async def lora_download(request):
     cookie = request.query.get("cookie", "").strip()
     token = request.query.get("token", "").strip()  # C 站 API Key（设置页生成），比 cookie 持久省事
 
+    _cleanup_progress()
+
     if progress_id:
         with _DOWNLOAD_PROGRESS_LOCK:
-            _DOWNLOAD_PROGRESS[progress_id] = {"done": 0, "total": 0, "status": "downloading", "filename": ""}
+            _DOWNLOAD_PROGRESS[progress_id] = {"done": 0, "total": 0, "status": "downloading", "filename": "", "ts": time.time()}
 
     # 只有 modelId 时：查 C 站模型详情，取默认（第一个）版本的 id
     if not version_id and model_id:
@@ -316,6 +338,7 @@ async def lora_download(request):
                 return web.json_response({"ok": False, "error": f"download http_{resp.status}"}, status=502)
 
             # 文件名：C 站 API 的 files[0].name 优先，其次 Content-Disposition，最后 fallback
+            target = None
             filename = api_filename or fallback_name
             if not api_filename:
                 cd = resp.headers.get("Content-Disposition", "")
@@ -358,6 +381,12 @@ async def lora_download(request):
 
             return web.json_response({"ok": True, "filename": filename, "path": target})
     except Exception as e:
+        # 异常中断：删除残留的半截文件，避免出现在 /anima/loras 列表中被误用
+        if target and os.path.exists(target):
+            try:
+                os.remove(target)
+            except Exception:
+                pass
         if progress_id:
             with _DOWNLOAD_PROGRESS_LOCK:
                 _DOWNLOAD_PROGRESS[progress_id]["status"] = "error"

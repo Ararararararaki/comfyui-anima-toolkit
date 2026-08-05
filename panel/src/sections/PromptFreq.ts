@@ -24,6 +24,9 @@ interface UploadedPng {
   steps: string
   cfg: string
   sampler: string
+  scheduler?: string
+  denoise?: string
+  noiseSeed?: string
   model: string
   loras: string[]
   loraTags: string[]
@@ -72,6 +75,9 @@ function parsePngFile(file: File): Promise<UploadedPng | null> {
             steps: meta.steps || '',
             cfg: meta.cfg || '',
             sampler: meta.sampler || '',
+            scheduler: meta.scheduler || '',
+            denoise: meta.denoise || '',
+            noiseSeed: meta.noiseSeed || '',
             model: meta.model || '',
             loras: meta.loras || [],
             loraTags: meta.loraTags || [],
@@ -97,7 +103,8 @@ function parsePngFile(file: File): Promise<UploadedPng | null> {
 
 async function parsePngChunks(buf: ArrayBuffer): Promise<{
   prompt: string; negativePrompt: string; seed: string; steps: string;
-  cfg: string; sampler: string; model: string; loras: string[]; loraTags: string[]; workflowJson: string; uiWorkflow: string
+  cfg: string; sampler: string; scheduler?: string; denoise?: string; noiseSeed?: string;
+  model: string; loras: string[]; loraTags: string[]; workflowJson: string; uiWorkflow: string
 } | null> {
   const view = new DataView(buf)
   const bytes = new Uint8Array(buf)
@@ -221,6 +228,9 @@ async function parsePngChunks(buf: ArrayBuffer): Promise<{
     steps: result.steps || raw['steps'] || '',
     cfg: result.cfg || raw['cfg'] || '',
     sampler: result.sampler || raw['sampler'] || '',
+    scheduler: result.scheduler || '',
+    denoise: result.denoise || '',
+    noiseSeed: result.noiseSeed || '',
     model: result.model || raw['model'] || '',
     loras: [...new Set(loras)],
     loraTags: [...new Set(loraTags)],
@@ -334,7 +344,8 @@ async function doSendPngToOutputs(p: UploadedPng, category: string): Promise<voi
   await outputsDb.files.put(outputFile)
   const outputMeta: OutputMetadata = {
     imageId: id, model: p.model, seed: p.seed, steps: p.steps, cfg: p.cfg,
-    sampler: p.sampler, vae: '', clipSkip: 0,
+    sampler: p.sampler, scheduler: p.scheduler, denoise: p.denoise, noiseSeed: p.noiseSeed,
+    vae: '', clipSkip: 0,
     prompt: p.positive, negativePrompt: p.negative, workflowJson: p.uiWorkflow || p.workflowJson,
     rawMetadata: {},
   }
@@ -358,13 +369,14 @@ function showCategoryPick(onPick: (cat: string) => void) {
   const overlay = document.createElement('div')
   overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;'
   const panel = document.createElement('div')
-  panel.style.cssText = 'background:#1b1d22;color:#e6e6e6;border:1px solid #333;border-radius:10px;padding:14px;width:250px;max-height:70vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.5);'
+  // 主题化替代行内硬编码深色（#1b1d22/#333 在 mono-light 下违和）
+  panel.style.cssText = 'background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:14px;width:250px;max-height:70vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.5);'
   panel.innerHTML = '<h4 style="margin:0 0 8px;font-size:13px">选择分类</h4>'
   const mk = (label: string, val: string) => {
     const btn = document.createElement('button')
     btn.textContent = label
-    btn.style.cssText = 'display:block;width:100%;padding:7px 10px;margin-bottom:4px;border:1px solid #333;border-radius:6px;cursor:pointer;font-size:12px;background:transparent;color:#e6e6e6;text-align:left;'
-    btn.onmouseenter = () => { btn.style.background = '#262a32' }
+    btn.style.cssText = 'display:block;width:100%;padding:7px 10px;margin-bottom:4px;border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:12px;background:transparent;color:var(--text);text-align:left;'
+    btn.onmouseenter = () => { btn.style.background = 'var(--bg3)' }
     btn.onmouseleave = () => { btn.style.background = 'transparent' }
     btn.onclick = () => { overlay.remove(); onPick(val) }
     panel.appendChild(btn)
@@ -375,10 +387,10 @@ function showCategoryPick(onPick: (cat: string) => void) {
   newWrap.style.cssText = 'display:flex;gap:6px;margin-top:8px;'
   const input = document.createElement('input')
   input.placeholder = '新建分类…'
-  input.style.cssText = 'flex:1;padding:6px;background:#0f1013;color:#e6e6e6;border:1px solid #333;border-radius:6px;font-size:12px;outline:none;'
+  input.style.cssText = 'flex:1;padding:6px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;outline:none;'
   const addBtn = document.createElement('button')
   addBtn.textContent = '新建'
-  addBtn.style.cssText = 'padding:6px 10px;border:none;border-radius:6px;cursor:pointer;font-size:12px;background:#5E6AD2;color:#fff;'
+  addBtn.style.cssText = 'padding:6px 10px;border:none;border-radius:6px;cursor:pointer;font-size:12px;background:var(--accent);color:#fff;'
   addBtn.onclick = () => { const v = input.value.trim(); if (v) { overlay.remove(); onPick(v) } }
   input.onkeydown = (e) => { if (e.key === 'Enter') addBtn.click() }
   newWrap.append(input, addBtn)
@@ -507,14 +519,17 @@ export function renderPromptFreq() {
           </div>`
       }
 
-      // 参数
-      if (p.seed || p.steps || p.cfg || p.sampler || p.model) {
+      // 参数（采样方法/调度器/步数/CFG/重绘/种子/噪波）
+      if (p.seed || p.steps || p.cfg || p.sampler || p.scheduler || p.denoise || p.noiseSeed || p.model) {
         html += `<div class="prompt-freq-png-params">
           ${p.model ? `<span>🧠 ${esc(p.model)}</span>` : ''}
-          ${p.seed ? `<span>🌰 ${esc(p.seed)}</span>` : ''}
-          ${p.steps ? `<span>👣 ${esc(p.steps)}</span>` : ''}
-          ${p.cfg ? `<span>⚙️ CFG ${esc(p.cfg)}</span>` : ''}
           ${p.sampler ? `<span>🔬 ${esc(p.sampler)}</span>` : ''}
+          ${p.scheduler ? `<span>📊 ${esc(p.scheduler)}</span>` : ''}
+          ${p.steps ? `<span>👣 ${esc(p.steps)} 步</span>` : ''}
+          ${p.cfg ? `<span>⚙️ CFG ${esc(p.cfg)}</span>` : ''}
+          ${p.denoise ? `<span>🌫 重绘 ${esc(p.denoise)}</span>` : ''}
+          ${p.seed ? `<span>🌰 ${esc(p.seed)}</span>` : ''}
+          ${p.noiseSeed && p.noiseSeed !== p.seed ? `<span>🌪 噪波 ${esc(p.noiseSeed)}</span>` : ''}
         </div>`
       }
 

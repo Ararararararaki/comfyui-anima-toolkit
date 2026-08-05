@@ -483,9 +483,6 @@ function bindToolbarEvents() {
   // 添加画师
   document.getElementById('addArtistBtn')?.addEventListener('click', showAddArtistModal)
 
-  // 提取画师
-  document.getElementById('extractArtistBtn')?.addEventListener('click', showExtractModal)
-
   // 批量模式
   document.getElementById('artistBatchToggleBtn')?.addEventListener('click', () => {
     useArtistStore.getState().toggleBatchMode()

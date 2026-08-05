@@ -6,6 +6,11 @@ import { outputsDb } from '../db/outputsDb'
 const MAX_THUMBNAILS = 200
 const THUMBNAIL_SIZE = 200
 
+// 缩略图解码并发限制：首屏数百张同时 new Image() 解码大图会阻塞主线程，限制同时解码数量
+let _thumbActive = 0
+const _thumbQueue: (() => void)[] = []
+const _THUMB_CONCURRENT = 4
+
 let accessOrder: string[] = []
 
 function hashPath(path: string): string {
@@ -22,13 +27,37 @@ export async function createThumbnailFromBlob(
   blob: Blob,
   size: number = THUMBNAIL_SIZE
 ): Promise<{ dataUrl: string; width: number; height: number }> {
+  // 限流：同时最多 _THUMB_CONCURRENT 个解码，超出排队，避免首屏大量图片同时解码阻塞主线程
+  while (_thumbActive >= _THUMB_CONCURRENT) {
+    await new Promise<void>((res) => _thumbQueue.push(res))
+  }
+  _thumbActive++
+  try {
+    return await _createThumbFromBlob(blob, size)
+  } finally {
+    _thumbActive--
+    const next = _thumbQueue.shift()
+    if (next) next()
+  }
+}
+
+async function _createThumbFromBlob(
+  blob: Blob,
+  size: number = THUMBNAIL_SIZE
+): Promise<{ dataUrl: string; width: number; height: number }> {
   return new Promise((resolve) => {
     const img = new Image()
+    // 创建后必须 revoke，否则每张新缩略图泄漏一个 Blob URL（底层 Blob 无法回收）
+    const url = URL.createObjectURL(blob)
+    const done = (result: { dataUrl: string; width: number; height: number }) => {
+      URL.revokeObjectURL(url)
+      resolve(result)
+    }
     img.onload = () => {
       const canvas = document.createElement('canvas')
       const ctx = canvas.getContext('2d')
       if (!ctx) {
-        resolve({ dataUrl: '', width: 0, height: 0 })
+        done({ dataUrl: '', width: 0, height: 0 })
         return
       }
 
@@ -43,14 +72,14 @@ export async function createThumbnailFromBlob(
       canvas.height = h
       ctx.drawImage(img, 0, 0, w, h)
 
-      resolve({
+      done({
         dataUrl: canvas.toDataURL('image/jpeg', 0.8),
         width: w,
         height: h,
       })
     }
-    img.onerror = () => resolve({ dataUrl: '', width: 0, height: 0 })
-    img.src = URL.createObjectURL(blob)
+    img.onerror = () => done({ dataUrl: '', width: 0, height: 0 })
+    img.src = url
   })
 }
 

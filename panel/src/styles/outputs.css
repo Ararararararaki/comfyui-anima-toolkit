@@ -266,8 +266,10 @@
 .outputs-toolbar {
   flex-shrink: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
+  row-gap: 8px;
   margin-bottom: 16px;
   padding: 12px;
   background: var(--bg2);

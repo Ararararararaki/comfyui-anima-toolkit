@@ -32,6 +32,8 @@ let dirTree: OutputDir | null = null
 let _lastClickedFileIndex = -1
 let _currentPreviewFileId = ''
 let _focusMode = false
+// 当前预览的原图 Blob URL（切换/关闭时 revoke，避免反复预览累积大图内存）
+let _previewBlobUrl = ''
 
 /**
  * 下载工作流 .json（ComfyUI 用 Load 或拖入画布导入最稳妥，替代复制——画布 Ctrl+V 易误导）
@@ -222,7 +224,7 @@ function renderOutputsView() {
   const state = useOutputStore.getState()
   renderImageGrid(state)
   // 同步填充已缓存的缩略图，避免操作后图片闪烁
-  document.querySelectorAll('.outputs-card img[data-file-path], .outputs-list-card-img img[data-file-path], .outputs-list-row img[data-file-path]').forEach(img => {
+  document.querySelectorAll('.outputs-card img[data-file-path], .outputs-list-card-img img[data-file-path]').forEach(img => {
     const p = (img as HTMLImageElement).dataset.filePath
     if (p) {
       const cached = state.thumbMemory.get(p)
@@ -237,7 +239,7 @@ function renderOutputsView() {
 /** 仅同步选中的 CSS 类，不重建整个卡片 DOM（性能优化） */
 function syncSelectionUI() {
   const selectedIds = useOutputStore.getState().selectedIds
-  document.querySelectorAll('.outputs-card, .outputs-list-row').forEach(el => {
+  document.querySelectorAll('.outputs-card, .outputs-list-card').forEach(el => {
     const id = (el as HTMLElement).dataset.id
     if (id) el.classList.toggle('selected', selectedIds.has(id))
   })
@@ -282,7 +284,7 @@ function updateStatusUI(ids: string[], status: string) {
       }
     }
     // 列表行
-    const row = section.querySelector(`.outputs-list-row[data-id="${id}"]`) as HTMLElement
+    const row = section.querySelector(`.outputs-list-card[data-id="${id}"]`) as HTMLElement
     if (row) {
       const nameCol = row.querySelector('.outputs-list-name') as HTMLElement
       if (nameCol) {
@@ -722,7 +724,7 @@ function bindOutputsEvents() {
     }
 
     // 列表行点击
-    const row = target.closest('.outputs-list-row') as HTMLElement
+    const row = target.closest('.outputs-list-card') as HTMLElement
     if (row && !target.closest('.outputs-list-chk') && !target.closest('.outputs-action-btn')) {
       const id = row.dataset.id
       if (id) {
@@ -946,7 +948,7 @@ function bindOutputsEvents() {
     // 空白区域点击：取消选中（不触发重绘）
     // 排除所有交互元素：卡片、按钮、输入框、目录树节点、筛选控件等
     if (target.closest('.outputs-main, .outputs-grid, .outputs-sidebar, .outputs-filter-panel, #outputsDirTree')
-      && !target.closest('button, input, select, textarea, .outputs-card, .outputs-list-row, .outputs-card-btn, .outputs-list-chk, .outputs-dir-node, .outputs-toolbar-btn, .outputs-batch-btn, .outputs-filter-input, .outputs-filter-clear, .outputs-shortcuts-btn, .outputs-select-btn, .outputs-refresh-btn, .outputs-search, .outputs-workflow-toggle, .outputs-meta-close-btn, .lb-nav, #outputsNodeMoreBtn, .outputs-sort-btn, .outputs-filter-btn, .outputs-view-grid, .outputs-view-list')) {
+      && !target.closest('button, input, select, textarea, .outputs-card, .outputs-list-card, .outputs-card-btn, .outputs-list-chk, .outputs-dir-node, .outputs-toolbar-btn, .outputs-batch-btn, .outputs-filter-input, .outputs-filter-clear, .outputs-shortcuts-btn, .outputs-select-btn, .outputs-refresh-btn, .outputs-search, .outputs-workflow-toggle, .outputs-meta-close-btn, .lb-nav, #outputsNodeMoreBtn, .outputs-sort-btn, .outputs-filter-btn, .outputs-view-grid, .outputs-view-list')) {
       const s = useOutputStore.getState()
       if (s.selectedIds.size > 0) {
         s.clearSelection()
@@ -966,6 +968,14 @@ function bindOutputsEvents() {
     })
   })
 
+  // 关闭 lightbox 时释放最后一张预览的原图 Blob URL
+  document.querySelector('.lightbox .close')?.addEventListener('click', () => {
+    if (_previewBlobUrl) {
+      URL.revokeObjectURL(_previewBlobUrl)
+      _previewBlobUrl = ''
+    }
+  })
+
   // ── 右键菜单 ──
   document.addEventListener('contextmenu', (e) => {
     const target = e.target as HTMLElement
@@ -975,7 +985,7 @@ function bindOutputsEvents() {
 
     // 找到被右键的图片卡片或列表行
     const card = target.closest('.outputs-card') as HTMLElement
-    const row = target.closest('.outputs-list-row') as HTMLElement
+    const row = target.closest('.outputs-list-card') as HTMLElement
     const el = card || row
     let fileIds: string[] = []
 
@@ -1627,7 +1637,12 @@ async function loadImageThumbnail(img: HTMLImageElement, fileId: string, filePat
 }
 
 function showCompatMessage() {
-  showToast('⚠️ 当前浏览器/访问方式不支持目录选择：请用 Chrome/Edge/夸克，并通过 localhost 或 HTTPS 访问（局域网 IP 访问不支持目录权限），或检查浏览器是否允许 "存储访问"')
+  // Outputs 的增量扫描/权限恢复依赖 FileSystemDirectoryHandle，webkitdirectory 回退不适用；
+  // 无句柄时已缓存内容仍可浏览，提示用户可用的替代路径
+  const cached = useOutputStore.getState().files.length
+  showToast(cached > 0
+    ? `⚠️ 当前浏览器/访问方式不支持目录选择（需 Chrome/Edge + localhost/HTTPS）；已缓存 ${cached} 张图片仍可浏览，但无法增量刷新`
+    : '⚠️ 当前浏览器/访问方式不支持目录选择：请用 Chrome/Edge 并通过 localhost 或 HTTPS 访问（局域网 IP 访问不支持目录权限）')
 }
 
 /**
@@ -2183,6 +2198,11 @@ function bindEditToolbar() {
 }
 
 async function openPreview(fileId: string) {
+  // 切换预览前 revoke 上一个 Blob URL（含失败路径，避免泄漏大图 Blob）
+  if (_previewBlobUrl) {
+    URL.revokeObjectURL(_previewBlobUrl)
+    _previewBlobUrl = ''
+  }
   _currentPreviewFileId = fileId
   const file = useOutputStore.getState().files.find(f => f.id === fileId)
   if (!file) return
@@ -2200,6 +2220,7 @@ async function openPreview(fileId: string) {
     const fileHandle = await current.getFileHandle(file.filename)
     const f = await fileHandle.getFile()
     imgUrl = URL.createObjectURL(f)
+    _previewBlobUrl = imgUrl
   } catch {
     return
   }

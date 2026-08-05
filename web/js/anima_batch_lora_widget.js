@@ -328,7 +328,8 @@
       while ((m = re.exec(text)) !== null) {
         items.push({
           name: m[1],
-          weight: parseFloat(m[2]),
+          // 非法权重(如 <lora:foo:abc>)兜底为 1.0，避免 NaN 污染 lora_syntax 与滑块显示
+          weight: Number.isFinite(parseFloat(m[2])) ? parseFloat(m[2]) : 1.0,
           disabled: false,
         });
       }
@@ -356,7 +357,10 @@
     _serialize() {
       return this.loras
         .filter((l) => !l.disabled) // 禁用的不写入 lora_syntax，后端不应用
-        .map((l) => `<lora:${l.name}:${l.weight.toFixed(2)}>`)
+        .map((l) => {
+          const w = Number.isFinite(l.weight) ? l.weight : 1.0;
+          return `<lora:${l.name}:${w.toFixed(2)}>`;
+        })
         .join(" ");
     }
 
@@ -380,11 +384,17 @@
 
     // 预加载后端 loraMeta 到 this.meta（供 _parse / 添加路径恢复隐藏偏好）
     _ensureMeta() {
-      if (this.meta) return;
+      const hasContent = this.meta && (this.meta.categories?.length || Object.keys(this.meta.loraMeta || {}).length || (this.meta.loraGroups || []).length);
+      if (hasContent) return;
       this.meta = { categories: [], loraMeta: {}, loraGroups: [] };
       fetch("/anima/meta")
         .then((r) => r.json())
-        .then((d) => { this.meta = d || { categories: [], loraMeta: {}, loraGroups: [] }; })
+        .then((d) => {
+          // 仅在后端确有数据时替换；失败/空结果保留现有引用，避免后续 toggle 把空 meta 整体覆盖到后端
+          if (d && (d.categories?.length || Object.keys(d.loraMeta || {}).length || (d.loraGroups || []).length)) {
+            this.meta = d;
+          }
+        })
         .catch(() => {});
     }
 
@@ -839,10 +849,14 @@
         }
 
         // ── 权重滑块 ──
+        // slider 外包 .weight-group 容器，匹配 CSS 选择器 .weight-group input[type=range]，
+        // 否则滑块回退浏览器原生样式（深色主题下突兀）
+        const weightGroup = document.createElement("div");
+        weightGroup.className = "weight-group";
         const slider = document.createElement("input");
         slider.type = "range"; slider.min = "0"; slider.max = "2"; slider.step = "0.05";
         slider.value = String(l.weight);
-        slider.className = "weight-group";
+        weightGroup.appendChild(slider);
 
         // ── 权重数值（纯文本，无箭头） ──
         const valSpan = document.createElement("input");
@@ -882,7 +896,7 @@
         metaBadge.textContent = (_cats ? "🏷" + _cats : "") + (_cnt ? " " + _cnt + "次" : "");
         metaBadge.style.cssText = "font-size:9px;color:#8A8F98;opacity:0.85;white-space:nowrap;flex-shrink:0;";
 
-        row.append(dragArea, toggle, name, metaBadge, twHint, slider, valSpan, del);
+        row.append(dragArea, toggle, name, metaBadge, twHint, weightGroup, valSpan, del);
         listEl.appendChild(row);
       });
     }
@@ -1167,7 +1181,11 @@
         });
       });
 
-      let meta = { categories: [], loraMeta: {}, loraGroups: [] };
+      // 以已有 meta 为起点：打开弹窗瞬间不无条件清空 this.meta，
+      // 否则 /anima/meta 拉取失败时 this.meta 永久为空，后续 toggle 会把后端分类/组/偏好整体覆盖清空
+      let meta = this.meta && (this.meta.categories?.length || Object.keys(this.meta.loraMeta || {}).length || (this.meta.loraGroups || []).length)
+        ? { categories: this.meta.categories || [], loraMeta: this.meta.loraMeta || {}, loraGroups: this.meta.loraGroups || [] }
+        : { categories: [], loraMeta: {}, loraGroups: [] };
       this.meta = meta;
       let allLoras = [];
       let mode = "grid";
@@ -1175,6 +1193,8 @@
       let curFilter = "all";
       const selected = new Set();
       if (!this._imgCache) this._imgCache = {};
+      // HTML 转义：本地文件名插入 innerHTML 前必须转义，防属性注入与标签注入
+      const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
       const ITEM_W = 150, GAP = 10, IMG_H = 150, INFO_H = 62, ROW_H = IMG_H + INFO_H + GAP;
 
@@ -1195,6 +1215,24 @@
           .catch(() => null)
           .finally(() => { clearTimeout(timer); _infoControllers.delete(ctrl); });
       };
+      // 并发限制：一次进入视口的 30-40 张卡片若同时请求 /anima/lora/info（后端每文件全量 SHA256），
+      // 会瞬间打满后端 CPU/IO；用简单信号量限到 4 个并发
+      let _infoConcurrent = 0;
+      const _infoQueue = [];
+      const MAX_INFO_CONCURRENT = 4;
+      const getInfoQueued = (name) => new Promise((resolve) => {
+        const run = () => {
+          _infoConcurrent++;
+          getInfo(name)
+            .finally(() => {
+              _infoConcurrent--;
+              if (_infoQueue.length) _infoQueue.shift()();
+            })
+            .then(resolve, resolve);
+        };
+        if (_infoConcurrent >= MAX_INFO_CONCURRENT) _infoQueue.push(run);
+        else run();
+      });
       // C 站图片走后端代理（浏览器无代理无法直连 image.civitai.com）；卡片用 400px 小图省流量
       const imgProxy = (url) => {
         if (!url || !url.startsWith("https://image.civitai.com/")) return url;
@@ -1252,7 +1290,7 @@
           const img = en.target;
           io.unobserve(img);
           const name = img.dataset.loraName;
-          getInfo(name).then((info) => {
+          getInfoQueued(name).then((info) => {
             if (!info) return;
             this._imgCache[name] = info;
             if (img.isConnected === false) return;
@@ -1312,14 +1350,14 @@
         const top = Math.floor(idx / cols) * ROW_H;
         card.style.cssText = `position:absolute;left:${left}px;top:${top}px;width:${ITEM_W}px;height:${ROW_H - GAP}px;border-radius:8px;overflow:hidden;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);cursor:pointer;`;
         card.innerHTML = `
-          <div class="bm-img" data-lora-name="${l.name}" style="position:relative;height:${IMG_H}px;background:rgba(255,255,255,0.04);overflow:hidden;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.15);font-size:22px;">🖼</div>
+          <div class="bm-img" data-lora-name="${esc(l.name)}" style="position:relative;height:${IMG_H}px;background:rgba(255,255,255,0.04);overflow:hidden;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.15);font-size:22px;">🖼</div>
           <div class="bm-badge" style="position:absolute;top:4px;left:4px;display:${added ? "flex" : "none"};align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:rgba(94,106,210,0.9);color:#fff;font-size:10px;font-weight:700;">✓</div>
           <div style="position:absolute;top:3px;right:3px;display:flex;gap:3px;">
             <button class="bm-catbtn" title="分配分类" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:rgba(0,0,0,0.4);color:rgba(255,255,255,0.4);">🏷️</button>
             <button class="bm-csite" title="打开 C 站页面" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:rgba(0,0,0,0.4);color:rgba(255,255,255,0.4);">🔗</button>
           </div>
           <div style="position:absolute;bottom:0;left:0;right:0;padding:5px 6px;background:linear-gradient(180deg,transparent,rgba(0,0,0,0.85));">
-            <div class="bm-mname" style="font-size:10px;color:#EDEDEF;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${l.name}</div>
+            <div class="bm-mname" style="font-size:10px;color:#EDEDEF;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(l.name)}</div>
             <div class="bm-lname" style="font-size:8px;color:rgba(255,255,255,0.45);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none;"></div>
             <div class="bm-meta" style="font-size:8px;color:rgba(255,255,255,0.3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none;"></div>
             <div class="bm-tw" style="font-size:8px;color:rgba(255,255,255,0.4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
@@ -1398,9 +1436,9 @@
         row.dataset.name = l.name;
         row.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;border:1px solid rgba(255,255,255,0.05);margin-bottom:4px;background:rgba(255,255,255,0.02);";
         row.innerHTML = `
-          <div class="bm-li-thumb" data-lora-name="${l.name}" style="position:relative;width:36px;height:36px;border-radius:5px;overflow:hidden;background:rgba(255,255,255,0.05);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;">🖼</div>
+          <div class="bm-li-thumb" data-lora-name="${esc(l.name)}" style="position:relative;width:36px;height:36px;border-radius:5px;overflow:hidden;background:rgba(255,255,255,0.05);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;">🖼</div>
           <div style="flex:1;min-width:0;">
-            <div class="bm-mname" style="font-size:10px;color:#EDEDEF;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${l.name}</div>
+            <div class="bm-mname" style="font-size:10px;color:#EDEDEF;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(l.name)}</div>
             <div class="bm-lname" style="font-size:8px;color:rgba(255,255,255,0.45);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none;"></div>
             <div class="bm-meta" style="font-size:8px;color:rgba(255,255,255,0.3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none;"></div>
             <div class="bm-tw" style="font-size:8px;color:rgba(255,255,255,0.35);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
@@ -1497,7 +1535,15 @@
           listEl.innerHTML = '<div style="padding:30px;text-align:center;color:#666;font-size:11px;">没有匹配的 LoRA</div>';
           return;
         }
-        matched.forEach((l) => listEl.appendChild(buildListRow(l)));
+        // 分片渲染：每帧最多 60 行，避免数百行一次性同步构建阻塞主线程
+        const CHUNK = 60;
+        let i = 0;
+        const step = () => {
+          const end = Math.min(i + CHUNK, matched.length);
+          for (; i < end; i++) listEl.appendChild(buildListRow(matched[i]));
+          if (i < matched.length) requestAnimationFrame(step);
+        };
+        step();
       };
 
       const renderCurrent = () => {
@@ -1644,7 +1690,12 @@
         saveMeta(); renderSidebar();
         showToast(`分类已创建: ${n}`);
       };
-      searchInput.oninput = () => renderCurrent();
+      // 搜索防抖：每次按键全量重建列表/网格代价高，150ms 合并连续输入
+      let _searchTimer = null;
+      searchInput.oninput = () => {
+        clearTimeout(_searchTimer);
+        _searchTimer = setTimeout(renderCurrent, 150);
+      };
       sortEl.onchange = () => renderCurrent();
       listEl.addEventListener("scroll", () => { if (mode === "grid") paintGrid(); });
       const onResize = () => { if (mode === "grid") paintGrid(); };
@@ -1653,10 +1704,13 @@
       // ── 加载数据 ──
       Promise.all([
         fetch("/anima/loras").then((r) => r.json()).catch(() => ({ loras: [] })),
-        fetch("/anima/meta").then((r) => r.json()).catch(() => ({ categories: [], loraMeta: {}, loraGroups: [] })),
+        fetch("/anima/meta").then((r) => r.json()).catch(() => null),
       ]).then(([lData, mData]) => {
         allLoras = (lData.loras || []).map((l) => ({ ...l }));
-        meta = this.meta = { categories: mData.categories || [], loraMeta: mData.loraMeta || {}, loraGroups: mData.loraGroups || [] };
+        // 只有后端确有数据时才整体替换；失败/空结果保留当前 this.meta（含之前加载的旧值），防止空 meta 覆盖后端
+        if (mData && (mData.categories?.length || Object.keys(mData.loraMeta || {}).length || (mData.loraGroups || []).length)) {
+          meta = this.meta = { categories: mData.categories || [], loraMeta: mData.loraMeta || {}, loraGroups: mData.loraGroups || [] };
+        }
         totalEl.textContent = `共 ${allLoras.length} 个`;
         renderSidebar();
         renderCurrent();
@@ -1755,6 +1809,8 @@
     // ── 触发词 tooltip 弹窗 ──
     _showTwTooltip(anchorEl, loraName, mode) {
       document.querySelectorAll(".anima-tw-popover").forEach((el) => el.remove());
+      // 触发词来自 C 站第三方数据，插入 innerHTML 前必须完整转义
+      const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
       const words = this.triggerWordMap[loraName];
       const popover = document.createElement("div");
@@ -1766,13 +1822,13 @@
       } else if (words === null) {
         wordHtml = '<span class="tw-empty">❌ 查询失败，可重新提取或悬停重试</span>';
       } else if (words.length) {
-        wordHtml = words.map((w) => `<span class="tw-word" data-copy="${w.replace(/"/g, "&quot;")}">${w}</span>`).join("");
+        wordHtml = words.map((w) => `<span class="tw-word" data-copy="${esc(w)}">${esc(w)}</span>`).join("");
         wordHtml += `<button class="tw-copy-all">📋 复制全部</button>`;
       } else {
         wordHtml = '<span class="tw-empty">该 LoRA 无触发词</span>';
       }
 
-      const safeName = String(loraName).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+      const safeName = esc(loraName);
       popover.innerHTML = `<div class="tw-title" style="font-size:11px;color:#EDEDEF;">📄 ${safeName}</div><div class="tw-title">📝 触发词</div><div style="display:flex;flex-wrap:wrap;gap:2px;">${wordHtml}</div>`;
       document.body.appendChild(popover);
 
