@@ -338,13 +338,12 @@
       if (!disabledMap) {
         try { disabledMap = JSON.parse(localStorage.getItem("anima_lora_disabled") || "{}"); } catch { disabledMap = {}; }
       }
-      for (const [name, weight] of Object.entries(disabledMap)) {
+      for (const [name] of Object.entries(disabledMap)) {
         const existing = items.find((e) => e.name.toLowerCase() === name.toLowerCase());
         if (existing) {
-          existing.disabled = true; // 同名项在 lora_syntax 里 → 标记禁用
-        } else {
-          items.push({ name, weight: Number(weight) || 1.0, disabled: true });
+          existing.disabled = true; // 同名项在 lora_syntax 里 → 标记禁用（恢复工作流保存的关闭状态）
         }
+        // 不再 push 缺失项：localStorage 历史禁用记录不应让标签凭空出现/污染用户粘贴结果
       }
       // 补充：后端持久化的"通常隐藏"偏好——即使 disabledMap 丢失（移除后重加/跨工作流粘贴），也能恢复关闭状态
       this._ensureMeta();
@@ -356,10 +355,13 @@
 
     _serialize() {
       return this.loras
-        .filter((l) => !l.disabled) // 禁用的不写入 lora_syntax，后端不应用
         .map((l) => {
           const w = Number.isFinite(l.weight) ? l.weight : 1.0;
-          return `<lora:${l.name}:${w.toFixed(2)}>`;
+          // disabled 项输出权重 0.00（禁用=权重0，ComfyUI 标准语义，后端 0 权重加载安全）：
+          // 保证标签始终保留在 lora_syntax 文本框里，避免粘贴后被历史禁用记录静默剔除
+          // 导致"标签变少"以及文本框与 UI 不同步
+          const outW = l.disabled ? 0 : w;
+          return `<lora:${l.name}:${outW.toFixed(2)}>`;
         })
         .join(" ");
     }
