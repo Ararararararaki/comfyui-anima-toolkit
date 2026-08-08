@@ -729,6 +729,7 @@
         return;
       }
       this.loras.forEach((l, i) => {
+        try {
         const row = document.createElement("div");
         row.className = "lora-row";
         row.classList.toggle("disabled", !!l.disabled);
@@ -844,10 +845,11 @@
         const twHint = document.createElement("span");
         twHint.className = "lora-tw-hint";
         const existingTw = this.triggerWordMap[l.name];
-        if (existingTw !== undefined) {
+        // undefined=未查过(悬停自动加载)、null=上次查询失败(悬停重试):两者都不直接读 .length,否则 null.length 抛 TypeError
+        if (existingTw !== undefined && existingTw !== null) {
           twHint.textContent = existingTw.length ? "📝 " + existingTw.slice(0, 2).join(", ") + (existingTw.length > 2 ? "..." : "") : "";
         } else {
-          twHint.textContent = ""; // 悬停后自动加载
+          twHint.textContent = ""; // 悬停后自动加载 / 失败后重试
         }
 
         // ── 权重滑块 ──
@@ -900,6 +902,10 @@
 
         row.append(dragArea, toggle, name, metaBadge, twHint, weightGroup, valSpan, del);
         listEl.appendChild(row);
+        } catch (err) {
+          // 单行渲染失败只跳过该行,避免"列表已清空但渲染中断"导致整体空白
+          console.error("[Anima] 渲染 LoRA 行失败:", l.name, err);
+        }
       });
     }
 
