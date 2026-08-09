@@ -10,7 +10,7 @@ import {
   createCollection, renameCollection, deleteCollection,
   exportFavData, importFavData, favCount, toggleFav
 } from '../store/favorites'
-import { addHidden, removeHidden, hiddenCount, getHiddenIds } from '../store/hidden'
+import { removeHidden, hiddenCount, getHiddenIds, clearHidden } from '../store/hidden'
 import { addSearch, getSearches, clearSearches, getViews, addView } from '../store/history'
 import { addArtistImage, removeArtistImage, getCustomImages, getMergedImages } from '../store/artistImages'
 import { addArtist, deleteArtist, getArtists, extractTagsFromModels, addArtistFromExtraction } from '../store/artists'
@@ -18,6 +18,8 @@ import { getNote, saveNote, getModelStatusText } from '../store/notes'
 import { openLightbox, closeLightbox, navLightbox } from '../components/Lightbox'
 import { openModal, closeModal, confirmModal } from '../components/Modal'
 import { esc, escAttr, copyText, showToast, sleep, thumbUrl, fmtNum } from '../utils'
+import { icon } from '../utils/icon'
+import { VirtualScroll } from '../components/VirtualScroll'
 import { renderLocalView as renderLocal, activateLocalManager } from './LocalManager'
 import { useLocalModelStore } from '../store/localModels'
 import { initPromptDB, getPromptCountByModel } from '../store/prompts'
@@ -26,9 +28,14 @@ import { activatePromptFreq, bindPromptFreqEvents } from './PromptFreq'
 import { activateOutputs } from './Outputs'
 
 const MAX_PAGES = 20
+/** 已使用的 cursor 集合：防止 API 异常/回环导致重复加载已看内容 */
+let usedCursors = new Set<string>()
+// ── 虚拟滚动:网格 absolute 布局,只渲染视口行 ──
+let gridVirtual: VirtualScroll | null = null
+let virtualList: any[] = []
+let virtualCols = 1
+const CARD_W = 300, CARD_GAP = 14, CARD_H = 470
 const galleryPos: Record<number, number> = {}
-let autoFetching = false
-let autoTimer: ReturnType<typeof setTimeout> | null = null
 
 /** 缓存 key 包含全部远程筛选参数，防止不同搜索条件互相串数据 */
 function cacheKey(store: ReturnType<typeof useModelStore.getState>): string {
@@ -38,6 +45,8 @@ function cacheKey(store: ReturnType<typeof useModelStore.getState>): string {
 /** 筛选条件变化：清空列表与 cursor，重新抓第一页 */
 function resetAndFetch() {
   const store = useModelStore.getState()
+  usedCursors.clear()
+  store.clearPageCursors()
   store.setRaw([])
   store.setPagination(0, 0, true)
   store.setNextPage(null)
@@ -56,39 +65,6 @@ function currentParams(): ModelFetchParams {
   }
 }
 
-export function toggleAuto() {
-  autoFetching = !autoFetching
-  const btn = document.getElementById('autoBtn') as HTMLButtonElement
-  if (!btn) return
-  if (autoFetching) {
-    btn.textContent = '⏹ 停止'
-    btn.classList.replace('btn-ghost', 'btn-danger')
-    showToast('▶ 自动翻页已开启')
-    runAuto()
-  } else {
-    btn.textContent = '▶ 自动翻页'
-    btn.classList.replace('btn-danger', 'btn-ghost')
-    if (autoTimer) { clearTimeout(autoTimer); autoTimer = null }
-  }
-}
-
-async function runAuto() {
-  if (!autoFetching) return
-  const store = useModelStore.getState()
-  if (store.hasMore && store.page < MAX_PAGES) {
-    await fetchPage(store.page + 1, { quietError: true, append: true, cursor: store.nextPage })
-  }
-  const store2 = useModelStore.getState()
-  if (!store2.hasMore || store2.page >= MAX_PAGES) {
-    showToast('✅ 自动翻页完成!')
-    autoFetching = false
-    const btn = document.getElementById('autoBtn')
-    if (btn) { btn.textContent = '▶ 自动翻页'; btn.classList.replace('btn-danger', 'btn-ghost') }
-    return
-  }
-  autoTimer = setTimeout(() => runAuto(), 2500)
-}
-
 export async function initLoraExplorer() {
   initFavorites()
   initPromptDB() // Initialize IndexedDB prompt library
@@ -98,16 +74,7 @@ export async function initLoraExplorer() {
   switchSection(useModelStore.getState().section as any, true)
 
   const store = useModelStore.getState()
-  const cached = Cache.load<any[]>(cacheKey(store), 30 * 60 * 1000)
-  if (cached && cached.length > 0) {
-    store.setRaw(cached)
-    store.rebuild()
-    refreshView()
-    const t = { AllTime: '全部时间', Year: '今年', Month: '本月', Week: '本周', Day: '今日' }[store.period] || store.period
-    showToast(`📦 已恢复 ${t} ${cached.length} 个模型`, 'success')
-  }
-
-  await fetchPage(1)
+  // 不再自动抓取/恢复缓存：栏目打开显示空状态，由「快速抓取」或搜索/分类手动触发
 
   const fbModels = useModelStore.getState().processed.filter(m => m.needsFallback && m.images.length === 0)
   if (fbModels.length > 0) {
@@ -158,19 +125,34 @@ async function fetchPage(p: number, options?: { quietError?: boolean; append?: b
   const store = useModelStore.getState()
   if (store.loading) return
 
+  // 守卫①：重复 cursor（API 异常/回环）→ 立即终止，不再重复加载已看内容
+  if (options?.cursor && usedCursors.has(options.cursor)) {
+    store.setNextPage(null)
+    store.setPagination(p, Math.max(p, store.maxPage), false)
+    showToast('✅ 已加载全部内容')
+    return
+  }
+
   useModelStore.setState({ loading: true })
   try {
+    if (options?.cursor) usedCursors.add(options.cursor)
     // cursor 分页：API 的 page 参数已失效（实测 page=1/2 返回相同数据），翻页必须携带 cursor
     const data = await fetchModels(currentParams(), options?.cursor)
     if (!data) return
     const items = data.items || []
     const meta = data.metadata || {}
     const nextCursor = meta.nextCursor || null
-    const hasMore = !!nextCursor && p < MAX_PAGES
-
+    const before = options?.append ? store.raw.length : 0
     if (options?.append) store.appendRaw(items); else store.setRaw(items)
-    store.setPagination(p, p, hasMore)
+    const appended = store.raw.length - before
+    // 守卫②：整页全是已加载 id（无新增）→ 视为到底，终止
+    const noGain = options?.append && appended === 0
+    const hasMore = !noGain && !!nextCursor && p < MAX_PAGES && !(nextCursor && usedCursors.has(nextCursor))
+    // 真实总页数：由 API metadata.totalPages 提供（跳转上限仍为 MAX_PAGES）
+    const totalPages = meta.totalPages ? Math.max(p, meta.totalPages) : Math.max(p, store.maxPage)
+    store.setPagination(p, totalPages, hasMore)
     store.setNextPage(nextCursor)
+    if (nextCursor) store.setPageCursor(p + 1, nextCursor)
     store.rebuild()
     refreshView(!!options?.append)
 
@@ -186,6 +168,18 @@ async function fetchPage(p: number, options?: { quietError?: boolean; append?: b
   }
 }
 
+// ── 快速抓取:定向类别(人物/光影/画风)或随机类别,抓取第一批 ──
+const QUICK_FETCH_TAGS = ['character', 'lighting', 'style', 'aesthetic', 'background']
+export function quickFetchByTag(tag: string | null) {
+  const store = useModelStore.getState()
+  const pick = tag || QUICK_FETCH_TAGS[Math.floor(Math.random() * QUICK_FETCH_TAGS.length)]
+  store.setRemoteTags([pick])
+  const tagInput = document.getElementById('tagInput') as HTMLInputElement
+  if (tagInput) tagInput.value = pick
+  showToast(tag ? `⏳ 正在抓取「${pick}」类 LoRA…` : `🎲 随机抓取「${pick}」类…`)
+  resetAndFetch()
+}
+
 export async function loadMore() {
   const store = useModelStore.getState()
   if (store.loading || !store.hasMore) return
@@ -195,27 +189,32 @@ export async function loadMore() {
   await fetchPage(next, { append: true, cursor: store.nextPage })
 }
 
-export async function fetchAll() {
-  const store = useModelStore.getState()
-  if (store.fetchAllBusy) return
-  useModelStore.setState({ fetchAllBusy: true })
-  const btn = document.getElementById('fetchBtn') as HTMLButtonElement
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ 抓取中…' }
-
-  if (store.raw.length === 0) await fetchPage(1)
-  let p = useModelStore.getState().page + 1
-  while (p <= MAX_PAGES && useModelStore.getState().hasMore) {
-    const ok = await fetchPage(p, { quietError: true, append: true, cursor: useModelStore.getState().nextPage })
-    if (!ok) break
-    p = useModelStore.getState().page + 1
-    await sleep(400)
+// ── 页码跳转：已加载页用缓存 cursor 直接拉该页；未加载页连续请求到目标页 ──
+export async function goToPage(target: number) {
+  const st0 = useModelStore.getState()
+  if (st0.loading) return
+  const totalPages = Math.max(1, Math.min(st0.maxPage || 1, MAX_PAGES))
+  const page = Math.max(1, Math.min(target, totalPages))
+  if (page === st0.page) return
+  const st = useModelStore.getState()
+  if (page === 1 || st.pageCursors[page]) {
+    // 已加载页：用缓存 cursor 重置加载该页
+    await fetchPage(page, { cursor: st.pageCursors[page] || null })
+  } else if (page > st.page) {
+    // 未加载页：连续请求到目标页（增量追加）
+    showToast(`⏳ 加载到第 ${page} 页…`)
+    let cur = st.page
+    while (cur < page) {
+      const s = useModelStore.getState()
+      if (!s.hasMore) { showToast('⚠️ 已无更多内容'); break }
+      await fetchPage(cur + 1, { append: true, cursor: s.nextPage, quietError: true })
+      cur = useModelStore.getState().page
+      if (cur >= page) break
+    }
   }
-
-  if (btn) {
-    btn.textContent = '✅ 完成!'
-    setTimeout(() => { btn.textContent = '🔄 抓取全部'; btn.disabled = false; useModelStore.setState({ fetchAllBusy: false }) }, 2000)
-  }
-  showToast('✅ 全部页面抓取完成!', 'success')
+  const grid = document.getElementById('grid')
+  if (grid) grid.scrollTo({ top: 0, behavior: 'smooth' })
+  else window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
 export function setPeriod(period: PeriodKey) {
@@ -245,6 +244,10 @@ function updateStats() {
   setText('totalLike', fmtNum(totalLk))
   setText('avgRatio', (avgR * 100).toFixed(2) + '%')
   setText('pageInfo', `${store.page}/${Math.min(store.maxPage, MAX_PAGES)}`)
+  const totalPages = Math.max(1, store.maxPage)
+  setText('pageTotalText', String(Math.min(totalPages, MAX_PAGES)))
+  const jump = document.getElementById('pageJumpInput') as HTMLInputElement
+  if (jump && document.activeElement !== jump) jump.value = String(store.page)
 
   const pct = store.maxPage > 0 ? (store.page / Math.min(store.maxPage, MAX_PAGES)) * 100 : 0
   const fill = document.getElementById('loadingFill')
@@ -268,8 +271,6 @@ function updateTabs() {
   for (const [k, id] of Object.entries(idMap)) {
     setText(id, String(k === 'fav' ? favCount() : (counts[k] || 0)))
   }
-  setText('cHidden', String(hiddenCount()))
-
   renderColTabs()
 
   document.querySelectorAll('.tab').forEach(t =>
@@ -301,10 +302,13 @@ function renderGrid(append = false) {
   const list = store.getFiltered()
 
   if (list.length === 0) {
+    if (gridVirtual) { gridVirtual.destroy(); gridVirtual = null }
+    grid.classList.remove('virtualized')
+    grid.onscroll = null
     if (store.processed.length === 0 && store.page > 0) {
       grid.innerHTML = `<div class="empty-state"><div class="big">🔍</div><p>所有 LoRA 未达筛选条件</p><p class="sub">下载量 > 250，赞/比 > 5%</p></div>`
     } else {
-      grid.innerHTML = `<div class="empty-state"><div class="big">🔮</div><p>${store.processed.length === 0 ? '还没有数据，点击「抓取全部」开始加载' : '没有匹配的 LoRA'}</p></div>`
+      grid.innerHTML = `<div class="empty-state"><div class="big">🔮</div><p>${store.processed.length === 0 ? '还没有数据，点击上方「快速抓取」或搜索开始' : '没有匹配的 LoRA'}</p></div>`
     }
     const wrap = document.getElementById('loadMoreWrap')
     if (wrap) wrap.style.display = 'none'
@@ -314,17 +318,38 @@ function renderGrid(append = false) {
   const wrap = document.getElementById('loadMoreWrap')
   if (wrap) wrap.style.display = store.hasMore ? 'flex' : 'none'
 
-  if (!append) {
-    // 全量渲染（首次加载/筛选/排序/切页触发）
-    grid.innerHTML = list.map(m => renderCard(m, store.category)).join('')
-    return
+  // 虚拟滚动：固定卡片宽/高 + 列数自适应，只渲染视口 ± overscan 的行（大列表 DOM 节点大幅下降）
+  virtualList = list
+  virtualCols = Math.max(1, Math.floor((grid.clientWidth + CARD_GAP) / (CARD_W + CARD_GAP)))
+  const rows = Math.ceil(list.length / virtualCols)
+  grid.classList.add('virtualized')
+  if (!gridVirtual) {
+    gridVirtual = new VirtualScroll({
+      container: grid,
+      itemHeight: CARD_H + CARD_GAP,
+      totalItems: rows,
+      renderItem: (row) => {
+        let html = ''
+        for (let col = 0; col < virtualCols; col++) {
+          const idx = row * virtualCols + col
+          if (idx >= virtualList.length) break
+          const m = virtualList[idx]
+          html += `<div class="vs-card-wrap" data-uid="${m.uid}" style="position:absolute;top:0;left:${col * (CARD_W + CARD_GAP)}px;width:${CARD_W}px;height:${CARD_H}px;border-radius:10px;overflow:hidden;">${renderCard(m, store.category)}</div>`
+        }
+        return html
+      },
+    })
+  } else {
+    gridVirtual.update({ totalItems: rows })
+    gridVirtual.refresh()
   }
-
-  // 增量追加（翻页/自动翻页/抓取全部）：只渲染尚未在 DOM 的卡片，避免 1000+ 卡片反复重建
-  const existing = new Set<string>()
-  grid.querySelectorAll('.card[data-uid]').forEach(el => existing.add((el as HTMLElement).dataset.uid || ''))
-  const html = list.filter(m => !existing.has(String(m.uid))).map(m => renderCard(m, store.category)).join('')
-  if (html) grid.insertAdjacentHTML('beforeend', html)
+  // 触底自动加载（网格内部滚动，提前 400px；loadMore 自带 loading/hasMore 保护）
+  grid.onscroll = () => {
+    const st = useModelStore.getState()
+    if (st.hasMore && !st.loading && grid.scrollTop + grid.clientHeight >= grid.scrollHeight - 400) {
+      loadMore()
+    }
+  }
 }
 
 function setText(id: string, text: string) {
@@ -337,15 +362,21 @@ function randomPick() {
   const filtered = store.getFiltered()
   if (filtered.length === 0) { showToast('⚠️ 当前筛选结果为空'); return }
   const pick = filtered[Math.floor(Math.random() * filtered.length)]
-  const card = document.querySelector(`.card[data-uid="${pick.uid}"]`) as HTMLElement
-  if (card) {
-    card.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    card.style.transition = 'box-shadow .3s, transform .3s'
-    card.style.boxShadow = '0 0 30px var(--accent-glow)'
-    card.style.transform = 'translateY(-4px)'
-    setTimeout(() => { card.style.boxShadow = ''; card.style.transform = '' }, 2000)
-    showToast('🎲 随机选中: ' + pick.name, 'success')
+  // 虚拟化下卡片可能未渲染：滚动到所在行再高亮
+  const idx = filtered.indexOf(pick)
+  if (gridVirtual && idx >= 0) {
+    gridVirtual.scrollToIndex(Math.floor(idx / virtualCols))
+    setTimeout(() => {
+      const wrap = document.querySelector(`.vs-card-wrap[data-uid="${pick.uid}"] .card`) as HTMLElement
+      if (wrap) {
+        wrap.style.transition = 'box-shadow .3s, transform .3s'
+        wrap.style.boxShadow = '0 0 30px var(--accent-glow)'
+        wrap.style.transform = 'translateY(-4px)'
+        setTimeout(() => { wrap.style.boxShadow = ''; wrap.style.transform = '' }, 2000)
+      }
+    }, 300)
   }
+  showToast('🎲 随机选中: ' + pick.name, 'success')
 }
 
 function renderArtistImgList(tag: string) {
@@ -551,15 +582,16 @@ export function setupGlobalHandlers() {
   }
 
   w.__deleteCard = (id: number) => {
-    addHidden(id)
-    refreshView()
-    showToast('🗑️ 已隐藏此 LoRA（可在「已隐藏」标签中恢复）')
-  }
-
-  w.__restoreCard = (id: number) => {
+    // 永久删除：从已加载数据与缓存中剔除，并清除隐藏记录（不可恢复）
+    const store = useModelStore.getState()
+    const raw = store.raw.filter(m => m.id !== id)
+    store.setRaw(raw)
+    store.rebuild()
     removeHidden(id)
+    Cache.save(cacheKey(store), raw)
     refreshView()
-    showToast('♻️ 已恢复此 LoRA', 'success')
+    updateTabs()
+    showToast('🗑️ 已永久删除', 'success')
   }
 
   w.__addViewHistory = (data: { id: number; uid: number; name: string; creator: string; url: string; category: string; thumb: string }) => {
@@ -685,10 +717,16 @@ export function setupGlobalHandlers() {
   }
 
   w.__batchHide = () => {
+    // 批量永久删除：从已加载数据与缓存中剔除（不可恢复）
     const store = useModelStore.getState()
     const ids = [...store.batchSelected]
-    for (const id of ids) addHidden(id)
-    showToast(`🗑️ 已隐藏 ${ids.length} 个模型`, 'success')
+    const idSet = new Set(ids)
+    const raw = store.raw.filter(m => !idSet.has(m.id))
+    store.setRaw(raw)
+    store.rebuild()
+    ids.forEach(id => removeHidden(id))
+    Cache.save(cacheKey(store), raw)
+    showToast(`🗑️ 已永久删除 ${ids.length} 个模型`, 'success')
     store.clearBatch()
     document.body.classList.remove('batch-mode')
     document.getElementById('batchBar')!.style.display = 'none'
@@ -977,9 +1015,24 @@ export function setupBindingListeners() {
     const w = window as any
     if (w.__batchFavorite) w.__batchFavorite()
   })
+  const batchHideBtn = document.getElementById('batchHideBtn') as HTMLButtonElement
+  if (batchHideBtn) batchHideBtn.innerHTML = icon('trash', 14) + '<span style="margin-left:5px">批量删除</span>'
   document.getElementById('batchHideBtn')?.addEventListener('click', () => {
     const w = window as any
     if (w.__batchHide) w.__batchHide()
+  })
+  // 清空历史隐藏记录(之前隐藏的数据一并永久清理)
+  const clearHiddenBtn = document.getElementById('clearHiddenBtn') as HTMLButtonElement
+  if (clearHiddenBtn) clearHiddenBtn.innerHTML = icon('trash', 14) + '<span style="margin-left:5px">清空隐藏记录</span>'
+  document.getElementById('clearHiddenBtn')?.addEventListener('click', async () => {
+    const n = hiddenCount()
+    if (n === 0) { showToast('没有隐藏记录'); return }
+    if (await confirmModal('清空隐藏记录', `确认清除 ${n} 条历史隐藏记录？清理后这些 LoRA 可被再次抓取显示。`)) {
+      clearHidden()
+      refreshView()
+      updateTabs()
+      showToast('🧹 隐藏记录已清空', 'success')
+    }
   })
   document.getElementById('batchCopyBtn')?.addEventListener('click', () => {
     const w = window as any
@@ -993,16 +1046,53 @@ export function setupBindingListeners() {
   })
 
   // Buttons
-  document.getElementById('fetchBtn')?.addEventListener('click', () => fetchAll())
+  const loadMoreBtn = document.getElementById('loadMoreBtn') as HTMLButtonElement
+  if (loadMoreBtn) loadMoreBtn.innerHTML = icon('arrowDown', 14) + '<span style="margin-left:5px">加载更多</span>'
   document.getElementById('loadMoreBtn')?.addEventListener('click', () => loadMore())
-  document.getElementById('randomBtn')?.addEventListener('click', () => randomPick())
+  // 页码导航：上一页 / 下一页 / 输入跳转
+  const pagePrevBtn = document.getElementById('pagePrevBtn') as HTMLButtonElement
+  if (pagePrevBtn) {
+    pagePrevBtn.innerHTML = icon('chevronLeft', 14) + '<span style="margin-left:5px">上一页</span>'
+    pagePrevBtn.addEventListener('click', () => goToPage(useModelStore.getState().page - 1))
+  }
+  const pageNextBtn = document.getElementById('pageNextBtn') as HTMLButtonElement
+  if (pageNextBtn) {
+    pageNextBtn.innerHTML = '<span style="margin-right:5px">下一页</span>' + icon('chevronRight', 14)
+    pageNextBtn.addEventListener('click', () => goToPage(useModelStore.getState().page + 1))
+  }
+  const pageJumpInput = document.getElementById('pageJumpInput') as HTMLInputElement
+  const doJump = () => {
+    const v = parseInt(pageJumpInput.value, 10)
+    if (!isNaN(v)) goToPage(v)
+  }
+  if (pageJumpInput) {
+    pageJumpInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doJump() })
+    pageJumpInput.addEventListener('change', doJump)
+  }
+  // 触底自动加载已交由 renderGrid 的 grid.onscroll 处理（虚拟滚动容器内部滚动）
+  // 快速抓取按钮:图标由 icon() 生成(符合色调),点击定向/随机抓取
+  ;([
+    { id: 'fetchCharBtn', iconName: 'user', tag: 'character' },
+    { id: 'fetchLightBtn', iconName: 'zap', tag: 'lighting' },
+    { id: 'fetchStyleBtn', iconName: 'palette', tag: 'style' },
+    { id: 'fetchRandomBtn', iconName: 'dice', tag: null },
+  ] as { id: string; iconName: string; tag: string | null }[]).forEach(({ id, iconName, tag }) => {
+    const btn = document.getElementById(id) as HTMLButtonElement
+    if (!btn) return
+    const label = btn.dataset.label || ''
+    btn.innerHTML = icon(iconName, 14) + '<span style="margin-left:5px">' + label + '</span>'
+    btn.addEventListener('click', () => quickFetchByTag(tag))
+  })
+  const batchModeBtn = document.getElementById('batchModeBtn') as HTMLButtonElement
+  if (batchModeBtn) batchModeBtn.innerHTML = icon('checkSquare', 14) + '<span style="margin-left:5px">选择</span>'
   document.getElementById('batchModeBtn')?.addEventListener('click', () => {
     const w = window as any
     if (w.__toggleBatchMode) w.__toggleBatchMode()
   })
-  document.getElementById('autoBtn')?.addEventListener('click', () => toggleAuto())
 
   // Add LoRA modal
+  const addLoraBtn = document.getElementById('addLoraBtn') as HTMLButtonElement
+  if (addLoraBtn) addLoraBtn.innerHTML = icon('plus', 14) + '<span style="margin-left:5px">手动添加</span>'
   document.getElementById('addLoraBtn')?.addEventListener('click', () => {
     openModal('addModal')
     const input = document.getElementById('addUrlInput') as HTMLInputElement

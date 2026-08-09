@@ -31,3 +31,7 @@ export function toggleHidden(id: number): boolean {
 export function hiddenCount(): number {
   return getHiddenIds().length
 }
+
+export function clearHidden() {
+  Cache.save(KEY, [])
+}

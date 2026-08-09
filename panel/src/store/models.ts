@@ -39,6 +39,8 @@ interface ModelState {
   nsfw: 'all' | 'sfw'
   /** 下一页 cursor URL（Civitai cursor 分页） */
   nextPage: string | null
+  /** 页码 → 该页起始 cursor（用于页码跳转；第 1 页为 null 不入表） */
+  pageCursors: Record<number, string>
   sort: SortKey
   period: PeriodKey
   section: SectionKey
@@ -58,6 +60,8 @@ interface ModelState {
   setRemoteTags: (t: string[]) => void
   setNsfw: (n: 'all' | 'sfw') => void
   setNextPage: (u: string | null) => void
+  setPageCursor: (page: number, cursor: string) => void
+  clearPageCursors: () => void
   setSort: (s: SortKey) => void
   setSection: (s: SectionKey) => void
   setQualityFilter: (q: string) => void
@@ -89,6 +93,7 @@ export const useModelStore = create<ModelState>((set, get) => ({
   remoteTags: [],
   nsfw: 'all',
   nextPage: null,
+  pageCursors: {},
   sort: 'Most Downloaded',
   period: 'AllTime',
   section: 'local',
@@ -101,13 +106,15 @@ export const useModelStore = create<ModelState>((set, get) => ({
   cardUid: 0,
   imgStore: {},
 
-  setPeriod: (period) => set({ period, raw: [], page: 0, hasMore: true, nextPage: null }),
+  setPeriod: (period) => set({ period, raw: [], page: 0, hasMore: true, nextPage: null, pageCursors: {} }),
   setCategory: (category) => set({ category }),
   setSearch: (search) => set({ search }),
   setRemoteQuery: (remoteQuery) => set({ remoteQuery }),
   setRemoteTags: (remoteTags) => set({ remoteTags }),
   setNsfw: (nsfw) => set({ nsfw }),
   setNextPage: (nextPage) => set({ nextPage }),
+  setPageCursor: (page, cursor) => set(s => ({ pageCursors: { ...s.pageCursors, [page]: cursor } })),
+  clearPageCursors: () => set({ pageCursors: {} }),
   setSort: (sort) => set({ sort }),
   setSection: (section) => set({ section }),
   setQualityFilter: (qualityFilter) => set({ qualityFilter }),
