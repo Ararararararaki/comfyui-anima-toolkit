@@ -586,15 +586,42 @@ async def get_meta(request):
 
 @PromptServer.instance.routes.post("/anima/meta")
 async def set_meta(request):
-    """Persist LoRA metadata (categories / favorite / pinned)."""
+    """Persist LoRA metadata (categories / favorite / pinned).
+
+    合并式写入（面板与节点双向同步枢纽）：
+    - categories：以 body 为准（面板/节点都维护全量列表，增删分类可靠）
+    - loraMeta：按文件字段级合并——body 中文件的字段覆盖旧值，
+      不在 body 中的后端文件保留；避免面板写 categories 时冲掉节点的
+      favorite/pinned/count/disabled，反之亦然
+    - loraGroups：body 有该键则用 body（节点可能清空组），否则保留旧值
+    """
     try:
         body = await request.json()
         if not isinstance(body, dict):
             raise ValueError("body must be an object")
+        old = _load_meta()
+        # categories：以 body 为准（全量列表）
+        cats = list(body.get("categories", old.get("categories", []) or []))
+        # loraMeta：按文件字段级合并
+        old_meta = old.get("loraMeta", {}) or {}
+        new_meta = {}
+        for name, entry in (body.get("loraMeta", {}) or {}).items():
+            if not isinstance(entry, dict):
+                continue
+            merged = dict(old_meta.get(name, {}) or {})
+            merged.update(entry)
+            new_meta[name] = merged
+        # body 未涉及的后端文件记录保留原样
+        for name, entry in old_meta.items():
+            if name not in new_meta:
+                new_meta[name] = entry
+        # loraGroups：body 有键则用 body（允许清空），否则保留旧值
+        old_groups = old.get("loraGroups", []) or []
+        groups = body.get("loraGroups", old_groups) if "loraGroups" in body else old_groups
         meta = {
-            "categories": list(body.get("categories", []) or []),
-            "loraMeta": body.get("loraMeta", {}) or {},
-            "loraGroups": body.get("loraGroups", []) or [],
+            "categories": cats,
+            "loraMeta": new_meta,
+            "loraGroups": groups,
         }
         _save_meta(meta)
         return web.json_response({"ok": True})

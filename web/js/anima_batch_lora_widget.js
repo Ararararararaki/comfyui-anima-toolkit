@@ -1241,6 +1241,25 @@
         if (_infoConcurrent >= MAX_INFO_CONCURRENT) _infoQueue.push(run);
         else run();
       });
+      // ── 打开 C 站：有 modelId 直接进模型页；没有（懒加载未完成或未匹配到）则占位窗口 + 现查，
+      //    确无匹配才回退名称搜索——避免"点 🔗 永远进搜索页"（9532e96 重构遗留）
+      const openCivitai = (name, getMid) => {
+        const mid = getMid();
+        if (mid) { window.open("https://civitai.com/models/" + mid, "_blank"); return; }
+        showToast("⏳ 正在获取 C 站链接…");
+        const w = window.open("", "_blank");
+        getInfoQueued(name).then((info) => {
+          const m = info && info.modelId;
+          if (m) {
+            if (w && !w.closed) w.location.href = "https://civitai.com/models/" + m;
+            else window.open("https://civitai.com/models/" + m, "_blank");
+          } else {
+            if (w && !w.closed) w.close();
+            showToast("未匹配到 C 站模型，已跳转搜索");
+            window.open("https://civitai.com/search/models?query=" + encodeURIComponent(name) + "&type=LORA", "_blank");
+          }
+        });
+      };
       // C 站图片走后端代理（浏览器无代理无法直连 image.civitai.com）；卡片用 400px 小图省流量
       const imgProxy = (url) => {
         if (!url || !url.startsWith("https://image.civitai.com/")) return url;
@@ -1391,9 +1410,7 @@
         };
         card.querySelector(".bm-csite").onclick = (ev) => {
           ev.stopPropagation();
-          const mid = card.dataset.modelId;
-          if (mid) window.open("https://civitai.com/models/" + mid, "_blank");
-          else window.open("https://civitai.com/search/models?query=" + encodeURIComponent(l.name) + "&type=LORA", "_blank");
+          openCivitai(l.name, () => card.dataset.modelId);
         };
         card.oncontextmenu = (ev) => {
           ev.preventDefault(); ev.stopPropagation();
@@ -1461,9 +1478,7 @@
         };
         row.querySelector(".bm-csite").onclick = (ev) => {
           ev.stopPropagation();
-          const mid = row.dataset.modelId;
-          if (mid) window.open("https://civitai.com/models/" + mid, "_blank");
-          else window.open("https://civitai.com/search/models?query=" + encodeURIComponent(l.name) + "&type=LORA", "_blank");
+          openCivitai(l.name, () => row.dataset.modelId);
         };
         row.oncontextmenu = (ev) => {
           ev.preventDefault(); ev.stopPropagation();
