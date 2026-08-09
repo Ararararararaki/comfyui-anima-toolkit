@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type { LocalLoraFile, LocalLoraMatch, PngMeta, TagFreq, LocalScanStatus } from '../types'
 import { Cache } from './cache'
 import { fetchModelVersionByHash, fetchModelById } from '../api/civitai'
-import { showToast } from '../utils'
+import { showToast, stripExt } from '../utils'
 
 function progressShow(done: number, total: number, label: string) {
   const wrap = document.getElementById('localProgress')
@@ -216,7 +216,7 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
   },
   setModelCategories: (fileName, cats) => {
     set(s => {
-      const mc = { ...s.modelCategories, [fileName]: cats }
+      const mc = { ...s.modelCategories, [stripExt(fileName)]: cats }
       Cache.save(CAT_CACHE_KEY + '_mc', mc)
       return { modelCategories: mc }
     })
@@ -226,8 +226,9 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     set(s => {
       const mc = { ...s.modelCategories }
       for (const fn of fileNames) {
-        const existing = mc[fn] || []
-        if (!existing.includes(cat)) mc[fn] = [...existing, cat]
+        const key = stripExt(fn)
+        const existing = mc[key] || []
+        if (!existing.includes(cat)) mc[key] = [...existing, cat]
       }
       Cache.save(CAT_CACHE_KEY + '_mc', mc)
       return { modelCategories: mc }
@@ -237,7 +238,7 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
   clearModelCategories: (fileName) => {
     set(s => {
       const mc = { ...s.modelCategories }
-      mc[fileName] = []
+      mc[stripExt(fileName)] = []
       Cache.save(CAT_CACHE_KEY + '_mc', mc)
       return { modelCategories: mc }
     })
@@ -656,10 +657,14 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     set(s => {
       const categories = [...s.categories]
       for (const c of cats) if (!categories.includes(c)) categories.push(c)
-      const modelCategories = { ...s.modelCategories }
+      // 本地旧 key(可能带扩展名)归一到无扩展名,避免与节点 key 并存/冲突
+      const modelCategories: Record<string, string[]> = {}
+      for (const [k, v] of Object.entries(s.modelCategories)) {
+        modelCategories[stripExt(k)] = v
+      }
       for (const [name, entry] of Object.entries(lm)) {
         if (entry && Array.isArray(entry.categories) && entry.categories.length) {
-          modelCategories[name] = entry.categories
+          modelCategories[stripExt(name)] = entry.categories
         }
       }
       Cache.save(CAT_CACHE_KEY, categories)

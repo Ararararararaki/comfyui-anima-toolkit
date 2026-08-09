@@ -1,6 +1,6 @@
 import { useLocalModelStore } from '../store/localModels'
 import type { LocalSortKey, LocalFilterKey, LocalViewKey } from '../store/localModels'
-import { esc, escAttr, copyText, showToast, fmtNum, thumbUrl, debounce } from '../utils'
+import { esc, escAttr, copyText, showToast, fmtNum, thumbUrl, debounce, stripExt } from '../utils'
 import { openLightbox } from '../components/Lightbox'
 import type { PngMeta, LocalLoraFile, TagFreq } from '../types'
 import type { OutputMetadata } from '../types/outputs'
@@ -77,14 +77,14 @@ function openLoraContextMenu(e: MouseEvent, name: string) {
   }
 
   // 单个 LoRA：分类勾选/取消
-  const existing = s.modelCategories[name] || []
+  const existing = s.modelCategories[stripExt(name)] || []
   openContextMenu(e.clientX, e.clientY, [
     {
       label: name.replace(/\.\w+$/, ''),
       items: [{
         label: '分类', icon: '🏷️', handler: () => {},
         children: catActions(existing, (cat) => {
-          const cur = s.modelCategories[name] || []
+          const cur = s.modelCategories[stripExt(name)] || []
           const next = cur.includes(cat) ? cur.filter(c => c !== cat) : [...cur, cat]
           s.setModelCategories(name, next)
           s.saveToCache()
@@ -222,6 +222,10 @@ export async function initLocalManager() {
 
 export async function activateLocalManager() {
   if (!_initDone) return
+  // 激活栏目时拉取后端分类合并(节点侧改的分类同步回面板,无需刷新页面)
+  useLocalModelStore.getState().loadBackendMeta().then(() => {
+    renderSidebarList(useLocalModelStore.getState())
+  })
   const store = useLocalModelStore.getState()
   if (store.dirHandle) return
   const hasCache = store.files.length > 0
@@ -392,7 +396,7 @@ function updateBatchBar(state: ReturnType<typeof useLocalModelStore.getState>) {
 function renderPromptTab(state: ReturnType<typeof useLocalModelStore.getState>) {
   const el = $$('promptLoraList')
   if (!el) return
-  const files = state.files.filter(f => f.matched || state.modelCategories[f.name])
+  const files = state.files.filter(f => f.matched || state.modelCategories[stripExt(f.name)])
   if (files.length === 0) {
     el.innerHTML = '<div class="empty-state empty-state-compact"><p>暂无可用的 LoRA，请先扫描并匹配</p></div>'
     return
@@ -587,7 +591,7 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
     ? `<div class="detail-section"><h4>简介</h4><p class="detail-desc">${esc(d.description.slice(0, 300))}${d.description.length > 300 ? '…' : ''}</p></div>`
     : ''
 
-  const modelCats = state.modelCategories[f.name] || []
+  const modelCats = state.modelCategories[stripExt(f.name)] || []
   const catHtml = `<div class="detail-section"><h4>分类</h4>
     <div class="detail-cats" id="detailCats">
       ${modelCats.map(c => `<span class="detail-cat-chip" data-cat="${escAttr(c)}">${esc(c)} <span class="detail-cat-rm" data-name="${escAttr(f.name)}" data-cat="${escAttr(c)}">✕</span></span>`).join('')}
@@ -1089,7 +1093,7 @@ function bindLocalEvents() {
     const fileName = e.dataTransfer?.getData('text/plain')
     if (!cat || !fileName || cat === '__uncategorized__') return
     const s = useLocalModelStore.getState()
-    const existing = s.modelCategories[fileName] || []
+    const existing = s.modelCategories[stripExt(fileName)] || []
     if (!existing.includes(cat)) {
       s.setModelCategories(fileName, [...existing, cat])
       s.saveToCache()
@@ -1513,7 +1517,7 @@ function bindLocalEvents() {
       const s = useLocalModelStore.getState()
       const fname = s.selectedModel
       if (!fname) return
-      const existing = s.modelCategories[fname] || []
+      const existing = s.modelCategories[stripExt(fname)] || []
       const available = s.categories.filter(c => !existing.includes(c))
       dd.innerHTML = available.length
         ? available.map(c => `<div class="td-opt" data-cat="${escAttr(c)}">${esc(c)}</div>`).join('')
@@ -1529,7 +1533,7 @@ function bindLocalEvents() {
       const s = useLocalModelStore.getState()
       const fname = s.selectedModel
       if (fname) {
-        const existing = s.modelCategories[fname] || []
+        const existing = s.modelCategories[stripExt(fname)] || []
         s.setModelCategories(fname, [...existing, cat])
         s.saveToCache()
       }
@@ -1544,7 +1548,7 @@ function bindLocalEvents() {
       const cat = catRm.dataset.cat
       if (fname && cat) {
         const s = useLocalModelStore.getState()
-        const existing = s.modelCategories[fname] || []
+        const existing = s.modelCategories[stripExt(fname)] || []
         s.setModelCategories(fname, existing.filter((c: string) => c !== cat))
         s.saveToCache()
         renderDetail(s)
@@ -1565,7 +1569,7 @@ function bindLocalEvents() {
       const state = useLocalModelStore.getState()
       const pw = state.promptWeights || {}
       const tags = state.files
-        .filter(f => f.matched || state.modelCategories[f.name])
+        .filter(f => f.matched || state.modelCategories[stripExt(f.name)])
         .map(f => {
           const name = f.name.replace(/\.\w+$/, '')
           const w = pw[f.name] ?? 1.0
@@ -1580,7 +1584,7 @@ function bindLocalEvents() {
       const state = useLocalModelStore.getState()
       const pw = state.promptWeights || {}
       const loraList = state.files
-        .filter(f => f.matched || state.modelCategories[f.name])
+        .filter(f => f.matched || state.modelCategories[stripExt(f.name)])
         .map(f => {
           const name = f.name.replace(/\.\w+$/, '')
           const w = pw[f.name] ?? 1.0

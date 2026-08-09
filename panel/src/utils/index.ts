@@ -27,6 +27,11 @@ export function debounce<T extends (...args: unknown[]) => void>(fn: T, ms: numb
   }) as T
 }
 
+// 去掉文件扩展名(sigrika_v1.safetensors → sigrika_v1),用于与节点 LoRA 名(无扩展名)对齐
+export function stripExt(name: string): string {
+  return name.replace(/\.[^.]+$/, '')
+}
+
 export function stripHtml(html: string): string {
   if (!html) return ''
   const d = document.createElement('div')
