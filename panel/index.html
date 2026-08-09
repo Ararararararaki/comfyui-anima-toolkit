@@ -39,28 +39,39 @@
       <div class="search-history" id="searchHistory" style="display:none"></div>
     </div>
     <select id="sortSelect" aria-label="排序方式">
-      <option value="downloads">⬇ 下载量</option>
-      <option value="likes">👍 点赞量</option>
-      <option value="ratio">📊 赞/下载比</option>
-      <option value="name">📝 名称</option>
+      <option value="Most Downloaded">⬇ 下载量</option>
+      <option value="Highest Rated">⭐ 评分</option>
+      <option value="Newest">🆕 最新发布</option>
+      <option value="Most Discussed">💬 讨论最多</option>
+      <option value="Most Collected">📌 收藏最多</option>
     </select>
     <select id="qualityFilter" aria-label="质量筛选">
       <option value="all">📋 全部</option>
       <option value="rec">🏆 推荐</option>
       <option value="new">🆕 新发布</option>
+      <option value="local">✅ 仅本地</option>
     </select>
-    <select id="baseModelFilter" aria-label="基座模型">
-      <option value="">🗂️ 全部模型</option>
-      <option value="SD1.5">🎨 SD1.5</option>
-      <option value="SDXL">🖼️ SDXL</option>
-      <option value="SD3">🆕 SD3</option>
-      <option value="Flux">⚡ Flux</option>
+    <select id="baseModelFilter" aria-label="基座模型" title="远程限定基座模型">
+      <option value="">🗂️ 全部基座</option>
+      <option value="Anima" selected>🎬 Anima</option>
+      <option value="SD 1.5">🎨 SD 1.5</option>
       <option value="Pony">🦄 Pony</option>
+      <option value="Illustrious">✨ Illustrious</option>
+      <option value="NoobAI">🤖 NoobAI</option>
+      <option value="Flux.1 D">⚡ Flux.1 D</option>
+      <option value="Other">📦 Other</option>
     </select>
+    <select id="nsfwFilter" aria-label="NSFW 过滤">
+      <option value="all">🔞 全部</option>
+      <option value="sfw">🛡️ 仅 SFW</option>
+    </select>
+    <input type="text" id="tagInput" placeholder="🏷️ 标签过滤（逗号分隔）" autocomplete="off" style="width:150px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text);font-size:12px" aria-label="标签过滤">
     <div class="period-group" role="group" aria-label="统计周期">
       <button class="period-btn active" data-period="AllTime">📅 全部</button>
+      <button class="period-btn" data-period="Year">🗓️ 今年</button>
       <button class="period-btn" data-period="Month">📆 本月</button>
       <button class="period-btn" data-period="Week">📋 本周</button>
+      <button class="period-btn" data-period="Day">⏱️ 今日</button>
     </div>
     <button class="btn btn-primary" id="fetchBtn" type="button">🔄 抓取全部</button>
     <button class="btn btn-ghost btn-border-green" id="batchModeBtn" type="button">✂️ 选择</button>
@@ -454,8 +465,14 @@
 
 <div class="modal-overlay" id="artistExtractModal">
   <div class="modal-box modal-sm">
-    <h3>📊 从数据提取画师</h3>
-    <p class="sub">从已加载的 LoRA 触发词中自动识别画师标签</p>
+    <h3>📊 从当前搜索结果提取</h3>
+    <p class="sub" id="artistExtractDesc">从当前已加载 LoRA 的触发词中提取（结果范围 = 当前远程搜索结果）</p>
+    <div style="display:flex;gap:6px;padding:6px 10px;border-bottom:1px solid var(--border)">
+      <button class="btn btn-primary extract-type-btn active" data-type="artist" style="flex:1;padding:4px;font-size:11px">🎨 画师</button>
+      <button class="btn btn-ghost extract-type-btn" data-type="character" style="flex:1;padding:4px;font-size:11px">👤 角色</button>
+      <button class="btn btn-ghost extract-type-btn" data-type="style" style="flex:1;padding:4px;font-size:11px">🏷️ 风格词</button>
+      <button class="btn btn-ghost" id="extractMinCountBtn" style="padding:4px 8px;font-size:11px" title="出现次数阈值">≥1次</button>
+    </div>
     <div class="modal-scroll-lg" id="artistExtractList"></div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="closeArtistExtractBtn">关闭</button>

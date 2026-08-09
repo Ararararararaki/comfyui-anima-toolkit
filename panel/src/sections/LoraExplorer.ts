@@ -2,6 +2,8 @@ import { useModelStore } from '../store/models'
 import { renderCard, refreshLocalNames } from '../components/ModelCard'
 import { renderArtists } from './ArtistSeries'
 import { fetchModels, fetchModelById, fetchModelImages } from '../api/civitai'
+import type { ModelFetchParams } from '../api/civitai'
+import type { PeriodKey, SortKey } from '../types'
 import { Cache } from '../store/cache'
 import {
   initFavorites, getCollections, getActiveCol, setActiveCol,
@@ -11,7 +13,7 @@ import {
 import { addHidden, removeHidden, hiddenCount, getHiddenIds } from '../store/hidden'
 import { addSearch, getSearches, clearSearches, getViews, addView } from '../store/history'
 import { addArtistImage, removeArtistImage, getCustomImages, getMergedImages } from '../store/artistImages'
-import { addArtist, deleteArtist, getArtists, extractArtistsFromModels, addArtistFromExtraction } from '../store/artists'
+import { addArtist, deleteArtist, getArtists, extractTagsFromModels, addArtistFromExtraction } from '../store/artists'
 import { getNote, saveNote, getModelStatusText } from '../store/notes'
 import { openLightbox, closeLightbox, navLightbox } from '../components/Lightbox'
 import { openModal, closeModal, confirmModal } from '../components/Modal'
@@ -27,6 +29,32 @@ const MAX_PAGES = 20
 const galleryPos: Record<number, number> = {}
 let autoFetching = false
 let autoTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 缓存 key 包含全部远程筛选参数，防止不同搜索条件互相串数据 */
+function cacheKey(store: ReturnType<typeof useModelStore.getState>): string {
+  return `models_${store.period}_${store.sort}_${store.filterBaseModel || 'all'}_${store.nsfw}_${store.remoteQuery}_${store.remoteTags.join(',')}`
+}
+
+/** 筛选条件变化：清空列表与 cursor，重新抓第一页 */
+function resetAndFetch() {
+  const store = useModelStore.getState()
+  store.setRaw([])
+  store.setPagination(0, 0, true)
+  store.setNextPage(null)
+  fetchPage(1)
+}
+
+function currentParams(): ModelFetchParams {
+  const store = useModelStore.getState()
+  return {
+    query: store.remoteQuery,
+    baseModels: store.filterBaseModel || undefined,
+    sort: store.sort,
+    nsfw: store.nsfw,
+    tags: store.remoteTags,
+    period: store.period,
+  }
+}
 
 export function toggleAuto() {
   autoFetching = !autoFetching
@@ -48,7 +76,7 @@ async function runAuto() {
   if (!autoFetching) return
   const store = useModelStore.getState()
   if (store.hasMore && store.page < MAX_PAGES) {
-    await fetchPage(store.page + 1, { quietError: true, append: true })
+    await fetchPage(store.page + 1, { quietError: true, append: true, cursor: store.nextPage })
   }
   const store2 = useModelStore.getState()
   if (!store2.hasMore || store2.page >= MAX_PAGES) {
@@ -70,12 +98,12 @@ export async function initLoraExplorer() {
   switchSection(useModelStore.getState().section as any, true)
 
   const store = useModelStore.getState()
-  const cached = Cache.load<any[]>('models_' + store.period, 30 * 60 * 1000)
+  const cached = Cache.load<any[]>(cacheKey(store), 30 * 60 * 1000)
   if (cached && cached.length > 0) {
     store.setRaw(cached)
     store.rebuild()
     refreshView()
-    const t = { AllTime: '全部时间', Month: '本月', Week: '本周' }[store.period] || store.period
+    const t = { AllTime: '全部时间', Year: '今年', Month: '本月', Week: '本周', Day: '今日' }[store.period] || store.period
     showToast(`📦 已恢复 ${t} ${cached.length} 个模型`, 'success')
   }
 
@@ -126,25 +154,27 @@ export function switchSection(id: 'lora' | 'artist' | 'prompt' | 'prompt-freq' |
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
-async function fetchPage(p: number, options?: { quietError?: boolean; append?: boolean }) {
+async function fetchPage(p: number, options?: { quietError?: boolean; append?: boolean; cursor?: string | null }) {
   const store = useModelStore.getState()
   if (store.loading) return
 
   useModelStore.setState({ loading: true })
   try {
-    const data = await fetchModels(p, store.period)
+    // cursor 分页：API 的 page 参数已失效（实测 page=1/2 返回相同数据），翻页必须携带 cursor
+    const data = await fetchModels(currentParams(), options?.cursor)
     if (!data) return
     const items = data.items || []
     const meta = data.metadata || {}
-    const maxPage = meta.totalPages || p
-    const hasMore = meta.nextPage !== null && meta.nextPage !== undefined && p < MAX_PAGES
+    const nextCursor = meta.nextCursor || null
+    const hasMore = !!nextCursor && p < MAX_PAGES
 
-    store.appendRaw(items)
-    store.setPagination(p, maxPage, hasMore)
+    if (options?.append) store.appendRaw(items); else store.setRaw(items)
+    store.setPagination(p, p, hasMore)
+    store.setNextPage(nextCursor)
     store.rebuild()
     refreshView(!!options?.append)
 
-    Cache.save('models_' + store.period, store.raw)
+    Cache.save(cacheKey(store), store.raw)
     return items
   } catch (err) {
     if ((err as Error).name === 'AbortError') return null
@@ -162,7 +192,7 @@ export async function loadMore() {
   const next = store.page + 1
   if (next > MAX_PAGES) { showToast('⚠️ 已达最大页数'); return }
   // append: true — 增量追加渲染，不重建已渲染的卡片 DOM
-  await fetchPage(next, { append: true })
+  await fetchPage(next, { append: true, cursor: store.nextPage })
 }
 
 export async function fetchAll() {
@@ -173,11 +203,11 @@ export async function fetchAll() {
   if (btn) { btn.disabled = true; btn.textContent = '⏳ 抓取中…' }
 
   if (store.raw.length === 0) await fetchPage(1)
-  let p = store.page + 1
-  while (p <= MAX_PAGES && store.hasMore) {
-    const ok = await fetchPage(p, { quietError: true, append: true })
+  let p = useModelStore.getState().page + 1
+  while (p <= MAX_PAGES && useModelStore.getState().hasMore) {
+    const ok = await fetchPage(p, { quietError: true, append: true, cursor: useModelStore.getState().nextPage })
     if (!ok) break
-    p = store.page + 1
+    p = useModelStore.getState().page + 1
     await sleep(400)
   }
 
@@ -188,13 +218,13 @@ export async function fetchAll() {
   showToast('✅ 全部页面抓取完成!', 'success')
 }
 
-export function setPeriod(period: 'AllTime' | 'Month' | 'Week') {
+export function setPeriod(period: PeriodKey) {
   const store = useModelStore.getState()
   if (store.period === period) return
   useModelStore.getState().setPeriod(period)
-  showToast(`📊 切换到「${{ AllTime: '全部', Month: '本月', Week: '本周' }[period]}」`)
+  showToast(`📊 切换到「${{ AllTime: '全部', Year: '今年', Month: '本月', Week: '本周', Day: '今日' }[period]}」`)
   document.querySelectorAll('.period-btn').forEach(b => b.classList.toggle('active', (b as HTMLElement).dataset.period === period))
-  fetchPage(1)
+  resetAndFetch()
 }
 
 export function refreshView(append = false) {
@@ -331,6 +361,26 @@ function renderArtistImgList(tag: string) {
   }
 }
 
+function getTagSuggestions(limit: number): { tag: string; count: number }[] {
+  // 从当前已加载 LoRA 的触发词统计高频词（@画师/角色 tag + 风格词），过滤质量词与权重语法
+  const count = new Map<string, number>()
+  const store = useModelStore.getState()
+  for (const m of store.processed) {
+    for (const w of m.trainedWords || []) {
+      const t = w.trim()
+      if (t.length < 2 || t.length > 60) continue
+      if (/^(masterpiece|best quality|high quality|worst quality|low quality|nsfw|rating\w*|score_\w+|year \d+)/i.test(t)) continue
+      if (/^[[(（]/.test(t)) continue
+      count.set(t, (count.get(t) || 0) + 1)
+    }
+  }
+  return [...count.entries()]
+    .filter(([, c]) => c >= 2)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([tag, c]) => ({ tag, count: c }))
+}
+
 function renderSearchHistory() {
   const dd = document.getElementById('searchHistory')
   if (!dd) return
@@ -341,6 +391,14 @@ function renderSearchHistory() {
     return
   }
   let html = ''
+  // 联想区：当前已加载 LoRA 触发词中的高频词，点击直接远程搜索
+  const suggestions = getTagSuggestions(10)
+  if (suggestions.length > 0) {
+    html += `<div class="sh-title">💡 触发词联想</div>`
+    for (const s of suggestions) {
+      html += `<div class="sh-item" data-action="suggest" data-query="${esc(s.tag)}"><span class="sh-icon">🏷️</span><span class="sh-text">${esc(s.tag)} <span style="color:var(--text3);font-size:9px">×${s.count}</span></span></div>`
+    }
+  }
   if (searches.length > 0) {
     html += `<div class="sh-title">🔍 搜索历史 <button onclick="clearSearches();renderSearchHistory();showToast('已清空搜索历史')">清空</button></div>`
     for (const q of searches) {
@@ -360,11 +418,13 @@ function renderSearchHistory() {
   dd.querySelectorAll('.sh-item').forEach(el => {
     el.addEventListener('click', function (this: HTMLElement, e) {
       e.stopPropagation()
-      if (this.dataset.action === 'search') {
-        const q = this.dataset.query || ''
+      const q = this.dataset.query || ''
+      if (this.dataset.action === 'search' || this.dataset.action === 'suggest') {
         ;(document.getElementById('searchInput') as HTMLInputElement).value = q
         useModelStore.getState().setSearch(q)
-        refreshView()
+        useModelStore.getState().setRemoteQuery(q)
+        addSearch(q)
+        resetAndFetch()
       } else if (this.dataset.action === 'view') {
         window.open(this.dataset.url, '_blank')
       }
@@ -428,8 +488,9 @@ export function setupGlobalHandlers() {
     const input = document.querySelector('.search-wrap input') as HTMLInputElement
     if (input) input.value = tag
     useModelStore.getState().setSearch(tag)
+    useModelStore.getState().setRemoteQuery(tag)
     addSearch(tag)
-    refreshView()
+    resetAndFetch()
     switchSection('lora')
     const artists = getArtists()
     const artist = artists.find(a => a.tag.toLowerCase() === tag.toLowerCase())
@@ -462,6 +523,19 @@ export function setupGlobalHandlers() {
     } else if (banner) {
       banner.style.display = 'none'
     }
+  }
+
+  // 按作者搜索：Civitai API 的 username/creator 参数实测均无效（返回未过滤结果），
+  // 降级为 query=作者名近似匹配（可命中名称/描述中含作者名的模型）
+  w.__searchCreator = (name: string) => {
+    const input = document.querySelector('.search-wrap input') as HTMLInputElement
+    if (input) input.value = name
+    useModelStore.getState().setSearch(name)
+    useModelStore.getState().setRemoteQuery(name)
+    addSearch(name)
+    resetAndFetch()
+    switchSection('lora')
+    showToast(`🔍 按作者搜索: ${name}`)
   }
 
   w.__toggleFav = (id: number, btn: HTMLElement) => {
@@ -766,12 +840,42 @@ export function setupBindingListeners() {
     if (tab) switchSection(tab.dataset.section as 'lora' | 'artist' | 'prompt' | 'local' | 'outputs')
   })
 
-  // Category tabs
+  // Category tabs —— 本地分类过滤；浏览模式（无远程查询）下点击角色/画风等类别
+  // 会用类别对应 Civitai tag 发起远程搜索，扩大结果面
+  const CAT_REMOTE_TAG: Record<string, string> = {
+    character: 'character',
+    artist: 'style',
+    aesthetic: 'aesthetic',
+    background: 'background',
+  }
+  // 记录类别 tab 自动设置的远程 tag，切回「全部/收藏/隐藏」时清除，避免残留过滤
+  let autoCategoryTag: string | null = null
   document.getElementById('tabsContainer')?.addEventListener('click', (e) => {
     const tab = (e.target as HTMLElement).closest('.tab') as HTMLElement
     if (tab) {
-      useModelStore.getState().setCategory(tab.dataset.cat || 'all')
-      refreshView()
+      const cat = tab.dataset.cat || 'all'
+      const store = useModelStore.getState()
+      store.setCategory(cat)
+      const remoteTag = CAT_REMOTE_TAG[cat]
+      if (remoteTag && !store.remoteQuery.trim()) {
+        // 浏览模式：用类别 tag 远程搜索，扩大覆盖面
+        store.setRemoteTags([remoteTag])
+        autoCategoryTag = remoteTag
+        const tagInput = document.getElementById('tagInput') as HTMLInputElement
+        if (tagInput) tagInput.value = remoteTag
+        resetAndFetch()
+      } else {
+        if (!remoteTag && autoCategoryTag) {
+          // 切回全部/收藏/隐藏等：清除类别自动 tag，保留用户手动输入的 tag
+          store.setRemoteTags(store.remoteTags.filter(t => t !== autoCategoryTag))
+          autoCategoryTag = null
+          const tagInput = document.getElementById('tagInput') as HTMLInputElement
+          if (tagInput) tagInput.value = store.remoteTags.join(', ')
+          resetAndFetch()
+        } else {
+          refreshView()
+        }
+      }
       window.scrollTo({ top: 0, behavior: 'smooth' })
     }
   })
@@ -789,19 +893,24 @@ export function setupBindingListeners() {
     }
   })
 
-  // Search
+  // Search —— 输入时先本地过滤即时响应，防抖 600ms 后发起远程搜索（query 参数）
   const searchInput = document.getElementById('searchInput') as HTMLInputElement
   if (searchInput) {
     let searchTimer: ReturnType<typeof setTimeout>
     searchInput.addEventListener('input', () => {
       clearTimeout(searchTimer)
+      useModelStore.getState().setSearch(searchInput.value)
+      refreshView()
       searchTimer = setTimeout(() => {
-        useModelStore.getState().setSearch(searchInput.value)
-        refreshView()
-      }, 400)
+        useModelStore.getState().setRemoteQuery(searchInput.value)
+        resetAndFetch()
+      }, 600)
     })
     searchInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
+        clearTimeout(searchTimer)
+        useModelStore.getState().setRemoteQuery(searchInput.value)
+        resetAndFetch()
         addSearch(searchInput.value)
         renderSearchHistory()
       }
@@ -813,10 +922,10 @@ export function setupBindingListeners() {
     })
   }
 
-  // Sort
+  // Sort —— 远程排序（Civitai API sort 参数）
   document.getElementById('sortSelect')?.addEventListener('change', (e) => {
-    useModelStore.getState().setSort((e.target as HTMLSelectElement).value as any)
-    refreshView()
+    useModelStore.getState().setSort((e.target as HTMLSelectElement).value as SortKey)
+    resetAndFetch()
   })
 
   // Quality filter
@@ -825,10 +934,39 @@ export function setupBindingListeners() {
     refreshView()
   })
 
+  // BaseModel —— 远程限定（Civitai API baseModels 参数）
   document.getElementById('baseModelFilter')?.addEventListener('change', (e) => {
     useModelStore.getState().setFilterBaseModel((e.target as HTMLSelectElement).value)
-    refreshView()
+    resetAndFetch()
   })
+
+  // NSFW 过滤（Civitai API nsfw 参数）
+  document.getElementById('nsfwFilter')?.addEventListener('change', (e) => {
+    useModelStore.getState().setNsfw((e.target as HTMLSelectElement).value as 'all' | 'sfw')
+    resetAndFetch()
+  })
+
+  // 标签过滤（Civitai API tag 参数，逗号分隔）
+  const tagInput = document.getElementById('tagInput') as HTMLInputElement
+  if (tagInput) {
+    let tagTimer: ReturnType<typeof setTimeout>
+    tagInput.addEventListener('input', () => {
+      clearTimeout(tagTimer)
+      tagTimer = setTimeout(() => {
+        const tags = tagInput.value.split(/[,，]/).map(t => t.trim()).filter(Boolean)
+        useModelStore.getState().setRemoteTags(tags)
+        resetAndFetch()
+      }, 600)
+    })
+    tagInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        clearTimeout(tagTimer)
+        const tags = tagInput.value.split(/[,，]/).map(t => t.trim()).filter(Boolean)
+        useModelStore.getState().setRemoteTags(tags)
+        resetAndFetch()
+      }
+    })
+  }
 
   // Batch mode buttons
   document.getElementById('batchCloseBtn')?.addEventListener('click', () => {
@@ -946,54 +1084,91 @@ export function setupBindingListeners() {
     ;(e.target as HTMLInputElement).value = ''
   })
 
-  // Extract artist from data
-  document.getElementById('extractArtistBtn')?.addEventListener('click', () => {
+  // Extract from current search results（类型可选 + 阈值 + 过滤规则）
+  let extractType: 'artist' | 'character' | 'style' = 'artist'
+  let extractMinCount = 1
+
+  function renderExtractList() {
     const store = useModelStore.getState()
     const processed = store.processed
-    const trainedWords = processed.map(m => m.trainedWords)
-    const found = extractArtistsFromModels(trainedWords)
-    if (found.length === 0) { showToast('⚠️ 没有找到画师标签'); return }
-
-    const existing = new Set(getArtists().map(a => a.tag))
-
-    const tagSources: Record<string, string[]> = {}
-    for (const m of processed) {
-      for (const w of m.trainedWords) {
-        const t = w.trim()
-        if (t.startsWith('@') && t.length > 2) {
-          if (!tagSources[t]) tagSources[t] = []
-          if (!tagSources[t].includes(m.name)) tagSources[t].push(m.name)
-        }
-      }
-    }
-
     const container = document.getElementById('artistExtractList')
     if (!container) return
-
+    const desc = document.getElementById('artistExtractDesc')
+    if (desc) desc.textContent = `从当前搜索结果（${processed.length} 个 LoRA）的触发词中提取`
+    const found = extractTagsFromModels(processed, extractType, extractMinCount)
+    const existing = new Set(getArtists().map(a => a.tag))
     const newCount = found.filter(f => !existing.has(f.tag)).length
+    const icon = extractType === 'artist' ? '🎨' : extractType === 'character' ? '👤' : '🏷️'
+    const label = { artist: '画师', character: '角色', style: '风格词' }[extractType]
+
+    if (found.length === 0) {
+      container.innerHTML = `<div style="padding:16px;text-align:center;color:var(--text3);font-size:12px">当前结果中未提取到${label}标签<br>（可先远程搜索缩小范围，或调低阈值）</div>`
+      return
+    }
 
     container.innerHTML = `<div style="padding:8px 10px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center">
-      <span style="font-size:12px;color:var(--text2)">发现 <b>${found.length}</b> 个画师标签，<b style="color:var(--green)">${newCount}</b> 个可添加</span>
-      ${newCount > 0 ? `<button class="btn btn-primary" id="extractAddAllBtn" style="padding:4px 12px;font-size:10px;margin-left:auto">➕ 添加全部 (${newCount})</button>` : ''}
+      <span style="font-size:12px;color:var(--text2)">发现 <b>${found.length}</b> 个${label}，<b style="color:var(--green)">${newCount}</b> 个可添加</span>
+      ${extractType === 'artist' && newCount > 0 ? `<button class="btn btn-primary" id="extractAddAllBtn" style="padding:4px 12px;font-size:10px;margin-left:auto">➕ 添加全部 (${newCount})</button>` : ''}
     </div>`
     + found.map(f => {
       const already = existing.has(f.tag)
-      const sources = tagSources[f.tag] || []
+      const sources = f.sources || []
+      const action = extractType === 'artist'
+        ? (already
+          ? '<span style="font-size:10px;color:var(--text3);white-space:nowrap">✅ 已存在</span>'
+          : `<button class="btn btn-primary extract-add-one" data-tag="${escAttr(f.tag)}" data-count="${f.count}" style="padding:3px 10px;font-size:10px;white-space:nowrap">➕ 添加</button>`)
+        : `<button class="btn btn-ghost extract-search-one" data-tag="${escAttr(f.tag)}" style="padding:3px 10px;font-size:10px;white-space:nowrap">🔍 搜索</button>`
       return `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border)">
-        <span style="font-size:16px;width:24px;text-align:center">🎨</span>
+        <span style="font-size:16px;width:24px;text-align:center">${icon}</span>
         <div style="flex:1;min-width:0">
           <div style="font-size:13px;font-family:'Courier New',monospace;color:var(--accent)">${esc(f.tag)}</div>
           <div style="font-size:9px;color:var(--text3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
             出现 ${f.count} 次 · 来源: ${sources.slice(0, 3).join(', ')}${sources.length > 3 ? ` 等 ${sources.length} 个模型` : ''}
           </div>
         </div>
-        ${already
-          ? '<span style="font-size:10px;color:var(--text3);white-space:nowrap">✅ 已存在</span>'
-          : `<button class="btn btn-primary extract-add-one" data-tag="${escAttr(f.tag)}" data-count="${f.count}" style="padding:3px 10px;font-size:10px;white-space:nowrap">➕ 添加</button>`
-        }
+        ${action}
       </div>`
     }).join('')
+  }
+
+  document.getElementById('extractArtistBtn')?.addEventListener('click', () => {
+    const store = useModelStore.getState()
+    if (store.processed.length === 0) { showToast('⚠️ 当前没有已加载的 LoRA，先搜索或抓取'); return }
+    renderExtractList()
     openModal('artistExtractModal')
+  })
+
+  // 类型切换
+  document.getElementById('artistExtractModal')?.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement
+    const typeBtn = target.closest('.extract-type-btn') as HTMLElement
+    if (typeBtn) {
+      extractType = typeBtn.dataset.type as 'artist' | 'character' | 'style'
+      document.querySelectorAll('.extract-type-btn').forEach(b => {
+        const active = b === typeBtn
+        b.classList.toggle('btn-primary', active)
+        b.classList.toggle('btn-ghost', !active)
+      })
+      renderExtractList()
+      return
+    }
+    if (target.id === 'extractMinCountBtn') {
+      extractMinCount = extractMinCount >= 3 ? 1 : extractMinCount + 1
+      target.textContent = `≥${extractMinCount}次`
+      renderExtractList()
+      return
+    }
+  })
+
+  // 角色/风格词：点击直接远程搜索该词
+  document.getElementById('artistExtractModal')?.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest('.extract-search-one') as HTMLElement
+    if (btn) {
+      const tag = btn.dataset.tag || ''
+      closeModal('artistExtractModal')
+      const w = window as any
+      if (w.__searchByTag) w.__searchByTag(tag)
+    }
   })
 
   // Extract modal event delegation (add single / add all)
@@ -1012,7 +1187,7 @@ export function setupBindingListeners() {
       if (added > 0) {
         showToast(`✅ 已添加 ${added} 个画师`, 'success')
         renderArtists()
-        document.getElementById('extractArtistBtn')?.click()
+        renderExtractList()
       }
       return
     }
@@ -1024,7 +1199,7 @@ export function setupBindingListeners() {
       if (tag && addArtistFromExtraction(tag, count)) {
         showToast(`✅ 已添加 ${tag}`, 'success')
         renderArtists()
-        document.getElementById('extractArtistBtn')?.click()
+        renderExtractList()
       }
       return
     }

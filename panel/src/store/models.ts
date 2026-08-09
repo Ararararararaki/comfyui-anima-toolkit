@@ -4,6 +4,15 @@ import { Cache } from './cache'
 import { stripHtml } from '../utils'
 import { isHidden, getHiddenIds } from './hidden'
 import { isFav, getCollectionFavs, getActiveCol } from './favorites'
+import { getLocalFileNames } from './localModels'
+
+// 与 ModelCard.isLocalModel 保持一致的本地匹配（名称规范化后与本地文件名互相包含）
+function isLocalByName(name: string): boolean {
+  const names = getLocalFileNames()
+  if (names.length === 0) return false
+  const q = name.toLowerCase().replace(/[\s_-]/g, '')
+  return names.some(n => n.includes(q) || q.includes(n))
+}
 
 const CAT_LABEL: Record<ModelCategory, string> = {
   artist: '画师风格', character: '人物角色', aesthetic: '美学优化', background: '背景环境', other: '其他',
@@ -22,6 +31,14 @@ interface ModelState {
   hasMore: boolean
   category: string
   search: string
+  /** 远程搜索关键词（Civitai API query 参数） */
+  remoteQuery: string
+  /** 远程标签过滤（Civitai API tag 参数，逗号分隔） */
+  remoteTags: string[]
+  /** NSFW 过滤：all 全部 / sfw 仅安全 */
+  nsfw: 'all' | 'sfw'
+  /** 下一页 cursor URL（Civitai cursor 分页） */
+  nextPage: string | null
   sort: SortKey
   period: PeriodKey
   section: SectionKey
@@ -37,6 +54,10 @@ interface ModelState {
   setPeriod: (period: PeriodKey) => void
   setCategory: (cat: string) => void
   setSearch: (q: string) => void
+  setRemoteQuery: (q: string) => void
+  setRemoteTags: (t: string[]) => void
+  setNsfw: (n: 'all' | 'sfw') => void
+  setNextPage: (u: string | null) => void
   setSort: (s: SortKey) => void
   setSection: (s: SectionKey) => void
   setQualityFilter: (q: string) => void
@@ -64,11 +85,15 @@ export const useModelStore = create<ModelState>((set, get) => ({
   hasMore: true,
   category: 'all',
   search: '',
-  sort: 'downloads',
+  remoteQuery: '',
+  remoteTags: [],
+  nsfw: 'all',
+  nextPage: null,
+  sort: 'Most Downloaded',
   period: 'AllTime',
   section: 'local',
   qualityFilter: 'all',
-  filterBaseModel: '',
+  filterBaseModel: 'Anima',
   batchMode: false,
   batchSelected: new Set(),
   autoFetching: false,
@@ -76,9 +101,13 @@ export const useModelStore = create<ModelState>((set, get) => ({
   cardUid: 0,
   imgStore: {},
 
-  setPeriod: (period) => set({ period, raw: [], page: 0, hasMore: true }),
+  setPeriod: (period) => set({ period, raw: [], page: 0, hasMore: true, nextPage: null }),
   setCategory: (category) => set({ category }),
   setSearch: (search) => set({ search }),
+  setRemoteQuery: (remoteQuery) => set({ remoteQuery }),
+  setRemoteTags: (remoteTags) => set({ remoteTags }),
+  setNsfw: (nsfw) => set({ nsfw }),
+  setNextPage: (nextPage) => set({ nextPage }),
   setSort: (sort) => set({ sort }),
   setSection: (section) => set({ section }),
   setQualityFilter: (qualityFilter) => set({ qualityFilter }),
@@ -229,6 +258,8 @@ export const useModelStore = create<ModelState>((set, get) => ({
       list = list.filter(m => m.quality.some(q => q === 'hot' || q === 'quality'))
     } else if (state.qualityFilter === 'new') {
       list = list.filter(m => m.quality.includes('new'))
+    } else if (state.qualityFilter === 'local') {
+      list = list.filter(m => isLocalByName(m.name))
     }
 
     if (state.filterBaseModel) {
@@ -246,13 +277,7 @@ export const useModelStore = create<ModelState>((set, get) => ({
       )
     }
 
-    switch (state.sort) {
-      case 'downloads': list.sort((a, b) => b.stats.downloadCount - a.stats.downloadCount); break
-      case 'likes': list.sort((a, b) => b.stats.thumbsUpCount - a.stats.thumbsUpCount); break
-      case 'ratio': list.sort((a, b) => b.stats.ratio - a.stats.ratio); break
-      case 'name': list.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')); break
-    }
-
+    // 远程排序由 Civitai API 完成（sort 参数），本地保持返回顺序
     return list
   },
 

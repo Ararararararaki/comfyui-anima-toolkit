@@ -108,6 +108,11 @@ interface LocalModelState {
   setDescription: (fileName: string, text: string) => void
   toggleCategoryExpanded: (cat: string) => void
 
+  // 与节点 /anima/meta 双向分类同步
+  fetchBackendMeta: () => Promise<any | null>
+  loadBackendMeta: () => Promise<void>
+  syncCategoriesToBackend: () => Promise<void>
+
   matchByUrl: (name: string, url: string) => Promise<void>
 
   setSearchQuery: (q: string) => void
@@ -167,59 +172,77 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
   manifest: Cache.load<Record<string, ManifestEntry>>(MANIFEST_CACHE_KEY, 365 * 24 * 60 * 60 * 1000) || {},
   newFileCount: 0,
 
-  setCategories: (categories) => { set({ categories }); Cache.save(CAT_CACHE_KEY, categories) },
-  addCategory: (name) => set(s => {
-    if (s.categories.includes(name)) return s
-    const c = [...s.categories, name]
-    const exp = s.expandedCategories.includes(name) ? s.expandedCategories : [...s.expandedCategories, name]
-    Cache.save(CAT_CACHE_KEY, c)
-    Cache.save(CAT_CACHE_KEY + '_exp', exp)
-    return { categories: c, expandedCategories: exp }
-  }),
-  removeCategory: (name) => set(s => {
-    const c = s.categories.filter(x => x !== name)
-    const mc: Record<string, string[]> = {}
-    for (const [k, v] of Object.entries(s.modelCategories)) {
-      mc[k] = v.filter(x => x !== name)
-    }
-    Cache.save(CAT_CACHE_KEY, c)
-    Cache.save(CAT_CACHE_KEY + '_mc', mc)
-    return { categories: c, modelCategories: mc, filterCategory: s.filterCategory === name ? null : s.filterCategory }
-  }),
-  renameCategory: (oldName, newName) => set(s => {
-    if (s.categories.includes(newName)) return s
-    const c = s.categories.map(x => x === oldName ? newName : x)
-    const mc: Record<string, string[]> = {}
-    for (const [k, v] of Object.entries(s.modelCategories)) {
-      mc[k] = v.map(x => x === oldName ? newName : x)
-    }
-    const exp = s.expandedCategories.map(x => x === oldName ? newName : x)
-    const fc = s.filterCategory === oldName ? newName : s.filterCategory
-    Cache.save(CAT_CACHE_KEY, c)
-    Cache.save(CAT_CACHE_KEY + '_mc', mc)
-    Cache.save(CAT_CACHE_KEY + '_exp', exp)
-    return { categories: c, modelCategories: mc, expandedCategories: exp, filterCategory: fc }
-  }),
-  setModelCategories: (fileName, cats) => set(s => {
-    const mc = { ...s.modelCategories, [fileName]: cats }
-    Cache.save(CAT_CACHE_KEY + '_mc', mc)
-    return { modelCategories: mc }
-  }),
-  setBatchModelCategories: (fileNames, cat) => set(s => {
-    const mc = { ...s.modelCategories }
-    for (const fn of fileNames) {
-      const existing = mc[fn] || []
-      if (!existing.includes(cat)) mc[fn] = [...existing, cat]
-    }
-    Cache.save(CAT_CACHE_KEY + '_mc', mc)
-    return { modelCategories: mc }
-  }),
-  clearModelCategories: (fileName) => set(s => {
-    const mc = { ...s.modelCategories }
-    delete mc[fileName]
-    Cache.save(CAT_CACHE_KEY + '_mc', mc)
-    return { modelCategories: mc }
-  }),
+  setCategories: (categories) => { set({ categories }); Cache.save(CAT_CACHE_KEY, categories); get().syncCategoriesToBackend() },
+  addCategory: (name) => {
+    set(s => {
+      if (s.categories.includes(name)) return s
+      const c = [...s.categories, name]
+      const exp = s.expandedCategories.includes(name) ? s.expandedCategories : [...s.expandedCategories, name]
+      Cache.save(CAT_CACHE_KEY, c)
+      Cache.save(CAT_CACHE_KEY + '_exp', exp)
+      return { categories: c, expandedCategories: exp }
+    })
+    get().syncCategoriesToBackend()
+  },
+  removeCategory: (name) => {
+    set(s => {
+      const c = s.categories.filter(x => x !== name)
+      const mc: Record<string, string[]> = {}
+      for (const [k, v] of Object.entries(s.modelCategories)) {
+        mc[k] = v.filter(x => x !== name)
+      }
+      Cache.save(CAT_CACHE_KEY, c)
+      Cache.save(CAT_CACHE_KEY + '_mc', mc)
+      return { categories: c, modelCategories: mc, filterCategory: s.filterCategory === name ? null : s.filterCategory }
+    })
+    get().syncCategoriesToBackend()
+  },
+  renameCategory: (oldName, newName) => {
+    set(s => {
+      if (s.categories.includes(newName)) return s
+      const c = s.categories.map(x => x === oldName ? newName : x)
+      const mc: Record<string, string[]> = {}
+      for (const [k, v] of Object.entries(s.modelCategories)) {
+        mc[k] = v.map(x => x === oldName ? newName : x)
+      }
+      const exp = s.expandedCategories.map(x => x === oldName ? newName : x)
+      const fc = s.filterCategory === oldName ? newName : s.filterCategory
+      Cache.save(CAT_CACHE_KEY, c)
+      Cache.save(CAT_CACHE_KEY + '_mc', mc)
+      Cache.save(CAT_CACHE_KEY + '_exp', exp)
+      return { categories: c, modelCategories: mc, expandedCategories: exp, filterCategory: fc }
+    })
+    get().syncCategoriesToBackend()
+  },
+  setModelCategories: (fileName, cats) => {
+    set(s => {
+      const mc = { ...s.modelCategories, [fileName]: cats }
+      Cache.save(CAT_CACHE_KEY + '_mc', mc)
+      return { modelCategories: mc }
+    })
+    get().syncCategoriesToBackend()
+  },
+  setBatchModelCategories: (fileNames, cat) => {
+    set(s => {
+      const mc = { ...s.modelCategories }
+      for (const fn of fileNames) {
+        const existing = mc[fn] || []
+        if (!existing.includes(cat)) mc[fn] = [...existing, cat]
+      }
+      Cache.save(CAT_CACHE_KEY + '_mc', mc)
+      return { modelCategories: mc }
+    })
+    get().syncCategoriesToBackend()
+  },
+  clearModelCategories: (fileName) => {
+    set(s => {
+      const mc = { ...s.modelCategories }
+      mc[fileName] = []
+      Cache.save(CAT_CACHE_KEY + '_mc', mc)
+      return { modelCategories: mc }
+    })
+    get().syncCategoriesToBackend()
+  },
   setFilterCategory: (filterCategory) => set({ filterCategory }),
   setBatchMode: (batchMode) => set({ batchMode, batchSelection: [] }),
   toggleBatchSelection: (name) => set(s => {
@@ -416,20 +439,30 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
         set({ scanProgress: { done: i + 1, total } })
       }
 
-      // 清理 manifest 中已删除的文件
+      // 清理 manifest 中已删除的文件，并统计"减少的 LoRA"
       const currentNames = new Set(entries.map(e => e.name))
+      const removedNames = oldFiles.filter(f => !currentNames.has(f.name)).map(f => f.name)
       for (const k of Object.keys(oldManifest)) {
         if (!currentNames.has(k)) delete oldManifest[k]
+      }
+      // 同步清理已删除文件的描述缓存（避免残留影响分类/搜索）
+      let descriptions = { ...get().descriptions }
+      let removedDesc = 0
+      for (const n of removedNames) {
+        if (n in descriptions) { delete descriptions[n]; removedDesc++ }
       }
 
       progressHide()
       Cache.save(MANIFEST_CACHE_KEY, newManifest)
-      set({ files: results, manifest: newManifest, scanStatus: 'done', newFileCount: 0 })
+      set({ files: results, manifest: newManifest, descriptions, scanStatus: 'done', newFileCount: 0 })
       get().saveToCache()
-      if (added + changed > 0) {
-        showToast(`📁 扫描完成: 新增 ${added}，变更 ${changed}，跳过 ${unchanged}`)
+      if (removedNames.length) get().rebuildTagFreq()
+      if (added + changed + removedNames.length > 0) {
+        showToast(`📁 扫描完成: 新增 ${added} · 变更 ${changed} · 移除 ${removedNames.length} · 跳过 ${unchanged}${removedDesc ? `（含 ${removedDesc} 条描述清理）` : ''}`)
         // 自动匹配新文件
         get().matchAll()
+      } else {
+        showToast(`📁 扫描完成: 无变化（${unchanged} 个未变）`)
       }
     } catch (err) {
       progressHide()
@@ -605,6 +638,50 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
   },
 
   setNewFileCount: (newFileCount) => set({ newFileCount }),
+
+  // ---- 与节点 /anima/meta 双向分类同步 ----
+  fetchBackendMeta: async () => {
+    try {
+      const resp = await fetch('/anima/meta')
+      if (!resp.ok) return null
+      return await resp.json()
+    } catch { return null }
+  },
+  // 从后端拉取分类合并到本地(节点侧改的分类同步回面板)
+  loadBackendMeta: async () => {
+    const backend = await get().fetchBackendMeta()
+    if (!backend) return
+    const cats: string[] = backend.categories || []
+    const lm: Record<string, { categories?: string[] }> = backend.loraMeta || {}
+    set(s => {
+      const categories = [...s.categories]
+      for (const c of cats) if (!categories.includes(c)) categories.push(c)
+      const modelCategories = { ...s.modelCategories }
+      for (const [name, entry] of Object.entries(lm)) {
+        if (entry && Array.isArray(entry.categories) && entry.categories.length) {
+          modelCategories[name] = entry.categories
+        }
+      }
+      Cache.save(CAT_CACHE_KEY, categories)
+      Cache.save(CAT_CACHE_KEY + '_mc', modelCategories)
+      return { categories, modelCategories }
+    })
+  },
+  // 推送本地分类到后端(合并式,只带分类相关字段;不携带 loraGroups,避免清空节点组)
+  syncCategoriesToBackend: async () => {
+    const s = get()
+    const loraMeta: Record<string, { categories: string[] }> = {}
+    for (const [name, cats] of Object.entries(s.modelCategories)) {
+      loraMeta[name] = { categories: cats || [] }
+    }
+    try {
+      await fetch('/anima/meta', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categories: s.categories, loraMeta }),
+      })
+    } catch { /* 后端不可用时忽略,面板仍可离线使用 */ }
+  },
 }))
 
 /** 返回所有本地 LoRA 文件的 basename（不含扩展名）+ 已匹配的 Civitai 模型名，用于在线卡片匹配 */

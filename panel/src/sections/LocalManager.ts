@@ -1,6 +1,7 @@
 import { useLocalModelStore } from '../store/localModels'
 import type { LocalSortKey, LocalFilterKey, LocalViewKey } from '../store/localModels'
 import { esc, escAttr, copyText, showToast, fmtNum, thumbUrl, debounce } from '../utils'
+import { openLightbox } from '../components/Lightbox'
 import type { PngMeta, LocalLoraFile, TagFreq } from '../types'
 import type { OutputMetadata } from '../types/outputs'
 import { promptModal, confirmModal } from '../components/Modal'
@@ -213,6 +214,10 @@ export async function initLocalManager() {
   renderLocalView()
   bindLocalEvents()
   _initDone = true
+  // 与节点 /anima/meta 双向分类同步：启动时拉取后端分类合并到本地
+  useLocalModelStore.getState().loadBackendMeta().then(() => {
+    renderSidebarList(useLocalModelStore.getState())
+  })
 }
 
 export async function activateLocalManager() {
@@ -1369,6 +1374,39 @@ function bindLocalEvents() {
         const state = useLocalModelStore.getState()
         if (state.selectedModel === name) state.selectModel(null)
         renderLocalView()
+      }
+      return
+    }
+
+    // C 站预览图点击放大：列表缩略图（先于选中详情处理，避免点图同时跳详情）
+    const listThumb = target.closest('.local-list-thumb') as HTMLElement
+    if (listThumb) {
+      const item = listThumb.closest('.local-list-item') as HTMLElement
+      const name = item?.dataset.name
+      const f = name ? useLocalModelStore.getState().files.find(ff => ff.name === name) : undefined
+      const imgs = f?.matchData?.images || []
+      if (imgs.length) openLightbox(imgs.map(u => thumbUrl(u, 800)), 0)
+      return
+    }
+    // C 站预览图点击放大：详情页大图 / 画廊缩略图
+    const heroImg = target.closest('.detail-hero-img') as HTMLElement
+    if (heroImg) {
+      const st = useLocalModelStore.getState()
+      const f = st.files.find(x => x.name === st.selectedModel)
+      const imgs = f?.matchData?.images || []
+      if (imgs.length) openLightbox(imgs.map(u => thumbUrl(u, 800)), 0)
+      return
+    }
+    const galleryImg = target.closest('.detail-gallery-thumb') as HTMLElement
+    if (galleryImg) {
+      const st = useLocalModelStore.getState()
+      const f = st.files.find(x => x.name === st.selectedModel)
+      const imgs = f?.matchData?.images || []
+      if (imgs.length) {
+        // gallery 渲染 images.slice(1,6)：容器内第 i 个子元素对应 images[i+1]
+        const gal = galleryImg.parentElement
+        const idx = gal ? Array.from(gal.children).indexOf(galleryImg) + 1 : 1
+        openLightbox(imgs.map(u => thumbUrl(u, 800)), Math.min(idx, imgs.length - 1))
       }
       return
     }

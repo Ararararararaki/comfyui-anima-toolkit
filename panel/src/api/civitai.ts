@@ -1,27 +1,64 @@
-import type { CivitaiResponse, PeriodKey } from '../types'
+import type { CivitaiResponse, PeriodKey, SortKey } from '../types'
 import { sleep, showToast, stripHtml } from '../utils'
 
 let controller: AbortController | null = null
 
-export async function fetchModels(page: number, period: PeriodKey): Promise<CivitaiResponse | null> {
+export interface ModelFetchParams {
+  query?: string
+  baseModels?: string
+  sort?: SortKey
+  nsfw?: 'all' | 'sfw'
+  tags?: string[]
+  period?: PeriodKey
+  limit?: number
+}
+
+const BASE_URL = 'https://civitai.com/api/v1/models'
+
+export function buildModelsUrl(params: ModelFetchParams, cursor?: string | null): string {
+  const sp = new URLSearchParams()
+  sp.set('types', 'LORA')
+  if (params.query?.trim()) sp.set('query', params.query.trim())
+  if (params.baseModels) sp.set('baseModels', params.baseModels)
+  if (params.sort) sp.set('sort', params.sort)
+  if (params.nsfw === 'sfw') sp.set('nsfw', 'false')
+  if (params.tags && params.tags.length > 0) sp.set('tag', params.tags.join(','))
+  if (params.period) sp.set('period', params.period)
+  sp.set('limit', String(params.limit ?? 100))
+  if (cursor) sp.set('cursor', cursor)
+  return `${BASE_URL}?${sp.toString()}`
+}
+
+async function getJson(url: string, signal?: AbortSignal): Promise<CivitaiResponse | null> {
+  // 429 限流与 503 搜索服务过载均自动重试（实测 query 搜索会偶发 503）
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const resp = await fetch(url, { signal })
+      if (resp.status === 429 || resp.status === 503) {
+        showToast(attempt === 0 ? '⚠️ API 限流/过载，等待重试…' : `⚠️ 重试中…(${attempt + 1}/3)`)
+        await sleep(3000)
+        continue
+      }
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      return resp.json()
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return null
+      if (attempt < 2) { await sleep(2000); continue }
+      throw err
+    }
+  }
+  return null
+}
+
+/**
+ * 抓取模型列表。不传 cursor 时按当前筛选构造新 URL（第一页）；
+ * 传 cursor 时使用 Civitai 返回的 nextPage URL（含 cursor）直接翻页。
+ * 注意：API 已改为 cursor 分页，page 参数不再生效（实测 page=1/2 返回相同数据）。
+ */
+export async function fetchModels(params: ModelFetchParams, cursor?: string | null): Promise<CivitaiResponse | null> {
   if (controller) controller.abort()
   controller = new AbortController()
-
-  const url = `https://civitai.com/api/v1/models?types=LORA&baseModels=Anima&sort=${encodeURIComponent('Most Downloaded')}&limit=100&period=${period}&page=${page}`
-
-  try {
-    const resp = await fetch(url, { signal: controller.signal })
-    if (resp.status === 429) {
-      showToast('⚠️ API 限流，等待重试…')
-      await sleep(3000)
-      return fetchModels(page, period)
-    }
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    return resp.json()
-  } catch (err) {
-    if ((err as Error).name === 'AbortError') return null
-    throw err
-  }
+  return getJson(buildModelsUrl(params, cursor), controller.signal)
 }
 
 export async function fetchModelById(id: number): Promise<CivitaiResponse['items'][0] | null> {

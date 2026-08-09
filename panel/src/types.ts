@@ -36,7 +36,12 @@ export interface CivitaiModel {
 
 export interface CivitaiResponse {
   items: CivitaiModel[]
-  metadata: { totalPages: number; nextPage: number | null }
+  metadata: {
+    totalPages?: number
+    nextPage?: string | null
+    nextCursor?: string | null
+    currentPage?: number
+  }
 }
 
 export type ModelCategory = 'artist' | 'character' | 'aesthetic' | 'background' | 'other'
@@ -70,8 +75,8 @@ export interface ProcessedModel {
   versionCreatedAt: string
 }
 
-export type SortKey = 'downloads' | 'likes' | 'ratio' | 'name'
-export type PeriodKey = 'AllTime' | 'Month' | 'Week'
+export type SortKey = 'Most Downloaded' | 'Highest Rated' | 'Newest' | 'Most Discussed' | 'Most Collected'
+export type PeriodKey = 'AllTime' | 'Year' | 'Month' | 'Week' | 'Day'
 export type SectionKey = 'lora' | 'artist' | 'prompt' | 'prompt-freq' | 'local' | 'outputs'
 
 export interface FavItem {

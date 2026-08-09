@@ -120,6 +120,70 @@ export function extractArtistsFromModels(trainedWordsLists: string[][]): { tag: 
     .map(([tag, count]) => ({ tag, name: tag.replace('@', ''), count }))
 }
 
+// ── 通用提取（类型可选 + 过滤规则） ──
+
+export type ExtractType = 'artist' | 'character' | 'style'
+
+export interface ExtractResult {
+  tag: string
+  name: string
+  count: number
+  sources: string[]
+}
+
+// Danbooru 通用质量词/计数词/占位词（角色与风格提取时过滤）
+const COMMON_WORDS = new Set([
+  'masterpiece', 'best quality', 'high quality', 'low quality', 'worst quality', 'quality',
+  'highres', 'absurdres', 'nsfw', 'solo', '1girl', '1boy', '2girls', 'multiple girls',
+  'looking at viewer', 'official art', 'concept art', 'sketch', 'lineart', 'watermark',
+  'signature', 'text', 'title', 'logo', 'anime style', 'art style', 'style',
+  'photorealistic', 'realistic', 'render', 'depth of field', 'blush', 'smile',
+  'closed mouth', 'open mouth', 'bangs', 'hair between eyes', 'sideways bangs',
+  'artist name', 'character name', 'tagme',
+])
+
+/**
+ * 从当前搜索结果中按类型提取标签：
+ * - artist：@ 开头的画师 tag（过滤通用词与模型名）
+ * - character：非 @ 高频词（角色名，过滤 Danbooru 质量/系统词）
+ * - style：非 @ 高频风格词（同 character 过滤规则，由调用方区分用途）
+ * minCount 为出现次数阈值，过滤只出现 1 次的噪音 tag。
+ */
+export function extractTagsFromModels(
+  models: { name: string; trainedWords: string[] }[],
+  type: ExtractType,
+  minCount = 1,
+): ExtractResult[] {
+  const tagCount = new Map<string, number>()
+  const sources = new Map<string, string[]>()
+  const modelNames = new Set(models.map(m => m.name.toLowerCase().replace(/[\s_-]/g, '')))
+
+  for (const m of models) {
+    for (const w of m.trainedWords || []) {
+      const t = w.trim()
+      if (t.length < 2 || t.length > 60) continue
+      const isArtistTag = t.startsWith('@')
+      if (type === 'artist' && !isArtistTag) continue
+      if (type !== 'artist' && isArtistTag) continue
+      const base = t.replace(/^@/, '')
+      if (COMMON_WORDS.has(base.toLowerCase())) continue
+      if (/^(rating|score|year|character_|artist_|style_|series_|copyright_|source_|tagme)/i.test(base)) continue
+      // 排除模型名本身（触发词即 lora 名时跳过，避免把模型名当画师/角色）
+      const norm = base.toLowerCase().replace(/[\s_-]/g, '')
+      if (modelNames.has(norm)) continue
+      tagCount.set(t, (tagCount.get(t) || 0) + 1)
+      const src = sources.get(t) || []
+      if (!src.includes(m.name)) src.push(m.name)
+      sources.set(t, src)
+    }
+  }
+  return [...tagCount.entries()]
+    .filter(([, c]) => c >= minCount)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 120)
+    .map(([tag, count]) => ({ tag, name: tag.replace('@', ''), count, sources: sources.get(tag) || [] }))
+}
+
 export function addArtistFromExtraction(tag: string, count: number): ArtistData | null {
   const list = getAll()
   if (list.some(a => a.tag === tag)) return null

@@ -1,5 +1,5 @@
 import type { ProcessedModel } from '../types'
-import { esc, thumbUrl, fmtNum, copyText } from '../utils'
+import { esc, escAttr, thumbUrl, fmtNum, copyText } from '../utils'
 import { isFav } from '../store/favorites'
 import { getNote } from '../store/notes'
 import { useModelStore } from '../store/models'
@@ -88,7 +88,7 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
       <div class="card-header">
         <div>
           <div class="card-title"><a href="${esc(m.url)}" target="_blank" rel="noopener" data-history="${esc(JSON.stringify(historyObj))}" onclick="window.__addViewHistory(JSON.parse(this.dataset.history))">${esc(m.name)}</a> <span class="badge badge-sm ${m.badgeClass}">${m.categoryLabel}</span>${notesIcon}${starsHtml}${statusBadge}</div>
-          <div class="card-creator">👤 <a href="${esc(m.creatorUrl)}" target="_blank">${esc(m.creator)}</a>${m.versionName ? ' · <span style="color:var(--text3)">v' + esc(m.versionName) + '</span>' : ''}</div>
+          <div class="card-creator">👤 <a href="${esc(m.creatorUrl)}" target="_blank">${esc(m.creator)}</a><button class="creator-search" title="按作者搜索" onclick="event.stopPropagation();window.__searchCreator('${escAttr(m.creator)}')">🔍</button>${m.versionName ? ' · <span style="color:var(--text3)">v' + esc(m.versionName) + '</span>' : ''}</div>
         </div>
         ${m.customAdded ? '<span class="custom-badge">📌 手动</span>' : ''}${(m.quality || []).map(q => q === 'hot' ? '<span class="quality-badge hot">🔥 热门</span>' : q === 'quality' ? '<span class="quality-badge good">👍 优质</span>' : q === 'new' ? '<span class="quality-badge new">🆕 新</span>' : '').join('')}
       </div>
