@@ -36,6 +36,10 @@ _PROXY_CACHE: dict = {}
 _CACHE_TTL = 60
 # Civitai 被墙需走代理：优先 ANIMA_PROXY 环境变量，否则自动探测本机 Clash/V2ray 常见端口
 _PROXY_OVERRIDE: str | None = None
+# 探测结果带 TTL：成功缓存 60s，失败仅 10s——用户中途开/关代理后，图片与查询 ≤10s 自动恢复/切换，无需重启 ComfyUI
+_PROXY_OVERRIDE_AT: float = 0.0
+_PROXY_OVERRIDE_TTL_OK = 60
+_PROXY_OVERRIDE_TTL_FAIL = 10
 
 def _cache_key(url, qs):
     return hashlib.md5(f"{url}?{qs}".encode()).hexdigest()
@@ -72,23 +76,70 @@ def _detect_proxy():
             continue
     return None
 
+_PROXY_LOCK: asyncio.Lock | None = None
+
+
+async def _refresh_proxy_override():
+    """重新探测代理并更新 TTL（成功缓存 60s，失败仅 10s——用户中途开/关代理后自动恢复）"""
+    global _PROXY_OVERRIDE, _PROXY_OVERRIDE_AT
+    now = time.time()
+    # 同步 socket 探测放线程池执行,避免阻塞 ComfyUI 事件循环(3 端口最坏 ~2.4s)
+    _PROXY_OVERRIDE = await asyncio.get_running_loop().run_in_executor(None, _detect_proxy)
+    _PROXY_OVERRIDE_AT = now + (_PROXY_OVERRIDE_TTL_OK if _PROXY_OVERRIDE else _PROXY_OVERRIDE_TTL_FAIL)
+
+
+async def _create_proxy_session():
+    """创建可复用的 aiohttp 会话（探测结果带 TTL）"""
+    if _PROXY_OVERRIDE is None or time.time() > _PROXY_OVERRIDE_AT:
+        await _refresh_proxy_override()
+    kwargs = dict(
+        # 用浏览器 UA：CivItai/Cloudflare 对非浏览器 UA 的下载请求会返回 401
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"},
+        timeout=aiohttp.ClientTimeout(total=30),
+        # 尊重 HTTP_PROXY/HTTPS_PROXY 环境变量
+        trust_env=True,
+    )
+    if _PROXY_OVERRIDE:
+        kwargs["proxy"] = _PROXY_OVERRIDE
+    return aiohttp.ClientSession(**kwargs)
+
+
+# 延迟关闭任务引用集：防止 create_task 未被持有而提前 GC（"Task was destroyed but pending" 警告）
+_PENDING_CLOSE: set = set()
+
+
+async def _safe_close(session):
+    """关闭旧会话。经 create_task 调度：不阻塞 _get_session 锁内路径；
+    注意 aiohttp close() 会立即关闭旧会话全部连接（代理切换瞬间若恰有持旧引用的慢请求仍可能 502，
+    低频且 10-60s 内自愈）；异常不向上抛。"""
+    try:
+        await session.close()
+    except Exception:
+        pass
+    finally:
+        _PENDING_CLOSE.discard(asyncio.current_task())
+
+
 async def _get_session():
-    global _PROXY_SESSION, _PROXY_OVERRIDE
-    if _PROXY_SESSION is None or _PROXY_SESSION.closed:
-        if _PROXY_OVERRIDE is None:
-            # 同步 socket 探测放线程池执行,避免阻塞 ComfyUI 事件循环(3 端口最坏 ~2.4s)
-            _PROXY_OVERRIDE = await asyncio.get_running_loop().run_in_executor(None, _detect_proxy)
-        kwargs = dict(
-            # 用浏览器 UA：CivItai/Cloudflare 对非浏览器 UA 的下载请求会返回 401
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"},
-            timeout=aiohttp.ClientTimeout(total=30),
-            # 尊重 HTTP_PROXY/HTTPS_PROXY 环境变量
-            trust_env=True,
-        )
-        if _PROXY_OVERRIDE:
-            kwargs["proxy"] = _PROXY_OVERRIDE
-        _PROXY_SESSION = aiohttp.ClientSession(**kwargs)
-    return _PROXY_SESSION
+    """返回可复用会话；探测结果过期时串行化重建（锁防并发竞态），探测无变化则复用 keep-alive"""
+    global _PROXY_SESSION, _PROXY_LOCK
+    if _PROXY_LOCK is None:
+        _PROXY_LOCK = asyncio.Lock()
+    async with _PROXY_LOCK:
+        if _PROXY_SESSION is None or _PROXY_SESSION.closed:
+            _PROXY_SESSION = await _create_proxy_session()
+        elif time.time() > _PROXY_OVERRIDE_AT:
+            prev = _PROXY_OVERRIDE
+            await _refresh_proxy_override()
+            if _PROXY_OVERRIDE != prev:
+                # 代理状态变化（开/关/换端口）→ 先替换全局引用，再延迟关闭旧会话：
+                # 消除竞态重建与旧会话泄漏；in-flight 502 风险降低（切换瞬间持旧引用的慢请求仍可能偶发，低频自愈）
+                old = _PROXY_SESSION
+                _PROXY_SESSION = await _create_proxy_session()
+                if old is not None and not old.closed:
+                    t = asyncio.get_running_loop().create_task(_safe_close(old))
+                    _PENDING_CLOSE.add(t)
+        return _PROXY_SESSION
 
 
 async def _load_index():
@@ -559,6 +610,54 @@ META_PATH = os.path.join(PLUGIN_DIR, "anima_meta.json")
 META_LOCK = threading.Lock()
 
 
+def _normalize_meta_keys(data: dict):
+    """把 loraMeta 中带扩展名的 key 合并到无扩展名（分类取并集），删除带扩展名条目。
+
+    面板旧数据用完整文件名（sigrika_v1.safetensors），节点用去扩展名（sigrika_v1），
+    两边 key 不一致导致分类互不可见。此函数读时归一化，幂等，下次保存时落盘清理。
+    """
+    lm = data.get("loraMeta")
+    if not isinstance(lm, dict):
+        return
+    merged = {}
+
+
+def _strip_model_ext(name: str) -> str:
+    """只去掉模型文件扩展名（避免把 chen-bin_v4.0 这类文件名误拆）"""
+    low = name.lower()
+    for ext in (".safetensors", ".pt", ".ckpt", ".pth", ".sft", ".bin"):
+        if low.endswith(ext):
+            return name[: -len(ext)]
+    return name
+
+    def _merge(dst: dict, src: dict):
+        for k, v in src.items():
+            if k == "categories" and isinstance(v, list):
+                cats = list(dst.get("categories", []) or [])
+                for c in v:
+                    if c not in cats:
+                        cats.append(c)
+                dst["categories"] = cats
+            else:
+                dst[k] = v
+
+    for name, entry in lm.items():
+        if not isinstance(entry, dict):
+            continue
+        base = _strip_model_ext(name)
+        if base == name:
+            if base in merged:
+                _merge(merged[base], entry)
+            else:
+                merged[base] = entry
+        else:
+            if base in merged:
+                _merge(merged[base], entry)
+            else:
+                merged[base] = entry
+    data["loraMeta"] = merged
+
+
 def _load_meta() -> dict:
     with META_LOCK:
         try:
@@ -566,6 +665,7 @@ def _load_meta() -> dict:
                 with open(META_PATH, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     if isinstance(data, dict):
+                        _normalize_meta_keys(data)
                         return data
         except Exception:
             pass

@@ -291,7 +291,7 @@ function renderColTabs() {
   container.innerHTML = cols.map(c =>
     `<button class="tab ${c.id === activeCol ? 'active' : ''}" data-colid="${c.id}" role="tab">${c.icon} ${esc(c.name)} <span class="count">${c.count}</span></button>`
   ).join('') +
-    `<button class="tab" id="manageColBtn" role="tab" style="border-color:var(--accent);color:var(--accent);font-size:11px">⚙️ 管理</button>`
+    `<button class="tab" id="manageColBtn" role="tab" style="border-color:var(--accent);color:var(--accent);font-size:11px">${icon('settings', 12)} 管理</button>`
 }
 
 function renderGrid(append = false) {
@@ -431,7 +431,7 @@ function renderSearchHistory() {
     }
   }
   if (searches.length > 0) {
-    html += `<div class="sh-title">🔍 搜索历史 <button onclick="clearSearches();renderSearchHistory();showToast('已清空搜索历史')">清空</button></div>`
+    html += `<div class="sh-title">${icon('search', 11)} 搜索历史 <button type="button" onclick="clearSearches();renderSearchHistory();showToast('已清空搜索历史')">清空</button></div>`
     for (const q of searches) {
       html += `<div class="sh-item" data-action="search" data-query="${esc(q)}"><span class="sh-icon">🕐</span><span class="sh-text">${esc(q)}</span></div>`
     }
@@ -573,7 +573,7 @@ export function setupGlobalHandlers() {
     const m = useModelStore.getState().processed.find(p => p.id === id)
     if (!m) return
     const added = toggleFav(m)
-    btn.textContent = added ? '⭐' : '☆'
+    btn.innerHTML = icon('star', 14)
     btn.classList.toggle('on', added)
     btn.classList.remove('pop')
     void btn.offsetWidth
@@ -581,7 +581,10 @@ export function setupGlobalHandlers() {
     updateTabs()
   }
 
-  w.__deleteCard = (id: number) => {
+  w.__deleteCard = async (id: number) => {
+    const m = useModelStore.getState().processed.find(p => p.id === id)
+    const name = m?.name || `#${id}`
+    if (!await confirmModal('永久删除', `确认永久删除「${name}」？\n此操作不可恢复！`)) return
     // 永久删除：从已加载数据与缓存中剔除，并清除隐藏记录（不可恢复）
     const store = useModelStore.getState()
     const raw = store.raw.filter(m => m.id !== id)
@@ -716,10 +719,12 @@ export function setupGlobalHandlers() {
     updateTabs()
   }
 
-  w.__batchHide = () => {
-    // 批量永久删除：从已加载数据与缓存中剔除（不可恢复）
+  w.__batchHide = async () => {
     const store = useModelStore.getState()
     const ids = [...store.batchSelected]
+    if (ids.length === 0) return
+    if (!await confirmModal('批量永久删除', `确认永久删除选中的 ${ids.length} 个模型？\n此操作不可恢复！`)) return
+    // 批量永久删除：从已加载数据与缓存中剔除（不可恢复）
     const idSet = new Set(ids)
     const raw = store.raw.filter(m => !idSet.has(m.id))
     store.setRaw(raw)
@@ -755,8 +760,8 @@ export function setupGlobalHandlers() {
       // Check if already extracted
       const count = await getPromptCountByModel(modelId)
 
-      btn.textContent = '✅'
-      btn.style.background = '#34d399'
+      btn.innerHTML = icon('check', 12)
+      btn.style.background = 'var(--green-dim)'
 
       const modal = document.getElementById('promptEditModal')
       if (modal) {
@@ -1188,7 +1193,7 @@ export function setupBindingListeners() {
     const found = extractTagsFromModels(processed, extractType, extractMinCount)
     const existing = new Set(getArtists().map(a => a.tag))
     const newCount = found.filter(f => !existing.has(f.tag)).length
-    const icon = extractType === 'artist' ? '🎨' : extractType === 'character' ? '👤' : '🏷️'
+    const typeIcon = extractType === 'artist' ? '🎨' : extractType === 'character' ? '👤' : '🏷️'
     const label = { artist: '画师', character: '角色', style: '风格词' }[extractType]
 
     if (found.length === 0) {
@@ -1198,7 +1203,7 @@ export function setupBindingListeners() {
 
     container.innerHTML = `<div style="padding:8px 10px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center">
       <span style="font-size:12px;color:var(--text2)">发现 <b>${found.length}</b> 个${label}，<b style="color:var(--green)">${newCount}</b> 个可添加</span>
-      ${extractType === 'artist' && newCount > 0 ? `<button class="btn btn-primary" id="extractAddAllBtn" style="padding:4px 12px;font-size:10px;margin-left:auto">➕ 添加全部 (${newCount})</button>` : ''}
+      ${extractType === 'artist' && newCount > 0 ? `<button class="btn btn-primary" id="extractAddAllBtn" style="padding:4px 12px;font-size:10px;margin-left:auto">${icon('plus', 12)} 添加全部 (${newCount})</button>` : ''}
     </div>`
     + found.map(f => {
       const already = existing.has(f.tag)
@@ -1206,10 +1211,10 @@ export function setupBindingListeners() {
       const action = extractType === 'artist'
         ? (already
           ? '<span style="font-size:10px;color:var(--text3);white-space:nowrap">✅ 已存在</span>'
-          : `<button class="btn btn-primary extract-add-one" data-tag="${escAttr(f.tag)}" data-count="${f.count}" style="padding:3px 10px;font-size:10px;white-space:nowrap">➕ 添加</button>`)
-        : `<button class="btn btn-ghost extract-search-one" data-tag="${escAttr(f.tag)}" style="padding:3px 10px;font-size:10px;white-space:nowrap">🔍 搜索</button>`
+          : `<button class="btn btn-primary extract-add-one" data-tag="${escAttr(f.tag)}" data-count="${f.count}" style="padding:3px 10px;font-size:10px;white-space:nowrap">${icon('plus', 12)} 添加</button>`)
+        : `<button class="btn btn-ghost extract-search-one" data-tag="${escAttr(f.tag)}" style="padding:3px 10px;font-size:10px;white-space:nowrap">${icon('search', 12)} 搜索</button>`
       return `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border)">
-        <span style="font-size:16px;width:24px;text-align:center">${icon}</span>
+        <span style="font-size:16px;width:24px;text-align:center">${typeIcon}</span>
         <div style="flex:1;min-width:0">
           <div style="font-size:13px;font-family:'Courier New',monospace;color:var(--accent)">${esc(f.tag)}</div>
           <div style="font-size:9px;color:var(--text3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">

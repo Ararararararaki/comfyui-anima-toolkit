@@ -1,5 +1,5 @@
 {
-  "name": "anima-toolkit",
+  "name": "anima-lora-explorer",
   "private": true,
   "version": "2.0.0",
   "type": "module",
@@ -9,8 +9,9 @@
     "dev:server": "node scripts/deploy-server.mjs",
     "dev:host": "vite --host --port 5173",
     "build": "tsc && vite build",
+    "smoke": "node scripts/smoke.mjs",
     "setup:comfyui": "node scripts/setup-comfyui.mjs",
-    "build:comfyui": "node scripts/build-comfyui.mjs",
+    "build:comfyui": "set COMFYUI_BASE=/extensions/ComfyUI-Anima-Batch-LoRA/app/ && tsc && vite build && node scripts/deploy-comfyui.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

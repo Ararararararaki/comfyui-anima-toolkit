@@ -22,7 +22,7 @@
   font-size: 12px;
   font-weight: 600;
   background: var(--accent, #5E6AD2);
-  color: #fff;
+  color: var(--text-on-accent, #fff);
 }
 .outputs-reauth-btn:hover { opacity: 0.9; }
 
@@ -161,7 +161,12 @@
   cursor: pointer;
   transition: all .15s;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
+.outputs-period-btn > svg,
+.outputs-filter-flag-btn > svg { flex-shrink: 0; }
 .outputs-period-btn:hover,
 .outputs-filter-flag-btn:hover {
   border-color: var(--accent);
@@ -319,7 +324,12 @@
   font-size: 13px;
   cursor: pointer;
   transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
 }
+.outputs-toolbar-btn > svg { flex-shrink: 0; }
 
 .outputs-toolbar-btn:hover {
   background: var(--bg3);
@@ -438,8 +448,8 @@
 
 .outputs-card-pinned-icon {
   font-size: 14px;
-  color: #8c9bff;
-  background: rgba(0,0,0,0.4);
+  color: var(--accent2);
+  background: var(--bg4);
   border-radius: 6px;
   padding: 2px 5px;
   line-height: 1;
@@ -584,9 +594,9 @@
   padding: 1px 7px;
   border-radius: 10px;
   font-size: 11px;
-  background: rgba(94, 106, 210, 0.18);
-  color: #9aa5ff;
-  border: 1px solid rgba(94, 106, 210, 0.3);
+  background: var(--purple-dim);
+  color: var(--accent2);
+  border: 1px solid var(--purple-dim);
 }
 
 
@@ -691,6 +701,7 @@
 
 .outputs-list-card-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 2px;
   margin-top: 2px;
 }
@@ -787,7 +798,11 @@
   font-size: 12px;
   cursor: pointer;
   transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
+.outputs-batch-btn > svg { flex-shrink: 0; }
 
 .outputs-batch-btn:hover {
   background: var(--accent);
@@ -1015,17 +1030,19 @@
 
 .outputs-meta-prompt {
   padding: 8px;
-  background: #f0f0f2;
+  background: var(--bg3);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 12px;
   line-height: 1.5;
-  color: #1a1a1c;
+  color: var(--text);
   word-break: break-all;
   cursor: pointer;
 }
 
 .outputs-meta-prompt:hover {
-  background: #e2e2e6;
+  background: var(--bg2);
+  border-color: var(--border-hover);
 }
 
 .outputs-meta-empty {
@@ -1037,17 +1054,19 @@
 
 .outputs-meta-prompt {
   padding: 8px;
-  background: #f0f0f2;
+  background: var(--bg3);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 12px;
   line-height: 1.5;
-  color: #1a1a1c;
+  color: var(--text);
   word-break: break-all;
   cursor: pointer;
 }
 
 .outputs-meta-prompt:hover {
-  background: #e2e2e6;
+  background: var(--bg2);
+  border-color: var(--border-hover);
 }
 
 /* 滚动哨兵 */

@@ -160,9 +160,9 @@ function renderSettingsHTML(s: AppSettings): string {
         <div class="settings-section">
           <h4 class="settings-section-title">${icon('copy', 14)} 导入/导出</h4>
           <div class="settings-row settings-actions-inline">
-            <button class="btn btn-sm" id="exportSettingsBtn">📤 导出设置</button>
-            <button class="btn btn-sm" id="importSettingsBtn">📥 导入设置</button>
-            <button class="btn btn-sm btn-danger" id="resetSettingsBtn">🔄 重置默认</button>
+            <button class="btn btn-sm" id="exportSettingsBtn">${icon('upload', 12)} 导出设置</button>
+            <button class="btn btn-sm" id="importSettingsBtn">${icon('download', 12)} 导入设置</button>
+            <button class="btn btn-sm btn-danger" id="resetSettingsBtn">${icon('refresh', 12)} 重置默认</button>
           </div>
           <input type="file" id="importFileInput" accept=".json" style="display:none">
         </div>
@@ -174,7 +174,7 @@ function renderSettingsHTML(s: AppSettings): string {
             <label class="settings-label">桥接状态</label>
             <div class="settings-actions-inline">
               <span id="comfyDirStatus" style="font-size:11px;color:var(--text3)">${s.comfyUIPath ? '已配置' : 'HTTP API (自动)'}</span>
-              <button class="btn btn-sm" id="comfyDirSelectBtn" style="display:none">📂 桥接目录 (旧版)</button>
+              <button class="btn btn-sm" id="comfyDirSelectBtn" style="display:none">${icon('folder', 12)} 桥接目录 (旧版)</button>
             </div>
           </div>
           <div class="settings-row">
@@ -329,9 +329,24 @@ function matchShortcut(e: KeyboardEvent, shortcut: string): boolean {
 
 function handleShortcut(action: string) {
   switch (action) {
-    case 'search':
-      document.getElementById('searchInput')?.focus()
+    case 'search': {
+      // 按当前激活 section 聚焦对应搜索框（兼容主搜索 + 各 section 搜索）
+      const section = document.querySelector('.main-tab.active')?.getAttribute('data-section') || 'lora'
+      const map: Record<string, string> = {
+        lora: 'searchInput',
+        local: 'localSearch',
+        artist: 'artistSearch',
+        prompt: 'promptSearch',
+        outputs: 'outputsSearch',
+        // prompt-freq 无独立搜索框，回退主搜索
+        'prompt-freq': 'searchInput',
+      }
+      const id = map[section]
+      const el = id ? document.getElementById(id) : null
+      if (el) { el.focus(); (el as HTMLInputElement).select?.() }
+      else document.getElementById('searchInput')?.focus()
       break
+    }
     case 'toggleTheme': {
       const dots = document.querySelectorAll('.theme-dot')
       const active = document.querySelector('.theme-dot.active')
@@ -360,14 +375,15 @@ function openSettings() {
     modal.id = SETTINGS_MODAL_ID
     modal.className = 'modal-overlay'
     document.body.appendChild(modal)
+    // 遮罩点击关闭：仅创建时绑定一次，避免重复打开监听器堆积
+    modal.addEventListener('click', (e) => { if (e.target === e.currentTarget) closeModal(SETTINGS_MODAL_ID) })
   }
   const s = getSettings()
   modal.innerHTML = renderSettingsHTML(s)
-  modal.classList.add('open')
+  openModal(SETTINGS_MODAL_ID)
 
-  // Close handlers
+  // Close handler（innerHTML 重建后重新绑定）
   document.getElementById('settingsCloseBtn')?.addEventListener('click', () => closeModal(SETTINGS_MODAL_ID))
-  modal.addEventListener('click', (e) => { if (e.target === e.currentTarget) closeModal(SETTINGS_MODAL_ID) })
 
   // Bind all events
   bindBackgroundEvents()

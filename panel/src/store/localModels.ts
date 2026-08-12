@@ -4,6 +4,8 @@ import { Cache } from './cache'
 import { fetchModelVersionByHash, fetchModelById } from '../api/civitai'
 import { showToast, stripExt } from '../utils'
 
+let _lastBackendSync = 0
+
 function progressShow(done: number, total: number, label: string) {
   const wrap = document.getElementById('localProgress')
   const bar = document.getElementById('localProgressBar')
@@ -110,7 +112,7 @@ interface LocalModelState {
 
   // 与节点 /anima/meta 双向分类同步
   fetchBackendMeta: () => Promise<any | null>
-  loadBackendMeta: () => Promise<void>
+  loadBackendMeta: (force?: boolean) => Promise<void>
   syncCategoriesToBackend: () => Promise<void>
 
   matchByUrl: (name: string, url: string) => Promise<void>
@@ -648,8 +650,11 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       return await resp.json()
     } catch { return null }
   },
-  // 从后端拉取分类合并到本地(节点侧改的分类同步回面板)
-  loadBackendMeta: async () => {
+  // 从后端拉取分类合并到本地(节点侧改的分类同步回面板);60s 节流避免每次切换栏目都请求+重渲染
+  loadBackendMeta: async (force = false) => {
+    const now = Date.now()
+    if (!force && now - _lastBackendSync < 60000) return
+    _lastBackendSync = now
     const backend = await get().fetchBackendMeta()
     if (!backend) return
     const cats: string[] = backend.categories || []
@@ -662,9 +667,15 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       for (const [k, v] of Object.entries(s.modelCategories)) {
         modelCategories[stripExt(k)] = v
       }
+      // 无扩展名 key 优先（节点新数据）；带扩展名仅在无扩展名缺失时兜底（消除顺序依赖）
+      const lmBase: Record<string, { categories?: string[] }> = {}
       for (const [name, entry] of Object.entries(lm)) {
+        const base = stripExt(name)
+        if (!(base in lmBase) || name === base) lmBase[base] = entry
+      }
+      for (const [base, entry] of Object.entries(lmBase)) {
         if (entry && Array.isArray(entry.categories) && entry.categories.length) {
-          modelCategories[stripExt(name)] = entry.categories
+          modelCategories[base] = entry.categories
         }
       }
       Cache.save(CAT_CACHE_KEY, categories)

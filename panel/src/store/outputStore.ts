@@ -83,7 +83,7 @@ interface OutputState {
   setFilterTag: (tag: string) => void
   setFilterCategory: (category: string) => void
   setCategory: (id: string, category: string) => Promise<void>
-  batchSetCategory: (ids: string[], category: string) => Promise<void>
+  batchSetCategory: (ids: string[], category: string) => Promise<number>
   deleteCategory: (category: string) => Promise<void>
   renameCategory: (oldName: string, newName: string) => Promise<void>
   clearAdvancedFilters: () => void
@@ -161,9 +161,10 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     set({ files })
     get().applyFilters()
   },
-  setViewMode: (viewMode) => set({ viewMode }),
+  setViewMode: (viewMode) => { set({ viewMode }); persistFilterState(get()) },
   setSortKey: (sortKey) => {
     set({ sortKey, page: 1 })
+    persistFilterState(get())
     get().applyFilters()
   },
   setSortOrder: (sortOrder) => {
@@ -179,10 +180,12 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   },
   setFilterKey: (filterKey) => {
     set({ filterKey, page: 1 })
+    persistFilterState(get())
     get().applyFilters()
   },
   setSearchQuery: (searchQuery) => {
     set({ searchQuery, page: 1 })
+    persistFilterState(get())
     get().applyFilters()
   },
   setCurrentPath: (currentPath) => {
@@ -190,14 +193,14 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     get().applyFilters()
   },
   setPage: (page: number) => set({ page }),
-  setFilterModel: (filterModel) => { set({ filterModel, page: 1 }); get().applyFilters() },
-  setFilterLora: (filterLora) => { set({ filterLora, page: 1 }); get().applyFilters() },
-  setFilterDateMin: (filterDateMin) => { set({ filterDateMin, page: 1 }); get().applyFilters() },
-  setFilterDateMax: (filterDateMax) => { set({ filterDateMax, page: 1 }); get().applyFilters() },
-  setFilterQuickPeriod: (filterQuickPeriod) => { set({ filterQuickPeriod, page: 1 }); get().applyFilters() },
-  setFilterStatusFlags: (filterStatusFlags) => { set({ filterStatusFlags, page: 1 }); get().applyFilters() },
-  setFilterTag: (filterTag) => { set({ filterTag, page: 1 }); get().applyFilters() },
-  setFilterCategory: (filterCategory) => { set({ filterCategory, page: 1 }); get().applyFilters() },
+  setFilterModel: (filterModel) => { set({ filterModel, page: 1 }); persistFilterState(get()); get().applyFilters() },
+  setFilterLora: (filterLora) => { set({ filterLora, page: 1 }); persistFilterState(get()); get().applyFilters() },
+  setFilterDateMin: (filterDateMin) => { set({ filterDateMin, page: 1 }); persistFilterState(get()); get().applyFilters() },
+  setFilterDateMax: (filterDateMax) => { set({ filterDateMax, page: 1 }); persistFilterState(get()); get().applyFilters() },
+  setFilterQuickPeriod: (filterQuickPeriod) => { set({ filterQuickPeriod, page: 1 }); persistFilterState(get()); get().applyFilters() },
+  setFilterStatusFlags: (filterStatusFlags) => { set({ filterStatusFlags, page: 1 }); persistFilterState(get()); get().applyFilters() },
+  setFilterTag: (filterTag) => { set({ filterTag, page: 1 }); persistFilterState(get()); get().applyFilters() },
+  setFilterCategory: (filterCategory) => { set({ filterCategory, page: 1 }); persistFilterState(get()); get().applyFilters() },
   setCategory: async (id, category) => {
     try {
       await outputsDb.files.update(id, { category })
@@ -206,22 +209,33 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     } catch (err) { console.warn('[outputStore] setCategory 失败:', err) }
   },
   batchSetCategory: async (ids, category) => {
-    for (const id of ids) await outputsDb.files.update(id, { category })
-    set(s => ({ files: s.files.map(f => ids.includes(f.id) ? { ...f, category } : f) }))
+    const results = await Promise.allSettled(ids.map(id => outputsDb.files.update(id, { category })))
+    const failed = results.filter(r => r.status === 'rejected')
+    if (failed.length > 0) console.warn(`[outputStore] batchSetCategory 失败 ${failed.length}/${ids.length}`)
+    // 仅更新 DB 写入成功的项，失败项保持原值（内存与 DB 一致）
+    const okIds = new Set(ids.filter((_, i) => results[i].status === 'fulfilled'))
+    set(s => ({ files: s.files.map(f => okIds.has(f.id) ? { ...f, category } : f) }))
     get().applyFilters()
+    return failed.length
   },
   deleteCategory: async (category) => {
     if (!category) return
     const ids = get().files.filter(f => f.category === category).map(f => f.id)
-    for (const id of ids) await outputsDb.files.update(id, { category: '' })
-    set(s => ({ files: s.files.map(f => f.category === category ? { ...f, category: '' } : f) }))
+    const results = await Promise.allSettled(ids.map(id => outputsDb.files.update(id, { category: '' })))
+    const failed = results.filter(r => r.status === 'rejected')
+    if (failed.length > 0) console.warn(`[outputStore] deleteCategory 失败 ${failed.length}/${ids.length}`)
+    const okIds = new Set(ids.filter((_, i) => results[i].status === 'fulfilled'))
+    set(s => ({ files: s.files.map(f => okIds.has(f.id) ? { ...f, category: '' } : f) }))
     get().applyFilters()
   },
   renameCategory: async (oldName, newName) => {
     if (!oldName || !newName) return
     const ids = get().files.filter(f => f.category === oldName).map(f => f.id)
-    for (const id of ids) await outputsDb.files.update(id, { category: newName })
-    set(s => ({ files: s.files.map(f => f.category === oldName ? { ...f, category: newName } : f) }))
+    const results = await Promise.allSettled(ids.map(id => outputsDb.files.update(id, { category: newName })))
+    const failed = results.filter(r => r.status === 'rejected')
+    if (failed.length > 0) console.warn(`[outputStore] renameCategory 失败 ${failed.length}/${ids.length}`)
+    const okIds = new Set(ids.filter((_, i) => results[i].status === 'fulfilled'))
+    set(s => ({ files: s.files.map(f => okIds.has(f.id) ? { ...f, category: newName } : f) }))
     get().applyFilters()
   },
   clearAdvancedFilters: () => {
@@ -236,6 +250,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     return { selectedIds: next }
   }),
   selectAll: () => set(s => ({
+    // Ctrl+A 语义 = 全选当前过滤视图（替换式，避免跨筛选累积选择波及不可见文件）
     selectedIds: new Set(s.filteredFiles.map(f => f.id))
   })),
   clearSelection: () => set({ selectedIds: new Set() }),
@@ -467,3 +482,37 @@ const savedOrder = localStorage.getItem('outputs_sortOrder')
 if (savedOrder === 'asc' || savedOrder === 'desc') {
   useOutputStore.getState().sortOrder = savedOrder
 }
+
+// ── 筛选状态持久化（viewMode/sortKey/filterKey/searchQuery/高级筛选）──
+const FILTER_STORAGE_KEY = 'outputs_filterState'
+function persistFilterState(state: { viewMode: string; sortKey: string; filterKey: string; searchQuery: string; filterModel: string; filterLora: string; filterDateMin: string; filterDateMax: string; filterQuickPeriod: string; filterStatusFlags: string[]; filterCategory: string }) {
+  try {
+    localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify({
+      viewMode: state.viewMode, sortKey: state.sortKey, filterKey: state.filterKey,
+      searchQuery: state.searchQuery, filterModel: state.filterModel, filterLora: state.filterLora,
+      filterDateMin: state.filterDateMin, filterDateMax: state.filterDateMax,
+      filterQuickPeriod: state.filterQuickPeriod, filterStatusFlags: state.filterStatusFlags,
+      filterCategory: state.filterCategory,
+    }))
+  } catch { /* quota */ }
+}
+function restoreFilterState() {
+  try {
+    const raw = localStorage.getItem(FILTER_STORAGE_KEY)
+    if (!raw) return
+    const saved = JSON.parse(raw)
+    const st = useOutputStore.getState()
+    if (saved.viewMode === 'grid' || saved.viewMode === 'list') st.viewMode = saved.viewMode
+    if (typeof saved.sortKey === 'string') st.sortKey = saved.sortKey
+    if (typeof saved.filterKey === 'string') st.filterKey = saved.filterKey
+    if (typeof saved.searchQuery === 'string') st.searchQuery = saved.searchQuery
+    if (typeof saved.filterModel === 'string') st.filterModel = saved.filterModel
+    if (typeof saved.filterLora === 'string') st.filterLora = saved.filterLora
+    if (typeof saved.filterDateMin === 'string') st.filterDateMin = saved.filterDateMin
+    if (typeof saved.filterDateMax === 'string') st.filterDateMax = saved.filterDateMax
+    if (typeof saved.filterQuickPeriod === 'string') st.filterQuickPeriod = saved.filterQuickPeriod
+    if (Array.isArray(saved.filterStatusFlags)) st.filterStatusFlags = saved.filterStatusFlags
+    if (typeof saved.filterCategory === 'string') st.filterCategory = saved.filterCategory
+  } catch { /* ignore */ }
+}
+restoreFilterState()

@@ -1,5 +1,5 @@
 import type { PromptEntry } from '../types'
-import { esc, fmtNum } from '../utils'
+import { esc, fmtNum, icon } from '../utils'
 
 // ── 搜索高亮工具 ──
 function highlightText(text: string, query: string): string {
@@ -41,9 +41,9 @@ export function renderPromptCard(p: PromptEntry, searchQuery = ''): string {
       ${tagsHtml ? `<div class="prompt-card-tags">${tagsHtml}</div>` : ''}
       ${p.notes ? `<div class="prompt-card-notes">💬 ${highlightText(p.notes.slice(0, 60), searchQuery)}${p.notes.length > 60 ? '…' : ''}</div>` : ''}
       <div class="prompt-card-actions">
-        <button class="btn btn-primary" data-copy="${esc(p.prompt)}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">📋 复制 Prompt</button>
-        <button class="btn btn-ghost" onclick="event.stopPropagation();window.__editPrompt('${p.id}')">✏️</button>
-        <button class="btn btn-danger prompt-card-del-btn" data-prompt-id="${p.id}">🗑️</button>
+        <button class="btn btn-primary" data-copy="${esc(p.prompt)}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${icon('copy', 12)} 复制 Prompt</button>
+        <button class="btn btn-ghost" onclick="event.stopPropagation();window.__editPrompt('${p.id}')" title="编辑">${icon('edit3', 12)}</button>
+        <button class="btn btn-danger prompt-card-del-btn" data-prompt-id="${p.id}" title="删除">${icon('trash', 12)}</button>
       </div>
     </div>
   </div>`

@@ -1,5 +1,5 @@
 import type { ProcessedModel } from '../types'
-import { esc, escAttr, thumbUrl, fmtNum, copyText } from '../utils'
+import { esc, escAttr, thumbUrl, fmtNum, copyText, icon } from '../utils'
 import { isFav } from '../store/favorites'
 import { getNote } from '../store/notes'
 import { useModelStore } from '../store/models'
@@ -59,19 +59,19 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
 
   // ── Workflow prompt ──
   const wfBtn = m.trainedWords?.length > 0
-    ? `<button class="wf-btn" onclick="event.stopPropagation();window.__copyWorkflowPrompt(${m.id},this)">⚡ 工作流 Prompt</button>`
+    ? `<button class="wf-btn" onclick="event.stopPropagation();window.__copyWorkflowPrompt(${m.id},this)">${icon('zap', 12)} 工作流 Prompt</button>`
     : ''
 
   const promptsHtml = (m.trainedWords?.length > 0)
     ? `<details class="prompts-details" style="margin-top:4px"><summary style="cursor:pointer;font-size:11px;color:var(--text2)">🔑 触发词 (${m.trainedWords.length})</summary>
         <div class="prompts-wrap" style="margin-top:4px">${
           m.trainedWords.map(w =>
-            `<div class="prompt-item"><code data-copy="${esc(w)}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${esc(w)}</code><div style="display:flex;gap:3px;flex-shrink:0"><button class="copy-btn" data-copy="${esc(w)}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">📋</button><button class="copy-btn" style="background:rgba(124,92,252,.5);font-size:9px" data-ew="${esc(w)}" onclick="event.stopPropagation();window.__extractPrompt(${m.id},this.dataset.ew,this)" title="提取到 Prompt 库">📥</button></div></div>`
+            `<div class="prompt-item"><code data-copy="${esc(w)}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${esc(w)}</code><div style="display:flex;gap:3px;flex-shrink:0"><button class="copy-btn" data-copy="${esc(w)}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${icon('copy', 12)}</button><button class="copy-btn" style="background:var(--purple-dim);font-size:9px" data-ew="${esc(w)}" onclick="event.stopPropagation();window.__extractPrompt(${m.id},this.dataset.ew,this)" title="提取到 Prompt 库">${icon('plus', 12)}</button></div></div>`
           ).join('')
         }<div class="prompt-actions">
-          <button class="pa-btn pa-btn-cpy" data-copy="${esc(m.trainedWords.join(', '))}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">📋 复制全部</button>
-          <button class="pa-btn pa-btn-cf" data-copy="${esc(m.trainedWords.join(', ') + ', masterpiece, best quality')}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">🎨 +质量词</button>
-          <button class="pa-btn pa-btn-sd" data-copy="${esc(m.trainedWords.map(w => '<lora:' + m.name.replace(/[^a-zA-Z0-9_]/g, '_') + ':' + w.replace(/^@/, '') + ':1.0>').join(' '))}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">⚡ ComfyUI 格式</button>
+          <button class="pa-btn pa-btn-cpy" data-copy="${esc(m.trainedWords.join(', '))}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${icon('copy', 12)} 复制全部</button>
+          <button class="pa-btn pa-btn-cf" data-copy="${esc(m.trainedWords.join(', ') + ', masterpiece, best quality')}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${icon('sparkles', 12)} +质量词</button>
+          <button class="pa-btn pa-btn-sd" data-copy="${esc(m.trainedWords.map(w => '<lora:' + m.name.replace(/[^a-zA-Z0-9_]/g, '_') + ':' + w.replace(/^@/, '') + ':1.0>').join(' '))}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${icon('zap', 12)} ComfyUI 格式</button>
         </div></div>
       </details>`
     : ''
@@ -88,7 +88,7 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
       <div class="card-header">
         <div>
           <div class="card-title"><a href="${esc(m.url)}" target="_blank" rel="noopener" data-history="${esc(JSON.stringify(historyObj))}" onclick="window.__addViewHistory(JSON.parse(this.dataset.history))">${esc(m.name)}</a> <span class="badge badge-sm ${m.badgeClass}">${m.categoryLabel}</span>${notesIcon}${starsHtml}${statusBadge}</div>
-          <div class="card-creator">👤 <a href="${esc(m.creatorUrl)}" target="_blank">${esc(m.creator)}</a><button class="creator-search" title="按作者搜索" onclick="event.stopPropagation();window.__searchCreator('${escAttr(m.creator)}')">🔍</button>${m.versionName ? ' · <span style="color:var(--text3)">v' + esc(m.versionName) + '</span>' : ''}</div>
+          <div class="card-creator">👤 <a href="${esc(m.creatorUrl)}" target="_blank">${esc(m.creator)}</a><button class="creator-search" title="按作者搜索" onclick="event.stopPropagation();window.__searchCreator('${escAttr(m.creator)}')">${icon('search', 11)}</button>${m.versionName ? ' · <span style="color:var(--text3)">v' + esc(m.versionName) + '</span>' : ''}</div>
         </div>
         ${m.customAdded ? '<span class="custom-badge">📌 手动</span>' : ''}${(m.quality || []).map(q => q === 'hot' ? '<span class="quality-badge hot">🔥 热门</span>' : q === 'quality' ? '<span class="quality-badge good">👍 优质</span>' : q === 'new' ? '<span class="quality-badge new">🆕 新</span>' : '').join('')}
       </div>
@@ -104,18 +104,18 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
       <div style="display:flex;gap:6px;margin-top:2px;flex-wrap:wrap">
         ${m.versions && m.versions.length > 0
           ? `<div class="version-dropdown-wrap" data-mid="${m.id}">
-              <button class="btn btn-primary version-dropdown-btn" style="flex:1;padding:5px;font-size:11px;min-width:80px">⬇ v${esc(m.versionName || m.versions[0].name)} ▾</button>
+              <button class="btn btn-primary version-dropdown-btn" style="flex:1;padding:5px;font-size:11px;min-width:80px">${icon('download', 12)} v${esc(m.versionName || m.versions[0].name)} ▾</button>
               <div class="version-dropdown" style="display:none">${m.versions.map(v =>
                 `<div class="version-option" data-url="${esc(v.files?.[0]?.downloadUrl || '')}">v${esc(v.name)}${v.files?.[0]?.name ? '<span class="version-file">' + esc(v.files[0].name) + '</span>' : ''}</div>`
               ).join('')}</div>
             </div>`
-          : m.downloadUrl ? `<button class="btn btn-primary" style="flex:1;padding:5px;font-size:11px;min-width:80px" onclick="window.open('${esc(m.downloadUrl)}','_blank')">⬇ 下载</button>` : ''}
-        <button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:11px" onclick="event.stopPropagation();window.__openNotes(${m.id})" title="备注/评分">💬</button>
+          : m.downloadUrl ? `<button class="btn btn-primary" style="flex:1;padding:5px;font-size:11px;min-width:80px" onclick="window.open('${esc(m.downloadUrl)}','_blank')">${icon('download', 12)} 下载</button>` : ''}
+        <button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:11px" onclick="event.stopPropagation();window.__openNotes(${m.id})" title="备注/评分">${icon('star', 12)}</button>
         ${wfBtn}
-        <button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:11px" onclick="event.stopPropagation();window.__copyCardInfo(${m.id})" title="复制卡片信息">📋</button>
+        <button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:11px" onclick="event.stopPropagation();window.__copyCardInfo(${m.id})" title="复制卡片信息">${icon('copy', 12)}</button>
         ${currentCategory === 'hidden'
-          ? '<button class="btn" style="flex:1;padding:5px;font-size:11px;min-width:60px;background:rgba(52,211,153,.2);color:var(--green)" onclick="event.stopPropagation();window.__restoreCard(' + m.id + ')">♻️ 恢复</button>'
-          : '<button class="btn btn-danger" style="flex:0;padding:5px 10px;font-size:11px;opacity:.6" onclick="event.stopPropagation();window.__deleteCard(' + m.id + ')" title="隐藏此 LoRA">🗑️</button>'}
+          ? '<button class="btn" style="flex:1;padding:5px;font-size:11px;min-width:60px;background:var(--green-dim);color:var(--green)" onclick="event.stopPropagation();window.__restoreCard(' + m.id + ')">' + icon('refresh', 12) + ' 恢复</button>'
+          : '<button class="btn btn-danger" style="flex:0;padding:5px 10px;font-size:11px;opacity:.6" onclick="event.stopPropagation();window.__deleteCard(' + m.id + ')" title="永久删除此 LoRA">' + icon('trash', 12) + '</button>'}
       </div>
     </div>
   </div>`
@@ -130,11 +130,11 @@ function renderGalleryHtml(m: ProcessedModel, imgs: string[], multi: boolean): s
     `<span class="${i === 0 ? 'active' : ''}" data-uid="${m.uid}" data-imgidx="${i}"></span>`
   ).join('') : ''
   const fbBadge = m.fallbackDone
-    ? `<span class="img-count" style="right:6px;left:auto;top:auto;bottom:36px;background:rgba(124,92,252,.8)">🔄 公开图库</span>`
+    ? `<span class="img-count" style="right:6px;left:auto;top:auto;bottom:36px;background:var(--purple-dim)">${icon('refreshCw', 10)} 公开图库</span>`
     : ''
   const isFavStatus = isFav(m.id)
   return `<div class="gallery" data-uid="${m.uid}">
-    <button class="fav-btn ${isFavStatus ? 'on' : ''}" data-favid="${m.id}" onclick="event.stopPropagation();window.__toggleFav(${m.id},this)">${isFavStatus ? '⭐' : '☆'}</button>
+    <button class="fav-btn ${isFavStatus ? 'on' : ''}" data-favid="${m.id}" onclick="event.stopPropagation();window.__toggleFav(${m.id},this)">${isFavStatus ? icon('star', 14) : icon('star', 14)}</button>
     <div class="gallery-track" data-uid="${m.uid}">${track}</div>
     ${multi ? `<button class="gallery-btn prev" data-uid="${m.uid}" data-dir="-1">‹</button>
     <button class="gallery-btn next" data-uid="${m.uid}" data-dir="1">›</button>

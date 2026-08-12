@@ -1255,7 +1255,13 @@
             else window.open("https://civitai.com/models/" + m, "_blank");
           } else {
             if (w && !w.closed) w.close();
-            showToast("未匹配到 C 站模型，已跳转搜索");
+            // 区分"查询失败(可能未开代理)"与"确实无匹配"：失败时提示用户开代理后重试
+            const src = (info && info.source) || "";
+            if (src.startsWith("error") || src.startsWith("http_")) {
+              showToast("⚠️ 获取 C 站链接失败(可能未开代理)，已改为搜索，开代理后可重试");
+            } else {
+              showToast("此模型在 C 站未匹配到，已跳转搜索");
+            }
             window.open("https://civitai.com/search/models?query=" + encodeURIComponent(name) + "&type=LORA", "_blank");
           }
         });

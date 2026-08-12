@@ -14,27 +14,27 @@
 
 <header>
   <div class="header-inner">
-    <h1>🎨 Anima Toolkit <small>本地工具箱</small></h1>
+    <h1><span data-icon="palette" class="h1-icon"></span> Anima Toolkit <small>本地工具箱</small></h1>
   <nav class="main-tabs" id="mainTabs" role="tablist">
-      <button class="main-tab active" data-section="local" role="tab" aria-selected="true">🖥️ 本地 lora 管理</button>
-      <button class="main-tab" data-section="lora" role="tab" aria-selected="false">📦 LoRA 探索 <span class="badge-tab" id="loraBadge">0</span></button>
-      <button class="main-tab" data-section="artist" role="tab" aria-selected="false">🖌️ 画师系列 <span class="badge-tab">8</span></button>
-      <button class="main-tab" data-section="prompt" role="tab" aria-selected="false">📖 Prompt 库</button>
-      <button class="main-tab" data-section="prompt-freq" role="tab" aria-selected="false">🖼️ 图片解析</button>
-      <button class="main-tab" data-section="outputs" role="tab" aria-selected="false">🖼️ Outputs</button>
+      <button class="main-tab active" data-section="local" data-icon="monitor" role="tab" aria-selected="true"><span>本地 lora 管理</span></button>
+      <button class="main-tab" data-section="lora" data-icon="package" role="tab" aria-selected="false"><span>LoRA 探索</span> <span class="badge-tab" id="loraBadge">0</span></button>
+      <button class="main-tab" data-section="artist" data-icon="brush" role="tab" aria-selected="false"><span>画师系列</span> <span class="badge-tab">8</span></button>
+      <button class="main-tab" data-section="prompt" data-icon="book" role="tab" aria-selected="false"><span>Prompt 库</span></button>
+      <button class="main-tab" data-section="prompt-freq" data-icon="image" role="tab" aria-selected="false"><span>图片解析</span></button>
+      <button class="main-tab" data-section="outputs" data-icon="grid" role="tab" aria-selected="false"><span>Outputs</span></button>
     </nav>
     <div class="theme-switcher" id="themeSwitcher" title="切换主题">
       <span class="theme-dot active" data-theme="mono" title="Monochrome 暗"></span>
       <span class="theme-dot" data-theme="mono-light" title="Monochrome 亮"></span>
     </div>
-    <button class="icon-btn settings-btn" id="settingsBtn" title="设置 (Ctrl+,)">⚙️</button>
+    <button class="icon-btn settings-btn" id="settingsBtn" data-icon="settings" title="设置 (Ctrl+,)"></button>
   </div>
 </header>
 
 <div id="sectionLora">
   <div class="ctrl-group">
     <div class="search-wrap">
-      <span class="icon" aria-hidden="true">🔍</span>
+      <span class="icon" data-icon="search" aria-hidden="true"></span>
       <input type="text" id="searchInput" placeholder="搜索名称、描述、标签、作者…" autocomplete="off" aria-label="搜索 LoRA">
       <div class="search-history" id="searchHistory" style="display:none"></div>
     </div>
@@ -67,14 +67,14 @@
     </select>
     <input type="text" id="tagInput" placeholder="🏷️ 标签过滤（逗号分隔）" autocomplete="off" style="width:150px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text);font-size:12px" aria-label="标签过滤">
     <div class="period-group" role="group" aria-label="统计周期">
-      <button class="period-btn active" data-period="AllTime">📅 全部</button>
-      <button class="period-btn" data-period="Year">🗓️ 今年</button>
-      <button class="period-btn" data-period="Month">📆 本月</button>
-      <button class="period-btn" data-period="Week">📋 本周</button>
-      <button class="period-btn" data-period="Day">⏱️ 今日</button>
+      <button class="period-btn active" data-period="AllTime" data-icon="calendar"><span>全部</span></button>
+      <button class="period-btn" data-period="Year" data-icon="calendar"><span>今年</span></button>
+      <button class="period-btn" data-period="Month" data-icon="calendar"><span>本月</span></button>
+      <button class="period-btn" data-period="Week" data-icon="calendar"><span>本周</span></button>
+      <button class="period-btn" data-period="Day" data-icon="sun"><span>今日</span></button>
     </div>
-    <button class="btn btn-ghost btn-border-green" id="batchModeBtn" type="button">✂️ 选择</button>
-    <button class="btn btn-ghost btn-border-accent" id="addLoraBtn" type="button">➕ 手动添加</button>
+    <button class="btn btn-ghost btn-border-green" id="batchModeBtn" data-icon="checkSquare" type="button"><span>选择</span></button>
+    <button class="btn btn-ghost btn-border-accent" id="addLoraBtn" data-icon="plus" type="button"><span>手动添加</span></button>
     <button class="btn btn-ghost" id="clearHiddenBtn" type="button"></button>
   </div>
 
@@ -98,13 +98,13 @@
 
   <div class="tabs-wrap">
     <div class="tabs" id="tabsContainer" role="tablist">
-      <button class="tab active" data-cat="all" role="tab">🏠 全部 <span class="count" id="cAll">0</span></button>
-      <button class="tab" data-cat="artist" role="tab">🎨 画师风格 <span class="count" id="cArtist">0</span></button>
-      <button class="tab" data-cat="character" role="tab">👤 人物角色 <span class="count" id="cCharacter">0</span></button>
-      <button class="tab" data-cat="aesthetic" role="tab">✨ 美学优化 <span class="count" id="cAesthetic">0</span></button>
-      <button class="tab" data-cat="background" role="tab">🌄 背景环境 <span class="count" id="cBg">0</span></button>
-      <button class="tab" data-cat="other" role="tab">📦 其他 <span class="count" id="cOther">0</span></button>
-      <button class="tab tab-fav" data-cat="fav" role="tab">⭐ 收藏 <span class="count" id="cFav">0</span></button>
+      <button class="tab active" data-cat="all" role="tab" data-icon="home"><span>全部</span> <span class="count" id="cAll">0</span></button>
+      <button class="tab" data-cat="artist" role="tab" data-icon="brush"><span>画师风格</span> <span class="count" id="cArtist">0</span></button>
+      <button class="tab" data-cat="character" role="tab" data-icon="user"><span>人物角色</span> <span class="count" id="cCharacter">0</span></button>
+      <button class="tab" data-cat="aesthetic" role="tab" data-icon="sparkles"><span>美学优化</span> <span class="count" id="cAesthetic">0</span></button>
+      <button class="tab" data-cat="background" role="tab" data-icon="sun"><span>背景环境</span> <span class="count" id="cBg">0</span></button>
+      <button class="tab" data-cat="other" role="tab" data-icon="package"><span>其他</span> <span class="count" id="cOther">0</span></button>
+      <button class="tab tab-fav" data-cat="fav" role="tab" data-icon="star"><span>收藏</span> <span class="count" id="cFav">0</span></button>
     </div>
     <div class="tabs col-tabs" id="colTabs" role="tablist"></div>
   </div>
@@ -144,16 +144,16 @@
         <p>Anima 模型常用画师 Prompt 标签，点击卡片选择组合</p>
         <div class="artist-toolbar">
           <div class="search-wrap search-wrap-fill">
-            <span class="icon">🔍</span>
+            <span class="icon" data-icon="search" aria-hidden="true"></span>
             <input type="text" id="artistSearch" placeholder="搜索画师名、Tag、描述…" autocomplete="off">
           </div>
-          <button class="btn btn-ghost btn-border-accent" id="addArtistBtn">➕ 添加</button>
-          <button class="btn btn-ghost btn-border-green" id="extractArtistBtn">📊 提取</button>
-          <button class="btn btn-ghost btn-sm" id="artistSortBtn">📅 默认</button>
-          <button class="btn btn-ghost btn-border-green" id="artistBatchToggleBtn">✂️ 批量</button>
-          <button class="btn btn-ghost btn-border-accent2" id="artistImportBtn">📥 导入</button>
-          <button class="btn btn-ghost btn-border-accent2" id="artistExportBtn">📤 导出</button>
-          <button class="btn btn-ghost btn-border-orange" id="artistDanbooruBtn">🔄 Danbooru 更新</button>
+          <button class="btn btn-ghost btn-border-accent" id="addArtistBtn" data-icon="plus"><span>添加</span></button>
+          <button class="btn btn-ghost btn-border-green" id="extractArtistBtn" data-icon="list"><span>提取</span></button>
+          <button class="btn btn-ghost btn-sm" id="artistSortBtn" data-icon="sortDesc"><span>默认</span></button>
+          <button class="btn btn-ghost btn-border-green" id="artistBatchToggleBtn" data-icon="checkSquare"><span>批量</span></button>
+          <button class="btn btn-ghost btn-border-accent2" id="artistImportBtn" data-icon="upload"><span>导入</span></button>
+          <button class="btn btn-ghost btn-border-accent2" id="artistExportBtn" data-icon="download"><span>导出</span></button>
+          <button class="btn btn-ghost btn-border-orange" id="artistDanbooruBtn" data-icon="refreshCw"><span>Danbooru 更新</span></button>
         </div>
       </div>
       <div class="artist-grid" id="artistGrid"></div>
@@ -170,17 +170,17 @@
       </div>
       <div class="artist-panel-bottom">
         <div class="artist-prompt-box">
-          <button class="btn btn-ghost preset-format-btn" id="artistFormatBtn">🔄 NAI格式</button>
+          <button class="btn btn-ghost preset-format-btn" id="artistFormatBtn" data-icon="refreshCw"><span>NAI格式</span></button>
           <textarea id="artistPromptPreview" class="artist-prompt-textarea" placeholder="选择画师后自动生成…" readonly></textarea>
-          <button class="btn btn-primary btn-md" id="artistCopyBtn">📋 复制</button>
+          <button class="btn btn-primary btn-md" id="artistCopyBtn" data-icon="copy"><span>复制</span></button>
         </div>
         <div class="preset-import-section">
           <textarea id="artistPromptImportText" class="artist-prompt-textarea artist-import-textarea" placeholder="粘贴画师串 (WebUI/NAI格式) 一键导入…"></textarea>
-          <button class="btn btn-ghost artist-import-btn" id="artistPromptImportBtn">📥 解析导入画师串</button>
+          <button class="btn btn-ghost artist-import-btn" id="artistPromptImportBtn" data-icon="upload"><span>解析导入画师串</span></button>
         </div>
         <div class="artist-panel-actions">
-          <button class="btn btn-ghost btn-sm btn-border-green" id="artistSavePresetBtn">💾 保存预设</button>
-          <button class="btn btn-ghost btn-sm" id="artistClearBtn" style="color:var(--text3)">✕ 清空</button>
+          <button class="btn btn-ghost btn-sm btn-border-green" id="artistSavePresetBtn" data-icon="book"><span>保存预设</span></button>
+          <button class="btn btn-ghost btn-sm" id="artistClearBtn" style="color:var(--text3)" data-icon="x"><span>清空</span></button>
         </div>
         <div class="artist-presets" id="artistPresets">
           <div class="artist-presets-header">▼ 我的预设</div>
@@ -202,10 +202,10 @@
     <main class="prompt-main">
       <div class="prompt-toolbar">
         <div class="search-wrap search-wrap-md">
-          <span class="icon">🔍</span>
+          <span class="icon" data-icon="search" aria-hidden="true"></span>
           <input type="text" id="promptSearch" placeholder="搜索 Prompt、标签、模型…" autocomplete="off">
         </div>
-        <button class="btn btn-primary" id="promptAddBtn">➕ 新增 Prompt</button>
+        <button class="btn btn-primary" id="promptAddBtn" data-icon="plus"><span>新增 Prompt</span></button>
       </div>
       <div class="prompt-grid" id="promptGrid"><div class="empty-state empty-state-grid"><div class="big">📖</div><p>Prompt 库为空</p><p class="sub">浏览 LoRA 列表，从卡片中提取触发词，或点击「新增 Prompt」手动添加</p></div></div>
     </main>
@@ -239,8 +239,8 @@
     <p class="sub">粘贴 Civitai LoRA 页面链接，将未自动收录的模型添加到列表中</p>
     <input type="text" id="addUrlInput" placeholder="https://civitai.com/models/12345/name" autocomplete="off">
     <div class="modal-actions">
-      <button class="btn btn-primary" id="addConfirmBtn">✅ 确认添加</button>
-      <button class="btn btn-ghost" id="addCancelBtn">取消</button>
+      <button class="btn btn-primary" id="addConfirmBtn" data-icon="check"><span>确认添加</span></button>
+      <button class="btn btn-ghost" id="addCancelBtn" data-icon="x"><span>取消</span></button>
     </div>
     <div class="modal-status" id="addStatus"></div>
   </div>
@@ -253,12 +253,12 @@
     <div class="modal-scroll" id="colList"></div>
     <div class="modal-form-row">
       <input type="text" id="newColName" placeholder="新收藏夹名称" style="flex:1">
-      <button class="btn btn-primary" id="createColBtn">➕ 新建</button>
+      <button class="btn btn-primary" id="createColBtn" data-icon="plus"><span>新建</span></button>
     </div>
     <div class="modal-actions modal-mt">
       <button class="btn btn-ghost" id="closeColManageBtn">关闭</button>
-      <button class="btn btn-ghost btn-border-accent" id="exportFavBtn">📤 导出</button>
-      <button class="btn btn-ghost btn-border-accent" id="importFavBtn">📥 导入</button>
+      <button class="btn btn-ghost btn-border-accent" id="exportFavBtn" data-icon="download"><span>导出</span></button>
+      <button class="btn btn-ghost btn-border-accent" id="importFavBtn" data-icon="upload"><span>导入</span></button>
     </div>
     <input type="file" id="importFavFile" accept=".json" style="display:none">
     <div class="modal-status" id="colManageStatus"></div>
@@ -268,11 +268,11 @@
 <div id="sectionLocal" class="section-hidden">
   <div class="local-container">
     <div class="local-toolbar">
-      <button class="btn btn-primary" id="localScanBtn">📂 扫描文件夹</button>
-      <button class="btn btn-ghost btn-border-accent" id="localUrlBtn" title="从 C 站链接下载 LoRA 到本地目录">🔗 URL 下载</button>
-      <button class="btn btn-ghost btn-border-green" id="localMatchAllBtn">🔍 全部匹配</button>
-      <button class="btn btn-ghost btn-border-red" id="localClearBtn">🗑️ 清空</button>
-      <button class="btn btn-ghost btn-border-green" id="localBatchToggleBtn">✂️ 批量分类</button>
+      <button class="btn btn-primary" id="localScanBtn" data-icon="folder"><span>扫描文件夹</span></button>
+      <button class="btn btn-ghost btn-border-accent" id="localUrlBtn" title="从 C 站链接下载 LoRA 到本地目录" data-icon="downloadCloud"><span>URL 下载</span></button>
+      <button class="btn btn-ghost btn-border-green" id="localMatchAllBtn" data-icon="refresh"><span>全部匹配</span></button>
+      <button class="btn btn-ghost btn-border-red" id="localClearBtn" data-icon="trash"><span>清空</span></button>
+      <button class="btn btn-ghost btn-border-green" id="localBatchToggleBtn" data-icon="checkSquare"><span>批量分类</span></button>
       <span id="localScanStats" class="local-stats-bar"></span>
       <span id="localNewFileBadge" class="local-newfile-badge hidden"></span>
     </div>
@@ -285,7 +285,7 @@
     <div class="local-split">
       <aside class="local-sidebar">
         <div class="local-sidebar-search">
-          <span class="icon" aria-hidden="true">🔍</span>
+          <span class="icon" data-icon="search" aria-hidden="true"></span>
           <input type="text" id="localSearch" placeholder="搜索文件名、模型名…" autocomplete="off">
         </div>
         <div class="local-sidebar-filters">
@@ -306,19 +306,38 @@
         </div>
         <div class="local-batch-bar batch-bar-hidden" id="localBatchBar">
           <span id="localBatchCount" class="local-batch-count">已选 0 项</span>
-          <button class="btn btn-ghost btn-sm" id="localBatchAssignBtn" style="flex:1">🏷️ 分类</button>
+          <button class="btn btn-ghost btn-sm" id="localBatchAssignBtn" style="flex:1" data-icon="tag"><span>分类</span></button>
           <div class="local-batch-dd-wrap" id="localBatchDDWrap"><div class="local-tree-dropdown hidden" id="localBatchDropdown"></div></div>
-          <button class="btn btn-ghost btn-xs" id="localBatchClearBtn" style="color:var(--text3)">✕</button>
+          <button class="btn btn-ghost btn-xs" id="localBatchClearBtn" style="color:var(--text3)" data-icon="x"></button>
         </div>
       </aside>
 
       <main class="local-main">
         <div class="local-view-tabs">
-          <button class="local-view-tab active" data-view="home">🏠 首页</button>
-          <button class="local-view-tab" data-view="detail">📋 详情</button>
+          <button class="local-view-tab active" data-view="home" data-icon="monitor"><span>首页</span></button>
+          <button class="local-view-tab" data-view="prompt" data-icon="send"><span>批量发送</span></button>
+          <button class="local-view-tab" data-view="gallery" data-icon="image"><span>PNG 解析</span></button>
+          <button class="local-view-tab" data-view="detail" data-icon="file-text"><span>详情</span></button>
         </div>
         <div class="local-view-pages">
           <div class="local-page active" id="pageLocalHome">
+          </div>
+
+          <div class="local-page" id="pageLocalPrompt">
+            <div id="promptLoraList"></div>
+          </div>
+
+          <div class="local-page" id="pageLocalGallery">
+            <div id="localPngDropZone" class="local-png-dropzone">
+              <p>点击选择或拖入 PNG 图片（解析提示词 / LoRA / 参数）</p>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0 4px">
+              <h4 style="margin:0">PNG 提示词画廊</h4>
+              <button class="btn btn-ghost btn-sm" id="localPngClearBtn" data-icon="trash"><span>清空</span></button>
+            </div>
+            <div id="localPngList"></div>
+            <h4 style="margin:14px 0 4px">标签频率统计</h4>
+            <div id="localTagList" class="local-tag-cloud"></div>
           </div>
 
           <div class="local-page" id="pageLocalDetail">
@@ -340,9 +359,9 @@
     <aside class="outputs-sidebar">
       <div class="outputs-sidebar-header">
         <h3>📁 目录</h3>
-        <button class="btn btn-ghost btn-sm outputs-select-btn">选择</button>
-        <button class="btn btn-ghost btn-sm outputs-refresh-btn">刷新</button>
-        <button class="btn btn-ghost btn-sm outputs-reparse-btn" title="强制重新解析所有图片的元数据（升级解析逻辑后使用）">重解析</button>
+        <button class="btn btn-ghost btn-sm outputs-select-btn" data-icon="folder"><span>选择</span></button>
+        <button class="btn btn-ghost btn-sm outputs-refresh-btn" data-icon="refresh"><span>刷新</span></button>
+        <button class="btn btn-ghost btn-sm outputs-reparse-btn" title="强制重新解析所有图片的元数据（升级解析逻辑后使用）" data-icon="refreshCw"><span>重解析</span></button>
       </div>
       <div class="outputs-dir-tree" id="outputsDirTree">
         <div class="outputs-empty-sidebar"><p>📁 选择目录开始扫描</p></div>
@@ -384,9 +403,9 @@
           <div class="outputs-filter-group">
             <label>筛选</label>
             <div class="outputs-filter-quick-period">
-              <button class="outputs-filter-flag-btn" data-flag="favorite">⭐ 已收藏</button>
-              <button class="outputs-filter-flag-btn" data-flag="rated">👍 已评分</button>
-              <button class="outputs-filter-flag-btn" data-flag="status">🏷️ 有标签</button>
+              <button class="outputs-filter-flag-btn" data-flag="favorite" data-icon="star"><span>已收藏</span></button>
+              <button class="outputs-filter-flag-btn" data-flag="rated" data-icon="thumbsUp"><span>已评分</span></button>
+              <button class="outputs-filter-flag-btn" data-flag="status" data-icon="tag"><span>有标签</span></button>
             </div>
           </div>
           <div class="outputs-filter-group">
@@ -396,10 +415,10 @@
                 <option value="">全部</option>
                 <option value="__none__">未分类</option>
               </select>
-              <button class="outputs-category-manage-btn" title="管理分类（删除/重命名）">⚙️</button>
+              <button class="outputs-category-manage-btn" title="管理分类（删除/重命名）" data-icon="settings"></button>
             </div>
           </div>
-          <button class="btn btn-ghost btn-xs outputs-filter-clear" style="display:none;margin-top:8px;width:100%">✕ 清除筛选</button>
+          <button class="btn btn-ghost btn-xs outputs-filter-clear" style="display:none;margin-top:8px;width:100%" data-icon="x"><span>清除筛选</span></button>
         </div>
       </div>
     </aside>
@@ -407,34 +426,37 @@
     <main class="outputs-main">
       <div class="outputs-toolbar">
         <div class="outputs-search-wrap">
-          <input type="text" class="outputs-search" placeholder="搜索文件名、模型、提示词…" autocomplete="off">
+          <input type="text" class="outputs-search" id="outputsSearch" placeholder="搜索文件名、模型、提示词…" autocomplete="off">
         </div>
         <div class="outputs-toolbar-group">
-          <button class="outputs-toolbar-btn outputs-view-grid active" title="网格视图">🔲</button>
-          <button class="outputs-toolbar-btn outputs-view-list" title="列表视图">📋</button>
+          <button class="outputs-toolbar-btn outputs-select-all-btn" id="outputsSelectAllBtn" data-icon="checkSquare" title="全选当前视图"></button>
         </div>
         <div class="outputs-toolbar-group">
-          <button class="outputs-toolbar-btn outputs-sort-btn" data-sort="date" title="按日期排序">📅</button>
-          <button class="outputs-toolbar-btn outputs-sort-btn" data-sort="name" title="按名称排序">📝</button>
-          <button class="outputs-toolbar-btn outputs-sort-btn" data-sort="size" title="按大小排序">📏</button>
-          <button class="outputs-toolbar-btn outputs-sort-order-btn" title="切换排序方向">↓</button>
+          <button class="outputs-toolbar-btn outputs-view-grid active" data-icon="grid" title="网格视图"></button>
+          <button class="outputs-toolbar-btn outputs-view-list" data-icon="list" title="列表视图"></button>
+        </div>
+        <div class="outputs-toolbar-group">
+          <button class="outputs-toolbar-btn outputs-sort-btn" data-sort="date" data-icon="clock" title="按日期排序"></button>
+          <button class="outputs-toolbar-btn outputs-sort-btn" data-sort="name" data-icon="file-text" title="按名称排序"></button>
+          <button class="outputs-toolbar-btn outputs-sort-btn" data-sort="size" data-icon="package" title="按大小排序"></button>
+          <button class="outputs-toolbar-btn outputs-sort-order-btn" data-icon="arrowUpDown" title="切换排序方向"></button>
         </div>
         <div class="outputs-toolbar-group">
           <button class="outputs-toolbar-btn outputs-filter-btn" data-filter="all">全部</button>
-          <button class="outputs-toolbar-btn outputs-filter-btn" data-filter="favorites">⭐ 收藏</button>
-          <button class="outputs-toolbar-btn outputs-filter-btn" data-filter="rated">👍 评分</button>
+          <button class="outputs-toolbar-btn outputs-filter-btn" data-filter="favorites" data-icon="heart"><span>收藏</span></button>
+          <button class="outputs-toolbar-btn outputs-filter-btn" data-filter="rated" data-icon="thumbsUp"><span>评分</span></button>
         </div>
-        <button class="outputs-toolbar-btn outputs-shortcuts-btn" title="快捷键">⌨️ 快捷键</button>
+        <button class="outputs-toolbar-btn outputs-shortcuts-btn" data-icon="keyboard" title="快捷键"></button>
       </div>
 
       <div class="outputs-batch-bar" id="outputsBatchBar" style="display:none">
         <span id="outputsBatchCount">已选 0 张</span>
-        <button class="outputs-batch-btn outputs-batch-fav-btn">⭐ 收藏</button>
-        <button class="outputs-batch-btn outputs-batch-unfav-btn">☆ 取消收藏</button>
-        <button class="outputs-batch-btn outputs-batch-rate-btn">🌟 评分</button>
-        <button class="outputs-batch-btn outputs-batch-copy-btn">📋 复制</button>
-        <button class="outputs-batch-btn outputs-batch-download-btn">⬇️ 下载</button>
-        <button class="outputs-batch-btn danger outputs-batch-delete-btn">🗑️ 删除</button>
+        <button class="outputs-batch-btn outputs-batch-fav-btn" data-icon="heart"><span>收藏</span></button>
+        <button class="outputs-batch-btn outputs-batch-unfav-btn" data-icon="x"><span>取消收藏</span></button>
+        <button class="outputs-batch-btn outputs-batch-rate-btn" data-icon="star"><span>评分</span></button>
+        <button class="outputs-batch-btn outputs-batch-copy-btn" data-icon="copy"><span>复制</span></button>
+        <button class="outputs-batch-btn outputs-batch-download-btn" data-icon="download"><span>下载</span></button>
+        <button class="outputs-batch-btn danger outputs-batch-delete-btn" data-icon="trash"><span>删除</span></button>
       </div>
 
       <div class="outputs-scan-progress" id="outputsScanProgress" style="display:none">
@@ -446,7 +468,7 @@
         <div class="outputs-empty">
           <div class="big">🖼️</div>
           <p>选择 ComfyUI 输出目录开始管理图片</p>
-          <button class="btn btn-primary outputs-select-btn">📁 选择目录</button>
+          <button class="btn btn-primary outputs-select-btn" data-icon="folder"><span>选择目录</span></button>
         </div>
       </div>
 
@@ -468,7 +490,7 @@
     <div class="artist-img-grid" id="artistImgList"></div>
     <div class="modal-form-row">
       <input type="text" id="artistImgUrl" placeholder="粘贴图片 URL 添加" style="flex:1">
-      <button class="btn btn-primary" id="artistImgAddBtn">➕ 添加</button>
+      <button class="btn btn-primary" id="artistImgAddBtn" data-icon="plus"><span>添加</span></button>
     </div>
     <div class="modal-actions modal-mt">
       <button class="btn btn-ghost" id="closeArtistImgBtn">关闭</button>
@@ -483,9 +505,9 @@
     <h3>📊 从当前搜索结果提取</h3>
     <p class="sub" id="artistExtractDesc">从当前已加载 LoRA 的触发词中提取（结果范围 = 当前远程搜索结果）</p>
     <div style="display:flex;gap:6px;padding:6px 10px;border-bottom:1px solid var(--border)">
-      <button class="btn btn-primary extract-type-btn active" data-type="artist" style="flex:1;padding:4px;font-size:11px">🎨 画师</button>
-      <button class="btn btn-ghost extract-type-btn" data-type="character" style="flex:1;padding:4px;font-size:11px">👤 角色</button>
-      <button class="btn btn-ghost extract-type-btn" data-type="style" style="flex:1;padding:4px;font-size:11px">🏷️ 风格词</button>
+      <button class="btn btn-primary extract-type-btn active" data-type="artist" style="flex:1;padding:4px;font-size:11px" data-icon="brush"><span>画师</span></button>
+      <button class="btn btn-ghost extract-type-btn" data-type="character" style="flex:1;padding:4px;font-size:11px" data-icon="user"><span>角色</span></button>
+      <button class="btn btn-ghost extract-type-btn" data-type="style" style="flex:1;padding:4px;font-size:11px" data-icon="tag"><span>风格词</span></button>
       <button class="btn btn-ghost" id="extractMinCountBtn" style="padding:4px 8px;font-size:11px" title="出现次数阈值">≥1次</button>
     </div>
     <div class="modal-scroll-lg" id="artistExtractList"></div>
@@ -508,8 +530,8 @@
       <textarea id="notesContent" placeholder="写点使用心得、权重推荐、搭配建议…&#10;例: CFG 4, Euler a, 权重0.9, 搭 @ask 效果好" class="textarea-md min-h-100"></textarea>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-primary" id="notesSaveBtn">✅ 保存</button>
-      <button class="btn btn-ghost" id="notesCancelBtn">取消</button>
+      <button class="btn btn-primary" id="notesSaveBtn" data-icon="check"><span>保存</span></button>
+      <button class="btn btn-ghost" id="notesCancelBtn" data-icon="x"><span>取消</span></button>
     </div>
     <div class="modal-status" id="notesStatus"></div>
   </div>
@@ -521,8 +543,8 @@
     <p class="sub">编辑 Prompt 内容和元信息</p>
     <div id="promptEditForm"></div>
     <div class="modal-actions">
-      <button class="btn btn-primary" id="promptEditSaveBtn">✅ 保存</button>
-      <button class="btn btn-ghost" id="promptEditCancelBtn">取消</button>
+      <button class="btn btn-primary" id="promptEditSaveBtn" data-icon="check"><span>保存</span></button>
+      <button class="btn btn-ghost" id="promptEditCancelBtn" data-icon="x"><span>取消</span></button>
     </div>
     <div class="modal-status" id="promptEditStatus"></div>
   </div>
@@ -533,21 +555,21 @@
   <button class="lb-nav prev" aria-label="上一张">‹</button>
   <button class="lb-nav next" aria-label="下一张">›</button>
   <div class="lb-editbar" id="lbEditBar">
-    <button data-act="rotl" title="向左旋转 90°">↺ 左转</button>
-    <button data-act="rotr" title="向右旋转 90°">↻ 右转</button>
-    <button data-act="fliph" title="水平翻转">⇋ 水平</button>
-    <button data-act="flipv" title="垂直翻转">⇵ 垂直</button>
-    <button data-act="crop" title="框选保留区域">✂ 裁剪</button>
-    <button data-act="save" title="保存为副本（不覆盖原图）">💾 保存</button>
-    <button data-act="reset" title="重置编辑">↩ 重置</button>
+    <button data-act="rotl" title="向左旋转 90°" data-icon="rotateCcw"><span>左转</span></button>
+    <button data-act="rotr" title="向右旋转 90°" data-icon="rotateCw"><span>右转</span></button>
+    <button data-act="fliph" title="水平翻转" data-icon="flipHorizontal"><span>水平</span></button>
+    <button data-act="flipv" title="垂直翻转" data-icon="flipVertical"><span>垂直</span></button>
+    <button data-act="crop" title="框选保留区域" data-icon="crop"><span>裁剪</span></button>
+    <button data-act="save" title="保存为副本（不覆盖原图）" data-icon="download"><span>保存</span></button>
+    <button data-act="reset" title="重置编辑" data-icon="undo"><span>重置</span></button>
   </div>
   <div class="lb-edit-wrap" id="lbEditWrap" style="display:none">
     <canvas id="lbEditCanvas"></canvas>
     <div class="lb-crop-layer" id="lbCropLayer">
       <div class="lb-crop-rect" id="lbCropRect"></div>
       <div class="lb-crop-btns">
-        <button class="lb-crop-confirm" id="lbCropConfirm">✓ 确认裁剪</button>
-        <button class="lb-crop-cancel" id="lbCropCancel">✕ 取消</button>
+        <button class="lb-crop-confirm" id="lbCropConfirm" data-icon="check"><span>确认裁剪</span></button>
+        <button class="lb-crop-cancel" id="lbCropCancel" data-icon="x"><span>取消</span></button>
       </div>
     </div>
   </div>
@@ -559,10 +581,10 @@
 
 <div id="batchBar" class="batch-bar batch-bar-hidden">
   <span id="batchCount" class="batch-bar-count">已选 0 项</span>
-  <button class="btn btn-primary batch-bar-item" id="batchFavBtn">⭐ 批量收藏</button>
-  <button class="btn btn-danger batch-bar-item batch-bar-del" id="batchHideBtn">批量删除</button>
-  <button class="btn btn-ghost batch-bar-item" id="batchCopyBtn">📋 复制触发词</button>
-  <button class="btn btn-ghost batch-bar-item" id="batchCloseBtn">✕ 退出</button>
+  <button class="btn btn-primary batch-bar-item" id="batchFavBtn" data-icon="heart"><span>批量收藏</span></button>
+  <button class="btn btn-danger batch-bar-item batch-bar-del" id="batchHideBtn" data-icon="trash"><span>批量删除</span></button>
+  <button class="btn btn-ghost batch-bar-item" id="batchCopyBtn" data-icon="copy"><span>复制触发词</span></button>
+  <button class="btn btn-ghost batch-bar-item" id="batchCloseBtn" data-icon="x"><span>退出</span></button>
 </div>
 <script type="module" src="/src/main.ts"></script>
 </body>

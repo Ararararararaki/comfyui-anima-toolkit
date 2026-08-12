@@ -24,33 +24,6 @@ function isPureLoraText(text: string): boolean {
   return text.replace(/<lora:[^>]*>/gi, '').trim().length === 0
 }
 
-function decompressZlib(data: Uint8Array): string {
-  // 浏览器环境没有原生 zlib，使用 DecompressionStream API
-  // 如果浏览器不支持，尝试直接解码
-  try {
-    // 先尝试作为原始 deflate 数据解压（跳过 zlib 头部的 2 字节）
-    const deflateData = data.slice(2)
-    const ds = new DecompressionStream('deflate-raw')
-    const writer = ds.writable.getWriter()
-    writer.write(deflateData)
-    writer.close()
-    const reader = ds.readable.getReader()
-    const chunks: Uint8Array[] = []
-    const pump = async () => {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        if (value) chunks.push(value)
-      }
-    }
-    // 同步方式无法 await，使用 TextDecoder 兜底
-    pump().then(() => { /* 异步解压完成 */ })
-    return ''
-  } catch {
-    return new TextDecoder().decode(data)
-  }
-}
-
 export async function decompressZlibAsync(data: Uint8Array): Promise<string> {
   try {
     // zTXt 使用 zlib 格式（deflate + 2 字节头部 + 4 字节校验）
@@ -58,16 +31,25 @@ export async function decompressZlibAsync(data: Uint8Array): Promise<string> {
     const deflateData = data.slice(2, data.length - 4)
     const ds = new DecompressionStream('deflate-raw')
     const writer = ds.writable.getWriter()
-    writer.write(deflateData)
-    writer.close()
+    writer.write(deflateData).catch(() => { /* 取消路径下写入 promise 可能 reject，仅噪音（review nit） */ })
+    writer.close().catch(() => { /* 解压流取消时关闭 promise 可能 reject，仅噪音（security low 修复） */ })
     const reader = ds.readable.getReader()
     const chunks: Uint8Array[] = []
+    const MAX_OUTPUT = 2 * 1024 * 1024 // 2MB 上限，防解压炸弹 DoS（security HIGH 修复）
+    let total = 0
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-      if (value) chunks.push(value)
+      if (value) {
+        total += value.length
+        if (total > MAX_OUTPUT) {
+          // 超限：丢弃数据，取消解压流，返回空串（由调用方 fallback 处理）
+          await reader.cancel().catch(() => { /* ignore */ })
+          return ''
+        }
+        chunks.push(value)
+      }
     }
-    const total = chunks.reduce((acc, c) => acc + c.length, 0)
     const result = new Uint8Array(total)
     let offset = 0
     for (const c of chunks) { result.set(c, offset); offset += c.length }
@@ -827,8 +809,10 @@ export async function parseOutputMetadata(
       if (dataEnd > bytes.length) break
 
       let keyEnd = dataStart
-      while (keyEnd < dataEnd && bytes[keyEnd] !== 0) keyEnd++
-      const key = String.fromCharCode(...bytes.slice(dataStart, keyEnd))
+      while (keyEnd < dataEnd && bytes[keyEnd] !== 0 && keyEnd - dataStart < 79) keyEnd++
+      // key 按 PNG 规范 ≤79 字节截断，循环拼接避免超大 spread 抛 RangeError（security 修复）
+      let key = ''
+      for (let i = dataStart; i < keyEnd; i++) key += String.fromCharCode(bytes[i])
 
       let val: string
       if (type === 'zTXt') {

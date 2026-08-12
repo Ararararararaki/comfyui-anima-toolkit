@@ -61,6 +61,8 @@ async function dedupFilesByPath(allFiles: OutputFile[]): Promise<void> {
 
 async function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
   return new Promise((resolve, reject) => {
+    // 超大文件直接拒绝，避免全量读入内存放大攻击面（review low 修复，与 PNG 解析 20MB 上限一致）
+    if (file.size > 20 * 1024 * 1024) { reject(new Error('file too large')); return }
     const reader = new FileReader()
     reader.onload = () => resolve(reader.result as ArrayBuffer)
     reader.onerror = reject
@@ -413,16 +415,13 @@ export async function scanOutputDir(dirHandle: FileSystemDirectoryHandle): Promi
 
     const allFiles = [...restoredFiles, ...newFiles]
 
-    // 更新状态
+    // 更新状态（保留持久化的筛选/搜索状态，不再强制重置）
     useOutputStore.setState({
       files: allFiles,
       scanStatus: 'done',
       scanProgress: { done: allFiles.length, total: allFiles.length },
       loading: false,
       currentPath: '',
-      searchQuery: '',
-      filterKey: 'all',
-      page: 1,
     })
 
     store.setFiles(allFiles)

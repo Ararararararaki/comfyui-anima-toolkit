@@ -107,10 +107,10 @@ export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, i
       </div>
       <div class="outputs-card-date">${fmtDate(file.mtime)}</div>
       <div class="outputs-card-actions">
-        ${meta?.prompt ? `<button class="outputs-copy-prompt-btn" data-id="${escAttr(file.id)}" title="复制正面 Prompt">📝 正面</button>` : ''}
-        ${meta?.workflowJson ? `<button class="outputs-copy-lora-btn" data-id="${escAttr(file.id)}" title="复制 LoRA 标签">🏷️ LoRA</button>` : ''}
-        ${meta?.workflowJson ? `<button class="outputs-dl-wf-btn" data-id="${escAttr(file.id)}" title="保存为 .json 文件，拖入 ComfyUI 画布即可导入">⬇️ 下载工作流</button>` : ''}
-        ${meta ? `<button class="outputs-meta-btn" data-id="${escAttr(file.id)}" title="查看元数据">ℹ️ 元数据</button>` : ''}
+        ${meta?.prompt ? `<button class="outputs-copy-prompt-btn" data-id="${escAttr(file.id)}" title="复制正面 Prompt">${icon('file-text', 12)} 正面</button>` : ''}
+        ${meta?.workflowJson ? `<button class="outputs-copy-lora-btn" data-id="${escAttr(file.id)}" title="复制 LoRA 标签">${icon('tag', 12)} LoRA</button>` : ''}
+        ${meta?.workflowJson ? `<button class="outputs-dl-wf-btn" data-id="${escAttr(file.id)}" title="保存为 .json 文件，拖入 ComfyUI 画布即可导入">${icon('download', 12)} 下载工作流</button>` : ''}
+        ${meta ? `<button class="outputs-meta-btn" data-id="${escAttr(file.id)}" title="查看元数据">${icon('info', 12)} 元数据</button>` : ''}
       </div>
     </div>
   </div>`
@@ -147,8 +147,14 @@ function renderListCard(file: OutputFile, selectedIds: Set<string>, metadataCach
       </div>
       <div class="outputs-list-card-actions">
         <button class="outputs-action-btn outputs-fav-btn" data-id="${escAttr(file.id)}" title="收藏">${icon('star', 14, file.favorite ? 'fill-icon' : '')}</button>
+        <button class="outputs-action-btn outputs-copy-btn" data-id="${escAttr(file.id)}" title="复制图片">${icon('copy', 14)}</button>
+        <button class="outputs-action-btn outputs-download-btn" data-id="${escAttr(file.id)}" title="下载">${icon('download', 14)}</button>
         <button class="outputs-action-btn outputs-preview-btn" data-id="${escAttr(file.id)}" title="预览">${icon('eye', 14)}</button>
         <button class="outputs-action-btn outputs-rename-btn" data-id="${escAttr(file.id)}" data-name="${escAttr(file.filename)}" title="重命名">${icon('edit3', 14)}</button>
+        ${meta?.prompt ? `<button class="outputs-action-btn outputs-copy-prompt-btn" data-id="${escAttr(file.id)}" title="复制正面 Prompt">${icon('file-text', 14)}</button>` : ''}
+        ${meta?.workflowJson ? `<button class="outputs-action-btn outputs-copy-lora-btn" data-id="${escAttr(file.id)}" title="复制 LoRA 标签">${icon('tag', 14)}</button>` : ''}
+        ${meta?.workflowJson ? `<button class="outputs-action-btn outputs-dl-wf-btn" data-id="${escAttr(file.id)}" title="保存为 .json 文件，拖入 ComfyUI 画布即可导入">${icon('fileJson', 14)}</button>` : ''}
+        ${meta ? `<button class="outputs-action-btn outputs-meta-btn" data-id="${escAttr(file.id)}" title="查看元数据">${icon('info', 14)}</button>` : ''}
       </div>
     </div>
   </div>`
@@ -160,7 +166,7 @@ export function renderEmpty(dirHandle: boolean): string {
   return `<div class="outputs-empty">
     <div class="big">🖼️</div>
     <p>${dirHandle ? '当前目录没有图片' : '选择 ComfyUI 输出目录开始管理图片'}</p>
-    ${!dirHandle ? '<button class="btn btn-primary outputs-select-btn">📁 选择目录</button>' : ''}
+    ${!dirHandle ? '<button class="btn btn-primary outputs-select-btn" data-icon="folder"><span>选择目录</span></button>' : ''}
   </div>`
 }
 
@@ -180,7 +186,7 @@ export function renderMetadataPanel(meta: OutputMetadata | null, file: OutputFil
   const hasWorkflow = !!meta?.workflowJson
   const header = `<div class="outputs-meta-header">
     <h3>元数据</h3>
-    ${hasWorkflow ? `<button class="outputs-meta-copy-btn" id="outputsMetaCopyWorkflowBtn" title="下载工作流 JSON">⬇️</button>` : ''}
+    ${hasWorkflow ? `<button class="outputs-meta-copy-btn" id="outputsMetaCopyWorkflowBtn" title="下载工作流 JSON">${icon('download', 12)}</button>` : ''}
     <button class="outputs-meta-close-btn" id="outputsMetaCloseBtn" title="关闭面板">✕</button>
   </div>`
 

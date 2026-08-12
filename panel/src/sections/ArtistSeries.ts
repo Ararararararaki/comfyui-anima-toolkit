@@ -1,4 +1,4 @@
-import { esc, escAttr, copyText, showToast, fmtNum } from '../utils'
+import { esc, escAttr, copyText, showToast, fmtNum, setBtnIcon, icon } from '../utils'
 import { openLightbox } from '../components/Lightbox'
 import {
   getArtists, refreshArtists, getArtistById, getArtistCategories,
@@ -140,7 +140,7 @@ function renderArtistCard(a: ArtistData, store: ReturnType<typeof useArtistStore
   // 图片预览按钮（不嵌入图片，节省卡片空间）
   const imgCount = (a.images || []).length
   const previewBtn = imgCount > 0
-    ? `<button class="artist-card-preview-btn" data-id="${escAttr(id)}" onclick="event.stopPropagation(); window.__openArtistLightbox('${escAttr(id)}', 0)" title="预览图片">🖼️ ${imgCount}张</button>`
+    ? `<button class="artist-card-preview-btn" data-id="${escAttr(id)}" onclick="event.stopPropagation(); window.__openArtistLightbox('${escAttr(id)}', 0)" title="预览图片">${icon('image', 12)} ${imgCount}张</button>`
     : ''
 
   // Danbooru 统计
@@ -259,9 +259,9 @@ function renderSidebarRight() {
         '  <span class="artist-sel-name">' + esc(name) + '</span>\n' +
         '  <input type="range" class="artist-sel-weight" min="0.1" max="2" step="0.1" value="' + weight + '" data-tag="' + escAttr(tag) + '">\n' +
         '  <input type="number" class="artist-sel-weight-input" min="0.1" max="2" step="0.1" value="' + weight.toFixed(1) + '" data-tag="' + escAttr(tag) + '" title="直接输入权重 (0.1-2)">\n' +
-        '  <button class="artist-sel-up" data-tag="' + escAttr(tag) + '" title="上移">↑</button>\n' +
-        '  <button class="artist-sel-down" data-tag="' + escAttr(tag) + '" title="下移">↓</button>\n' +
-        '  <button class="artist-sel-remove" data-tag="' + escAttr(tag) + '" title="移除">✕</button>\n' +
+        '  <button class="artist-sel-up" data-tag="' + escAttr(tag) + '" title="上移">' + icon('arrowUp', 12) + '</button>\n' +
+        '  <button class="artist-sel-down" data-tag="' + escAttr(tag) + '" title="下移">' + icon('arrowDown', 12) + '</button>\n' +
+        '  <button class="artist-sel-remove" data-tag="' + escAttr(tag) + '" title="移除">' + icon('x', 12) + '</button>\n' +
         '</div>'
     }).join('')
   }
@@ -284,8 +284,8 @@ function renderSidebarRight() {
       : store.presets.map(p => '<div class="artist-preset-item" data-id="' + escAttr(p.id) + '">\n' +
           '  <span class="preset-name">' + esc(p.name) + '</span>\n' +
           '  <span class="preset-count">' + p.artists.length + '位</span>\n' +
-          '  <button class="preset-load-btn" data-id="' + escAttr(p.id) + '" title="加载">📥</button>\n' +
-          '  <button class="preset-del-btn" data-id="' + escAttr(p.id) + '" title="删除">✕</button>\n' +
+          '  <button class="preset-load-btn" data-id="' + escAttr(p.id) + '" title="加载">' + icon('download', 12) + '</button>\n' +
+          '  <button class="preset-del-btn" data-id="' + escAttr(p.id) + '" title="删除">' + icon('x', 12) + '</button>\n' +
           '</div>').join('')
   }
 }
@@ -416,8 +416,7 @@ function bindPanelEvents() {
     const store = useArtistStore.getState()
     const next = store.promptFormat === 'webui' ? 'nai' : 'webui'
     useArtistStore.setState({ promptFormat: next })
-    const btn = document.getElementById('artistFormatBtn')
-    if (btn) btn.textContent = next === 'webui' ? '🔄 NAI格式' : '🔄 WebUI格式'
+    setBtnIcon(document.getElementById('artistFormatBtn'), 'refreshCw', next === 'webui' ? 'NAI格式' : 'WebUI格式')
     renderSidebarRight()
   })
 
@@ -495,9 +494,9 @@ function bindToolbarEvents() {
     const modes = ['default', 'alpha', 'hot'] as const
     const next = modes[(modes.indexOf(store.sortMode) + 1) % 3]
     store.setSortMode(next)
-    const labels: Record<string, string> = { default: '📅 默认', alpha: '🔤 字母', hot: '🔥 热度' }
-    const btn = document.getElementById('artistSortBtn')
-    if (btn) btn.textContent = labels[next]
+    const labels: Record<string, string> = { default: '默认', alpha: '字母', hot: '热度' }
+    const icons: Record<string, string> = { default: 'sortDesc', alpha: 'sortAsc', hot: 'trendingUp' }
+    setBtnIcon(document.getElementById('artistSortBtn'), icons[next], labels[next])
     updateView()
   })
 
@@ -663,7 +662,7 @@ function bindDanbooruEvents() {
     if ((btn as HTMLButtonElement).disabled) return
     ;(btn as HTMLButtonElement).disabled = true
     cancelled = false
-    btn.textContent = '⏳ 更新中…'
+    setBtnIcon(btn, 'spinner', '更新中…')
 
     const rate = 3
     const concurrency = 3
@@ -680,7 +679,7 @@ function bindDanbooruEvents() {
         container.innerHTML = '<div class="danbooru-progress">\n' +
           '<div class="danbooru-progress-bar"><div class="danbooru-progress-fill" style="width:' + pct + '%"></div></div>\n' +
           '<span>' + done + '/' + total + ' (' + errors + ' 错误)</span>\n' +
-          '<button class="btn btn-ghost" id="danbooruCancelBtn" style="font-size:10px">⏹ 停止</button>\n' +
+          '<button class="btn btn-ghost" id="danbooruCancelBtn" style="font-size:10px">' + icon('x', 12) + ' 停止</button>\n' +
           '</div>'
         document.getElementById('danbooruCancelBtn')?.addEventListener('click', () => {
           cancelled = true
@@ -720,7 +719,7 @@ function bindDanbooruEvents() {
     updateView()
     container.style.display = 'none'
     ;(btn as HTMLButtonElement).disabled = false
-    btn.textContent = '🔄 Danbooru 更新'
+    setBtnIcon(btn, 'refreshCw', 'Danbooru 更新')
     const msg = cancelled ? '更新已取消' : '更新完成: ' + done + '/' + total
     showToast(msg)
   }
@@ -790,7 +789,7 @@ function renderPresets() {
     }).join(', ')
 
     return '<div class="artist-card preset-card" data-id="' + escAttr(p.id) + '">\n' +
-      '  <div class="artist-card-accent" style="background:#8b5cf6"></div>\n' +
+      '  <div class="artist-card-accent" style="background:var(--purple, #8b5cf6)"></div>\n' +
       '  <div class="artist-card-body">\n' +
       '    <div class="artist-card-header">\n' +
       '      <span class="artist-card-tag">' + esc(p.name) + '</span>\n' +
@@ -829,7 +828,7 @@ function showAddArtistModal() {
     '    </div>\n' +
     '  </div>\n' +
     '  <div class="modal-actions" style="margin-top:12px">\n' +
-    '    <button class="btn btn-primary" id="addArtistConfirm">✅ 确认</button>\n' +
+    '    <button class="btn btn-primary" id="addArtistConfirm">' + icon('check', 12) + ' 确认</button>\n' +
     '    <button class="btn btn-ghost" id="addArtistCancel">取消</button>\n' +
     '  </div>\n' +
     '</div>'
@@ -874,7 +873,7 @@ function showExtractModal() {
     '    <p style="color:var(--text3)">点击下方按钮开始提取…</p>\n' +
     '  </div>\n' +
     '  <div class="modal-actions" style="margin-top:12px">\n' +
-    '    <button class="btn btn-primary" id="extractStartBtn">🔍 开始提取</button>\n' +
+    '    <button class="btn btn-primary" id="extractStartBtn">' + icon('search', 12) + ' 开始提取</button>\n' +
     '    <button class="btn btn-ghost" id="extractCancelBtn">关闭</button>\n' +
     '  </div>\n' +
     '</div>'
@@ -903,10 +902,10 @@ function showExtractModal() {
     for (const item of extracted) {
       html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)">\n' +
         '  <span><strong>' + esc(item.tag) + '</strong> <span style="color:var(--text3)">(' + item.count + '次)</span></span>\n' +
-        '  <button class="btn btn-ghost extract-add-btn" data-tag="' + escAttr(item.tag) + '" data-count="' + item.count + '" style="font-size:9px;padding:2px 6px">➕</button>\n' +
+        '  <button class="btn btn-ghost extract-add-btn" data-tag="' + escAttr(item.tag) + '" data-count="' + item.count + '" style="font-size:9px;padding:2px 6px" title="添加">' + icon('plus', 12) + '</button>\n' +
         '</div>'
     }
-    html += '<div style="margin-top:8px"><button class="btn btn-primary" id="extractAllBtn" style="font-size:10px">📥 全部添加</button></div>'
+    html += '<div style="margin-top:8px"><button class="btn btn-primary" id="extractAllBtn" style="font-size:10px">' + icon('download', 12) + ' 全部添加</button></div>'
     resultEl.innerHTML = html
 
     resultEl.addEventListener('click', (e2) => {

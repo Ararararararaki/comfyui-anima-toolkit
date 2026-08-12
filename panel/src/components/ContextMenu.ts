@@ -1,5 +1,7 @@
 // ── 轻量级右键菜单组件 ──
 // Vanilla TS 实现，支持分组、分隔线、危险操作、子菜单
+import { icon } from '../utils/icon'
+import { esc } from '../utils'
 
 export interface ContextMenuAction {
   label: string
@@ -19,6 +21,12 @@ export interface ContextMenuGroup {
 let _activeMenu: HTMLElement | null = null
 let _activeSubMenu: HTMLElement | null = null
 let _subMenuTimer: number | null = null
+
+/** 菜单图标：图标名 → SVG，非图标名（如旧 emoji）原样返回（兜底值转义防误用） */
+function menuIcon(name: string): string {
+  const svg = icon(name, 14)
+  return svg || `${esc(name)} `
+}
 
 /** 取消待执行的子菜单关闭 */
 function cancelCloseSubMenu() {
@@ -86,7 +94,7 @@ export function openContextMenu(
 
         const labelSpan = document.createElement('span')
         labelSpan.className = 'context-menu-item-label'
-        labelSpan.innerHTML = item.icon ? `${item.icon} ${item.label}` : item.label
+        labelSpan.innerHTML = item.icon ? `${menuIcon(item.icon)}${esc(item.label)}` : esc(item.label)
         el.appendChild(labelSpan)
 
         const arrow = document.createElement('span')
@@ -103,7 +111,7 @@ export function openContextMenu(
           scheduleCloseSubMenu()
         })
       } else {
-        el.innerHTML = `<span class="context-menu-item-label">${item.icon ? `${item.icon} ${item.label}` : item.label}</span>`
+        el.innerHTML = `<span class="context-menu-item-label">${item.icon ? `${menuIcon(item.icon)}${esc(item.label)}` : esc(item.label)}</span>`
         if (item.shortcut) {
           const shortcut = document.createElement('span')
           shortcut.className = 'context-menu-shortcut'
@@ -157,7 +165,7 @@ function openSubMenu(parentEl: HTMLElement, items: ContextMenuAction[], parentX:
   items.forEach(item => {
     const el = document.createElement('div')
     el.className = `context-menu-item${item.danger ? ' danger' : ''}${item.disabled ? ' disabled' : ''}`
-    el.innerHTML = `<span class="context-menu-item-label">${item.icon ? `${item.icon} ${item.label}` : item.label}</span>`
+    el.innerHTML = `<span class="context-menu-item-label">${item.icon ? `${menuIcon(item.icon)}${esc(item.label)}` : esc(item.label)}</span>`
     if (item.shortcut) {
       const shortcut = document.createElement('span')
       shortcut.className = 'context-menu-shortcut'
@@ -272,38 +280,38 @@ export function createOutputContextMenu(
     const id = fileIds[0]
     groups.push({
       items: [
-        { label: '预览', icon: '🔍', handler: () => handlers.onPreview?.(id), shortcut: 'Enter' },
-        { label: '收藏', icon: '⭐', handler: () => handlers.onFavorite?.(id) },
-        { label: '评分', icon: '🌟', handler: () => handlers.onRate?.(id) },
-        { label: '置顶', icon: '📍', handler: () => handlers.onPin?.(id, true) },
-        { label: '设置分类', icon: '🏷️', handler: () => handlers.onSetCategory?.([id]) },
-        { label: '复制', icon: '📋', handler: () => handlers.onCopyImage?.(id) },
-        { label: '下载', icon: '⬇️', handler: () => handlers.onDownloadImage?.(id) },
-        { label: '重命名', icon: '✏️', handler: () => handlers.onRename?.(id), shortcut: 'F2' },
+        { label: '预览', icon: 'eye', handler: () => handlers.onPreview?.(id), shortcut: 'Enter' },
+        { label: '收藏', icon: 'star', handler: () => handlers.onFavorite?.(id) },
+        { label: '评分', icon: 'thumbsUp', handler: () => handlers.onRate?.(id) },
+        { label: '置顶', icon: 'pin', handler: () => handlers.onPin?.(id, true) },
+        { label: '设置分类', icon: 'tag', handler: () => handlers.onSetCategory?.([id]) },
+        { label: '复制', icon: 'copy', handler: () => handlers.onCopyImage?.(id) },
+        { label: '下载', icon: 'download', handler: () => handlers.onDownloadImage?.(id) },
+        { label: '重命名', icon: 'edit3', handler: () => handlers.onRename?.(id), shortcut: 'F2' },
       ]
     })
     groups.push({
       items: [
-        { label: '复制元数据', icon: '📋', handler: () => handlers.onCopyMetadata?.(id) },
-        { label: '复制 Prompt', icon: '📝', handler: () => handlers.onCopyPrompt?.(id) },
+        { label: '复制元数据', icon: 'file-text', handler: () => handlers.onCopyMetadata?.(id) },
+        { label: '复制 Prompt', icon: 'copy', handler: () => handlers.onCopyPrompt?.(id) },
       ]
     })
     groups.push({
       items: [
-        { label: '删除', icon: '🗑️', handler: () => handlers.onDelete?.(id), danger: true, shortcut: 'Del' },
+        { label: '删除', icon: 'trash', handler: () => handlers.onDelete?.(id), danger: true, shortcut: 'Del' },
       ]
     })
   } else if (fileIds.length > 1) {
     groups.push({
       label: `已选 ${fileIds.length} 个文件`,
       items: [
-        { label: '批量收藏', icon: '⭐', handler: () => handlers.onBatchFavorite?.(fileIds) },
-        { label: '批量评分', icon: '🌟', handler: () => handlers.onBatchRate?.(fileIds) },
-        { label: '批量置顶', icon: '📍', handler: () => handlers.onBatchPin?.(fileIds, true) },
-        { label: '批量设置分类', icon: '🏷️', handler: () => handlers.onSetCategory?.(fileIds) },
-        { label: '批量复制', icon: '📋', handler: () => handlers.onBatchCopyImage?.(fileIds) },
-        { label: '批量下载', icon: '⬇️', handler: () => handlers.onBatchDownloadImage?.(fileIds) },
-        { label: '批量删除', icon: '🗑️', handler: () => handlers.onBatchDelete?.(fileIds), danger: true },
+        { label: '批量收藏', icon: 'star', handler: () => handlers.onBatchFavorite?.(fileIds) },
+        { label: '批量评分', icon: 'thumbsUp', handler: () => handlers.onBatchRate?.(fileIds) },
+        { label: '批量置顶', icon: 'pin', handler: () => handlers.onBatchPin?.(fileIds, true) },
+        { label: '批量设置分类', icon: 'tag', handler: () => handlers.onSetCategory?.(fileIds) },
+        { label: '批量复制', icon: 'copy', handler: () => handlers.onBatchCopyImage?.(fileIds) },
+        { label: '批量下载', icon: 'download', handler: () => handlers.onBatchDownloadImage?.(fileIds) },
+        { label: '批量删除', icon: 'trash', handler: () => handlers.onBatchDelete?.(fileIds), danger: true },
       ]
     })
   }

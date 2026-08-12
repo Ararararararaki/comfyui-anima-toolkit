@@ -8,6 +8,7 @@ import { bindArtistEvents } from './sections/ArtistSeries'
 import { initSettings, applySettings } from './sections/Settings'
 import { initOutputs } from './sections/Outputs'
 import { bindPromptFreqEvents } from './sections/PromptFreq'
+import { initIconButtons } from './utils'
 
 // ── Theme switcher ──
 function initThemeSwitcher() {
@@ -30,6 +31,7 @@ function initThemeSwitcher() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  initIconButtons()
   initThemeSwitcher()
   initSettings()
   setupGlobalHandlers()

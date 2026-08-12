@@ -2,7 +2,7 @@ import { getAllPrompts, countAllPrompts, countPromptsByCategory, searchPrompts, 
 import { renderPromptCard } from '../components/PromptCard'
 import { renderPromptEditor } from '../components/PromptEditor'
 import type { PromptEntry, PromptCategory } from '../types'
-import { showToast, esc } from '../utils'
+import { showToast, esc, icon } from '../utils'
 import { openModal, closeModal, promptModal, confirmModal } from '../components/Modal'
 
 let currentSearch = ''
@@ -63,7 +63,7 @@ async function renderCategories(sidebar: HTMLElement | null) {
         ${c.id !== 'uncategorized' ? `<button class="prompt-cat-del" data-catid="${c.id}" title="删除分类">✕</button>` : ''}
       </div>
     `).join('')}
-    <button class="prompt-cat-add" onclick="window.__addPromptCategory()">➕ 新建分类</button>
+    <button class="prompt-cat-add" onclick="window.__addPromptCategory()">${icon('plus', 12)} 新建分类</button>
   `
 
   // Bind category clicks

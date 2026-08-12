@@ -54,6 +54,12 @@ async function _createThumbFromBlob(
       resolve(result)
     }
     img.onload = () => {
+      // 像素炸弹防护：超大尺寸图片（如 40000x40000）完整解码内存峰值可达数百 MB，直接放弃缩略图
+      const MAX_PIXELS = 40 * 1000 * 1000 // 4000 万像素上限（review should-fix 修复）
+      if (img.naturalWidth * img.naturalHeight > MAX_PIXELS) {
+        done({ dataUrl: '', width: 0, height: 0 })
+        return
+      }
       const canvas = document.createElement('canvas')
       const ctx = canvas.getContext('2d')
       if (!ctx) {

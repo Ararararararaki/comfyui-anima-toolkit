@@ -1,9 +1,62 @@
+let _lastFocused: HTMLElement | null = null
+
+function focusableIn(el: Element): HTMLElement[] {
+  return Array.from(el.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  )).filter(el => el.offsetParent !== null || el === document.activeElement)
+}
+
+function trapFocus(modal: HTMLElement, e: KeyboardEvent) {
+  if (e.key !== 'Tab') return
+  const items = focusableIn(modal)
+  if (items.length === 0) { e.preventDefault(); return }
+  const first = items[0]
+  const last = items[items.length - 1]
+  if (e.shiftKey && (document.activeElement === first || !modal.contains(document.activeElement))) {
+    e.preventDefault(); last.focus()
+  } else if (!e.shiftKey && (document.activeElement === last || !modal.contains(document.activeElement))) {
+    e.preventDefault(); first.focus()
+  }
+}
+
 export function openModal(id: string) {
-  document.getElementById(id)?.classList.add('open')
+  const modal = document.getElementById(id)
+  if (!modal) return
+  modal.classList.add('open')
+  _lastFocused = document.activeElement as HTMLElement
+  // 聚焦策略：输入框优先；无输入框时聚焦主操作按钮（data-primary / .btn-primary / 末尾按钮），
+  // 避免确认框焦点落在「取消」上导致 Enter 误取消
+  const inputs = focusableIn(modal).filter(el => el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')
+  let target: HTMLElement | undefined
+  if (inputs.length > 0) target = inputs[0]
+  else {
+    const all = focusableIn(modal)
+    target = all.find(el => el.hasAttribute('data-primary')) ||
+      all.find(el => el.classList.contains('btn-primary')) ||
+      all[all.length - 1]
+  }
+  if (target) target.focus()
+  else modal.setAttribute('tabindex', '-1'), modal.focus()
+  // Escape 关闭 + Tab 循环（命名函数 + 显式移除，避免重复打开时监听器堆积）
+  modal.removeEventListener('keydown', modalKeyHandler)
+  modal.addEventListener('keydown', modalKeyHandler)
+}
+
+function modalKeyHandler(e: KeyboardEvent) {
+  const modal = e.currentTarget as HTMLElement
+  if (e.key === 'Escape') {
+    if (modal.id === 'customPromptModal') resolvePromptModal(false)
+    else if (modal.id === 'customConfirmModal') resolveConfirmModal(false)
+    else closeModal(modal.id)
+  } else trapFocus(modal, e)
 }
 
 export function closeModal(id: string) {
-  document.getElementById(id)?.classList.remove('open')
+  const modal = document.getElementById(id)
+  modal?.classList.remove('open')
+  if (modal && document.activeElement && modal.contains(document.activeElement)) {
+    _lastFocused?.focus?.()
+  }
 }
 
 // ── Custom prompt/confirm dialogs ──
@@ -18,7 +71,7 @@ function getPromptModal(): HTMLElement {
       <div class="modal-box" style="max-width:400px">
         <h3 id="cpmTitle">输入</h3>
         <p class="sub" id="cpmDesc"></p>
-        <input type="text" id="cpmInput" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:rgba(255,255,255,0.04);color:var(--text);font-size:13px;outline:none;font-family:var(--font)">
+        <input type="text" id="cpmInput" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:13px;outline:none;font-family:var(--font)">
         <div class="modal-actions">
           <button class="btn btn-ghost" id="cpmCancelBtn">取消</button>
           <button class="btn btn-primary" id="cpmConfirmBtn">确定</button>
@@ -41,7 +94,10 @@ let _promptResolver: ((value: string | null) => void) | null = null
 function resolvePromptModal(confirmed: boolean) {
   const modal = document.getElementById('customPromptModal')
   const input = document.getElementById('cpmInput') as HTMLInputElement
-  if (modal) modal.classList.remove('open')
+  if (modal) {
+    modal.classList.remove('open')
+    if (modal.contains(document.activeElement)) _lastFocused?.focus?.()
+  }
   if (_promptResolver) {
     _promptResolver(confirmed ? (input?.value ?? '') : null)
     _promptResolver = null
@@ -56,9 +112,11 @@ export function promptModal(title: string, defaultValue = '', desc = ''): Promis
     const input = document.getElementById('cpmInput') as HTMLInputElement
     if (titleEl) titleEl.textContent = title
     if (descEl) { descEl.textContent = desc; descEl.style.display = desc ? '' : 'none' }
-    if (input) { input.value = defaultValue; input.focus(); input.select() }
+    if (input) input.value = defaultValue
     _promptResolver = resolve
-    modal.classList.add('open')
+    openModal('customPromptModal')
+    // openModal 已聚焦输入框；select 全选（在 openModal 之后调用，避免 _lastFocused 记录成 input 自身）
+    input?.select?.()
   })
 }
 
@@ -74,7 +132,7 @@ function getConfirmModal(): HTMLElement {
         <p class="sub" id="ccmDesc" style="white-space:pre-wrap"></p>
         <div class="modal-actions">
           <button class="btn btn-ghost" id="ccmCancelBtn">取消</button>
-          <button class="btn btn-danger" id="ccmConfirmBtn">确定</button>
+          <button class="btn btn-danger" id="ccmConfirmBtn" data-primary>确定</button>
         </div>
       </div>`
     document.body.appendChild(modal)
@@ -89,7 +147,10 @@ let _confirmResolver: ((value: boolean) => void) | null = null
 
 function resolveConfirmModal(confirmed: boolean) {
   const modal = document.getElementById('customConfirmModal')
-  if (modal) modal.classList.remove('open')
+  if (modal) {
+    modal.classList.remove('open')
+    if (modal.contains(document.activeElement)) _lastFocused?.focus?.()
+  }
   if (_confirmResolver) {
     _confirmResolver(confirmed)
     _confirmResolver = null
@@ -104,7 +165,7 @@ export function confirmModal(title: string, desc = ''): Promise<boolean> {
     if (titleEl) titleEl.textContent = title
     if (descEl) { descEl.textContent = desc; descEl.style.display = desc ? '' : 'none' }
     _confirmResolver = resolve
-    modal.classList.add('open')
+    openModal('customConfirmModal')
   })
 }
 

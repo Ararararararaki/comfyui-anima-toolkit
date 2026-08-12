@@ -1,5 +1,5 @@
 import type { PromptEntry } from '../types'
-import { esc } from '../utils'
+import { esc, icon } from '../utils'
 import { getAllCategories } from '../store/prompts'
 
 export function renderPromptEditor(p: Partial<PromptEntry> & { id: string }) {
@@ -41,7 +41,7 @@ export function renderPromptEditor(p: Partial<PromptEntry> & { id: string }) {
     <div id="pe_loras" class="form-row-stretch">${lorasHtml}</div>
     <div id="pe_images">${imgsHtml}</div>
     <div class="form-gap-sm">
-      <button type="button" class="btn btn-ghost btn-md" onclick="document.getElementById('pe_fileInput').click()">📷 添加预览图</button>
+      <button type="button" class="btn btn-ghost btn-md" onclick="document.getElementById('pe_fileInput').click()">${icon('image', 12)} 添加预览图</button>
       <input type="file" id="pe_fileInput" accept="image/*" multiple style="display:none">
     </div>
     <textarea id="pe_notes" placeholder="个人备注" class="textarea-md min-h-40">${esc(p.notes || '')}</textarea>

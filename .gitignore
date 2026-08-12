@@ -15,6 +15,9 @@ panel/vite_error.txt
 
 # Local dev tooling
 panel/src/skills-lock.json
+CLAUDE.md
+.reasonix/
+.scratch/
 
 # OS
 .DS_Store
