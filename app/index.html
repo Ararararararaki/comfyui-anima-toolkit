@@ -9,9 +9,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script type="module" crossorigin src="./assets/index-BjEh3t2A.js"></script>
+  <script type="module" crossorigin src="./assets/index-BvsFzMEx.js"></script>
   <link rel="modulepreload" crossorigin href="./assets/vendor-D6eCwX_v.js">
-  <link rel="stylesheet" crossorigin href="./assets/index-kpj73zlm.css">
+  <link rel="stylesheet" crossorigin href="./assets/index-Bij06IBQ.css">
 </head>
 <body>
 
@@ -169,7 +169,7 @@
         <span id="artistSelCount" class="artist-sel-count">0</span>
       </div>
       <div class="artist-panel-list" id="artistSelList">
-        <div class="empty-state" style="padding:20px 12px"><div class="big">👆</div><p class="empty-state-sub">点击画师卡片添加到组合</p></div>
+        <div class="empty-state" style="padding:20px 12px"><div class="big" data-icon="mousePointer"></div><p class="empty-state-sub">点击画师卡片添加到组合</p></div>
       </div>
       <div class="artist-panel-bottom">
         <div class="artist-prompt-box">
@@ -210,7 +210,7 @@
         </div>
         <button class="btn btn-primary" id="promptAddBtn" data-icon="plus"><span>新增 Prompt</span></button>
       </div>
-      <div class="prompt-grid" id="promptGrid"><div class="empty-state empty-state-grid"><div class="big">📖</div><p>Prompt 库为空</p><p class="sub">浏览 LoRA 列表，从卡片中提取触发词，或点击「新增 Prompt」手动添加</p></div></div>
+      <div class="prompt-grid" id="promptGrid"><div class="empty-state empty-state-grid"><div class="big" data-icon="book"></div><p>Prompt 库为空</p><p class="sub">浏览 LoRA 列表，从卡片中提取触发词，或点击「新增 Prompt」手动添加</p></div></div>
     </main>
   </div>
 </div>
@@ -231,7 +231,7 @@
       </div>
     </div>
     <div class="prompt-freq-content" id="promptFreqContent">
-      <div class="prompt-freq-empty"><div class="big">📝</div><p>暂无数据</p><p class="sub">请先在 Outputs 中扫描图片目录</p></div>
+      <div class="prompt-freq-empty"><div class="big" data-icon="file-text"></div><p>暂无数据</p><p class="sub">请先在 Outputs 中扫描图片目录</p></div>
     </div>
   </div>
 </div>
@@ -305,7 +305,7 @@
           </select>
         </div>
         <div class="local-file-list" id="localFileList">
-          <div class="empty-state"><div class="big">📁</div><p>点击「扫描文件夹」<br>选择 LoRA 目录</p></div>
+          <div class="empty-state"><div class="big" data-icon="folder"></div><p>点击「扫描文件夹」<br>选择 LoRA 目录</p></div>
         </div>
         <div class="local-batch-bar batch-bar-hidden" id="localBatchBar">
           <span id="localBatchCount" class="local-batch-count">已选 0 项</span>
@@ -321,6 +321,7 @@
           <button class="local-view-tab" data-view="prompt" data-icon="send"><span>批量发送</span></button>
           <button class="local-view-tab" data-view="gallery" data-icon="image"><span>PNG 解析</span></button>
           <button class="local-view-tab" data-view="detail" data-icon="file-text"><span>详情</span></button>
+          <button class="local-view-tab" data-view="models" data-icon="package"><span>模型</span></button>
         </div>
         <div class="local-view-pages">
           <div class="local-page active" id="pageLocalHome">
@@ -344,8 +345,12 @@
           </div>
 
           <div class="local-page" id="pageLocalDetail">
-            <div class="empty-state" id="detailEmpty"><div class="big">👈</div><p>从左侧列表选择一个模型</p></div>
+            <div class="empty-state" id="detailEmpty"><div class="big" data-icon="chevronLeft"></div><p>从左侧列表选择一个模型</p></div>
             <div id="detailContent" style="display:none"></div>
+          </div>
+
+          <div class="local-page" id="pageLocalModels">
+            <div id="localModelsContent"></div>
           </div>
         </div>
       </main>
@@ -469,7 +474,7 @@
 
       <div class="outputs-grid" id="outputsGrid">
         <div class="outputs-empty">
-          <div class="big">🖼️</div>
+          <div class="big" data-icon="image"></div>
           <p>选择 ComfyUI 输出目录开始管理图片</p>
           <button class="btn btn-primary outputs-select-btn" data-icon="folder"><span>选择目录</span></button>
         </div>
