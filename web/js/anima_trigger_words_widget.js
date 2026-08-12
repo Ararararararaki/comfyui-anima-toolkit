@@ -68,9 +68,10 @@
     }
 
     // ── 统一读取 twMap（原始大小写优先、lowercase 兜底）──
+    // direct key 存在（含空数组=用户显式清空）即返回，避免清空后 lowercase 旧值回显
     _twFor(name) {
       const direct = this.twMap[name];
-      if (Array.isArray(direct) && direct.length) return direct;
+      if (direct !== undefined) return Array.isArray(direct) ? direct : [];
       const lower = this.twMap[name ? name.toLowerCase() : ""];
       return Array.isArray(lower) ? lower : [];
     }
