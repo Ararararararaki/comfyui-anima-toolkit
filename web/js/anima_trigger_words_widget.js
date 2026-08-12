@@ -67,15 +67,22 @@
       return b;
     }
 
+    // ── 统一读取 twMap（原始大小写优先、lowercase 兜底）──
+    _twFor(name) {
+      const direct = this.twMap[name];
+      if (Array.isArray(direct) && direct.length) return direct;
+      const lower = this.twMap[name ? name.toLowerCase() : ""];
+      return Array.isArray(lower) ? lower : [];
+    }
+
     _commit() {
       // 把卡片编辑后的触发词写回 trigger_words 输入框（逗号连接），驱动节点输出
       const twWidget = this.node.widgets?.find((w) => w.name === "trigger_words");
       if (!twWidget) return;
       const parts = [];
       for (const l of this.loras) {
-        // key 大小写归一：twMap 键可能保留 bridge/提取时的原始大小写，查找时统一 lowercase 兜底
-        const tw = this.twMap[l.name] ?? this.twMap[l.name.toLowerCase()];
-        if (Array.isArray(tw) && tw.length) parts.push(tw.join(", "));
+        const tw = this._twFor(l.name);
+        if (tw.length) parts.push(tw.join(", "));
       }
       const val = parts.join(", ");
       if (twWidget.value !== val) {
@@ -119,7 +126,7 @@
         input.className = "atw-card-input";
         input.type = "text";
         input.placeholder = "触发词（逗号分隔），可手动编辑";
-        input.value = Array.isArray(this.twMap[l.name]) ? this.twMap[l.name].join(", ") : (Array.isArray(this.twMap[l.name.toLowerCase()]) ? this.twMap[l.name.toLowerCase()].join(", ") : "");
+        input.value = this._twFor(l.name).join(", ");
         input.onchange = () => {
           const tw = input.value.split(",").map((s) => s.trim()).filter(Boolean);
           this.twMap[l.name] = tw;
@@ -203,7 +210,7 @@
 
     // ── 提取：逐个查询 /anima/lora/info 获取 trainedWords ──
     async _extractAll() {
-      const pending = this.loras.filter((l) => !Array.isArray(this.twMap[l.name]) || this.twMap[l.name].length === 0);
+      const pending = this.loras.filter((l) => this._twFor(l.name).length === 0);
       if (!pending.length) { showToast("所有 LoRA 的触发词已获取"); return; }
       showToast("正在提取 " + pending.length + " 个 LoRA 的触发词…");
       let found = 0, failed = 0;
@@ -262,7 +269,7 @@
       const copyBtn = this._btn("复制全部", "atw-copy", "复制所有触发词（逗号连接）", "clipboard");
       extractBtn.onclick = () => this._extractAll();
       copyBtn.onclick = () => {
-        const parts = this.loras.map((l) => Array.isArray(this.twMap[l.name]) ? this.twMap[l.name].join(", ") : "").filter(Boolean);
+        const parts = this.loras.map((l) => this._twFor(l.name).join(", ")).filter(Boolean);
         if (!parts.length) { showToast("暂无触发词可复制"); return; }
         const text = parts.join(", ") + ",";
         if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(() => {});
