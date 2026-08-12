@@ -1,0 +1,162 @@
+# Anima Toolkit · ComfyUI-Anima-Batch-LoRA — 交接文档（2026-08-03）
+
+> 给下一位 agent 的工作交接。项目当前健康、全部已推送 GitHub。请先读本文 + 合并仓库 README，再动手。
+
+## 一、项目是什么
+
+ComfyUI 自定义节点（批量 LoRA 加载器）+ 内嵌的「本地管理面板」（Anima Toolkit），解决 ComfyUI 下 LoRA/Prompt/出图管理的便利性。GitHub 一键包，clone 到 `custom_nodes` 即用（`app/` 预构建、相对路径）。
+
+- **GitHub**: `https://github.com/Ararararararaki/comfyui-anima-toolkit`（2026-08 从 `comfyui-local-manager` 改名，旧 URL 自动重定向）
+- **品牌**：Anima Toolkit · 本地工具箱；顶部按钮用「菲比」角色图标
+
+## 二、三个目录（务必分清）
+
+| 目录 | 角色 | git |
+|------|------|-----|
+| `E:\claude program\civitai` | **面板开发目录**（src/ 在根） | 历史独立，**不推 GitHub** |
+| `E:\claude program\ComfyUI-Anima-Batch-LoRA` | **合并发布仓库**（面板在 panel/ + 插件 + app + screenshots） | 推 GitHub 的是这个 |
+| `E:\1AI\ComfyUI-aki-v3\ComfyUI\custom_nodes\ComfyUI-Anima-Batch-LoRA` | **ComfyUI 实际运行插件目录** | 非 git |
+
+⚠️ 历史上 civitai 的 remote 也指向 GitHub，但**不要从 civitai 直接 push**（结构/历史不兼容）。发布一律走合并仓库。
+
+## 三、开发 → 发布流程（重要）
+
+### 面板改动（前端 UI）
+1. 改 `civitai\src\...`
+2. `cd "E:\claude program\civitai" && npm run build:comfyui` → 构建 + 部署 app/ 到 ComfyUI 插件目录
+3. 复制改动的文件到合并仓库对应 `panel\src\...`
+4. 在合并仓库 `git add + commit + push`（GitHub Actions 自动重建 app/）
+
+### 插件改动（节点/后端）
+- 后端：合并仓库 `__init__.py`、`anima_batch_lora.py`
+- 前端：合并仓库 `web/js/anima_batch_lora_widget.js`
+- 改完复制到 ComfyUI 插件目录（`web/js/`、根目录 py）
+- 生效：**widget.js 硬刷新 ComfyUI 页面（Ctrl+Shift+R）**；**`__init__.py`/py 需重启 ComfyUI**
+
+### 面板本地验证
+- `npx tsc --noEmit` / `npm run build`
+- CDP headless 冒烟：临时脚本在 `/tmp/cdp_*.cjs`（静态服务器 + headless Chrome 访问面板/ComfyUI 8188）
+
+## 四、功能清单（当前全部可用）
+
+### LoRA 加载节点（web/js/anima_batch_lora_widget.js，60KB+ 大文件）
+- 批量 `<lora:name:weight>` 语法、`lora_syntax` 多行输入、触发词悬停/点击复制
+- 📂 本地 LoRA 浏览弹窗：网格/列表、虚拟滚动、C 站图（走后端代理）、拖拽框选批量分类、右键分类/收藏/置顶、**已添加置顶**
+- 📩 面板同步（自动轮询，面板「发送到 ComfyUI」后 ≤5s 自动添加）
+- **⚙️ LoRA 启用/禁用开关**：关闭的不参与生成但保留在列表（随工作流持久化）
+- **💾 组功能**：保存当前列表为新组 / 一键切换 / 删除（合并原「保存组」+「组」按钮），存后端 anima_meta.json
+- **📥 URL 下载**：从 C 站链接下载 LoRA 到本地——带/不带 modelVersionId 均可（无则取默认版本）、批量（每行一个链接）、实时进度条、下载中可取消（自动删部分文件）、需登录模型用 C 站 API Key（设置页统一管理）+ Cookie 容错、自动用 model-versions API 拿正确文件名
+- **🔄 检查更新**：本地版本落后时工具栏高亮「🔄 有新版本」，点击弹窗显示更新指引（git pull / ZIP 覆盖 + 前往 GitHub）；版本对比靠根目录 VERSION 文件 vs 后端 __init__.py 返回的 latest
+- **一键复制已启用 LoRA 的触发词**（英文逗号连接）+ 句末带逗号
+- **常用次数排序**（添加到节点时 count+1）+ 节点行显示分类/次数
+- 🔍 验证标签 / ↻ 刷新列表 / 📥 提取触发词 / ✕ 清空列表 / 🌐 面板
+- 权重调节：尖括号 scrubbing（按住 `<`/`>` 水平拖动连续调，4px=0.05；单击步进 0.05）
+
+### 本地管理面板（civitai/src）
+- **本地 LoRA 管理**（LocalManager）：Steam 风格、C 站匹配、返图、右键分类、发送到 ComfyUI、**扫描浏览器回退**（showDirectoryPicker 不可用——Firefox/夸克旧版/局域网 IP 访问时自动改用 `<input webkitdirectory>` 文件选择）
+- **Outputs**（Outputs.ts）：元数据解析、拖拽框选（可卡片起手）、快捷键、**自定义分类**（单分类：徽章/筛选/右键/管理）、**复制 LoRA 标签**（统一提取，兼容 UI/API/LoraManager 格式）、**目录选择兼容提示**、**刷新按钮走增量扫描 + 有无新图提示**、**卡片显示创建日期**、**复制工作流已改为下载工作流 .json**（替代复制，画布 Ctrl+V 不导入易误导）、**预览图片编辑**（lightbox 内旋转/翻转/框选裁剪/保存副本 `原名_edited.扩展名`，不覆盖原图；canvas 处理，裁剪层需编辑画布显示，主题色为白时按钮用固定紫）
+- **图片解析**（PromptFreq，原「图片 Prompt 解析」）：PNG 元数据解析、预览放大、翻译、保存到 Prompt 库、**发送到 Outputs**（选分类+保存文件）、**LoRA `<lora:名:权重>` 标签**（点击复制/一键复制全部）、**下载工作流 .json**（拖入 ComfyUI 导入；已移除「复制工作流」按钮——画布 Ctrl+V 不导入易误导）、**生图模型提取**（UNETLoader 等）、**卡片切 tab 常驻**、**完整 lora 名悬浮预览**
+- **Prompt 库**（PromptLibrary）：分类/搜索/收藏、编辑（去 weight 加 loras）、删除/收藏立即刷新
+- **画师系列**（ArtistSeries）、**LoRA 探索**（LoraExplorer）：待优化
+- **设置页**（Settings.ts）：**C 站 API Key 统一管理**（下载弹窗自动带出；「生成 API Key」按钮直接打开 C 站 `/user/settings/api-keys`）、**背景图改 IndexedDB 存储**（修复大图 localStorage 超限静默失败）
+- 顶部「菲比」图标按钮：已接入 **ComfyUI 标准菜单 API（app.menu）**，不再依赖注入容器；点击进面板
+
+## 五、核心解析逻辑（outputMetadata.ts，最近大改）
+
+- **prompt chunk（API）优先**，workflow chunk（UI）兜底 —— API 是图实际执行的提示词，UI 多采样器会选错（曾导致「提示词不对图」）
+- `safeParseJSON`：清洗 `[NaN]`/`[NaN]`/Infinity（ComfyUI `is_changed:[NaN]` 是非法 JSON）
+- `parseComfyUIWorkflow`：nodeMap 双键（string/number）、数组链接递归（CLIPTextEncode text:["676",0]）、权威引用守卫（KSampler 链路优先，防旁路文本）
+- `extractLorasFromWorkflow`：名称数组（7 处调用点依赖裸名，勿改返回值）
+- `extractLoraTagsFromWorkflow`：`<lora:name:weight>`（含权重，供 PromptFreq/节点）
+- `parseOutputMetadata`：PNG chunks → 上述逻辑 → OutputMetadata
+
+## 六、最近改动（GitHub 最新提交 634200a，版本 2.0.0）
+
+### 2026-08-12 之后（本轮未发布批次：节点 UI 重构 + 新节点 + 安全修复）
+
+**LoRA 节点（web/js/anima_batch_lora_widget.js）**
+- **权重滑块 → 尖括号 scrubbing**：删除 `input[type=range]`，改为「< 数字 >」三段结构；按住 `<`/`>` 水平拖动连续调权重（4px=0.05），单击步进 0.05，松开 commit。拖动与单击各恰好 commit 一次（`__scrubbed` 标志抑制双重 commit，2 秒超时自动重置防残留）
+- **LoRA 名称放宽**：去掉 16 字符截断，弹性占满（CSS ellipsis 兜底）
+- **行内图标 SVG 化**（lucide stroke 风格与面板统一）：拖拽 ⠿→grip、删除 ×→x、分类 🏷→tag、权重 < >→chevronLeft/Right；toolbar 8 按钮 emoji→SVG（新增 11 个 lucide 图标）
+- **卡片不再显示使用次数与触发词小字**（用户要求；hover 预览图弹窗保留）
+- **悬浮预览图**：hover 触发词弹窗顶部显示预览图（经 `/anima/image` 代理 400px）+ 模型名/作者（`loraInfoMap` 缓存，onerror 回退占位）
+- **关键修复**：`_render` 里 `esc` 未定义导致的 ReferenceError（有分类标签的卡片行渲染失败被跳过 → 拖拽后只剩前 2 行）——已补类级 `esc`/`escAttr`（332-334 行）
+- **安全修复**：分类选择器/右键菜单分类名 escAttr+esc 转义（存储型 XSS）；imgProxy 非白名单 URL 返回空串（防 javascript:/data: 注入）；`_imgProxy` 提升为类级方法（原 `_browseModal` 局部 const 导致 `_showTwTooltip` 引用会 ReferenceError）
+
+**触发词管理节点（新增）**
+- 后端 `anima_trigger_words.py`：`Anima Trigger Words` 节点（INPUT lora_syntax + 手动 trigger_words，从 bridge 查找表提取触发词，去重保序）
+- 前端 `web/js/anima_trigger_words_widget.js`：卡片列表（每个 LoRA 一张卡，触发词可编辑/删除）+ 提取触发词 / 复制全部
+- **残留 bug 修复**：`_syncFromSyntax` 原为"只增不删"（语法删掉的 LoRA 卡片残留）→ 改为以语法为准全量对齐（移除已删 LoRA + 清 twMap + 补 `_commit()` 重算输出）；`_syncFromBridge` 同步做减法（bridge ∪ 语法并集过滤）；`_commit` twMap 查找 lowercase 兜底（大小写变更不丢触发词）
+
+**后端（__init__.py / anima_batch_lora.py）**
+- **bridge 持久化**：`/anima/bridge/update` 落盘 `anima_bridge.json`（ComfyUI 重启不丢 LoRA 组合）；`bridge_clear`（DELETE）同步删除持久化文件（否则重启后文件兜底恢复旧数据）
+- **LoRA SHA256 缓存**：`_sha256_file` 加 path→(mtime,size,sha256) 缓存，避免重复全文件哈希
+- **`/anima/models` 端点**：列出模型文件（分组）
+- **serve_asset 路径防护**：`startswith` → `os.path.commonpath` 严格比较（防 `app2/` 同前缀兄弟目录绕过）
+- **`_normalize_meta_keys` 修复**：函数体被 `_strip_model_ext` 截断导致归一化死代码（面板扩展名 key 与节点去扩展名 key 的分类/收藏/次数不同步）——已把 `_merge`+遍历+写回移回函数体
+
+**面板（civitai/src，随合并仓库 panel/）**
+- 命令面板 Cmd/Ctrl+K（9 条命令：6 tab + 设置 + 主题切换）
+- 4 个栏目搜索框加清除 ✕ 按钮（ArtistSeries/PromptLibrary/Outputs/LocalManager，`attachSearchClear` 通用辅助）
+- 各栏目 emoji 按钮 → `icon()` SVG 统一（icon.ts 补 mousePointer 等）
+- 空状态统一为 SVG 图标结构
+
+> ⚠️ **上述 2026-08-12 批次尚未推送 GitHub**（需先同步 panel/ 到合并仓库 → commit → push；Actions 自动重建 app/）。功能已验证（node --check + CDP 实测 + review/security_review 通过）。
+
+近期发布集中在 **URL 下载、检查更新、LoRA 开关、组功能、API Key 管理、浏览器回退** 等，摘要见合并仓库 `CHANGELOG.md` 的 `## [2.0.0]`。关键 commit：
+
+- `634200a` 节点发现新版本时显示更新指引弹窗（git pull / ZIP 覆盖 + 前往 GitHub）
+- `e49fff8` 背景图改 IndexedDB 存储（修复大图超限静默失败）+ 设置页加 C 站 API Key
+- `32a76e3` 顶栏菲比图标不显示——ICON_URL 路径漏了 web/（图片实际在 web/img/）
+- `107375f` 检查更新功能——落后时节点工具栏高亮提示
+- `e69864a` 下载弹窗只用 API Key + 修复遮罩误关 + 下载中可取消
+- `79dc754` / `f3990b5` URL 下载支持 C 站 API Key（推荐）+ Cookie 容错
+- `ab0b9ed` URL 下载文件名错误——改用 model-versions API 的 files[0].name
+- `6a19cd0` C 站下载 401——改用浏览器 UA（Cloudflare 拒非浏览器 UA）
+- `a1bd3b8` Outputs 图片闪烁——diffManifest mtime 加 1s 容差
+- `dd388cd` URL 下载支持无 modelVersionId 链接 + 批量下载（每行一个链接）
+
+### 版本管理 / 更新日志（新增约定）
+
+发布新版本时（合并仓库）：递增根目录 `VERSION` → 同步 `__init__.py` 的 `__version__` → 在 `CHANGELOG.md` 顶部添加 `## [新版本号] - 日期`。用户可在节点工具栏「🔄 更新」检查到新版本。
+
+## 七、已知问题 / 待办
+
+- ~~Outputs 复制 LoRA 标签待修复~~（已修复：改用 `extractLoraTagsFromWorkflow` 统一提取，兼容 UI/API/LoraManager）
+- ~~顶栏菲比图标加载失败（404）~~（已修复 2026-08-03：**ComfyUI 0.30+ 把 `/extensions/{name}/` 映射到插件 `web/` 目录**，此前 `ICON_URL` 带的 `web/` 前缀变成 `web/web/` 导致 404。已改为不带 `web/` 前缀，并用 `img.onerror` 回退到旧路径，兼容新旧 ComfyUI。改动在 `web/js/anima_batch_lora_widget.js` 的 `setAnimaIcon`；改后**硬刷新 ComfyUI 页面**即可，无需重启）
+- 画师系列、LoRA 探索（待优化）
+- 别人发的图若**无元数据**（微信/QQ/压缩会清），解析显示「该图无元数据」——正常现象，非 bug
+- LoRA 探索里下载模型（C 站）若仍走旧路径，需确认是否与新 URL 下载弹窗统一
+- **图片编辑功能已增强（2026-08-03）**：① **修复「确认裁剪」不生效的根因 bug**——确认/取消按钮位于裁剪层 `.lb-crop-layer` 内部，点按钮时 mousedown 冒泡到裁剪层 handler 会把已拖好的选框重置为 0，confirmCrop 读到空框而失效（真实鼠标必现，JS `click()` 会绕过 mousedown 故之前测试没发现）；已改为裁剪层 mousedown 忽略按钮事件。交互保持「拖框 → 确认」两步（有容错），保存时也自动应用未确认的选框；② **保存副本时保留原 PNG 的 prompt/workflow 元数据**（新增 `src/services/pngChunks.ts`，把原图 tEXt chunks 注入导出 PNG，ComfyUI 仍能回导）；③ 保存后网格即时出现副本（手动入库，不依赖增量扫描）+ 预览自动切换到新副本；④ 修复 jpg 保存失败（`image/jpg` → `image/jpeg`）；⑤ 编辑状态机重构为「基准画布」模型，消除旋转+裁剪组合的坐标错位，裁剪坐标 clamp 到画布边界，加 _saving 保存锁。已 CDP 真实鼠标事件验证通过（含大图缩放像素级验证）、已部署 ComfyUI（build:comfyui）、合并仓库 panel/ 已同步但**未 push GitHub**
+- **Outputs 元数据展示统一（2026-08-03）**：预览图片后**不再自动弹出**右侧元数据面板（已移除 `outputs-metadata-panel` 的 HTML/CSS/全局事件与 `showMetadataPanel`），元数据统一由卡片「ℹ️ 元数据」按钮弹出独立窗口（`openMetaPanel`，含模型/提示词/节点/下载工作流）。已 CDP 验证、已部署 ComfyUI、合并仓库 panel/ 已同步但**未 push GitHub**
+- **图片编辑候选功能待探讨/开发**（用户认可的方向）：① 调色（亮度/对比度/饱和度/色温/锐化）② 尺寸缩放 ③ 批量编辑 ④ 预设滤镜
+- 编辑裁剪层依赖编辑画布显示（`lbEditWrap`），主题色 `--accent` 在白/黑主题下会变白/黑——按钮/选框改用固定紫色（已处理）
+
+## 八、给下一位 agent 的提示
+
+1. **先读合并仓库 README.md**（用户重写版）+ 本文件 + `CHANGELOG.md`，再动手
+2. 用户偏好：**中文回复**、research-first（先探索给方案，可给多方案让用户选）、频繁微调 UI 位置/尺寸
+3. **用户要求：开发后必须自己验证测试通过，不要推给用户去点**。用 CDP headless 冒烟（模板：`C:\Users\Toki\AppData\Local\Temp\cdp_verify_edit.cjs`）——启动静态服务器 + Chrome `--headless=new --remote-debugging-port` + Node 内置 WebSocket 连 CDP，检查 JS 报错、DOM、核心算法。注意静态服务器要映射 `/extensions/ComfyUI-Anima-Batch-LoRA/app/` 前缀到 dist，否则 JS 404
+4. 改解析/核心逻辑时，**用真实 PNG 验证**（output 目录 `E:\1AI\...\output\` 有 100+ 张可测）
+5. 大功能先 EnterPlanMode 规划，涉及多文件的用 Explore 子代理探索
+6. 所有改动最终要：合并仓库 commit + push（Actions 自动重建 app/）+ 复制到 ComfyUI 插件目录。**注意合并仓库与 civitai 的 src 需保持逐文件一致**（比对其余文件行尾 CRLF/LF 会假性差异，用 `diff --strip-trailing-cr`）
+7. **push 被拒时先 `git pull --rebase`**：GitHub Actions 每次重建 app/ 会生成新的 `chore: rebuild panel app` 提交，下次 push 前远程常有领先提交；rebase 即可，不要 force push
+8. 本地 `civitai` 的 git 状态混乱（历史不推 GitHub），改文件直接用工作区即可，无需处理 git
+9. 面板数据存在浏览器 IndexedDB（`outputs-db`）+ 插件目录 `anima_meta.json`，换浏览器会重置分类等
+10. **发新版本**：递增 `VERSION` → 同步 `__init__.py` `__version__` → 更新 `CHANGELOG.md` 顶部（节点「🔄 更新」靠版本号对比提示）
+
+## 九、关键教训：PNG 元数据可能被 ComfyUI 覆盖（勿误判解析 bug）
+
+用户若反馈「图片解析提取的提示词/工作流与画面不符」，**先查 PNG 内嵌元数据本身**，而不是改解析逻辑：
+
+- **用独立工具复核 PNG 元数据**：`python -c "from PIL import Image; im=Image.open(路径); print(im.info.keys()); print(im.info.get('workflow','')[:200])"`（PIL 直接读 PNG 文本 chunk，与 node 脚本结果一致即为事实）
+- 若 PNG 内嵌的 workflow UUID 是**用户自己的工作流**（如 `a585215a-...`），说明该图曾**在 ComfyUI 里被打开/导出/重绘过**——ComfyUI 保存图片时会写入**当前画布工作流**的元数据，覆盖原始生成参数（画面与元数据因此不符）
+- 若节点（如 DanbooruTextPassthrough / PreviewAny）**有多个预设提示词**（widgets_values 多组），API prompt chunk 里 `prompt_text` 记录的是**实际执行的那组**；解析取它是对的，不要改成取「画面匹配的那组」（无数据来源）
+- 结论：图片解析是**如实读取 PNG 字节**。元数据被覆盖时，原始参数已不在文件里，解析器无法还原，只能提示「无元数据」或显示被覆盖的版本
+- 验证：用 ComfyUI output 里**刚生成的图**（非被处理过的）拖入图片解析，提示词/工作流/画面应一致
+
+**补充案例（2026-08 排查）**：QQ/微信收到的**原图**（`Pic\...\Ori\` 目录）也可能内嵌**完整 UI 工作流 + LoraManager 自动补全痕迹**（`__lm_autocomplete_meta_text` 字段）。面板复制工作流是逐字节复制 PNG 的 `workflow` chunk，不会替换成别的。
+
+⚠️ **「复制工作流后画布显示的还是自己旧工作流」通常是导入方式误判，不是解析 bug**：ComfyUI **画布 Ctrl+V 不导入**工作流 JSON（只粘贴图片/文本），画布保持当前打开的工作流，看起来像"复制出旧工作流"。面板已移除「复制工作流」按钮，改用**「下载工作流 .json」→ 拖入 ComfyUI 画布**（或菜单 Load）导入，最稳妥。
+
+

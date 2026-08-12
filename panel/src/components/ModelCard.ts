@@ -38,8 +38,8 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
   const note = getNote(m.id)
   const hasNotes = note && (note.notes || note.rating > 0 || note.status !== 'untried')
   const notesIcon = hasNotes
-    ? `<span class="notes-indicator has-notes" onclick="event.stopPropagation();window.__openNotes(${m.id})" title="${esc(note?.notes?.slice(0, 50) || '查看备注')}">💬</span>`
-    : `<span class="notes-indicator no-notes" onclick="event.stopPropagation();window.__openNotes(${m.id})" title="添加备注">💬</span>`
+    ? `<span class="notes-indicator has-notes" onclick="event.stopPropagation();window.__openNotes(${m.id})" title="${esc(note?.notes?.slice(0, 50) || '查看备注')}">${icon('edit3', 12)}</span>`
+    : `<span class="notes-indicator no-notes" onclick="event.stopPropagation();window.__openNotes(${m.id})" title="添加备注">${icon('edit3', 12)}</span>`
 
   const starsHtml = note && note.rating > 0
     ? `<span class="notes-stars">${'★'.repeat(note.rating)}${'☆'.repeat(5 - note.rating)}</span>`

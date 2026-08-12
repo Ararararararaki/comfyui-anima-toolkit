@@ -768,6 +768,11 @@ h1 small { font-size: 12px; color: var(--text2); font-weight: 400; margin-left: 
 
 .empty-state .big { font-size: 44px; margin-bottom: 14px; opacity: 0.9; }
 
+/* 空状态 SVG 图标统一色（跟随主题文字三级色，替代 emoji） */
+.empty-state .big svg,
+.prompt-freq-empty .big svg,
+.outputs-empty .big svg { color: var(--text3); opacity: 0.7; }
+
 .empty-state p { font-size: 14px; color: var(--text2); }
 
 .empty-state .sub { font-size: 12px; color: var(--text3); margin-top: 6px; }
@@ -4674,3 +4679,79 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 .local-png-tags { display: flex; flex-wrap: wrap; gap: 3px; }
 .local-png-loras { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
 .local-tag-cloud { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0; }
+
+/* ── 命令面板（Cmd/Ctrl+K）── */
+.cmdk-overlay {
+  position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(4px); display: none; align-items: flex-start; justify-content: center;
+  padding-top: 12vh;
+}
+.cmdk-overlay.open { display: flex; }
+.cmdk-box {
+  width: 92vw; max-width: 560px; background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 12px; box-shadow: 0 0 0 1px rgba(255,255,255,0.04), 0 24px 64px rgba(0,0,0,0.6);
+  overflow: hidden; animation: cmdk-pop 0.16s ease;
+}
+@keyframes cmdk-pop { from { opacity: 0; transform: translateY(-8px) scale(0.98); } to { opacity: 1; transform: none; } }
+.cmdk-search { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.cmdk-search svg { color: var(--text3); flex-shrink: 0; }
+.cmdk-input {
+  flex: 1; border: none; background: transparent; color: var(--text); font-size: 14px;
+  outline: none; font-family: var(--font); padding: 0;
+}
+.cmdk-input::placeholder { color: var(--text3); }
+.cmdk-list { max-height: 46vh; overflow-y: auto; padding: 6px; }
+.cmdk-item {
+  display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px;
+  cursor: pointer; font-size: 13px; color: var(--text);
+}
+.cmdk-item.active { background: var(--accent-glow); color: var(--text); }
+.cmdk-icon { display: inline-flex; color: var(--text2); flex-shrink: 0; }
+.cmdk-item.active .cmdk-icon { color: var(--accent2); }
+.cmdk-label { flex-shrink: 0; font-weight: 500; }
+.cmdk-hint { margin-left: auto; font-size: 11px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cmdk-empty { padding: 24px; text-align: center; color: var(--text3); font-size: 13px; }
+.cmdk-footer {
+  display: flex; gap: 14px; padding: 8px 14px; border-top: 1px solid var(--border);
+  font-size: 11px; color: var(--text3);
+}
+.cmdk-footer span { display: inline-flex; align-items: center; gap: 4px; }
+
+/* ── 本地模型管理 tab（checkpoint/VAE/embedding 等）── */
+.local-models-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 2px 12px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+.local-models-group { margin-bottom: 14px; }
+.local-models-group-header { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text); padding: 6px 2px; }
+.local-models-group-header svg { color: var(--text2); }
+.local-models-count { margin-left: auto; font-size: 10px; color: var(--text3); background: var(--bg3); padding: 1px 7px; border-radius: 8px; }
+.local-models-list { display: flex; flex-direction: column; gap: 2px; }
+.local-models-row {
+  display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 6px;
+  cursor: pointer; font-size: 12px; transition: background .12s;
+}
+.local-models-row:hover { background: var(--bg3); }
+.local-models-row.copied { background: var(--accent-glow); }
+.local-models-name { color: var(--text); font-weight: 500; flex-shrink: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.local-models-meta { margin-left: auto; font-size: 10px; color: var(--text3); white-space: nowrap; flex-shrink: 0; }
+
+/* ── 搜索框清除按钮（attachSearchClear 注入）── */
+.search-wrap { position: relative; }
+.search-wrap .search-clear,
+.search-clear-host .search-clear {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  width: 20px; height: 20px; border: none; border-radius: 50%; background: transparent;
+  color: var(--text3); cursor: pointer; display: none; align-items: center; justify-content: center;
+  padding: 0; line-height: 1; transition: background .12s, color .12s;
+}
+.search-wrap .search-clear:hover,
+.search-clear-host .search-clear:hover { background: var(--bg4); color: var(--text); }
+.search-wrap input { padding-right: 32px; }
+
+/* 搜索清除按钮：local-sidebar / outputs 容器定位 */
+.local-sidebar-search .search-clear {
+  position: absolute; right: 16px; top: 18px; transform: translateY(-50%);
+  width: 20px; height: 20px; border: none; border-radius: 50%; background: transparent;
+  color: var(--text3); cursor: pointer; display: none; align-items: center; justify-content: center;
+  padding: 0; line-height: 1;
+}
+.local-sidebar-search .search-clear:hover { background: var(--bg4); color: var(--text); }
+.local-sidebar-search input { padding-right: 30px; }

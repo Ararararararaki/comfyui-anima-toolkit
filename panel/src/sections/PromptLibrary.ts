@@ -2,7 +2,7 @@ import { getAllPrompts, countAllPrompts, countPromptsByCategory, searchPrompts, 
 import { renderPromptCard } from '../components/PromptCard'
 import { renderPromptEditor } from '../components/PromptEditor'
 import type { PromptEntry, PromptCategory } from '../types'
-import { showToast, esc, icon } from '../utils'
+import { showToast, esc, icon, attachSearchClear } from '../utils'
 import { openModal, closeModal, promptModal, confirmModal } from '../components/Modal'
 
 let currentSearch = ''
@@ -53,14 +53,14 @@ async function renderCategories(sidebar: HTMLElement | null) {
 
   sidebar.innerHTML = `
     <button class="prompt-cat-item ${currentCategory === '' ? 'active' : ''}" data-catid="">
-      📋 全部 <span class="count">${allCount}</span>
+      ${icon('grid', 12)} 全部 <span class="count">${allCount}</span>
     </button>
     ${cats.map(c => `
       <div class="prompt-cat-row">
         <button class="prompt-cat-item ${currentCategory === c.id ? 'active' : ''}" data-catid="${c.id}">
           ${c.icon ? c.icon + ' ' : ''}${c.name} <span class="count">${catCounts[c.id] || 0}</span>
         </button>
-        ${c.id !== 'uncategorized' ? `<button class="prompt-cat-del" data-catid="${c.id}" title="删除分类">✕</button>` : ''}
+        ${c.id !== 'uncategorized' ? `<button class="prompt-cat-del" data-catid="${c.id}" title="删除分类">${icon('x', 12)}</button>` : ''}
       </div>
     `).join('')}
     <button class="prompt-cat-add" onclick="window.__addPromptCategory()">${icon('plus', 12)} 新建分类</button>
@@ -90,7 +90,7 @@ async function renderCategories(sidebar: HTMLElement | null) {
 
 function renderListContent(container: HTMLElement, prompts: PromptEntry[]) {
   if (prompts.length === 0) {
-    container.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><div class="big">📖</div><p>${currentSearch ? '没有匹配的 Prompt' : 'Prompt 库为空'}</p><p class="sub">浏览 LoRA 列表，从卡片中提取触发词</p></div>`
+    container.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><div class="big">${icon('book', 28)}</div><p>${currentSearch ? '没有匹配的 Prompt' : 'Prompt 库为空'}</p><p class="sub">浏览 LoRA 列表，从卡片中提取触发词</p></div>`
     return
   }
   container.innerHTML = prompts.map(p => renderPromptCard(p, currentSearch)).join('')
@@ -300,7 +300,7 @@ export function setupPromptHandlers() {
     input.value = ''
     const span = document.createElement('span')
     span.className = 'tag tag-editable'
-    span.innerHTML = `${tag} <button class="tag-del-btn" onclick="this.parentElement.remove()">✕</button>`
+    span.innerHTML = `${tag} <button class="tag-del-btn" onclick="this.parentElement.remove()">${icon('x', 12)}</button>`
     tagsContainer.appendChild(span)
   }
 
@@ -313,7 +313,7 @@ export function setupPromptHandlers() {
     input.value = ''
     const span = document.createElement('span')
     span.className = 'tag tag-editable'
-    span.innerHTML = `${lora} <button class="tag-del-btn" onclick="this.parentElement.remove()">✕</button>`
+    span.innerHTML = `${lora} <button class="tag-del-btn" onclick="this.parentElement.remove()">${icon('x', 12)}</button>`
     lorasContainer.appendChild(span)
   }
 
@@ -345,7 +345,7 @@ export function setupPromptHandlers() {
         ? `<div class="img-thumb-grid">${images.map((u, i) =>
             `<div class="img-thumb-wrap">
               <img src="${esc(u)}" alt="">
-              <button type="button" class="img-thumb-del" onclick="window.__removePromptImage(${i})">✕</button>
+              <button type="button" class="img-thumb-del" onclick="window.__removePromptImage(${i})">${icon('x', 12)}</button>
             </div>`).join('')}</div>`
         : ''
     }
@@ -373,6 +373,10 @@ export function setupPromptHandlers() {
     searchInput.addEventListener('input', () => {
       clearTimeout(timer)
       timer = setTimeout(() => w.__searchPrompts(), 300)
+    })
+    attachSearchClear(searchInput as HTMLInputElement, () => {
+      currentSearch = ''
+      renderPromptList()
     })
   }
 

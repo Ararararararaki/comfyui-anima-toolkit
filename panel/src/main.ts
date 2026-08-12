@@ -9,6 +9,7 @@ import { initSettings, applySettings } from './sections/Settings'
 import { initOutputs } from './sections/Outputs'
 import { bindPromptFreqEvents } from './sections/PromptFreq'
 import { initIconButtons } from './utils'
+import { initCommandPalette } from './sections/CommandPalette'
 
 // ── Theme switcher ──
 function initThemeSwitcher() {
@@ -43,4 +44,5 @@ document.addEventListener('DOMContentLoaded', () => {
   initLocalManager()
   bindArtistEvents()
   initOutputs()
+  initCommandPalette()
 })

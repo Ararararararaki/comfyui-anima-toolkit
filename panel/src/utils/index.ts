@@ -119,3 +119,26 @@ export function setBtnIcon(el: HTMLElement | null, iconName: string, text: strin
   if (!el) return
   el.innerHTML = icon(iconName, size) + '<span>' + esc(text) + '</span>'
 }
+
+// 给搜索框注入「清除 ✕」按钮：有输入时显示，点击清空并触发 onClear 回调。
+// 幂等：同一输入框只注入一次。按钮放在 .search-wrap / .search-clear-host 容器内。
+export function attachSearchClear(input: HTMLInputElement, onClear: () => void): void {
+  const host = input.closest('.search-wrap, .search-clear-host, .local-sidebar-search, .outputs-search-wrap') as HTMLElement | null
+  if (!host || host.querySelector('.search-clear')) return
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.className = 'search-clear'
+  btn.title = '清空搜索'
+  btn.setAttribute('aria-label', '清空搜索')
+  btn.innerHTML = icon('x', 14)
+  const update = () => { btn.style.display = input.value ? 'flex' : 'none' }
+  btn.addEventListener('click', () => {
+    input.value = ''
+    update()
+    input.focus()
+    onClear()
+  })
+  input.addEventListener('input', update)
+  host.appendChild(btn)
+  update()
+}

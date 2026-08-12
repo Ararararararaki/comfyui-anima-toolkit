@@ -164,7 +164,7 @@ function renderListCard(file: OutputFile, selectedIds: Set<string>, metadataCach
 
 export function renderEmpty(dirHandle: boolean): string {
   return `<div class="outputs-empty">
-    <div class="big">🖼️</div>
+    <div class="big">${icon('image', 28)}</div>
     <p>${dirHandle ? '当前目录没有图片' : '选择 ComfyUI 输出目录开始管理图片'}</p>
     ${!dirHandle ? '<button class="btn btn-primary outputs-select-btn" data-icon="folder"><span>选择目录</span></button>' : ''}
   </div>`
@@ -187,7 +187,7 @@ export function renderMetadataPanel(meta: OutputMetadata | null, file: OutputFil
   const header = `<div class="outputs-meta-header">
     <h3>元数据</h3>
     ${hasWorkflow ? `<button class="outputs-meta-copy-btn" id="outputsMetaCopyWorkflowBtn" title="下载工作流 JSON">${icon('download', 12)}</button>` : ''}
-    <button class="outputs-meta-close-btn" id="outputsMetaCloseBtn" title="关闭面板">✕</button>
+    <button class="outputs-meta-close-btn" id="outputsMetaCloseBtn" title="关闭面板">${icon('x', 14)}</button>
   </div>`
 
   if (!meta) return `${header}<div class="outputs-meta-empty">无元数据</div>`
@@ -286,7 +286,7 @@ export function renderFilterPanel(
             <input type="number" class="outputs-filter-input outputs-filter-steps-max" placeholder="最大" value="${escAttr(filters.filterStepsMax)}">
           </div>
         </div>
-        ${hasAny ? '<button class="btn btn-ghost btn-xs outputs-filter-clear" style="margin-top:8px;width:100%">✕ 清除筛选</button>' : ''}
+        ${hasAny ? `<button class="btn btn-ghost btn-xs outputs-filter-clear" style="margin-top:8px;width:100%">${icon('x', 12)} 清除筛选</button>` : ''}
       </div>
     </div>`
 }

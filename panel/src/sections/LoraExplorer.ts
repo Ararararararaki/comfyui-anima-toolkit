@@ -121,6 +121,9 @@ export function switchSection(id: 'lora' | 'artist' | 'prompt' | 'prompt-freq' |
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
+// 暴露给命令面板（CommandPalette.ts）跨模块调用，避免循环依赖
+;(window as any).__animaSwitchSection = switchSection
+
 async function fetchPage(p: number, options?: { quietError?: boolean; append?: boolean; cursor?: string | null }) {
   const store = useModelStore.getState()
   if (store.loading) return
@@ -306,9 +309,9 @@ function renderGrid(append = false) {
     grid.classList.remove('virtualized')
     grid.onscroll = null
     if (store.processed.length === 0 && store.page > 0) {
-      grid.innerHTML = `<div class="empty-state"><div class="big">🔍</div><p>所有 LoRA 未达筛选条件</p><p class="sub">下载量 > 250，赞/比 > 5%</p></div>`
+      grid.innerHTML = `<div class="empty-state"><div class="big">${icon('search', 28)}</div><p>所有 LoRA 未达筛选条件</p><p class="sub">下载量 > 250，赞/比 > 5%</p></div>`
     } else {
-      grid.innerHTML = `<div class="empty-state"><div class="big">🔮</div><p>${store.processed.length === 0 ? '还没有数据，点击上方「快速抓取」或搜索开始' : '没有匹配的 LoRA'}</p></div>`
+      grid.innerHTML = `<div class="empty-state"><div class="big">${icon('package', 28)}</div><p>${store.processed.length === 0 ? '还没有数据，点击上方「快速抓取」或搜索开始' : '没有匹配的 LoRA'}</p></div>`
     }
     const wrap = document.getElementById('loadMoreWrap')
     if (wrap) wrap.style.display = 'none'
@@ -387,7 +390,7 @@ function renderArtistImgList(tag: string) {
     list.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:16px;color:var(--text3);font-size:12px">暂无自定义图片，下方粘贴URL添加</div>'
   } else {
     list.innerHTML = imgs.map((url) =>
-      `<div style="position:relative;aspect-ratio:1"><img src="${esc(url)}" style="width:100%;height:100%;object-fit:cover;border-radius:6px"><button class="btn btn-danger" style="position:absolute;top:2px;right:2px;padding:1px 5px;font-size:9px;opacity:.8" onclick="window.__removeArtistImg('${esc(tag)}','${esc(url)}')">✕</button></div>`
+      `<div style="position:relative;aspect-ratio:1"><img src="${esc(url)}" style="width:100%;height:100%;object-fit:cover;border-radius:6px"><button class="btn btn-danger" style="position:absolute;top:2px;right:2px;padding:1px 5px;font-size:9px;opacity:.8" onclick="window.__removeArtistImg('${esc(tag)}','${esc(url)}')">${icon('x', 11)}</button></div>`
     ).join('')
   }
 }
@@ -484,7 +487,7 @@ function renderColManageList() {
         : '<input class="col-rename-input" data-colid="' + safeId + '" type="text" value="' + safeName + '" style="flex:1;padding:4px 8px;border-radius:5px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:13px;font-family:var(--font);outline:none">'
       ) +
       '<span style="font-size:11px;color:var(--text3);white-space:nowrap">' + c.count + ' 项</span>' +
-      (isDefault ? '' : '<button class="btn btn-danger col-del-btn" style="padding:3px 8px;font-size:10px;opacity:.6" data-colid="' + safeId + '" data-colname="' + safeName + '">✕</button>') +
+      (isDefault ? '' : '<button class="btn btn-danger col-del-btn" style="padding:3px 8px;font-size:10px;opacity:.6" data-colid="' + safeId + '" data-colname="' + safeName + '">' + icon('x', 11) + '</button>') +
       '</div>'
   }).join('')
 

@@ -1,6 +1,6 @@
 import { useLocalModelStore } from '../store/localModels'
 import type { LocalSortKey, LocalFilterKey, LocalViewKey } from '../store/localModels'
-import { esc, escAttr, copyText, showToast, fmtNum, thumbUrl, debounce, stripExt, setBtnIcon, icon } from '../utils'
+import { esc, escAttr, copyText, showToast, fmtNum, thumbUrl, debounce, stripExt, setBtnIcon, icon, attachSearchClear } from '../utils'
 import { openLightbox } from '../components/Lightbox'
 import type { PngMeta, LocalLoraFile, TagFreq } from '../types'
 import type { OutputMetadata } from '../types/outputs'
@@ -319,7 +319,7 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
   }
 
   if (files.length === 0) {
-    el.innerHTML = '<div class="empty-state empty-state-wide"><div class="big">📭</div><p class="empty-state-text">没有匹配的文件</p></div>'
+    el.innerHTML = '<div class="empty-state empty-state-wide"><div class="big">' + icon('mailOpen', 28) + '</div><p class="empty-state-text">没有匹配的文件</p></div>'
     return
   }
 
@@ -393,10 +393,62 @@ function updateBatchBar(state: ReturnType<typeof useLocalModelStore.getState>) {
     return
   }
   bar.style.display = 'flex'
-  count.textContent = `已选 ${state.batchSelection.length} 项`
-}
-
-function renderPromptTab(state: ReturnType<typeof useLocalModelStore.getState>) {
+  count.textContent = `已选 ${state.batchSelection.length} 项`
+}
+
+// ── 模型管理 tab（checkpoint/VAE/embedding/controlnet 等）──
+let _modelsLoaded = false
+async function renderModelsTab() {
+  const el = $$('localModelsContent')
+  if (!el) return
+  el.innerHTML = `<div class="empty-state"><div class="big">⏳</div><p>加载模型中…</p></div>`
+  try {
+    const resp = await fetch('/anima/models')
+    if (!resp.ok) throw new Error(`http ${resp.status}`)
+    const data = await resp.json()
+    _modelsLoaded = true
+    const groups = (data.groups || []) as { type: string; label: string; items: any[]; count: number }[]
+    const fmtSize = (b: number) => b >= 1073741824 ? (b / 1073741824).toFixed(2) + ' GB' : b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : (b / 1024).toFixed(0) + ' KB'
+    const fmtDate = (m: number) => m ? new Date(m * 1000).toLocaleDateString('zh-CN') : '-'
+    const total = data.total || 0
+
+    if (total === 0) {
+      el.innerHTML = `<div class="empty-state"><div class="big">${icon('package', 28)}</div><p>未发现模型文件</p><p class="sub">模型需放在 ComfyUI 的 models/ 对应子目录（checkpoints、vae、embeddings 等）</p></div>`
+      return
+    }
+
+    el.innerHTML = `
+      <div class="local-models-toolbar">
+        <span style="font-size:12px;color:var(--text2)">共 <strong style="color:var(--text)">${total}</strong> 个模型</span>
+        <span style="font-size:11px;color:var(--text3)">点击模型名复制到剪贴板</span>
+      </div>
+      ${groups.filter(g => g.count > 0).map(g => `
+        <div class="local-models-group">
+          <div class="local-models-group-header">
+            ${icon('folder', 13)} <span>${esc(g.label)}</span>
+            <span class="local-models-count">${g.count}</span>
+          </div>
+          <div class="local-models-list">
+            ${g.items.map(it => `
+              <div class="local-models-row" data-name="${escAttr(it.name)}" title="点击复制模型名">
+                <span class="local-models-name">${esc(trunc(it.name, 42))}</span>
+                <span class="local-models-meta">${esc(it.ext)} · ${fmtSize(it.size)} · ${fmtDate(it.lastModified)}</span>
+              </div>`).join('')}
+          </div>
+        </div>`).join('')}`
+    // 点击复制模型名
+    el.querySelectorAll('.local-models-row').forEach(row => {
+      row.addEventListener('click', () => {
+        const name = (row as HTMLElement).dataset.name || ''
+        copyText(name, row as HTMLElement)
+      })
+    })
+  } catch (e: any) {
+    el.innerHTML = `<div class="empty-state"><div class="big">${icon('alertCircle', 28)}</div><p>加载模型失败</p><p class="sub">${esc(String(e.message || e))}（需 ComfyUI 后端 /anima/models 接口，旧版插件请更新）</p></div>`
+  }
+}
+
+function renderPromptTab(state: ReturnType<typeof useLocalModelStore.getState>) {
   const el = $$('promptLoraList')
   if (!el) return
   const files = state.files.filter(f => f.matched || state.modelCategories[stripExt(f.name)])
@@ -517,7 +569,7 @@ function renderHome(state: ReturnType<typeof useLocalModelStore.getState>) {
   }
 
   if (!outputWithLocalLora) {
-    html += `<div class="empty-state"><div class="big">📊</div><p>暂无使用数据，扫描 Outputs 目录后自动生成</p></div>`
+    html += `<div class="empty-state"><div class="big">${icon('trendingUp', 28)}</div><p>暂无使用数据，扫描 Outputs 目录后自动生成</p></div>`
   }
 
   el.innerHTML = html
@@ -762,7 +814,7 @@ function renderGallery(state: ReturnType<typeof useLocalModelStore.getState>) {
   if (!el) return
   const pngs = state.pngs
   if (pngs.length === 0) {
-    el.innerHTML = '<div class="empty-state"><div class="big">🖼️</div><p>尚未添加 PNG 图片，点击上方区域选择或拖入图片</p></div>'
+    el.innerHTML = '<div class="empty-state"><div class="big">' + icon('image', 28) + '</div><p>尚未添加 PNG 图片，点击上方区域选择或拖入图片</p></div>'
     return
   }
   el.innerHTML = pngs.map(p => {
@@ -791,7 +843,7 @@ function renderTagFreq(tags: TagFreq[]) {
   const el = $$('localTagList')
   if (!el) return
   if (tags.length === 0) {
-    el.innerHTML = '<div class="empty-state"><div class="big">🏷️</div><p>暂无数据，扫描 LoRA 或添加 PNG 后自动生成</p></div>'
+    el.innerHTML = '<div class="empty-state"><div class="big">' + icon('tag', 28) + '</div><p>暂无数据，扫描 LoRA 或添加 PNG 后自动生成</p></div>'
     return
   }
   const maxCount = tags[0]?.count || 1
@@ -900,9 +952,9 @@ function bindLocalEvents() {
         const pctEl = document.createElement('span')
         pctEl.className = 'ld-pct'
         pctEl.textContent = '0%'
-        const cancelBtn = document.createElement('button')
-        cancelBtn.textContent = '✕'
-        cancelBtn.title = '取消下载'
+        const cancelBtn = document.createElement('button')
+        cancelBtn.innerHTML = icon('x', 12)
+        cancelBtn.title = '取消下载'
         cancelBtn.style.cssText = 'padding:2px 6px;background:rgba(255,80,80,0.15);color:#ff6b6b;border:1px solid rgba(255,80,80,0.3);border-radius:4px;cursor:pointer;font-size:10px;flex-shrink:0;line-height:1;'
         row.append(nameEl, barWrap, pctEl, cancelBtn)
         listEl.appendChild(row)
@@ -1030,7 +1082,11 @@ function bindLocalEvents() {
     useLocalModelStore.getState().setSearchQuery(q)
     renderSidebarList(useLocalModelStore.getState())
   }, 150)
-  $$('localSearch')?.addEventListener('input', debouncedLocalSearch)
+  $$('localSearch')?.addEventListener('input', debouncedLocalSearch)
+  attachSearchClear($$('localSearch') as HTMLInputElement, () => {
+    useLocalModelStore.getState().setSearchQuery('')
+    renderSidebarList(useLocalModelStore.getState())
+  })
 
   $$('localSort')?.addEventListener('change', () => {
     const v = ($$('localSort') as HTMLSelectElement).value as LocalSortKey
@@ -1053,10 +1109,11 @@ function bindLocalEvents() {
       document.querySelectorAll('.local-page').forEach(p => p.classList.remove('active'))
       const target = $$('pageLocal' + view.charAt(0).toUpperCase() + view.slice(1))
       if (target) target.classList.add('active')
-      if (view === 'home') renderHome(useLocalModelStore.getState())
-      if (view === 'detail') renderDetail(useLocalModelStore.getState())
-      if (view === 'gallery') renderGallery(useLocalModelStore.getState())
-      if (view === 'prompt') renderPromptTab(useLocalModelStore.getState())
+      if (view === 'home') renderHome(useLocalModelStore.getState())
+      if (view === 'detail') renderDetail(useLocalModelStore.getState())
+      if (view === 'gallery') renderGallery(useLocalModelStore.getState())
+      if (view === 'prompt') renderPromptTab(useLocalModelStore.getState())
+      if (view === 'models') renderModelsTab()
     })
   })
 

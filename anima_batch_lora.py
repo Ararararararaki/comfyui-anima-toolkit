@@ -315,3 +315,54 @@ async def list_loras(request):
             "lastModified": mtime,
         })
     return web.json_response({"loras": loras, "total": len(loras)})
+
+
+# ComfyUI 支持的模型文件夹类型（面板「模型管理」用它列出 checkpoint/VAE/embedding 等）
+_MODEL_FOLDER_TYPES = [
+    ("checkpoints", "Checkpoint"),
+    ("vae", "VAE"),
+    ("embeddings", "Embedding"),
+    ("clip", "Text Encoder"),
+    ("clip_vision", "CLIP Vision"),
+    ("controlnet", "ControlNet"),
+    ("upscale_models", "Upscale"),
+    ("hypernetworks", "Hypernetwork"),
+    ("style_models", "Style Model"),
+    ("loras", "LoRA"),
+]
+
+
+@PromptServer.instance.routes.get("/anima/models")
+async def list_models(request):
+    """List all model files grouped by folder type (checkpoint/VAE/embedding/...).
+
+    面板「模型管理」用：一次请求拿全部分类，避免前端逐个类型请求。
+    每项含 filename/name/size/lastModified，便于排序与展示。
+    """
+    groups = []
+    total = 0
+    for folder_type, label in _MODEL_FOLDER_TYPES:
+        try:
+            files = folder_paths.get_filename_list(folder_type)
+        except Exception:
+            files = []
+        items = []
+        for f in files:
+            size, mtime = 0, 0.0
+            full = folder_paths.get_full_path(folder_type, f)
+            if full and os.path.isfile(full):
+                try:
+                    st = os.stat(full)
+                    size, mtime = st.st_size, st.st_mtime
+                except OSError:
+                    pass
+            items.append({
+                "filename": f,
+                "name": os.path.splitext(f)[0],
+                "ext": os.path.splitext(f)[1],
+                "size": size,
+                "lastModified": mtime,
+            })
+        groups.append({"type": folder_type, "label": label, "items": items, "count": len(items)})
+        total += len(items)
+    return web.json_response({"groups": groups, "total": total})

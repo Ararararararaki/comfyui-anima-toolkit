@@ -1,4 +1,4 @@
-import { esc, escAttr, copyText, showToast, fmtNum, setBtnIcon, icon } from '../utils'
+import { esc, escAttr, copyText, showToast, fmtNum, setBtnIcon, icon, attachSearchClear } from '../utils'
 import { openLightbox } from '../components/Lightbox'
 import {
   getArtists, refreshArtists, getArtistById, getArtistCategories,
@@ -85,7 +85,7 @@ export function renderArtists() {
       : q
         ? '没有匹配的画师，换个关键词试试'
         : '该分类下暂无画师'
-    grid.innerHTML = '<div class="empty-state" style="padding:40px"><div class="big">📭</div><p>' + msg + '</p></div>'
+    grid.innerHTML = '<div class="empty-state" style="padding:40px"><div class="big">' + icon('mailOpen', 28) + '</div><p>' + msg + '</p></div>'
     renderSidebarLeft()
     renderSidebarRight()
     return
@@ -245,7 +245,7 @@ function renderSidebarRight() {
 
   // 已选画师列表
   if (tags.length === 0) {
-    selList.innerHTML = '<div class="empty-state" style="padding:20px 12px"><div class="big">👆</div><p style="font-size:11px">点击画师卡片添加到组合</p></div>'
+    selList.innerHTML = '<div class="empty-state" style="padding:20px 12px"><div class="big">' + icon('mousePointer', 28) + '</div><p style="font-size:11px">点击画师卡片添加到组合</p></div>'
   } else {
     selList.innerHTML = tags.map((tag, i) => {
       const artist = getArtists().find(a => a.tag === tag)
@@ -477,6 +477,10 @@ function bindToolbarEvents() {
       clearTimeout(timer)
       timer = window.setTimeout(() => updateView(), 250)
     }
+    attachSearchClear(searchInput, () => {
+      useArtistStore.getState().setSearch('')
+      updateView()
+    })
   }
 
   // 添加画师
@@ -776,7 +780,7 @@ function renderPresets() {
   const artists = getArtists()
 
   if (store.presets.length === 0) {
-    grid.innerHTML = '<div class="empty-state" style="padding:40px"><div class="big">💾</div><p>暂无风格预设</p><p class="sub">选择画师组合后点击"保存预设"</p></div>'
+    grid.innerHTML = '<div class="empty-state" style="padding:40px"><div class="big">' + icon('book', 28) + '</div><p>暂无风格预设</p><p class="sub">选择画师组合后点击"保存预设"</p></div>'
     renderSidebarLeft()
     renderSidebarRight()
     return

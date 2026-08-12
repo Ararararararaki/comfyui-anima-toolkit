@@ -309,6 +309,30 @@
     setTimeout(() => { t.style.opacity = "0"; setTimeout(() => { t.remove(); if (_toastEl === t) _toastEl = null; }, 300); }, 1500);
   }
 
+  // ── 内联 SVG 图标（lucide 风格 stroke，与面板统一画风，替代 emoji/字符）──
+  const _ICON_PATHS = {
+    grip: '<circle cx="9" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="18" r="1"/>',
+    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    tag: '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5"/>',
+    chevronLeft: '<path d="m15 18-6-6 6-6"/>',
+    chevronRight: '<path d="m9 18 6-6-6-6"/>',
+    search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+    download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+    clipboard: '<rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
+    folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+    globe: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+    refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+  };
+  function svgIcon(name, size = 12) {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;pointer-events:none;">${_ICON_PATHS[name] || ""}</svg>`;
+  }
+
+  // HTML 转义（供 _render 的 metaBadge 等动态内容使用；此前 _render 内直接调用 esc 但未定义，
+  // 仅在分类标签非空时抛 ReferenceError → 单行渲染失败被 catch 跳过 → 卡片列表莫名只剩前几行）
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  // 属性值转义（双引号上下文；esc 已覆盖引号，此处为语义别名）
+  const escAttr = (s) => esc(s);
+
   // ── UI 状态 ──
   class WidgetUI {
     constructor(node, loraWidget) {
@@ -316,6 +340,7 @@
       this.loraWidget = loraWidget;
       this.loras = this._parse(loraWidget.value || "");
       this.triggerWordMap = {};
+      this.loraInfoMap = {}; // name -> {previewUrl, modelName, creator}（悬停预览用）
       this._lastBridgeTs = 0;   // 上次已应用的 bridge updated_at（避免重复同步）
       this._bridgeTimer = null;
     }
@@ -426,7 +451,7 @@
           .anima-lora-widget { display:flex; flex-direction:column; padding:6px; max-height:420px; background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01)); border-radius:8px; font-family:"Inter","Geist Sans",system-ui,sans-serif; border:1px solid rgba(255,255,255,0.05); box-shadow:inset 0 1px 0 0 rgba(255,255,255,0.04); }
           .anima-lora-widget .list { flex:1; overflow-y:auto; min-height:0; }
           .anima-lora-widget .toolbar { display:flex; gap:5px; margin-bottom:6px; flex-wrap:wrap; }
-          .anima-lora-widget .toolbar button { padding:4px 10px; border:none; border-radius:6px; cursor:pointer; font-size:9px; font-weight:600; color:#EDEDEF; white-space:nowrap; letter-spacing:0.02em; transition:all 0.2s ease-out; box-shadow:0 0 0 1px rgba(255,255,255,0.06),0 2px 8px rgba(0,0,0,0.3); }
+          .anima-lora-widget .toolbar button { display:inline-flex; align-items:center; gap:4px; padding:4px 10px; border:none; border-radius:6px; cursor:pointer; font-size:9px; font-weight:600; color:#EDEDEF; white-space:nowrap; letter-spacing:0.02em; transition:all 0.2s ease-out; box-shadow:0 0 0 1px rgba(255,255,255,0.06),0 2px 8px rgba(0,0,0,0.3); }
           .anima-lora-widget .toolbar .btn-verify { background:linear-gradient(135deg,#5E6AD2,#6872D9); box-shadow:0 0 0 1px rgba(94,106,210,0.3),0 2px 12px rgba(94,106,210,0.2),inset 0 1px 0 0 rgba(255,255,255,0.15); }
           .anima-lora-widget .toolbar .btn-verify:hover { background:linear-gradient(135deg,#6872D9,#7B83E0); box-shadow:0 0 0 1px rgba(94,106,210,0.4),0 4px 20px rgba(94,106,210,0.3),inset 0 1px 0 0 rgba(255,255,255,0.2); transform:translateY(-1px); }
           .anima-lora-widget .toolbar .btn-verify:active { transform:scale(0.97); }
@@ -444,16 +469,14 @@
           .anima-lora-widget .drag-area { display:inline-flex; align-items:center; cursor:grab; padding:2px 4px; border-radius:4px; flex-shrink:0; user-select:none; -webkit-user-select:none; }
           .anima-lora-widget .drag-area:hover { background:rgba(255,255,255,0.06); }
           .anima-lora-widget .drag-area .drag-hint { color:rgba(255,255,255,0.15); font-size:11px; line-height:1; }
-          .anima-lora-widget .lora-name { font-size:10px; min-width:50px; max-width:90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#C8C9CB; flex-shrink:0; cursor:pointer; padding:2px 4px; border-radius:4px; transition:all 0.15s ease-out; }
+          .anima-lora-widget .lora-name { font-size:10px; min-width:50px; max-width:none; flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#C8C9CB; flex-shrink:1; cursor:pointer; padding:2px 4px; border-radius:4px; transition:all 0.15s ease-out; }
           .anima-lora-widget .lora-name:hover { background:rgba(94,106,210,0.12); color:#EDEDEF; }
-          .anima-lora-widget .lora-tw-hint { font-size:8px; color:rgba(255,255,255,0.25); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:58px; flex-shrink:0; min-width:0; }
-          .anima-lora-widget .weight-group { display:flex; align-items:center; gap:3px; flex:1; }
-          .anima-lora-widget .weight-group input[type=range] { -webkit-appearance:none; appearance:none; flex:1; height:3px; cursor:pointer; min-width:40px; background:rgba(255,255,255,0.08); border-radius:2px; outline:none; }
-          .anima-lora-widget .weight-group input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:12px; height:12px; border-radius:50%; background:linear-gradient(135deg,#5E6AD2,#7B83E0); cursor:pointer; border:2px solid #0a0a0c; box-shadow:0 0 0 1px rgba(94,106,210,0.3),0 2px 6px rgba(0,0,0,0.4); transition:all 0.15s ease-out; }
-          .anima-lora-widget .weight-group input[type=range]::-webkit-slider-thumb:hover { transform:scale(1.2); box-shadow:0 0 0 2px rgba(94,106,210,0.3),0 2px 8px rgba(94,106,210,0.3); }
-          .anima-lora-widget .weight-group input[type=range]::-moz-range-thumb { width:12px; height:12px; border-radius:50%; background:linear-gradient(135deg,#5E6AD2,#7B83E0); border:2px solid #0a0a0c; cursor:pointer; }
+          .anima-lora-widget .weight-group { display:flex; align-items:center; gap:2px; flex-shrink:0; }
+          .anima-lora-widget .weight-step { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; padding:0; border:none; border-radius:4px; background:rgba(255,255,255,0.06); color:#8A8F98; cursor:pointer; flex-shrink:0; transition:all 0.15s ease-out; }
+          .anima-lora-widget .weight-step:hover { background:rgba(94,106,210,0.18); color:#EDEDEF; box-shadow:0 0 0 1px rgba(94,106,210,0.25); }
+          .anima-lora-widget .weight-step:active { transform:scale(0.92); background:rgba(94,106,210,0.28); }
           .anima-lora-widget .weight-val { width:32px; font-size:9px; text-align:center; background:transparent; color:#EDEDEF; border:none; padding:1px 0; font-family:"Geist Mono","JetBrains Mono",monospace; outline:none; }
-          .anima-lora-widget .del-btn { background:none; border:none; color:rgba(255,80,80,0.4); cursor:pointer; font-size:13px; padding:0 4px; flex-shrink:0; transition:all 0.15s ease-out; border-radius:3px; line-height:1; }
+          .anima-lora-widget .del-btn { display:inline-flex; align-items:center; justify-content:center; background:none; border:none; color:rgba(255,80,80,0.4); cursor:pointer; padding:0 3px; flex-shrink:0; transition:all 0.15s ease-out; border-radius:3px; line-height:1; width:18px; height:18px; }
           .anima-lora-widget .del-btn:hover { color:#ff6b6b; background:rgba(255,80,80,0.1); }
           .anima-lora-widget .lora-toggle { width:26px; height:14px; border-radius:7px; background:rgba(255,255,255,0.10); position:relative; cursor:pointer; flex-shrink:0; transition:all 0.2s var(--ease); box-shadow:inset 0 1px 2px rgba(0,0,0,0.4); }
           .anima-lora-widget .lora-toggle::after { content:""; position:absolute; top:2px; left:2px; width:10px; height:10px; border-radius:50%; background:#6b7280; transition:left 0.2s var(--ease), background 0.2s var(--ease); }
@@ -476,10 +499,14 @@
           .anima-lora-widget .modal .close-btn { margin-top:10px; padding:5px 14px; align-self:flex-end; background:rgba(255,255,255,0.06); color:#8A8F98; border:1px solid rgba(255,255,255,0.06); border-radius:6px; cursor:pointer; font-size:10px; transition:all 0.15s ease-out; }
           .anima-lora-widget .modal .close-btn:hover { background:rgba(255,255,255,0.10); color:#EDEDEF; }
           .anima-lora-widget .anima-tw-popover { position:fixed; z-index:99999; background:linear-gradient(180deg,#141418,#0f0f12); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:10px 12px; max-width:300px; box-shadow:0 0 0 1px rgba(255,255,255,0.04),0 12px 40px rgba(0,0,0,0.6),0 0 60px rgba(94,106,210,0.05); }
+          .anima-lora-widget .anima-tw-popover .tw-preview { width:100%; height:120px; border-radius:6px; overflow:hidden; margin-bottom:8px; background:rgba(255,255,255,0.04); display:flex; align-items:center; justify-content:center; }
+          .anima-lora-widget .anima-tw-popover .tw-preview img { width:100%; height:100%; object-fit:cover; display:block; }
+          .anima-lora-widget .anima-tw-popover .tw-preview-fallback { color:rgba(255,255,255,0.25); font-size:10px; padding:0 10px; text-align:center; }
+          .anima-lora-widget .anima-tw-popover .tw-meta { font-size:9px; color:rgba(255,255,255,0.4); margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
           .anima-lora-widget .anima-tw-popover .tw-title { font-weight:600; font-size:10px; color:#8A8F98; margin-bottom:5px; letter-spacing:0.02em; }
           .anima-lora-widget .anima-tw-popover .tw-word { background:rgba(94,106,210,0.12); color:#C8C9CB; padding:3px 8px; border-radius:4px; font-size:10px; margin:2px; display:inline-block; cursor:pointer; transition:all 0.15s ease-out; border:1px solid rgba(94,106,210,0.1); }
           .anima-lora-widget .anima-tw-popover .tw-word:hover { background:rgba(94,106,210,0.25); color:#EDEDEF; }
-          .anima-lora-widget .anima-tw-popover .tw-copy-all { display:block; margin-top:6px; padding:4px 10px; background:linear-gradient(135deg,#5E6AD2,#6872D9); color:#EDEDEF; border:none; border-radius:5px; cursor:pointer; font-size:9px; font-weight:500; transition:all 0.15s ease-out; box-shadow:0 0 0 1px rgba(94,106,210,0.2),inset 0 1px 0 0 rgba(255,255,255,0.1); }
+          .anima-lora-widget .anima-tw-popover .tw-copy-all { display:inline-flex; align-items:center; gap:4px; margin-top:6px; padding:4px 10px; background:linear-gradient(135deg,#5E6AD2,#6872D9); color:#EDEDEF; border:none; border-radius:5px; cursor:pointer; font-size:9px; font-weight:500; transition:all 0.15s ease-out; box-shadow:0 0 0 1px rgba(94,106,210,0.2),inset 0 1px 0 0 rgba(255,255,255,0.1); }
           .anima-lora-widget .anima-tw-popover .tw-copy-all:hover { background:linear-gradient(135deg,#6872D9,#7B83E0); }
           .anima-lora-widget .anima-tw-popover .tw-empty { color:rgba(255,255,255,0.3); font-size:10px; }
           .anima-lora-widget::-webkit-scrollbar { width:4px; }
@@ -518,14 +545,15 @@
       // ── 工具栏 ──
       const toolbar = document.createElement("div");
       toolbar.className = "toolbar";
-      const verifyBtn = this._btn("🔍 验证标签", "btn-verify", "检查输入框中的 <lora:...> 标签能否在本地找到对应文件");
-      const extractBtn = this._btn("📥 提取触发词", "btn-verify", "批量查询当前列表所有 LoRA 的触发词（自动刷新列表）");
-      const copyAllTwBtn = this._btn("📋 全部触发词", "btn-verify", "一键复制已启用 LoRA 的所有触发词（英文逗号连接）");
-      const browseBtn = this._btn("📂 本地 LoRA", "btn-browse", "打开本地 LoRA 浏览窗：预览 C 站图、点击添加 / 分类");
-      const clearBtn = this._btn("✕ 清空列表", "btn-clear", "清空当前 LoRA 列表");
-      const panelBtn = this._btn("🌐 面板", "btn-verify", "打开本地管理面板（Anima Toolkit）");
-      const groupsBtn = this._btn("📁 组", "btn-browse", "LoRA 组：保存当前列表 / 切换 / 删除");
-      const updateBtn = this._btn("🔄 更新", "btn-browse", "检查插件版本更新");
+      const verifyBtn = this._btn("验证标签", "btn-verify", "检查输入框中的 <lora:...> 标签能否在本地找到对应文件", "search");
+      const extractBtn = this._btn("提取触发词", "btn-verify", "批量查询当前列表所有 LoRA 的触发词（自动刷新列表）", "download");
+      const copyAllTwBtn = this._btn("全部触发词", "btn-verify", "一键复制已启用 LoRA 的所有触发词（英文逗号连接）", "clipboard");
+      const browseBtn = this._btn("本地 LoRA", "btn-browse", "打开本地 LoRA 浏览窗：预览 C 站图、点击添加 / 分类", "folder");
+      const clearBtn = this._btn("", "btn-clear", "清空当前 LoRA 列表", "x");
+      clearBtn.style.padding = "4px 8px"; // 纯图标按钮，缩写宽度
+      const panelBtn = this._btn("面板", "btn-verify", "打开本地管理面板（Anima Toolkit）", "globe");
+      const groupsBtn = this._btn("组", "btn-browse", "LoRA 组：保存当前列表 / 切换 / 删除", "folder");
+      const updateBtn = this._btn("更新", "btn-browse", "检查插件版本更新", "refresh");
       toolbar.append(verifyBtn, extractBtn, copyAllTwBtn, browseBtn, groupsBtn, clearBtn, panelBtn, updateBtn);
 
       // 检查更新：点击手动检查；build 后自动查一次，有新版时按钮高亮成「有新版本」
@@ -539,7 +567,7 @@
       setTimeout(() => {
         fetch("/anima/version").then((r) => r.json()).then((v) => {
           if (v && v.behind) {
-            updateBtn.textContent = "🔄 有新版本";
+            updateBtn.innerHTML = svgIcon("refresh", 12) + '<span>有新版本</span>';
             updateBtn.title = `当前 ${v.version}，最新 ${v.latest}，点击查看更新方式`;
             updateBtn.onclick = () => showUpdateGuide(v);
           }
@@ -561,7 +589,11 @@
       extractBtn.onclick = () => this._extractAllTriggerWords(listEl);
       copyAllTwBtn.onclick = () => this._copyAllTriggerWords();
       browseBtn.onclick = () => { showToast("正在加载 LoRA 列表..."); this._browseModal(statusEl); };
-      clearBtn.onclick = () => { this.loras = []; this._commit(); this._render(listEl); };
+      clearBtn.onclick = () => {
+        // 二次确认防误触（纯图标按钮更易误点）
+        if (!window.confirm("确定清空当前 LoRA 列表？")) return;
+        this.loras = []; this._commit(); this._render(listEl);
+      };
       panelBtn.onclick = () => window.open(PANEL_BASE, "_blank");
       groupsBtn.onclick = () => this._groupsModal(listEl);
 
@@ -594,10 +626,11 @@
       };
     }
 
-    _btn(text, cls, title) {
+    _btn(text, cls, title, iconName) {
       const b = document.createElement("button");
-      b.textContent = text;
       b.className = cls;
+      if (iconName) b.innerHTML = svgIcon(iconName, 12) + '<span>' + text + '</span>';
+      else b.textContent = text;
       if (title) b.title = title; // 悬停显示按钮用途
       return b;
     }
@@ -625,6 +658,11 @@
           if (data.error || src.startsWith("error") || src.startsWith("http")) throw new Error(data.error || src);
           const tw = data.trainedWords || [];
           this.triggerWordMap[l.name] = tw;
+          this.loraInfoMap[l.name] = {
+            previewUrl: data.previewUrl || null,
+            modelName: data.modelName || "",
+            creator: data.creator || "",
+          };
           if (tw.length) found++;
         } catch (e) {
           // 查询失败不标记为"已检查"——用 null 表示失败，允许重试
@@ -650,6 +688,17 @@
       }
     }
     // ── 获取单个 LoRA 的触发词（共享工具，含失败标记） ──
+    // ── C 站图片代理（白名单域；_browseModal 卡片与 _showTwTooltip 预览图共用）──
+    _imgProxy(url) {
+      // 仅代理 C 站图片域；非白名单 URL 返回空字符串（调用方 onerror 兜底占位），
+      // 避免 javascript:/data: 等协议被带入 <img src>（返回值未转义进 innerHTML）
+      if (!url || !url.startsWith("https://image.civitai.com/")) return "";
+      let u = url;
+      if (u.includes("original=true")) u = u.replace("original=true", "width=400");
+      if (u.includes("width=")) u = u.replace(/width=\d+/g, "width=400");
+      return "/anima/image?url=" + encodeURIComponent(u);
+    }
+
     _fetchTw(name, onDone) {
       fetch("/anima/lora/info?name=" + encodeURIComponent(name))
         .then((r) => {
@@ -663,6 +712,12 @@
           }
           const tw = data.trainedWords || [];
           this.triggerWordMap[name] = tw;
+          // 缓存预览图/模型名/作者，供悬停 popover 展示
+          this.loraInfoMap[name] = {
+            previewUrl: data.previewUrl || null,
+            modelName: data.modelName || "",
+            creator: data.creator || "",
+          };
           onDone && onDone(tw);
         })
         .catch((e) => {
@@ -707,16 +762,7 @@
         if (this.triggerWordMap[l.name] !== undefined) return;
         this._fetchTw(l.name, (tw) => {
           if (!this.listEl) return;
-          const rows = this.listEl.querySelectorAll(".lora-row");
-          rows.forEach((row) => {
-            if (row.dataset.loraName !== l.name) return;
-            const hint = row.querySelector(".lora-tw-hint");
-            if (hint) {
-              hint.textContent = tw.length
-                ? "📝 " + tw.slice(0, 2).join(", ") + (tw.length > 2 ? "..." : "")
-                : "无触发词";
-            }
-          });
+          // 触发词卡片小字已移除（用户要求），仅保留 hover 预览图弹窗数据
         });
       });
     }
@@ -725,7 +771,7 @@
     _render(listEl) {
       listEl.innerHTML = "";
       if (!this.loras.length) {
-        listEl.innerHTML = '<div class="empty-msg">暂无 LoRA，点击「📂 本地 LoRA」添加</div>';
+        listEl.innerHTML = '<div class="empty-msg">暂无 LoRA，点击「本地 LoRA」添加</div>';
         return;
       }
       this.loras.forEach((l, i) => {
@@ -739,7 +785,7 @@
         const dragArea = document.createElement("span");
         dragArea.className = "drag-area";
         dragArea.draggable = true;
-        dragArea.innerHTML = `<span class="drag-hint">⠿</span>`;
+        dragArea.innerHTML = `<span class="drag-hint">${svgIcon("grip", 11)}</span>`;
 
         // ── 启用/禁用开关（关闭则失效但保留在列表） ──
         const toggle = document.createElement("div");
@@ -779,10 +825,10 @@
           this._render(listEl);
         };
 
-        // ── LoRA 名称（悬停预览触发词，点击复制） ──
+        // ── LoRA 名称（悬停预览触发词/预览图，点击复制） ──
         const name = document.createElement("span");
         name.className = "lora-name";
-        name.textContent = l.name.length > 16 ? l.name.slice(0, 13) + "..." : l.name;
+        name.textContent = l.name; // 完整名，CSS ellipsis 兜底截断
         name.title = l.name; // 原生悬浮提示完整名（兜底，不依赖弹窗逻辑）
         let tooltipTimer = null;
         name.onmouseenter = () => {
@@ -795,8 +841,6 @@
               // 懒加载（undefined=未查过，null=上次失败，都重新查）
               this._fetchTw(l.name, (tw) => {
                 this._showTwTooltip(name, l.name, "hover");
-                const twHint = row.querySelector(".lora-tw-hint");
-                if (twHint) twHint.textContent = tw.length ? tw.slice(0, 2).join(", ") + (tw.length > 2 ? "..." : "") : "无触发词";
               });
             }
           };
@@ -841,46 +885,92 @@
           }
         };
 
-        // ── 触发词预览（小字灰显） ──
-        const twHint = document.createElement("span");
-        twHint.className = "lora-tw-hint";
-        const existingTw = this.triggerWordMap[l.name];
-        // undefined=未查过(悬停自动加载)、null=上次查询失败(悬停重试):两者都不直接读 .length,否则 null.length 抛 TypeError
-        if (existingTw !== undefined && existingTw !== null) {
-          twHint.textContent = existingTw.length ? "📝 " + existingTw.slice(0, 2).join(", ") + (existingTw.length > 2 ? "..." : "") : "";
-        } else {
-          twHint.textContent = ""; // 悬停后自动加载 / 失败后重试
-        }
+        // ── 触发词预览（小字灰显）已按用户要求移除：卡片不显示触发词（悬停预览图仍保留） ──
 
-        // ── 权重滑块 ──
-        // slider 外包 .weight-group 容器，匹配 CSS 选择器 .weight-group input[type=range]，
-        // 否则滑块回退浏览器原生样式（深色主题下突兀）
+        // ── 权重调节（尖括号 scrubbing，替代滑块）──
+        // 结构：< 数字 >；按住 < / > 后水平拖动鼠标可连续调整权重（每级 0.05），
+        // 松开（mouseup/mouseleave）才 commit，避免拖动过程反复重建 DOM widget。
         const weightGroup = document.createElement("div");
         weightGroup.className = "weight-group";
-        const slider = document.createElement("input");
-        slider.type = "range"; slider.min = "0"; slider.max = "2"; slider.step = "0.05";
-        slider.value = String(l.weight);
-        weightGroup.appendChild(slider);
 
-        // ── 权重数值（纯文本，无箭头） ──
+        const decBtn = document.createElement("button");
+        decBtn.className = "weight-step";
+        decBtn.type = "button";
+        decBtn.title = "降低权重（按住左右拖动可连续调）";
+        decBtn.innerHTML = svgIcon("chevronLeft", 12);
+
         const valSpan = document.createElement("input");
         valSpan.className = "weight-val";
         valSpan.type = "text"; valSpan.inputMode = "decimal";
         valSpan.value = l.weight.toFixed(2);
 
-        const update = () => {
-          l.weight = clamp(parseFloat(slider.value), 0, 2);
+        const incBtn = document.createElement("button");
+        incBtn.className = "weight-step";
+        incBtn.type = "button";
+        incBtn.title = "提高权重（按住左右拖动可连续调）";
+        incBtn.innerHTML = svgIcon("chevronRight", 12);
+
+        weightGroup.append(decBtn, valSpan, incBtn);
+
+        function clamp(v, min, max) { return isNaN(v) ? 0 : Math.max(min, Math.min(max, v)); }
+        const applyWeight = (v) => {
+          l.weight = clamp(v, 0, 2);
           valSpan.value = l.weight.toFixed(2);
         };
-        function clamp(v, min, max) { return isNaN(v) ? 0 : Math.max(min, Math.min(max, v)); }
+        // 单击步进 0.05（仅纯单击；若刚发生 scrubbing 拖动则跳过，避免双重 commit 重建 DOM 丢卡片）
+        const step = (btn, d) => {
+          btn.onclick = (e) => {
+            e.stopPropagation();
+            if (btn.__scrubbed) { btn.__scrubbed = false; return; }
+            applyWeight(l.weight + d);
+            this._commit();
+          };
+        };
+        step(decBtn, -0.05);
+        step(incBtn, +0.05);
 
-        // oninput 只更新数值；onchange（松开滑块）才 commit。
-        // 否则每次 input 触发 graph.change() 重建 DOM widget，滑块被替换导致拖动中断。
-        slider.oninput = update;
-        slider.onchange = () => { update(); this._commit(); };
+        // scrubbing：按住 < / > 后，水平位移映射为权重增量（4px = 0.05）。
+        // 用 mousedown/mousemove/mouseup（与 ComfyUI 节点拖动兼容）。
+        // 核心修复：拖动结束仅 commit 一次，并标记 __scrubbed 抑制紧随的 click 事件，
+        // 否则 click 的 onclick 会再次 commit → 双重 graph.change() 重建 DOM，闭包引用失效导致卡片消失。
+        const attachScrub = (btn) => {
+          let startX = 0, startW = 0, dragging = false, moved = false;
+          const onMove = (e) => {
+            if (!dragging) return;
+            const dx = e.clientX - startX;
+            if (Math.abs(dx) >= 2) moved = true;
+            const delta = Math.round(dx / 4) * 0.05; // 4px=0.05，向右增向左减
+            applyWeight(startW + delta);
+          };
+          const onUp = () => {
+            if (!dragging) return;
+            dragging = false;
+            btn.__scrubbed = moved;
+            // 若 mouseup 发生在按钮外，click 不会触发消费该标志；超时自动重置，避免吞掉下一次合法单击步进
+            if (moved) setTimeout(() => { if (btn.__scrubbed) btn.__scrubbed = false; }, 2000);
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+            document.body.style.cursor = "";
+            if (moved) this._commit(); // 拖动过才 commit（纯单击由 step 的 onclick 处理）
+          };
+          btn.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dragging = true;
+            moved = false;
+            startX = e.clientX;
+            startW = l.weight;
+            document.body.style.cursor = "ew-resize";
+            window.addEventListener("mousemove", onMove);
+            window.addEventListener("mouseup", onUp);
+          });
+        };
+        attachScrub(decBtn);
+        attachScrub(incBtn);
+
         valSpan.onchange = () => {
           const v = parseFloat(valSpan.value);
-          if (!isNaN(v) && v >= 0 && v <= 2) { slider.value = String(v); update(); this._commit(); }
+          if (!isNaN(v) && v >= 0 && v <= 2) { applyWeight(v); this._commit(); }
           else { valSpan.value = l.weight.toFixed(2); }
         };
         valSpan.onkeydown = (e) => { if (e.key === "Enter") valSpan.blur(); };
@@ -888,7 +978,8 @@
         // ── 删除 ──
         const del = document.createElement("button");
         del.className = "del-btn";
-        del.textContent = "×";
+        del.innerHTML = svgIcon("x", 12);
+        del.title = "删除该 LoRA";
         del.onclick = () => { this.loras.splice(i, 1); this._commit(); this._render(listEl); };
 
         // ── 分类 / 常用次数小标签 ──
@@ -896,11 +987,10 @@
         metaBadge.className = "lora-meta-badge";
         const _m = (this.meta && this.meta.loraMeta && this.meta.loraMeta[l.name]) || {};
         const _cats = (_m.categories || []).slice(0, 1).join("");
-        const _cnt = _m.count || 0;
-        metaBadge.textContent = (_cats ? "🏷" + _cats : "") + (_cnt ? " " + _cnt + "次" : "");
-        metaBadge.style.cssText = "font-size:9px;color:#8A8F98;opacity:0.85;white-space:nowrap;flex-shrink:0;";
+        metaBadge.innerHTML = _cats ? svgIcon("tag", 9) + esc(_cats) : ""; // 使用次数已按用户要求移除，仅保留分类标签
+        metaBadge.style.cssText = "font-size:9px;color:#8A8F98;opacity:0.85;white-space:nowrap;flex-shrink:0;display:inline-flex;align-items:center;gap:2px;";
 
-        row.append(dragArea, toggle, name, metaBadge, twHint, weightGroup, valSpan, del);
+        row.append(dragArea, toggle, name, metaBadge, weightGroup, del);
         listEl.appendChild(row);
         } catch (err) {
           // 单行渲染失败只跳过该行,避免"列表已清空但渲染中断"导致整体空白
@@ -1267,13 +1357,7 @@
         });
       };
       // C 站图片走后端代理（浏览器无代理无法直连 image.civitai.com）；卡片用 400px 小图省流量
-      const imgProxy = (url) => {
-        if (!url || !url.startsWith("https://image.civitai.com/")) return url;
-        let u = url;
-        if (u.includes("original=true")) u = u.replace("original=true", "width=400");
-        if (u.includes("width=")) u = u.replace(/width=\d+/g, "width=400");
-        return "/anima/image?url=" + encodeURIComponent(u);
-      };
+      // （白名单代理逻辑为类级方法 this._imgProxy，_browseModal 与 _showTwTooltip 共用）
 
       const getMatched = () => {
         const q = (searchInput.value || "").toLowerCase();
@@ -1306,7 +1390,7 @@
         const mk = (key, label, count, icon) => {
           const item = document.createElement("button");
           item.style.cssText = `display:flex;align-items:center;gap:6px;width:100%;padding:5px 8px;margin-bottom:2px;border-radius:6px;cursor:pointer;font-size:10px;text-align:left;border:none;background:${curFilter === key ? "rgba(94,106,210,0.25)" : "transparent"};color:${curFilter === key ? "#EDEDEF" : "#8A8F98"};`;
-          item.innerHTML = `<span>${icon || ""}${label}</span><span style="margin-left:auto;color:rgba(255,255,255,0.3);font-size:9px;">${count}</span>`;
+          item.innerHTML = `<span>${icon || ""}${esc(label)}</span><span style="margin-left:auto;color:rgba(255,255,255,0.3);font-size:9px;">${esc(String(count))}</span>`;
           item.onclick = () => { curFilter = (curFilter === key) ? "all" : key; renderSidebar(); renderCurrent(); };
           sidebarEl.appendChild(item);
         };
@@ -1328,7 +1412,7 @@
             this._imgCache[name] = info;
             if (img.isConnected === false) return;
             if (info.previewUrl) {
-              img.innerHTML = `<img src="${imgProxy(info.previewUrl)}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.innerHTML='<span style=font-size:22px>🖼</span>'">`;
+              img.innerHTML = `<img src="${this._imgProxy(info.previewUrl)}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.innerHTML='<span style=font-size:22px>🖼</span>'">`;
             } else {
               img.innerHTML = `<span style="font-size:22px;">${info.source === "not_on_civitai" ? "❌" : "🖼"}</span>`;
             }
@@ -1366,7 +1450,7 @@
       const paintThumb = (imgEl, name) => {
         const cached = this._imgCache[name];
         if (cached && cached.previewUrl) {
-          imgEl.innerHTML = `<img src="${imgProxy(cached.previewUrl)}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;">`;
+          imgEl.innerHTML = `<img src="${this._imgProxy(cached.previewUrl)}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none'">`;
         } else {
           io.observe(imgEl);
         }
@@ -1766,7 +1850,7 @@
       if (!meta.categories.length) html += '<div style="font-size:9px;color:#666;padding:4px 0;">暂无分类，点「➕ 分类」创建</div>';
       meta.categories.forEach((cat) => {
         const on = m.categories.includes(cat);
-        html += `<button data-cat="${cat}" style="display:flex;align-items:center;gap:6px;width:100%;padding:4px 6px;margin-bottom:2px;background:${on ? "rgba(94,106,210,0.25)" : "transparent"};color:#C8C9CB;border:none;border-radius:4px;cursor:pointer;font-size:10px;text-align:left;">${on ? "☑" : "☐"} ${cat}</button>`;
+        html += `<button data-cat="${escAttr(cat)}" style="display:flex;align-items:center;gap:6px;width:100%;padding:4px 6px;margin-bottom:2px;background:${on ? "rgba(94,106,210,0.25)" : "transparent"};color:#C8C9CB;border:none;border-radius:4px;cursor:pointer;font-size:10px;text-align:left;">${on ? "☑" : "☐"} ${esc(cat)}</button>`;
       });
       picker.innerHTML = html;
       picker.querySelectorAll("[data-cat]").forEach((btn) => {
@@ -1816,7 +1900,7 @@
       if (!meta.categories.length) html += '<div style="font-size:9px;color:#666;padding:4px 0;">暂无分类，先点顶部「➕ 分类」创建</div>';
       meta.categories.forEach((cat) => {
         const allOn = targets.every((n) => (meta.loraMeta[n] || {}).categories?.includes(cat));
-        html += `<button data-cat="${cat}" style="display:flex;align-items:center;gap:6px;width:100%;padding:4px 6px;margin-bottom:2px;background:${allOn ? "rgba(94,106,210,0.25)" : "transparent"};color:#C8C9CB;border:none;border-radius:4px;cursor:pointer;font-size:10px;text-align:left;">${allOn ? "☑" : "☐"} ${cat}</button>`;
+        html += `<button data-cat="${escAttr(cat)}" style="display:flex;align-items:center;gap:6px;width:100%;padding:4px 6px;margin-bottom:2px;background:${allOn ? "rgba(94,106,210,0.25)" : "transparent"};color:#C8C9CB;border:none;border-radius:4px;cursor:pointer;font-size:10px;text-align:left;">${allOn ? "☑" : "☐"} ${esc(cat)}</button>`;
       });
       picker.innerHTML = html;
       picker.querySelectorAll("[data-cat]").forEach((btn) => {
@@ -1840,25 +1924,41 @@
       document.querySelectorAll(".anima-tw-popover").forEach((el) => el.remove());
       // 触发词来自 C 站第三方数据，插入 innerHTML 前必须完整转义
       const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+      const escAttr = (s) => esc(s);
 
       const words = this.triggerWordMap[loraName];
+      const info = this.loraInfoMap[loraName];
       const popover = document.createElement("div");
       popover.className = "anima-tw-popover";
 
+      // ── 预览图（C 站图片走后端代理，400px 小图；非白名单 URL 由 this._imgProxy 降级空串，onerror 兜底占位）──
+      let previewHtml = "";
+      if (info && info.previewUrl) {
+        previewHtml = `<div class="tw-preview"><img src="${escAttr(this._imgProxy(info.previewUrl))}" alt="" onerror="this.parentElement.innerHTML='<span class=tw-preview-fallback>无预览图</span>'"></div>`;
+      } else if (info && info.modelName) {
+        previewHtml = `<div class="tw-preview tw-preview-fallback">${esc(info.modelName)}</div>`;
+      }
+
+      // ── 模型名 / 作者 ──
+      let metaHtml = "";
+      if (info && (info.modelName || info.creator)) {
+        metaHtml = `<div class="tw-meta">${info.creator ? esc(info.creator) + " · " : ""}${esc(info.modelName || "")}</div>`;
+      }
+
       let wordHtml;
       if (words === undefined) {
-        wordHtml = '<span class="tw-empty">暂未获取到触发词，请先运行「📥 提取」</span>';
+        wordHtml = '<span class="tw-empty">暂未获取到触发词，请先运行「提取」</span>';
       } else if (words === null) {
-        wordHtml = '<span class="tw-empty">❌ 查询失败，可重新提取或悬停重试</span>';
+        wordHtml = '<span class="tw-empty">查询失败，可重新提取或悬停重试</span>';
       } else if (words.length) {
         wordHtml = words.map((w) => `<span class="tw-word" data-copy="${esc(w)}">${esc(w)}</span>`).join("");
-        wordHtml += `<button class="tw-copy-all">📋 复制全部</button>`;
+        wordHtml += `<button class="tw-copy-all">${svgIcon("clipboard", 11)}<span>复制全部</span></button>`;
       } else {
         wordHtml = '<span class="tw-empty">该 LoRA 无触发词</span>';
       }
 
       const safeName = esc(loraName);
-      popover.innerHTML = `<div class="tw-title" style="font-size:11px;color:#EDEDEF;">📄 ${safeName}</div><div class="tw-title">📝 触发词</div><div style="display:flex;flex-wrap:wrap;gap:2px;">${wordHtml}</div>`;
+      popover.innerHTML = `${previewHtml}<div class="tw-title" style="font-size:11px;color:#EDEDEF;font-weight:600;">${safeName}</div>${metaHtml}<div class="tw-title">触发词</div><div style="display:flex;flex-wrap:wrap;gap:2px;">${wordHtml}</div>`;
       document.body.appendChild(popover);
 
       // 定位

@@ -53,7 +53,7 @@ function showCompatScanHint() {
 
 export type LocalSortKey = 'name' | 'size' | 'date' | 'match'
 export type LocalFilterKey = 'all' | 'matched' | 'unmatched'
-export type LocalViewKey = 'home' | 'detail' | 'gallery' | 'prompt'
+export type LocalViewKey = 'home' | 'detail' | 'gallery' | 'prompt' | 'models'
 
 const SCAN_CACHE_KEY = 'local_loras_v2'
 const PNG_CACHE_KEY = 'local_pngs_v1'

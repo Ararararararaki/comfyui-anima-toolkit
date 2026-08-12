@@ -5,7 +5,7 @@ import { deleteFiles, renameFile, batchFavorite, batchRate } from '../services/o
 import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, ensureThumbnails, reparseAllMetadata, ensureMetadataFresh } from '../services/outputScanner'
 import { hashPath } from '../services/outputManifest'
 import { outputsDb } from '../db/outputsDb'
-import { esc, escAttr, showToast, copyText, icon } from '../utils'
+import { esc, escAttr, showToast, copyText, icon, attachSearchClear } from '../utils'
 import { confirmModal, promptModal } from '../components/Modal'
 import type { OutputFile, OutputMetadata, OutputDir, OutputScanStatus } from '../types/outputs'
 import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow } from '../services/outputMetadata'
@@ -1252,16 +1252,20 @@ function bindOutputsEvents() {
 
   // 搜索
   const searchInput = document.querySelector('.outputs-search') as HTMLInputElement
-  if (searchInput) {
-    let debounce: ReturnType<typeof setTimeout>
-    searchInput.addEventListener('input', () => {
-      clearTimeout(debounce)
-      debounce = setTimeout(() => {
-        useOutputStore.getState().setSearchQuery(searchInput.value)
-        renderOutputsView()
-      }, 300)
-    })
-  }
+  if (searchInput) {
+    let debounce: ReturnType<typeof setTimeout>
+    searchInput.addEventListener('input', () => {
+      clearTimeout(debounce)
+      debounce = setTimeout(() => {
+        useOutputStore.getState().setSearchQuery(searchInput.value)
+        renderOutputsView()
+      }, 300)
+    })
+    attachSearchClear(searchInput, () => {
+      useOutputStore.getState().setSearchQuery('')
+      renderOutputsView()
+    })
+  }
 
   // 图片懒加载
   const observer = new IntersectionObserver((entries) => {

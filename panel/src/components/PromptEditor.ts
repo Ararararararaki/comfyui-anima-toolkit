@@ -8,12 +8,12 @@ export function renderPromptEditor(p: Partial<PromptEntry> & { id: string }) {
 
   let tagsHtml = ''
   if (p.tags) {
-    tagsHtml = p.tags.map(t => `<span class="tag tag-editable">${esc(t)} <button class="tag-del-btn" onclick="window.__removePromptEditTag('${esc(t)}')">✕</button></span>`).join('')
+    tagsHtml = p.tags.map(t => `<span class="tag tag-editable">${esc(t)} <button class="tag-del-btn" onclick="window.__removePromptEditTag('${esc(t)}')">${icon('x', 12)}</button></span>`).join('')
   }
 
   let lorasHtml = ''
   if (p.loras) {
-    lorasHtml = p.loras.map(l => `<span class="tag tag-editable">${esc(l)} <button class="tag-del-btn" onclick="window.__removePromptEditLora('${esc(l)}')">✕</button></span>`).join('')
+    lorasHtml = p.loras.map(l => `<span class="tag tag-editable">${esc(l)} <button class="tag-del-btn" onclick="window.__removePromptEditLora('${esc(l)}')">${icon('x', 12)}</button></span>`).join('')
   }
 
   const images = p.images || []
@@ -21,7 +21,7 @@ export function renderPromptEditor(p: Partial<PromptEntry> & { id: string }) {
     ? `<div class="img-thumb-grid">${images.map((u, i) =>
         `<div class="img-thumb-wrap">
           <img src="${esc(u)}" alt="">
-          <button type="button" class="img-thumb-del" onclick="window.__removePromptImage(${i})">✕</button>
+          <button type="button" class="img-thumb-del" onclick="window.__removePromptImage(${i})">${icon('x', 12)}</button>
         </div>`).join('')}</div>`
     : ''
 
@@ -69,7 +69,7 @@ export function renderPromptEditor(p: Partial<PromptEntry> & { id: string }) {
               cont.innerHTML = existing.map((u, i) =>
                 `<div class="img-thumb-wrap">
                   <img src="${esc(u)}" alt="">
-                  <button type="button" class="img-thumb-del" onclick="window.__removePromptImage(${i})">✕</button>
+                  <button type="button" class="img-thumb-del" onclick="window.__removePromptImage(${i})">${icon('x', 12)}</button>
                 </div>`
               ).join('')
             }

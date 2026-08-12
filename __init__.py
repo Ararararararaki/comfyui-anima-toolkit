@@ -16,8 +16,16 @@ from server import PromptServer
 
 from .anima_batch_lora import (
     NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS,
-    BRIDGE_DATA, BRIDGE_LOCK, _find_lora_path,
+    BRIDGE_DATA, BRIDGE_LOCK, BRIDGE_PATH, _find_lora_path,
 )
+from .anima_trigger_words import (
+    NODE_CLASS_MAPPINGS as TW_NODE_CLASS_MAPPINGS,
+    NODE_DISPLAY_NAME_MAPPINGS as TW_NODE_DISPLAY_NAME_MAPPINGS,
+)
+
+# 合并触发词管理节点的注册表（ComfyUI 通过 __init__.py 顶层这两个变量发现所有节点）
+NODE_CLASS_MAPPINGS = {**NODE_CLASS_MAPPINGS, **TW_NODE_CLASS_MAPPINGS}
+NODE_DISPLAY_NAME_MAPPINGS = {**NODE_DISPLAY_NAME_MAPPINGS, **TW_NODE_DISPLAY_NAME_MAPPINGS}
 
 WEB_DIRECTORY = "./web"
 
@@ -178,8 +186,21 @@ async def _proxy(url, request):
 _LORA_INFO_CACHE: dict[str, tuple[float, dict]] = {}
 _LORA_INFO_TTL = 300
 
+# 文件 SHA256 缓存：path -> (mtime, size, sha256)。LoRA 文件不变时避免重复全文件哈希
+# （大文件哈希很慢，重复查询 /anima/lora/info 会反复阻塞线程池）。
+_SHA256_CACHE: dict[str, tuple[float, int, str]] = {}
+
 
 def _sha256_file(filepath: str) -> str:
+    # 命中缓存（mtime + size 均未变）则直接返回
+    try:
+        st = os.stat(filepath)
+        key = os.path.normcase(os.path.abspath(filepath))
+        cached = _SHA256_CACHE.get(key)
+        if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
+            return cached[2]
+    except OSError:
+        pass
     h = hashlib.sha256()
     with open(filepath, "rb") as f:
         while True:
@@ -187,7 +208,13 @@ def _sha256_file(filepath: str) -> str:
             if not chunk:
                 break
             h.update(chunk)
-    return h.hexdigest()
+    digest = h.hexdigest()
+    try:
+        st = os.stat(filepath)
+        _SHA256_CACHE[os.path.normcase(os.path.abspath(filepath))] = (st.st_mtime, st.st_size, digest)
+    except OSError:
+        pass
+    return digest
 
 
 def _creator_name(model: dict) -> str:
@@ -503,13 +530,24 @@ async def anima_version(request):
 
 @PromptServer.instance.routes.post("/anima/bridge/update")
 async def bridge_update(request):
-    """Receive bridge data from the frontend via POST."""
+    """Receive bridge data from the frontend via POST.
+
+    同时持久化到 anima_bridge.json：面板「发送到 ComfyUI」后，
+    即使 ComfyUI 重启，节点 load_loras 也能从文件兜底读取列表，
+    不再因内存 BRIDGE_DATA 丢失而丢 LoRA 组合。
+    """
     try:
         data = await request.json()
         data["_receivedAt"] = time.time()
         with BRIDGE_LOCK:
             BRIDGE_DATA.clear()
             BRIDGE_DATA.update(data)
+        # 落盘（失败不阻断内存桥接，仅告警）
+        try:
+            with open(BRIDGE_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"[Anima] bridge 持久化失败（不影响内存桥接）: {e}")
         return web.json_response({"ok": True, "receivedAt": data["_receivedAt"]})
     except Exception as e:
         return web.json_response({"ok": False, "error": str(e)}, status=400)
@@ -517,9 +555,15 @@ async def bridge_update(request):
 
 @PromptServer.instance.routes.delete("/anima/bridge/update")
 async def bridge_clear(request):
-    """Clear the in-memory bridge data."""
+    """Clear the in-memory bridge data (and its persisted file so it stays cleared after restart)."""
     with BRIDGE_LOCK:
         BRIDGE_DATA.clear()
+        # 同步删除持久化文件，否则重启后文件兜底会恢复旧数据（“清除”语义失效）
+        try:
+            if os.path.exists(BRIDGE_PATH):
+                os.remove(BRIDGE_PATH)
+        except Exception as e:
+            print(f"[Anima] bridge 持久化文件删除失败: {e}")
     return web.json_response({"ok": True})
 
 
@@ -550,8 +594,10 @@ async def serve_index(request):
 @PromptServer.instance.routes.get("/extensions/ComfyUI-Anima-Batch-LoRA/app/{path:.+}")
 async def serve_asset(request):
     path = request.match_info["path"]
+    base = os.path.normpath(APP_DIR)
     filepath = os.path.normpath(os.path.join(APP_DIR, path))
-    if not filepath.startswith(os.path.normpath(APP_DIR)):
+    # commonpath 严格比较，防 app2/ 等同前缀兄弟目录绕过（startswith 前缀检查有缺陷）
+    if os.path.commonpath([base, filepath]) != base:
         return web.Response(status=403)
     if not os.path.isfile(filepath):
         return web.Response(status=404)
@@ -621,15 +667,6 @@ def _normalize_meta_keys(data: dict):
         return
     merged = {}
 
-
-def _strip_model_ext(name: str) -> str:
-    """只去掉模型文件扩展名（避免把 chen-bin_v4.0 这类文件名误拆）"""
-    low = name.lower()
-    for ext in (".safetensors", ".pt", ".ckpt", ".pth", ".sft", ".bin"):
-        if low.endswith(ext):
-            return name[: -len(ext)]
-    return name
-
     def _merge(dst: dict, src: dict):
         for k, v in src.items():
             if k == "categories" and isinstance(v, list):
@@ -645,17 +682,20 @@ def _strip_model_ext(name: str) -> str:
         if not isinstance(entry, dict):
             continue
         base = _strip_model_ext(name)
-        if base == name:
-            if base in merged:
-                _merge(merged[base], entry)
-            else:
-                merged[base] = entry
+        if base in merged:
+            _merge(merged[base], entry)
         else:
-            if base in merged:
-                _merge(merged[base], entry)
-            else:
-                merged[base] = entry
+            merged[base] = entry
     data["loraMeta"] = merged
+
+
+def _strip_model_ext(name: str) -> str:
+    """只去掉模型文件扩展名（避免把 chen-bin_v4.0 这类文件名误拆）"""
+    low = name.lower()
+    for ext in (".safetensors", ".pt", ".ckpt", ".pth", ".sft", ".bin"):
+        if low.endswith(ext):
+            return name[: -len(ext)]
+    return name
 
 
 def _load_meta() -> dict:

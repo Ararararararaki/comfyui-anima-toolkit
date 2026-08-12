@@ -1269,3 +1269,13 @@
   border-radius: 6px;
 }
 
+
+/* 搜索清除按钮（attachSearchClear 注入） */
+.outputs-search-wrap .search-clear {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  width: 20px; height: 20px; border: none; border-radius: 50%; background: transparent;
+  color: var(--text3); cursor: pointer; display: none; align-items: center; justify-content: center;
+  padding: 0; line-height: 1; transition: background .12s, color .12s;
+}
+.outputs-search-wrap .search-clear:hover { background: var(--bg4); color: var(--text); }
+.outputs-search { padding-right: 32px; }

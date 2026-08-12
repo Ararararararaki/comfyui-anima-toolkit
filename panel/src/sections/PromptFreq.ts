@@ -567,7 +567,7 @@ export function renderPromptFreq() {
 
   if (!html && state.files.length === 0 && _uploadedPngs.length === 0) {
     // 无任何数据：显示空态提示 + 上传区
-    el.innerHTML = '<div class="prompt-freq-empty"><div class="big">📝</div><p>暂无数据</p><p class="sub">请先在 Outputs 中扫描图片目录，或上传 PNG 文件</p></div>' + html
+    el.innerHTML = '<div class="prompt-freq-empty"><div class="big">' + icon('file-text', 28) + '</div><p>暂无数据</p><p class="sub">请先在 Outputs 中扫描图片目录，或上传 PNG 文件</p></div>' + html
     return
   }
 
