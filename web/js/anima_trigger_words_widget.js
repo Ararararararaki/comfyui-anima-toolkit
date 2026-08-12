@@ -119,7 +119,7 @@
         input.className = "atw-card-input";
         input.type = "text";
         input.placeholder = "触发词（逗号分隔），可手动编辑";
-        input.value = Array.isArray(this.twMap[l.name]) ? this.twMap[l.name].join(", ") : "";
+        input.value = Array.isArray(this.twMap[l.name]) ? this.twMap[l.name].join(", ") : (Array.isArray(this.twMap[l.name.toLowerCase()]) ? this.twMap[l.name.toLowerCase()].join(", ") : "");
         input.onchange = () => {
           const tw = input.value.split(",").map((s) => s.trim()).filter(Boolean);
           this.twMap[l.name] = tw;
