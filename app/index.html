@@ -3,21 +3,21 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Anima Toolkit · 本地工具箱</title>
+<title>TK Toolkit · 本地工具箱</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#5E6AD2">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script type="module" crossorigin src="./assets/index-BvsFzMEx.js"></script>
+  <script type="module" crossorigin src="./assets/index-CV6mE86q.js"></script>
   <link rel="modulepreload" crossorigin href="./assets/vendor-D6eCwX_v.js">
-  <link rel="stylesheet" crossorigin href="./assets/index-Bij06IBQ.css">
+  <link rel="stylesheet" crossorigin href="./assets/index-BVjAeGD_.css">
 </head>
 <body>
 
 <header>
   <div class="header-inner">
-    <h1><span data-icon="palette" class="h1-icon"></span> Anima Toolkit <small>本地工具箱</small></h1>
+    <h1><span data-icon="palette" class="h1-icon"></span> TK Toolkit <small>本地工具箱</small></h1>
   <nav class="main-tabs" id="mainTabs" role="tablist">
       <button class="main-tab active" data-section="local" data-icon="monitor" role="tab" aria-selected="true"><span>本地 lora 管理</span></button>
       <button class="main-tab" data-section="lora" data-icon="package" role="tab" aria-selected="false"><span>LoRA 探索</span> <span class="badge-tab" id="loraBadge">0</span></button>
@@ -219,16 +219,7 @@
   <div class="container">
     <div class="prompt-freq-toolbar">
       <h2>🖼️ 图片解析</h2>
-      <div class="prompt-freq-controls">
-        <span style="font-size:12px;color:var(--text2)">基于最近</span>
-        <select id="promptFreqLimit">
-          <option value="20">20 张</option>
-          <option value="50" selected>50 张</option>
-          <option value="100">100 张</option>
-          <option value="0">全部</option>
-        </select>
-        <span style="font-size:12px;color:var(--text2)">图片</span>
-      </div>
+      
     </div>
     <div class="prompt-freq-content" id="promptFreqContent">
       <div class="prompt-freq-empty"><div class="big" data-icon="file-text"></div><p>暂无数据</p><p class="sub">请先在 Outputs 中扫描图片目录</p></div>
@@ -368,7 +359,7 @@
       <div class="outputs-sidebar-header">
         <h3>📁 目录</h3>
         <button class="btn btn-ghost btn-sm outputs-select-btn" data-icon="folder"><span>选择</span></button>
-        <button class="btn btn-ghost btn-sm outputs-refresh-btn" data-icon="refresh"><span>刷新</span></button>
+        <button class="btn btn-ghost btn-sm outputs-refresh-btn" data-icon="refresh" title="增量扫描：检查并加载新图片"><span>刷新</span></button>
         <button class="btn btn-ghost btn-sm outputs-reparse-btn" title="强制重新解析所有图片的元数据（升级解析逻辑后使用）" data-icon="refreshCw"><span>重解析</span></button>
       </div>
       <div class="outputs-dir-tree" id="outputsDirTree">
