@@ -1,0 +1,601 @@
+# Anima Camera Control — 可视化相机提示词控制节点
+#
+# 算法忠实复刻 ComfyUI-bsk_UI 的 CameraControlNode（AGPL-3.0），
+# 参考出处：https://github.com/.../ComfyUI-bsk_UI 的 camera_control_node.py
+# 输出行为与该节点逐位对齐（方位 2D 比例分配 + 高度/距离档位 + 倾斜 + extras，
+# 加权 (tag:weight) 与纯 tag 两种模式），确保「真正生效」且与用户既有工作流一致。
+#
+# 在 BSK 算法之上新增两类便捷控制（桌面批生图缺失的能力）：
+#   1. 一键预设（PRESETS）：按 anima-prompt 实际机位用法定制，点选即得
+#   2. 自然语言（parse_camera_nl）：写「俯视 近景」自动映射到 pos_x/y/z/roll
+#
+# 优先级：自然语言 > 预设 > 手动 pos_x/y/z/roll。
+
+import json
+import math
+from aiohttp import web
+from server import PromptServer
+
+
+# ============ 默认配置（与 BSK CameraControlNode 保持一致） ============
+DEFAULT_CONFIG = {
+    "weight_min": 0.1,
+    "weight_max": 10.0,
+    "no_weight": False,
+    "no_weight_threshold": 0.5,
+    "azimuth": {
+        "enabled": True,
+        "weight": 10.0,
+        "deadzone_ratio": 0.2,
+        "directions": {
+            "front": {"tag": "from front", "enabled": True},
+            "back":  {"tag": "from behind", "enabled": True},
+            "left":  {"tag": "from right", "enabled": True},
+            "right": {"tag": "from left", "enabled": True},
+        },
+    },
+    "elevation": {
+        "enabled": True,
+        "extra": 10.0,
+        "categories": {
+            "bird": {"tag": "directly above, from above, aerial view,", "enabled": True},
+            "high": {"tag": "high angle, from above", "enabled": True},
+            "eye":  {"tag": "eye-level", "enabled": True},
+            "low":  {"tag": "low angle, from below,", "enabled": True},
+            "worm": {"tag": "directly below", "enabled": True},
+        },
+    },
+    "distance": {
+        "enabled": True,
+        "extra": 0.0,
+        "categories": {
+            "ecu":    {"tag": "extreme close-up", "enabled": True},
+            "cu":     {"tag": "close-up", "enabled": True},
+            "medium": {"tag": "medium shot", "enabled": True},
+            "full":   {"tag": "full body", "enabled": True},
+            "wide":   {"tag": "wide shot", "enabled": True},
+        },
+    },
+    "tilt": {
+        "enabled": True,
+        "deadzone": 0.15,
+        "extra": 0.0,
+        "dutch_tag": "dutch angle",
+    },
+    "extra_master": 1.0,
+    "wheel_step": 0.0003,
+    "extras": {
+        "lens":        {"enabled": False, "value": "85mm lens"},
+        "dof":         {"enabled": False, "value": "shallow depth of field", "weight": 1.3},
+        "movement":    {"enabled": False, "value": "handheld camera"},
+        "composition": {"enabled": False, "value": "rule of thirds"},
+        "style":       {"enabled": False, "value": "cinematic"},
+    },
+}
+
+DEFAULT_CONFIG_JSON = json.dumps(DEFAULT_CONFIG, ensure_ascii=False)
+
+# 旧 schema 标记键（历史版本遗留，加载时迁移清除）
+LEGACY_KEYS = {"two_tier", "axes", "negative"}
+
+# 距离档位的 z 区间：档内权重随 z 从区间起点(0% 额外权重)线性爬到终点(100% 额外权重)。
+DIST_RANGES = {
+    "ecu":    (0.7, 1.0),
+    "cu":     (0.2, 0.7),
+    "medium": (-0.2, 0.2),
+    "full":   (-0.7, -0.2),
+    "wide":   (-1.0, -0.7),
+}
+
+# 中景/全身/远景：距离越远(z 越小)权重越大，故档内 frac 反向计算；
+# 特写/近景仍是越近(z 越大)权重越大。
+DIST_FAR_STRONGER = {"medium", "full", "wide"}
+
+
+# ============ 一键预设（按 anima-prompt 实际机位用法定制） ============
+# pos_x ∈ [-1,1] 方位环绕；pos_y ∈ [-1,1] 俯仰（+俯视/-仰视）；pos_z ∈ [-1,1] 景别（+特写/-远景）；
+# roll ∈ [-1,1] 倾斜（|roll|≥0.15 出 dutch angle）。
+# extra：预设附加的纯 tag（足控/角色焦点等 BSK 方位算法不覆盖、但用户实际在用的词）。
+PRESETS = {
+    # ── 方位 ──
+    "正面":      {"pos_x": 0.0, "pos_y": 0.0, "pos_z": 0.0, "roll": 0.0},
+    "背面":      {"pos_x": 1.0, "pos_y": 0.0, "pos_z": 0.0, "roll": 0.0},
+    "左侧":      {"pos_x": 0.5, "pos_y": 0.0, "pos_z": 0.0, "roll": 0.0},
+    "右侧":      {"pos_x": -0.5, "pos_y": 0.0, "pos_z": 0.0, "roll": 0.0},
+    # ── 俯仰 ──
+    "正上方俯视": {"pos_x": 0.0, "pos_y": 1.0, "pos_z": 0.0, "roll": 0.0},
+    "俯视":      {"pos_x": 0.0, "pos_y": 0.5, "pos_z": 0.0, "roll": 0.0},
+    "仰视":      {"pos_x": 0.0, "pos_y": -0.5, "pos_z": 0.0, "roll": 0.0},
+    "正下方仰视": {"pos_x": 0.0, "pos_y": -1.0, "pos_z": 0.0, "roll": 0.0},
+    # ── 景别 ──
+    "特写":      {"pos_x": 0.0, "pos_y": 0.0, "pos_z": 1.0, "roll": 0.0},
+    "近景":      {"pos_x": 0.0, "pos_y": 0.0, "pos_z": 0.5, "roll": 0.0},
+    "中景":      {"pos_x": 0.0, "pos_y": 0.0, "pos_z": 0.0, "roll": 0.0},
+    "全身":      {"pos_x": 0.0, "pos_y": 0.0, "pos_z": -0.5, "roll": 0.0},
+    "远景":      {"pos_x": 0.0, "pos_y": 0.0, "pos_z": -1.0, "roll": 0.0},
+    # ── 倾斜 ──
+    "荷兰角":    {"pos_x": 0.0, "pos_y": 0.0, "pos_z": 0.0, "roll": 0.6},
+    # ── 组合预设（anima-prompt 实际用法） ──
+    "足控仰视":   {"pos_x": 0.0, "pos_y": -0.5, "pos_z": 0.5, "roll": 0.0,
+                 "extra": "straight-on, foot focus"},
+    "角色特写":   {"pos_x": 0.0, "pos_y": 0.0, "pos_z": 1.0, "roll": 0.0,
+                 "extra": "face focus, looking at viewer"},
+    "角色中景":   {"pos_x": 0.0, "pos_y": 0.0, "pos_z": 0.0, "roll": 0.0,
+                 "extra": "looking at viewer"},
+}
+
+CUSTOM_PRESET = "自定义"
+PRESET_NAMES = [CUSTOM_PRESET] + list(PRESETS.keys())
+
+
+def _has_any(text: str, keywords) -> bool:
+    """子串匹配（大小写不敏感），任一关键词命中即 True。"""
+    t = text.lower()
+    return any(k.lower() in t for k in keywords)
+
+
+def parse_camera_nl(text, base=(0.0, 0.0, 0.0, 0.0)):
+    """自然语言 → (pos_x, pos_y, pos_z, roll)。规则式解析，覆盖常用机位描述。
+
+    未命中的维度保持 base 值（支持叠加部分描述，如「近景，俯视」）。
+    返回 tuple[float, float, float, float]。
+    """
+    px, py, pz, rl = (float(v) for v in base)
+    t = (text or "").lower()
+
+    # ── 俯仰 (pos_y)：+俯视 / -仰视 ──
+    if _has_any(t, ("正上方", "鸟瞰", "航拍", "aerial", "directly above",
+                    "top-down", "top down", "bird's eye", "birds eye")):
+        py = 1.0
+    elif _has_any(t, ("俯视", "俯拍", "高角度", "高角", "from above",
+                      "high angle", "looking down", "overhead")):
+        py = 0.5
+    elif _has_any(t, ("仰视", "仰拍", "低角度", "低角", "from below",
+                      "low angle", "looking up")):
+        py = -0.5
+    elif _has_any(t, ("正下方", "directly below", "worm's eye", "worm eye")):
+        py = -1.0
+    elif _has_any(t, ("平视", "eye level", "eye-level", "straight-on", "straight on")):
+        py = 0.0
+
+    # ── 景别 (pos_z)：+特写 / -远景 ──
+    if _has_any(t, ("大特写", "extreme close", "extreme closeup")):
+        pz = 1.0
+    elif _has_any(t, ("特写", "close-up", "close up", "closeup")):
+        pz = 0.8
+    elif _has_any(t, ("近景", "medium close")):
+        pz = 0.4
+    elif _has_any(t, ("中景", "medium shot", "medium")):
+        pz = 0.0
+    elif _has_any(t, ("全身", "full body", "full shot", "全身照")):
+        pz = -0.5
+    elif _has_any(t, ("远景", "wide shot", "wide angle", "大远景")):
+        pz = -1.0
+
+    # ── 方位 (pos_x)：BSK 方位 2D 映射 ──
+    if _has_any(t, ("背面", "背后", "身后", "背影", "from behind", "back view")):
+        px = 1.0
+    elif _has_any(t, ("侧面", "侧拍", "侧视", "from the side", "side view", "profile")):
+        px = 0.5
+    elif _has_any(t, ("左侧", "从左", "from the left")):
+        px = 0.5   # BSK：right 方向输出 "from left"（相机在左）
+    elif _has_any(t, ("右侧", "从右", "from the right")):
+        px = -0.5
+    elif _has_any(t, ("正面", "正对", "from front", "front view")):
+        px = 0.0
+
+    # ── 倾斜 (roll) ──
+    if _has_any(t, ("荷兰角", "倾斜", "dutch", "tilted")):
+        rl = 0.6
+    elif _has_any(t, ("水平", "level", "straight")):
+        rl = 0.0
+
+    return (px, py, pz, rl)
+
+
+class CameraControlCore:
+    """相机算法核心（与 BSK CameraControlNode 逐位对齐）。
+
+    拆成独立类便于 AnimaCameraControl 节点复用与单元测试。
+    """
+
+    # ---------- 工具 ----------
+    @staticmethod
+    def _fmt_weight(w):
+        return f"{round(float(w), 2):.2f}"
+
+    @staticmethod
+    def _split_tags(tag):
+        return [t.strip() for t in str(tag).split(",") if t.strip()]
+
+    @classmethod
+    def _emit_weighted(cls, tag, w):
+        return [f"({t}:{cls._fmt_weight(w)})" for t in cls._split_tags(tag)]
+
+    @classmethod
+    def _emit_plain(cls, tag):
+        return cls._split_tags(tag)
+
+    @staticmethod
+    def _merge_defaults(cfg, base):
+        for k, v in base.items():
+            if k not in cfg:
+                cfg[k] = v
+            elif isinstance(v, dict) and isinstance(cfg[k], dict):
+                CameraControlCore._merge_defaults(cfg[k], v)
+        return cfg
+
+    @classmethod
+    def _has_legacy_keys(cls, obj):
+        if not isinstance(obj, dict):
+            return False
+        for k, v in obj.items():
+            if k in LEGACY_KEYS:
+                return True
+            if isinstance(v, dict) and cls._has_legacy_keys(v):
+                return True
+        return False
+
+    @classmethod
+    def _strip_legacy_keys(cls, obj):
+        if not isinstance(obj, dict):
+            return
+        for k in list(obj.keys()):
+            if k in LEGACY_KEYS:
+                del obj[k]
+            elif isinstance(obj[k], dict):
+                cls._strip_legacy_keys(obj[k])
+
+    @classmethod
+    def _load_config(cls, raw):
+        if not raw:
+            return json.loads(DEFAULT_CONFIG_JSON)
+        try:
+            cfg = json.loads(raw)
+        except Exception:
+            cfg = json.loads(DEFAULT_CONFIG_JSON)
+        if cls._has_legacy_keys(cfg):
+            cfg["weight_min"] = DEFAULT_CONFIG["weight_min"]
+            cfg["weight_max"] = DEFAULT_CONFIG["weight_max"]
+            cls._strip_legacy_keys(cfg)
+        cls._merge_defaults(cfg, json.loads(DEFAULT_CONFIG_JSON))
+        return cfg
+
+    @staticmethod
+    def _elevation_key(y):
+        if y > 0.7:
+            return "bird"
+        if y > 0.2:
+            return "high"
+        if y >= -0.2:
+            return "eye"
+        if y >= -0.7:
+            return "low"
+        return "worm"
+
+    @staticmethod
+    def _distance_key(z):
+        if z > 0.7:
+            return "ecu"
+        if z > 0.2:
+            return "cu"
+        if z >= -0.2:
+            return "medium"
+        if z >= -0.7:
+            return "full"
+        return "wide"
+
+    @classmethod
+    def _distance_parts(cls, cfg, z):
+        key = cls._distance_key(float(z))
+        cat = (cfg["distance"].get("categories") or {}).get(key)
+        if not cat or not cat.get("tag") or not cat.get("enabled", True):
+            return []
+        extra_master = float(cfg.get("extra_master", 1.0))
+        extra = float(cfg["distance"].get("extra", 0.0))
+        wmin = float(cfg.get("weight_min", 0.1))
+        wmax = float(cfg.get("weight_max", 10.0))
+        start, end = DIST_RANGES[key]
+        if key in DIST_FAR_STRONGER:
+            frac = max(0.0, min(1.0, (end - float(z)) / (end - start)))
+        else:
+            frac = max(0.0, min(1.0, (float(z) - start) / (end - start)))
+        w = 1.0 + frac * extra_master * extra
+        w = min(wmax, max(wmin, w))
+        return cls._emit_weighted(cat["tag"], w)
+
+    @classmethod
+    def _weighted_tilt(cls, cfg):
+        tilt = cfg.get("tilt", {})
+        if not tilt.get("enabled", True):
+            return []
+        extra_master = float(cfg.get("extra_master", 1.0))
+        extra = float(tilt.get("extra", 0.0))
+        wmax = float(cfg.get("weight_max", 10.0))
+        w = 1.0 + extra_master * extra
+        w = min(wmax, max(0.1, w))
+        return cls._emit_weighted(tilt.get("dutch_tag", ""), w)
+
+    # ---------- 主计算 ----------
+    @classmethod
+    def compute(cls, pos_x, pos_y, pos_z, roll, config):
+        cfg = cls._load_config(config)
+        if cfg.get("no_weight"):
+            return cls._compute_no_weight(float(pos_x), float(pos_y), float(pos_z), float(roll), cfg)
+        parts = []
+
+        wmin = float(cfg.get("weight_min", 0.1))
+        wmax = float(cfg.get("weight_max", 5.0))
+        dz = float(cfg.get("azimuth", {}).get("deadzone_ratio", 0.2))
+
+        # ---------- 方位（Azimuth）2D 比例分配 ----------
+        if cfg.get("azimuth", {}).get("enabled", True):
+            az = float(pos_x) * math.pi
+            front = max(0.0, math.cos(az))
+            back = max(0.0, -math.cos(az))
+            right = max(0.0, math.sin(az))
+            left = max(0.0, -math.sin(az))
+            s = front + back + left + right
+            if s > 0:
+                front /= s
+                back /= s
+                left /= s
+                right /= s
+            AZ_POLE = 0.9
+            az_gate = max(0.0, min(1.0, (1.0 - abs(float(pos_y))) / (1.0 - AZ_POLE)))
+            az_budget = float(cfg["azimuth"]["weight"]) * az_gate
+            for name, ratio in (("front", front), ("back", back), ("left", left), ("right", right)):
+                dir_cfg = cfg["azimuth"]["directions"].get(name, {})
+                if not dir_cfg.get("enabled", True):
+                    continue
+                w = ratio * az_budget
+                if ratio <= 0 or w < dz:
+                    continue
+                w = min(wmax, max(wmin, w))
+                parts.extend(cls._emit_weighted(dir_cfg.get("tag", ""), w))
+
+        # ---------- 高度（Elevation） ----------
+        if cfg.get("elevation", {}).get("enabled", True):
+            elev_key = cls._elevation_key(float(pos_y))
+            elev_cat = (cfg["elevation"].get("categories") or {}).get(elev_key)
+            if elev_cat and elev_cat.get("tag") and elev_cat.get("enabled", True):
+                extra_master = float(cfg.get("extra_master", 1.0))
+                elev_extra = float(cfg["elevation"].get("extra", 0.0))
+                ew = abs(float(pos_y)) * (1.0 + extra_master * elev_extra)
+                if ew >= dz:
+                    ew = min(wmax, max(wmin, ew))
+                    parts.extend(cls._emit_weighted(elev_cat["tag"], ew))
+
+        # ---------- 距离（Distance） ----------
+        if cfg.get("distance", {}).get("enabled", True):
+            parts.extend(cls._distance_parts(cfg, float(pos_z)))
+
+        # ---------- 倾斜（Tilt） ----------
+        if cfg.get("tilt", {}).get("enabled", True):
+            if abs(float(roll)) >= float(cfg["tilt"]["deadzone"]):
+                parts.extend(cls._weighted_tilt(cfg))
+
+        # ---------- 额外相机提示词 ----------
+        extras = cfg.get("extras", {})
+        for key in ("lens", "dof", "movement", "composition", "style"):
+            e = extras.get(key)
+            if not e or not e.get("enabled"):
+                continue
+            val = (e.get("value") or "").strip()
+            if not val:
+                continue
+            if key == "dof":
+                parts.append(f"({val}:{cls._fmt_weight(e.get('weight', 1.3))})")
+            else:
+                parts.append(val)
+
+        result = ", ".join(parts)
+        if result:
+            result += ","
+        return result
+
+    @classmethod
+    def _compute_no_weight(cls, pos_x, pos_y, pos_z, roll, cfg):
+        parts = []
+        thr = float(cfg.get("no_weight_threshold", 0.5))
+        az = cfg.get("azimuth", {})
+        if az.get("enabled", True):
+            a = float(pos_x) * math.pi
+            front = max(0.0, math.cos(a))
+            back = max(0.0, -math.cos(a))
+            right = max(0.0, math.sin(a))
+            left = max(0.0, -math.sin(a))
+            s = front + back + left + right
+            if s > 0:
+                front /= s
+                back /= s
+                left /= s
+                right /= s
+            AZ_POLE = 0.9
+            az_gate = max(0.0, min(1.0, (1.0 - abs(float(pos_y))) / (1.0 - AZ_POLE)))
+            if az_gate > 0:
+                dirs = (("front", front), ("back", back), ("left", left), ("right", right))
+                dom = None
+                dom_r = -1.0
+                for name, ratio in dirs:
+                    d = az.get("directions", {}).get(name, {})
+                    if not d.get("enabled", True):
+                        continue
+                    if ratio > dom_r:
+                        dom_r = ratio
+                        dom = name
+                if dom is not None and dom_r > 0:
+                    parts.extend(cls._emit_plain(az["directions"][dom].get("tag", "")))
+                for name, ratio in dirs:
+                    if name == dom:
+                        continue
+                    d = az.get("directions", {}).get(name, {})
+                    if not d.get("enabled", True):
+                        continue
+                    if ratio >= thr:
+                        parts.extend(cls._emit_plain(d.get("tag", "")))
+        if cfg.get("elevation", {}).get("enabled", True):
+            ek = cls._elevation_key(float(pos_y))
+            if ek != "eye":
+                ecat = (cfg["elevation"].get("categories") or {}).get(ek)
+                if ecat and ecat.get("tag") and ecat.get("enabled", True):
+                    parts.extend(cls._emit_plain(ecat["tag"]))
+        if cfg.get("distance", {}).get("enabled", True):
+            dk = cls._distance_key(float(pos_z))
+            if dk != "medium":
+                dcat = (cfg["distance"].get("categories") or {}).get(dk)
+                if dcat and dcat.get("tag") and dcat.get("enabled", True):
+                    parts.extend(cls._emit_plain(dcat["tag"]))
+        if cfg.get("tilt", {}).get("enabled", True) and abs(float(roll)) >= float(cfg["tilt"]["deadzone"]):
+            parts.extend(cls._emit_plain(cfg["tilt"].get("dutch_tag", "")))
+        extras = cfg.get("extras", {})
+        for key in ("lens", "dof", "movement", "composition", "style"):
+            e = extras.get(key)
+            if not e or not e.get("enabled"):
+                continue
+            val = (e.get("value") or "").strip()
+            if val:
+                parts.append(val)
+        result = ", ".join(parts)
+        return result + "," if result else ""
+
+
+class AnimaCameraControl:
+    NAME = "TK Camera Control"
+    CATEGORY = "TK/camera"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "preset": (PRESET_NAMES, {"default": CUSTOM_PRESET, "label": "机位预设"}),
+                "nl_prompt": ("STRING", {
+                    "default": "",
+                    "multiline": False,
+                    "placeholder": "自然语言：如「俯视 近景」/「从背后 全身」",
+                    "tooltip": "自然语言描述机位，自动映射参数（优先级高于预设与手动）。",
+                }),
+                "pos_x": ("FLOAT", {
+                    "default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01,
+                    "label": "左右方位 (X)",
+                }),
+                "pos_y": ("FLOAT", {
+                    "default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01,
+                    "label": "上下俯仰 (Y)",
+                }),
+                "pos_z": ("FLOAT", {
+                    "default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01,
+                    "label": "前后景别 (Z)",
+                }),
+                "roll": ("FLOAT", {
+                    "default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01,
+                    "label": "翻滚倾斜 (Roll)",
+                }),
+                "extra_tags": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "placeholder": "附加相机 tag（如 foot focus / face focus），追加到末尾",
+                    "tooltip": "可选：手动追加的纯 tag，与算法输出合并。",
+                }),
+                "config": ("STRING", {
+                    "multiline": True,
+                    "default": DEFAULT_CONFIG_JSON,
+                }),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("相机提示词",)
+    FUNCTION = "execute"
+    DESCRIPTION = "可视化控制相机机位，输出对应相机提示词（忠实复刻 BSK 算法：方位 2D 比例 + 高度/距离档位 + 倾斜 + extras；支持一键预设与自然语言）"
+
+    def execute(self, preset, nl_prompt, pos_x, pos_y, pos_z, roll, extra_tags, config):
+        px, py, pz, rl = float(pos_x), float(pos_y), float(pos_z), float(roll)
+
+        # 优先级：自然语言 > 预设 > 手动
+        nl = (nl_prompt or "").strip()
+        if nl:
+            px, py, pz, rl = parse_camera_nl(nl, (px, py, pz, rl))
+            extra_preset = ""
+        elif preset and preset != CUSTOM_PRESET and preset in PRESETS:
+            p = PRESETS[preset]
+            px, py, pz, rl = p["pos_x"], p["pos_y"], p["pos_z"], p.get("roll", 0.0)
+            extra_preset = p.get("extra", "")
+        else:
+            extra_preset = ""
+
+        prompt = CameraControlCore.compute(px, py, pz, rl, config)
+
+        # 附加 tag：预设自带 extra + 手动 extra_tags（去重保序）
+        extras = []
+        for chunk in (extra_preset, extra_tags or ""):
+            for t in chunk.split(","):
+                t = t.strip()
+                if t and t not in extras:
+                    extras.append(t)
+        if extras:
+            suffix = ", ".join(extras)
+            prompt = (prompt.rstrip().rstrip(",") + ", " + suffix + ",").strip(", ").strip() + ","
+            prompt = prompt.strip()
+
+        # 兜底：无任何输出时返回空串（下游可安全拼接）
+        return (prompt,)
+
+
+NODE_CLASS_MAPPINGS = {
+    AnimaCameraControl.NAME: AnimaCameraControl,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    AnimaCameraControl.NAME: "TK 相机控制",
+}
+
+
+# ============ 相机预览 API（批量节点注入相机词时用） ============
+
+@PromptServer.instance.routes.get("/anima/camera/preview")
+async def camera_preview(request):
+    """按参数计算相机提示词（供批量节点在队列展开时拼接相机词）。
+
+    优先级与节点 execute 一致：自然语言 > 预设 > 手动 pos。
+    """
+    try:
+        x = float(request.query.get("x", "0"))
+        y = float(request.query.get("y", "0"))
+        z = float(request.query.get("z", "0"))
+        roll = float(request.query.get("roll", "0"))
+    except ValueError:
+        return web.json_response({"prompt": ""})
+    config = request.query.get("config", "")
+    extra = (request.query.get("extra") or "").strip()
+    preset = (request.query.get("preset") or "").strip()
+    nl = (request.query.get("nl") or "").strip()
+
+    # 复刻 execute 的优先级
+    if nl:
+        x, y, z, roll = parse_camera_nl(nl, (x, y, z, roll))
+        extra_preset = ""
+    elif preset and preset != CUSTOM_PRESET and preset in PRESETS:
+        p = PRESETS[preset]
+        x, y, z, roll = p["pos_x"], p["pos_y"], p["pos_z"], p.get("roll", 0.0)
+        extra_preset = p.get("extra", "")
+    else:
+        extra_preset = ""
+
+    try:
+        prompt = CameraControlCore.compute(x, y, z, roll, config)
+    except Exception:
+        prompt = ""
+
+    extras = []
+    for chunk in (extra_preset, extra):
+        for t in chunk.split(","):
+            t = t.strip()
+            if t and t not in extras:
+                extras.append(t)
+    if extras:
+        suffix = ", ".join(extras)
+        prompt = (prompt.rstrip().rstrip(",") + ", " + suffix + ",").strip(", ").strip() + ","
+        prompt = prompt.strip()
+
+    return web.json_response({"prompt": prompt})

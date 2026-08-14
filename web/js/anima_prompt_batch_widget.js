@@ -1,0 +1,1138 @@
+// Anima Prompt Batch 节点前端 Widget + 队列展开
+//
+// 功能：
+//   1. 节点内 UI：提示词文件选择（多文件）、分组勾选（条数/预览）、
+//      正向/负向目标文本节点选择、相机控制节点选择
+//   2. 队列展开：包装 app.queuePrompt —— 把一次队列按「组×提示词」顺序展开为 N 个任务，
+//      逐个把提示词注入目标文本节点（复用 ComfyUI 原生 seed/批量/进度/历史逻辑）
+//
+// 适配所有工作流：注入目标用下拉框任意选择（CLIPTextEncode / Flux / 任意 STRING widget）。
+(function () {
+  const NODE_NAME = "TK Prompt Batch";
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  // 组机位预设（与相机节点 PRESETS 常用项保持一致；组内优先级：手动 UI > 文件相机行 > 全局相机节点）
+  const CAM_PRESETS = {
+    "正面": { pos_x: 0, pos_y: 0, pos_z: 0, roll: 0 },
+    "背面": { pos_x: 1, pos_y: 0, pos_z: 0, roll: 0 },
+    "左侧": { pos_x: 0.5, pos_y: 0, pos_z: 0, roll: 0 },
+    "右侧": { pos_x: -0.5, pos_y: 0, pos_z: 0, roll: 0 },
+    "正上方俯视": { pos_x: 0, pos_y: 1, pos_z: 0, roll: 0 },
+    "俯视": { pos_x: 0, pos_y: 0.5, pos_z: 0, roll: 0 },
+    "仰视": { pos_x: 0, pos_y: -0.5, pos_z: 0, roll: 0 },
+    "正下方仰视": { pos_x: 0, pos_y: -1, pos_z: 0, roll: 0 },
+    "特写": { pos_x: 0, pos_y: 0, pos_z: 1, roll: 0 },
+    "近景": { pos_x: 0, pos_y: 0, pos_z: 0.5, roll: 0 },
+    "中景": { pos_x: 0, pos_y: 0, pos_z: 0, roll: 0 },
+    "全身": { pos_x: 0, pos_y: 0, pos_z: -0.5, roll: 0 },
+    "远景": { pos_x: 0, pos_y: 0, pos_z: -1, roll: 0 },
+    "荷兰角": { pos_x: 0, pos_y: 0, pos_z: 0, roll: 0.6 },
+    "足控仰视": { pos_x: 0, pos_y: -0.5, pos_z: 0.5, roll: 0 },
+  };
+  const fmtPos = (px, py, pz, rl) => [px, py, pz, rl].map((v) => String(Math.round((parseFloat(v) || 0) * 100) / 100)).join(",");
+  const fmtNum = (v) => String(Math.round((parseFloat(v) || 0) * 100) / 100);
+  // 机位描述 → /anima/camera/preview 查询串（preset:名 / px,py,pz,roll / 自然语言）
+  function cameraToQuery(desc) {
+    const s = String(desc || "").trim();
+    if (s.startsWith("preset:")) return "preset=" + encodeURIComponent(s.slice(7));
+    if (/^[-\d.,，\s]+$/.test(s)) {
+      const nums = s.split(/[,，\s]+/).filter(Boolean).map(Number);
+      if (nums.length >= 4 && nums.slice(0, 4).every(Number.isFinite)) {
+        return `x=${nums[0]}&y=${nums[1]}&z=${nums[2]}&roll=${nums[3]}`;
+      }
+    }
+    return "nl=" + encodeURIComponent(s);
+  }
+
+  function apiFetch(path) {
+    const api = window.comfyAPI?.api?.api || window.api;
+    if (api?.fetchApi) return api.fetchApi(path);
+    return fetch(path);
+  }
+  async function fetchJson(path) {
+    const r = await apiFetch(path);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }
+
+  function getGraph(app) {
+    // 优先读原始字段 rootGraphInternal，避免触发 graph getter 的 "accessed before initialization" 噪音日志
+    if (app.rootGraphInternal) return app.rootGraphInternal;
+    return app.rootGraph || app.graph || app.canvas?.graph || null;
+  }
+  function getNodes(app) {
+    const g = getGraph(app);
+    if (!g) return [];
+    const raw = g.nodes ?? g._nodes ?? [];
+    if (Array.isArray(raw)) return raw;
+    if (raw instanceof Map) return Array.from(raw.values());
+    if (typeof raw === "object") return Object.values(raw);
+    return [];
+  }
+  function findNode(app, id) {
+    return getNodes(app).find((n) => String(n.id) === String(id)) || null;
+  }
+
+  // 枚举可作为注入目标的文本节点（含 STRING widget 的节点）
+  function listTextTargets(app) {
+    const out = [];
+    for (const n of getNodes(app)) {
+      if (!n.widgets || !Array.isArray(n.widgets)) continue;
+      for (const w of n.widgets) {
+        const isText = (w.type || "").toLowerCase().includes("string") ||
+          /text|prompt|positive|negative|string/i.test(w.name || "");
+        if (!isText) continue;
+        out.push({ nodeId: String(n.id), widget: w.name, title: n.title || n.type || n.comfyClass || String(n.id) });
+      }
+    }
+    return out;
+  }
+  // 枚举相机控制节点（供「每组独立机位」选择）
+  function listCameraTargets(app) {
+    const out = [];
+    for (const n of getNodes(app)) {
+      const cls = n.type || n.comfyClass || "";
+      if (/camera/i.test(cls)) {
+        out.push({ nodeId: String(n.id), title: n.title || cls });
+      }
+    }
+    return out;
+  }
+
+  class BatchUI {
+    constructor(node, w) {
+      this.node = node;
+      this.w = w; // {prompt_files, positive_target, negative_target, camera_target, output_subfolder, groups_selection, region_values}
+      this.cachedGroups = []; // [{file, name, count, prompts, region, camera}]
+      this.checked = new Set(); // 选中的 "file::name"
+      this.regionValues = new Map(); // "file::name" → "x,y,w,h,s"（UI 编辑值）
+      this.cameraValues = new Map(); // "file::name" → 机位描述（NL 文本 / preset:名 / px,py,pz,roll）
+      this.openCamKey = null; // 当前展开机位编辑器的组键
+      this.rootEl = null;
+    }
+
+    _setW(widget, value) {
+      if (!widget) return;
+      widget.value = value;
+      if (typeof widget.callback === "function") { try { widget.callback(value) } catch {} }
+    }
+
+    _fileLines() {
+      return (this.w.prompt_files?.value || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    }
+
+    // 取最新提示词文件（优先 input/prompts/，为空回退 input/ 根）
+    async fetchLatestPath() {
+      for (const dir of ["prompts", ""]) {
+        try {
+          const j = await fetchJson("/anima/prompt/list?dir=" + encodeURIComponent(dir));
+          const f = (j.files && j.files[0]) || "";
+          if (f) return dir ? dir + "/" + f : f;
+        } catch (e) { /* 继续尝试下一目录 */ }
+      }
+      return null;
+    }
+
+    async _parseFiles() {
+      const lines = this._fileLines();
+      this.cachedGroups = [];
+      for (const p of lines) {
+        try {
+          const j = await fetchJson("/anima/prompt/parse?path=" + encodeURIComponent(p));
+          for (const g of j.groups || []) {
+            const rec = { file: p, name: g.name, count: g.count, prompts: g.prompts,
+                          region: g.region || null, background: g.background || null, person: g.person || null,
+                          camera: g.camera || null };
+            this.cachedGroups.push(rec);
+            // 文件里解析出的区域参数作为该组默认值（UI 已改过则保留 UI 值）
+            const key = p + "::" + g.name;
+            if (!this.regionValues.has(key) && rec.region) {
+              this.regionValues.set(key, fmtRegion(rec.region));
+            }
+            // 组相机：UI 手动设置（cameraValues）优先于文件「相机:」行
+            if (!this.cameraValues.has(key) && rec.camera) {
+              this.cameraValues.set(key, rec.camera);
+            }
+          }
+        } catch (e) { /* 忽略单文件解析失败 */ }
+      }
+      // 恢复已勾选（默认全选）
+      if (this.checked.size === 0) {
+        for (const g of this.cachedGroups) this.checked.add(g.file + "::" + g.name);
+      }
+      this._renderGroups();
+      this._persistSelection();
+    }
+
+    _persistSelection() {
+      const names = this.cachedGroups.filter((g) => this.checked.has(g.file + "::" + g.name)).map((g) => g.name);
+      this._setW(this.w.groups_selection, JSON.stringify(names));
+      const regionObj = {};
+      for (const [k, v] of this.regionValues) if (v) regionObj[k] = v;
+      this._setW(this.w.region_values, JSON.stringify(regionObj));
+      const camObj = {};
+      for (const [k, v] of this.cameraValues) if (v) camObj[k] = v;
+      this._setW(this.w.camera_values, JSON.stringify(camObj));
+    }
+
+    _renderGroups() {
+      if (!this.listEl) return;
+      this.listEl.innerHTML = "";
+      if (!this.cachedGroups.length) {
+        this.listEl.innerHTML = '<div class="anima-batch-empty">未解析到分组。请填提示词文件后点「解析」。</div>';
+        return;
+      }
+      let total = 0;
+      for (const g of this.cachedGroups) {
+        const key = g.file + "::" + g.name;
+        const wrap = document.createElement("div");
+        wrap.className = "anima-batch-group";
+        const row = document.createElement("label");
+        row.className = "anima-batch-row";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = this.checked.has(key);
+        cb.addEventListener("change", () => { cb.checked ? this.checked.add(key) : this.checked.delete(key); this._persistSelection(); });
+        const info = document.createElement("span");
+        info.className = "anima-batch-row-info";
+        info.textContent = `${g.name}（${g.count} 条）`;
+        info.title = (g.prompts || []).slice(0, 2).join("\n———\n");
+        row.appendChild(cb);
+        row.appendChild(info);
+        wrap.appendChild(row);
+
+        // 本组机位按钮（有值时高亮）
+        const camVal = this.cameraValues.get(key) || "";
+        const camBtn = document.createElement("button");
+        camBtn.type = "button";
+        camBtn.className = "anima-batch-cam-btn" + (camVal ? " has" : "");
+        camBtn.textContent = "机位";
+        camBtn.title = camVal ? "本组独立机位：" + camVal + "（点开修改）" : "设置本组独立机位；不设置则用全局相机节点";
+        camBtn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          this.openCamKey = this.openCamKey === key ? null : key;
+          this._renderGroups();
+        });
+        wrap.appendChild(camBtn);
+
+        // 展开的机位编辑器
+        if (this.openCamKey === key) {
+          wrap.appendChild(this._buildCamEditor(g, key));
+        }
+
+        this.listEl.appendChild(wrap);
+        if (this.checked.has(key)) total += g.count;
+      }
+      if (this.countEl) this.countEl.textContent = `共 ${this.cachedGroups.length} 组 · 选中 ${total} 条提示词`;
+    }
+
+    // 组机位编辑器：预设下拉 + 自然语言输入 + 手动数值滑块 + 清除
+    _buildCamEditor(g, key) {
+      const ed = document.createElement("div");
+      ed.className = "anima-batch-cam-editor";
+      const cur = this.cameraValues.get(key) || "";
+      let mode = "nl", text = "", px = 0, py = 0, pz = 0, rl = 0;
+      if (cur.startsWith("preset:")) { mode = "preset"; text = cur.slice(7); }
+      else if (/^[-\d.,，\s]+$/.test(cur)) {
+        const nums = cur.split(/[,，\s]+/).filter(Boolean).map(Number);
+        if (nums.length >= 4 && nums.slice(0, 4).every(Number.isFinite)) {
+          mode = "pos"; px = nums[0]; py = nums[1]; pz = nums[2]; rl = nums[3];
+        } else { text = cur; }
+      } else { text = cur; }
+
+      const apply = () => { this._persistSelection(); this._renderGroups(); };
+
+      // ── 模式/预设下拉 ──
+      const selRow = document.createElement("div");
+      selRow.className = "anima-batch-cam-row";
+      const sel = document.createElement("select");
+      sel.className = "anima-batch-cam-sel";
+      sel.appendChild(new Option("自然语言 / 数值", "nl"));
+      for (const n of Object.keys(CAM_PRESETS)) sel.appendChild(new Option("预设 · " + n, "preset:" + n));
+      sel.appendChild(new Option("手动数值（4 滑块）", "pos"));
+      sel.value = mode;
+      sel.addEventListener("change", () => {
+        const v = sel.value;
+        if (v === "nl") {
+          const old = this.cameraValues.get(key) || "";
+          if (!old.startsWith("preset:") && !/^[-\d.,，\s]+$/.test(old)) return; // 已是 NL
+          this.cameraValues.delete(key);
+        } else if (v.startsWith("preset:")) {
+          this.cameraValues.set(key, v);
+        } else if (v === "pos") {
+          this.cameraValues.set(key, fmtPos(px, py, pz, rl));
+        }
+        apply();
+      });
+      selRow.appendChild(sel);
+      ed.appendChild(selRow);
+
+      // ── 自然语言输入 ──
+      if (mode === "nl") {
+        const nlRow = document.createElement("div");
+        nlRow.className = "anima-batch-cam-row";
+        const nlInput = document.createElement("input");
+        nlInput.type = "text";
+        nlInput.className = "anima-batch-cam-nl";
+        nlInput.placeholder = "如：俯视 近景 / 从背后 全身 / 荷兰角";
+        nlInput.value = text;
+        nlInput.addEventListener("change", () => {
+          const v = nlInput.value.trim();
+          if (v) this.cameraValues.set(key, v); else this.cameraValues.delete(key);
+          apply();
+        });
+        nlRow.appendChild(nlInput);
+        ed.appendChild(nlRow);
+      }
+
+      // ── 手动数值：4 滑块 ──
+      if (mode === "pos") {
+        const grid = document.createElement("div");
+        grid.className = "anima-batch-cam-grid";
+        const mkSlider = (label, get, set) => {
+          const row = document.createElement("div");
+          row.className = "anima-batch-cam-slider-row";
+          const lb = document.createElement("span");
+          lb.className = "anima-batch-cam-slider-label";
+          lb.textContent = label;
+          const range = document.createElement("input");
+          range.type = "range";
+          range.min = -1; range.max = 1; range.step = 0.05;
+          range.value = get();
+          const val = document.createElement("span");
+          val.className = "anima-batch-cam-slider-val";
+          val.textContent = fmtNum(get());
+          range.addEventListener("input", () => {
+            val.textContent = fmtNum(parseFloat(range.value));
+            set(parseFloat(range.value));
+            this._persistSelection();
+          });
+          range.addEventListener("change", () => apply());
+          row.append(lb, range, val);
+          grid.appendChild(row);
+        };
+        mkSlider("方位", () => px, (v) => { px = v; this.cameraValues.set(key, fmtPos(px, py, pz, rl)); });
+        mkSlider("俯仰", () => py, (v) => { py = v; this.cameraValues.set(key, fmtPos(px, py, pz, rl)); });
+        mkSlider("距离", () => pz, (v) => { pz = v; this.cameraValues.set(key, fmtPos(px, py, pz, rl)); });
+        mkSlider("角度", () => rl, (v) => { rl = v; this.cameraValues.set(key, fmtPos(px, py, pz, rl)); });
+        ed.appendChild(grid);
+      }
+
+      // ── 清除（跟随全局相机节点）──
+      const clearRow = document.createElement("div");
+      clearRow.className = "anima-batch-cam-row";
+      const clearBtn = document.createElement("button");
+      clearBtn.type = "button";
+      clearBtn.className = "anima-batch-cam-clear";
+      clearBtn.textContent = "✕ 清除本组机位（跟随全局相机）";
+      clearBtn.addEventListener("click", () => {
+        this.cameraValues.delete(key);
+        this.openCamKey = null;
+        apply();
+      });
+      clearRow.appendChild(clearBtn);
+      ed.appendChild(clearRow);
+      return ed;
+    }
+
+    _fillTargets() {
+      const app = window.comfyAPI?.app?.app;
+      if (!app) return;
+      const targets = listTextTargets(app);
+      const cams = listCameraTargets(app);
+      const mkOpt = (sel, placeholder, items, isCamera) => {
+        if (!sel) return;
+        const cur = sel.value || "";
+        sel.innerHTML = `<option value="">${placeholder}</option>` +
+          items.map((t) => `<option value="${esc(t.nodeId + (isCamera ? "" : "." + t.widget))}" ${cur === (t.nodeId + (isCamera ? "" : "." + t.widget)) ? "selected" : ""}>${esc(t.title + (isCamera ? "" : " · " + t.widget))}</option>`).join("");
+      };
+      mkOpt(this.posSel, "选择正向提示词目标节点…", targets, false);
+      mkOpt(this.negSel, "负向提示词目标（可选）…", targets, false);
+      mkOpt(this.camSel, "相机控制节点（可选）…", cams, true);
+    }
+
+    build() {
+      const container = document.createElement("div");
+      container.className = "anima-batch-ui";
+      this.rootEl = container;
+
+      // 隐藏全部标准 widget（参数全部由下方自定义 UI 控制；region_values/camera_values
+      // 等内部 JSON 不再裸显示在节点上，随工作流持久化照常）
+      for (const w of this.node.widgets || []) {
+        if (!w || w.name === "anima_batch_panel") continue;
+        w.hidden = true;
+        w.options = w.options || {};
+        w.options.hidden = true;
+        if (w.element) w.element.style.display = "none";
+        if (typeof w.computeSize === "function") {
+          const orig = w.computeSize;
+          w.computeSize = function () { try { return [0, -4]; } catch (e) { return orig.apply(this, arguments); } };
+        }
+        if (typeof w.draw === "function") { w.draw = () => {}; }
+      }
+
+      // 文件区：当前文件显示 + 「选择文件」按钮（可导航目录浏览器）
+      const fileRow = document.createElement("div");
+      fileRow.className = "anima-batch-row";
+      const fileLbl = document.createElement("span");
+      fileLbl.className = "anima-batch-label";
+      fileLbl.textContent = "提示词文件";
+      this.fileCur = document.createElement("span");
+      this.fileCur.className = "anima-batch-file-cur";
+      this.fileCur.textContent = this.w.prompt_files?.value || "（未选择）";
+      this.fileCur.title = "当前提示词文件（相对 input/ 或绝对路径）";
+      const browseBtn = document.createElement("button");
+      browseBtn.type = "button";
+      browseBtn.className = "anima-batch-btn";
+      browseBtn.textContent = "选择文件…";
+      const latestBtn = document.createElement("button");
+      latestBtn.type = "button";
+      latestBtn.className = "anima-batch-btn";
+      latestBtn.textContent = "🔄 最新";
+      latestBtn.title = "一键选中 input/prompts/ 下最新修改的提示词文件";
+      fileRow.appendChild(fileLbl);
+      fileRow.appendChild(this.fileCur);
+      fileRow.appendChild(latestBtn);
+      fileRow.appendChild(browseBtn);
+      container.appendChild(fileRow);
+
+      // 自动最新开关：队列时自动使用 prompts/ 下最新文件（无需手动选）
+      const autoRow = document.createElement("div");
+      autoRow.className = "anima-batch-row";
+      const autoBox = document.createElement("input");
+      autoBox.type = "checkbox";
+      autoBox.id = "anima-auto-latest-" + this.node.id;
+      autoBox.checked = !!this.autoLatest;
+      autoBox.addEventListener("change", () => { this.autoLatest = autoBox.checked; });
+      const autoLbl = document.createElement("label");
+      autoLbl.htmlFor = autoBox.id;
+      autoLbl.textContent = "自动用最新文件（点生成时自动选中 prompts/ 最新 txt）";
+      autoLbl.className = "anima-batch-hint";
+      autoRow.append(autoBox, autoLbl);
+      container.appendChild(autoRow);
+
+      latestBtn.addEventListener("click", async () => {
+        try {
+          const path = await this.fetchLatestPath();
+          if (!path) { alert("input/prompts/ 与 input/ 下都没有提示词文件"); return; }
+          this._setW(this.w.prompt_files, path);
+          this.fileCur.textContent = path;
+          fileList.style.display = "none";
+          this.checked.clear();
+          await this._parseFiles();
+        } catch (e) { alert("获取最新文件失败：" + String((e && e.message) || e)); }
+      });
+
+      // 文件浏览器（可导航：上级/子目录/路径直输；相对 input/ 与绝对路径都支持）
+      const fileList = document.createElement("div");
+      fileList.className = "anima-batch-filelist";
+      fileList.style.display = "none";
+      container.appendChild(fileList);
+      let browseDir = ""; // 当前浏览目录（相对 input/ 或绝对路径）
+      const renderBrowser = async () => {
+        fileList.innerHTML = "";
+        let j;
+        try {
+          j = await fetchJson("/anima/prompt/list?dir=" + encodeURIComponent(browseDir));
+        } catch (e) {
+          fileList.innerHTML = '<div class="anima-batch-empty">目录加载失败：' + esc(String((e && e.message) || e)) + '</div>';
+          return;
+        }
+        // 导航行：上级 + 当前路径
+        const nav = document.createElement("div");
+        nav.className = "anima-batch-nav";
+        const upBtn = document.createElement("button");
+        upBtn.type = "button";
+        upBtn.className = "anima-batch-btn anima-batch-nav-up";
+        upBtn.textContent = "⬆ 上级";
+        upBtn.disabled = !j.parent && (j.dir === "." || j.dir === "");
+        upBtn.title = "返回上级目录";
+        upBtn.addEventListener("click", () => { browseDir = j.parent || ""; renderBrowser(); });
+        const pathSpan = document.createElement("span");
+        pathSpan.className = "anima-batch-nav-path";
+        pathSpan.textContent = j.abs_dir || ".";
+        pathSpan.title = "当前目录绝对路径";
+        nav.append(upBtn, pathSpan);
+        fileList.appendChild(nav);
+        // 路径直输行
+        const pathRow = document.createElement("div");
+        pathRow.className = "anima-batch-nav-pathrow";
+        const pathInput = document.createElement("input");
+        pathInput.type = "text";
+        pathInput.className = "anima-batch-nav-input";
+        pathInput.placeholder = "输入目录路径（相对 input/ 或绝对路径）后回车跳转";
+        pathInput.value = (j.dir && j.dir !== ".") ? j.dir : "";
+        pathInput.onkeydown = (e) => { if (e.key === "Enter") { browseDir = pathInput.value.trim(); renderBrowser(); } };
+        pathRow.appendChild(pathInput);
+        fileList.appendChild(pathRow);
+        // 子目录
+        for (const d of j.dirs || []) {
+          const row = document.createElement("div");
+          row.className = "anima-batch-file";
+          row.textContent = "📁 " + d;
+          row.title = "进入目录 " + d;
+          row.addEventListener("click", () => { browseDir = browseDir ? browseDir + "/" + d : d; renderBrowser(); });
+          fileList.appendChild(row);
+        }
+        // 提示词文件（点击选择）
+        for (const f of j.files || []) {
+          const row = document.createElement("div");
+          row.className = "anima-batch-file";
+          row.textContent = "📄 " + f;
+          row.title = "选择：" + (browseDir ? browseDir + "/" + f : f);
+          row.addEventListener("click", () => {
+            const path = browseDir ? browseDir + "/" + f : f;
+            this._setW(this.w.prompt_files, path);
+            this.fileCur.textContent = path;
+            fileList.style.display = "none";
+            this._parseFiles();
+          });
+          fileList.appendChild(row);
+        }
+        if (!(j.dirs || []).length && !(j.files || []).length) {
+          const empty = document.createElement("div");
+          empty.className = "anima-batch-empty";
+          empty.textContent = "该目录没有 .txt 提示词文件";
+          fileList.appendChild(empty);
+        }
+      };
+      browseBtn.addEventListener("click", async () => {
+        if (fileList.style.display !== "none") { fileList.style.display = "none"; return; }
+        fileList.style.display = "block";
+        fileList.innerHTML = '<div class="anima-batch-empty">加载中…</div>';
+        await renderBrowser();
+      });
+
+      // 目标选择区
+      const selWrap = document.createElement("div");
+      selWrap.className = "anima-batch-sels";
+      this.posSel = this._mkSelect("正向目标");
+      this.negSel = this._mkSelect("负向目标");
+      this.camSel = this._mkSelect("相机节点");
+      selWrap.appendChild(this.posSel);
+      selWrap.appendChild(this.negSel);
+      selWrap.appendChild(this.camSel);
+      container.appendChild(selWrap);
+
+      // 按钮区
+      const btnRow = document.createElement("div");
+      btnRow.className = "anima-batch-btns";
+      const parseBtn = document.createElement("button");
+      parseBtn.type = "button";
+      parseBtn.textContent = "解析分组";
+      parseBtn.addEventListener("click", async () => {
+        // 先同步 targets 下拉（保证注入目标最新）
+        this._fillTargets();
+        await this._parseFiles();
+      });
+      const refreshBtn = document.createElement("button");
+      refreshBtn.type = "button";
+      refreshBtn.textContent = "刷新目标节点";
+      refreshBtn.addEventListener("click", () => this._fillTargets());
+      btnRow.appendChild(parseBtn);
+      btnRow.appendChild(refreshBtn);
+      container.appendChild(btnRow);
+
+      // 计数
+      this.countEl = document.createElement("div");
+      this.countEl.className = "anima-batch-count";
+      container.appendChild(this.countEl);
+
+      // 分组列表
+      this.listEl = document.createElement("div");
+      this.listEl.className = "anima-batch-list";
+      container.appendChild(this.listEl);
+
+      // 挂载：ComfyUI 官方 addDOMWidget（兼容 0.30.x）。insertBefore 兜底同样做
+      // parentNode 判空，防止节点创建早期 widget 未挂 DOM 时抛错导致拖不进去。
+      try {
+        if (typeof this.node.addDOMWidget === "function") {
+          this.node.addDOMWidget("anima_batch_panel", "custom", container, { serialize: false, hideOnZoom: false });
+        } else {
+          const firstEl = this.node.widgets?.map((w) => w.element).find(Boolean);
+          if (firstEl && firstEl.parentNode) firstEl.parentNode.insertBefore(container, firstEl);
+          else if (this.node.element) this.node.element.prepend(container);
+        }
+      } catch (e) {
+        console.error("[TK Prompt Batch] 挂载 UI 失败:", e);
+      }
+
+      // 初始恢复勾选 + 渲染（配置恢复后）
+      try {
+        const sel = JSON.parse(this.w.groups_selection?.value || "[]");
+        if (Array.isArray(sel) && sel.length) { /* 等 parse 时按名称匹配恢复 */ }
+        this._restoredNames = new Set(sel);
+      } catch { this._restoredNames = new Set(); }
+      // 恢复区域参数（file::name → 字符串）
+      try {
+        const rv = JSON.parse(this.w.region_values?.value || "{}");
+        if (rv && typeof rv === "object") {
+          for (const k of Object.keys(rv)) {
+            if (typeof rv[k] === "string") this.regionValues.set(k, rv[k]);
+          }
+        }
+      } catch {}
+      // 恢复组相机参数（file::name → 机位描述）
+      try {
+        const cv = JSON.parse(this.w.camera_values?.value || "{}");
+        if (cv && typeof cv === "object") {
+          for (const k of Object.keys(cv)) {
+            if (typeof cv[k] === "string" && cv[k].trim()) this.cameraValues.set(k, cv[k].trim());
+          }
+        }
+      } catch {}
+
+      // 目标选择变更 → 写回 widget
+      this.posSel.addEventListener("change", () => this._setW(this.w.positive_target, this.posSel.value));
+      this.negSel.addEventListener("change", () => this._setW(this.w.negative_target, this.negSel.value));
+      this.camSel.addEventListener("change", () => this._setW(this.w.camera_target, this.camSel.value));
+
+      // 初始化下拉（配置恢复后）。工作流加载时图可能仍在异步重建，目标节点枚举
+      // 可能为空 → 下拉未匹配到保存的目标值时按间隔重试几次（幂等重建 options）。
+      const tryFill = (delay, remaining) => {
+        setTimeout(() => {
+          this.posSel.value = this.w.positive_target?.value || "";
+          this.negSel.value = this.w.negative_target?.value || "";
+          this.camSel.value = this.w.camera_target?.value || "";
+          this._fillTargets();
+          const cur = this.w.positive_target?.value || "";
+          const matched = !cur || this.posSel.value === cur;
+          if (matched) {
+            this._parseFiles().then(() => {
+              if (this._restoredNames && this._restoredNames.size) {
+                this.checked.clear();
+                for (const g of this.cachedGroups) {
+                  if (this._restoredNames.has(g.name)) this.checked.add(g.file + "::" + g.name);
+                }
+                this._renderGroups();
+              }
+            });
+          } else if (remaining > 0) {
+            tryFill(800, remaining - 1);
+          } else {
+            // 最终兜底：即使目标节点枚举不到也照常解析组列表
+            this._parseFiles();
+          }
+        }, delay);
+      };
+      tryFill(50, 6);
+    }
+
+    _mkSelect(label) {
+      const wrap = document.createElement("div");
+      wrap.className = "anima-batch-sel";
+      const lb = document.createElement("div");
+      lb.className = "anima-batch-label";
+      lb.textContent = label;
+      const sel = document.createElement("select");
+      sel.className = "anima-batch-select";
+      wrap.appendChild(lb);
+      wrap.appendChild(sel);
+      return sel;
+    }
+
+    // 构建队列任务列表（组×提示词顺序）
+    buildJobs(app) {
+      const posT = (this.w.positive_target?.value || "").trim();
+      const negT = (this.w.negative_target?.value || "").trim();
+      if (!posT) return [];
+      const [posId, posKey] = posT.split(".");
+      if (!posId || !posKey) return [];
+      const neg = negT ? negT.split(".") : null;
+      const camId = (this.w.camera_target?.value || "").trim();
+
+      const jobs = [];
+      for (const g of this.cachedGroups) {
+        if (!this.checked.has(g.file + "::" + g.name)) continue;
+        const gkey = g.file + "::" + g.name;
+        for (const p of g.prompts || []) {
+          jobs.push({
+            posId, posKey,
+            negId: neg ? neg[0] : null, negKey: neg ? neg[1] : null,
+            text: p, groupName: g.name,
+            camId: camId || null,
+            camera: (this.cameraValues.get(gkey) || "").trim() || null,
+            region: (this.regionValues.get(gkey) || "").trim() || null,
+            person: g.person || null,
+            bg: g.background || null,
+            subfolder: this.w.output_subfolder?.value !== false,
+          });
+        }
+      }
+      return jobs;
+    }
+  }
+
+  // 区域参数数组 → "x,y,w,h,s" 字符串（保留 3 位小数）
+  function fmtRegion(r) {
+    if (!Array.isArray(r) || r.length < 4) return "";
+    const v = r.slice(0, 5).map((n) => String(Math.round(parseFloat(n) * 1000) / 1000));
+    if (v.length === 4) v.push("1");
+    return v.join(",");
+  }
+
+  // 读相机节点当前参数（含预设/自然语言，交给后端预览接口按优先级计算）
+  function readCameraPrompt(app, camId) {
+    const node = findNode(app, camId);
+    if (!node) return null;
+    const w = (n) => node.widgets?.find((x) => x.name === n);
+    return {
+      px: parseFloat(w("pos_x")?.value ?? 0), py: parseFloat(w("pos_y")?.value ?? 0),
+      pz: parseFloat(w("pos_z")?.value ?? 0), rl: parseFloat(w("roll")?.value ?? 0),
+      cfg: w("config")?.value || "",
+      extra: (w("extra_tags")?.value || "").trim(),
+      nl: (w("nl_prompt")?.value || "").trim(),
+      preset: (w("preset")?.value || "").trim(),
+    };
+  }
+
+  // ── 方案 A：区域参数注入（ConditioningSetAreaPercentage） ──
+  // 在 graphToPrompt 产出的最终 prompt JSON 上做手术，不改动画布图（不污染工作流）。
+  //
+  // 注入结构（ComfyUI 区域标准用法：区域 cond + 全图 base cond 混合）：
+  //   正片cond ──► ConditioningSetAreaPercentage(区域) ──┐
+  //                                                     ├─► ConditioningCombine ──► 原下游
+  //   空文本CLIPTextEncode ─► ConditioningSetAreaPercentage(全图 base) ──┘
+  let regionSeq = 0;
+  function injectRegionIntoPrompt(prompt, condId, slot, regionStr, clipInput) {
+    const nums = String(regionStr || "").split(/[,，\s]+/).filter((s) => s.length > 0).map((s) => parseFloat(s));
+    if (nums.length < 4 || nums.slice(0, 4).some((n) => !Number.isFinite(n))) return false;
+    const clamp01 = (v) => Math.max(0, Math.min(1, v));
+    const x = clamp01(nums[0]), y = clamp01(nums[1]);
+    const w = clamp01(nums[2]), h = clamp01(nums[3]);
+    if (w <= 0 || h <= 0) return false;
+    // 区域=全图时无需分区（等于不注入，避免无意义分支）
+    if (w >= 0.999 && h >= 0.999 && x <= 0.001 && y <= 0.001) return false;
+    const s = nums.length > 4 && Number.isFinite(nums[4]) ? nums[4] : 1.0;
+    const key = String(condId);
+    const n = ++regionSeq;
+    const regionId = "tk_region_" + n;
+    const baseEncId = "tk_base_enc_" + n;
+    const baseAreaId = "tk_base_area_" + n;
+    const combineId = "tk_combine_" + n;
+
+    // 找消费 [condId, slot] 的输入（正片 conditioning 的下游），改接 combine
+    let consumers = 0;
+    for (const nid of Object.keys(prompt || {})) {
+      const inputs = (prompt[nid] || {}).inputs || {};
+      for (const k of Object.keys(inputs)) {
+        const v = inputs[k];
+        if (Array.isArray(v) && v.length >= 2 && String(v[0]) === key && v[1] === slot) {
+          inputs[k] = [combineId, 0];
+          consumers++;
+        }
+      }
+    }
+    if (!consumers) return false;
+    // base 文本编码需要 CLIP：复制原 cond 节点的 clip 输入；没有则跳过（无法补底衬）
+    if (!Array.isArray(clipInput)) return false;
+
+    prompt[regionId] = {
+      class_type: "ConditioningSetAreaPercentage",
+      inputs: { conditioning: [key, slot], width: w, height: h, x: x, y: y, strength: s },
+    };
+    // 区域外底衬：用「简单背景」引导，避免空文本导致模型在区域外自由发挥（画多余人物）
+    prompt[baseEncId] = {
+      class_type: "CLIPTextEncode",
+      inputs: { clip: clipInput, text: "simple background, empty space, plain, minimal," },
+    };
+    prompt[baseAreaId] = {
+      class_type: "ConditioningSetAreaPercentage",
+      inputs: { conditioning: [baseEncId, 0], width: 1, height: 1, x: 0, y: 0, strength: 1 },
+    };
+    prompt[combineId] = {
+      class_type: "ConditioningCombine",
+      inputs: { conditioning_1: [regionId, 0], conditioning_2: [baseAreaId, 0] },
+    };
+    return true;
+  }
+
+  // ── Anima 底模区域注入（ComfyUI-Anima-Regional-Conditioning） ──
+  // Anima/Cosmos 的 latent 是 5D（含时间维），ComfyUI 原生 ConditioningSetArea 不兼容；
+  // 改用 Anima 生态节点：矩形 mask → AnimaConditioningRegion(区域cond) →
+  // ApplyAnimaRegionalConditioningPatch(model) → KSampler。
+  // 节点全部在 graphToPrompt 产物上临时注入，不动画布图。
+  function injectAnimaRegionIntoPrompt(prompt, act) {
+    const nums = String(act.region || "").split(/[,，\s]+/).filter((s) => s.length > 0).map((s) => parseFloat(s));
+    if (nums.length < 4 || nums.slice(0, 4).some((n) => !Number.isFinite(n))) return false;
+    const clamp01 = (v) => Math.max(0, Math.min(1, v));
+    const x = clamp01(nums[0]), y = clamp01(nums[1]);
+    const w = clamp01(nums[2]), h = clamp01(nums[3]);
+    if (w <= 0 || h <= 0) return false;
+    if (w >= 0.999 && h >= 0.999 && x <= 0.001 && y <= 0.001) return false;
+    const s = nums.length > 4 && Number.isFinite(nums[4]) ? nums[4] : 1.0;
+
+    const condId = String(act.cond.id);
+    const clipInput = prompt[condId]?.inputs?.clip;
+    if (!Array.isArray(clipInput)) return false;
+
+    // 找 KSampler（model 输入是连线）
+    let samplerId = null, samplerModel = null;
+    for (const nid of Object.keys(prompt)) {
+      const node = prompt[nid];
+      if (!node || typeof node.class_type !== "string") continue;
+      if (!/^KSampler/.test(node.class_type)) continue;
+      if (Array.isArray(node.inputs?.model)) { samplerId = nid; samplerModel = node.inputs.model; break; }
+    }
+    if (!samplerId || !samplerModel) return false;
+
+    const W = Math.max(1, Math.round(act.dims?.w || 1024));
+    const H = Math.max(1, Math.round(act.dims?.h || 1024));
+    const rx = Math.round(x * W), ry = Math.round(y * H);
+    const rw = Math.max(1, Math.round(w * W)), rh = Math.max(1, Math.round(h * H));
+
+    const n = ++regionSeq;
+    const encId = "tk_anima_enc_" + n;
+    const bgEncId = "tk_anima_bgenc_" + n;
+    const blackId = "tk_anima_black_" + n;
+    const whiteId = "tk_anima_white_" + n;
+    const fullWhiteId = "tk_anima_fullwhite_" + n;
+    const maskId = "tk_anima_mask_" + n;
+    const bgMaskId = "tk_anima_bgmask_" + n;
+    const regionId = "tk_anima_region_" + n;
+    const bgRegionId = "tk_anima_bgregion_" + n;
+    const applyId = "tk_anima_apply_" + n;
+
+    const regionText = (act.person || act.text || "").trim();
+    if (!regionText) return false;
+    const bgText = (act.bg || "").trim();
+    // 人物区 cond = 人物词（9a1aac71 定稿配置：不加背景词、不加否定词）
+    const regionCondText = regionText;
+
+    // 人物区域（用户指定区域）
+    prompt[encId] = { class_type: "CLIPTextEncode", inputs: { clip: clipInput, text: regionCondText } };
+    prompt[blackId] = { class_type: "SolidMask", inputs: { value: 0, width: W, height: H } };
+    prompt[whiteId] = { class_type: "SolidMask", inputs: { value: 1, width: rw, height: rh } };
+    prompt[maskId] = {
+      class_type: "MaskComposite",
+      inputs: { destination: [blackId, 0], source: [whiteId, 0], x: rx, y: ry, operation: "add" },
+    };
+    prompt[regionId] = {
+      class_type: "AnimaConditioningRegion",
+      inputs: { mask: [maskId, 0], conditioning: [encId, 0], weight: s },
+    };
+
+    // 背景区域（人物区域之外 = 全白 - 人物白块），背景词填充；
+    // 无「背景:」行时背景 cond 复用正片链路（KSampler positive）。
+    let tailRegionId = regionId;
+    if (bgText) {
+      prompt[bgEncId] = { class_type: "CLIPTextEncode", inputs: { clip: clipInput, text: bgText } };
+      prompt[fullWhiteId] = { class_type: "SolidMask", inputs: { value: 1, width: W, height: H } };
+      prompt[bgMaskId] = {
+        class_type: "MaskComposite",
+        inputs: { destination: [fullWhiteId, 0], source: [whiteId, 0], x: rx, y: ry, operation: "subtract" },
+      };
+      prompt[bgRegionId] = {
+        class_type: "AnimaConditioningRegion",
+        inputs: { mask: [bgMaskId, 0], conditioning: [bgEncId, 0], weight: 1, regions: [regionId, 0] },
+      };
+      tailRegionId = bgRegionId;
+    }
+
+    prompt[applyId] = {
+      class_type: "ApplyAnimaRegionalConditioningPatch",
+      inputs: {
+        model: samplerModel,
+        regions: [tailRegionId, 0],
+        base_mode: "uncovered_only",
+        base_strength: 1.0,
+        end_percent: 0.35,
+        cross_mask_strength: 1.0,
+        self_mask_strength: 0.2,
+        base_ratio: 0.1,
+        cross_inject_every_n_blocks: 1,
+        self_inject_every_n_blocks: 1,
+      },
+    };
+    prompt[samplerId].inputs.model = [applyId, 0];
+    return true;
+  }
+
+  // 找图尺寸（EmptyLatentImage 类节点的 width/height widget）
+  function findLatentDims(app) {
+    for (const n of getNodes(app)) {
+      const cls = n.type || n.comfyClass || "";
+      if (!/EmptyLatent|EmptySD3|EmptyAuraFlow|EmptyFlux/i.test(cls)) continue;
+      const ww = n.widgets?.find((x) => x.name === "width");
+      const hw = n.widgets?.find((x) => x.name === "height");
+      if (ww && hw && Number(ww.value) > 0 && Number(hw.value) > 0) {
+        return { w: Number(ww.value), h: Number(hw.value) };
+      }
+    }
+    return null;
+  }
+
+  // 从文本目标节点出发，顺着 STRING 输出链路找「输出 CONDITIONING 且被消费」的节点。
+  // 例：WeiLinPromptUI(STRING) → Text Concatenate → CLIPTextEncode(CONDITIONING) → KSampler
+  // 区域注入必须挂在 CONDITIONING 上，否则类型不匹配（String 接 CONDITIONING 会报错）。
+  function findCondNode(app, posId) {
+    const graph = getGraph(app);
+    const links = graph && graph.links instanceof Map ? graph.links
+      : new Map((graph?.links || []).map((l) => [l[0] ?? l.id, l]));
+    const linkTarget = (l) => (Array.isArray(l) ? l[2] : l?.target_id); // 兼容 0.30 对象 link
+    const seen = new Set();
+    const queue = [findNode(app, posId)];
+    while (queue.length) {
+      const n = queue.shift();
+      if (!n || seen.has(String(n.id))) continue;
+      seen.add(String(n.id));
+      const outs = n.outputs || [];
+      const condIdx = outs.findIndex((o) => o.type === "CONDITIONING");
+      if (condIdx >= 0 && (outs[condIdx].links || []).length > 0) {
+        return { id: String(n.id), slot: condIdx };
+      }
+      const strIdx = outs.findIndex((o) => o.type === "STRING");
+      if (strIdx < 0) continue;
+      for (const linkId of outs[strIdx].links || []) {
+        const l = links.get(linkId);
+        const tid = linkTarget(l);
+        if (tid != null) queue.push(findNode(app, tid));
+      }
+    }
+    return null;
+  }
+
+  // Anima 底模检测：Cosmos 架构 latent 是 5D（含时间维），ComfyUI 原生
+  // ConditioningSetArea 区域机制只支持 2D → 直接注入会 IndexError。
+  // 检测到 Anima 底模时跳过原生区域注入（区域控制需 Anima 生态节点）。
+  function isAnimaModel(app) {
+    for (const n of getNodes(app)) {
+      const cls = n.type || n.comfyClass || "";
+      if (!/UNETLoader|CheckpointLoader/i.test(cls)) continue;
+      const w = n.widgets?.find((x) => /unet_name|ckpt_name/i.test(x.name || ""));
+      if (w && /anima/i.test(String(w.value || ""))) return true;
+    }
+    return false;
+  }
+
+    // 区域注入已停用（2026-08-15 用户决定：Anima 底模区域控制效果不佳，专注相机控制）。
+    // 注入函数 injectRegionIntoPrompt / injectAnimaRegionIntoPrompt / findCondNode
+    // 等仍保留在文件内（SD 等其他底模未来可恢复），此处不再调用。
+
+    // 全局：包装 app.queuePrompt
+    function installQueueExpansion() {
+      const app = window.comfyAPI?.app?.app;
+      if (!app || app.__animaBatchInstalled) return;
+      app.__animaBatchInstalled = true;
+      const orig = app.queuePrompt.bind(app);
+
+    app.queuePrompt = async function (number, batchCount, options) {
+      // 找到批处理节点
+      // 只认「启用中」的批量节点（mode 0 = always；mute/禁用/隐藏后 mode 非 0 → 走正常队列）
+      const batchNode = getNodes(app).find((n) => n._animaBatchUI && n.mode === 0);
+      if (!batchNode) return orig(number, batchCount, options);
+      const ui = batchNode._animaBatchUI;
+
+      // 自动最新模式：队列前刷新为最新提示词文件（失败不阻塞，走原逻辑）
+      if (ui.autoLatest) {
+        try {
+          const path = await ui.fetchLatestPath();
+          if (path && (ui.w.prompt_files?.value || "") !== path) {
+            ui.checked.clear();
+            ui._setW(ui.w.prompt_files, path);
+            if (ui.fileCur) ui.fileCur.textContent = path;
+            await ui._parseFiles();
+          }
+        } catch (e) { /* 自动刷新失败不阻塞队列 */ }
+      }
+
+      // 异步解析相机词（若指定相机节点）
+      let cameraMap = null;
+      const camId = (ui.w.camera_target?.value || "").trim();
+      if (camId) {
+        const cam = readCameraPrompt(app, camId);
+        if (cam) {
+          cameraMap = await (async () => {
+            try {
+              const q = `x=${cam.px}&y=${cam.py}&z=${cam.pz}&roll=${cam.rl}&config=${encodeURIComponent(cam.cfg)}&extra=${encodeURIComponent(cam.extra)}&preset=${encodeURIComponent(cam.preset)}&nl=${encodeURIComponent(cam.nl)}`;
+              const r = await fetchJson(`/anima/camera/preview?${q}`);
+              return r.prompt || "";
+            } catch { return ""; }
+          })();
+        }
+      }
+
+      const jobs = ui.buildJobs(app);
+      if (!jobs.length) return orig(number, batchCount, options);
+
+      // 批量前快照所有 SaveImage 的 filename_prefix，跑完恢复——
+      // 否则批量把画布上的前缀改成 batch/组名 后不还原，用户下次手动跑单图会存进 batch/ 子目录
+      const prefixSnapshot = new Map();
+      if (jobs.some((j) => j.subfolder)) {
+        for (const n of getNodes(app)) {
+          const cls = n.type || n.comfyClass || "";
+          if (!/SaveImage|PreviewImage|imageSave/i.test(cls)) continue;
+          const w = n.widgets?.find((x) => x.name === "filename_prefix");
+          if (w) prefixSnapshot.set(n, w.value);
+        }
+      }
+      const restorePrefix = () => {
+        for (const [n, v] of prefixSnapshot) {
+          const w = n.widgets?.find((x) => x.name === "filename_prefix");
+          if (w) setTextWidget(n, "filename_prefix", v);
+        }
+      };
+
+      try {
+        // 逐条注入并顺序入队（复用原生 seed/进度/历史）
+        for (const job of jobs) {
+          const posNode = findNode(app, job.posId);
+          if (!posNode) continue;
+          // 注入整段提示词（后端已把「背景/人物」行合并进组提示词）
+          setTextWidget(posNode, job.posKey, job.text);
+
+          // 负向提示词：保持目标节点现有值不变（不注入，避免误清空用户负面词）；
+          // 每组独立负向属后续增强，当前由工作流里的负向节点统一控制。
+
+          // 相机词注入：把相机词拼到正向文本末尾（幂等：每次完整替换正向文本）
+          // 优先级：本组独立机位（job.camera） > 全局相机节点（cameraMap）
+          if (job.camera) {
+            try {
+              const q = cameraToQuery(job.camera);
+              const r = await fetchJson("/anima/camera/preview?" + q);
+              if (r && r.prompt) {
+                const cur = getWidgetValue(posNode, job.posKey);
+                setTextWidget(posNode, job.posKey, mergeCamera(cur, r.prompt));
+              }
+            } catch { /* 组相机解析失败时静默跳过，用已有文本 */ }
+          } else if (cameraMap) {
+            const cur = getWidgetValue(posNode, job.posKey);
+            setTextWidget(posNode, job.posKey, mergeCamera(cur, cameraMap));
+          }
+
+          // 每组输出子目录：覆盖 SaveImage filename_prefix
+          if (job.subfolder) {
+            applySubfolderPrefix(app, job.groupName);
+          }
+
+          // （区域注入已停用，见 installQueueExpansion 注释）
+          await orig(1, batchCount);
+        }
+      } finally {
+        // 无论成功/失败/用户取消，都还原 filename_prefix
+        restorePrefix();
+      }
+      return true;
+    };
+  }
+
+  function getWidgetValue(node, key) {
+    const w = node?.widgets?.find((x) => x.name === key);
+    return w?.value ?? "";
+  }
+  function setTextWidget(node, key, text) {
+    const w = node?.widgets?.find((x) => x.name === key);
+    if (!w) return false;
+    w.value = text;
+    if (typeof w.callback === "function") { try { w.callback(text) } catch {} }
+    return true;
+  }
+  function mergeCamera(cur, camera) {
+    // 简单拼接：目标文本每次被完整替换，无需剥离（幂等由"每次替换"保证）。
+    // camera 词由后端计算、末尾带逗号，直接追加到正向提示词末尾。
+    const base = String(cur || "").trim();
+    if (!camera) return base;
+    if (!base) return camera;
+    return base.replace(/,\s*$/, "") + ", " + camera;
+  }
+  function applySubfolderPrefix(app, groupName) {
+    const safe = String(groupName || "").replace(/[\\/:*?"<>|]/g, "_").slice(0, 40);
+    for (const n of getNodes(app)) {
+      const cls = n.type || n.comfyClass || "";
+      // easy imageSave 类名是 "imageSave"（不是 "SaveImage"），两类都要匹配
+      if (!/SaveImage|PreviewImage|imageSave/i.test(cls)) continue;
+      const w = n.widgets?.find((x) => x.name === "filename_prefix");
+      if (w) { w.value = "batch/" + safe; if (typeof w.callback === "function") { try { w.callback(w.value) } catch {} } }
+    }
+  }
+
+  function init() {
+    const api = window.comfyAPI?.app?.app;
+    if (!api) return setTimeout(init, 500);
+    api.registerExtension({
+      name: "TK.PromptBatch.Widget",
+      async beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData.name !== NODE_NAME) return;
+        const orig = nodeType.prototype.onNodeCreated;
+        nodeType.prototype.onNodeCreated = function () {
+          const r = orig?.apply(this, arguments);
+          const w = (n) => this.widgets?.find((x) => x.name === n);
+          const ui = new BatchUI(this, {
+            prompt_files: w("prompt_files"), positive_target: w("positive_target"),
+            negative_target: w("negative_target"), camera_target: w("camera_target"),
+            output_subfolder: w("output_subfolder"), groups_selection: w("groups_selection"),
+            region_values: w("region_values"), camera_values: w("camera_values"),
+          });
+          this._animaBatchUI = ui;
+          ui.build();
+          return r;
+        };
+      },
+      async setup() {
+        installQueueExpansion();
+        // 调试钩子（CDP/控制台验证区域注入用）
+        window.__tkDebug = window.__tkDebug || {};
+        window.__tkDebug.injectRegionIntoPrompt = injectRegionIntoPrompt;
+      },
+    });
+  }
+
+  function injectStyle() {
+    if (document.getElementById("anima-batch-style")) return;
+    const s = document.createElement("style");
+    s.id = "anima-batch-style";
+    s.textContent = `
+.anima-batch-ui { padding: 6px 8px; display:flex; flex-direction:column; gap:6px; border-bottom:1px solid var(--border-color,#333); }
+.anima-batch-label { font-size:11px; color:var(--fg-color,#999); display:block; margin-bottom:2px; }
+.anima-batch-sels { display:flex; flex-direction:column; gap:4px; }
+.anima-batch-sel { }
+.anima-batch-select { width:100%; background:var(--comfy-input-bg,#222); color:var(--fg-color,#ddd); border:1px solid var(--border-color,#444); border-radius:4px; font-size:11px; padding:3px 4px; }
+.anima-batch-btns { display:flex; gap:6px; }
+.anima-batch-btns button, .anima-batch-btn { background:var(--comfy-input-bg,#222); color:var(--fg-color,#ddd); border:1px solid var(--border-color,#444); border-radius:4px; font-size:11px; padding:3px 8px; cursor:pointer; }
+.anima-batch-btns button:hover, .anima-batch-btn:hover { background:var(--comfy-menu-bg,#333); }
+.anima-batch-filelist { max-height:150px; overflow:auto; border:1px solid var(--border-color,#444); border-radius:4px; background:var(--comfy-input-bg,#222); }
+.anima-batch-file { padding:3px 6px; font-size:11px; cursor:pointer; color:var(--fg-color,#ccc); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.anima-batch-file:hover { background:var(--comfy-menu-bg,#333); color:#c586ff; }
+.anima-batch-count { font-size:11px; color:#c586ff; }
+.anima-batch-hint { font-size:10px; color:var(--fg-color,#777); line-height:1.4; }
+.anima-batch-list { max-height:200px; overflow:auto; display:flex; flex-direction:column; gap:2px; }
+.anima-batch-group { display:flex; flex-direction:column; gap:2px; padding:2px 0; border-bottom:1px dashed rgba(255,255,255,0.07); }
+.anima-batch-row { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--fg-color,#ccc); }
+.anima-batch-row input { margin:0; }
+.anima-batch-row-info { flex:1; cursor:help; }
+.anima-batch-region-row { display:flex; align-items:center; padding-left:20px; }
+.anima-batch-region { flex:1; min-width:0; background:var(--comfy-input-bg,#222); color:var(--fg-color,#ddd); border:1px solid var(--border-color,#444); border-radius:3px; font-size:10px; padding:2px 4px; }
+.anima-batch-region:focus { border-color:#8b5cf6; outline:none; }
+.anima-batch-empty { font-size:11px; color:var(--fg-color,#777); }
+.anima-batch-group { border-bottom:1px dashed var(--border-color,#2a2a2a); padding:2px 0; }
+.anima-batch-cam-btn { flex:0 0 auto; font-size:10px; padding:2px 8px; margin-left:auto; background:var(--comfy-input-bg,#222); color:var(--fg-color,#999); border:1px solid var(--border-color,#444); border-radius:4px; cursor:pointer; }
+.anima-batch-cam-btn:hover { border-color:#8b5cf6; color:#c9b8ff; }
+.anima-batch-cam-btn.has { background:rgba(139,92,246,0.18); color:#c9b8ff; border-color:#8b5cf6; }
+.anima-batch-cam-editor { padding:6px; margin:4px 0 2px 20px; background:var(--comfy-input-bg,#1a1a1f); border:1px solid var(--border-color,#333); border-radius:6px; display:flex; flex-direction:column; gap:5px; }
+.anima-batch-cam-row { display:flex; align-items:center; gap:6px; }
+.anima-batch-cam-sel { flex:1; min-width:0; background:var(--comfy-input-bg,#222); color:var(--fg-color,#ddd); border:1px solid var(--border-color,#444); border-radius:4px; font-size:11px; padding:3px 4px; }
+.anima-batch-cam-nl { flex:1; min-width:0; background:var(--comfy-input-bg,#222); color:var(--fg-color,#ddd); border:1px solid var(--border-color,#444); border-radius:4px; font-size:11px; padding:3px 6px; }
+.anima-batch-cam-nl:focus { border-color:#8b5cf6; outline:none; }
+.anima-batch-cam-grid { display:grid; grid-template-columns:1fr; gap:3px; }
+.anima-batch-cam-slider-row { display:flex; align-items:center; gap:6px; }
+.anima-batch-cam-slider-label { flex:0 0 30px; font-size:10px; color:var(--fg-color,#999); }
+.anima-batch-cam-slider-row input[type=range] { flex:1; min-width:0; height:14px; accent-color:#8b5cf6; cursor:pointer; }
+.anima-batch-cam-slider-val { flex:0 0 34px; font-size:10px; color:#c9b8ff; text-align:right; font-variant-numeric:tabular-nums; }
+.anima-batch-cam-clear { font-size:10px; padding:2px 6px; background:transparent; color:var(--fg-color,#888); border:1px dashed var(--border-color,#444); border-radius:4px; cursor:pointer; }
+.anima-batch-cam-clear:hover { color:#ff6b6b; border-color:#ff6b6b; }
+.anima-batch-file-cur { flex:1; min-width:0; font-size:10px; color:var(--fg-color,#aaa); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.anima-batch-nav { display:flex; align-items:center; gap:6px; padding:4px 2px; border-bottom:1px solid var(--border-color,#2a2a2a); }
+.anima-batch-nav-up { font-size:10px; padding:2px 8px; flex-shrink:0; }
+.anima-batch-nav-up:disabled { opacity:0.4; cursor:default; }
+.anima-batch-nav-path { flex:1; min-width:0; font-size:10px; color:var(--fg-color,#888); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
+.anima-batch-nav-pathrow { padding:4px 2px; }
+.anima-batch-nav-input { width:100%; box-sizing:border-box; background:var(--comfy-input-bg,#1b1e26); color:var(--fg-color,#ddd); border:1px solid var(--border-color,#383d4a); border-radius:4px; font-size:10px; padding:3px 6px; }
+.anima-batch-nav-input:focus { outline:none; border-color:#8b5cf6; }
+`;
+    document.head.appendChild(s);
+  }
+
+  injectStyle();
+  init();
+})();

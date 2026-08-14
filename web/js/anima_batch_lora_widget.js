@@ -1,6 +1,6 @@
 // Anima Batch LoRA Widget — 中文界面 + 桥接自动加载 + 触发词复制
 (function () {
-  const NODE_NAME = "Anima Batch LoRA Loader";
+  const NODE_NAME = "TK Batch LoRA Loader";
   // 面板 URL / 图标：动态解析当前插件目录名（兼容任意 clone 目录名）
   let PANEL_BASE = "/extensions/ComfyUI-Anima-Batch-LoRA/app/";
   let ICON_URL = "/extensions/ComfyUI-Anima-Batch-LoRA/img/anima-btn.jpg";
@@ -29,7 +29,7 @@
     if (!api) return setTimeout(init, 500);
 
     api.registerExtension({
-      name: "Anima.BatchLoRA.Widget",
+      name: "TK.BatchLoRA.Widget",
       async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== NODE_NAME) return;
         const orig = nodeType.prototype.onNodeCreated;
@@ -98,7 +98,7 @@
               const { ComfyButtonGroup } = await import("/scripts/ui/components/buttonGroup.js");
               const btn = new ComfyButton({
                 content: img,
-                tooltip: "打开 Anima 本地工具箱（面板）",
+                tooltip: "打开 TK 工具箱（面板）",
                 action: () => window.open(PANEL_BASE, "_blank"),
                 classList: "comfyui-button comfyui-menu-mobile-collapse primary",
               });
@@ -115,7 +115,7 @@
               fbImg.style.cssText = "width:18px;height:18px;border-radius:4px;vertical-align:middle;";
               setAnimaIcon(fbImg);
               fb.appendChild(fbImg);
-              fb.title = "打开 Anima 本地工具箱（面板）";
+              fb.title = "打开 TK 工具箱（面板）";
               fb.style.cssText = "background:none;border:none;cursor:pointer;padding:4px;";
               fb.onclick = () => window.open(PANEL_BASE, "_blank");
               menu.prepend(fb);
@@ -498,17 +498,17 @@
           .anima-lora-widget .modal .lora-item .lora-ext { color:rgba(255,255,255,0.2); font-size:9px; }
           .anima-lora-widget .modal .close-btn { margin-top:10px; padding:5px 14px; align-self:flex-end; background:rgba(255,255,255,0.06); color:#8A8F98; border:1px solid rgba(255,255,255,0.06); border-radius:6px; cursor:pointer; font-size:10px; transition:all 0.15s ease-out; }
           .anima-lora-widget .modal .close-btn:hover { background:rgba(255,255,255,0.10); color:#EDEDEF; }
-          .anima-lora-widget .anima-tw-popover { position:fixed; z-index:99999; background:linear-gradient(180deg,#141418,#0f0f12); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:10px 12px; max-width:300px; box-shadow:0 0 0 1px rgba(255,255,255,0.04),0 12px 40px rgba(0,0,0,0.6),0 0 60px rgba(94,106,210,0.05); }
-          .anima-lora-widget .anima-tw-popover .tw-preview { width:100%; height:120px; border-radius:6px; overflow:hidden; margin-bottom:8px; background:rgba(255,255,255,0.04); display:flex; align-items:center; justify-content:center; }
-          .anima-lora-widget .anima-tw-popover .tw-preview img { width:100%; height:100%; object-fit:cover; display:block; }
-          .anima-lora-widget .anima-tw-popover .tw-preview-fallback { color:rgba(255,255,255,0.25); font-size:10px; padding:0 10px; text-align:center; }
-          .anima-lora-widget .anima-tw-popover .tw-meta { font-size:9px; color:rgba(255,255,255,0.4); margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-          .anima-lora-widget .anima-tw-popover .tw-title { font-weight:600; font-size:10px; color:#8A8F98; margin-bottom:5px; letter-spacing:0.02em; }
-          .anima-lora-widget .anima-tw-popover .tw-word { background:rgba(94,106,210,0.12); color:#C8C9CB; padding:3px 8px; border-radius:4px; font-size:10px; margin:2px; display:inline-block; cursor:pointer; transition:all 0.15s ease-out; border:1px solid rgba(94,106,210,0.1); }
-          .anima-lora-widget .anima-tw-popover .tw-word:hover { background:rgba(94,106,210,0.25); color:#EDEDEF; }
-          .anima-lora-widget .anima-tw-popover .tw-copy-all { display:inline-flex; align-items:center; gap:4px; margin-top:6px; padding:4px 10px; background:linear-gradient(135deg,#5E6AD2,#6872D9); color:#EDEDEF; border:none; border-radius:5px; cursor:pointer; font-size:9px; font-weight:500; transition:all 0.15s ease-out; box-shadow:0 0 0 1px rgba(94,106,210,0.2),inset 0 1px 0 0 rgba(255,255,255,0.1); }
-          .anima-lora-widget .anima-tw-popover .tw-copy-all:hover { background:linear-gradient(135deg,#6872D9,#7B83E0); }
-          .anima-lora-widget .anima-tw-popover .tw-empty { color:rgba(255,255,255,0.3); font-size:10px; }
+          .anima-tw-popover { position:fixed; z-index:99999; background:linear-gradient(180deg,#141418,#0f0f12); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:10px 12px; max-width:300px; box-shadow:0 0 0 1px rgba(255,255,255,0.04),0 12px 40px rgba(0,0,0,0.6),0 0 60px rgba(94,106,210,0.05); }
+          .anima-tw-popover .tw-preview { width:100%; height:120px; border-radius:6px; overflow:hidden; margin-bottom:8px; background:rgba(255,255,255,0.04); display:flex; align-items:center; justify-content:center; }
+          .anima-tw-popover .tw-preview img { width:100%; height:100%; object-fit:cover; display:block; }
+          .anima-tw-popover .tw-preview-fallback { color:rgba(255,255,255,0.25); font-size:10px; padding:0 10px; text-align:center; }
+          .anima-tw-popover .tw-meta { font-size:9px; color:rgba(255,255,255,0.4); margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+          .anima-tw-popover .tw-title { font-weight:600; font-size:10px; color:#8A8F98; margin-bottom:5px; letter-spacing:0.02em; }
+          .anima-tw-popover .tw-word { background:rgba(94,106,210,0.12); color:#C8C9CB; padding:3px 8px; border-radius:4px; font-size:10px; margin:2px; display:inline-block; cursor:pointer; transition:all 0.15s ease-out; border:1px solid rgba(94,106,210,0.1); }
+          .anima-tw-popover .tw-word:hover { background:rgba(94,106,210,0.25); color:#EDEDEF; }
+          .anima-tw-popover .tw-copy-all { display:inline-flex; align-items:center; gap:4px; margin-top:6px; padding:4px 10px; background:linear-gradient(135deg,#5E6AD2,#6872D9); color:#EDEDEF; border:none; border-radius:5px; cursor:pointer; font-size:9px; font-weight:500; transition:all 0.15s ease-out; box-shadow:0 0 0 1px rgba(94,106,210,0.2),inset 0 1px 0 0 rgba(255,255,255,0.1); }
+          .anima-tw-popover .tw-copy-all:hover { background:linear-gradient(135deg,#6872D9,#7B83E0); }
+          .anima-tw-popover .tw-empty { color:rgba(255,255,255,0.3); font-size:10px; }
           .anima-lora-widget::-webkit-scrollbar { width:4px; }
           .anima-lora-widget::-webkit-scrollbar-track { background:transparent; }
           .anima-lora-widget::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:2px; }
@@ -551,7 +551,7 @@
       const browseBtn = this._btn("本地 LoRA", "btn-browse", "打开本地 LoRA 浏览窗：预览 C 站图、点击添加 / 分类", "folder");
       const clearBtn = this._btn("", "btn-clear", "清空当前 LoRA 列表", "x");
       clearBtn.style.padding = "4px 8px"; // 纯图标按钮，缩写宽度
-      const panelBtn = this._btn("面板", "btn-verify", "打开本地管理面板（Anima Toolkit）", "globe");
+      const panelBtn = this._btn("面板", "btn-verify", "打开本地管理面板（TK Toolkit）", "globe");
       const groupsBtn = this._btn("组", "btn-browse", "LoRA 组：保存当前列表 / 切换 / 删除", "folder");
       const updateBtn = this._btn("更新", "btn-browse", "检查插件版本更新", "refresh");
       toolbar.append(verifyBtn, extractBtn, copyAllTwBtn, browseBtn, groupsBtn, clearBtn, panelBtn, updateBtn);

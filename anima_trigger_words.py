@@ -12,8 +12,8 @@ from .anima_batch_lora import _parse_lora_syntax, BRIDGE_DATA, BRIDGE_LOCK, BRID
 
 
 class AnimaTriggerWords:
-    NAME = "Anima Trigger Words"
-    CATEGORY = "Anima/loaders"
+    NAME = "TK Trigger Words"
+    CATEGORY = "TK/loaders"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -31,6 +31,12 @@ class AnimaTriggerWords:
                     "placeholder": "手动补充的触发词（可选，会追加到末尾）",
                     "tooltip": "可选：手动追加触发词，与自动提取的合并。",
                 }),
+                "tw_map": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "placeholder": "卡片触发词 JSON（前端维护，持久化用）",
+                    "tooltip": "卡片编辑的触发词 JSON，随工作流保存；刷新/重载后恢复卡片内容。",
+                }),
             },
         }
 
@@ -39,7 +45,7 @@ class AnimaTriggerWords:
     FUNCTION = "collect_trigger_words"
     OUTPUT_NODE = False
 
-    def collect_trigger_words(self, lora_syntax, trigger_words=""):
+    def collect_trigger_words(self, lora_syntax, trigger_words="", tw_map=""):
         entries = _parse_lora_syntax(lora_syntax or "")
 
         # 从 bridge 数据构建 name -> trigger_words 查找表（面板「发送到 ComfyUI」会带 trigger_words）
@@ -82,5 +88,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "Anima Trigger Words": "Anima Trigger Words",
+    "TK Trigger Words": "TK 触发词",
 }

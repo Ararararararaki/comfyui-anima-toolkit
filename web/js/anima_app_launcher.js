@@ -21,7 +21,7 @@
     clearInterval(tryInit);
 
     const btn = document.createElement("button");
-    btn.textContent = "🎨 Anima";
+    btn.textContent = "🎨 TK";
     btn.title = "打开本地 LoRA 管理面板（由 ComfyUI 直接提供，无需单独启动）";
     btn.onclick = () => window.open(base, "_blank");
     btn.style.cssText = "background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:11px;font-weight:600;margin:4px;";

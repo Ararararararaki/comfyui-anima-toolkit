@@ -3,7 +3,7 @@
 // 联动：从 bridge（面板「发送到 ComfyUI」）与 lora_syntax 输入解析 LoRA，
 //       点击「提取」逐个查询 /anima/lora/info 获取 trainedWords 填卡。
 (function () {
-  const NODE_NAME = "Anima Trigger Words";
+  const NODE_NAME = "TK Trigger Words";
 
   // ── 内联 SVG 图标（lucide 风格，与 LoRA 节点统一）──
   const _ICON = {
@@ -46,15 +46,38 @@
   }
 
   class TriggerWordsUI {
-    constructor(node, syntaxWidget) {
+    constructor(node, syntaxWidget, twMapWidget) {
       this.node = node;
       this.syntaxWidget = syntaxWidget;
+      this.twMapWidget = twMapWidget || null;
       this.loras = parseLoraSyntax(syntaxWidget.value || "");
       // name -> [trigger words]（卡片编辑用），{source:'fetched'|'manual'}
       this.twMap = {};
       this.listEl = null;
       this._lastBridgeTs = 0;
       this._bridgeTimer = null;
+    }
+
+    // 从 tw_map widget 恢复卡片触发词（工作流加载时 widget 值在 onNodeCreated 之后才恢复，
+    // 所以由 onConfigure 钩子在值就绪后再调用一次）
+    _loadFromTwMap() {
+      // configure 恢复 lora_syntax 值后，重新解析 LoRA 列表
+      if (this.syntaxWidget) {
+        this.loras = parseLoraSyntax(this.syntaxWidget.value || "");
+      }
+      if (!this.twMapWidget) return;
+      try {
+        const saved = JSON.parse(this.twMapWidget.value || "{}");
+        if (saved && typeof saved === "object") {
+          const next = {};
+          for (const k of Object.keys(saved)) {
+            if (Array.isArray(saved[k])) next[k] = saved[k].map(String);
+          }
+          this.twMap = next;
+          if (this.listEl) this._render();
+          this._commit();
+        }
+      } catch (e) { /* 忽略损坏的 tw_map */ }
     }
 
     _btn(text, cls, title, iconName) {
@@ -89,6 +112,14 @@
       if (twWidget.value !== val) {
         twWidget.value = val;
         if (this.node.graph) this.node.graph.change();
+      }
+      // 持久化卡片触发词（刷新/重载后恢复）
+      if (this.twMapWidget) {
+        const json = JSON.stringify(this.twMap);
+        if (this.twMapWidget.value !== json) {
+          this.twMapWidget.value = json;
+          if (this.node.graph) this.node.graph.change();
+        }
       }
     }
 
@@ -310,7 +341,7 @@
     const api = window.comfyAPI?.app?.app;
     if (!api) return setTimeout(init, 500);
     api.registerExtension({
-      name: "Anima.TriggerWords.Widget",
+      name: "TK.TriggerWords.Widget",
       async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== NODE_NAME) return;
         const orig = nodeType.prototype.onNodeCreated;
@@ -318,8 +349,16 @@
           const r = orig?.apply(this, arguments);
           const syntaxWidget = this.widgets?.find((w) => w.name === "lora_syntax");
           if (!syntaxWidget) return r;
-          const ui = new TriggerWordsUI(this, syntaxWidget);
+          const twMapWidget = this.widgets?.find((w) => w.name === "tw_map");
+          const ui = new TriggerWordsUI(this, syntaxWidget, twMapWidget);
           this._animaTwUI = ui;
+          // 工作流加载：widget 值恢复完成后重新载入持久化的卡片触发词
+          const origConfigure = nodeType.prototype.onConfigure;
+          nodeType.prototype.onConfigure = function () {
+            const rc = typeof origConfigure === "function" ? origConfigure.apply(this, arguments) : undefined;
+            if (this._animaTwUI && this._animaTwUI._loadFromTwMap) this._animaTwUI._loadFromTwMap();
+            return rc;
+          };
           const el = ui.build();
           // 挂到节点 DOM（放在 widgets 区域后）
           const size = this.size || [260, 120];

@@ -106,8 +106,8 @@ def _parse_lora_syntax(text: str) -> list[dict]:
 
 
 class AnimaBatchLoRALoader:
-    NAME = "Anima Batch LoRA Loader"
-    CATEGORY = "Anima/loaders"
+    NAME = "TK Batch LoRA Loader"
+    CATEGORY = "TK/loaders"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -194,7 +194,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "Anima Batch LoRA Loader": "Anima Batch LoRA Loader",
+    "TK Batch LoRA Loader": "TK 批量 LoRA 加载器",
 }
 
 
