@@ -156,6 +156,17 @@ export async function restoreFilesFromDb(
 }
 
 /**
+ * 页面刷新后从 DB 直接恢复全部缓存文件（不遍历文件系统）：
+ * manifest 未变更记录 + files 表 bulkGet，首屏秒出，再由增量扫描后台校正
+ */
+export async function restoreAllFromDb(): Promise<OutputFile[]> {
+  const manifests = await loadManifest()
+  if (manifests.length === 0) return []
+  const files = await outputsDb.files.bulkGet(manifests.map(man => man.id))
+  return files.filter((f): f is OutputFile => f !== undefined)
+}
+
+/**
  * 统一路径哈希函数（与 outputScanner / outputStore 保持一致）
  */
 export function hashPath(path: string): string {

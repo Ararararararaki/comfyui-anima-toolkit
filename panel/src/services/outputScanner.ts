@@ -701,8 +701,14 @@ async function getCachedThumbnailPaths(): Promise<Set<string>> {
  * 补生成缺失的缩略图
  * 在加载缓存后调用，确保所有图片的缩略图已生成
  */
+// 60s 节流：避免每次切到 Outputs tab 都全表查缩略图缓存
+let _lastEnsureThumbs = 0
+
 export async function ensureThumbnails(dirHandle: FileSystemDirectoryHandle | null): Promise<void> {
   if (!dirHandle) return
+  const now = Date.now()
+  if (now - _lastEnsureThumbs < 60000) return
+  _lastEnsureThumbs = now
 
   const files = useOutputStore.getState().files
   if (files.length === 0) return

@@ -35,14 +35,20 @@
 }
 
 /* 侧边栏 */
-.outputs-sidebar {
-  width: 240px;
+.outputs-sidebar {  width: 240px;
   min-width: 240px;
   background: var(--bg2);
   border-radius: var(--radius);
   padding: 12px;
   border: 1px solid var(--border);
-}
+
+  /* 滚动页面时侧栏固定跟随视口（body 整页滚动，侧栏不随内容滚走） */
+  position: sticky;
+  top: 12px;
+  align-self: flex-start;
+  max-height: calc(100vh - 24px);
+  display: flex;
+  flex-direction: column;}
 
 .outputs-sidebar-header {
   display: flex;
@@ -190,10 +196,11 @@
   font-family: var(--font);
 }
 
-.outputs-dir-tree {
-  max-height: calc(100vh - 250px);
-  overflow-y: auto;
-}
+.outputs-dir-tree {    overflow-y: auto;
+
+  /* 高度由 sticky 侧栏分配（flex:1），目录树内部独立滚动 */
+  flex: 1;
+  min-height: 60px;}
 
 .outputs-dir-node {
   display: flex;
@@ -1279,3 +1286,15 @@
 }
 .outputs-search-wrap .search-clear:hover { background: var(--bg4); color: var(--text); }
 .outputs-search { padding-right: 32px; }
+
+
+/* 重解析按钮区分（红色调 = 重操作，防误点；固定色不依赖主题变量，mono 黑白主题均可见） */
+.outputs-reparse-btn {
+  color: #e88a8a !important;
+  border-color: rgba(212, 106, 106, 0.5) !important;
+}
+.outputs-reparse-btn:hover {
+  color: #f0a0a0 !important;
+  border-color: rgba(212, 106, 106, 0.8) !important;
+  background: rgba(212, 106, 106, 0.12) !important;
+}

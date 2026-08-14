@@ -22,8 +22,8 @@ function buildCommands(): Command[] {
     { id: 'prompt-freq', label: '图片解析', hint: 'PNG 元数据 / 高频词', iconName: 'image', run: () => switchSectionSafe('prompt-freq') },
     { id: 'outputs', label: 'Outputs 图片管理', hint: '返图浏览 / 收藏 / 编辑', iconName: 'grid', run: () => switchSectionSafe('outputs') },
     { id: 'settings', label: '打开设置', hint: '主题 / 布局 / API Key', iconName: 'settings', run: () => document.getElementById('settingsBtn')?.click() },
-    { id: 'theme-dark', label: '切换暗色主题', hint: 'Monochrome 暗', iconName: 'palette', run: () => setTheme('mono') },
-    { id: 'theme-light', label: '切换亮色主题', hint: 'Monochrome 亮', iconName: 'palette', run: () => setTheme('mono-light') },
+    { id: 'theme-dark', label: '切换暗色主题', hint: 'Monochrome 暗', iconName: 'moon', run: () => setTheme('mono') },
+    { id: 'theme-light', label: '切换亮色主题', hint: 'Monochrome 亮', iconName: 'sun', run: () => setTheme('mono-light') },
   ]
 }
 
@@ -40,9 +40,43 @@ function setTheme(theme: string) {
 }
 
 const PALETTE_ID = 'commandPalette'
+// 键盘导航当前高亮索引（每次打开重置）
+let activeIdx = -1
 
 function paletteEl(): HTMLElement | null {
   return document.getElementById(PALETTE_ID)
+}
+
+// 输入/键盘监听器只在 DOM 创建时绑定一次（具名函数 + open 守卫），
+// 避免 openCommandPalette 每次打开都重复 addEventListener 造成监听器累积。
+function handlePaletteInput(this: HTMLInputElement) {
+  if (!paletteEl()?.classList.contains('open')) return
+  const el = paletteEl()!
+  renderCommands(el, this.value.trim())
+}
+
+function handlePaletteKeydown(e: KeyboardEvent) {
+  const el = paletteEl()
+  if (!el || !el.classList.contains('open')) return
+  const listEl = el.querySelector('.cmdk-list') as HTMLElement
+  const items = Array.from(listEl.querySelectorAll('.cmdk-item')) as HTMLElement[]
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault()
+    if (!items.length) return
+    activeIdx = e.key === 'ArrowDown'
+      ? (activeIdx + 1) % items.length
+      : (activeIdx - 1 + items.length) % items.length
+    items.forEach((it, i) => it.classList.toggle('active', i === activeIdx))
+    items[activeIdx]?.scrollIntoView({ block: 'nearest' })
+  } else if (e.key === 'Enter') {
+    e.preventDefault()
+    const active = items[activeIdx]
+    if (active) (active as any).__cmd?.run()
+    else if (items.length === 1) (items[0] as any).__cmd?.run()
+    closeCommandPalette()
+  } else if (e.key === 'Escape') {
+    closeCommandPalette()
+  }
 }
 
 function openCommandPalette() {
@@ -67,40 +101,19 @@ function openCommandPalette() {
     document.body.appendChild(el)
     // 遮罩点击关闭
     el.addEventListener('mousedown', (e) => { if (e.target === el) closeCommandPalette() })
+    // 一次性的输入/键盘监听器（见 handlePaletteInput/Keydown 注释）
+    const input = el.querySelector('.cmdk-input') as HTMLInputElement
+    input.addEventListener('input', handlePaletteInput)
+    input.addEventListener('keydown', handlePaletteKeydown)
   }
 
   el.classList.add('open')
+  activeIdx = -1
   const input = el.querySelector('.cmdk-input') as HTMLInputElement
+  input.value = '' // 重开时清空上次的搜索词，与列表（空查询）保持一致
   renderCommands(el, '')
   // 聚焦输入框
   setTimeout(() => input?.focus(), 0)
-  let activeIdx = -1
-  const listEl = el.querySelector('.cmdk-list') as HTMLElement
-
-  input?.addEventListener('input', () => {
-    renderCommands(el!, input.value.trim())
-  })
-
-  input?.addEventListener('keydown', (e) => {
-    const items = Array.from(listEl.querySelectorAll('.cmdk-item')) as HTMLElement[]
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault()
-      if (!items.length) return
-      activeIdx = e.key === 'ArrowDown'
-        ? (activeIdx + 1) % items.length
-        : (activeIdx - 1 + items.length) % items.length
-      items.forEach((it, i) => it.classList.toggle('active', i === activeIdx))
-      items[activeIdx]?.scrollIntoView({ block: 'nearest' })
-    } else if (e.key === 'Enter') {
-      e.preventDefault()
-      const active = items[activeIdx]
-      if (active) (active as any).__cmd?.run()
-      else if (items.length === 1) (items[0] as any).__cmd?.run()
-      closeCommandPalette()
-    } else if (e.key === 'Escape') {
-      closeCommandPalette()
-    }
-  })
 }
 
 function closeCommandPalette() {

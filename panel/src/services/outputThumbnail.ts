@@ -132,6 +132,19 @@ export async function getThumbnail(
   return result.dataUrl
 }
 
+/** 批量把 DB 缩略图读回内存（一次 bulkGet 替代每张图独立查询），返回 path → dataUrl */
+export async function preloadThumbnailsFromDb(files: { path: string }[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  if (files.length === 0) return out
+  const ids = files.map(f => hashPath(f.path))
+  const cached = await outputsDb.thumbnails.bulkGet(ids)
+  for (let i = 0; i < files.length; i++) {
+    const thumb = cached[i]
+    if (thumb?.dataUrl) out.set(files[i].path, thumb.dataUrl)
+  }
+  return out
+}
+
 export async function getCachedThumbnail(fileId: string): Promise<string | null> {
   const id = hashPath(fileId)
   const cached = await outputsDb.thumbnails.get(id)

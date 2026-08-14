@@ -2,7 +2,7 @@
 // 从 IndexedDB 或缓存中提取筛选选项（模型列表、LoRA 列表等）
 
 import type { OutputMetadata } from '../types/outputs'
-import { extractLorasFromWorkflow, parseComfyUIWorkflow } from './outputMetadata'
+import { extractLorasFromWorkflow, parseComfyUIWorkflow, PARSER_VERSION } from './outputMetadata'
 import { outputsDb } from '../db/outputsDb'
 
 export interface FilterOptions {
@@ -58,7 +58,13 @@ export function extractFilterOptions(metadataCache: Map<string, OutputMetadata>)
  * 对已有元数据重新解析 prompt（widgets_values 等）
  * 在扫描逻辑更新后调用，补全旧数据中缺失的 prompt
  */
+// 同一 PARSER_VERSION 只补全一次：避免每次进入 Outputs 都全量 JSON.parse 所有 workflow（大目录下是主要卡顿源）
+const BACKFILL_KEY = 'anima_backfill_v'
+
 export async function backfillPrompts(cache: Map<string, OutputMetadata>): Promise<number> {
+  try {
+    if (localStorage.getItem(BACKFILL_KEY) === String(PARSER_VERSION)) return 0
+  } catch { /* localStorage 不可用时照常执行 */ }
   let fixed = 0
   for (const [id, meta] of cache) {
     if (!meta.workflowJson) continue
@@ -69,33 +75,11 @@ export async function backfillPrompts(cache: Map<string, OutputMetadata>): Promi
         await outputsDb.metadata.update(id, { prompt: parsed.prompt, negativePrompt: parsed.negativePrompt || '' })
         cache.set(id, { ...meta, prompt: parsed.prompt, negativePrompt: parsed.negativePrompt || '' })
         fixed++
-        console.log(`[backfill] 图片 ${id}: 原prompt="${meta.prompt?.slice(0,30)}" → 新prompt="${parsed.prompt?.slice(0,30)}"`)
       }
     } catch { /* 跳过解析失败 */ }
   }
   if (fixed > 0) console.log(`[backfill] 补全 ${fixed} 条 prompt`)
-  else {
-    // 输出一条有效数据的结构用于调试
-    for (const [id, meta] of cache) {
-      if (meta.workflowJson) {
-        try {
-          const wf = JSON.parse(meta.workflowJson)
-          const allNodes = wf.nodes || (Array.isArray(wf) ? wf : Object.entries(wf).filter(([k, v]) => typeof v === 'object' && v !== null).map(([k, v]) => Object.assign({ id: k }, v)))
-          const textNodes = allNodes.filter((n: any) => n?.class_type === 'CLIPTextEncode' || n?.type === 'CLIPTextEncode')
-          console.log(`[backfill] 找到 ${textNodes.length} 个 CLIPTextEncode 节点:`)
-          textNodes.forEach((n: any) => {
-            console.log(`  节点 ${n.id || n.title || '?'}: inputs=`, JSON.stringify(n.inputs || {}).slice(0, 200))
-            console.log(`  widgets_values=`, n.widgets_values?.slice(0, 2))
-          })
-          // 找 KSampler 的 positive/negative 引用
-          const samplers = allNodes.filter((n: any) => n?.class_type?.includes('KSampler') || n?.type?.includes('KSampler'))
-          samplers.forEach((s: any) => {
-            console.log(`  KSampler ${s.id}: positive=`, s.inputs?.positive, 'negative=', s.inputs?.negative)
-          })
-        } catch {}
-        break
-      }
-    }
-  }
+  // 记录版本：同版本解析逻辑不再重跑（新版本号由 PARSER_VERSION 升级驱动）
+  try { localStorage.setItem(BACKFILL_KEY, String(PARSER_VERSION)) } catch { /* 忽略 */ }
   return fixed
 }

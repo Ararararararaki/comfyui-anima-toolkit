@@ -35,6 +35,8 @@ export interface OutputMetadata {
   negativePrompt: string        // 负向提示词
   workflowJson: string          // ComfyUI 工作流 JSON
   rawMetadata: Record<string, string>
+  loras?: string[]              // 内存缓存版：预提取的 LoRA 名列表（瘦身版元数据剥离 workflowJson 后仍可展示/筛选）
+  hasWorkflow?: boolean         // 内存缓存版：是否原本有 workflow（剥离后仍可判断"下载工作流"按钮）
 }
 
 export interface OutputDir {

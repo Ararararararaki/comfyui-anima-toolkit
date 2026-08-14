@@ -123,6 +123,22 @@ function matchSearch(file: OutputFile, query: string, metadata: OutputMetadata |
   )
 }
 
+// ── 内存瘦身：缓存版元数据剥离 workflowJson（单条几十~几百 KB，几百张图即数百 MB 内存 → GC 长暂停卡顿）
+// 提取 loras 供渲染/筛选直接使用；需要完整 workflow 的路径（下载 .json/复制标签/元数据面板）从 DB 懒读。
+function slimMeta(meta: OutputMetadata): OutputMetadata {
+  const copy: OutputMetadata = { ...meta }
+  if (meta.workflowJson) {
+    copy.loras = extractLorasFromWorkflow(meta.workflowJson, meta.rawMetadata)
+    copy.hasWorkflow = true
+    copy.workflowJson = ''
+  }
+  // rawMetadata（原始 PNG chunk 全量，平均 80KB+/张）与 negativePrompt 只在解析/提取/展示时用：
+  // 内存版剥离（完整数据从 DB 懒读），渲染/筛选/搜索不需要
+  copy.rawMetadata = {}
+  copy.negativePrompt = ''
+  return copy
+}
+
 export const useOutputStore = create<OutputState>((set, get) => ({
   dirHandle: null,
   rootPath: '',
@@ -328,9 +344,10 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     if (cached) return cached
     const meta = await outputsDb.metadata.get(id)
     if (meta) {
+      const slim = slimMeta(meta)
       set(s => {
         const next = new Map(s.metadataCache)
-        next.set(id, meta)
+        next.set(id, slim)
         return { metadataCache: next }
       })
     }
@@ -339,13 +356,13 @@ export const useOutputStore = create<OutputState>((set, get) => ({
 
   putMetadata: (meta) => set(s => {
     const next = new Map(s.metadataCache)
-    next.set(meta.imageId, meta)
+    next.set(meta.imageId, slimMeta(meta))
     return { metadataCache: next }
   }),
   putMetadataBatch: (metas) => set(s => {
     if (metas.length === 0) return {}
     const next = new Map(s.metadataCache)
-    for (const m of metas) next.set(m.imageId, m)
+    for (const m of metas) next.set(m.imageId, slimMeta(m))
     return { metadataCache: next }
   }),
   removeMetadata: (ids) => set(s => {
@@ -444,7 +461,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
 
         if (filterModel && !meta.model.toLowerCase().includes(filterModel.toLowerCase())) return false
         if (filterLora) {
-          const loras = extractLorasFromWorkflow(meta.workflowJson, meta.rawMetadata)
+          const loras = meta.loras || []
           if (!loras.some(l => l.toLowerCase().includes(filterLora.toLowerCase()))) return false
         }
         if (filterTag && !f.tags.some(t => t.toLowerCase().includes(filterTag.toLowerCase()))) return false
