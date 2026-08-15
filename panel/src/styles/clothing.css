@@ -148,7 +148,6 @@
 .clothing-card.selected .clothing-card-check,
 .clothing-card:hover .clothing-card-check { display: flex; }
 .clothing-card-check.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-#clothingSelBtn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .clothing-batch-bar {
   display: none; align-items: center; gap: 8px; padding: 8px 12px;
   border: 1px solid var(--accent); border-radius: 8px; background: rgba(94,106,210,0.08);

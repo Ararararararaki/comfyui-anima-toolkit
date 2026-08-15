@@ -14,8 +14,7 @@ import type { ClothingCard, ClothingCategory } from '../types'
 let currentCategory = ''   // '' = 全部, 'fav' = 收藏, 其他 = 分类 id
 let currentSearch = ''
 let listLoadSeq = 0
-let selectionMode = false  // 多选模式开关
-let selectedIds = new Set<string>()
+let selectedIds = new Set<string>()   // 点卡片/拖拽框选即选中，无开关
 const objUrlCache = new Map<string, string>()   // card.id -> objectURL（imageBlob 渲染缓存）
 
 function container(): HTMLElement | null {
@@ -56,14 +55,12 @@ export async function renderClothingLibrary() {
   updateBatchBar()
 }
 
-// 多选批量条：显示已选数量 + 删除/取消按钮
+// 多选批量条：有选中时显示（点卡片即选中、拖拽即框选，无需开关）
 function updateBatchBar() {
   const bar = document.getElementById('clothingBatchBar')
   const countEl = document.getElementById('clothingSelCount')
   if (countEl) countEl.textContent = String(selectedIds.size)
-  if (bar) bar.style.display = selectionMode ? 'flex' : 'none'
-  const selBtn = document.getElementById('clothingSelBtn')
-  if (selBtn) selBtn.classList.toggle('active', selectionMode)
+  if (bar) bar.style.display = selectedIds.size > 0 ? 'flex' : 'none'
   // 选中态同步到卡片 DOM（删除/刷新后勾选框状态保持）
   document.querySelectorAll('#clothingGrid .clothing-card').forEach(el => {
     const id = el.getAttribute('data-card-id') || ''
@@ -73,16 +70,14 @@ function updateBatchBar() {
   })
 }
 
-function toggleSelectionMode() {
-  selectionMode = !selectionMode
-  if (!selectionMode) selectedIds.clear()
+function toggleCardSelect(id: string) {
+  if (selectedIds.has(id)) selectedIds.delete(id)
+  else selectedIds.add(id)
   updateBatchBar()
 }
 
-function toggleCardSelect(id: string) {
-  if (!selectionMode) return
-  if (selectedIds.has(id)) selectedIds.delete(id)
-  else selectedIds.add(id)
+function clearSelection() {
+  selectedIds.clear()
   updateBatchBar()
 }
 
@@ -119,12 +114,8 @@ function bindToolbar() {
   document.getElementById('clothingAddBtn')?.addEventListener('click', () => openClothingEditor())
   document.getElementById('clothingGachaBtn')?.addEventListener('click', () => openGachaModal())
   document.getElementById('clothingNewCatBtn')?.addEventListener('click', () => (window as any).__clothingAddCategory())
-  document.getElementById('clothingSelBtn')?.addEventListener('click', toggleSelectionMode)
   document.getElementById('clothingDelSelBtn')?.addEventListener('click', deleteSelected)
-  document.getElementById('clothingSelCancelBtn')?.addEventListener('click', () => {
-    selectedIds.clear()
-    updateBatchBar()
-  })
+  document.getElementById('clothingSelCancelBtn')?.addEventListener('click', clearSelection)
   document.getElementById('clothingImportBtn')?.addEventListener('click', () => {
     document.getElementById('clothingImportFile')?.click()
   })
@@ -679,12 +670,15 @@ export function setupClothingHandlers() {
     if (!btn) return
     w.__clothingSetCat(btn.getAttribute('data-cat') || '')
   })
-  // 多选模式下点击卡片切换选中（按钮已 stopPropagation，不干扰）
+  // 点击卡片 = 切换选中（按钮已 stopPropagation，不干扰）；点网格空白 = 清空选择
   document.getElementById('clothingGrid')?.addEventListener('click', (e) => {
-    if (!selectionMode) return
-    const card = (e.target as HTMLElement).closest('.clothing-card') as HTMLElement
-    if (!card) return
-    toggleCardSelect(card.getAttribute('data-card-id') || '')
+    const target = e.target as HTMLElement
+    const card = target.closest('.clothing-card') as HTMLElement
+    if (card) {
+      toggleCardSelect(card.getAttribute('data-card-id') || '')
+    } else if (target === document.getElementById('clothingGrid')) {
+      clearSelection()
+    }
   })
   initDragSelect()
 }
@@ -707,6 +701,7 @@ function initDragSelect() {
   let startPageX = 0, startPageY = 0
   let rectEl: HTMLElement | null = null
   let _justBoxed = false
+  let _boxedMoved = false   // 本次拖拽是否真的画了框（区分「拖拽框选」与「点一下」）
 
   function getCardIdsInRect(l: number, t: number, r: number, b: number): string[] {
     const ids: string[] = []
@@ -724,7 +719,6 @@ function initDragSelect() {
   }
 
   document.addEventListener('mousedown', (e: Event) => {
-    if (!selectionMode) return
     const me = e as MouseEvent
     const target = e.target as HTMLElement
     if (!target.closest('#sectionClothing')) return
@@ -732,6 +726,7 @@ function initDragSelect() {
     if (me.button !== 0) return
 
     isDragging = true
+    _boxedMoved = false
     document.body.style.userSelect = 'none'
     document.body.style.webkitUserSelect = 'none'
     e.preventDefault()
@@ -754,6 +749,7 @@ function initDragSelect() {
     const sx = window.scrollX, sy = window.scrollY
     rectEl.style.cssText = `left:${l - sx}px;top:${t - sy}px;width:${r - l}px;height:${b - t}px`
     if (r - l > 5 || b - t > 5) {
+      _boxedMoved = true
       const ids = getCardIdsInRect(l, t, r, b)
       selectedIds = new Set(ids)
       updateBatchBar()
@@ -766,7 +762,8 @@ function initDragSelect() {
     document.body.style.userSelect = ''
     document.body.style.webkitUserSelect = ''
     if (rectEl) { rectEl.remove(); rectEl = null }
-    if (selectedIds.size > 0) _justBoxed = true
+    if (_boxedMoved) _justBoxed = true   // 真拖了框才拦截后续 click；点一下不拦（让空白点击清空生效）
+    _boxedMoved = false
     updateBatchBar()
   })
 
