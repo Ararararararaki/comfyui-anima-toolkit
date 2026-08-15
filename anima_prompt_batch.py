@@ -15,7 +15,7 @@ import json
 import folder_paths
 from aiohttp import web
 from server import PromptServer
-from anima_prompt_parser import parse_prompt_groups
+from .anima_prompt_parser import parse_prompt_groups
 
 # 输入目录（ComfyUI input 根目录，prompt 文件可放 input/ 或 input/prompts/）
 _INPUT_ROOT = None
