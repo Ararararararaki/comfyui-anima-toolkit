@@ -8,6 +8,10 @@ const comfyuiUrl = process.env.COMFYUI_URL || 'http://localhost:8188'
 
 export default defineConfig({
   base: basePath,
+  define: {
+    // 面板构建时间戳（界面右上角显示，用于确认是否加载了新版本）
+    __BUILD_TIME__: JSON.stringify(new Date().toISOString().slice(0, 16).replace('T', ' ')),
+  },
   server: {
     proxy: {
       '/api/civitai': {

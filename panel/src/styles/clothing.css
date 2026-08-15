@@ -1,5 +1,8 @@
 /* ── 服装卡片库 ── */
 
+/* 构建时间（右上角，确认版本新旧） */
+.build-time { font-size: 10px; color: var(--text3); margin-left: 8px; white-space: nowrap; }
+
 /* 栏目容器 */
 .clothing-layout { display: flex; flex-direction: column; gap: 12px; }
 

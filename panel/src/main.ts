@@ -13,6 +13,17 @@ import { initClothing } from './sections/ClothingLibrary'
 import { initIconButtons } from './utils'
 import { initCommandPalette } from './sections/CommandPalette'
 
+declare const __BUILD_TIME__: string
+
+// ── 构建时间显示（右上角；确认是否加载新版本）──
+function initBuildTime() {
+  const el = document.getElementById('buildTime')
+  if (el && typeof __BUILD_TIME__ !== 'undefined') {
+    el.textContent = `构建 ${__BUILD_TIME__}`
+    el.title = `面板构建时间：${__BUILD_TIME__}（发布新版后重开面板窗口即更新）`
+  }
+}
+
 // ── Theme switcher ──
 function initThemeSwitcher() {
   const saved = localStorage.getItem('anima_theme') || 'mono-light'
@@ -36,6 +47,7 @@ function initThemeSwitcher() {
 document.addEventListener('DOMContentLoaded', () => {
   initIconButtons()
   initThemeSwitcher()
+  initBuildTime()
   initSettings()
   setupGlobalHandlers()
   setupBindingListeners()
