@@ -1,5 +1,6 @@
 /* ── Settings Panel ── */
 import { loadSettings, saveSettings, getSettings, resetSettings, exportSettings, importSettings, saveBgImageDB, loadBgImageDB, clearBgImageDB, type AppSettings } from '../store/settings'
+import { exportAll, importAll } from '../services/backupService'
 import { openModal, closeModal, confirmModal, promptModal } from '../components/Modal'
 import { showToast } from '../utils'
 import { icon } from '../utils/icon'
@@ -164,7 +165,12 @@ function renderSettingsHTML(s: AppSettings): string {
             <button class="btn btn-sm" id="importSettingsBtn">${icon('download', 12)} 导入设置</button>
             <button class="btn btn-sm btn-danger" id="resetSettingsBtn">${icon('refresh', 12)} 重置默认</button>
           </div>
+          <div class="settings-row settings-actions-inline">
+            <button class="btn btn-sm" id="exportAllBtn">${icon('upload', 12)} 导出全部数据</button>
+            <button class="btn btn-sm" id="importAllBtn">${icon('download', 12)} 导入全部数据</button>
+          </div>
           <input type="file" id="importFileInput" accept=".json" style="display:none">
+          <input type="file" id="backupFileInput" accept=".json" style="display:none">
         </div>
 
         <!-- 🔗 ComfyUI -->
@@ -615,6 +621,54 @@ function bindImportExportEvents() {
       closeModal(SETTINGS_MODAL_ID)
       // Re-open to refresh UI
       setTimeout(openSettings, 100)
+    }
+  })
+
+  // Backup: 导出全部数据（IndexedDB + 设置 + 背景图，不含缩略图）
+  document.getElementById('exportAllBtn')?.addEventListener('click', async () => {
+    try {
+      const data = await exportAll()
+      const json = JSON.stringify(data, null, 2)
+      const blob = new Blob([json], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `anima-backup-${new Date().toISOString().slice(0, 10)}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+      showToast('✅ 已导出全部数据（不含缩略图）')
+    } catch (e) {
+      showToast('⚠️ 导出失败：' + String((e && (e as Error).message) || e))
+    }
+  })
+
+  // Backup: 导入全部数据（导入前自动备份当前数据）
+  const backupInput = document.getElementById('backupFileInput') as HTMLInputElement
+  document.getElementById('importAllBtn')?.addEventListener('click', () => backupInput?.click())
+  backupInput?.addEventListener('change', async () => {
+    const file = backupInput.files?.[0]
+    if (!file) return
+    const text = await file.text()
+    // 导入前自动把当前数据再导出一份到下载，防止误覆盖
+    try {
+      const current = await exportAll()
+      const json = JSON.stringify(current, null, 2)
+      const blob = new Blob([json], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `anima-backup-before-import-${new Date().toISOString().slice(0, 10)}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) { /* 自动备份失败不阻塞导入 */ }
+    const res = await importAll(text)
+    if (res.ok) {
+      applySettings(loadSettings())
+      closeModal(SETTINGS_MODAL_ID)
+      setTimeout(openSettings, 100)
+      showToast('✅ 全部数据已恢复')
+    } else {
+      showToast('⚠️ 导入失败：' + (res.error || '未知错误'))
     }
   })
 

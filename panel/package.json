@@ -11,7 +11,7 @@
     "build": "tsc && vite build",
     "smoke": "node scripts/smoke.mjs",
     "setup:comfyui": "node scripts/setup-comfyui.mjs",
-    "build:comfyui": "set COMFYUI_BASE=/extensions/ComfyUI-Anima-Batch-LoRA/app/ && tsc && vite build && node scripts/deploy-comfyui.mjs",
+    "build:comfyui": "set COMFYUI_BASE=/extensions/ComfyUI-Anima-Batch-LoRA/app/ && tsc && vite build --outDir dist-comfyui --emptyOutDir && node scripts/deploy-comfyui.mjs --src dist-comfyui",
     "preview": "vite preview"
   },
   "dependencies": {

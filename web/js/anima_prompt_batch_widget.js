@@ -109,6 +109,8 @@
       this.cameraValues = new Map(); // "file::name" → 机位描述（NL 文本 / preset:名 / px,py,pz,roll）
       this.openCamKey = null; // 当前展开机位编辑器的组键
       this.rootEl = null;
+      this.resultEl = null; // 批次结果反馈区
+      this._reportOpen = false;
     }
 
     _setW(widget, value) {
@@ -142,7 +144,7 @@
           for (const g of j.groups || []) {
             const rec = { file: p, name: g.name, count: g.count, prompts: g.prompts,
                           region: g.region || null, background: g.background || null, person: g.person || null,
-                          camera: g.camera || null };
+                          camera: g.camera || null, neg: g.neg || null };
             this.cachedGroups.push(rec);
             // 文件里解析出的区域参数作为该组默认值（UI 已改过则保留 UI 值）
             const key = p + "::" + g.name;
@@ -412,6 +414,22 @@
       autoRow.append(autoBox, autoLbl);
       container.appendChild(autoRow);
 
+      // 保存到日期文件夹开关（控制 output_subfolder；按日期目录+时间戳+组名组织输出）
+      const saveRow = document.createElement("div");
+      saveRow.className = "anima-batch-row";
+      const saveBox = document.createElement("input");
+      saveBox.type = "checkbox";
+      saveBox.id = "anima-save-date-" + this.node.id;
+      saveBox.checked = this.w.output_subfolder?.value !== false;
+      saveBox.title = "关闭后使用画布上 SaveImage 节点的原保存路径";
+      saveBox.addEventListener("change", () => { this._setW(this.w.output_subfolder, saveBox.checked); });
+      const saveLbl = document.createElement("label");
+      saveLbl.htmlFor = saveBox.id;
+      saveLbl.textContent = "保存到日期文件夹（2026-08-15/20260815_1030_组名_anima）";
+      saveLbl.className = "anima-batch-hint";
+      saveRow.append(saveBox, saveLbl);
+      container.appendChild(saveRow);
+
       latestBtn.addEventListener("click", async () => {
         try {
           const path = await this.fetchLatestPath();
@@ -544,6 +562,11 @@
       this.listEl.className = "anima-batch-list";
       container.appendChild(this.listEl);
 
+      // 批次结果反馈区
+      this.resultEl = document.createElement("div");
+      this.resultEl.className = "anima-batch-report-wrap";
+      container.appendChild(this.resultEl);
+
       // 挂载：ComfyUI 官方 addDOMWidget（兼容 0.30.x）。insertBefore 兜底同样做
       // parentNode 判空，防止节点创建早期 widget 未挂 DOM 时抛错导致拖不进去。
       try {
@@ -656,11 +679,69 @@
             region: (this.regionValues.get(gkey) || "").trim() || null,
             person: g.person || null,
             bg: g.background || null,
+            neg: g.neg || null,
             subfolder: this.w.output_subfolder?.value !== false,
           });
         }
       }
       return jobs;
+    }
+
+    // 批次跑完后汇总各组结果：等待队列清空 → 拉 /history → 按组名匹配 → 渲染
+    async collectBatchReport(jobs) {
+      if (!this.resultEl) return;
+      this._setReportLoading();
+      try {
+        // 等待 ComfyUI 队列清空（最多 5 分钟，每 1.5s 查一次）
+        const deadline = Date.now() + 5 * 60 * 1000;
+        for (;;) {
+          const q = await fetchJson("/queue");
+          const running = (q.queue_running || []).length;
+          const pending = (q.queue_pending || []).length;
+          if (running === 0 && pending === 0) break;
+          if (Date.now() > deadline) {
+            this._renderReport({ ok: false, error: "等待超时：队列 5 分钟内未清空", groups: [] });
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 1500));
+        }
+        const hist = await fetchJson("/history?max_items=200");
+        const report = formatBatchReport(hist, jobs);
+        this._renderReport(report);
+      } catch (e) {
+        this._renderReport({ ok: false, error: String((e && e.message) || e), groups: [] });
+      }
+    }
+
+    _setReportLoading() {
+      if (!this.resultEl) return;
+      this.resultEl.innerHTML = '<div class="anima-batch-report anima-batch-report-loading">⏳ 等待批次完成并汇总结果…</div>';
+    }
+
+    _renderReport(report) {
+      if (!this.resultEl) return;
+      if (!report || !report.ok) {
+        this.resultEl.innerHTML = `<div class="anima-batch-report anima-batch-report-error">⚠️ ${esc(report?.error || "汇总失败")}</div>`;
+        return;
+      }
+      const groups = report.groups || [];
+      const okCount = groups.filter((g) => g.success).length;
+      const failCount = groups.length - okCount;
+      const rows = groups.map((g) => {
+        const cls = g.success ? "anima-batch-report-ok" : "anima-batch-report-fail";
+        const reason = g.success ? "成功" : (g.error || "失败");
+        return `<div class="anima-batch-report-row ${cls}"><b>${esc(g.groupName)}</b>（${g.count} 条）— ${esc(reason)}</div>`;
+      }).join("");
+      this.resultEl.innerHTML = `<div class="anima-batch-report anima-batch-report-summary">✅ 成功 ${okCount} 组 · ❌ 失败 ${failCount} 组<button class="anima-batch-report-toggle" title="收起/展开">${this._reportOpen ? "收起" : "展开"}</button></div><div class="anima-batch-report-detail" style="${this._reportOpen ? "" : "display:none"}">${rows || '<div class="anima-batch-report-empty">未匹配到本次批次输出</div>'}</div>`;
+      const toggle = this.resultEl.querySelector(".anima-batch-report-toggle");
+      if (toggle) {
+        toggle.addEventListener("click", () => {
+          this._reportOpen = !this._reportOpen;
+          const detail = this.resultEl.querySelector(".anima-batch-report-detail");
+          if (detail) detail.style.display = this._reportOpen ? "" : "none";
+          toggle.textContent = this._reportOpen ? "收起" : "展开";
+        });
+      }
     }
   }
 
@@ -974,6 +1055,22 @@
         }
       };
 
+      // 批量前快照负向目标节点原值（仅对本次会用到的目标节点），每组注入后立即恢复，
+      // 避免上一组负向泄漏到下一组、也避免批量后节点残留。
+      const negSnapshot = new Map();
+      for (const job of jobs) {
+        if (!job.negId || !job.negKey || !job.neg) continue;
+        const nk = job.negId + "." + job.negKey;
+        if (negSnapshot.has(nk)) continue;
+        const n = findNode(app, job.negId);
+        if (n) negSnapshot.set(nk, { node: n, key: job.negKey, value: getWidgetValue(n, job.negKey) });
+      }
+      const restoreNeg = (job) => {
+        if (!job.negId || !job.negKey || !job.neg) return;
+        const snap = negSnapshot.get(job.negId + "." + job.negKey);
+        if (snap) setTextWidget(snap.node, snap.key, snap.value);
+      };
+
       try {
         // 逐条注入并顺序入队（复用原生 seed/进度/历史）
         for (const job of jobs) {
@@ -982,8 +1079,12 @@
           // 注入整段提示词（后端已把「背景/人物」行合并进组提示词）
           setTextWidget(posNode, job.posKey, job.text);
 
-          // 负向提示词：保持目标节点现有值不变（不注入，避免误清空用户负面词）；
-          // 每组独立负向属后续增强，当前由工作流里的负向节点统一控制。
+          // 负向提示词：仅当本组文件写了「负向:」且用户选择了负向目标节点时才注入；
+          // 无负向行时完全不碰负向节点，保持现有值不变。
+          if (job.negId && job.negKey && job.neg) {
+            const negNode = findNode(app, job.negId);
+            if (negNode) setTextWidget(negNode, job.negKey, job.neg);
+          }
 
           // 相机词注入：把相机词拼到正向文本末尾（幂等：每次完整替换正向文本）
           // 优先级：本组独立机位（job.camera） > 全局相机节点（cameraMap）
@@ -1008,10 +1109,23 @@
 
           // （区域注入已停用，见 installQueueExpansion 注释）
           await orig(1, batchCount);
+
+          // 跑完立即恢复负向节点原值，防止泄漏到下一组
+          restoreNeg(job);
+        }
+
+        // 批次结果反馈：等队列清空后拉 /history，汇总到节点 UI
+        try {
+          if (ui.collectBatchReport) await ui.collectBatchReport(jobs);
+        } catch (e) {
+          console.error("[TK Prompt Batch] 批次结果汇总失败:", e);
         }
       } finally {
-        // 无论成功/失败/用户取消，都还原 filename_prefix
+        // 无论成功/失败/用户取消，都还原 filename_prefix 与负向节点
         restorePrefix();
+        for (const snap of negSnapshot.values()) {
+          setTextWidget(snap.node, snap.key, snap.value);
+        }
       }
       return true;
     };
@@ -1036,18 +1150,95 @@
     if (!base) return camera;
     return base.replace(/,\s*$/, "") + ", " + camera;
   }
+    function formatBatchReport(history, jobs) {
+    // 把 /history 返回（对象或数组）归一化为数组
+    const entries = Array.isArray(history) ? history : Object.values(history || {});
+    const byGroup = new Map();
+    for (const job of jobs || []) {
+      const name = job.groupName || "未命名组";
+      if (!byGroup.has(name)) {
+        byGroup.set(name, { groupName: name, total: 0, ok: 0, fail: 0, errors: [] });
+      }
+      byGroup.get(name).total++;
+    }
+
+    const matchKey = (entry, groupName) => {
+      if (!groupName) return false;
+      const parts = [];
+      const outputs = entry.outputs || {};
+      for (const nodeId of Object.keys(outputs)) {
+        const out = outputs[nodeId] || {};
+        for (const img of (out.images || [])) {
+          parts.push((img.subfolder ? img.subfolder + "/" : "") + (img.filename || ""));
+        }
+        for (const v of Object.values(out)) {
+          if (typeof v === "string") parts.push(v);
+          else if (v && typeof v === "object") { try { parts.push(JSON.stringify(v)); } catch {} }
+        }
+      }
+      try { if (entry.prompt) parts.push(JSON.stringify(entry.prompt)); } catch {}
+      return parts.join("\n").includes(groupName);
+    };
+
+    const matchedGroups = new Set();
+    for (const entry of entries) {
+      const status = entry.status || {};
+      const completed = status.completed === true || status.status_str === "success";
+      let error = "";
+      const msgs = status.messages || [];
+      for (const m of msgs) {
+        const kind = Array.isArray(m) ? m[0] : (m && m.type) || "";
+        const data = Array.isArray(m) ? m[1] : m;
+        if (/EXECUTION_ERROR|EXECUTION_INTERRUPTED|execution_error|execution_interrupted/i.test(String(kind))) {
+          error = typeof data === "string" ? data : JSON.stringify(data || "");
+          break;
+        }
+      }
+      for (const group of byGroup.values()) {
+        if (matchedGroups.has(group.groupName)) continue;
+        if (matchKey(entry, group.groupName)) {
+          matchedGroups.add(group.groupName);
+          if (completed) group.ok++;
+          else { group.fail++; if (error) group.errors.push(error); }
+          break;
+        }
+      }
+    }
+
+    const groups = [];
+    for (const g of byGroup.values()) {
+      const unmatched = g.total - g.ok - g.fail;
+      const success = g.fail === 0 && unmatched === 0;
+      let err = g.errors[0] || "";
+      if (unmatched > 0) err = (err ? err + "；" : "") + `${unmatched} 条未匹配到本次输出`;
+      groups.push({
+        groupName: g.groupName, count: g.total, success,
+        error: err || null, ok: g.ok, fail: g.fail, unmatched,
+      });
+    }
+    return { ok: true, groups };
+  }
+
+  // 批量保存前缀：按日期目录组织（用户习惯 %date:yyyy-MM-dd%/%date:yyyyMMdd_hhmm%_anima），
+  // 文件名带组名便于批量区分；同一前缀重复时 ComfyUI 自动追加 _00001_ 序号防重名。
+  // 例：2026-08-15/20260815_1030_组1_anima.png
   function applySubfolderPrefix(app, groupName) {
-    const safe = String(groupName || "").replace(/[\\/:*?"<>|]/g, "_").slice(0, 40);
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const dateDir = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
+    const stamp = "" + now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) + "_" + pad(now.getHours()) + pad(now.getMinutes());
+    const safe = String(groupName || "").replace(/[\/:*?"<>|]/g, "_").slice(0, 40);
+    const prefix = dateDir + "/" + stamp + (safe ? "_" + safe : "") + "_anima";
     for (const n of getNodes(app)) {
       const cls = n.type || n.comfyClass || "";
       // easy imageSave 类名是 "imageSave"（不是 "SaveImage"），两类都要匹配
       if (!/SaveImage|PreviewImage|imageSave/i.test(cls)) continue;
       const w = n.widgets?.find((x) => x.name === "filename_prefix");
-      if (w) { w.value = "batch/" + safe; if (typeof w.callback === "function") { try { w.callback(w.value) } catch {} } }
+      if (w) { w.value = prefix; if (typeof w.callback === "function") { try { w.callback(w.value) } catch {} } }
     }
   }
 
-  function init() {
+function init() {
     const api = window.comfyAPI?.app?.app;
     if (!api) return setTimeout(init, 500);
     api.registerExtension({
