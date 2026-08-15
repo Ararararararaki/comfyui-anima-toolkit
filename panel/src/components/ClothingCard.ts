@@ -3,8 +3,9 @@ import { esc, icon } from '../utils'
 
 // ── 服装卡片：有图显示图片卡，无图显示文字卡 ──
 // objUrl：由调用方从 blob→objectURL 缓存 Map 传入（组件保持纯函数）
+// selected：多选模式下是否选中（显示勾选框 + 高亮边框）
 
-export function renderClothingCard(card: ClothingCard, objUrl?: string): string {
+export function renderClothingCard(card: ClothingCard, objUrl?: string, selected = false): string {
   const imgHtml = objUrl
     ? `<div class="clothing-card-img"><img src="${esc(objUrl)}" alt="" loading="lazy"></div>`
     : card.imageUrl
@@ -17,8 +18,10 @@ export function renderClothingCard(card: ClothingCard, objUrl?: string): string 
     : ''
 
   const promptPreview = card.prompt.length > 90 ? card.prompt.slice(0, 90) + '…' : card.prompt
+  const checkHtml = `<span class="clothing-card-check ${selected ? 'on' : ''}" data-check>${icon('check', 12)}</span>`
 
-  return `<div class="clothing-card ${imgHtml ? '' : 'no-img'}" data-card-id="${esc(card.id)}">
+  return `<div class="clothing-card ${imgHtml ? '' : 'no-img'} ${selected ? 'selected' : ''}" data-card-id="${esc(card.id)}">
+    ${checkHtml}
     ${imgHtml}
     ${textCardHtml}
     <div class="clothing-card-body">

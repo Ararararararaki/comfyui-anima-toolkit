@@ -222,9 +222,16 @@
       </div>
       <div class="spacer"></div>
       <button class="btn btn-primary" id="clothingGachaBtn" data-icon="dice" title="从卡片库随机抽取组合"><span>抽卡</span></button>
+      <button class="btn btn-ghost" id="clothingSelBtn" data-icon="checkSquare" title="多选模式：点击/拖拽框选卡片，可批量删除"><span>多选</span></button>
       <button class="btn btn-ghost" id="clothingAddBtn" data-icon="plus"><span>添加卡片</span></button>
       <button class="btn btn-ghost" id="clothingImportBtn" data-icon="download" title="导入 clothing-import.json"><span>导入</span></button>
       <button class="btn btn-ghost" id="clothingNewCatBtn" data-icon="tag"><span>新建分类</span></button>
+    </div>
+    <div class="clothing-batch-bar" id="clothingBatchBar">
+      <span>已选 <b id="clothingSelCount">0</b> 张</span>
+      <span style="flex:1"></span>
+      <button class="btn btn-danger btn-sm" id="clothingDelSelBtn" data-icon="trash"><span>删除选中</span></button>
+      <button class="btn btn-ghost btn-sm" id="clothingSelCancelBtn"><span>取消选择</span></button>
     </div>
     <div class="clothing-cats" id="clothingCats"></div>
     <div class="clothing-grid" id="clothingGrid"><div class="empty-state empty-state-grid"><div class="big" data-icon="shirt"></div><p>服装库为空</p><p class="sub">点「导入」把 Prompt-Manager 的 92 条服装串搬进来，或点「添加卡片」手建</p></div></div>

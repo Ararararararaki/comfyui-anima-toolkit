@@ -105,3 +105,54 @@
   border: 1px dashed var(--border); border-radius: 6px; padding: 8px 10px;
   word-break: break-all; max-height: 90px; overflow-y: auto; line-height: 1.6;
 }
+
+/* ── 导入预览弹窗（分类折叠 + 卡片缩略图逐张勾选）── */
+.ci-cat { border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); overflow: hidden; }
+.ci-cat-head { display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: default; }
+.ci-cat-head[data-open] { border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.03); }
+.ci-cat-name { font-size: 12px; font-weight: 600; color: var(--text); }
+.ci-cat-count { font-size: 10px; color: var(--text3); }
+.ci-cat-toggle {
+  margin-left: auto; background: none; border: none; color: var(--text3); cursor: pointer;
+  font-size: 13px; padding: 0 4px; border-radius: 4px; font-family: var(--font);
+}
+.ci-cat-toggle:hover { color: var(--text); background: var(--bg3); }
+.ci-cat-cards {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px;
+  padding: 8px; max-height: 260px; overflow-y: auto;
+}
+.ci-card {
+  display: flex; flex-direction: column; gap: 3px; border: 1px solid var(--border);
+  border-radius: 6px; overflow: hidden; cursor: pointer; background: var(--bg1);
+  transition: all .15s; position: relative;
+}
+.ci-card:hover { border-color: var(--border-hover); }
+.ci-card.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.ci-card input[type=checkbox] { position: absolute; top: 4px; left: 4px; z-index: 2; accent-color: var(--accent); }
+.ci-card-img { aspect-ratio: 3/4; background: #000; display: flex; align-items: center; justify-content: center; }
+.ci-card-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ci-card-noimg { font-size: 10px; color: var(--text3); padding: 4px; word-break: break-all; text-align: center; }
+.ci-card-name { font-size: 10px; color: var(--text2); padding: 0 5px 5px; word-break: break-all; line-height: 1.3; }
+
+/* ── 多选模式 ── */
+.clothing-card { position: relative; }
+.clothing-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 8px 40px rgba(0,0,0,0.4); }
+.clothing-card-check {
+  position: absolute; top: 6px; left: 6px; z-index: 3; width: 20px; height: 20px;
+  border-radius: 50%; background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.35);
+  color: transparent; display: none; align-items: center; justify-content: center; pointer-events: none;
+}
+.clothing-card.selected .clothing-card-check,
+.clothing-card:hover .clothing-card-check { display: flex; }
+.clothing-card-check.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+#clothingSelBtn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.clothing-batch-bar {
+  display: none; align-items: center; gap: 8px; padding: 8px 12px;
+  border: 1px solid var(--accent); border-radius: 8px; background: rgba(94,106,210,0.08);
+  font-size: 12px; color: var(--text);
+}
+.clothing-batch-bar b { color: var(--accent); }
+.clothing-selection-rect {
+  position: fixed; z-index: 99999; background: rgba(99,102,241,0.12);
+  border: 2px dashed rgba(99,102,241,0.6); border-radius: 4px; pointer-events: none;
+}
