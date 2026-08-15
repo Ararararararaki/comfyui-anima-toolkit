@@ -1,4 +1,4 @@
-# ComfyUI-Anima-Batch-LoRA
+﻿# ComfyUI-Anima-Batch-LoRA
 # Batch LoRA loader node + embedded Anima web app.
 # App available at: /extensions/ComfyUI-Anima-Batch-LoRA/app/
 
@@ -53,7 +53,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 
 WEB_DIRECTORY = "./web"
 
-__version__ = "2.1.0"  # 与仓库根 VERSION 文件保持一致，发布更新时同步递增
+__version__ = "2.2.0"  # 与仓库根 VERSION 文件保持一致，发布更新时同步递增
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 

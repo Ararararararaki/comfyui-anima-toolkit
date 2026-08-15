@@ -20,6 +20,7 @@
       <button class="main-tab" data-section="lora" data-icon="package" role="tab" aria-selected="false"><span>LoRA 探索</span> <span class="badge-tab" id="loraBadge">0</span></button>
       <button class="main-tab" data-section="artist" data-icon="brush" role="tab" aria-selected="false"><span>画师系列</span> <span class="badge-tab">8</span></button>
       <button class="main-tab" data-section="prompt" data-icon="book" role="tab" aria-selected="false"><span>Prompt 库</span></button>
+      <button class="main-tab" data-section="clothing" data-icon="shirt" role="tab" aria-selected="false"><span>服装库</span></button>
       <button class="main-tab" data-section="prompt-freq" data-icon="image" role="tab" aria-selected="false"><span>图片解析</span></button>
       <button class="main-tab" data-section="outputs" data-icon="grid" role="tab" aria-selected="false"><span>Outputs</span></button>
     </nav>
@@ -209,6 +210,25 @@
       </div>
       <div class="prompt-grid" id="promptGrid"><div class="empty-state empty-state-grid"><div class="big" data-icon="book"></div><p>Prompt 库为空</p><p class="sub">浏览 LoRA 列表，从卡片中提取触发词，或点击「新增 Prompt」手动添加</p></div></div>
     </main>
+  </div>
+</div>
+
+<div id="sectionClothing" class="section-hidden">
+  <div class="clothing-layout">
+    <div class="clothing-toolbar">
+      <div class="search-wrap">
+        <span class="icon" data-icon="search" aria-hidden="true"></span>
+        <input type="text" id="clothingSearch" placeholder="搜索服装、标签…" autocomplete="off" aria-label="搜索服装">
+      </div>
+      <div class="spacer"></div>
+      <button class="btn btn-primary" id="clothingGachaBtn" data-icon="dice" title="从卡片库随机抽取组合"><span>抽卡</span></button>
+      <button class="btn btn-ghost" id="clothingAddBtn" data-icon="plus"><span>添加卡片</span></button>
+      <button class="btn btn-ghost" id="clothingImportBtn" data-icon="download" title="导入 clothing-import.json"><span>导入</span></button>
+      <button class="btn btn-ghost" id="clothingNewCatBtn" data-icon="tag"><span>新建分类</span></button>
+    </div>
+    <div class="clothing-cats" id="clothingCats"></div>
+    <div class="clothing-grid" id="clothingGrid"><div class="empty-state empty-state-grid"><div class="big" data-icon="shirt"></div><p>服装库为空</p><p class="sub">点「导入」把 Prompt-Manager 的 92 条服装串搬进来，或点「添加卡片」手建</p></div></div>
+    <input type="file" id="clothingImportFile" accept=".json" style="display:none">
   </div>
 </div>
 

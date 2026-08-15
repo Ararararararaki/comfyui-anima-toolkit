@@ -198,6 +198,36 @@ export interface ModelNote {
   updatedAt: number
 }
 
+// ── 服装卡片库 ──
+export interface ClothingCard {
+  id: string
+  /** 显示名（无图时卡片大字显示） */
+  name: string
+  /** 英文 tag 串（抽卡复制时按逗号连接） */
+  prompt: string
+  /** 平铺分类 id（一个名字一组，无层级） */
+  categoryId: string
+  /** 从 prompt 拆分出的 tag，用于搜索 */
+  tags: string[]
+  /** 本地图片（IndexedDB Blob，优先于 imageUrl） */
+  imageBlob?: Blob
+  /** 远程图片 URL（无本地图时兜底） */
+  imageUrl?: string
+  favorite: boolean
+  /** 被抽中次数（后续可做常用优先） */
+  useCount: number
+  /** import=从 Prompt-Manager 迁入 / manual=手建 */
+  source: 'import' | 'manual'
+  createdAt: number
+  updatedAt: number
+}
+
+export interface ClothingCategory {
+  id: string
+  name: string
+  sortOrder: number
+}
+
 export interface LocalLoraFile {
   name: string
   path: string

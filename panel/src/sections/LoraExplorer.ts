@@ -1,6 +1,7 @@
 import { useModelStore } from '../store/models'
 import { renderCard, refreshLocalNames } from '../components/ModelCard'
 import { renderArtists } from './ArtistSeries'
+import { renderClothingLibrary } from './ClothingLibrary'
 import { fetchModels, fetchModelById, fetchModelImages } from '../api/civitai'
 import type { ModelFetchParams } from '../api/civitai'
 import type { PeriodKey, SortKey } from '../types'
@@ -100,12 +101,12 @@ export async function initLoraExplorer() {
   }
 }
 
-export function switchSection(id: 'lora' | 'artist' | 'prompt' | 'prompt-freq' | 'local' | 'outputs', force?: boolean) {
+export function switchSection(id: 'lora' | 'artist' | 'prompt' | 'clothing' | 'prompt-freq' | 'local' | 'outputs', force?: boolean) {
   const store = useModelStore.getState()
   if (!force && id === store.section) return
   useModelStore.getState().setSection(id as any)
-  document.querySelectorAll('#sectionLora, #sectionArtist, #sectionPrompt, #sectionPromptFreq, #sectionLocal, #sectionOutputs').forEach(el => el.classList.add('section-hidden'))
-  const sectionMap: Record<string, string> = { lora: 'sectionLora', artist: 'sectionArtist', prompt: 'sectionPrompt', 'prompt-freq': 'sectionPromptFreq', local: 'sectionLocal', outputs: 'sectionOutputs' }
+  document.querySelectorAll('#sectionLora, #sectionArtist, #sectionPrompt, #sectionClothing, #sectionPromptFreq, #sectionLocal, #sectionOutputs').forEach(el => el.classList.add('section-hidden'))
+  const sectionMap: Record<string, string> = { lora: 'sectionLora', artist: 'sectionArtist', prompt: 'sectionPrompt', clothing: 'sectionClothing', 'prompt-freq': 'sectionPromptFreq', local: 'sectionLocal', outputs: 'sectionOutputs' }
   document.getElementById(sectionMap[id])?.classList.remove('section-hidden')
   document.querySelectorAll('.main-tab').forEach(t => {
     const active = (t as HTMLElement).dataset.section === id
@@ -115,6 +116,7 @@ export function switchSection(id: 'lora' | 'artist' | 'prompt' | 'prompt-freq' |
   if (id === 'artist') renderArtists()
   if (id === 'lora') renderGrid()
   if (id === 'prompt') renderPromptLibrary()
+  if (id === 'clothing') renderClothingLibrary()
   if (id === 'prompt-freq') activatePromptFreq()
   if (id === 'local') { renderLocal(); activateLocalManager() }
   if (id === 'outputs') { activateOutputs().catch(() => {}) }

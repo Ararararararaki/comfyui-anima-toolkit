@@ -1,0 +1,107 @@
+/* ── 服装卡片库 ── */
+
+/* 栏目容器 */
+.clothing-layout { display: flex; flex-direction: column; gap: 12px; }
+
+/* 平铺分类标签栏（一个名字一组，可横滚） */
+.clothing-cats {
+  display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px;
+  scrollbar-width: thin;
+}
+.clothing-cat-tab {
+  flex-shrink: 0; padding: 5px 14px; border: 1px solid var(--border); border-radius: 14px;
+  background: transparent; color: var(--text2); font-size: 12px; cursor: pointer;
+  transition: all .15s; font-family: var(--font);
+}
+.clothing-cat-tab:hover { border-color: var(--border-hover); color: var(--text); }
+.clothing-cat-tab.active {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+.clothing-cat-tab .count { opacity: .75; margin-left: 4px; font-size: 10px; }
+
+/* 工具栏 */
+.clothing-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.clothing-toolbar .spacer { flex: 1; }
+
+/* 卡片网格 */
+.clothing-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px;
+}
+.clothing-grid:empty::after {
+  content: '暂无卡片——点「导入」把 Prompt-Manager 的 92 条服装串搬进来，或「添加卡片」手建';
+  grid-column: 1 / -1; text-align: center; color: var(--text3); font-size: 12px; padding: 40px 0;
+}
+
+/* 卡片（有图：图片卡） */
+.clothing-card {
+  background: linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.01) 100%);
+  border: 1px solid var(--border); border-radius: var(--card-radius); overflow: hidden;
+  transition: all .25s; display: flex; flex-direction: column;
+  box-shadow: 0 2px 16px rgba(0,0,0,0.25);
+}
+.clothing-card:hover { border-color: var(--border-hover); box-shadow: 0 8px 40px rgba(0,0,0,0.4); transform: translateY(-2px); }
+
+.clothing-card-img { position: relative; aspect-ratio: 3/4; overflow: hidden; background: #000; }
+.clothing-card-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* 卡片（无图：文字卡） */
+.clothing-card.no-img { background: linear-gradient(180deg, rgba(94,106,210,0.12) 0%, rgba(94,106,210,0.03) 100%); }
+.clothing-card-text {
+  display: flex; flex-direction: column; justify-content: center; align-items: center;
+  aspect-ratio: 3/4; gap: 8px; padding: 12px; text-align: center;
+}
+.clothing-card-text-main { font-size: 15px; font-weight: 700; color: var(--text); word-break: break-all; line-height: 1.4; }
+.clothing-card-text-sub { font-size: 10px; color: var(--text3); word-break: break-all; line-height: 1.5; }
+
+.clothing-card-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.clothing-card-header { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.clothing-card-name { font-size: 13px; font-weight: 600; color: var(--text); word-break: break-all; }
+.clothing-card-fav { cursor: pointer; color: var(--text3); transition: transform .2s, color .2s; display: inline-flex; }
+.clothing-card-fav:hover { transform: scale(1.2); }
+.clothing-card-fav.on { color: #fbbf24; }
+.clothing-card-prompt code {
+  font-size: 11px; color: var(--accent); background: rgba(255,255,255,0.04);
+  padding: 3px 8px; border-radius: 4px; display: block; word-break: break-all; line-height: 1.5;
+}
+.clothing-card-actions { display: flex; gap: 4px; margin-top: 2px; }
+
+/* ── 抽卡面板 ── */
+.gacha-panel {
+  border: 1px solid var(--border); border-radius: var(--card-radius);
+  background: linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.01) 100%);
+  padding: 12px; display: flex; flex-direction: column; gap: 10px;
+}
+.gacha-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.gacha-controls label { font-size: 12px; color: var(--text2); }
+.gacha-controls select, .gacha-controls input[type=number] {
+  padding: 5px 8px; background: var(--bg1); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; font-size: 12px; outline: none; font-family: var(--font);
+}
+.gacha-controls input[type=number] { width: 56px; }
+.gacha-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.gacha-result-card {
+  position: relative; border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  background: var(--bg2); display: flex; flex-direction: column;
+}
+.gacha-result-card.locked { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.gacha-result-img { aspect-ratio: 3/4; background: #000; }
+.gacha-result-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.gacha-result-text {
+  padding: 6px 8px; font-size: 10px; color: var(--text2); word-break: break-all;
+  line-height: 1.5; max-height: 64px; overflow: hidden;
+}
+.gacha-result-actions {
+  display: flex; justify-content: space-between; padding: 4px 6px; border-top: 1px solid var(--border);
+}
+.gacha-result-actions button {
+  background: none; border: none; color: var(--text3); cursor: pointer; font-size: 11px;
+  display: inline-flex; align-items: center; gap: 3px; padding: 2px 4px; border-radius: 4px;
+  transition: all .15s; font-family: var(--font);
+}
+.gacha-result-actions button:hover { color: var(--text); background: var(--bg3); }
+.gacha-result-actions .lock-btn.on { color: var(--accent); }
+.gacha-merged {
+  font-size: 11px; color: var(--text2); background: rgba(255,255,255,0.03);
+  border: 1px dashed var(--border); border-radius: 6px; padding: 8px 10px;
+  word-break: break-all; max-height: 90px; overflow-y: auto; line-height: 1.6;
+}

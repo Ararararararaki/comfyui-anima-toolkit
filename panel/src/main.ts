@@ -1,5 +1,6 @@
 import './styles/global.css'
 import './styles/outputs.css'
+import './styles/clothing.css'
 import { initLoraExplorer, setupBindingListeners, setupGlobalHandlers } from './sections/LoraExplorer'
 import { setupModalListeners } from './components/Modal'
 import { setupPromptHandlers } from './sections/PromptLibrary'
@@ -8,6 +9,7 @@ import { bindArtistEvents } from './sections/ArtistSeries'
 import { initSettings, applySettings } from './sections/Settings'
 import { initOutputs } from './sections/Outputs'
 import { bindPromptFreqEvents } from './sections/PromptFreq'
+import { initClothing } from './sections/ClothingLibrary'
 import { initIconButtons } from './utils'
 import { initCommandPalette } from './sections/CommandPalette'
 
@@ -40,6 +42,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupModalListeners()
   setupPromptHandlers()
   bindPromptFreqEvents()
+  initClothing()
   initLoraExplorer()
   initLocalManager()
   bindArtistEvents()
