@@ -160,6 +160,7 @@ function bindToolbar() {
   document.getElementById('clothingImportBtn')?.addEventListener('click', () => {
     document.getElementById('clothingImportFile')?.click()
   })
+  document.getElementById('clothingExportBtn')?.addEventListener('click', () => exportClothing())
   const fileInput = document.getElementById('clothingImportFile') as HTMLInputElement
   fileInput?.addEventListener('change', async () => {
     const file = fileInput.files?.[0]
@@ -419,7 +420,7 @@ async function doImport(data: any, selectedCards: any[], useFileCats: boolean) {
       prompt,
       categoryId: useFileCats ? (catIdMap.get(fileCat) || 'uncategorized') : 'uncategorized',
       tags: prompt.split(',').map(t => t.trim()).filter(Boolean),
-      imageBlob: c.imageBase64 ? base64ToBlob(c.imageBase64) : undefined,
+      imageBlob: c.imageBase64 ? base64ToBlob(c.imageBase64, c.imageMime || 'image/jpeg') : undefined,
       imageUrl: c.imageUrl || undefined,
       favorite: !!c.favorite,
       useCount: 0,
@@ -443,6 +444,61 @@ async function doImport(data: any, selectedCards: any[], useFileCats: boolean) {
 // 串归一化（查重/键名匹配用）：去首尾空白/逗号、转小写
 function norm(s: string): string {
   return String(s || '').replace(/^[\s,]+|[\s,]+$/g, '').trim().toLowerCase()
+}
+
+// ── 导出备份（全部卡片含图 → JSON 文件，可再导入恢复）──
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((res, rej) => {
+    const r = new FileReader()
+    r.onload = () => res(String(r.result).split(',')[1] || '')
+    r.onerror = rej
+    r.readAsDataURL(blob)
+  })
+}
+
+async function buildExportJson(): Promise<{ text: string; count: number }> {
+  const cats = await getAllCategories()
+  const cards = await getAllCards()
+  const catName = new Map(cats.map(c => [c.id, c.name]))
+  const outCards: any[] = []
+  for (const c of cards) {
+    let b64: string | undefined
+    let mime: string | undefined
+    if (c.imageBlob) {
+      try {
+        b64 = await blobToBase64(c.imageBlob)
+        mime = c.imageBlob.type || 'image/jpeg'
+      } catch { /* 单张图片转换失败不阻塞导出 */ }
+    }
+    outCards.push({
+      name: c.name,
+      prompt: c.prompt,
+      category: catName.get(c.categoryId) || '未分类',
+      ...(b64 ? { imageBase64: b64, imageMime: mime } : {}),
+      ...(c.imageUrl ? { imageUrl: c.imageUrl } : {}),
+      favorite: c.favorite,
+    })
+  }
+  const text = JSON.stringify({
+    schemaVersion: 1,
+    exportedAt: new Date().toISOString(),
+    categories: Array.from(catName.values()).map(name => ({ name })),
+    cards: outCards,
+  })
+  return { text, count: cards.length }
+}
+
+async function exportClothing() {
+  const { text, count } = await buildExportJson()
+  const blob = new Blob([text], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `clothing-export-${new Date().toISOString().slice(0, 10)}.json`
+  a.click()
+  URL.revokeObjectURL(url)
+  showToast(`✅ 已导出 ${count} 张卡片（含图片，可随时再导入恢复）`)
 }
 
 // ── 批量移动分类（选中卡片 → 指定分类）──
@@ -492,11 +548,11 @@ async function moveSelectedToCategory() {
   openModal('clothingMoveModal')
 }
 
-function base64ToBlob(b64: string): Blob {
+function base64ToBlob(b64: string, mime = 'image/jpeg'): Blob {
   const bin = atob(b64)
   const bytes = new Uint8Array(bin.length)
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-  return new Blob([bytes], { type: 'image/jpeg' })
+  return new Blob([bytes], { type: mime })
 }
 
 // ── 编辑弹窗（动态创建，新建/编辑共用）──
@@ -772,6 +828,8 @@ export function setupClothingHandlers() {
     await renderClothingLibrary()
   }
   w.__clothingOpenGacha = () => openGachaModal()
+  w.__clothingExport = () => exportClothing()
+  w.__clothingBuildExportJson = () => buildExportJson()
   w.__clothingAdd = () => openClothingEditor()
   w.__clothingAddCategory = async () => {
     const name = await promptModal('新建分类', '', '输入分类名称（一个名字一组）')
