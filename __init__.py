@@ -1,4 +1,4 @@
-﻿# ComfyUI-Anima-Batch-LoRA
+# ComfyUI-Anima-Batch-LoRA
 # Batch LoRA loader node + embedded Anima web app.
 # App available at: /extensions/ComfyUI-Anima-Batch-LoRA/app/
 
@@ -589,6 +589,30 @@ async def bridge_clear(request):
         except Exception as e:
             print(f"[Anima] bridge 持久化文件删除失败: {e}")
     return web.json_response({"ok": True})
+
+
+# ── 服装库 AI 索引同步（面板数据变更后自动调用；anima-prompt skill 直接读此文件）──
+
+@PromptServer.instance.routes.post("/anima/clothing/index")
+async def clothing_index_save(request):
+    """写入服装库索引文本 → <插件目录>/data/clothing-index.txt（AI skill 引用路径）。
+    body: {"text": "..."}；超限/坏 JSON 拒绝，不影响面板主流程。
+    """
+    try:
+        payload = await request.json()
+        text = str(payload.get("text") or "")
+    except Exception:
+        return web.json_response({"ok": False, "error": "bad json"}, status=400)
+    if len(text) > 2 * 1024 * 1024:
+        return web.json_response({"ok": False, "error": "too large"}, status=413)
+    try:
+        data_dir = os.path.join(PLUGIN_DIR, "data")
+        os.makedirs(data_dir, exist_ok=True)
+        with open(os.path.join(data_dir, "clothing-index.txt"), "w", encoding="utf-8") as f:
+            f.write(text)
+    except OSError as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+    return web.json_response({"ok": True, "bytes": len(text)})
 
 
 # ── Serve the built web app ───

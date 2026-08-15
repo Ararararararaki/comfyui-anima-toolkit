@@ -7,6 +7,7 @@ import {
 import { renderClothingCard } from '../components/ClothingCard'
 import { esc, icon, showToast, attachSearchClear, debounce } from '../utils'
 import { openModal, closeModal, confirmModal, promptModal } from '../components/Modal'
+import { outputsDb } from '../db/outputsDb'
 import type { ClothingCard, ClothingCategory } from '../types'
 
 // ── 服装卡片库：平铺分类 + 卡片网格 + 抽卡 ──
@@ -61,7 +62,38 @@ export async function renderClothingLibrary() {
   grid.innerHTML = pageCards.map(c => renderClothingCard(c, objUrlCache.get(c.id), selectedIds.has(c.id))).join('')
   renderPagination(cards.length, totalPages)
   updateBatchBar()
+  syncIndexDebounced()   // 数据变更后自动同步 AI 索引（文本没变则不发送）
 }
+
+// ── AI 索引自动同步（全自动：面板数据一变 → 后端写 clothing-index.txt → skill 直接读）──
+
+let lastIndexText = ''
+
+async function buildIndexText(): Promise<string> {
+  const cats = await getAllCategories()
+  const cards = await getAllCards()
+  const catName = new Map(cats.map(c => [c.id, c.name]))
+  const lines = cards.map(c => `${catName.get(c.categoryId) || '未分类'}|${c.name}|${c.prompt}`)
+  const header = [
+    '# 服装卡片库索引（Anima Toolkit 面板「服装库」，无图轻量版）',
+    `# 共 ${lines.length} 张卡 · 分类：${Array.from(catName.values()).join(' / ')}`,
+    '# 每行格式：分类|名称|prompt（prompt 为可直接使用的逗号连接 tag 串）',
+    '# 用法：按分类 grep 检索，命中后整串使用，勿拆改',
+    '',
+  ].join('\n')
+  return header + lines.join('\n')
+}
+
+const syncIndexDebounced = debounce(async () => {
+  try {
+    const text = await buildIndexText()
+    if (text === lastIndexText) return
+    const res = await fetch('/anima/clothing/index', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+    })
+    if (res.ok) lastIndexText = text
+  } catch { /* 后端不可达/未重启时静默，下次数据变更再试 */ }
+}, 2000)
 
 // 分页条（每页 60 张；页码最多显示 7 个，超出用省略号）
 function renderPagination(total: number, totalPages: number) {
@@ -501,6 +533,52 @@ async function exportClothing() {
   showToast(`✅ 已导出 ${count} 张卡片（含图片，可随时再导入恢复）`)
 }
 
+// ── 从 Outputs 选图配卡（读 outputs-db 最近出图的缩略图，点选即用）──
+
+async function openOutputsPicker() {
+  const files = await outputsDb.files.orderBy('createdAt').reverse().limit(30).toArray()
+  const thumbs: { path: string; dataUrl: string }[] = []
+  for (const f of files) {
+    const t = await outputsDb.thumbnails.get(f.id)
+    if (t?.dataUrl) thumbs.push({ path: f.path || f.filename || '', dataUrl: t.dataUrl })
+  }
+  document.getElementById('clothingOutputsPickModal')?.remove()
+  const modal = document.createElement('div')
+  modal.id = 'clothingOutputsPickModal'
+  modal.className = 'modal-overlay'
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:640px">
+      <h3>${icon('image', 16)} 从 Outputs 选图</h3>
+      <p class="sub" style="margin:6px 0 10px">最近 ${thumbs.length} 张出图（点选即配到卡片；没有可用图时请先扫描 Outputs 或手动上传）</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px;max-height:380px;overflow-y:auto">
+        ${thumbs.map((t, i) => `<img src="${t.dataUrl}" data-idx="${i}" title="${esc(t.path)}" style="width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">`).join('') || '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">Outputs 里还没有图</div>'}
+      </div>
+      <div class="modal-actions" style="margin-top:12px">
+        <span style="flex:1"></span>
+        <button class="btn btn-ghost" id="copCloseBtn">关闭</button>
+      </div>
+    </div>`
+  document.body.appendChild(modal)
+  modal.addEventListener('click', (e) => { if (e.target === e.currentTarget) modal.remove() })
+  document.getElementById('copCloseBtn')?.addEventListener('click', () => modal.remove())
+  modal.querySelectorAll('img[data-idx]').forEach(img => {
+    img.addEventListener('click', async () => {
+      const t = thumbs[Number(img.getAttribute('data-idx'))]
+      try {
+        const blob = await (await fetch(t.dataUrl)).blob()
+        editingBlob = blob
+        const preview = document.getElementById('ceImgPreview')
+        if (preview) preview.innerHTML = `<img src="${t.dataUrl}" style="max-width:120px;border-radius:6px;border:1px solid var(--border)">`
+        showToast(`✅ 已选用 Outputs 图片：${t.path.slice(0, 30)}`)
+      } catch {
+        showToast('❌ 读取图片失败')
+      }
+      modal.remove()
+    })
+  })
+  openModal('clothingOutputsPickModal')
+}
+
 // ── 批量移动分类（选中卡片 → 指定分类）──
 
 async function moveSelectedToCategory() {
@@ -581,7 +659,10 @@ function getEditorModal(): HTMLElement {
         </div>
         <div>
           <label style="font-size:12px;color:var(--text2)">图片（可选，不选则为文字卡）</label>
-          <input type="file" id="ceImg" accept="image/*" style="margin-top:4px;font-size:12px;color:var(--text2)">
+          <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+            <input type="file" id="ceImg" accept="image/*" style="font-size:12px;color:var(--text2)">
+            <button class="btn btn-ghost btn-sm" id="ceFromOutputs" type="button">${icon('image', 12)} 从 Outputs 选图</button>
+          </div>
           <div id="ceImgPreview" style="margin-top:6px"></div>
         </div>
       </div>
@@ -605,6 +686,7 @@ function getEditorModal(): HTMLElement {
       preview.innerHTML = `<img src="${url}" style="max-width:120px;border-radius:6px;border:1px solid var(--border)">`
     }
   })
+  document.getElementById('ceFromOutputs')?.addEventListener('click', openOutputsPicker)
   return modal
 }
 
@@ -830,6 +912,7 @@ export function setupClothingHandlers() {
   w.__clothingOpenGacha = () => openGachaModal()
   w.__clothingExport = () => exportClothing()
   w.__clothingBuildExportJson = () => buildExportJson()
+  w.__clothingBuildIndexText = () => buildIndexText()
   w.__clothingAdd = () => openClothingEditor()
   w.__clothingAddCategory = async () => {
     const name = await promptModal('新建分类', '', '输入分类名称（一个名字一组）')
@@ -876,7 +959,45 @@ export function setupClothingHandlers() {
     const n = Number(btn.getAttribute('data-page'))
     if (n > 0) gotoPage(n)
   })
+  // 分类标签右键菜单（重命名/删除分类；全部/收藏不可操作）
+  document.getElementById('clothingCats')?.addEventListener('contextmenu', (e) => {
+    const tab = (e.target as HTMLElement).closest('.clothing-cat-tab') as HTMLElement
+    if (!tab) return
+    const catId = tab.getAttribute('data-cat') || ''
+    if (!catId || catId === 'fav') return
+    e.preventDefault()
+    showCatMenu(e.clientX, e.clientY, catId)
+  })
   initDragSelect()
+}
+
+// ── 分类标签右键菜单（重命名/删除分类）──
+
+function showCatMenu(x: number, y: number, catId: string) {
+  document.getElementById('clothingCatMenu')?.remove()
+  const menu = document.createElement('div')
+  menu.id = 'clothingCatMenu'
+  menu.className = 'clothing-cat-menu'
+  menu.style.cssText = `position:fixed;left:${Math.min(x, window.innerWidth - 160)}px;top:${Math.min(y, window.innerHeight - 90)}px;z-index:9999`
+  menu.innerHTML = `
+    <button data-act="rename">${icon('edit3', 12)} 重命名分类</button>
+    <button data-act="del" class="danger">${icon('trash', 12)} 删除分类</button>`
+  document.body.appendChild(menu)
+  const close = () => menu.remove()
+  menu.addEventListener('click', async (e) => {
+    const btn = (e.target as HTMLElement).closest('button') as HTMLElement
+    if (!btn) return
+    close()
+    const w = window as any
+    if (btn.getAttribute('data-act') === 'rename') await w.__clothingRenameCategory(catId)
+    else await w.__clothingDeleteCategory(catId)
+  })
+  // 关闭监听必须等当前 contextmenu 事件冒泡结束再注册（setTimeout 0），
+  // 否则刚弹出的菜单会被同一个事件的 document 监听器立刻关掉
+  setTimeout(() => {
+    document.addEventListener('click', close, { once: true })
+    document.addEventListener('contextmenu', close, { once: true })
+  }, 0)
 }
 
 export async function initClothing() {
