@@ -155,6 +155,7 @@ function bindToolbar() {
   document.getElementById('clothingGachaBtn')?.addEventListener('click', () => openGachaModal())
   document.getElementById('clothingNewCatBtn')?.addEventListener('click', () => (window as any).__clothingAddCategory())
   document.getElementById('clothingDelSelBtn')?.addEventListener('click', deleteSelected)
+  document.getElementById('clothingMoveBtn')?.addEventListener('click', moveSelectedToCategory)
   document.getElementById('clothingSelCancelBtn')?.addEventListener('click', clearSelection)
   document.getElementById('clothingImportBtn')?.addEventListener('click', () => {
     document.getElementById('clothingImportFile')?.click()
@@ -200,15 +201,16 @@ export async function importClothingJson(text: string) {
     }
     const selected = await showImportPreview(data.cards)
     if (!selected) { showToast('已取消导入'); return }
-    await doImport(data, selected)
+    await doImport(data, selected.cards, selected.useFileCats)
   } finally {
     importing = false
   }
 }
 
-// 预览弹窗：分类折叠列表 + 展开后卡片缩略图，可勾选到单张；返回选中的卡片数组；取消返回 null
+// 预览弹窗：分类折叠列表 + 展开后卡片缩略图，可勾选到单张
+// 返回 { cards: 选中的卡片数组, useFileCats: 是否按文件分类导入 }；取消返回 null
 // 每次调用重建弹窗（不复用 DOM），避免确认按钮闭包捕获上一次的 resolve
-function showImportPreview(allCards: any[]): Promise<any[] | null> {
+function showImportPreview(allCards: any[]): Promise<{ cards: any[]; useFileCats: boolean } | null> {
   return new Promise((resolve) => {
     document.getElementById('clothingImportModal')?.remove()
     const modal = document.createElement('div')
@@ -218,7 +220,11 @@ function showImportPreview(allCards: any[]): Promise<any[] | null> {
       <div class="modal-box" style="max-width:760px">
         <h3>${icon('download', 16)} 导入服装卡片</h3>
         <p class="sub" style="margin:6px 0 10px">点分类行展开看卡片图，勾选到单张；分类前的框 = 一键全选/全不选该类</p>
-        <div id="ciCats" style="display:flex;flex-direction:column;gap:4px;max-height:420px;overflow-y:auto;padding-right:4px"></div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);margin-bottom:8px;cursor:pointer">
+          <input type="checkbox" id="ciUseFileCats">
+          按文件分类导入（不勾 = 全部进「未分类」，导入后你自己分类/收藏）
+        </label>
+        <div id="ciCats" style="display:flex;flex-direction:column;gap:4px;max-height:400px;overflow-y:auto;padding-right:4px"></div>
         <div class="modal-actions" style="margin-top:12px">
           <button class="btn btn-ghost" id="ciAllBtn">全选</button>
           <button class="btn btn-ghost" id="ciNoneBtn">全不选</button>
@@ -334,11 +340,12 @@ function showImportPreview(allCards: any[]): Promise<any[] | null> {
       }
     })
 
-    const done = (val: any[] | null) => { modal.classList.remove('open'); resolve(val) }
+    const done = (val: { cards: any[]; useFileCats: boolean } | null) => { modal.classList.remove('open'); resolve(val) }
     modal.addEventListener('click', (e) => { if (e.target === e.currentTarget) done(null) })
     document.getElementById('ciCancelBtn')?.addEventListener('click', () => done(null))
     document.getElementById('ciOkBtn')?.addEventListener('click', () => {
-      done(allCards.filter((_, i) => selectedIdx.has(i)))
+      const useFileCats = !!(document.getElementById('ciUseFileCats') as HTMLInputElement)?.checked
+      done({ cards: allCards.filter((_, i) => selectedIdx.has(i)), useFileCats })
     })
     document.getElementById('ciAllBtn')?.addEventListener('click', () => {
       allCards.forEach((_, i) => selectedIdx.add(i))
@@ -355,53 +362,134 @@ function showImportPreview(allCards: any[]): Promise<any[] | null> {
   })
 }
 
-// 执行导入（只导入 selectedCards；清旧导入卡再写 → 可重复导入）
-async function doImport(data: any, selectedCards: any[]) {
+// 执行导入（合并模式：只加不删 + 查重跳过；useFileCats=false 时全部进「未分类」由用户自己分类）
+async function doImport(data: any, selectedCards: any[], useFileCats: boolean) {
   if (!selectedCards.length) { showToast('没有选中的卡片'); return }
-  // 分类：只建选中的卡片涉及到的分类（按名字去重，已存在跳过）
-  const existing = await getAllCategories()
-  const existingNames = new Set(existing.map(c => c.name))
-  const catIdMap = new Map<string, string>()   // 导入文件分类名 -> 库内 id
-  for (const c of existing) catIdMap.set(c.name, c.id)
-  const needCats: string[] = []
-  for (const c of selectedCards) {
-    const name = String(c.category || '未分类')
-    if (!needCats.includes(name)) needCats.push(name)
+  // 现有卡片 prompt 索引（查重用）
+  const existing = await getAllCards()
+  const promptToCard = new Map<string, ClothingCard>()   // norm(prompt) -> 现有卡
+  for (const c of existing) {
+    const key = norm(c.prompt)
+    if (!promptToCard.has(key)) promptToCard.set(key, c)
   }
+  // 分类：useFileCats 时按文件分类建/复用；否则全部未分类
+  const existingCats = await getAllCategories()
+  const catIdMap = new Map<string, string>()
+  for (const c of existingCats) catIdMap.set(c.name, c.id)
   let newCatCount = 0
-  for (const [i, name] of needCats.entries()) {
-    if (existingNames.has(name)) continue
-    const id = generateCategoryId()
-    await addCategory({ id, name, sortOrder: 100 + i })
-    catIdMap.set(name, id)
-    newCatCount++
-  }
-  // 卡片：清掉旧导入卡（source=import）再批量写入，手建卡保留 → 可重复导入
-  const olds = await getAllCards()
-  for (const c of olds) {
-    if (c.source === 'import') await deleteCard(c.id)
+  if (useFileCats) {
+    const needCats: string[] = []
+    for (const c of selectedCards) {
+      const name = String(c.category || '未分类')
+      if (!needCats.includes(name)) needCats.push(name)
+    }
+    for (const [i, name] of needCats.entries()) {
+      if (catIdMap.has(name)) continue
+      const id = generateCategoryId()
+      await addCategory({ id, name, sortOrder: 100 + i })
+      catIdMap.set(name, id)
+      newCatCount++
+    }
   }
   const now = Date.now()
-  const cards: ClothingCard[] = selectedCards.map((c: any) => ({
-    id: generateCardId(),
-    name: String(c.name || '未命名'),
-    prompt: String(c.prompt || ''),
-    categoryId: catIdMap.get(String(c.category || '未分类')) || 'uncategorized',
-    tags: String(c.prompt || '').split(',').map(t => t.trim()).filter(Boolean),
-    imageBlob: c.imageBase64 ? base64ToBlob(c.imageBase64) : undefined,
-    imageUrl: c.imageUrl || undefined,
-    favorite: !!c.favorite,
-    useCount: 0,
-    source: 'import',
-    createdAt: now + Math.random(),
-    updatedAt: now,
-  }))
+  const cards: ClothingCard[] = []
+  let skipped = 0      // 查重跳过的
+  let recategorized = 0  // 重复但分类不同 → 更新现有卡分类（恢复分组）
+  for (const c of selectedCards) {
+    const prompt = String(c.prompt || '').trim()
+    if (!prompt) continue
+    const key = norm(prompt)
+    const dup = promptToCard.get(key)
+    const fileCat = useFileCats ? String(c.category || '未分类') : '未分类'
+    if (dup) {
+      // 重复：不新增；若勾了按文件分类且现有卡分类不同 → 把现有卡移入文件分类
+      if (useFileCats) {
+        const targetId = catIdMap.get(fileCat) || 'uncategorized'
+        if (dup.categoryId !== targetId) {
+          await updateCard(dup.id, { categoryId: targetId })
+          recategorized++
+        }
+      }
+      skipped++
+      continue
+    }
+    cards.push({
+      id: generateCardId(),
+      name: String(c.name || '未命名'),
+      prompt,
+      categoryId: useFileCats ? (catIdMap.get(fileCat) || 'uncategorized') : 'uncategorized',
+      tags: prompt.split(',').map(t => t.trim()).filter(Boolean),
+      imageBlob: c.imageBase64 ? base64ToBlob(c.imageBase64) : undefined,
+      imageUrl: c.imageUrl || undefined,
+      favorite: !!c.favorite,
+      useCount: 0,
+      source: 'import',
+      createdAt: now + Math.random(),
+      updatedAt: now,
+    })
+  }
   if (cards.length) await bulkAddCards(cards)
-  showToast(`✅ 导入完成：${cards.length} 张卡片${newCatCount ? `，新增 ${newCatCount} 个分类` : ''}`)
+  const parts = [`导入 ${cards.length} 张`]
+  if (skipped) parts.push(`跳过重复 ${skipped} 张`)
+  if (recategorized) parts.push(`更新分类 ${recategorized} 张`)
+  if (newCatCount) parts.push(`新增分类 ${newCatCount} 个`)
+  showToast(`✅ ${parts.join('，')}`)
   currentCategory = ''
   currentSearch = ''
   page = 1
   await renderClothingLibrary()
+}
+
+// 串归一化（查重/键名匹配用）：去首尾空白/逗号、转小写
+function norm(s: string): string {
+  return String(s || '').replace(/^[\s,]+|[\s,]+$/g, '').trim().toLowerCase()
+}
+
+// ── 批量移动分类（选中卡片 → 指定分类）──
+
+async function moveSelectedToCategory() {
+  if (!selectedIds.size) { showToast('先选中卡片'); return }
+  const cats = await getAllCategories()
+  // 轻量选择弹窗：下拉选已有分类 + 或输入新分类名
+  const modal = document.createElement('div')
+  modal.id = 'clothingMoveModal'
+  modal.className = 'modal-overlay'
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:400px">
+      <h3>${icon('folder', 16)} 移动选中卡片到分类</h3>
+      <p class="sub" style="margin:6px 0 10px">已选 ${selectedIds.size} 张；选已有分类或输入新分类名</p>
+      <select id="cmCatSel" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:13px;outline:none;font-family:var(--font)">
+        ${cats.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}
+      </select>
+      <input type="text" id="cmNewCat" placeholder="或输入新分类名（留空用上面的）" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:13px;outline:none;font-family:var(--font);margin-top:8px;box-sizing:border-box">
+      <div class="modal-actions" style="margin-top:12px">
+        <button class="btn btn-ghost" id="cmCancelBtn">取消</button>
+        <button class="btn btn-primary" id="cmOkBtn" data-primary>移动</button>
+      </div>
+    </div>`
+  document.body.appendChild(modal)
+  const close = () => modal.remove()
+  modal.addEventListener('click', (e) => { if (e.target === e.currentTarget) close() })
+  document.getElementById('cmCancelBtn')?.addEventListener('click', close)
+  document.getElementById('cmOkBtn')?.addEventListener('click', async () => {
+    const sel = document.getElementById('cmCatSel') as HTMLSelectElement
+    const newName = (document.getElementById('cmNewCat') as HTMLInputElement).value.trim()
+    let catId = sel?.value || 'uncategorized'
+    if (newName) {
+      const existed = cats.find(c => c.name === newName)
+      if (existed) catId = existed.id
+      else {
+        catId = generateCategoryId()
+        await addCategory({ id: catId, name: newName, sortOrder: 100 + cats.length })
+      }
+    }
+    for (const id of selectedIds) await updateCard(id, { categoryId: catId })
+    close()
+    showToast(`✅ 已移动 ${selectedIds.size} 张卡片到「${newName || cats.find(c => c.id === sel?.value)?.name || '未分类'}」`)
+    selectedIds.clear()
+    await renderClothingLibrary()
+  })
+  openModal('clothingMoveModal')
 }
 
 function base64ToBlob(b64: string): Blob {
