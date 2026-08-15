@@ -117,47 +117,128 @@ export async function importClothingJson(text: string) {
     if (data.schemaVersion !== 1 || !Array.isArray(data.cards)) {
       throw new Error('文件格式不对（不是服装库导入文件）')
     }
-    // 分类：按名字去重，已存在跳过
-    const existing = await getAllCategories()
-    const existingNames = new Set(existing.map(c => c.name))
-    const catIdMap = new Map<string, string>()   // 导入文件分类名 -> 库内 id
-    for (const c of existing) catIdMap.set(c.name, c.id)
-    let newCatCount = 0
-    for (const [i, cat] of (data.categories as { name: string }[]).entries()) {
-      if (existingNames.has(cat.name)) continue
-      const id = generateCategoryId()
-      await addCategory({ id, name: cat.name, sortOrder: 100 + i })
-      catIdMap.set(cat.name, id)
-      newCatCount++
+    // 按分类分组，供预览勾选
+    const byCat = new Map<string, any[]>()
+    for (const c of data.cards) {
+      const cat = String(c.category || '未分类')
+      if (!byCat.has(cat)) byCat.set(cat, [])
+      byCat.get(cat)!.push(c)
     }
-    // 卡片：清掉旧导入卡（source=import）再批量写入，手建卡保留 → 可重复导入
-    const olds = await getAllCards()
-    for (const c of olds) {
-      if (c.source === 'import') await deleteCard(c.id)
-    }
-    const now = Date.now()
-    const cards: ClothingCard[] = data.cards.map((c: any) => ({
-      id: generateCardId(),
-      name: String(c.name || '未命名'),
-      prompt: String(c.prompt || ''),
-      categoryId: catIdMap.get(String(c.category || '未分类')) || 'uncategorized',
-      tags: String(c.prompt || '').split(',').map(t => t.trim()).filter(Boolean),
-      imageBlob: c.imageBase64 ? base64ToBlob(c.imageBase64) : undefined,
-      imageUrl: c.imageUrl || undefined,
-      favorite: !!c.favorite,
-      useCount: 0,
-      source: 'import',
-      createdAt: now + Math.random(),
-      updatedAt: now,
-    }))
-    if (cards.length) await bulkAddCards(cards)
-    showToast(`✅ 导入完成：${cards.length} 张卡片${newCatCount ? `，新增 ${newCatCount} 个分类` : ''}`)
-    currentCategory = ''
-    currentSearch = ''
-    await renderClothingLibrary()
+    const selected = await showImportPreview(byCat)
+    if (!selected) { showToast('已取消导入'); return }
+    await doImport(data, byCat, new Set(selected))
   } finally {
     importing = false
   }
+}
+
+// 预览弹窗：按分类勾选（每类数量 + 前 2 张样例卡名），返回选中的分类名数组；取消返回 null
+// 每次调用重建弹窗（不复用 DOM），避免确认按钮闭包捕获上一次的 resolve
+function showImportPreview(byCat: Map<string, any[]>): Promise<string[] | null> {
+  return new Promise((resolve) => {
+    document.getElementById('clothingImportModal')?.remove()
+    const modal = document.createElement('div')
+    modal.id = 'clothingImportModal'
+    modal.className = 'modal-overlay'
+    modal.innerHTML = `
+      <div class="modal-box" style="max-width:520px">
+        <h3>${icon('download', 16)} 导入服装卡片</h3>
+        <p class="sub" style="margin:6px 0 10px">勾选要导入的分类（一个分类一组，不勾的不进库）</p>
+        <div id="ciCats" style="display:flex;flex-direction:column;gap:6px;max-height:340px;overflow-y:auto;padding-right:4px"></div>
+        <div class="modal-actions" style="margin-top:12px">
+          <button class="btn btn-ghost" id="ciAllBtn">全选</button>
+          <button class="btn btn-ghost" id="ciNoneBtn">全不选</button>
+          <span style="flex:1"></span>
+          <button class="btn btn-ghost" id="ciCancelBtn">取消</button>
+          <button class="btn btn-primary" id="ciOkBtn" data-primary>导入选中 (0 张)</button>
+        </div>
+      </div>`
+    document.body.appendChild(modal)
+    const done = (val: string[] | null) => { modal.classList.remove('open'); resolve(val) }
+    modal.addEventListener('click', (e) => { if (e.target === e.currentTarget) done(null) })
+    document.getElementById('ciCancelBtn')?.addEventListener('click', () => done(null))
+    document.getElementById('ciOkBtn')?.addEventListener('click', () => {
+      const checked = Array.from(document.querySelectorAll<HTMLInputElement>('#ciCats input[type=checkbox]:checked')).map(i => i.value)
+      done(checked)
+    })
+    document.getElementById('ciAllBtn')?.addEventListener('click', () => {
+      document.querySelectorAll<HTMLInputElement>('#ciCats input[type=checkbox]').forEach(i => { i.checked = true; i.dispatchEvent(new Event('change')) })
+    })
+    document.getElementById('ciNoneBtn')?.addEventListener('click', () => {
+      document.querySelectorAll<HTMLInputElement>('#ciCats input[type=checkbox]').forEach(i => { i.checked = false; i.dispatchEvent(new Event('change')) })
+    })
+    const catsBox = document.getElementById('ciCats')
+    if (catsBox) {
+      catsBox.innerHTML = Array.from(byCat.entries()).map(([cat, cards]) => {
+        const samples = cards.slice(0, 2).map(c => String(c.name || c.prompt || '').slice(0, 40)).join('；')
+        return `<label style="display:flex;align-items:flex-start;gap:8px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;cursor:pointer;background:var(--bg2)">
+          <input type="checkbox" value="${esc(cat)}" checked style="margin-top:2px">
+          <span style="flex:1;font-size:12px">
+            <span style="font-weight:600;color:var(--text)">${esc(cat)}</span>
+            <span class="count" style="margin-left:6px;font-size:10px;color:var(--text3)">${cards.length} 张</span>
+            <span style="display:block;font-size:10px;color:var(--text3);margin-top:3px;word-break:break-all">${esc(samples)}</span>
+          </span>
+        </label>`
+      }).join('')
+    }
+    const updateCount = () => {
+      const n = document.querySelectorAll<HTMLInputElement>('#ciCats input[type=checkbox]:checked').length
+      const okBtn = document.getElementById('ciOkBtn')
+      if (okBtn) okBtn.textContent = `导入选中 (${n} 个分类)`
+    }
+    catsBox?.addEventListener('change', updateCount)
+    updateCount()
+    openModal('clothingImportModal')
+  })
+}
+
+// 执行导入（只导入 selectedCats 里的分类；清旧导入卡再写 → 可重复导入）
+async function doImport(data: any, byCat: Map<string, any[]>, selectedCats: Set<string>) {
+  // 分类：按名字去重，已存在跳过
+  const existing = await getAllCategories()
+  const existingNames = new Set(existing.map(c => c.name))
+  const catIdMap = new Map<string, string>()   // 导入文件分类名 -> 库内 id
+  for (const c of existing) catIdMap.set(c.name, c.id)
+  let newCatCount = 0
+  for (const [i, cat] of (data.categories as { name: string }[]).entries()) {
+    if (!selectedCats.has(cat.name)) continue
+    if (existingNames.has(cat.name)) continue
+    const id = generateCategoryId()
+    await addCategory({ id, name: cat.name, sortOrder: 100 + i })
+    catIdMap.set(cat.name, id)
+    newCatCount++
+  }
+  // 卡片：清掉旧导入卡（source=import）再批量写入，手建卡保留 → 可重复导入
+  const olds = await getAllCards()
+  for (const c of olds) {
+    if (c.source === 'import') await deleteCard(c.id)
+  }
+  const now = Date.now()
+  const cards: ClothingCard[] = []
+  for (const [cat, rawCards] of byCat) {
+    if (!selectedCats.has(cat)) continue
+    for (const c of rawCards) {
+      cards.push({
+        id: generateCardId(),
+        name: String(c.name || '未命名'),
+        prompt: String(c.prompt || ''),
+        categoryId: catIdMap.get(String(c.category || '未分类')) || 'uncategorized',
+        tags: String(c.prompt || '').split(',').map(t => t.trim()).filter(Boolean),
+        imageBlob: c.imageBase64 ? base64ToBlob(c.imageBase64) : undefined,
+        imageUrl: c.imageUrl || undefined,
+        favorite: !!c.favorite,
+        useCount: 0,
+        source: 'import',
+        createdAt: now + Math.random(),
+        updatedAt: now,
+      })
+    }
+  }
+  if (cards.length) await bulkAddCards(cards)
+  showToast(`✅ 导入完成：${cards.length} 张卡片${newCatCount ? `，新增 ${newCatCount} 个分类` : ''}`)
+  currentCategory = ''
+  currentSearch = ''
+  await renderClothingLibrary()
 }
 
 function base64ToBlob(b64: string): Blob {
