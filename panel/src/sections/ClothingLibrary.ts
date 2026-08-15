@@ -15,6 +15,8 @@ let currentCategory = ''   // '' = 全部, 'fav' = 收藏, 其他 = 分类 id
 let currentSearch = ''
 let listLoadSeq = 0
 let selectedIds = new Set<string>()   // 点卡片/拖拽框选即选中，无开关
+const PAGE_SIZE = 60
+let page = 1
 const objUrlCache = new Map<string, string>()   // card.id -> objectURL（imageBlob 渲染缓存）
 
 function container(): HTMLElement | null {
@@ -31,28 +33,66 @@ function ensureObjUrls(cards: ClothingCard[]) {
 
 // ── 渲染 ──
 
+// 当前视图的卡片（按分类/收藏/搜索过滤）
+async function currentViewCards(): Promise<ClothingCard[]> {
+  if (currentCategory === 'fav') {
+    const all = currentSearch ? await searchCards(currentSearch) : await getAllCards()
+    return all.filter(c => c.favorite)
+  }
+  if (currentCategory) {
+    return currentSearch ? await searchCardsByCategory(currentSearch, currentCategory) : await getCardsByCategory(currentCategory)
+  }
+  return currentSearch ? await searchCards(currentSearch) : await getAllCards()
+}
+
 export async function renderClothingLibrary() {
   const grid = container()
   if (!grid) return
   const seq = ++listLoadSeq
   await renderCats()
 
-  let cards: ClothingCard[]
-  if (currentCategory === 'fav') {
-    const all = currentSearch ? await searchCards(currentSearch) : await getAllCards()
-    cards = all.filter(c => c.favorite)
-  } else if (currentCategory) {
-    cards = currentSearch
-      ? await searchCardsByCategory(currentSearch, currentCategory)
-      : await getCardsByCategory(currentCategory)
-  } else {
-    cards = currentSearch ? await searchCards(currentSearch) : await getAllCards()
-  }
+  const cards = await currentViewCards()
   if (seq !== listLoadSeq) return
 
   ensureObjUrls(cards)
-  grid.innerHTML = cards.map(c => renderClothingCard(c, objUrlCache.get(c.id), selectedIds.has(c.id))).join('')
+  const totalPages = Math.max(1, Math.ceil(cards.length / PAGE_SIZE))
+  if (page > totalPages) page = totalPages
+  const pageCards = cards.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+  grid.innerHTML = pageCards.map(c => renderClothingCard(c, objUrlCache.get(c.id), selectedIds.has(c.id))).join('')
+  renderPagination(cards.length, totalPages)
   updateBatchBar()
+}
+
+// 分页条（每页 60 张；页码最多显示 7 个，超出用省略号）
+function renderPagination(total: number, totalPages: number) {
+  const box = document.getElementById('clothingPagination')
+  if (!box) return
+  if (totalPages <= 1) { box.innerHTML = ''; return }
+  const pages: (number | '...')[] = []
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i)
+  } else {
+    pages.push(1)
+    if (page > 3) pages.push('...')
+    for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) pages.push(i)
+    if (page < totalPages - 2) pages.push('...')
+    pages.push(totalPages)
+  }
+  box.innerHTML = `
+    <button class="clothing-page-btn" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>${icon('chevronLeft', 12)}</button>
+    ${pages.map(p => p === '...'
+      ? '<span class="clothing-page-dots">…</span>'
+      : `<button class="clothing-page-btn ${p === page ? 'active' : ''}" data-page="${p}">${p}</button>`).join('')}
+    <button class="clothing-page-btn" data-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''}>${icon('chevronRight', 12)}</button>
+    <span class="clothing-page-info">共 ${total} 张 · 第 ${page}/${totalPages} 页</span>`
+}
+
+async function gotoPage(n: number) {
+  const cards = await currentViewCards()
+  const totalPages = Math.max(1, Math.ceil(cards.length / PAGE_SIZE))
+  page = Math.max(1, Math.min(n, totalPages))
+  await renderClothingLibrary()
+  window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
 // 多选批量条：有选中时显示（点卡片即选中、拖拽即框选，无需开关）
@@ -142,6 +182,7 @@ function bindToolbar() {
 const debounceSearch = debounce(async () => {
   const input = document.getElementById('clothingSearch') as HTMLInputElement
   currentSearch = input?.value || ''
+  page = 1
   await renderClothingLibrary()
 }, 250)
 
@@ -359,6 +400,7 @@ async function doImport(data: any, selectedCards: any[]) {
   showToast(`✅ 导入完成：${cards.length} 张卡片${newCatCount ? `，新增 ${newCatCount} 个分类` : ''}`)
   currentCategory = ''
   currentSearch = ''
+  page = 1
   await renderClothingLibrary()
 }
 
@@ -638,6 +680,7 @@ export function setupClothingHandlers() {
   }
   w.__clothingSetCat = async (catId: string) => {
     currentCategory = catId
+    page = 1
     await renderClothingLibrary()
   }
   w.__clothingOpenGacha = () => openGachaModal()
@@ -679,6 +722,13 @@ export function setupClothingHandlers() {
     } else if (target === document.getElementById('clothingGrid')) {
       clearSelection()
     }
+  })
+  // 分页条事件
+  document.getElementById('clothingPagination')?.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest('.clothing-page-btn') as HTMLElement
+    if (!btn || btn.hasAttribute('disabled')) return
+    const n = Number(btn.getAttribute('data-page'))
+    if (n > 0) gotoPage(n)
   })
   initDragSelect()
 }

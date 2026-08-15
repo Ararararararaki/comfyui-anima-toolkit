@@ -149,11 +149,31 @@
 .clothing-card:hover .clothing-card-check { display: flex; }
 .clothing-card-check.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .clothing-batch-bar {
-  display: none; align-items: center; gap: 8px; padding: 8px 12px;
-  border: 1px solid var(--accent); border-radius: 8px; background: rgba(94,106,210,0.08);
-  font-size: 12px; color: var(--text);
+  display: none; align-items: center; gap: 8px; padding: 10px 16px;
+  border: 1px solid var(--accent); border-radius: 12px; background: rgba(94,106,210,0.12);
+  backdrop-filter: blur(8px); font-size: 12px; color: var(--text);
+  /* 悬浮固定在屏幕底部：选完卡不用滚回顶部 */
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+  z-index: 600; box-shadow: 0 8px 32px rgba(0,0,0,0.45);
 }
 .clothing-batch-bar b { color: var(--accent); }
+
+/* 分页条 */
+.clothing-pagination {
+  display: flex; align-items: center; justify-content: center; gap: 4px;
+  padding: 14px 0 6px; flex-wrap: wrap;
+}
+.clothing-page-btn {
+  min-width: 28px; height: 28px; padding: 0 8px; border: 1px solid var(--border);
+  border-radius: 6px; background: transparent; color: var(--text2); font-size: 12px;
+  cursor: pointer; transition: all .15s; display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--font);
+}
+.clothing-page-btn:hover:not(:disabled) { border-color: var(--border-hover); color: var(--text); }
+.clothing-page-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.clothing-page-btn:disabled { opacity: .35; cursor: default; }
+.clothing-page-dots { color: var(--text3); font-size: 12px; padding: 0 2px; }
+.clothing-page-info { margin-left: 10px; font-size: 11px; color: var(--text3); }
 .clothing-selection-rect {
   position: fixed; z-index: 99999; background: rgba(99,102,241,0.12);
   border: 2px dashed rgba(99,102,241,0.6); border-radius: 4px; pointer-events: none;
