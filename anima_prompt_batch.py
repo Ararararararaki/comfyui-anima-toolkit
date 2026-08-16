@@ -111,6 +111,12 @@ class AnimaPromptBatch:
                     "placeholder": "每组相机参数（JSON，前端维护）",
                     "tooltip": "每组独立机位：{组键: 机位描述}（自然语言/预设名/px,py,pz,roll），随工作流持久化；优先级高于文件「相机:」行。",
                 }),
+                "extra_dirs": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "placeholder": "每行一个附加提示词目录（绝对路径）；「最新」与文件浏览器会一起搜索",
+                    "tooltip": "附加提示词搜索目录（每行一个绝对路径）。AI 写词落盘到 input 之外时填这里，「最新」/自动最新/递归浏览都会覆盖。",
+                }),
             }
         }
 
@@ -121,7 +127,7 @@ class AnimaPromptBatch:
 
     def execute(self, prompt_files, positive_target, negative_target,
                 camera_target, output_subfolder, groups_selection, region_values,
-                camera_values=""):
+                camera_values="", extra_dirs=""):
         # 返回第一条选中提示词作为预览（可选接线到文本节点做单张试跑）
         selected = self._selected_group_names(groups_selection)
         cam_overrides = {}
@@ -167,16 +173,84 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 
 # ============ HTTP API ============
 
+# 提示词文件扩展名
+_PROMPT_EXTS = (".txt", ".md", ".prompt")
+
+
+def _scan_prompt_files(root: str, max_depth: int = 4, limit: int = 500):
+    """递归扫描 root 下的提示词文件，返回 [(相对路径, mtime, 绝对路径)]（按 mtime 降序）。
+
+    跳过隐藏目录（.开头）；depth 限制防失控；文件数上限保护。
+    """
+    hits: list[tuple[str, float, str]] = []
+
+    def walk(cur: str, rel: str, depth: int):
+        if depth > max_depth or len(hits) >= limit:
+            return
+        try:
+            entries = os.listdir(cur)
+        except OSError:
+            return
+        for name in entries:
+            if name.startswith("."):
+                continue
+            full = os.path.join(cur, name)
+            try:
+                if os.path.isdir(full):
+                    walk(full, os.path.join(rel, name) if rel else name, depth + 1)
+                elif os.path.isfile(full) and name.lower().endswith(_PROMPT_EXTS):
+                    hits.append((os.path.join(rel, name) if rel else name, os.path.getmtime(full), full))
+            except OSError:
+                continue
+            if len(hits) >= limit:
+                return
+
+    walk(root, "", 0)
+    hits.sort(key=lambda e: e[1], reverse=True)
+    return hits
+
+
+def _extra_dirs_from_query(request) -> list[str]:
+    """解析附加搜索目录参数（extra=<json 数组>，每个为绝对路径）。"""
+    raw = (request.query.get("extra") or "").strip()
+    if not raw:
+        return []
+    try:
+        arr = json.loads(raw)
+    except Exception:
+        arr = []
+    out = []
+    for p in arr or []:
+        s = str(p).strip().strip('"').strip("'")
+        if s and os.path.isabs(s) and os.path.isdir(s):
+            out.append(os.path.normpath(s))
+    return out
+
+
 @PromptServer.instance.routes.get("/anima/prompt/list")
 async def prompt_list(request):
     """列出指定目录下的 .txt 提示词文件与子目录（可导航浏览器）。
 
     参数：dir=<相对 input/ 的目录，或任意绝对路径>。默认空=input/ 根。
-    返回 {dir, abs_dir, parent, dirs:[], files:[]}：dir=展示用相对路径，abs_dir=绝对路径，
-    parent=上级目录（相对路径或绝对路径，根时为 "."）。
+    recursive=1 时：忽略 dir，递归扫描 input 全树（+ extra 附加目录），
+    返回扁平文件列表 {path, mtime}（path=相对 input/ 或绝对路径），供「全树最新/最近文件」使用。
+    普通模式返回 {dir, abs_dir, parent, dirs:[], files:[{name, mtime}]}。
     """
-    raw = (request.query.get("dir") or "").strip()
+    recursive = (request.query.get("recursive") or "").strip() == "1"
     base = os.path.normpath(_input_root())
+    if recursive:
+        # input 树内返回相对路径（parse/list 可直接用）；附加目录返回绝对路径
+        all_hits = [(p, m) for p, m, _a in _scan_prompt_files(base)]
+        for d in _extra_dirs_from_query(request):
+            for rel, mtime, _abs in _scan_prompt_files(d):
+                all_hits.append((os.path.join(d, rel), mtime))
+        all_hits.sort(key=lambda e: e[1], reverse=True)
+        return web.json_response({
+            "recursive": True,
+            "files": [{"path": p, "mtime": int(m * 1000)} for p, m in all_hits],
+        })
+
+    raw = (request.query.get("dir") or "").strip()
     if not raw:
         cur = base
     elif os.path.isabs(raw):
@@ -193,11 +267,11 @@ async def prompt_list(request):
             full = os.path.join(cur, name)
             if os.path.isdir(full):
                 dirs.append(name)
-            elif os.path.isfile(full) and name.lower().endswith((".txt", ".md", ".prompt")):
+            elif os.path.isfile(full) and name.lower().endswith(_PROMPT_EXTS):
                 entries.append((name, os.path.getmtime(full)))
         # 文件按修改时间降序（最新在前）——前端「最新」按钮直接取 files[0]
         entries.sort(key=lambda e: e[1], reverse=True)
-        files = [n for n, _ in entries]
+        files = [{"name": n, "mtime": int(m * 1000)} for n, m in entries]
         dirs.sort()
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
@@ -217,6 +291,25 @@ async def prompt_list(request):
         "dirs": dirs,
         "files": files,
     })
+
+
+@PromptServer.instance.routes.get("/anima/prompt/latest")
+async def prompt_latest(request):
+    """返回最新修改的提示词文件（递归扫描 input 全树 + 可选附加目录）。
+
+    参数：extra=<json 数组，绝对路径目录>。
+    返回 {ok, path, mtime, abs}；无文件时 {ok: false}。
+    """
+    base = os.path.normpath(_input_root())
+    all_hits = [(p, m, a) for p, m, a in _scan_prompt_files(base)]
+    for d in _extra_dirs_from_query(request):
+        for rel, mtime, _abs in _scan_prompt_files(d):
+            all_hits.append((os.path.join(d, rel), mtime, _abs))
+    if not all_hits:
+        return web.json_response({"ok": False, "error": "input 目录下没有提示词文件"})
+    all_hits.sort(key=lambda e: e[1], reverse=True)
+    path, mtime, abs_path = all_hits[0]
+    return web.json_response({"ok": True, "path": path, "mtime": int(mtime * 1000), "abs": abs_path})
 
 
 @PromptServer.instance.routes.get("/anima/prompt/parse")

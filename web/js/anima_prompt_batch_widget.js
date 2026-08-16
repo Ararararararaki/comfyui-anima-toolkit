@@ -10,6 +10,27 @@
 (function () {
   const NODE_NAME = "TK Prompt Batch";
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const escAttr = (s) => esc(s);
+
+  // ── 最近使用文件（localStorage 持久化，跨节点共享）──
+  const RECENT_KEY = "anima_tk_recent_files";
+  function loadRecentFiles() {
+    try { const a = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); return Array.isArray(a) ? a : []; } catch { return []; }
+  }
+  function saveRecentFiles(list) {
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 8))) } catch { /* 存储不可用忽略 */ }
+  }
+  function rememberFile(path, mtime) {
+    const list = loadRecentFiles().filter((r) => r.path !== path);
+    list.unshift({ path, mtime: mtime || 0, ts: Date.now() });
+    saveRecentFiles(list);
+  }
+  function fmtMtime(ms) {
+    if (!ms) return "";
+    const d = new Date(ms);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
 
   // 组机位预设（与相机节点 PRESETS 常用项保持一致；组内优先级：手动 UI > 文件相机行 > 全局相机节点）
   const CAM_PRESETS = {
@@ -102,7 +123,7 @@
   class BatchUI {
     constructor(node, w) {
       this.node = node;
-      this.w = w; // {prompt_files, positive_target, negative_target, camera_target, output_subfolder, groups_selection, region_values}
+      this.w = w; // {prompt_files, positive_target, negative_target, camera_target, output_subfolder, groups_selection, region_values, extra_dirs}
       this.cachedGroups = []; // [{file, name, count, prompts, region, camera}]
       this.checked = new Set(); // 选中的 "file::name"
       this.regionValues = new Map(); // "file::name" → "x,y,w,h,s"（UI 编辑值）
@@ -111,6 +132,7 @@
       this.rootEl = null;
       this.resultEl = null; // 批次结果反馈区
       this._reportOpen = false;
+      this.recentEl = null; // 最近文件行容器
     }
 
     _setW(widget, value) {
@@ -123,16 +145,62 @@
       return (this.w.prompt_files?.value || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     }
 
-    // 取最新提示词文件（优先 input/prompts/，为空回退 input/ 根）
+    // 附加搜索目录（extra_dirs widget：每行一个绝对路径）
+    extraDirs() {
+      return (this.w.extra_dirs?.value || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    }
+
+    // 取最新提示词文件：递归搜索整个 input 树 + 附加目录（AI 写到任意子目录都能找到）
     async fetchLatestPath() {
+      try {
+        const extra = this.extraDirs();
+        const q = extra.length ? "?extra=" + encodeURIComponent(JSON.stringify(extra)) : "";
+        const j = await fetchJson("/anima/prompt/latest" + q);
+        if (j && j.ok && j.path) return j.path;
+      } catch (e) { /* 端点不可用时回退旧逻辑 */ }
+      // 回退：旧目录枚举逻辑（prompts/ → input/ 根）
       for (const dir of ["prompts", ""]) {
         try {
           const j = await fetchJson("/anima/prompt/list?dir=" + encodeURIComponent(dir));
-          const f = (j.files && j.files[0]) || "";
+          const f = (j.files && j.files[0] && j.files[0].name) || "";
           if (f) return dir ? dir + "/" + f : f;
         } catch (e) { /* 继续尝试下一目录 */ }
       }
       return null;
+    }
+
+    // 统一选文件入口：写 widget + 更新显示 + 记入最近 + 解析
+    async _selectFile(path, mtime) {
+      this._setW(this.w.prompt_files, path);
+      if (this.fileCur) this.fileCur.textContent = path;
+      rememberFile(path, mtime || 0);
+      this._renderRecents();
+      this.checked.clear();
+      await this._parseFiles();
+    }
+
+    // 最近使用文件快捷列表（点击即用）
+    _renderRecents() {
+      if (!this.recentEl) return;
+      const list = loadRecentFiles().filter((r) => r.path);
+      const cur = (this.w.prompt_files?.value || "").trim();
+      if (!list.length) { this.recentEl.style.display = "none"; return; }
+      this.recentEl.style.display = "";
+      const chips = list.map((r) => {
+        const on = r.path === cur ? " on" : "";
+        return `<span class="anima-batch-recent-chip${on}" data-path="${escAttr(r.path)}" title="${escAttr(r.path)}（修改于 ${fmtMtime(r.mtime)}）">${esc(r.path)}</span>`;
+      }).join("");
+      this.recentEl.innerHTML = `<span class="anima-batch-recent-label">最近</span>${chips}<button class="anima-batch-recent-clear" title="清空最近列表">×</button>`;
+      this.recentEl.querySelectorAll(".anima-batch-recent-chip").forEach((el) => {
+        el.addEventListener("click", () => {
+          const p = el.getAttribute("data-path") || "";
+          if (!p) return;
+          const rec = loadRecentFiles().find((r) => r.path === p);
+          this._selectFile(p, rec ? rec.mtime : 0);
+        });
+      });
+      const clearBtn = this.recentEl.querySelector(".anima-batch-recent-clear");
+      if (clearBtn) clearBtn.addEventListener("click", (ev) => { ev.stopPropagation(); saveRecentFiles([]); this._renderRecents(); });
     }
 
     async _parseFiles() {
@@ -197,7 +265,8 @@
         cb.addEventListener("change", () => { cb.checked ? this.checked.add(key) : this.checked.delete(key); this._persistSelection(); });
         const info = document.createElement("span");
         info.className = "anima-batch-row-info";
-        info.textContent = `${g.name}（${g.count} 条）`;
+        const cnt = g.count ?? (g.prompts || []).length ?? 0;
+        info.textContent = `${g.name}（${cnt} 条）`;
         info.title = (g.prompts || []).slice(0, 2).join("\n———\n");
         row.appendChild(cb);
         row.appendChild(info);
@@ -224,7 +293,7 @@
         }
 
         this.listEl.appendChild(wrap);
-        if (this.checked.has(key)) total += g.count;
+        if (this.checked.has(key)) total += g.count ?? (g.prompts || []).length ?? 0;
       }
       if (this.countEl) this.countEl.textContent = `共 ${this.cachedGroups.length} 组 · 选中 ${total} 条提示词`;
     }
@@ -359,19 +428,50 @@
       container.className = "anima-batch-ui";
       this.rootEl = container;
 
-      // 隐藏全部标准 widget（参数全部由下方自定义 UI 控制；region_values/camera_values
-      // 等内部 JSON 不再裸显示在节点上，随工作流持久化照常）
-      for (const w of this.node.widgets || []) {
-        if (!w || w.name === "anima_batch_panel") continue;
-        w.hidden = true;
-        w.options = w.options || {};
-        w.options.hidden = true;
-        if (w.element) w.element.style.display = "none";
-        if (typeof w.computeSize === "function") {
-          const orig = w.computeSize;
-          w.computeSize = function () { try { return [0, -4]; } catch (e) { return orig.apply(this, arguments); } };
+      // 挂载：ComfyUI 官方 addDOMWidget（兼容 0.30.x）。insertBefore 兜底同样做。
+      // parentNode 判空，防止节点创建早期 widget 未挂 DOM 时抛错导致拖不进去。
+      // 挂载失败时【不隐藏标准 widget】→ 节点仍可用（手动填 prompt_files），避免渲染成空白框。
+      let mounted = false;
+      try {
+        if (typeof this.node.addDOMWidget === "function") {
+          this.node.addDOMWidget("anima_batch_panel", "custom", container, { serialize: false, hideOnZoom: false });
+          mounted = true;
+        } else {
+          const firstEl = this.node.widgets?.map((w) => w.element).find(Boolean);
+          if (firstEl && firstEl.parentNode) { firstEl.parentNode.insertBefore(container, firstEl); mounted = true; }
+          else if (this.node.element) { this.node.element.prepend(container); mounted = true; }
         }
-        if (typeof w.draw === "function") { w.draw = () => {}; }
+      } catch (e) {
+        console.error("[TK Prompt Batch] 挂载 UI 失败:", e);
+      }
+      if (!mounted) {
+        // 节点 DOM 可能尚未就绪，延迟再试一次；仍失败则给出可见提示
+        setTimeout(() => {
+          try {
+            if (!container.isConnected && this.node.element) { this.node.element.prepend(container); mounted = container.isConnected; }
+          } catch { /* 忽略 */ }
+          if (!container.isConnected) {
+            console.error("[TK Prompt Batch] UI 面板挂载失败：已保留标准 widget（可手动填写 prompt_files）");
+            this._mountFailed = true;
+          }
+        }, 0);
+      }
+
+      // 挂载成功才隐藏标准 widget（参数全部由下方自定义 UI 控制；region_values/camera_values
+      // 等内部 JSON 不再裸显示在节点上，随工作流持久化照常）
+      if (mounted) {
+        for (const w of this.node.widgets || []) {
+          if (!w || w.name === "anima_batch_panel") continue;
+          w.hidden = true;
+          w.options = w.options || {};
+          w.options.hidden = true;
+          if (w.element) w.element.style.display = "none";
+          if (typeof w.computeSize === "function") {
+            const orig = w.computeSize;
+            w.computeSize = function () { try { return [0, -4]; } catch (e) { return orig.apply(this, arguments); } };
+          }
+          if (typeof w.draw === "function") { w.draw = () => {}; }
+        }
       }
 
       // 文件区：当前文件显示 + 「选择文件」按钮（可导航目录浏览器）
@@ -392,12 +492,18 @@
       latestBtn.type = "button";
       latestBtn.className = "anima-batch-btn";
       latestBtn.textContent = "🔄 最新";
-      latestBtn.title = "一键选中 input/prompts/ 下最新修改的提示词文件";
+      latestBtn.title = "一键选中整个 input 目录树（含附加目录）里最新修改的提示词文件";
       fileRow.appendChild(fileLbl);
       fileRow.appendChild(this.fileCur);
       fileRow.appendChild(latestBtn);
       fileRow.appendChild(browseBtn);
       container.appendChild(fileRow);
+
+      // 最近使用文件（点击即用）
+      this.recentEl = document.createElement("div");
+      this.recentEl.className = "anima-batch-recents";
+      container.appendChild(this.recentEl);
+      this._renderRecents();
 
       // 自动最新开关：队列时自动使用 prompts/ 下最新文件（无需手动选）
       const autoRow = document.createElement("div");
@@ -433,12 +539,9 @@
       latestBtn.addEventListener("click", async () => {
         try {
           const path = await this.fetchLatestPath();
-          if (!path) { alert("input/prompts/ 与 input/ 下都没有提示词文件"); return; }
-          this._setW(this.w.prompt_files, path);
-          this.fileCur.textContent = path;
+          if (!path) { alert("input/ 与附加目录下都没有提示词文件"); return; }
           fileList.style.display = "none";
-          this.checked.clear();
-          await this._parseFiles();
+          await this._selectFile(path, 0);
         } catch (e) { alert("获取最新文件失败：" + String((e && e.message) || e)); }
       });
 
@@ -448,6 +551,91 @@
       fileList.style.display = "none";
       container.appendChild(fileList);
       let browseDir = ""; // 当前浏览目录（相对 input/ 或绝对路径）
+
+      // 全树搜索：输入文件名关键词 → 匹配 input 全树 + 附加目录（AI 写到哪都能搜到）
+      const searchRow = document.createElement("div");
+      searchRow.className = "anima-batch-nav-pathrow";
+      const searchInput = document.createElement("input");
+      searchInput.type = "text";
+      searchInput.className = "anima-batch-nav-input";
+      searchInput.placeholder = "🔎 全树搜索文件名（input 子目录 + 附加目录）…";
+      searchRow.appendChild(searchInput);
+      fileList.appendChild(searchRow);
+      let searchTimer = null;
+      const runSearch = async () => {
+        const q = searchInput.value.trim().toLowerCase();
+        const old = fileList.querySelector(".anima-batch-search-results");
+        if (old) old.remove();
+        if (!q) return;
+        try {
+          const extra = this.extraDirs();
+          const eq = extra.length ? "&extra=" + encodeURIComponent(JSON.stringify(extra)) : "";
+          const j = await fetchJson("/anima/prompt/list?recursive=1" + eq);
+          const matches = (j.files || []).filter((f) => f.path.toLowerCase().includes(q)).slice(0, 30);
+          const box = document.createElement("div");
+          box.className = "anima-batch-search-results";
+          if (!matches.length) {
+            box.innerHTML = '<div class="anima-batch-empty">没有匹配的文件</div>';
+          } else {
+            for (const f of matches) {
+              const row2 = document.createElement("div");
+              row2.className = "anima-batch-file anima-batch-file-row";
+              const ns = document.createElement("span");
+              ns.className = "anima-batch-file-name";
+              ns.textContent = "📄 " + f.path;
+              const mt = document.createElement("span");
+              mt.className = "anima-batch-file-meta";
+              const fresh = (Date.now() - f.mtime) < 24 * 3600 * 1000;
+              mt.textContent = (fresh ? "新 " : "") + fmtMtime(f.mtime);
+              if (fresh) mt.classList.add("fresh");
+              row2.appendChild(ns);
+              row2.appendChild(mt);
+              row2.title = "选择：" + f.path + "（修改于 " + fmtMtime(f.mtime) + "）";
+              row2.addEventListener("click", () => {
+                this._selectFile(f.path, f.mtime);
+                fileList.style.display = "none";
+              });
+              box.appendChild(row2);
+            }
+          }
+          fileList.appendChild(box);
+        } catch (e) { /* 搜索失败忽略 */ }
+      };
+      searchInput.oninput = () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(runSearch, 250);
+      };
+
+      // 附加搜索目录（AI 落盘到 input 之外时配置；每行一个绝对路径）
+      const extraRow = document.createElement("div");
+      extraRow.className = "anima-batch-nav-pathrow";
+      const extraToggle = document.createElement("button");
+      extraToggle.type = "button";
+      extraToggle.className = "anima-batch-btn";
+      extraToggle.textContent = "＋ 附加目录";
+      extraToggle.title = "配置额外提示词目录（绝对路径，每行一个）；「最新」/全树搜索/自动最新都会覆盖";
+      const extraBox = document.createElement("textarea");
+      extraBox.className = "anima-batch-nav-input";
+      extraBox.rows = 2;
+      extraBox.placeholder = "每行一个绝对路径，如 D:\\prompts\n留空关闭";
+      extraBox.style.display = "none";
+      extraBox.value = (this.w.extra_dirs?.value || "");
+      extraBox.oninput = () => {
+        if (this.w.extra_dirs) this._setW(this.w.extra_dirs, extraBox.value);
+      };
+      extraToggle.addEventListener("click", () => {
+        const show = extraBox.style.display === "none";
+        extraBox.style.display = show ? "" : "none";
+        extraToggle.textContent = show ? "－ 附加目录" : "＋ 附加目录";
+        if (show) {
+          extraBox.value = (this.w.extra_dirs?.value || "");
+          extraBox.focus();
+        }
+      });
+      extraRow.appendChild(extraToggle);
+      extraRow.appendChild(extraBox);
+      fileList.appendChild(extraRow);
+
       const renderBrowser = async () => {
         fileList.innerHTML = "";
         let j;
@@ -493,18 +681,25 @@
           row.addEventListener("click", () => { browseDir = browseDir ? browseDir + "/" + d : d; renderBrowser(); });
           fileList.appendChild(row);
         }
-        // 提示词文件（点击选择）
+        // 提示词文件（点击选择；显示修改时间 + 「新」徽章）
         for (const f of j.files || []) {
           const row = document.createElement("div");
-          row.className = "anima-batch-file";
-          row.textContent = "📄 " + f;
-          row.title = "选择：" + (browseDir ? browseDir + "/" + f : f);
+          row.className = "anima-batch-file anima-batch-file-row";
+          const nameSpan = document.createElement("span");
+          nameSpan.className = "anima-batch-file-name";
+          nameSpan.textContent = "📄 " + (f.name || f);
+          const meta = document.createElement("span");
+          meta.className = "anima-batch-file-meta";
+          const fresh = f.mtime && (Date.now() - f.mtime) < 24 * 3600 * 1000;
+          meta.textContent = (fresh ? "新 " : "") + fmtMtime(f.mtime);
+          if (fresh) meta.classList.add("fresh");
+          row.appendChild(nameSpan);
+          row.appendChild(meta);
+          const path = browseDir ? browseDir + "/" + (f.name || f) : (f.name || f);
+          row.title = "选择：" + path + "（修改于 " + fmtMtime(f.mtime) + "）";
           row.addEventListener("click", () => {
-            const path = browseDir ? browseDir + "/" + f : f;
-            this._setW(this.w.prompt_files, path);
-            this.fileCur.textContent = path;
+            this._selectFile(path, f.mtime);
             fileList.style.display = "none";
-            this._parseFiles();
           });
           fileList.appendChild(row);
         }
@@ -538,6 +733,7 @@
       btnRow.className = "anima-batch-btns";
       const parseBtn = document.createElement("button");
       parseBtn.type = "button";
+      parseBtn.className = "anima-batch-btn anima-batch-parse-btn";
       parseBtn.textContent = "解析分组";
       parseBtn.addEventListener("click", async () => {
         // 先同步 targets 下拉（保证注入目标最新）
@@ -566,20 +762,6 @@
       this.resultEl = document.createElement("div");
       this.resultEl.className = "anima-batch-report-wrap";
       container.appendChild(this.resultEl);
-
-      // 挂载：ComfyUI 官方 addDOMWidget（兼容 0.30.x）。insertBefore 兜底同样做
-      // parentNode 判空，防止节点创建早期 widget 未挂 DOM 时抛错导致拖不进去。
-      try {
-        if (typeof this.node.addDOMWidget === "function") {
-          this.node.addDOMWidget("anima_batch_panel", "custom", container, { serialize: false, hideOnZoom: false });
-        } else {
-          const firstEl = this.node.widgets?.map((w) => w.element).find(Boolean);
-          if (firstEl && firstEl.parentNode) firstEl.parentNode.insertBefore(container, firstEl);
-          else if (this.node.element) this.node.element.prepend(container);
-        }
-      } catch (e) {
-        console.error("[TK Prompt Batch] 挂载 UI 失败:", e);
-      }
 
       // 初始恢复勾选 + 渲染（配置恢复后）
       try {
@@ -1013,6 +1195,8 @@
             ui.checked.clear();
             ui._setW(ui.w.prompt_files, path);
             if (ui.fileCur) ui.fileCur.textContent = path;
+            rememberFile(path, 0);
+            if (typeof ui._renderRecents === "function") ui._renderRecents();
             await ui._parseFiles();
           }
         } catch (e) { /* 自动刷新失败不阻塞队列 */ }
@@ -1254,6 +1438,7 @@ function init() {
             negative_target: w("negative_target"), camera_target: w("camera_target"),
             output_subfolder: w("output_subfolder"), groups_selection: w("groups_selection"),
             region_values: w("region_values"), camera_values: w("camera_values"),
+            extra_dirs: w("extra_dirs"),
           });
           this._animaBatchUI = ui;
           ui.build();
@@ -1286,20 +1471,37 @@ function init() {
 .anima-batch-file { padding:3px 6px; font-size:11px; cursor:pointer; color:var(--fg-color,#ccc); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .anima-batch-file:hover { background:var(--comfy-menu-bg,#333); color:#c586ff; }
 .anima-batch-count { font-size:11px; color:#c586ff; }
-.anima-batch-hint { font-size:10px; color:var(--fg-color,#777); line-height:1.4; }
+.anima-batch-hint { font-size:10px; color:var(--fg-color,#999); line-height:1.4; }
 .anima-batch-list { max-height:200px; overflow:auto; display:flex; flex-direction:column; gap:2px; }
-.anima-batch-group { display:flex; flex-direction:column; gap:2px; padding:2px 0; border-bottom:1px dashed rgba(255,255,255,0.07); }
+.anima-batch-group { display:flex; flex-direction:column; gap:2px; padding:3px 0; border-bottom:1px dashed rgba(255,255,255,0.07); }
 .anima-batch-row { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--fg-color,#ccc); }
-.anima-batch-row input { margin:0; }
-.anima-batch-row-info { flex:1; cursor:help; }
+.anima-batch-row input { margin:0; flex-shrink:0; }
+.anima-batch-row-info { flex:1; min-width:0; cursor:help; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .anima-batch-region-row { display:flex; align-items:center; padding-left:20px; }
 .anima-batch-region { flex:1; min-width:0; background:var(--comfy-input-bg,#222); color:var(--fg-color,#ddd); border:1px solid var(--border-color,#444); border-radius:3px; font-size:10px; padding:2px 4px; }
 .anima-batch-region:focus { border-color:#8b5cf6; outline:none; }
-.anima-batch-empty { font-size:11px; color:var(--fg-color,#777); }
-.anima-batch-group { border-bottom:1px dashed var(--border-color,#2a2a2a); padding:2px 0; }
-.anima-batch-cam-btn { flex:0 0 auto; font-size:10px; padding:2px 8px; margin-left:auto; background:var(--comfy-input-bg,#222); color:var(--fg-color,#999); border:1px solid var(--border-color,#444); border-radius:4px; cursor:pointer; }
+.anima-batch-empty { font-size:11px; color:var(--fg-color,#999); }
+.anima-batch-group { border-bottom:1px dashed var(--border-color,#2a2a2a); padding:3px 0; }
+.anima-batch-cam-btn { flex:0 0 auto; font-size:10px; padding:2px 8px; margin-left:auto; background:var(--comfy-input-bg,#222); color:var(--fg-color,#bbb); border:1px solid var(--border-color,#4a4a52); border-radius:4px; cursor:pointer; transition:border-color .15s, color .15s, background .15s; }
 .anima-batch-cam-btn:hover { border-color:#8b5cf6; color:#c9b8ff; }
 .anima-batch-cam-btn.has { background:rgba(139,92,246,0.18); color:#c9b8ff; border-color:#8b5cf6; }
+/* 主操作按钮强调 */
+.anima-batch-parse-btn { background:rgba(139,92,246,0.22) !important; border-color:#8b5cf6 !important; color:#d6c8ff !important; font-weight:600; }
+.anima-batch-parse-btn:hover { background:rgba(139,92,246,0.35) !important; }
+/* 最近使用文件 */
+.anima-batch-recents { display:none; flex-wrap:wrap; gap:4px; align-items:center; }
+.anima-batch-recent-label { font-size:10px; color:var(--fg-color,#888); flex-shrink:0; }
+.anima-batch-recent-chip { font-size:10px; padding:2px 7px; background:var(--comfy-input-bg,#222); border:1px solid var(--border-color,#444); border-radius:10px; cursor:pointer; color:#bbb; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; transition:border-color .15s, color .15s; }
+.anima-batch-recent-chip:hover { border-color:#8b5cf6; color:#d6c8ff; }
+.anima-batch-recent-chip.on { border-color:#8b5cf6; color:#c9b8ff; background:rgba(139,92,246,0.15); }
+.anima-batch-recent-clear { font-size:11px; color:#888; background:none; border:none; cursor:pointer; padding:0 2px; line-height:1; }
+.anima-batch-recent-clear:hover { color:#ff6b6b; }
+/* 文件行：名称 + 时间 */
+.anima-batch-file-row { display:flex; align-items:center; gap:6px; }
+.anima-batch-file-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.anima-batch-file-meta { flex:0 0 auto; font-size:10px; color:var(--fg-color,#666); }
+.anima-batch-file-meta.fresh { color:#4aba8b; font-weight:600; }
+.anima-batch-search-results { border-top:1px solid var(--border-color,#2a2a2a); max-height:150px; overflow:auto; }
 .anima-batch-cam-editor { padding:6px; margin:4px 0 2px 20px; background:var(--comfy-input-bg,#1a1a1f); border:1px solid var(--border-color,#333); border-radius:6px; display:flex; flex-direction:column; gap:5px; }
 .anima-batch-cam-row { display:flex; align-items:center; gap:6px; }
 .anima-batch-cam-sel { flex:1; min-width:0; background:var(--comfy-input-bg,#222); color:var(--fg-color,#ddd); border:1px solid var(--border-color,#444); border-radius:4px; font-size:11px; padding:3px 4px; }
