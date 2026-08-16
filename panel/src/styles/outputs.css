@@ -26,12 +26,13 @@
 }
 .outputs-reauth-btn:hover { opacity: 0.9; }
 
-/* 主布局 */
+/* 主布局：固定视口高度，网格内部滚动（配合虚拟滚动） */
 .outputs-layout {
   display: flex;
   gap: 16px;
   padding: 16px;
-  min-height: calc(100vh - 120px);
+  height: calc(100vh - 120px);
+  min-height: 480px;
 }
 
 /* 侧边栏 */
@@ -268,10 +269,13 @@
   font-size: 13px;
 }
 
-/* 主内容区 */
+/* 主内容区：纵向排列，网格占满剩余高度并内部滚动 */
 .outputs-main {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 /* 工具栏 */
@@ -386,16 +390,13 @@
   white-space: nowrap;
 }
 
-/* 图片网格 */
+/* 图片网格：内部滚动容器（虚拟行由 JS 渲染为 grid 行；列表模式同一容器滚动） */
 .outputs-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 16px;
-}
-
-/* 列表模式：grid 容器变 block，让内部 .outputs-list 自由布局 */
-.outputs-grid:has(.outputs-list) {
-  display: block;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
+  overscroll-behavior: contain;
 }
 
 /* 图片卡片 */
@@ -531,6 +532,10 @@
 
 .outputs-card-info {
   padding: 8px 10px;
+  /* 固定高度：虚拟滚动行高依赖它（与 Outputs.ts OUTPUTS_INFO_H 同步）；
+     内部 actions 两行预留，超出裁剪，保证每张卡高度一致 */
+  height: 136px;
+  overflow: hidden;
 }
 
 .outputs-card-name {
@@ -1203,11 +1208,6 @@
     width: 100%;
     min-width: 0;
     max-height: 200px;
-  }
-
-  .outputs-grid {
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 10px;
   }
 
   .outputs-list {

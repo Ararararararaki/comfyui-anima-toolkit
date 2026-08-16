@@ -7,23 +7,22 @@ import { restoreAllFromDb } from '../services/outputManifest'
 import { preloadThumbnailsFromDb } from '../services/outputThumbnail'
 import { hashPath } from '../services/outputManifest'
 import { outputsDb } from '../db/outputsDb'
-import { esc, escAttr, showToast, copyText, icon, attachSearchClear } from '../utils'
+import { esc, escAttr, showToast, copyText, icon, attachSearchClear, debounce } from '../utils'
 import { confirmModal, promptModal } from '../components/Modal'
 import type { OutputFile, OutputMetadata, OutputDir, OutputScanStatus } from '../types/outputs'
 import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow } from '../services/outputMetadata'
 import { extractPngTextChunks, injectPngTextChunks } from '../services/pngChunks'
 import { backfillPrompts } from '../services/outputMetadataService'
+import { VirtualScroll, type VirtualScrollItemStyle } from '../components/VirtualScroll'
 import JSZip from 'jszip'
 
 import {
   renderDirTree as renderDirTreeHtml,
-  renderGrid,
   renderList,
   renderEmpty,
   renderStats,
   renderMetadataPanel,
   renderImageCard,
-  cardSignature,
   STATUS_DEFS,
 } from '../renderers/outputRenderer'
 
@@ -197,16 +196,17 @@ export async function activateOutputs() {
     } else {
       // 已有缓存 -> 尝试检测新文件（轻量操作）；60s 节流避免每次切换栏目都遍历目录
       const now = Date.now()
-      if (now - _lastIncrementalScan < 60000) return
-      _lastIncrementalScan = now
-      try {
-        const count = await scanOutputDirIncremental(state.dirHandle)
-        if (count > 0) {
-          dirTree = await buildDirTree(state.dirHandle)
-          renderDirTree(dirTree)
-          renderOutputsView()
-        }
-      } catch { /* 静默失败 */ }
+      if (now - _lastIncrementalScan >= 60000) {
+        _lastIncrementalScan = now
+        try {
+          const count = await scanOutputDirIncremental(state.dirHandle)
+          if (count > 0) {
+            dirTree = await buildDirTree(state.dirHandle)
+            renderDirTree(dirTree)
+            renderOutputsView()
+          }
+        } catch { /* 静默失败 */ }
+      }
     }
 
     // 后台补生成缺失的缩略图（非关键，失败不影响主流程）
@@ -220,6 +220,10 @@ export async function activateOutputs() {
     const empty = document.querySelector('.outputs-empty') as HTMLElement
     if (empty) empty.style.display = 'flex'
   }
+
+  // 每次进入栏目都重渲染：虚拟滚动的行列几何依赖可见宽度
+  // （旧 CSS grid 在显示时自动 reflow；现在由 JS 计算，隐藏期渲染过宽 0 的几何必须重建）
+  renderOutputsView()
 
   setupInfiniteScroll()
   initDragSelect()
@@ -394,6 +398,28 @@ function updateFilterPanel() {
   if (clearBtn) clearBtn.style.display = hasAny ? 'block' : 'none'
 }
 
+// ── 网格虚拟滚动（Perf-1：全量数据虚拟渲染，DOM 只含可视行）──
+let _outputsVS: VirtualScroll | null = null
+/** 卡片信息区固定高度（含 actions 两行预留），与 CSS `.outputs-card-info` 同步 */
+const OUTPUTS_INFO_H = 136
+
+interface OutputsGeom { cols: number; gap: number; cardW: number; rowH: number }
+
+/** 网格几何：与 CSS `repeat(auto-fill, minmax(200px,1fr))` 保持一致（≤768px 时 150px/10px）；
+ *  行高 = 卡宽 + 信息区高 + 卡片上下边框 4px（box-sizing: border-box 下内容区少 4px） */
+function outputsGeom(width: number): OutputsGeom {
+  const narrow = window.innerWidth <= 768
+  const min = narrow ? 150 : 200
+  const gap = narrow ? 10 : 16
+  const cols = Math.max(1, Math.floor((width + gap) / (min + gap)))
+  const cardW = (width - (cols - 1) * gap) / cols
+  return { cols, gap, cardW, rowH: Math.round(cardW + OUTPUTS_INFO_H + 4) }
+}
+
+function destroyOutputsVS() {
+  if (_outputsVS) { _outputsVS.destroy(); _outputsVS = null }
+}
+
 function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
   const el = document.querySelector('.outputs-grid') as HTMLElement
   if (!el) return
@@ -402,52 +428,44 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
   const hasDir = !!state.dirHandle
 
   if (files.length === 0) {
+    destroyOutputsVS()
     el.innerHTML = renderEmpty(hasDir)
     return
   }
 
   if (state.viewMode === 'grid') {
-    // 卡片 LoRA 标签直接取 meta.loras（瘦身版元数据在入库时已提取，渲染零解析）
-    const lorasCache = new Map<string, string[]>()
-    for (const f of files) {
-      const meta = state.metadataCache.get(f.id)
-      if (meta?.loras?.length) lorasCache.set(f.id, meta.loras)
-    }
+    // ── 网格模式：虚拟滚动渲染全量（缩略图走 thumbMemory 回填 + IntersectionObserver，翻页不闪烁）──
+    const geom = outputsGeom(el.clientWidth)
+    const totalRows = Math.ceil(files.length / geom.cols)
 
-    // 增量渲染：数据未变的卡片复用已有 DOM（img 保持已加载的 src），
-    // 只新建新增/变化的卡片 → 新图出现时旧图不再重新加载闪烁
-    const existing = new Map<string, HTMLElement>()
-    for (const card of Array.from(el.querySelectorAll<HTMLElement>('.outputs-card'))) {
-      const id = card.dataset.id
-      if (id) existing.set(id, card)
-    }
-
-    const fragment = document.createDocumentFragment()
-    for (const f of files) {
-      const meta = state.metadataCache.get(f.id)
-      const sig = cardSignature(f)
-      const old = existing.get(f.id)
-      if (old && old.dataset.sig === sig) {
-        // 数据未变 → 复用 DOM（图片保持已加载状态）；只同步 meta 相关显示，不重建图片
-        syncCardMeta(old, f, meta ?? null)
-        fragment.appendChild(old)
-      } else {
-        const html = renderImageCard(f, meta ?? null, state.selectedIds.has(f.id), lorasCache.get(f.id), sig)
-        const tmp = document.createElement('div')
-        tmp.innerHTML = html
-        const node = tmp.firstElementChild as HTMLElement
-        // 命中内存缓存缩略图 → 直接回填 src，避免新卡片从空 src 闪一下
-        const img = node.querySelector('img[data-file-path]') as HTMLImageElement | null
-        const p = img?.dataset.filePath
-        if (img && p) {
-          const cached = state.thumbMemory.get(p)
-          if (cached) img.src = cached
-        }
-        fragment.appendChild(node)
+    // renderItem 闭包捕获本次 files/geom，每次渲染带最新闭包
+    const renderItem = (rowIndex: number, style: VirtualScrollItemStyle) => {
+      const s = useOutputStore.getState()
+      const startIdx = rowIndex * geom.cols
+      let html = ''
+      for (let i = 0; i < geom.cols; i++) {
+        const f = files[startIdx + i]
+        if (!f) break
+        const meta = s.metadataCache.get(f.id)
+        html += renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined)
       }
+      return `<div style="position:absolute;top:${style.top}px;left:0;width:100%;height:${geom.rowH}px;display:grid;grid-template-columns:repeat(${geom.cols}, minmax(0,1fr));gap:${geom.gap}px;padding:0">${html}</div>`
     }
-    el.replaceChildren(fragment)
+
+    if (_outputsVS && el.querySelector('.virtual-scroll-inner')) {
+      // itemHeight 必须一起更新：隐藏期创建的实例可能是退化几何（宽 0），
+      // 只改 totalItems 会导致 padding 沿用旧行高、滚动高度错乱
+      el.querySelector('.outputs-empty')?.remove()   // 清掉静态 HTML 占位残留
+      _outputsVS.update({ totalItems: totalRows, renderItem, itemHeight: geom.rowH })
+    } else {
+      destroyOutputsVS()
+      removeOutputsSentinel()
+      el.innerHTML = ''   // 清空容器（含 index.html 静态 .outputs-empty 占位），VirtualScroll 只 append 不清
+      _outputsVS = new VirtualScroll({ container: el, itemHeight: geom.rowH, totalItems: totalRows, renderItem })
+    }
   } else {
+    // ── 列表模式：保持原渲染（整表重建 + 加载更多），哨兵在滚动容器内驱动加载 ──
+    destroyOutputsVS()
     el.innerHTML = renderList(files, state.selectedIds, state.metadataCache)
     // 同步回填已缓存的缩略图，避免重建 DOM 时图片从灰图重新闪烁
     for (const img of el.querySelectorAll('img[data-file-path]')) {
@@ -457,6 +475,7 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
         if (cached) (img as HTMLImageElement).src = cached
       }
     }
+    setupInfiniteScroll()
   }
 }
 
@@ -1414,6 +1433,14 @@ function bindOutputsEvents() {
 
   // ── 无限滚动 ──
   setupInfiniteScroll()
+
+  // 网格虚拟滚动的行几何随窗口宽度变化 → 重渲染（虚拟行宽/列数需重建）
+  window.addEventListener('resize', debounce(() => {
+    const section = document.getElementById('sectionOutputs')
+    if (section && !section.classList.contains('section-hidden') && useOutputStore.getState().viewMode === 'grid') {
+      renderOutputsView()
+    }
+  }, 200))
 }
 
 // ── 拖拽框选：用 document 级事件，确保不被其他元素拦截 ──
@@ -1430,6 +1457,34 @@ function initDragSelect() {
   let _justBoxed = false
 
   function getCardIdsInRect(l: number, t: number, r: number, b: number): string[] {
+    const state = useOutputStore.getState()
+    const grid = document.querySelector('.outputs-grid') as HTMLElement | null
+    if (!grid) return []
+
+    // 网格模式（虚拟滚动）：DOM 里只有可视行，改用「选区矩形 → 行列索引」精确换算
+    if (state.viewMode === 'grid' && grid.clientWidth > 0) {
+      const geom = outputsGeom(grid.clientWidth)
+      const sx = window.scrollX, sy = window.scrollY
+      const gridRect = grid.getBoundingClientRect()
+      const gridLeft = gridRect.left + sx
+      const gridTop = gridRect.top + sy
+      const scTop = grid.scrollTop   // 网格内部滚动，文档坐标需加回 scrollTop
+      const firstRow = Math.max(0, Math.floor((t - gridTop + scTop) / geom.rowH))
+      const lastRow = Math.max(0, Math.floor((b - gridTop + scTop) / geom.rowH))
+      const firstCol = Math.max(0, Math.floor((l - gridLeft) / (geom.cardW + geom.gap)))
+      const lastCol = Math.max(0, Math.floor((r - gridLeft) / (geom.cardW + geom.gap)))
+      const ids: string[] = []
+      const files = state.filteredFiles
+      for (let row = firstRow; row <= lastRow; row++) {
+        for (let col = firstCol; col <= lastCol; col++) {
+          const f = files[row * geom.cols + col]
+          if (f) ids.push(f.id)
+        }
+      }
+      return ids
+    }
+
+    // 列表模式：DOM 命中（列表未虚拟化，全部行都在 DOM）
     const ids: string[] = []
     const sx = window.scrollX, sy = window.scrollY
     document.querySelectorAll('.outputs-card, .outputs-list-card').forEach(el => {
@@ -1537,21 +1592,33 @@ function initDragSelect() {
   document.addEventListener('mouseleave', cancelDrag)
 }
 
+/** 移除无限滚动哨兵（网格模式用内部滚动监听，不需要它） */
+function removeOutputsSentinel() {
+  const old = document.querySelector('.outputs-scroll-sentinel') as HTMLElement | null
+  if (old) {
+    const grid = old.parentElement as HTMLElement | null
+    ;(grid as any)?._outputsSentinelIO?.disconnect()
+    delete (grid as any)?._outputsSentinelIO
+    old.remove()
+  }
+}
+
 function setupInfiniteScroll() {
-  // 查找或创建滚动哨兵元素
-  let sentinel = document.querySelector('.outputs-scroll-sentinel') as HTMLElement
+  // 网格模式：内部滚动容器自己驱动 loadMore（见 renderImageGrid），不需要哨兵
+  if (useOutputStore.getState().viewMode === 'grid') {
+    removeOutputsSentinel()
+    return
+  }
+
+  // 列表模式：grid 是内部滚动容器 → 哨兵放容器末尾
+  const grid = document.querySelector('.outputs-grid') as HTMLElement | null
+  // 清理旧观察器（renderList 每次 innerHTML 重建会清掉哨兵，这里幂等重建）
+  ;(grid as any)?._outputsSentinelIO?.disconnect()
+  let sentinel = document.querySelector('.outputs-scroll-sentinel') as HTMLElement | null
   if (!sentinel) {
     sentinel = document.createElement('div')
     sentinel.className = 'outputs-scroll-sentinel'
-    const outputsGrid = document.querySelector('.outputs-grid')
-    if (outputsGrid) {
-      outputsGrid.after(sentinel)
-    }
-  }
-
-  // 清理旧观察器
-  if ((sentinel as any)._io) {
-    ;(sentinel as any)._io.disconnect()
+    if (grid) grid.appendChild(sentinel)
   }
 
   const observer = new IntersectionObserver((entries) => {
@@ -1569,7 +1636,7 @@ function setupInfiniteScroll() {
   }, { rootMargin: '400px' })
 
   observer.observe(sentinel)
-  ;(sentinel as any)._io = observer
+  if (grid) (grid as any)._outputsSentinelIO = observer
 }
 
 async function preloadMetadataBatch(files: OutputFile[], cache: Map<string, OutputMetadata>) {

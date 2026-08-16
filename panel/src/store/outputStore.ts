@@ -177,7 +177,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     set({ files })
     get().applyFilters()
   },
-  setViewMode: (viewMode) => { set({ viewMode }); persistFilterState(get()) },
+  setViewMode: (viewMode) => { set({ viewMode }); persistFilterState(get()); get().applyFilters() },
   setSortKey: (sortKey) => {
     set({ sortKey, page: 1 })
     persistFilterState(get())
@@ -398,7 +398,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   },
 
   applyFilters: () => {
-    const { files, filterKey, searchQuery, sortKey, sortOrder, currentPath, metadataCache, page,
+    const { files, filterKey, searchQuery, sortKey, sortOrder, currentPath, metadataCache, page, viewMode,
       filterModel, filterLora, filterDateMin, filterDateMax, filterQuickPeriod, filterStatusFlags, filterTag, filterCategory } = get()
 
     let filtered = [...files]
@@ -483,13 +483,14 @@ export const useOutputStore = create<OutputState>((set, get) => ({
       }
     })
 
-    // 分页
+    // 分页：仅列表模式保留「加载更多」限流（列表未虚拟化，DOM 会随页数累积）；
+    // 网格模式由 VirtualScroll 渲染全量（DOM 只含可视行，无需切片）
     const total = filtered.length
-    const paged = filtered.slice(0, page * PAGE_SIZE)
+    const paged = viewMode === 'list' ? filtered.slice(0, page * PAGE_SIZE) : filtered
 
     set({
       filteredFiles: paged,
-      hasMore: paged.length < total
+      hasMore: viewMode === 'list' && paged.length < total
     })
   },
 }))

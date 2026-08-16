@@ -62,6 +62,7 @@ export class VirtualScroll {
     const viewportHeight = this.container.clientHeight
 
     if (totalItems === 0) {
+      this.inner.style.height = 'auto'
       this.inner.style.paddingTop = '0'
       this.inner.style.paddingBottom = '0'
       this.inner.innerHTML = ''
@@ -75,6 +76,9 @@ export class VirtualScroll {
     // 用 padding 撑出滚动空间
     this.inner.style.paddingTop = (startIndex * itemHeight) + 'px'
     this.inner.style.paddingBottom = (Math.max(0, totalItems - endIndex) * itemHeight) + 'px'
+    // 关键：inner 固定为总高度。行是 absolute 定位（不占文档流），
+    // 若 inner 高度只等于 padding，容器可滚动范围会少掉「已渲染行」的高度 → 大列表最后几行滚不到
+    this.inner.style.height = totalHeight + 'px'
 
     // 只渲染可见条目
     let html = ''
