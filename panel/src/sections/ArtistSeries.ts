@@ -9,7 +9,7 @@ import { getSocialIcon, pool, resetDanbooruLimiter, getDanbooruCount, getDanboor
 import { useArtistStore } from '../store/artistStore'
 import { parsePromptInput, generatePromptText } from './PromptParser'
 import { openModal, closeModal, promptModal, confirmModal } from '../components/Modal'
-import { VirtualScroll } from '../components/VirtualScroll'
+import { VirtualScroll, type VirtualScrollItemStyle } from '../components/VirtualScroll'
 import type { ArtistData } from '../types'
 
 // ── 常量 ──
@@ -95,23 +95,33 @@ export function renderArtists() {
   const columns = getArtistColumns(grid.clientWidth)
   const totalRows = Math.ceil(filtered.length / columns)
 
-  destroyArtistVS()
-  _artistVS = new VirtualScroll({
-    container: grid,
-    itemHeight: ARTIST_ROW_HEIGHT,
-    totalItems: totalRows,
-    renderItem: (rowIndex, style) => {
-      const s = useArtistStore.getState()
-      const startIdx = rowIndex * columns
-      let html = ''
-      for (let i = 0; i < columns; i++) {
-        const a = filtered[startIdx + i]
-        if (!a) break
-        html += `<div style="flex:1;min-width:0;padding:2px">${renderArtistCard(a, s)}</div>`
-      }
-      return `<div style="position:absolute;top:${style.top}px;left:0;width:100%;height:${style.height}px;display:flex;gap:${ARTIST_CARD_GAP - 4}px;padding:0 ${ARTIST_CARD_GAP / 2}px">${html}</div>`
-    },
-  })
+  // renderItem 闭包捕获本次的 filtered/columns，每次 render 都要带最新闭包
+  const renderItem = (rowIndex: number, style: VirtualScrollItemStyle) => {
+    const s = useArtistStore.getState()
+    const startIdx = rowIndex * columns
+    let html = ''
+    for (let i = 0; i < columns; i++) {
+      const a = filtered[startIdx + i]
+      if (!a) break
+      html += `<div style="flex:1;min-width:0;padding:2px">${renderArtistCard(a, s)}</div>`
+    }
+    return `<div style="position:absolute;top:${style.top}px;left:0;width:100%;height:${style.height}px;display:flex;gap:${ARTIST_CARD_GAP - 4}px;padding:0 ${ARTIST_CARD_GAP / 2}px">${html}</div>`
+  }
+
+  // Perf-7：数据变化时复用 VirtualScroll 实例（update 只重渲染可见行），
+  // 不再每次 destroy + new（后者整容器重建 + 滚动位置归零）。
+  // 若 inner 容器已被外部 innerHTML 覆盖（如 renderPresets）则退化为重建。
+  if (_artistVS && grid.querySelector('.virtual-scroll-inner')) {
+    _artistVS.update({ totalItems: totalRows, renderItem })
+  } else {
+    destroyArtistVS()
+    _artistVS = new VirtualScroll({
+      container: grid,
+      itemHeight: ARTIST_ROW_HEIGHT,
+      totalItems: totalRows,
+      renderItem,
+    })
+  }
   renderSidebarLeft()
   renderSidebarRight()
 }
