@@ -32,6 +32,36 @@
     return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
+  // ── 注入目标选择持久化（localStorage，防工作流重载/图重建后选择丢失）──
+  // 2026-08-17 修复：用户反馈「正向提示词注入节点被清空」→ 批生成在无注入状态下
+  // 提交了 N 份重复提示词。这里按 workflow id + 节点 id 保存目标选择，重载后自动恢复。
+  const TARGETS_KEY = "anima_tk_targets_v1";
+  function currentWorkflowId(app) {
+    try {
+      return app?.workflow?.id || app?.activeWorkflow?.id ||
+        (app?.workflow?.name) || "default";
+    } catch { return "default"; }
+  }
+  function loadSavedTargets(wfId, nodeId) {
+    try {
+      const all = JSON.parse(localStorage.getItem(TARGETS_KEY) || "{}");
+      const rec = (all[wfId] || {})[String(nodeId)] || {};
+      return {
+        positive_target: rec.positive_target || "",
+        negative_target: rec.negative_target || "",
+        camera_target: rec.camera_target || "",
+      };
+    } catch { return { positive_target: "", negative_target: "", camera_target: "" }; }
+  }
+  function saveTargets(wfId, nodeId, rec) {
+    try {
+      const all = JSON.parse(localStorage.getItem(TARGETS_KEY) || "{}");
+      all[wfId] = all[wfId] || {};
+      all[wfId][String(nodeId)] = rec;
+      localStorage.setItem(TARGETS_KEY, JSON.stringify(all));
+    } catch { /* 存储不可用忽略 */ }
+  }
+
   // 组机位预设（与相机节点 PRESETS 常用项保持一致；组内优先级：手动 UI > 文件相机行 > 全局相机节点）
   const CAM_PRESETS = {
     "正面": { pos_x: 0, pos_y: 0, pos_z: 0, roll: 0 },
@@ -133,6 +163,8 @@
       this.resultEl = null; // 批次结果反馈区
       this._reportOpen = false;
       this.recentEl = null; // 最近文件行容器
+      this.batchActive = false; // 批次展开进行中（吞掉前端 auto_queue 自动重排）
+      this.targetStatusEl = null; // 注入目标状态行
     }
 
     _setW(widget, value) {
@@ -415,12 +447,54 @@
       const mkOpt = (sel, placeholder, items, isCamera) => {
         if (!sel) return;
         const cur = sel.value || "";
+        // 关键修复：cur 非空但列表里匹配不到时，保留原值显示（图重建/节点未就绪时
+        // 下拉不再被静默清空，避免用户无感知地丢目标）
+        const matched = items.some((t) => cur === (t.nodeId + (isCamera ? "" : "." + t.widget)));
         sel.innerHTML = `<option value="">${placeholder}</option>` +
-          items.map((t) => `<option value="${esc(t.nodeId + (isCamera ? "" : "." + t.widget))}" ${cur === (t.nodeId + (isCamera ? "" : "." + t.widget)) ? "selected" : ""}>${esc(t.title + (isCamera ? "" : " · " + t.widget))}</option>`).join("");
+          items.map((t) => `<option value="${esc(t.nodeId + (isCamera ? "" : "." + t.widget))}" ${cur === (t.nodeId + (isCamera ? "" : "." + t.widget)) ? "selected" : ""}>${esc(t.title + (isCamera ? "" : " · " + t.widget))}</option>`).join("") +
+          (!matched && cur ? `<option value="${esc(cur)}" selected>（已保存）${esc(cur)}</option>` : "");
       };
       mkOpt(this.posSel, "选择正向提示词目标节点…", targets, false);
       mkOpt(this.negSel, "负向提示词目标（可选）…", targets, false);
       mkOpt(this.camSel, "相机控制节点（可选）…", cams, true);
+      this._renderTargetStatus();
+    }
+
+    // 注入目标状态行：绿色=就绪，红色=缺失/未选（批生成会被阻止）
+    _renderTargetStatus() {
+      if (!this.targetStatusEl) return;
+      const app = window.comfyAPI?.app?.app;
+      const posT = (this.w.positive_target?.value || "").trim();
+      let cls, html;
+      if (!posT) {
+        cls = "warn";
+        html = "⚠ 未选择正向目标 — 批生成将被阻止，请在上方选择提示词注入节点";
+      } else {
+        const [id, key] = posT.split(".");
+        const n = app ? findNode(app, id) : null;
+        const w = n?.widgets?.find((x) => x.name === key);
+        if (n && w) {
+          cls = "ok";
+          html = `✓ 正向目标：${esc(n.title || n.type || id)} · ${esc(key)}`;
+        } else {
+          cls = "warn";
+          html = `⚠ 正向目标「${esc(posT)}」未匹配到节点/widget（工作流已改动？请重新选择）`;
+        }
+      }
+      this.targetStatusEl.className = "anima-batch-target-status " + cls;
+      this.targetStatusEl.innerHTML = html;
+    }
+
+    // 批次被阻止时的可见报错（结果区 + 状态行 + 控制台）
+    _showBatchError(msg) {
+      console.error("[TK Prompt Batch] 批次已阻止:", msg);
+      if (this.resultEl) {
+        this.resultEl.innerHTML = `<div class="anima-batch-report anima-batch-report-error">⛔ ${esc(msg)}</div>`;
+      }
+      if (this.targetStatusEl) {
+        this.targetStatusEl.className = "anima-batch-target-status warn";
+        this.targetStatusEl.innerHTML = "⛔ " + esc(msg);
+      }
     }
 
     build() {
@@ -728,6 +802,20 @@
       selWrap.appendChild(this.camSel);
       container.appendChild(selWrap);
 
+      // 目标状态行（未选择/失效时红字提示，批生成会被阻止）
+      this.targetStatusEl = document.createElement("div");
+      this.targetStatusEl.className = "anima-batch-target-status";
+      container.appendChild(this.targetStatusEl);
+
+      // 恢复上次保存的目标选择（工作流重载/图重建后 widget 值可能为空）
+      try {
+        const app = window.comfyAPI?.app?.app;
+        const saved = loadSavedTargets(currentWorkflowId(app), this.node.id);
+        if (saved.positive_target && !(this.w.positive_target?.value || "").trim()) this._setW(this.w.positive_target, saved.positive_target);
+        if (saved.negative_target && !(this.w.negative_target?.value || "").trim()) this._setW(this.w.negative_target, saved.negative_target);
+        if (saved.camera_target && !(this.w.camera_target?.value || "").trim()) this._setW(this.w.camera_target, saved.camera_target);
+      } catch { /* 恢复失败不影响使用 */ }
+
       // 按钮区
       const btnRow = document.createElement("div");
       btnRow.className = "anima-batch-btns";
@@ -788,10 +876,19 @@
         }
       } catch {}
 
-      // 目标选择变更 → 写回 widget
-      this.posSel.addEventListener("change", () => this._setW(this.w.positive_target, this.posSel.value));
-      this.negSel.addEventListener("change", () => this._setW(this.w.negative_target, this.negSel.value));
-      this.camSel.addEventListener("change", () => this._setW(this.w.camera_target, this.camSel.value));
+      // 目标选择变更 → 写回 widget + 持久化 + 刷新状态行
+      const persistTargets = () => {
+        const app = window.comfyAPI?.app?.app;
+        saveTargets(currentWorkflowId(app), this.node.id, {
+          positive_target: this.w.positive_target?.value || "",
+          negative_target: this.w.negative_target?.value || "",
+          camera_target: this.w.camera_target?.value || "",
+        });
+        this._renderTargetStatus();
+      };
+      this.posSel.addEventListener("change", () => { this._setW(this.w.positive_target, this.posSel.value); persistTargets(); });
+      this.negSel.addEventListener("change", () => { this._setW(this.w.negative_target, this.negSel.value); persistTargets(); });
+      this.camSel.addEventListener("change", () => { this._setW(this.w.camera_target, this.camSel.value); persistTargets(); });
 
       // 初始化下拉（配置恢复后）。工作流加载时图可能仍在异步重建，目标节点枚举
       // 可能为空 → 下拉未匹配到保存的目标值时按间隔重试几次（幂等重建 options）。
@@ -801,6 +898,7 @@
           this.negSel.value = this.w.negative_target?.value || "";
           this.camSel.value = this.w.camera_target?.value || "";
           this._fillTargets();
+          this._renderTargetStatus();
           const cur = this.w.positive_target?.value || "";
           const matched = !cur || this.posSel.value === cur;
           if (matched) {
@@ -1187,6 +1285,38 @@
       if (!batchNode) return orig(number, batchCount, options);
       const ui = batchNode._animaBatchUI;
 
+      // auto_queue（前端 instant/change 模式的自动重排）永不展开批量：
+      // 队列清空后自动重排会把同一批反复提交（历史里出现过连续重复任务），
+      // TK 批量本身就是自动化，无需自动重排。禁用/隐藏 TK 节点后走正常逻辑。
+      const trigger = (options && options.intent && options.intent.trigger_source) || "";
+      if (trigger === "auto_queue") return false;
+
+      // ── 注入目标校验（2026-08-17 修复）：目标缺失/失效时【阻止批次】并给出可见报错，
+      //    绝不再静默提交「无注入的重复提示词」（曾导致 N 份相同提示词入队 + 任务异常中断）
+      const posT = (ui.w.positive_target?.value || "").trim();
+      const negT = (ui.w.negative_target?.value || "").trim();
+      const problems = [];
+      const checkTarget = (label, t, required) => {
+        if (!t) {
+          if (required) problems.push(`未选择「${label}」`);
+          return;
+        }
+        const [id, key] = t.split(".");
+        const n = findNode(app, id);
+        if (!n) {
+          problems.push(`「${label}」目标节点 ${id} 不存在（工作流已改动？请重新选择）`);
+        } else if (!n.widgets?.find((x) => x.name === key)) {
+          const avail = (n.widgets || []).map((x) => x.name).join(", ") || "无";
+          problems.push(`「${label}」目标 ${id}.${key} 不存在（该节点可用 widget：${avail}）`);
+        }
+      };
+      checkTarget("正向提示词注入节点", posT, true);
+      checkTarget("负向提示词注入节点", negT, false);
+      if (problems.length) {
+        ui._showBatchError("批生成被阻止：" + problems.join("；"));
+        return false;
+      }
+
       // 自动最新模式：队列前刷新为最新提示词文件（失败不阻塞，走原逻辑）
       if (ui.autoLatest) {
         try {
@@ -1256,18 +1386,31 @@
       };
 
       try {
+        ui.batchActive = true;
         // 逐条注入并顺序入队（复用原生 seed/进度/历史）
         for (const job of jobs) {
           const posNode = findNode(app, job.posId);
-          if (!posNode) continue;
-          // 注入整段提示词（后端已把「背景/人物」行合并进组提示词）
-          setTextWidget(posNode, job.posKey, job.text);
+          if (!posNode) {
+            ui._showBatchError(`批生成中止：正向目标节点 ${job.posId} 不存在（工作流已改动？请重新选择）`);
+            return false;
+          }
+          // 注入整段提示词（后端已把「背景/人物」行合并进组提示词）；
+          // 注入失败（widget 不存在/名字不符）立即中止，绝不静默提交未注入的提示词
+          if (!setTextWidget(posNode, job.posKey, job.text)) {
+            const avail = (posNode.widgets || []).map((x) => x.name).join(", ") || "无";
+            ui._showBatchError(`批生成中止：目标节点 ${job.posId} 没有 widget「${job.posKey}」（可用：${avail}）。请重新选择注入节点`);
+            return false;
+          }
 
           // 负向提示词：仅当本组文件写了「负向:」且用户选择了负向目标节点时才注入；
           // 无负向行时完全不碰负向节点，保持现有值不变。
           if (job.negId && job.negKey && job.neg) {
             const negNode = findNode(app, job.negId);
-            if (negNode) setTextWidget(negNode, job.negKey, job.neg);
+            if (negNode && !setTextWidget(negNode, job.negKey, job.neg)) {
+              const avail = (negNode.widgets || []).map((x) => x.name).join(", ") || "无";
+              ui._showBatchError(`批生成中止：负向目标节点 ${job.negId} 没有 widget「${job.negKey}」（可用：${avail}）。请重新选择负向注入节点`);
+              return false;
+            }
           }
 
           // 相机词注入：把相机词拼到正向文本末尾（幂等：每次完整替换正向文本）
@@ -1306,6 +1449,7 @@
         }
       } finally {
         // 无论成功/失败/用户取消，都还原 filename_prefix 与负向节点
+        ui.batchActive = false;
         restorePrefix();
         for (const snap of negSnapshot.values()) {
           setTextWidget(snap.node, snap.key, snap.value);
@@ -1522,6 +1666,10 @@ function init() {
 .anima-batch-nav-pathrow { padding:4px 2px; }
 .anima-batch-nav-input { width:100%; box-sizing:border-box; background:var(--comfy-input-bg,#1b1e26); color:var(--fg-color,#ddd); border:1px solid var(--border-color,#383d4a); border-radius:4px; font-size:10px; padding:3px 6px; }
 .anima-batch-nav-input:focus { outline:none; border-color:#8b5cf6; }
+/* 注入目标状态行（2026-08-17：目标缺失时醒目提示） */
+.anima-batch-target-status { font-size:10px; line-height:1.4; padding:3px 6px; border-radius:4px; margin:2px 0; }
+.anima-batch-target-status.ok { color:#4aba8b; background:rgba(74,186,139,0.08); }
+.anima-batch-target-status.warn { color:#ff9d5c; background:rgba(255,157,92,0.10); border:1px solid rgba(255,157,92,0.35); font-weight:600; }
 `;
     document.head.appendChild(s);
   }
