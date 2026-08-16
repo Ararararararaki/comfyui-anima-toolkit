@@ -1,6 +1,7 @@
 import {
-  getAllCards, getCardsByCategory, searchCards, searchCardsByCategory,
-  getCard, addCard, updateCard, deleteCard, bulkAddCards,
+  getAllCards, getCardsByCategory,
+  getCard, addCard, updateCard, deleteCard, bulkAddCards, bulkUpdateCards, bulkDeleteCards,
+  queryCardsPage, countCards, countCardsByCategory, countFavCards,
   generateCardId, getAllCategories, addCategory, updateCategory, deleteCategory as dbDeleteCategory,
   generateCategoryId, initClothingDB, drawCards, joinCardPrompts,
 } from '../store/clothingDb'
@@ -32,19 +33,17 @@ function ensureObjUrls(cards: ClothingCard[]) {
   }
 }
 
-// ── 渲染 ──
-
-// 当前视图的卡片（按分类/收藏/搜索过滤）
-async function currentViewCards(): Promise<ClothingCard[]> {
-  if (currentCategory === 'fav') {
-    const all = currentSearch ? await searchCards(currentSearch) : await getAllCards()
-    return all.filter(c => c.favorite)
+// 只保留 keepIds 里卡片的 object URL，其余 revoke（防内存只涨不落）
+function revokeObjUrlsExcept(keepIds: Set<string>) {
+  for (const [id, url] of objUrlCache) {
+    if (!keepIds.has(id)) {
+      URL.revokeObjectURL(url)
+      objUrlCache.delete(id)
+    }
   }
-  if (currentCategory) {
-    return currentSearch ? await searchCardsByCategory(currentSearch, currentCategory) : await getCardsByCategory(currentCategory)
-  }
-  return currentSearch ? await searchCards(currentSearch) : await getAllCards()
 }
+
+// ── 渲染 ──
 
 export async function renderClothingLibrary() {
   const grid = container()
@@ -52,15 +51,29 @@ export async function renderClothingLibrary() {
   const seq = ++listLoadSeq
   await renderCats()
 
-  const cards = await currentViewCards()
+  // DB 端分页：只取当前一页（不再全量 load 全部卡 + 内存 slice）
+  const q = {
+    categoryId: currentCategory && currentCategory !== 'fav' ? currentCategory : undefined,
+    fav: currentCategory === 'fav',
+    keyword: currentSearch,
+    limit: PAGE_SIZE,
+  }
+  let offset = (page - 1) * PAGE_SIZE
+  let { cards, total } = await queryCardsPage({ ...q, offset })
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  if (page > totalPages) {
+    // 数据变少导致页码越界：收敛到最后一页再查一次
+    page = totalPages
+    offset = (page - 1) * PAGE_SIZE
+    cards = (await queryCardsPage({ ...q, offset })).cards
+  }
   if (seq !== listLoadSeq) return
 
+  // object URL 只保留当前页（+抽卡面板引用的卡），其余 revoke
   ensureObjUrls(cards)
-  const totalPages = Math.max(1, Math.ceil(cards.length / PAGE_SIZE))
-  if (page > totalPages) page = totalPages
-  const pageCards = cards.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
-  grid.innerHTML = pageCards.map(c => renderClothingCard(c, objUrlCache.get(c.id), selectedIds.has(c.id))).join('')
-  renderPagination(cards.length, totalPages)
+  revokeObjUrlsExcept(new Set([...cards.map(c => c.id), ...gachaResult.map(c => c.id)]))
+  grid.innerHTML = cards.map(c => renderClothingCard(c, objUrlCache.get(c.id), selectedIds.has(c.id))).join('')
+  renderPagination(total, totalPages)
   updateBatchBar()
   syncIndexDebounced()   // 数据变更后自动同步 AI 索引（文本没变则不发送）
 }
@@ -120,10 +133,8 @@ function renderPagination(total: number, totalPages: number) {
 }
 
 async function gotoPage(n: number) {
-  const cards = await currentViewCards()
-  const totalPages = Math.max(1, Math.ceil(cards.length / PAGE_SIZE))
-  page = Math.max(1, Math.min(n, totalPages))
-  await renderClothingLibrary()
+  page = Math.max(1, n)
+  await renderClothingLibrary()   // 越界收敛在 render 内做（数据变少时兜底）
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
@@ -157,7 +168,7 @@ async function deleteSelected() {
   if (!selectedIds.size) return
   const ok = await confirmModal('批量删除', `确认删除选中的 ${selectedIds.size} 张卡片？\n删除后不可恢复！`)
   if (!ok) return
-  for (const id of selectedIds) await deleteCard(id)
+  await bulkDeleteCards([...selectedIds])
   showToast(`🗑️ 已删除 ${selectedIds.size} 张卡片`)
   selectedIds.clear()
   await renderClothingLibrary()
@@ -167,17 +178,20 @@ async function renderCats() {
   const catsEl = document.getElementById('clothingCats')
   if (!catsEl) return
   const cats = await getAllCategories()
-  const all = await getAllCards()
-  const favCount = all.filter(c => c.favorite).length
-  const catCount = (id: string) => all.filter(c => c.categoryId === id).length
+  // 计数走 DB 聚合（count 查询），不再全量 getAllCards 到内存算
+  const [allCount, favCount, ...catCounts] = await Promise.all([
+    countCards(),
+    countFavCards(),
+    ...cats.map(c => countCardsByCategory(c.id)),
+  ])
 
   const tab = (id: string, name: string, count: number) =>
     `<button class="clothing-cat-tab ${currentCategory === id ? 'active' : ''}" data-cat="${esc(id)}">${esc(name)}<span class="count">${count}</span></button>`
 
   catsEl.innerHTML =
-    tab('', '全部', all.length) +
+    tab('', '全部', allCount) +
     tab('fav', '收藏', favCount) +
-    cats.map(c => tab(c.id, c.name, catCount(c.id))).join('')
+    cats.map((c, i) => tab(c.id, c.name, catCounts[i])).join('')
 }
 
 // ── 工具栏绑定 ──
@@ -617,7 +631,7 @@ async function moveSelectedToCategory() {
         await addCategory({ id: catId, name: newName, sortOrder: 100 + cats.length })
       }
     }
-    for (const id of selectedIds) await updateCard(id, { categoryId: catId })
+    await bulkUpdateCards([...selectedIds], { categoryId: catId })
     close()
     showToast(`✅ 已移动 ${selectedIds.size} 张卡片到「${newName || cats.find(c => c.id === sel?.value)?.name || '未分类'}」`)
     selectedIds.clear()
@@ -827,7 +841,13 @@ async function gachaDraw() {
   const need = Math.max(0, gachaCount - lockedCards.length)
   const drawn = drawCards(rest, need)
   gachaResult = [...lockedCards, ...drawn]
-  for (const c of gachaResult) if (c.id) await updateCard(c.id, { useCount: (c.useCount || 0) + 1 })
+  // 批量 +1 useCount（逐条 for 循环改为一次 bulkUpdate）
+  if (gachaResult.length) {
+    await bulkUpdateCards(
+      gachaResult.map(c => c.id),
+      gachaResult.map(c => ({ useCount: (c.useCount || 0) + 1 })),
+    )
+  }
   renderGachaResults()
 }
 
