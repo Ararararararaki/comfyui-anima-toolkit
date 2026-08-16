@@ -194,7 +194,10 @@ export async function activateOutputs() {
         } catch { /* 静默失败 */ }
       }
     } else {
-      // 已有缓存 -> 尝试检测新文件（轻量操作）；60s 节流避免每次切换栏目都遍历目录
+      // 已有缓存 -> 先立即按当前缓存渲染（栏目刚显示，容器已有真实宽度；
+      // 若等扫描完成再渲染，期间会显示隐藏期留下的退化几何：单行+图片重叠）
+      renderOutputsView()
+      // 尝试检测新文件（轻量操作）；60s 节流避免每次切换栏目都遍历目录
       const now = Date.now()
       if (now - _lastIncrementalScan >= 60000) {
         _lastIncrementalScan = now
@@ -423,6 +426,11 @@ function destroyOutputsVS() {
 function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
   const el = document.querySelector('.outputs-grid') as HTMLElement
   if (!el) return
+
+  // 栏目隐藏时（display:none）容器宽高为 0：跳过渲染，
+  // 否则虚拟滚动会按「1 列 + 退化行高」建几何，切进来时图片单行重叠
+  // （显示后由 activateOutputs/renderOutputsView 以真实宽度渲染）
+  if (el.clientWidth === 0 || el.clientHeight === 0) return
 
   const files = state.filteredFiles
   const hasDir = !!state.dirHandle
