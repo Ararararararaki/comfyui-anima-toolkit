@@ -79,12 +79,12 @@ export function cardSignature(file: OutputFile): string {
   ].join('|')
 }
 
-export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, isSelected: boolean, loras?: string[], sig?: string): string {
+export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, isSelected: boolean, loras?: string[], sig?: string, thumbSrc?: string): string {
   const st = file.status ? STATUS_DEFS[file.status] : null
   return `<div class="outputs-card ${isSelected ? 'selected' : ''}${file.status ? ` status-${file.status}` : ''}" data-id="${escAttr(file.id)}" data-path="${escAttr(file.path)}"${sig ? ` data-sig="${escAttr(sig)}"` : ''}>
     <div class="outputs-card-img">
       ${st ? `<div class="outputs-card-status-tag" style="background:${st.color}">${st.label}</div>` : ''}
-      <img src="" data-file-id="${escAttr(file.id)}" data-file-path="${escAttr(file.path)}" alt="${esc(file.filename)}" loading="lazy">
+      <img src="${escAttr(thumbSrc || '')}" data-file-id="${escAttr(file.id)}" data-file-path="${escAttr(file.path)}" alt="${esc(file.filename)}" loading="lazy">
       <div class="outputs-card-actions-top">
         ${file.pinned ? `<span class="outputs-card-pinned-icon">${icon('pin', 12)}</span>` : ''}
         <button class="outputs-card-fav-icon ${file.favorite ? 'active' : ''}" data-id="${escAttr(file.id)}" title="收藏">${icon('star', 14)}</button>

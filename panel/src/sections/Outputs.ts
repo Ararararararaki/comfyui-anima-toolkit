@@ -447,7 +447,9 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
         const f = files[startIdx + i]
         if (!f) break
         const meta = s.metadataCache.get(f.id)
-        html += renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined)
+        // thumbSrc 同步回填内存缩略图：虚拟滚动滚动时行会被重建，
+        // 若等 IntersectionObserver 异步回填会有几帧黑图闪烁
+        html += renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined, undefined, s.thumbMemory.get(f.path))
       }
       return `<div style="position:absolute;top:${style.top}px;left:0;width:100%;height:${geom.rowH}px;display:grid;grid-template-columns:repeat(${geom.cols}, minmax(0,1fr));gap:${geom.gap}px;padding:0">${html}</div>`
     }

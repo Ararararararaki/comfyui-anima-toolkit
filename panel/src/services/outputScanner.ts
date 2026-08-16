@@ -2,7 +2,7 @@ import type { OutputFile, OutputMetadata, OutputDir } from '../types/outputs'
 import { outputsDb } from '../db/outputsDb'
 import { useOutputStore } from '../store/outputStore'
 import { parseOutputMetadata, PARSER_VERSION } from './outputMetadata'
-import { getThumbnail, deleteThumbnails } from './outputThumbnail'
+import { getThumbnail, deleteThumbnails, preloadThumbnailsFromDb } from './outputThumbnail'
 import {
   diffManifest,
   restoreFilesFromDb,
@@ -611,6 +611,16 @@ export async function loadOutputDirHandle(): Promise<LoadDirHandleResult> {
         console.log('🔍 [loadOutputDirHandle] 去重后文件数:', deduped.length)
         // 直接全量展示，绕过 page=1 的 50 条限制
         useOutputStore.setState({ files: deduped, page: Math.ceil(deduped.length / 50) })
+        // 无句柄时也预载缩略图到内存：图片浏览不依赖句柄（句柄只用于增量扫描/补缩略图），
+        // 否则无句柄缓存浏览时所有图片加载不了（loadImageThumbnail 无句柄直接 return）
+        const thumbs = await preloadThumbnailsFromDb(deduped)
+        if (thumbs.size > 0) {
+          useOutputStore.setState(s => {
+            const merged = new Map(s.thumbMemory)
+            for (const [p, d] of thumbs) merged.set(p, d)
+            return { thumbMemory: merged }
+          })
+        }
         useOutputStore.getState().applyFilters()
         result.restored = true
       }
