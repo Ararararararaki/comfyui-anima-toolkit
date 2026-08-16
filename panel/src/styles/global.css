@@ -28,6 +28,12 @@
 
   --card-radius: 16px; --radius: 8px;
 
+  /* ── Motion（统一手感曲线：强 ease-out 起步快、落点稳）── */
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);          /* 进入/反馈 */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);       /* 悬停/颜色过渡 */
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);      /* 屏幕内位移 */
+
   --shadow: 0 0 0 1px rgba(255,255,255,0.04), 0 2px 24px rgba(0,0,0,0.5), 0 0 60px rgba(0,0,0,0.2);
 
   --font: 'Inter', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
@@ -350,13 +356,17 @@ h1 small { font-size: 12px; color: var(--text2); font-weight: 400; margin-left: 
 
   padding: 7px 16px; border: none; border-radius: 8px; font-size: 12px;
 
-  font-weight: 600; cursor: pointer; transition: all .2s; white-space: nowrap; font-family: var(--font);
+  font-weight: 600; cursor: pointer; white-space: nowrap; font-family: var(--font);
 
   user-select: none;
 
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
 
   min-height: 32px;
+
+  /* 指定属性过渡：避免 transition:all 把 box-shadow/布局也动画化 */
+  transition: background-color .18s var(--ease-standard), border-color .18s var(--ease-standard),
+    color .18s var(--ease-standard), transform .15s var(--ease-out), box-shadow .18s var(--ease-standard);
 
 }
 
@@ -981,7 +991,7 @@ h1 small { font-size: 12px; color: var(--text2); font-weight: 400; margin-left: 
 
   padding: 8px 20px; border-radius: 10px; font-size: 13px; opacity: 0;
 
-  transition: all .35s; z-index: 9999; pointer-events: none;
+  transition: opacity .22s var(--ease-out), transform .22s var(--ease-out); z-index: 9999; pointer-events: none;
 
   background: rgba(10,10,12,.92); border: 1px solid var(--border); color: var(--text);
 
@@ -4665,3 +4675,28 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 }
 .local-sidebar-search .search-clear:hover { background: var(--bg4); color: var(--text); }
 .local-sidebar-search input { padding-right: 30px; }
+
+/* ── Motion 降级与触屏适配（2026-08-16 设计打磨批次）── */
+
+/* 触屏/粗指针：hover 弹跳无意义且误触，禁用卡片 hover 位移 */
+@media (hover: none), (pointer: coarse) {
+  .outputs-card:hover, .clothing-card:hover, .artist-card:hover,
+  .local-model-card:hover, .btn-primary:hover, .main-tab:hover {
+    transform: none !important;
+  }
+  .outputs-card:hover .outputs-card-img img,
+  .clothing-card:hover .clothing-card-img img,
+  .artist-card:hover .artist-card-img img {
+    transform: none !important;
+  }
+}
+
+/* 系统减弱动态：动画/过渡近乎瞬时，保留必要透明度变化 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

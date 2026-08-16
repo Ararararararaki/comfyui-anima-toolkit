@@ -14,9 +14,10 @@ import type { ArtistData } from '../types'
 
 // ── 常量 ──
 
+// 分类图标：icon.ts 内的图标名（UI 规范：按钮/面板图标一律 SVG，禁 emoji）
 const CAT_ICONS: Record<string, string> = {
-  '全部画师': '📋', '未分类': '📦', '二次元': '🖌️', '厚涂': '🎨', '写实': '📷',
-  '水墨': '🏯', '黑白': '🖤', 'R18': '🔞',
+  '全部画师': 'list', '未分类': 'package', '二次元': 'brush', '厚涂': 'palette', '写实': 'camera',
+  '水墨': 'droplet', '黑白': 'contrast', 'R18': 'ban',
 }
 
 const CAT_COLORS: Record<string, string> = {
@@ -29,7 +30,7 @@ const CAT_COLORS: Record<string, string> = {
 }
 
 function getCatIcon(cat: string): string {
-  return CAT_ICONS[cat] || '📁'
+  return icon(CAT_ICONS[cat] || 'folder', 12)
 }
 
 function getCatColor(cat: string): string {
@@ -81,7 +82,7 @@ export function renderArtists() {
     destroyArtistVS()
     const hasAny = artists.length > 0
     const msg = !hasAny
-      ? '还没有画师，点击工具栏「➕ 添加」或「📊 提取」创建'
+      ? '还没有画师，点击工具栏「添加」或「提取」创建'
       : q
         ? '没有匹配的画师，换个关键词试试'
         : '该分类下暂无画师'
@@ -155,7 +156,7 @@ function renderArtistCard(a: ArtistData, store: ReturnType<typeof useArtistStore
 
   // Danbooru 统计
   const dbHtml = a.danbooruCount > 0
-    ? '<span class="artist-card-stat">🔥 ' + fmtNum(a.danbooruCount) + '</span>'
+    ? '<span class="artist-card-stat">' + icon('flame', 11) + ' ' + fmtNum(a.danbooruCount) + '</span>'
     : ''
 
   // 社交链接
@@ -168,7 +169,7 @@ function renderArtistCard(a: ArtistData, store: ReturnType<typeof useArtistStore
   // LoRA 标签（显示数量，hover 查看名称）
   const loras = a.loras || []
   const loraHtml = hasLora
-    ? `<span class="artist-card-badge" title="${esc(loras.slice(0, 6).join(', '))}${loras.length > 6 ? '…' : ''}">🎯 LoRA${loras.length > 0 ? ' ×' + loras.length : ''}</span>`
+    ? `<span class="artist-card-badge" title="${esc(loras.slice(0, 6).join(', '))}${loras.length > 6 ? '…' : ''}">${icon('target', 11)} LoRA${loras.length > 0 ? ' ×' + loras.length : ''}</span>`
     : ''
 
   // 类名
@@ -192,7 +193,7 @@ function renderArtistCard(a: ArtistData, store: ReturnType<typeof useArtistStore
     '      ' + socialHtml + '\n' +
     '    </div>\n' +
     '  </div>\n' +
-    (isGhost ? '  <span class="ghost-badge">👻</span>\n' : '') +
+    (isGhost ? `  <span class="ghost-badge">${icon('ghost', 12)}</span>\n` : '') +
     '</div>'
 }
 
@@ -216,7 +217,7 @@ function renderSidebarLeft() {
 
   // 全部
   items.push('<div class="artist-cat-item' + (store.filterCat === 'all' ? ' on' : '') + '" data-cat="all">' +
-    '📋 全部 <span class="artist-cat-count">' + totalCount + '</span></div>')
+    getCatIcon('全部画师') + ' 全部 <span class="artist-cat-count">' + totalCount + '</span></div>')
 
   // 分类
   for (const cat of cats) {
@@ -228,12 +229,12 @@ function renderSidebarLeft() {
   // 幽灵画师
   if (ghostCount > 0) {
     items.push('<div class="artist-cat-item' + (store.filterCat === '__ghost' ? ' on' : '') + '" data-cat="__ghost">' +
-      '👻 占位 <span class="artist-cat-count">' + ghostCount + '</span></div>')
+      icon('ghost', 12) + ' 占位 <span class="artist-cat-count">' + ghostCount + '</span></div>')
   }
 
   // 预设
   items.push('<div class="artist-cat-item' + (store.filterCat === '__presets' ? ' on' : '') + '" data-cat="__presets">' +
-    '💾 预设 <span class="artist-cat-count">' + store.presets.length + '</span></div>')
+    icon('save', 12) + ' 预设 <span class="artist-cat-count">' + store.presets.length + '</span></div>')
 
   list.innerHTML = items.join('')
 }
@@ -807,7 +808,7 @@ function renderPresets() {
       '  <div class="artist-card-body">\n' +
       '    <div class="artist-card-header">\n' +
       '      <span class="artist-card-tag">' + esc(p.name) + '</span>\n' +
-      '      <span class="artist-card-badge">💾</span>\n' +
+      '      <span class="artist-card-badge">' + icon('save', 12) + '</span>\n' +
       '    </div>\n' +
       '    <div class="artist-card-name">' + p.artists.length + ' 位画师</div>\n' +
       '    <div class="artist-card-desc">' + esc(artistTags).slice(0, 120) + (artistTags.length > 120 ? '…' : '') + '</div>\n' +
@@ -829,7 +830,7 @@ function showAddArtistModal() {
   const catOpts = cats.map(c => '<option value="' + escAttr(c) + '">' + getCatIcon(c) + ' ' + esc(c) + '</option>').join('')
 
   modal.innerHTML = '<div class="modal-box">\n' +
-    '  <h3>➕ 添加画师</h3>\n' +
+    '  <h3>' + icon('plus', 14) + ' 添加画师</h3>\n' +
     '  <div style="display:flex;flex-direction:column;gap:8px">\n' +
     '    <input type="text" id="addArtistTag" placeholder="Tag (不含@前缀，如 g0w0ru)" autocomplete="off">\n' +
     '    <input type="text" id="addArtistName" placeholder="显示名称 (如 g0w0ru)" autocomplete="off">\n' +
@@ -881,7 +882,7 @@ function showExtractModal() {
   if (!modal) return
 
   modal.innerHTML = '<div class="modal-box" style="max-width:400px">\n' +
-    '  <h3>📊 提取画师</h3>\n' +
+    '  <h3>' + icon('barChart', 14) + ' 提取画师</h3>\n' +
     '  <p class="sub">从已加载 LoRA 的 trainedWords 中自动检测 @ 开头的画师标签</p>\n' +
     '  <div id="extractResult" style="max-height:200px;overflow-y:auto;font-size:11px">\n' +
     '    <p style="color:var(--text3)">点击下方按钮开始提取…</p>\n' +
@@ -929,7 +930,7 @@ function showExtractModal() {
         const count = parseInt(t.dataset.count || '1')
         const result = addArtistFromExtraction(tag, count)
         if (result) {
-          t.textContent = '✅'
+          t.innerHTML = icon('check', 12)
           t.classList.replace('btn-ghost', 'btn-primary')
         } else {
           t.textContent = '已有'

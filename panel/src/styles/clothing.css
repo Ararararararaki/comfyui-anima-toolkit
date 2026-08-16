@@ -39,7 +39,8 @@
 .clothing-card {
   background: linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.01) 100%);
   border: 1px solid var(--border); border-radius: var(--card-radius); overflow: hidden;
-  transition: all .25s; display: flex; flex-direction: column;
+  transition: transform .2s var(--ease-out), border-color .2s var(--ease-standard), box-shadow .2s var(--ease-standard);
+  display: flex; flex-direction: column;
   box-shadow: 0 2px 16px rgba(0,0,0,0.25);
 }
 .clothing-card:hover { border-color: var(--border-hover); box-shadow: 0 8px 40px rgba(0,0,0,0.4); transform: translateY(-2px); }

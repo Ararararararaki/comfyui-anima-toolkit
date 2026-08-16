@@ -407,7 +407,7 @@
   background: var(--bg2);
   border: 2px solid transparent;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: transform 0.18s var(--ease-out), border-color 0.18s var(--ease-standard), box-shadow 0.18s var(--ease-standard);
 }
 
 .outputs-card:hover {
