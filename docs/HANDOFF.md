@@ -2,6 +2,14 @@
 
 > 给下一位 agent 的工作交接。项目当前健康、全部已推送 GitHub。请先读本文 + 合并仓库 README，再动手。
 
+## 最新：TK 相机控制相对拖拽修复 + 配套「标准正向撰写」skill（2026-08-20）
+
+- **相机拖拽 bug**：运行目录那份曾改成「双模式」——按住相机点=微调、其余位置=**absolute**（射线-球面求交，指针直接映射机位）→ 只能命中可见正前方、拖不到背面。已统一为**相对增量**：按下记录机位起点、移动叠加增量，方位周期化可连续绕 360° 穿越背面；保留相机点=微调。验证 `.scratch/verify_camera_drag.py` 7/7（真实 8188 画布，读 pos_x/pos_y 与 `_animaCam`）。改动已推送（`c6df924`），运行目录 widget 已同步生效（硬刷新 Ctrl+Shift+R）。
+- **新 skill `anima-prompt-writer`（标准正向撰写·SFW 安全版）**：用用户定稿的 Master Vision Prompt Engineering 规则当唯一标准（无数据集），正向撰写合成规则——10 段标签顺序（质量→美学→时代→meta→安全→人数→角色→系列→画师@→通用）+ 空间构图句（视角+身体接触环境 ≤60 词）；并规范化「写到正确目录 + 格式」：`ComfyUI\input\prompts\`、文件名 `数字序号_描述_日期.txt`、`## 组N · 标题` 格式（解析语义对齐 `anima_prompt_parser.py`：三种标题/注释跳过/`相机:` 行不计入正片）。格式闭环已验 `.scratch/verify_skill_format.py`（真实探针解析 3 组全对）。
+- **存放约定（⚠️ 保持同步的 3 处）**：本机完整版 `空目录\.dsh\skills\anima-prompt-writer\SKILL.md`（含 LOCAL ONLY 块：NSFW 指针/tagdb/服装索引）== `.zcode\skills\anima-prompt-writer\SKILL.md`；GitHub 版 `skill/anima-prompt-writer/SKILL.md`（**去掉 LOCAL ONLY 块**，SFW 安全可发布）。README 已加「TK 批量提示词节点 + 配套 skill」章节与目录结构 `skill/`。
+- **NSFW 纪律**：NSFW/成人内容一律不上 GitHub；本 skill 只做标准/SFW 正向撰写，NSFW 批走本地 `anima-prompt`（大师协议）。
+- 生效：skill 是纯文档，无需重启；本地已放好三处。仓库推送后 GitHub 用户 clone 即得 skill/。
+
 ## 最新：TK D站画廊 500 搜索失败根治 + 筛选/分级冲突优化（2026-08-19 晚）
 
 - **根因（已用真实 D站 API 复现）**：`order:score`（及 `order:favcount`、`order:random`）在**无时间窗**时会对全库排序，Danbooru 数据库超时返回 **500**（`ActiveRecord::QueryCanceled: The database timed out`）——裸 `order:score` 或 `1girl order:score` 必现，这正是「搜索失败:Danbooru请求失败：500 Server Error for url: .../posts.json?tags=order%3Ascore...」的来源。实测：`order:rank` 恒 200；`order:score + score:>500` 也可救（全时段 top）；任意 `age:*` 时间窗必救。

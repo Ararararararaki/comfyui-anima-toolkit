@@ -79,6 +79,26 @@ Steam 风格界面,管理全部本地 LoRA:
 - 分类 tab:全部 / 画师风格 / 人物角色 / 美学优化 / 背景环境 / 其他 / 收藏 / 已隐藏
 - 检测本地是否已有,卡片上直接下载
 
+## TK 批量提示词节点 + 配套 AI 撰写 skill
+
+**TK Prompt Batch(批量提示词注入)** 读本地提示词文件按组批量出图:一组 = 一张图,队列时逐组顺序生成。提示词文件放 ComfyUI 的 `input/prompts/` 目录,格式:
+
+```txt
+## 组1 · 单人日常 · 教室窗前
+masterpiece, best quality, score_9, year 2025, highres, safe, 1girl, [角色], [系列], [通用标签...]
+相机: from the side, low angle        # 可选:该组的机位
+
+## 组2 · 双人 · 海边黄昏
+masterpiece, best quality, score_9, year 2025, highres, safe, 2girls, [角色A], [角色B], [系列], [通用标签...]
+```
+
+- 标题行支持 `## 组N · 标题` / `【N】标题` / `01 序号` 三种;`#` 开头是注释;组内可写 `相机:` 行(不计入提示词)。
+- 节点上点「选择文件…」或「🔄 最新」即可加载;勾选「自动用最新文件」后每次队列自动用最新 txt。
+
+**让 AI 帮你写这种文件**:仓库自带配套 skill [`skill/anima-prompt-writer/SKILL.md`](skill/anima-prompt-writer/SKILL.md)(标准正向撰写,SFW 安全版)。它按固定标签顺序(质量→美学→时代→meta→安全→人数→角色→系列→画师@→通用)+ 一段空间构图句写正片,并自动落到 `input/prompts/` 的正确目录与格式——没有数据集,以规则为唯一标准。
+
+安装:把 `skill/anima-prompt-writer` 目录复制到你所用 AI 的 skills 目录(如 Claude Code 的 `~/.claude/skills/` 或 DSH 的 `~/.dsh/skills/`),之后让 AI「写提示词」即可。
+
 ## 部署
 
 把仓库克隆到 ComfyUI 的 custom_nodes 目录:
@@ -111,6 +131,7 @@ ComfyUI-Anima-Batch-LoRA/
 ├── web/js/               # 节点前端（不用构建）
 ├── app/                  # 面板构建产物（克隆即用，别手改）
 ├── panel/                # 面板源码（Vite + TypeScript）
+├── skill/                # 配套 AI skill（anima-prompt-writer 标准正向撰写）
 ├── screenshots/          # 截图
 └── .github/workflows/    # 自动构建 app
 ```
