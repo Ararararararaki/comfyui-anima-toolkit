@@ -1,0 +1,4 @@
+app/index.html text eol=lf
+app/manifest.json text eol=lf
+app/sw.js text eol=lf
+panel/index.html text eol=lf
