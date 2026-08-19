@@ -19,6 +19,11 @@ CLAUDE.md
 .reasonix/
 .scratch/
 
+# 内部工作文档/环境专用脚本：仅本地保留，不发布
+docs/HANDOFF.md
+docs/aegis/
+tests/verify_danbooru_dropdown.py
+
 # OS
 .DS_Store
 Thumbs.db
