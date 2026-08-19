@@ -175,6 +175,37 @@ def main() -> None:
                 async () => {
                   const ui = window.__adgNode._animaDanbooruGallery;
                   ui.queryWidget.value = '1girl solo';
+                  ui.settings.filters.order = 'score';
+                  ui.settings.filters.age = '';
+                  ui.settings.filters.minScore = '';
+                  ui.filterControls.refresh();
+                  window.__adgFetchCalls = 0;
+                  await ui.search({ resetPage: true });
+                  const result = {
+                    calls: window.__adgFetchCalls,
+                    status: document.querySelector('.adg-status').textContent,
+                    order: ui.settings.filters.order,
+                    query: ui.currentQuery(),
+                  };
+                  ui.queryWidget.value = '1girl';
+                  return result;
+                }
+                """
+            )
+            check(
+                "超限时自动降级排序而非死路（保留内容标签/分级/筛选）",
+                limit_result["calls"] >= 1
+                and limit_result["order"] == ""
+                and "order:" not in limit_result["query"]
+                and "已自动移除" in limit_result["status"],
+                limit_result,
+            )
+
+            over_limit_blocked = page.evaluate(
+                """
+                async () => {
+                  const ui = window.__adgNode._animaDanbooruGallery;
+                  ui.queryWidget.value = '1girl solo blue_hair';
                   window.__adgFetchCalls = 0;
                   await ui.search({ resetPage: true });
                   const result = { calls: window.__adgFetchCalls, status: document.querySelector('.adg-status').textContent };
@@ -183,7 +214,7 @@ def main() -> None:
                 }
                 """
             )
-            check("超过 D站匿名标签限制时本地阻止请求并给出说明", limit_result["calls"] == 0 and "最多 2 个" in limit_result["status"], limit_result)
+            check("无法降级时本地阻止并说明", over_limit_blocked["calls"] == 0 and "最多 2 个" in over_limit_blocked["status"], over_limit_blocked)
 
             page.evaluate("window.__adgFetchCalls = 0")
             triggers.nth(1).click()
@@ -200,6 +231,25 @@ def main() -> None:
                 """
             )
             check("重置筛选清空状态且只请求一次", reset_result == {"filters": {"age": "", "minScore": "", "minFavs": "", "order": ""}, "calls": 1, "badge": ""}, reset_result)
+
+            slow_window = page.evaluate(
+                """
+                () => {
+                  const ui = window.__adgNode._animaDanbooruGallery;
+                  ui.settings.filters.order = 'score';
+                  ui.settings.filters.age = '';
+                  const query = ui.currentQuery();
+                  ui.settings.filters.order = '';
+                  ui.filterControls.refresh();
+                  return query;
+                }
+                """
+            )
+            check(
+                "慢排序自动附加时间窗以避免 D站 500",
+                "order:score" in slow_window and "age:1week" in slow_window and slow_window.count("order:") == 1,
+                slow_window,
+            )
 
             page.evaluate(
                 """

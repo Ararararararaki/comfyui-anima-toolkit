@@ -2,6 +2,16 @@
 
 > 给下一位 agent 的工作交接。项目当前健康、全部已推送 GitHub。请先读本文 + 合并仓库 README，再动手。
 
+## 最新：TK D站画廊 500 搜索失败根治 + 筛选/分级冲突优化（2026-08-19 晚）
+
+- **根因（已用真实 D站 API 复现）**：`order:score`（及 `order:favcount`、`order:random`）在**无时间窗**时会对全库排序，Danbooru 数据库超时返回 **500**（`ActiveRecord::QueryCanceled: The database timed out`）——裸 `order:score` 或 `1girl order:score` 必现，这正是「搜索失败:Danbooru请求失败：500 Server Error for url: .../posts.json?tags=order%3Ascore...」的来源。实测：`order:rank` 恒 200；`order:score + score:>500` 也可救（全时段 top）；任意 `age:*` 时间窗必救。
+- **修复① 慢排序自动附加时间窗**（前端 `currentQuery()` 与后端 `/anima/danbooru/posts` 双保险，常量前后端一致：`SLOW_ORDERS={score,favcount,random}`、`DEFAULT_SLOW_ORDER_WINDOW=1week`）：评分/收藏/随机排序若没有 `age:` 自动补 `age:1week`（age 是免费 metatag，不占计数槽）；用户显式设了时间则尊重。后端补窗时在响应 `warnings` 里提示。原报错 URL `tags=order:score` 现返回 200 + 图片。
+- **修复② 筛选/分级冲突不再死路**：D站 匿名搜索最多 2 个计数标签（普通标签与 `order:` 各占 1；`rating:`/`age:`/`score:`/`favcount:` 免费）。之前超限直接红字拦截；现在**超限且已设排序时自动降级排序**（保留内容标签/分级/筛选，改用默认最新），状态栏提示「已自动移除「…」排序，按最新显示（匿名最多 2 个计数标签）」；仅当无法降级（3+ 普通标签）才本地拦截并给中文说明。
+- **修复③ 友好报错**：`_friendly_danbooru_error` 解析 D站 JSON 错误体 → 中文说明（数据库超时/标签限制/原 message），不再透传难懂的 `500 Server Error: ...`；`lastQuery` 改只存搜索框原文（修掉把分级/排序混进搜索框的隐患）。
+- **文件**：`anima_danbooru_gallery.py`（改）、`web/js/anima_danbooru_gallery_widget.js`（改）、`tests/verify_danbooru_dropdown.py`（改动：超限断言改为「自动降级」；新增「慢排序自动附加时间窗」「无法降级仍拦截」两项）。
+- **验证**：`node --check` + `python -m py_compile` 通过；`tests/verify_danbooru_dropdown.py` 全绿（24 项）；ComfyUI 已重启（py 生效），实机 `/anima/danbooru/posts?tags=order%3Ascore` → 200+6图+warnings，`tags=1girl%20solo%20order:score` → 400 中文限制提示。发布源与运行目录 SHA 一致。
+- **生效**：py 已随重启生效；JS 需硬刷新 `Ctrl+Shift+R`。
+
 ## 最新：TK D站画廊下拉控件重构（2026-08-19）
 
 - **交互**：分级、筛选、分类统一为选择框外观的 portal 下拉；菜单挂到 `document.body`，不会再被节点 `overflow:hidden` 裁切。

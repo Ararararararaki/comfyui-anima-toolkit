@@ -7,6 +7,11 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
   const FAVORITES_STORAGE_KEY = "anima_danbooru_gallery_favorites_v1";
   const MAX_TAGS = 5;
   const FREE_METATAGS = new Set(["rating", "status", "is", "age", "date", "id", "limit", "score", "downvotes", "favcount", "width", "height", "ratio", "mpixels", "filesize", "filetype", "duration", "md5", "pixiv_id", "pixiv", "parent", "child", "upvote", "embedded", "tagcount"]);
+  // 慢排序：D站 对无时间窗的评分/收藏/随机排序会数据库超时 500，前端自动附带一个免费 metatag 时间窗（与后端常量一致）。
+  const SLOW_ORDERS = new Set(["score", "favcount", "random"]);
+  const DEFAULT_SLOW_ORDER_AGE = "1week";
+  const DANBOORU_TAG_LIMIT = 2;
+  const ORDER_LABELS = { score: "评分", favcount: "收藏", random: "随机", rank: "综合" };
 
   function normalizeTags(rawValue) {
     const seen = new Set();
@@ -117,24 +122,42 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
     currentQuery() {
       const raw = this.queryWidget?.value || this.settings.lastQuery || "";
       const f = this.settings.filters;
-      const parts = [normalizeTags(raw), this.settings.rating.length ? `rating:${this.settings.rating.join(",")}` : "", f.age ? `age:${f.age}` : "", f.minScore ? `score:>${f.minScore}` : "", f.minFavs ? `favcount:>${f.minFavs}` : "", f.order ? `order:${f.order}` : ""];
+      // 评分/收藏/随机排序若不带时间窗，D站 会对全库排序造成数据库超时 500：
+      // 自动附带一个时间窗（age 是免费 metatag，不占计数槽）。用户显式设置了 age 时尊重用户选择。
+      const autoWindow = Boolean(f.order && SLOW_ORDERS.has(f.order) && !f.age);
+      this._autoWindow = autoWindow;
+      const age = autoWindow ? DEFAULT_SLOW_ORDER_AGE : f.age;
+      const parts = [normalizeTags(raw), this.settings.rating.length ? `rating:${this.settings.rating.join(",")}` : "", age ? `age:${age}` : "", f.minScore ? `score:>${f.minScore}` : "", f.minFavs ? `favcount:>${f.minFavs}` : "", f.order ? `order:${f.order}` : ""];
       return parts.filter(Boolean).join(" ");
     }
 
     async search({ resetPage = false, force = false } = {}) {
-      const query = this.currentQuery();
+      this._droppedOrder = false;
+      let query = this.currentQuery();
       if (!query) {
         this.posts = [];
         this.renderPosts();
         this.setStatus("输入 Danbooru 标签后点“搜索”。例如：1girl solo");
         return;
       }
-      if (countedSearchTerms(query) > 2) {
-        this.setStatus("D站匿名搜索最多 2 个计数标签；排序会占 1 个，请减少普通标签或改用“最新”排序。", "error");
+      let counted = countedSearchTerms(query);
+      if (counted > DANBOORU_TAG_LIMIT && this.settings.filters.order) {
+        // 匿名搜索最多 2 个计数标签，而排序会占 1 个；内容标签/分级/筛选才是用户意图，
+        // 因此超限时优先保留这些、只自动降级排序（改用默认最新）而不是死路报错。
+        const droppedOrder = this.settings.filters.order;
+        this.settings.filters.order = "";
+        this.saveSettings();
+        this.filterControls.refresh();
+        this._droppedOrder = droppedOrder;
+        query = this.currentQuery();
+        counted = countedSearchTerms(query);
+      }
+      if (counted > DANBOORU_TAG_LIMIT) {
+        this.setStatus("D站 匿名搜索最多 2 个计数标签（普通标签与排序各占 1 个）。当前超出上限，请减少普通标签，或改用评级/时间/评分/收藏筛选。", "error");
         return;
       }
       if (resetPage) this.page = 1;
-      this.settings.lastQuery = normalizeTags(this.queryWidget?.value || query);
+      this.settings.lastQuery = normalizeTags(this.queryWidget?.value || "");
       this.saveSettings();
       this.queryWidget.value = this.settings.lastQuery;
 
@@ -159,7 +182,11 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         this.renderPosts();
         this.renderPagination();
         const source = data.cached ? "缓存" : "D站";
-        this.setStatus(`${source}：${this.posts.length} 张 · 第 ${this.page} 页`);
+        const notices = [];
+        if (Array.isArray(data.warnings) && data.warnings.length) notices.push(...data.warnings.map(String));
+        if (this._autoWindow && this.settings.filters.order) notices.push(`「${ORDER_LABELS[this.settings.filters.order] || this.settings.filters.order}」排序已自动限定近 1 周，否则 D站 会超时`);
+        if (this._droppedOrder) notices.push(`已自动移除「${ORDER_LABELS[this._droppedOrder] || this._droppedOrder}」排序，按最新显示（匿名最多 2 个计数标签）`);
+        this.setStatus(`${source}：${this.posts.length} 张 · 第 ${this.page} 页` + (notices.length ? `（${notices.join("；")}）` : ""));
       } catch (error) {
         if (error?.name === "AbortError") return;
         if (currentRequest !== this.requestId) return;

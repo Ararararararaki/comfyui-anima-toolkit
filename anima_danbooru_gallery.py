@@ -36,6 +36,10 @@ MIN_PAGE_SIZE = 1
 CACHE_TTL_SECONDS = 30
 CACHE_MAX_ENTRIES = 64
 REQUEST_INTERVAL_SECONDS = 0.2
+# Danbooru 对这几种 "慢排序" 在无时间窗时会对全库排序导致数据库超时（500）。
+# 自动附带一个免费 metatag 时间窗即可稳定返回（与前端 anima_danbooru_gallery_widget.js 常量保持一致）。
+SLOW_ORDERS = frozenset({"score", "favcount", "random"})
+DEFAULT_SLOW_ORDER_WINDOW = "1week"
 FREE_METATAGS = frozenset({
     "rating", "status", "is", "age", "date", "id", "limit", "score", "downvotes",
     "favcount", "width", "height", "ratio", "mpixels", "filesize", "filetype",
@@ -114,6 +118,43 @@ def _bounded_int(value: str | None, default: int, minimum: int, maximum: int) ->
         return default
 
 
+def _order_value(tags: str) -> str:
+    """从规范化标签里取唯一的 order:* 值（排序唯一 owner：前端 settings.filters.order）。"""
+    for token in str(tags or "").split():
+        if token.startswith("order:"):
+            return token.split(":", 1)[1].lower().lstrip("+")
+    return ""
+
+
+def _has_age_tag(tags: str) -> bool:
+    """慢排序需要时间窗兜底；已有用户显式 age:* 时不重复附加。"""
+    return any(token.startswith("age:") for token in str(tags or "").split())
+
+
+def _friendly_danbooru_error(error: requests.RequestException) -> str:
+    """把 Danbooru 的 JSON 错误体转成用户能看懂的中文，而不是透传 "500 Server Error: ..." 这类原始串。"""
+    response = getattr(error, "response", None)
+    payload: dict[str, Any] | None = None
+    if response is not None:
+        try:
+            parsed = response.json()
+            if isinstance(parsed, dict):
+                payload = parsed
+        except ValueError:
+            payload = None
+    if payload is not None:
+        raw_message = str(payload.get("message") or payload.get("error") or "").strip()
+        error_name = str(payload.get("error") or "")
+        status_code = getattr(response, "status_code", 0)
+        if "Canceled" in error_name or "timeout" in raw_message.lower():
+            return "D站 数据库超时：搜索范围过大。评分/收藏/随机排序必须带「时间」筛选，或改用「综合」排序。"
+        if status_code == 422 or "TagLimitError" in error_name:
+            return "D站 搜索限制：普通标签 + 排序最多 2 个计数标签。请减少普通标签，善用评级/时间/评分/收藏等筛选。"
+        if raw_message:
+            return f"D站 返回错误（HTTP {status_code}）：{raw_message}"
+    return f"Danbooru 请求失败：{error}"
+
+
 def _is_allowed_danbooru_url(url: str) -> bool:
     try:
         parsed = urlparse(url)
@@ -188,9 +229,18 @@ async def anima_danbooru_posts(request: web.Request) -> web.Response:
     tags = normalize_search_tags(request.query.get("tags", ""))
     if not tags:
         return web.json_response({"posts": [], "query": "", "cached": False})
+
+    warnings: list[str] = []
+    order_value = _order_value(tags)
+    if order_value in SLOW_ORDERS and not _has_age_tag(tags):
+        # 排序唯一 owner（order:*）；评分/收藏/随机无时间窗查询会让 Danbooru 数据库超时 500，
+        # 自动附带一个免费 metatag 时间窗（前端的 currentQuery() 同样会预加，这里是权威兜底）。
+        tags = (tags + " age:" + DEFAULT_SLOW_ORDER_WINDOW).strip()
+        warnings.append(f"「{order_value}」排序已自动附加近 1 周时间窗（否则 Danbooru 会数据库超时）")
+
     if count_restricted_search_tags(tags) > 2:
         return web.json_response(
-            {"error": "D站匿名搜索最多 2 个计数标签；order 排序会占 1 个，请减少普通标签或使用默认最新排序"},
+            {"error": "D站 匿名搜索最多 2 个计数标签（普通标签与排序各占 1 个）；请减少普通标签或改用默认最新排序"},
             status=400,
         )
 
@@ -205,10 +255,10 @@ async def anima_danbooru_posts(request: web.Request) -> web.Response:
     except requests.Timeout:
         return web.json_response({"error": "Danbooru 请求超时，请稍后重试"}, status=504)
     except requests.RequestException as error:
-        return web.json_response({"error": f"Danbooru 请求失败：{error}"}, status=502)
+        return web.json_response({"error": _friendly_danbooru_error(error)}, status=502)
     except (TypeError, ValueError) as error:
         return web.json_response({"error": str(error)}, status=502)
-    return web.json_response({"posts": posts, "query": search_request.tags, "cached": cached})
+    return web.json_response({"posts": posts, "query": search_request.tags, "cached": cached, "warnings": warnings})
 
 
 @PromptServer.instance.routes.get("/anima/danbooru/image")
