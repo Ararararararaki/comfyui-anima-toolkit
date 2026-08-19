@@ -28,7 +28,7 @@ jobs:
         run: cd panel && npm ci
 
       - name: Build & deploy app/
-        run: cd panel && npm run build:comfyui
+        run: cd panel && npm run build:comfyui:ci
 
       - name: Commit rebuilt app/
         run: |

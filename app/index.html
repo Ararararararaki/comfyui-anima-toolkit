@@ -9,9 +9,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script type="module" crossorigin src="./assets/index-CV6mE86q.js"></script>
-  <link rel="modulepreload" crossorigin href="./assets/vendor-D6eCwX_v.js">
-  <link rel="stylesheet" crossorigin href="./assets/index-BVjAeGD_.css">
+  <script type="module" crossorigin src="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-D4GUWqtq.js"></script>
+  <link rel="modulepreload" crossorigin href="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/vendor-D6eCwX_v.js">
+  <link rel="stylesheet" crossorigin href="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-9DdgU_7w.css">
 </head>
 <body>
 
@@ -23,6 +23,7 @@
       <button class="main-tab" data-section="lora" data-icon="package" role="tab" aria-selected="false"><span>LoRA 探索</span> <span class="badge-tab" id="loraBadge">0</span></button>
       <button class="main-tab" data-section="artist" data-icon="brush" role="tab" aria-selected="false"><span>画师系列</span> <span class="badge-tab">8</span></button>
       <button class="main-tab" data-section="prompt" data-icon="book" role="tab" aria-selected="false"><span>Prompt 库</span></button>
+      <button class="main-tab" data-section="clothing" data-icon="shirt" role="tab" aria-selected="false"><span>服装库</span></button>
       <button class="main-tab" data-section="prompt-freq" data-icon="image" role="tab" aria-selected="false"><span>图片解析</span></button>
       <button class="main-tab" data-section="outputs" data-icon="grid" role="tab" aria-selected="false"><span>Outputs</span></button>
     </nav>
@@ -30,6 +31,7 @@
       <span class="theme-dot active" data-theme="mono" title="Monochrome 暗"></span>
       <span class="theme-dot" data-theme="mono-light" title="Monochrome 亮"></span>
     </div>
+    <span id="buildTime" class="build-time"></span>
     <button class="icon-btn settings-btn" id="settingsBtn" data-icon="settings" title="设置 (Ctrl+,)"></button>
   </div>
 </header>
@@ -212,6 +214,34 @@
       </div>
       <div class="prompt-grid" id="promptGrid"><div class="empty-state empty-state-grid"><div class="big" data-icon="book"></div><p>Prompt 库为空</p><p class="sub">浏览 LoRA 列表，从卡片中提取触发词，或点击「新增 Prompt」手动添加</p></div></div>
     </main>
+  </div>
+</div>
+
+<div id="sectionClothing" class="section-hidden">
+  <div class="clothing-layout">
+    <div class="clothing-toolbar">
+      <div class="search-wrap">
+        <span class="icon" data-icon="search" aria-hidden="true"></span>
+        <input type="text" id="clothingSearch" placeholder="搜索服装、标签…" autocomplete="off" aria-label="搜索服装">
+      </div>
+      <div class="spacer"></div>
+      <button class="btn btn-primary" id="clothingGachaBtn" data-icon="dice" title="从卡片库随机抽取组合"><span>抽卡</span></button>
+      <button class="btn btn-ghost" id="clothingAddBtn" data-icon="plus"><span>添加卡片</span></button>
+      <button class="btn btn-ghost" id="clothingImportBtn" data-icon="download" title="导入 clothing-import.json"><span>导入</span></button>
+      <button class="btn btn-ghost" id="clothingExportBtn" data-icon="upload" title="导出全部卡片（含图）为备份文件"><span>导出</span></button>
+      <button class="btn btn-ghost" id="clothingNewCatBtn" data-icon="tag"><span>新建分类</span></button>
+    </div>
+    <div class="clothing-batch-bar" id="clothingBatchBar">
+      <span>已选 <b id="clothingSelCount">0</b> 张</span>
+      <span style="flex:1"></span>
+      <button class="btn btn-ghost btn-sm" id="clothingMoveBtn" data-icon="folder" title="把选中的卡片移动到分类"><span>移动分类</span></button>
+      <button class="btn btn-danger btn-sm" id="clothingDelSelBtn" data-icon="trash"><span>删除选中</span></button>
+      <button class="btn btn-ghost btn-sm" id="clothingSelCancelBtn"><span>取消选择</span></button>
+    </div>
+    <div class="clothing-cats" id="clothingCats"></div>
+    <div class="clothing-grid" id="clothingGrid"><div class="empty-state empty-state-grid"><div class="big" data-icon="shirt"></div><p>服装库为空</p><p class="sub">点「导入」把 Prompt-Manager 的 92 条服装串搬进来，或点「添加卡片」手建</p></div></div>
+    <div class="clothing-pagination" id="clothingPagination"></div>
+    <input type="file" id="clothingImportFile" accept=".json" style="display:none">
   </div>
 </div>
 
@@ -407,16 +437,6 @@
               <button class="outputs-filter-flag-btn" data-flag="status" data-icon="tag"><span>有标签</span></button>
             </div>
           </div>
-          <div class="outputs-filter-group">
-            <label>分类</label>
-            <div class="outputs-filter-range">
-              <select class="outputs-filter-input outputs-filter-category">
-                <option value="">全部</option>
-                <option value="__none__">未分类</option>
-              </select>
-              <button class="outputs-category-manage-btn" title="管理分类（删除/重命名）" data-icon="settings"></button>
-            </div>
-          </div>
           <button class="btn btn-ghost btn-xs outputs-filter-clear" style="display:none;margin-top:8px;width:100%" data-icon="x"><span>清除筛选</span></button>
         </div>
       </div>
@@ -442,7 +462,11 @@
         </div>
         <div class="outputs-toolbar-group">
           <button class="outputs-toolbar-btn outputs-filter-btn" data-filter="all">全部</button>
-          <button class="outputs-toolbar-btn outputs-filter-btn" data-filter="favorites" data-icon="heart"><span>收藏</span></button>
+          <select class="outputs-toolbar-select outputs-filter-category" aria-label="进入分类" title="进入分类后，下方只显示该分类的图片">
+            <option value="">分类</option>
+            <option value="__none__">未分类</option>
+          </select>
+          <button class="outputs-toolbar-btn outputs-category-manage-btn" title="管理分类（删除/重命名）" data-icon="settings"></button>
           <button class="outputs-toolbar-btn outputs-filter-btn" data-filter="rated" data-icon="thumbsUp"><span>评分</span></button>
         </div>
         <button class="outputs-toolbar-btn outputs-shortcuts-btn" data-icon="keyboard" title="快捷键"></button>
@@ -584,6 +608,6 @@
   <button class="btn btn-danger batch-bar-item batch-bar-del" id="batchHideBtn" data-icon="trash"><span>批量删除</span></button>
   <button class="btn btn-ghost batch-bar-item" id="batchCopyBtn" data-icon="copy"><span>复制触发词</span></button>
   <button class="btn btn-ghost batch-bar-item" id="batchCloseBtn" data-icon="x"><span>退出</span></button>
-</div>
+</div>
 </body>
 </html>
