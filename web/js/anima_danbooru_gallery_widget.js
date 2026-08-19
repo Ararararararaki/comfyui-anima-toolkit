@@ -75,6 +75,17 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.tooltip = null;
       this.domWidget = null;
       this.filterControls = null;
+      this.registered = false; // 是否已登录 Danbooru（登录后标签上限 2→6）
+    }
+
+    async refreshAccount() {
+      try {
+        const d = await (await fetch("/anima/danbooru/account")).json();
+        this.registered = Boolean(d?.logged_in);
+      } catch {
+        this.registered = false;
+      }
+      return this.registered;
     }
 
     saveSettings() {
@@ -131,6 +142,11 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       return parts.filter(Boolean).join(" ");
     }
 
+    tagLimit() {
+      // 匿名最多 2 个计数标签；登录 Danbooru 账号后放宽到 6（值需与后端 /anima/danbooru/posts 一致）
+      return this.registered ? 6 : DANBOORU_TAG_LIMIT;
+    }
+
     async search({ resetPage = false, force = false } = {}) {
       this._droppedOrder = false;
       let query = this.currentQuery();
@@ -141,7 +157,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         return;
       }
       let counted = countedSearchTerms(query);
-      if (counted > DANBOORU_TAG_LIMIT && this.settings.filters.order) {
+      if (counted > this.tagLimit() && this.settings.filters.order) {
         // 匿名搜索最多 2 个计数标签，而排序会占 1 个；内容标签/分级/筛选才是用户意图，
         // 因此超限时优先保留这些、只自动降级排序（改用默认最新）而不是死路报错。
         const droppedOrder = this.settings.filters.order;
@@ -152,8 +168,11 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         query = this.currentQuery();
         counted = countedSearchTerms(query);
       }
-      if (counted > DANBOORU_TAG_LIMIT) {
-        this.setStatus("D站 匿名搜索最多 2 个计数标签（普通标签与排序各占 1 个）。当前超出上限，请减少普通标签，或改用评级/时间/评分/收藏筛选。", "error");
+      if (counted > this.tagLimit()) {
+        const hint = this.registered
+          ? `D站 登录账号最多 ${this.tagLimit()} 个计数标签。请减少普通标签，或改用评级/时间/评分/收藏筛选。`
+          : `D站 匿名搜索最多 ${this.tagLimit()} 个计数标签（普通标签与排序各占 1 个）。请减少普通标签或改用评级/时间/评分/收藏筛选；或在「设置」里登录 Danbooru 账号可解除限制。`;
+        this.setStatus(hint, "error");
         return;
       }
       if (resetPage) this.page = 1;
@@ -557,6 +576,66 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       heightInput.value = String(this.settings.gridHeight);
       heightLabel.append(heightInput);
       content.append(pageLabel, heightLabel);
+
+      // ── D站 账号（登录后解除匿名 2 标签限制，更少限流）──
+      this.refreshAccount().then((reg) => {
+        content.querySelector(".adg-account-status")?.remove();
+        const status = document.createElement("div");
+        status.className = "adg-account-status";
+        status.style.cssText = "font-size:11px;color:var(--text2,#999);margin-top:4px;";
+        status.textContent = reg ? "✓ 已登录 Danbooru（标签上限 6 个，多筛选更自由）" : "ℹ 未登录：匿名最多 2 个计数标签。登录后可同时组合更多标签+排序。";
+        content.append(status);
+      });
+      const accTitle = document.createElement("div");
+      accTitle.className = "adg-field";
+      accTitle.textContent = "Danbooru 登录（解除标签上限）";
+      const userLabel = document.createElement("label");
+      userLabel.className = "adg-field";
+      userLabel.textContent = "用户名";
+      const userInput = document.createElement("input");
+      userInput.placeholder = "danbooru 用户名";
+      userLabel.append(userInput);
+      const keyLabel = document.createElement("label");
+      keyLabel.className = "adg-field";
+      keyLabel.textContent = "API Key（个人设置页 -> API Key 生成）";
+      const keyInput = document.createElement("input");
+      keyInput.type = "password";
+      keyInput.placeholder = "粘贴 API Key";
+      keyLabel.append(keyInput);
+      const tip = document.createElement("div");
+      tip.style.cssText = "font-size:10px;color:var(--text2,#999);";
+      tip.textContent = "凭证仅存本机插件目录，不上传。清空保存 = 退出登录。";
+      content.append(accTitle, userLabel, keyLabel, tip);
+      const accBtn = document.createElement("button");
+      accBtn.type = "button";
+      accBtn.className = "primary";
+      accBtn.textContent = "保存登录";
+      accBtn.style.cssText = "margin-top:6px;padding:4px 10px;border-radius:6px;background:#8b5cf6;color:#fff;border:none;cursor:pointer;font-size:11px;";
+      accBtn.onclick = async () => {
+        accBtn.disabled = true;
+        accBtn.textContent = "保存中…";
+        try {
+          const ud = userInput.value.trim();
+          const kd = keyInput.value.trim();
+          const r = await fetch("/anima/danbooru/account", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username: ud, api_key: kd }),
+          });
+          const j = await r.json();
+          this.registered = Boolean(j?.logged_in);
+          const st = content.querySelector(".adg-account-status");
+          if (st) st.textContent = this.registered ? `✓ 已登录 · ${j?.username || ""}` : "ℹ 已退出（匿名 2 标签限制）";
+          this.setStatus(this.registered ? "D站 登录成功，标签上限已解除至 6 个" : "D站 已退出登录", "success");
+          this.search({ resetPage: true });
+        } catch {
+          this.setStatus("保存登录失败，请重试", "error");
+        }
+        accBtn.disabled = false;
+        accBtn.textContent = "保存登录";
+      };
+      content.append(accBtn);
+
       this.openDialog({
         title: "画廊设置",
         content,
@@ -650,6 +729,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.setStatus("正在自动加载图片…");
       this.renderPosts();
       this.renderPagination();
+      this.refreshAccount(); // 异步刷新登录状态（标签上限 2/6），不阻塞初始搜索
       setTimeout(() => this.search({ resetPage: true }), 0);
       return root;
     }

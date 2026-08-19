@@ -79,9 +79,52 @@ def _resolve_danbooru_proxies() -> dict[str, str] | None:
 
 _danbooru_session = requests.Session()
 _danbooru_session.headers.update(DANBOORU_HEADERS)
-_danbooru_proxies = _resolve_danbooru_proxies()
-if _danbooru_proxies:
-    _danbooru_session.proxies.update(_danbooru_proxies)
+
+
+def _apply_danbooru_proxy() -> None:
+    """每次请求前按当前环境实时解析代理（不再重启时一次性固化）。
+
+    这样即使 ComfyUI 启动那一刻 Clash/系统代理没开，之后也会自动补上；
+    Clash 中途重启/开关也不会有"代理缓存死掉 → 全部超时"的问题。
+    """
+    proxies = _resolve_danbooru_proxies()
+    _danbooru_session.proxies.clear()
+    if proxies:
+        _danbooru_session.proxies.update(proxies)
+
+
+# ---------- Danbooru 账号（登录后解除匿名 2 标签限制、更少限流） ----------
+# 凭证只存本机插件目录 data/danbooru_account.json，绝不上传/不入 git。
+_account_lock = threading.Lock()
+_account_path = Path(__file__).with_name("data") / "danbooru_account.json"
+_account_cache: dict[str, str] | None = None
+
+
+def _load_account() -> dict[str, str]:
+    global _account_cache
+    with _account_lock:
+        if _account_cache is not None:
+            return _account_cache
+        try:
+            data = json.loads(_account_path.read_text(encoding="utf-8"))
+            username = str(data.get("username") or "").strip()
+            api_key = str(data.get("api_key") or "").strip()
+            _account_cache = {"username": username, "api_key": api_key} if (username and api_key) else {}
+        except (OSError, ValueError, TypeError):
+            _account_cache = {}
+        return _account_cache
+
+
+def _registered() -> bool:
+    acc = _load_account()
+    return bool(acc.get("username") and acc.get("api_key"))
+
+
+def _account_params() -> dict[str, str]:
+    acc = _load_account()
+    if acc.get("username") and acc.get("api_key"):
+        return {"login": acc["username"], "api_key": acc["api_key"]}
+    return {}
 
 
 class _RateLimiter:
@@ -245,11 +288,18 @@ def _fetch_posts(request: SearchRequest) -> tuple[list[dict[str, Any]], bool]:
             return cached, True
 
     _rate_limiter.wait()
-    response = _danbooru_session.get(
-        DANBOORU_POSTS_URL,
-        params={"tags": request.tags, "page": request.page, "limit": request.limit},
-        timeout=15,
-    )
+
+    def _do_request():
+        _apply_danbooru_proxy()
+        params = {"tags": request.tags, "page": request.page, "limit": request.limit}
+        params.update(_account_params())  # 登录后：解除匿名 2 标签限制 + 更少限流
+        return _danbooru_session.get(DANBOORU_POSTS_URL, params=params, timeout=30)
+
+    try:
+        response = _do_request()
+    except (requests.Timeout, requests.ConnectionError):
+        # 代理/网络可能刚失效：重解析代理后重试一次
+        response = _do_request()
     response.raise_for_status()
     data = response.json()
     if not isinstance(data, list):
@@ -273,11 +323,13 @@ async def anima_danbooru_posts(request: web.Request) -> web.Response:
         tags = (tags + " age:" + DEFAULT_SLOW_ORDER_WINDOW).strip()
         warnings.append(f"「{order_value}」排序已自动附加近 1 周时间窗（否则 Danbooru 会数据库超时）")
 
-    if count_restricted_search_tags(tags) > 2:
-        return web.json_response(
-            {"error": "D站 匿名搜索最多 2 个计数标签（普通标签与排序各占 1 个）；请减少普通标签或改用默认最新排序"},
-            status=400,
-        )
+    registered = _registered()
+    # 匿名最多 2 个计数标签（普通标签+排序各算 1）；登录后放宽到 6
+    tag_limit = 6 if registered else 2
+    if count_restricted_search_tags(tags) > tag_limit:
+        hint = "（已登录 D站，普通标签+排序仍最多 6 个；请减少标签或排序）" if registered else \
+            "（普通标签与排序各占 1 个；登录 Danbooru 账号可解除 2 标签限制 或 减少标签/改用默认最新排序）"
+        return web.json_response({"error": f"D站 搜索最多 {tag_limit} 个计数标签{hint}", "registered": registered}, status=400)
 
     search_request = SearchRequest(
         tags=tags,
@@ -288,12 +340,14 @@ async def anima_danbooru_posts(request: web.Request) -> web.Response:
     try:
         posts, cached = await asyncio.get_running_loop().run_in_executor(None, _fetch_posts, search_request)
     except requests.Timeout:
-        return web.json_response({"error": "Danbooru 请求超时，请稍后重试"}, status=504)
+        return web.json_response({"error": "Danbooru 请求超时：搜索太慢或网络不稳，请稍后重试（已自动重试一次）", "registered": registered}, status=504)
+    except requests.ConnectionError as error:
+        return web.json_response({"error": f"连不上 Danbooru：{getattr(error, '__class__', error.__class__).__name__}。请确认 Clash/代理已开启；实在不行重启一次 ComfyUI 让代理配置生效", "registered": registered}, status=502)
     except requests.RequestException as error:
-        return web.json_response({"error": _friendly_danbooru_error(error)}, status=502)
+        return web.json_response({"error": _friendly_danbooru_error(error), "registered": registered}, status=502)
     except (TypeError, ValueError) as error:
-        return web.json_response({"error": str(error)}, status=502)
-    return web.json_response({"posts": posts, "query": search_request.tags, "cached": cached, "warnings": warnings})
+        return web.json_response({"error": str(error), "registered": registered}, status=502)
+    return web.json_response({"posts": posts, "query": search_request.tags, "cached": cached, "warnings": warnings, "registered": registered})
 
 
 @PromptServer.instance.routes.get("/anima/danbooru/image")
@@ -301,14 +355,19 @@ async def anima_danbooru_image(request: web.Request) -> web.Response:
     image_url = request.query.get("url", "").strip()
     if not _is_allowed_danbooru_url(image_url):
         return web.json_response({"error": "只允许代理 donmai.us 的 HTTPS 图片"}, status=400)
+    def _get():
+        _apply_danbooru_proxy()
+        return _danbooru_session.get(image_url, timeout=30)
     try:
-        response = await asyncio.get_running_loop().run_in_executor(
-            None,
-            lambda: _danbooru_session.get(image_url, timeout=25),
-        )
+        response = await asyncio.get_running_loop().run_in_executor(None, _get)
         response.raise_for_status()
     except requests.Timeout:
-        return web.json_response({"error": "图片代理超时"}, status=504)
+        # 代理/网络可能刚失效：重解析代理后重试一次
+        try:
+            response = await asyncio.get_running_loop().run_in_executor(None, _get)
+            response.raise_for_status()
+        except requests.Timeout:
+            return web.json_response({"error": "图片代理超时（已重试）：请确认 Clash/代理已开启"}, status=504)
     except requests.RequestException as error:
         return web.json_response({"error": f"图片代理失败：{error}"}, status=502)
     return web.Response(
@@ -316,6 +375,59 @@ async def anima_danbooru_image(request: web.Request) -> web.Response:
         content_type=response.headers.get("Content-Type", "image/jpeg").split(";", 1)[0],
         headers={"Cache-Control": "public, max-age=3600"},
     )
+
+
+@PromptServer.instance.routes.post("/anima/danbooru/account")
+async def anima_danbooru_account_save(request: web.Request) -> web.Response:
+    """保存 Danbooru 登录凭证（用户名 + API Key）到本机插件目录；清空 = 退出登录。"""
+    global _account_cache
+    try:
+        body = await request.json()
+    except (ValueError, AttributeError):
+        return web.json_response({"error": "body 必须是 JSON"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "body 必须是对象"}, status=400)
+    username = str(body.get("username") or "").strip()
+    api_key = str(body.get("api_key") or "").strip()
+    try:
+        _account_path.parent.mkdir(parents=True, exist_ok=True)
+        if username and api_key:
+            _account_path.write_text(json.dumps({"username": username, "api_key": api_key}, ensure_ascii=False), encoding="utf-8")
+        else:
+            _account_path.unlink(missing_ok=True)
+    except OSError as error:
+        return web.json_response({"error": f"写入凭证失败：{error}"}, status=500)
+    with _account_lock:
+        _account_cache = {"username": username, "api_key": api_key} if (username and api_key) else {}
+    return web.json_response({"logged_in": bool(username and api_key), "username": username, "tip": "凭证仅存于本机插件目录，不会上传。遇 429 限流请适当降低使用频率。"})
+
+
+@PromptServer.instance.routes.get("/anima/danbooru/account")
+async def anima_danbooru_account_status(request: web.Request) -> web.Response:
+    """返回登录状态（不泄露 api_key）。"""
+    acc = _load_account()
+    return web.json_response({"logged_in": bool(acc.get("username") and acc.get("api_key")), "username": acc.get("username", "")})
+
+
+@PromptServer.instance.routes.get("/anima/danbooru/suggest")
+async def anima_danbooru_suggest(request: web.Request) -> web.Response:
+    query = normalize_search_tags(request.query.get("q", "")).split(" ")[-1:]
+    if not query:
+        return web.json_response({"suggestions": [], "didYouMean": [], "rewrites": []})
+    term = query[0]
+    def fetch():
+        _rate_limiter.wait()
+        _apply_danbooru_proxy()
+        params = {"search[name_matches]": f"{term}*", "search[order]": "count", "limit": 8}
+        params.update(_account_params())
+        response = _danbooru_session.get("https://danbooru.donmai.us/tags.json", params=params, timeout=20)
+        response.raise_for_status(); return response.json()
+    try:
+        tags = await asyncio.get_running_loop().run_in_executor(None, fetch)
+        names = [x.get("name") for x in tags if isinstance(x, dict) and x.get("name")]
+    except Exception:
+        names = []
+    return web.json_response({"suggestions": names, "didYouMean": names[:3], "rewrites": names[:3]})
 
 
 @PromptServer.instance.routes.post("/anima/danbooru/translate")
@@ -382,8 +494,9 @@ class DanbooruGallery:
         if not _is_allowed_danbooru_url(image_url):
             raise ValueError("不允许的 Danbooru 图片 URL")
         request = urllib.request.Request(image_url, headers={"User-Agent": DANBOORU_HEADERS["User-Agent"]})
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler(_danbooru_proxies or {}))
-        with opener.open(request, timeout=25) as response:
+        proxies = _resolve_danbooru_proxies()  # 实时解析，避免启动时固化死代理
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies or {}))
+        with opener.open(request, timeout=30) as response:
             image_bytes = response.read()
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         image_array = np.asarray(image).astype(np.float32) / 255.0
