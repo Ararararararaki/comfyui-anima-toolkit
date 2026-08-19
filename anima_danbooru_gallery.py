@@ -36,6 +36,12 @@ MIN_PAGE_SIZE = 1
 CACHE_TTL_SECONDS = 30
 CACHE_MAX_ENTRIES = 64
 REQUEST_INTERVAL_SECONDS = 0.2
+FREE_METATAGS = frozenset({
+    "rating", "status", "is", "age", "date", "id", "limit", "score", "downvotes",
+    "favcount", "width", "height", "ratio", "mpixels", "filesize", "filetype",
+    "duration", "md5", "pixiv_id", "pixiv", "parent", "child", "upvote", "embedded",
+    "tagcount",
+})
 
 
 class _RateLimiter:
@@ -86,6 +92,19 @@ def normalize_search_tags(raw_tags: str) -> str:
         if len(normalized) >= MAX_SEARCH_TAGS:
             break
     return " ".join(normalized)
+
+
+def count_restricted_search_tags(tags: str) -> int:
+    """Danbooru 匿名/Member 搜索最多两个非 free metatag。"""
+    count = 0
+    for raw_token in str(tags or "").split():
+        token = raw_token.lstrip("-~").lower()
+        if token in {"or", "(", ")"}:
+            continue
+        prefix, separator, _ = token.partition(":")
+        if not separator or prefix not in FREE_METATAGS:
+            count += 1
+    return count
 
 
 def _bounded_int(value: str | None, default: int, minimum: int, maximum: int) -> int:
@@ -169,6 +188,11 @@ async def anima_danbooru_posts(request: web.Request) -> web.Response:
     tags = normalize_search_tags(request.query.get("tags", ""))
     if not tags:
         return web.json_response({"posts": [], "query": "", "cached": False})
+    if count_restricted_search_tags(tags) > 2:
+        return web.json_response(
+            {"error": "D站匿名搜索最多 2 个计数标签；order 排序会占 1 个，请减少普通标签或使用默认最新排序"},
+            status=400,
+        )
 
     search_request = SearchRequest(
         tags=tags,

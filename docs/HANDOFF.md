@@ -2,6 +2,19 @@
 
 > 给下一位 agent 的工作交接。项目当前健康、全部已推送 GitHub。请先读本文 + 合并仓库 README，再动手。
 
+## 最新：TK D站画廊下拉控件重构（2026-08-19）
+
+- **交互**：分级、筛选、分类统一为选择框外观的 portal 下拉；菜单挂到 `document.body`，不会再被节点 `overflow:hidden` 裁切。
+- **分级**：支持普通/敏感/可疑/明确多选，触发器显示数量；旧字符串 `"g"` / `"g,s"` 自动迁移为数组，重开节点不会丢多选。
+- **筛选**：时间、最低评分、最低收藏、排序使用二级级联菜单；悬浮 150ms 展开，点击可固定，支持方向键与 Esc；多个条件只在“应用筛选”时请求一次。
+- **排序**：独立“排行”按钮和旧 `toggleRanking()` 已删除；唯一 owner 为 `settings.filters.order`。搜索框内手写 `order:*` 会被规范化移除，避免重复 order 导致 422。
+- **分类**：沿用同一菜单壳的平面单选；空值文案由误导性的“无分类”改为准确的“全部分类”；卡片上的“分类”仍表示给单张图片归类。
+- **D站限制**：匿名/Member 搜索最多 2 个计数标签，`order` 会占 1 个；前端超限时不发请求并显示中文说明，后端 `/anima/danbooru/posts` 同步返回清晰 400，不再透传 D站 422。
+- **新 owner**：`web/js/anima_dropdown_menu.js` 管 portal/定位/外部关闭/键盘/级联；`web/js/anima_danbooru_filter_controls.js` 管分级、筛选、分类状态与菜单内容；`web/css/anima_danbooru_gallery.css` 是画廊唯一样式 owner。
+- **复杂度**：主 widget 从原 786 行降到约 680 行；已删除未被调用的 `openControlDock/openGallery/openFilter`、旧 `<details>` 菜单、内联 CSS 和独立排行路径。
+- **验证**：`tests/verify_danbooru_dropdown.py` 真实启动 headless ComfyUI 节点，覆盖 portal 不裁切、多选持久化、悬浮/点击级联、单次请求、重置、分类、键盘、排序单 owner、标签限制与零运行时异常。
+- **生效**：JS/CSS 硬刷新即可；本批后端校验修改了 `anima_danbooru_gallery.py`，首次部署需要重启 ComfyUI。
+
 ## 最新：TK D站画廊（2026-08-19）
 
 - 新节点稳定 ID：`DanbooruGallery`；显示名：**TK D站画廊**；分类：`TK/Danbooru`。
