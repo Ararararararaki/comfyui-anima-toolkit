@@ -2,6 +2,16 @@
 
 > 给下一位 agent 的工作交接。项目当前健康、全部已推送 GitHub。请先读本文 + 合并仓库 README，再动手。
 
+## 最新：TK D站画廊（2026-08-19）
+
+- 新节点稳定 ID：`DanbooruGallery`；显示名：**TK D站画廊**；分类：`TK/Danbooru`。
+- 文件：`anima_danbooru_gallery.py`、`web/js/anima_danbooru_gallery_widget.js`、`data/danbooru_tags_zh.json`。根 `__init__.py` 只负责 mappings 接线。
+- 功能：固定/可调画廊高度、瀑布流完整比例预览、单选图片输出 IMAGE/STRING、完整双语 tag 悬浮预览、图片下载/大图/Prompt/分类/入 Prompt 库（Data URL 预览图）。
+- 搜索：自动加载上次 query；Danbooru 缓存与强制刷新；中文多选分级；节点内高级筛选（时间、最低评分、最低收藏、唯一排序）；本地分类、搜索预设、五页码/输入跳页/前后翻页；补全、无结果纠错与可见扩展建议。
+- 重要：排序只经 `settings.filters.order` 维护，禁止把 `order:rank` 追加进搜索框；否则会和 `order:score` 冲突导致 Danbooru 422。
+- 验证：`node --check web/js/anima_danbooru_gallery_widget.js`、`python -m py_compile anima_danbooru_gallery.py`、`/object_info/DanbooruGallery`、`/anima/danbooru/suggest?q=1gir`。
+- 发布：Python/数据修改需重启 ComfyUI；JS 修改需 `Ctrl+Shift+R`。发布源与运行目录的本节点文件必须 SHA256 相同。
+
 ## 一、项目是什么
 
 ComfyUI 自定义节点（批量 LoRA 加载器）+ 内嵌的「本地管理面板」（Anima Toolkit），解决 ComfyUI 下 LoRA/Prompt/出图管理的便利性。GitHub 一键包，clone 到 `custom_nodes` 即用（`app/` 预构建、相对路径）。
