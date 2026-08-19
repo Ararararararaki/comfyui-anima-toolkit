@@ -501,16 +501,18 @@ if (savedOrder === 'asc' || savedOrder === 'desc') {
   useOutputStore.getState().sortOrder = savedOrder
 }
 
-// ── 筛选状态持久化（viewMode/sortKey/filterKey/searchQuery/高级筛选）──
+// ── 筛选状态持久化 ──
+// 只持久化「浏览偏好」：视图/排序/预设筛选/搜索。高级筛选（模型/LoRA/日期范围/快捷时段/状态/分类）
+// 是临时探索条件，不跨会话保存——否则一次误设的日期范围会长期静默生效，把历史日期全部藏掉
+// （复现：dateMin=2026-08-12 导致 8.12 及之前永久不显示，"清除筛选"才恢复）。
 const FILTER_STORAGE_KEY = 'outputs_filterState'
 function persistFilterState(state: { viewMode: string; sortKey: string; filterKey: string; searchQuery: string; filterModel: string; filterLora: string; filterDateMin: string; filterDateMax: string; filterQuickPeriod: string; filterStatusFlags: string[]; filterCategory: string }) {
+  void state.filterModel; void state.filterLora; void state.filterDateMin; void state.filterDateMax
+  void state.filterQuickPeriod; void state.filterStatusFlags; void state.filterCategory
   try {
     localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify({
       viewMode: state.viewMode, sortKey: state.sortKey, filterKey: state.filterKey,
-      searchQuery: state.searchQuery, filterModel: state.filterModel, filterLora: state.filterLora,
-      filterDateMin: state.filterDateMin, filterDateMax: state.filterDateMax,
-      filterQuickPeriod: state.filterQuickPeriod, filterStatusFlags: state.filterStatusFlags,
-      filterCategory: state.filterCategory,
+      searchQuery: state.searchQuery,
     }))
   } catch { /* quota */ }
 }
@@ -524,13 +526,9 @@ function restoreFilterState() {
     if (typeof saved.sortKey === 'string') st.sortKey = saved.sortKey
     if (typeof saved.filterKey === 'string') st.filterKey = saved.filterKey
     if (typeof saved.searchQuery === 'string') st.searchQuery = saved.searchQuery
-    if (typeof saved.filterModel === 'string') st.filterModel = saved.filterModel
-    if (typeof saved.filterLora === 'string') st.filterLora = saved.filterLora
-    if (typeof saved.filterDateMin === 'string') st.filterDateMin = saved.filterDateMin
-    if (typeof saved.filterDateMax === 'string') st.filterDateMax = saved.filterDateMax
-    if (typeof saved.filterQuickPeriod === 'string') st.filterQuickPeriod = saved.filterQuickPeriod
-    if (Array.isArray(saved.filterStatusFlags)) st.filterStatusFlags = saved.filterStatusFlags
-    if (typeof saved.filterCategory === 'string') st.filterCategory = saved.filterCategory
+    // 历史残留的高级筛选一律忽略并显式清空，防止幽灵过滤（如遗留 dateMin）把历史日期藏掉
+    st.filterModel = ''; st.filterLora = ''; st.filterDateMin = ''; st.filterDateMax = ''
+    st.filterQuickPeriod = ''; st.filterStatusFlags = []; st.filterTag = ''; st.filterCategory = ''
   } catch { /* ignore */ }
 }
 restoreFilterState()

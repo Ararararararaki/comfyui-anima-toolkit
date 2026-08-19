@@ -172,6 +172,16 @@ export function renderEmpty(dirHandle: boolean): string {
   </div>`
 }
 
+/** 空状态（库里有图、但被筛选/路径过滤成空）：明确提示可能残留筛选，并提供一键清除 */
+export function renderFilteredEmpty(): string {
+  return `<div class="outputs-empty">
+    <div class="big">${icon('filter', 28)}</div>
+    <p>筛选条件下没有可显示的图片</p>
+    <p class="sub">这里其实有图片，可能是残留了日期范围或其它筛选条件（也许是很久以前设过一直生效）</p>
+    <button type="button" id="outputsClearFiltersBtn" class="btn btn-primary"><span>清除筛选，查看全部</span></button>
+  </div>`
+}
+
 // ── 统计栏渲染 ──
 
 export function renderStats(total: number, filtered: number, selected: number): string {

@@ -24,6 +24,7 @@ import {
   renderDirTree as renderDirTreeHtml,
   renderList,
   renderEmpty,
+  renderFilteredEmpty,
   renderStats,
   renderMetadataPanel,
   renderImageCard,
@@ -459,7 +460,17 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
 
   if (files.length === 0) {
     destroyOutputsVS()
-    el.innerHTML = renderEmpty(hasDir)
+    removeOutputsSentinel()
+    // 库里有图但被筛选/路径滤空 → 给准确空状态 + 一键清除筛选（防"幽灵筛选把历史日期藏掉"的困惑）
+    el.innerHTML = state.files.length > 0 ? renderFilteredEmpty() : renderEmpty(hasDir)
+    el.querySelector<HTMLElement>('#outputsClearFiltersBtn')?.addEventListener('click', () => {
+      const st2 = useOutputStore.getState()
+      st2.clearAdvancedFilters()
+      st2.setFilterKey('all')
+      st2.setSearchQuery('')
+      st2.setCurrentPath('')
+      renderOutputsView()
+    })
     return
   }
 
