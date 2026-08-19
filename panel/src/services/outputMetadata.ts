@@ -168,16 +168,45 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
     return hits >= 2
   }
 
-  // 从节点提取文本内容（API format 的文本字段可能是数组链接 [srcId, slot]，递归解析上游文本）
+  // ── 正片文本提取（泛化版，2026-08-20）──
+  // 不依赖具体节点型号：按「内容字段白名单 + 配置字段黑名单 + 节点类别」沿 KSampler.positive 链路通用取文本，
+  // 覆盖任意型号的拼接/组装节点（Text Concatenate、String Combiner、Prompt Builder…）、叶节点（Primitive/String/textbox…）、
+  // 以及"文本来自其输入链路"的透传/过滤节点（Danbooru Tag Sorter、Clean Tags、Tag Mapper…）。
+  const _TEXT_KEY_RE = /(text|prompt|caption|description|tags|keyword|string|content|value|nl_prompt|extra_tags|subtitle|quality|style|character|background|general|identity|rating|aspect_ratio|length)$/i
+  const _CONFIG_KEY_RE = /^(delimiter|separator|clean_whitespace|seed|width|height|steps|cfg|sampler_name|scheduler|denoise|device|type|model|clip|unet|vae|batch_size|anything|preset|roll|pos_x|pos_y|pos_z|excel_file|category_mapping|new_category_order|regex_blacklist|tag_blacklist|validation|is_comment|force_reload)$/i
+  const _LEAF_CT_RE = /^(primitive|string|multiline|textbox|keyword|property|single.?line|text.?input)/i
+  const _JOIN_CT_RE = /(concat|combine|concatenate|joining|join|assemble|merge|compose|builder|section|smith|text.?comb)/i
+
+  const _cleanTags = (t: string) => t.split(/[\r\n]+/).join(', ').replace(/,\s*,/g, ',').trim()
+  const _isContentKey = (k: string) => !_CONFIG_KEY_RE.test(k) && _TEXT_KEY_RE.test(k)
+
   function getNodeText(node: any, visited = new Set<string>()): string {
     const inputs = node.inputs || {}
     const ct = (node.class_type || node.type || '').toLowerCase()
-    // 直接文本字段（含 preview_text / prompt_text，如 PreviewAny / DanbooruTextPassthrough）
-    for (const key of ['text', 'prompt', 'positive', 'negative', 'prompt_text', 'preview_text', 'preview_markdown']) {
-      const v = inputs[key]
+    const nodeId = node.id !== undefined ? String(node.id) : ''
+    // 进入即标记自己（防环）。注意：不能在组装分支里"先标记孩子再递归"，
+    // 否则像 DanbooruTagSorter 这类"文本来自其输入链路"的节点会在自身递归段被判 visited 而整支丢失。
+    if (nodeId && visited.has(nodeId)) return ''
+    if (nodeId) visited.add(nodeId)
+
+    const resolveSource = (v: any): string => {
       if (typeof v === 'string' && v.length > 3) return v
+      if (!Array.isArray(v) || v.length === 0) return ''
+      const srcVal = v[0]
+      if (typeof srcVal !== 'number' && (typeof srcVal !== 'string' || isNaN(Number(srcVal)))) return ''
+      const srcNode = nodeMap.get(srcVal) || nodeMap.get(Number(srcVal))
+      if (!srcNode || srcNode === node) return ''
+      return getNodeText(srcNode, visited)
     }
-    // 生态节点：TK D站画廊把选中 prompt 存在 selection_data JSON（多选逗号连接，供拼接节点注入）
+
+    // 1) 内容字段直读（多个同类字段按序聚合，如 preview_text + prompt_text）
+    //    注意：只要存在数组链接输入，就可能是"混合型组装"（部分分区字面量、部分分区链接）——此时不提前短路，交给下面的组装分支全量聚合。
+    const hasLinkInput = Object.values(inputs).some((v) => Array.isArray(v) && v.length > 0)
+    const direct: string[] = []
+    for (const [k, v] of Object.entries(inputs)) if (typeof v === 'string' && _isContentKey(k) && v.length > 3) direct.push(v)
+    if (direct.length && !hasLinkInput) return _cleanTags(direct.join(', '))
+
+    // 2) 生态特例：TK D站画廊把选中 prompt 存在 selection_data JSON（多选逗号连接，供拼接节点注入）
     if (ct.includes('danboorugallery')) {
       const sd = inputs.selection_data
       if (typeof sd === 'string') {
@@ -185,59 +214,47 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
           const data = JSON.parse(sd)
           const list = data?.selections
           if (Array.isArray(list)) {
-            const prompts = list
-              .map((s: any) => (s && typeof s === 'object' ? String(s.prompt || '') : ''))
-              .filter(Boolean)
-            if (prompts.length) return prompts.join(', ')
+            const ps = list.map((s: any) => (s && typeof s === 'object' ? String(s.prompt || '') : '')).filter(Boolean)
+            if (ps.length) return ps.join(', ')
           }
         } catch { /* 非 JSON 忽略 */ }
       }
     }
-    // 通用字符串叶节点：PrimitiveStringMultiline / String 等把文字放 value 字段（常被上游拼接节点引用）
-    if (/(primitive|string|multiline|textbox|text node|keyword)/i.test(ct)) {
-      const leaf = inputs.value ?? inputs.string ?? inputs.contents ?? inputs.content ?? inputs.data
-      if (typeof leaf === 'string' && leaf.length > 3) return leaf
-    }
-    // 文本拼接节点（Text Concatenate / TextConcat / Text Comb 等）：把 text1..n / text_a..z 按序拼接。
-    // 值可能是字面量，也可能是数组链接 [srcId, slot] → 递归解析上游文本（应对"text 由其他节点注入"）。
-    if (/concat|combine|concatenate|text.?comb/i.test(ct)) {
-      const parts: string[] = []
-      const nodeIdGuard = node.id !== undefined ? String(node.id) : ''
-      const pushPart = (v: any) => {
-        if (typeof v === 'string' && v.length > 3) { parts.push(v); return }
-        if (!Array.isArray(v) || v.length === 0) return
-        const src = nodeMap.get(v[0]) || nodeMap.get(Number(v[0]))
-        if (!src || src === node) return
-        const sid = String(src.id)
-        if (visited.has(sid) || sid === nodeIdGuard) return
-        visited.add(sid)
-        const t = getNodeText(src, visited)
-        if (t) parts.push(t)
+
+    // 3) 通用字符串叶节点：PrimitiveStringMultiline / String / textbox 等
+    if (_LEAF_CT_RE.test(ct)) {
+      for (const k of ['value', 'string', 'contents', 'content', 'data', 'text']) {
+        const v = inputs[k]
+        if (typeof v === 'string' && v.length > 3) return v
       }
-      for (let i = 1; i <= 24; i++) pushPart(inputs[`text${i}`])
-      for (const ch of 'abcdefghijklmnopqrstuvwxyz') pushPart(inputs[`text_${ch}`])
-      for (const ch of 'abcdefghijklmnopqrstuvwxyz') pushPart(inputs[`text${ch.toUpperCase()}`])
-      const joined = parts.join(', ').replace(/,\s*,/g, ',').trim()
+    }
+
+    // 4) 组装/拼接节点：把非配置输入按字段顺序聚合（值可为字面量或数组链接）
+    //    兼容没进正则的"类 Prompt Builder"节点：≥2 个非配置输入即按组装处理；字符串仅当 key 属内容白名单。
+    const contentInputs = Object.entries(inputs).filter(
+      ([k, v]) =>
+        !_CONFIG_KEY_RE.test(k) &&
+        ((Array.isArray(v) && v.length > 0) || (typeof v === 'string' && _isContentKey(k) && v.length > 3)),
+    )
+    if (_JOIN_CT_RE.test(ct) || contentInputs.length >= 2) {
+      const parts: string[] = []
+      for (const [k, v] of contentInputs) {
+        const t = resolveSource(v)
+        if (t) parts.push(_cleanTags(t))
+      }
+      const joined = _cleanTags(parts.join(', '))
       if (joined.length > 3) return joined
     }
-    // widgets_values（UI format fallback）
+
+    // 5) widgets_values（UI format fallback）
     if (Array.isArray(node.widgets_values)) {
-      for (const w of node.widgets_values) {
-        if (typeof w === 'string' && w.length > 5) return w
-      }
+      for (const w of node.widgets_values) if (typeof w === 'string' && w.length > 5) return w
     }
-    // API format：输入值为数组链接 [srcId, slot] → 递归解析源节点文本
-    const nodeId = node.id !== undefined ? String(node.id) : ''
-    if (visited.has(nodeId)) return ''
-    visited.add(nodeId)
-    for (const key of Object.keys(inputs)) {
-      const v = inputs[key]
-      if (!Array.isArray(v) || v.length === 0) continue
-      const srcVal = v[0]
-      if (typeof srcVal !== 'number' && (typeof srcVal !== 'string' || isNaN(Number(srcVal)))) continue
-      const srcNode = nodeMap.get(srcVal) || nodeMap.get(Number(srcVal))
-      if (!srcNode || srcNode === node) continue
-      const t = getNodeText(srcNode, visited)
+
+    // 6) 通用递归：任意剩余数组链接（透传/过滤类：Danbooru Tag Sorter / Clean Tags → 上游文本）
+    for (const [k, v] of Object.entries(inputs)) {
+      if (_CONFIG_KEY_RE.test(k)) continue
+      const t = resolveSource(v)
       if (t) return t
     }
     return ''
