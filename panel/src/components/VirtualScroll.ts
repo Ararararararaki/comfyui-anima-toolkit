@@ -17,6 +17,12 @@ export interface VirtualScrollOptions {
   totalItems: number
   overscan?: number
   renderItem: (index: number, style: VirtualScrollItemStyle) => string
+  /**
+   * 在虚拟行发生增删前后同步执行。调用方可借此暂存并复用昂贵的 DOM 资源
+   * （例如已经解码的图片节点），避免一次 update 把它们全部销毁后重新解码。
+   */
+  beforeRender?: (inner: HTMLElement) => void
+  afterRender?: (inner: HTMLElement) => void
 }
 
 export class VirtualScroll {
@@ -25,9 +31,17 @@ export class VirtualScroll {
   private opts: Required<VirtualScrollOptions>
   private onScroll: () => void
   private rafId: number | null = null
+  private renderedStartIndex = -1
+  private renderedEndIndex = -1
+  private renderedItems = new Map<number, HTMLElement>()
 
   constructor(opts: VirtualScrollOptions) {
-    this.opts = { overscan: 5, ...opts }
+    this.opts = {
+      overscan: 5,
+      beforeRender: () => {},
+      afterRender: () => {},
+      ...opts,
+    }
     this.container = opts.container
 
     // 确保容器可滚动
@@ -53,19 +67,24 @@ export class VirtualScroll {
     this.container.addEventListener('scroll', this.onScroll, { passive: true })
 
     // 首次渲染
-    this.render()
+    this.render(true)
   }
 
-  private render(): void {
+  private render(force = false): void {
     const { itemHeight, overscan, totalItems } = this.opts
     const scrollTop = this.container.scrollTop
     const viewportHeight = this.container.clientHeight
 
     if (totalItems === 0) {
+      this.opts.beforeRender(this.inner)
       this.inner.style.height = 'auto'
       this.inner.style.paddingTop = '0'
       this.inner.style.paddingBottom = '0'
-      this.inner.innerHTML = ''
+      this.inner.replaceChildren()
+      this.renderedStartIndex = -1
+      this.renderedEndIndex = -1
+      this.renderedItems.clear()
+      this.opts.afterRender(this.inner)
       return
     }
 
@@ -73,25 +92,54 @@ export class VirtualScroll {
     const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan)
     const endIndex = Math.min(totalItems, Math.ceil((scrollTop + viewportHeight) / itemHeight) + overscan)
 
-    // 用 padding 撑出滚动空间
-    this.inner.style.paddingTop = (startIndex * itemHeight) + 'px'
-    this.inner.style.paddingBottom = (Math.max(0, totalItems - endIndex) * itemHeight) + 'px'
-    // 关键：inner 固定为总高度。行是 absolute 定位（不占文档流），
-    // 若 inner 高度只等于 padding，容器可滚动范围会少掉「已渲染行」的高度 → 大列表最后几行滚不到
+    // 范围未变时保留现有 DOM：每个滚动像素都重建 img 会触发重复解码，
+    // 即使缩略图已缓存也会短暂显示卡片背景色。
+    if (!force && startIndex === this.renderedStartIndex && endIndex === this.renderedEndIndex) return
+
+    this.opts.beforeRender(this.inner)
+
+    // 内层固定总高度，行按其绝对索引定位；这样滚动窗口变化时，重叠行无需改变位置或重建。
+    this.inner.style.paddingTop = '0'
+    this.inner.style.paddingBottom = '0'
     this.inner.style.height = totalHeight + 'px'
 
-    // 只渲染可见条目
-    let html = ''
+    if (force) {
+      this.inner.replaceChildren()
+      this.renderedItems.clear()
+    }
+
+    // 只移除离开窗口的行，保留重叠行及其已解码的图片元素。
+    for (const [index, item] of this.renderedItems) {
+      if (index < startIndex || index >= endIndex) {
+        item.remove()
+        this.renderedItems.delete(index)
+      }
+    }
+
+    // 仅创建新进入窗口的行。包装层提供固定坐标，让所有现有 renderItem 保持不变。
     for (let i = startIndex; i < endIndex; i++) {
-      html += this.opts.renderItem(i, {
+      if (this.renderedItems.has(i)) continue
+      const item = document.createElement('div')
+      item.className = 'virtual-scroll-item'
+      item.dataset.index = String(i)
+      item.style.position = 'absolute'
+      item.style.top = (i * itemHeight) + 'px'
+      item.style.left = '0'
+      item.style.width = '100%'
+      item.style.height = itemHeight + 'px'
+      item.innerHTML = this.opts.renderItem(i, {
         position: 'absolute',
-        top: (i - startIndex) * itemHeight,
+        top: 0,
         left: 0,
         width: '100%',
         height: itemHeight,
       })
+      this.inner.appendChild(item)
+      this.renderedItems.set(i, item)
     }
-    this.inner.innerHTML = html
+    this.renderedStartIndex = startIndex
+    this.renderedEndIndex = endIndex
+    this.opts.afterRender(this.inner)
   }
 
   /**
@@ -99,14 +147,14 @@ export class VirtualScroll {
    */
   update(opts: Partial<VirtualScrollOptions>): void {
     Object.assign(this.opts, opts)
-    this.render()
+    this.render(true)
   }
 
   /**
    * 强制重新渲染（如 itemHeight 变化时）
    */
   refresh(): void {
-    this.render()
+    this.render(true)
   }
 
   /**

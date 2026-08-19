@@ -7,13 +7,17 @@ import { restoreAllFromDb } from '../services/outputManifest'
 import { preloadThumbnailsFromDb } from '../services/outputThumbnail'
 import { hashPath } from '../services/outputManifest'
 import { outputsDb } from '../db/outputsDb'
+import { addPrompt, generatePromptId } from '../store/prompts'
 import { esc, escAttr, showToast, copyText, icon, attachSearchClear, debounce } from '../utils'
 import { confirmModal, promptModal } from '../components/Modal'
 import type { OutputFile, OutputMetadata, OutputDir, OutputScanStatus } from '../types/outputs'
+import type { PromptEntry } from '../types'
 import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow } from '../services/outputMetadata'
 import { extractPngTextChunks, injectPngTextChunks } from '../services/pngChunks'
 import { backfillPrompts } from '../services/outputMetadataService'
 import { VirtualScroll, type VirtualScrollItemStyle } from '../components/VirtualScroll'
+import { ImageNodeCache } from '../components/ImageNodeCache'
+import { initOutputDragSelection, type OutputGridGeometry } from './outputDragSelection'
 import JSZip from 'jszip'
 
 import {
@@ -229,7 +233,6 @@ export async function activateOutputs() {
   renderOutputsView()
 
   setupInfiniteScroll()
-  initDragSelect()
 }
 
 function renderDirTree(dir: OutputDir | null) {
@@ -268,7 +271,7 @@ function syncSelectionUI() {
 function updateFavoriteUI(id: string) {
   const fav = useOutputStore.getState().files.find(f => f.id === id)
   if (!fav) return
-  document.querySelectorAll(`[data-id="${id}"] .outputs-fav-btn, [data-id="${id}"] .outputs-card-fav-icon`).forEach(el => {
+  document.querySelectorAll(`[data-id="${id}"] .outputs-fav-btn`).forEach(el => {
     el.textContent = fav.favorite ? '⭐' : '☆'
     el.classList.toggle('active', fav.favorite)
   })
@@ -329,6 +332,30 @@ const _filterOptModels = new Set<string>()
 const _filterOptLoras = new Set<string>()
 const _filterOptDoneIds = new Set<string>()
 
+function getOutputCategories(files: OutputFile[]): Array<{ name: string; count: number }> {
+  const counts = new Map<string, number>()
+  for (const file of files) {
+    if (file.category) counts.set(file.category, (counts.get(file.category) || 0) + 1)
+  }
+  return Array.from(counts, ([name, count]) => ({ name, count }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+function updateCategorySelects(state: ReturnType<typeof useOutputStore.getState>) {
+  const categories = getOutputCategories(state.files)
+  const uncategorized = state.files.filter(file => !file.category).length
+
+  // 顶栏分类导航是唯一的“进入分类”入口；选择后下方网格直接切到该分类。
+  const nav = document.querySelector('.outputs-filter-category') as HTMLSelectElement | null
+  if (nav) {
+    nav.innerHTML = `<option value="">全部图片（${state.files.length}）</option>` +
+      `<option value="__none__">未分类（${uncategorized}）</option>` +
+      categories.map(({ name, count }) => `<option value="${escAttr(name)}">${esc(name)}（${count}）</option>`).join('')
+    nav.value = state.filterCategory || ''
+  }
+
+}
+
 function updateFilterPanel() {
   const body = document.getElementById('outputsFilterBody')
   if (!body) return
@@ -346,16 +373,7 @@ function updateFilterPanel() {
   setVal('outputs-filter-date-min', s.filterDateMin)
   setVal('outputs-filter-date-max', s.filterDateMax)
 
-  // 填充分类下拉选项（从文件分类去重），并同步选中值
-  const catEl = document.querySelector('.outputs-filter-category') as HTMLSelectElement
-  if (catEl) {
-    const cats = Array.from(new Set(s.files.map(f => f.category).filter(Boolean))).sort()
-    const current = catEl.value
-    catEl.innerHTML = '<option value="">全部</option><option value="__none__">未分类</option>' +
-      cats.map(c => `<option value="${escAttr(c)}">${esc(c)}</option>`).join('')
-    if (s.filterCategory) catEl.value = s.filterCategory
-    else catEl.value = current && cats.includes(current) ? current : ''
-  }
+  updateCategorySelects(s)
 
   // 同步快捷时间段按钮状态
   document.querySelectorAll('.outputs-period-btn').forEach(b => {
@@ -406,7 +424,11 @@ let _outputsVS: VirtualScroll | null = null
 /** 卡片信息区固定高度（含 actions 两行预留），与 CSS `.outputs-card-info` 同步 */
 const OUTPUTS_INFO_H = 136
 
-interface OutputsGeom { cols: number; gap: number; cardW: number; rowH: number }
+// 已解码缩略图节点缓存：虚拟滚动 update 会重建行容器，但不能再销毁同一路径的 img。
+// dataURL 在内存里并不等于浏览器已完成解码；只有复用原 img 节点才能从根上消除重解码黑帧。
+const _outputImageNodes = new ImageNodeCache(600)
+
+type OutputsGeom = OutputGridGeometry
 
 /** 网格几何：与 CSS `repeat(auto-fill, minmax(200px,1fr))` 保持一致（≤768px 时 150px/10px）；
  *  行高 = 卡宽 + 信息区高 + 卡片上下边框 4px（box-sizing: border-box 下内容区少 4px） */
@@ -471,7 +493,14 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
       destroyOutputsVS()
       removeOutputsSentinel()
       el.innerHTML = ''   // 清空容器（含 index.html 静态 .outputs-empty 占位），VirtualScroll 只 append 不清
-      _outputsVS = new VirtualScroll({ container: el, itemHeight: geom.rowH, totalItems: totalRows, renderItem })
+      _outputsVS = new VirtualScroll({
+        container: el,
+        itemHeight: geom.rowH,
+        totalItems: totalRows,
+        renderItem,
+        beforeRender: inner => _outputImageNodes.capture(inner),
+        afterRender: inner => _outputImageNodes.restore(inner, useOutputStore.getState().thumbMemory),
+      })
     }
   } else {
     // ── 列表模式：保持原渲染（整表重建 + 加载更多），哨兵在滚动容器内驱动加载 ──
@@ -516,6 +545,7 @@ function syncCardMeta(card: HTMLElement, file: OutputFile, meta: OutputMetadata 
   const id = file.id
   actionsEl.innerHTML =
     (hasPrompt ? `<button class="outputs-copy-prompt-btn" data-id="${id}" title="复制正面 Prompt">${icon('file-text', 12)} 正面</button>` : '') +
+    (hasPrompt ? `<button class="outputs-save-prompt-btn" data-id="${id}" title="将 Prompt 和图片存入 Prompt 库">${icon('book', 12)} 入库</button>` : '') +
     (hasLoras ? `<button class="outputs-copy-lora-btn" data-id="${id}" title="复制 LoRA 标签">${icon('tag', 12)} LoRA</button>` : '') +
     (hasWf ? `<button class="outputs-dl-wf-btn" data-id="${id}" title="保存为 .json 文件，拖入 ComfyUI 画布即可导入">${icon('download', 12)} 下载工作流</button>` : '') +
     (meta ? `<button class="outputs-meta-btn" data-id="${id}" title="查看元数据">${icon('info', 12)} 元数据</button>` : '')
@@ -549,7 +579,10 @@ function rangeSelectTo(id: string) {
 
 function bindOutputsEvents() {
   // 初始化拖拽框选（放在最前面，避免被后续代码的运行时错误阻断）
-  initDragSelect()
+  initOutputDragSelection({
+    getGridGeometry: outputsGeom,
+    onSelectionChanged: () => { syncSelectionUI(); updateBatchBar() },
+  })
   // 预览图片编辑工具栏（旋转/裁剪/保存）
   bindEditToolbar()
 
@@ -631,8 +664,19 @@ function bindOutputsEvents() {
       return
     }
 
-    // 收藏按钮（卡片内 + 列表内）
-    const favBtn = target.closest('.outputs-fav-btn, .outputs-card-fav-icon') as HTMLElement
+    // 卡片右上角分类入口：已选中的卡片按当前多选集批量归类，否则只处理当前卡片。
+    const categoryBtn = target.closest('.outputs-card-category-icon') as HTMLElement
+    if (categoryBtn) {
+      const id = categoryBtn.dataset.id
+      if (id) {
+        const selected = useOutputStore.getState().selectedIds
+        showCategoryPicker(selected.has(id) && selected.size > 0 ? Array.from(selected) : [id])
+      }
+      return
+    }
+
+    // 收藏按钮（列表视图）
+    const favBtn = target.closest('.outputs-fav-btn') as HTMLElement
     if (favBtn) {
       const id = favBtn.dataset.id
       if (id) {
@@ -684,6 +728,14 @@ function bindOutputsEvents() {
           showToast('该图片无 Prompt')
         }
       }
+      return
+    }
+
+    // 保存 Prompt（连同独立图片副本）到 Prompt 库
+    const savePromptBtn = target.closest('.outputs-save-prompt-btn') as HTMLElement
+    if (savePromptBtn) {
+      const id = savePromptBtn.dataset.id
+      if (id) await saveOutputPromptToLibrary(id)
       return
     }
 
@@ -933,7 +985,9 @@ function bindOutputsEvents() {
     const filterBtn = target.closest('.outputs-filter-btn') as HTMLElement
     if (filterBtn) {
       const key = filterBtn.dataset.filter as any
-      useOutputStore.getState().setFilterKey(key)
+      const state = useOutputStore.getState()
+      state.setFilterKey(key)
+      if (key === 'all' && state.filterCategory) state.setFilterCategory('')
       // 更新 active 状态
       document.querySelectorAll('.outputs-filter-btn').forEach(b => b.classList.remove('active'))
       filterBtn.classList.add('active')
@@ -1323,7 +1377,8 @@ function bindOutputsEvents() {
     })
   }
 
-  // 图片懒加载
+  // 虚拟网格预取：行会在进入屏幕前就被渲染，提前读取缩略图可避免快速滚动时先露出黑色容器。
+  const grid = document.querySelector('.outputs-grid') as HTMLElement | null
   const observer = new IntersectionObserver((entries) => {
     for (const entry of entries) {
       if (entry.isIntersecting) {
@@ -1336,17 +1391,18 @@ function bindOutputsEvents() {
         observer.unobserve(img)
       }
     }
-  }, { rootMargin: '100px' })
+  }, { root: grid, rootMargin: '900px 0px' })
 
   // 观察所有图片
   const observeImages = () => {
     document.querySelectorAll('.outputs-card img[data-file-id], .outputs-list-card-img img[data-file-id]').forEach(img => {
-      observer.observe(img)
+      // renderImageCard 已同步写入 thumbMemory 命中项；不要再观察并重复设置相同 src，
+      // 某些 Chromium 版本会因此重新走图片解码管线，造成一次黑帧。
+      if (!(img as HTMLImageElement).getAttribute('src')) observer.observe(img)
     })
   }
 
   // 使用 MutationObserver 监听 DOM 变化
-  const grid = document.querySelector('.outputs-grid')
   if (grid) {
     const mutObs = new MutationObserver(observeImages)
     mutObs.observe(grid, { childList: true, subtree: true })
@@ -1420,7 +1476,12 @@ function bindOutputsEvents() {
 
   // 分类筛选下拉
   document.querySelector('.outputs-filter-category')?.addEventListener('change', (e) => {
-    useOutputStore.getState().setFilterCategory((e.target as HTMLSelectElement).value)
+    const state = useOutputStore.getState()
+    state.setFilterKey('all')
+    state.setFilterCategory((e.target as HTMLSelectElement).value)
+    document.querySelectorAll('.outputs-filter-btn').forEach(button => {
+      button.classList.toggle('active', (button as HTMLElement).dataset.filter === 'all')
+    })
     renderOutputsView()
   })
 
@@ -1451,155 +1512,6 @@ function bindOutputsEvents() {
       renderOutputsView()
     }
   }, 200))
-}
-
-// ── 拖拽框选：用 document 级事件，确保不被其他元素拦截 ──
-let _dragInitDone = false
-
-function initDragSelect() {
-  if (_dragInitDone) return
-  _dragInitDone = true
-  console.log('[Outputs] initDragSelect — 绑定 document 级拖拽事件')
-
-  let isDragging = false
-  let startPageX = 0, startPageY = 0
-  let rectEl: HTMLElement | null = null
-  let _justBoxed = false
-
-  function getCardIdsInRect(l: number, t: number, r: number, b: number): string[] {
-    const state = useOutputStore.getState()
-    const grid = document.querySelector('.outputs-grid') as HTMLElement | null
-    if (!grid) return []
-
-    // 网格模式（虚拟滚动）：DOM 里只有可视行，改用「选区矩形 → 行列索引」精确换算
-    if (state.viewMode === 'grid' && grid.clientWidth > 0) {
-      const geom = outputsGeom(grid.clientWidth)
-      const sx = window.scrollX, sy = window.scrollY
-      const gridRect = grid.getBoundingClientRect()
-      const gridLeft = gridRect.left + sx
-      const gridTop = gridRect.top + sy
-      const scTop = grid.scrollTop   // 网格内部滚动，文档坐标需加回 scrollTop
-      const firstRow = Math.max(0, Math.floor((t - gridTop + scTop) / geom.rowH))
-      const lastRow = Math.max(0, Math.floor((b - gridTop + scTop) / geom.rowH))
-      const firstCol = Math.max(0, Math.floor((l - gridLeft) / (geom.cardW + geom.gap)))
-      const lastCol = Math.max(0, Math.floor((r - gridLeft) / (geom.cardW + geom.gap)))
-      const ids: string[] = []
-      const files = state.filteredFiles
-      for (let row = firstRow; row <= lastRow; row++) {
-        for (let col = firstCol; col <= lastCol; col++) {
-          const f = files[row * geom.cols + col]
-          if (f) ids.push(f.id)
-        }
-      }
-      return ids
-    }
-
-    // 列表模式：DOM 命中（列表未虚拟化，全部行都在 DOM）
-    const ids: string[] = []
-    const sx = window.scrollX, sy = window.scrollY
-    document.querySelectorAll('.outputs-card, .outputs-list-card').forEach(el => {
-      const cr = el.getBoundingClientRect()
-      // 卡片位置转文档坐标（pageX/pageY 体系）
-      const cardL = cr.left + sx, cardT = cr.top + sy
-      const cardR = cr.right + sx, cardB = cr.bottom + sy
-      if (l < cardR && r > cardL && t < cardB && b > cardT) {
-        const id = (el as HTMLElement).dataset.id
-        if (id) ids.push(id)
-      }
-    })
-    return ids
-  }
-
-  document.addEventListener('mousedown', (e: Event) => {
-    const me = e as MouseEvent
-    const target = e.target as HTMLElement
-    if (!target.closest('#sectionOutputs')) return
-    // 允许以图片卡片为起点拖拽（与节点内拖拽行为一致），排除工具栏/头部等控件
-    if (target.closest('.outputs-list-header, button, input, .outputs-empty, .outputs-toolbar, .outputs-batch-bar')) return
-    if (me.button !== 0) return
-
-    isDragging = true
-    // 阻止浏览器原生文字/图片选中产生的蓝色高亮
-    document.body.style.userSelect = 'none'
-    document.body.style.webkitUserSelect = 'none'
-    e.preventDefault()
-
-    startPageX = me.pageX
-    startPageY = me.pageY
-
-    if (!me.ctrlKey && !me.metaKey && !me.shiftKey) {
-      useOutputStore.getState().clearSelection()
-    }
-
-    rectEl = document.createElement('div')
-    rectEl.className = 'outputs-selection-rect'
-    rectEl.style.cssText = `position:fixed;left:${me.clientX}px;top:${me.clientY}px;width:0;height:0;z-index:99999;background:rgba(99,102,241,0.12);border:2px dashed rgba(99,102,241,0.6);pointer-events:none;border-radius:4px`
-    document.body.appendChild(rectEl)
-  })
-
-  document.addEventListener('mousemove', (e: Event) => {
-    const me = e as MouseEvent
-    if (!isDragging || !rectEl) return
-
-    // 文档坐标计算（pageX/pageY），滚动后依然正确
-    const l = Math.min(startPageX, me.pageX)
-    const t = Math.min(startPageY, me.pageY)
-    const r = Math.max(startPageX, me.pageX)
-    const b = Math.max(startPageY, me.pageY)
-    const w = r - l
-    const h = b - t
-
-    // 选区框用 position:fixed，转成视口坐标
-    const sx = window.scrollX, sy = window.scrollY
-    rectEl.style.cssText = `position:fixed;left:${l - sx}px;top:${t - sy}px;width:${w}px;height:${h}px;z-index:99999;background:rgba(99,102,241,0.12);border:2px dashed rgba(99,102,241,0.6);pointer-events:none;border-radius:4px`
-
-    if (w > 5 || h > 5) {
-      const ids = getCardIdsInRect(l, t, r, b)
-      useOutputStore.setState({ selectedIds: new Set(ids) })
-      const batchCount = document.getElementById('outputsBatchCount')
-      if (batchCount) batchCount.textContent = `已选 ${ids.length} 张`
-      document.querySelectorAll('.outputs-card, .outputs-list-card').forEach(el => {
-        const id = (el as HTMLElement).dataset.id
-        if (id) el.classList.toggle('selected', ids.includes(id))
-      })
-    }
-  })
-
-  document.addEventListener('mouseup', () => {
-    if (!isDragging) return
-    isDragging = false
-    // 恢复文字选中
-    document.body.style.userSelect = ''
-    document.body.style.webkitUserSelect = ''
-    if (rectEl) { rectEl.remove(); rectEl = null }
-    if (useOutputStore.getState().selectedIds.size > 0) _justBoxed = true
-    syncSelectionUI()
-    updateBatchBar()
-  })
-
-  // 拖拽结束后的 click 不应触发卡片选中/预览（capture 阶段拦截，先于卡片点击逻辑）
-  document.addEventListener('click', (e: Event) => {
-    if (_justBoxed) {
-      _justBoxed = false
-      e.preventDefault()
-      e.stopPropagation()
-    }
-  }, true)
-
-  // 拖拽中途失焦（切屏/alt-tab/切标签页）或鼠标离开页面 → mouseup 不派发，
-  // 手动取消拖拽并清理残留选框，否则虚线框会永久滞留页面。
-  const cancelDrag = () => {
-    if (!isDragging) return
-    isDragging = false
-    document.body.style.userSelect = ''
-    document.body.style.webkitUserSelect = ''
-    if (rectEl) { rectEl.remove(); rectEl = null }
-    syncSelectionUI()
-    updateBatchBar()
-  }
-  window.addEventListener('blur', cancelDrag)
-  document.addEventListener('visibilitychange', () => { if (document.hidden) cancelDrag() })
-  document.addEventListener('mouseleave', cancelDrag)
 }
 
 /** 移除无限滚动哨兵（网格模式用内部滚动监听，不需要它） */
@@ -1762,13 +1674,18 @@ async function loadImageThumbnail(img: HTMLImageElement, fileId: string, filePat
   try {
     // 内存缓存（同步）
     const mem = useOutputStore.getState().thumbMemory.get(filePath)
-    if (mem) { img.src = mem; return }
+    if (mem) {
+      if (img.getAttribute('src') !== mem) img.src = mem
+      _outputImageNodes.remember(img)
+      return
+    }
 
     // 尝试从 IndexedDB 缓存加载
     const cached = await import('../services/outputThumbnail').then(m => m.getCachedThumbnail(filePath))
     if (cached) {
       useOutputStore.getState().setThumbMemory(filePath, cached)
-      img.src = cached
+      if (img.getAttribute('src') !== cached) img.src = cached
+      _outputImageNodes.remember(img)
       return
     }
 
@@ -1780,7 +1697,8 @@ async function loadImageThumbnail(img: HTMLImageElement, fileId: string, filePat
     const thumbnail = await import('../services/outputThumbnail').then(m => m.getThumbnail(file, filePath))
     if (thumbnail) {
       useOutputStore.getState().setThumbMemory(filePath, thumbnail)
-      img.src = thumbnail
+      if (img.getAttribute('src') !== thumbnail) img.src = thumbnail
+      _outputImageNodes.remember(img)
     }
   } catch {
     // 加载失败，显示占位符
@@ -1862,6 +1780,60 @@ async function compressImage(blob: Blob, maxDimension = 1920): Promise<Blob> {
     return canvas.convertToBlob({ type: 'image/webp', quality: 0.85 })
   } catch {
     return blob // fallback: 返回原图
+  }
+}
+
+/** 将 Outputs 图片的 Prompt 与压缩图片副本保存到 Prompt 库，脱离原文件后仍可查看。 */
+async function saveOutputPromptToLibrary(fileId: string): Promise<void> {
+  const state = useOutputStore.getState()
+  const file = state.files.find(f => f.id === fileId)
+  const meta = (await outputsDb.metadata.get(fileId)) ?? state.metadataCache.get(fileId)
+  if (!file || !meta?.prompt.trim()) {
+    showToast('该图片无 Prompt，无法保存')
+    return
+  }
+
+  const result = await getFileBlob(fileId)
+  if (!result) {
+    showToast('保存失败：找不到原图片')
+    return
+  }
+
+  try {
+    const image = await blobToDataURL(await compressImage(result.blob))
+    const loras = meta.workflowJson
+      ? extractLoraTagsFromWorkflow(meta.workflowJson, meta.rawMetadata)
+      : (meta.loras || [])
+    const params = [
+      meta.model && `模型: ${meta.model}`,
+      meta.seed && `Seed: ${meta.seed}`,
+      meta.steps && `Steps: ${meta.steps}`,
+      meta.cfg && `CFG: ${meta.cfg}`,
+      meta.sampler && `采样器: ${meta.sampler}`,
+    ].filter(Boolean).join(' | ')
+    const notes = [
+      meta.negativePrompt && `负 Prompt: ${meta.negativePrompt}`,
+      params && `参数: ${params}`,
+    ].filter(Boolean).join('\n')
+    const entry: PromptEntry = {
+      id: generatePromptId(),
+      prompt: meta.prompt,
+      displayText: file.filename.replace(/\.[^.]+$/, '') || 'Outputs Prompt',
+      images: [image],
+      primaryImage: image,
+      tags: [...file.tags],
+      loras,
+      categoryId: 'uncategorized',
+      notes,
+      isFavorite: false,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    await addPrompt(entry)
+    showToast('✅ Prompt 与图片已保存到 Prompt 库', 'success')
+  } catch (error) {
+    console.warn('[outputs] 保存 Prompt 失败:', error)
+    showToast('保存失败，请重试')
   }
 }
 
@@ -2538,7 +2510,7 @@ function showCategoryManager() {
   panel.innerHTML = `<h4 style="margin:0 0 8px;font-size:13px">分类管理（${cats.length} 个分类）</h4>`
 
   if (cats.length === 0) {
-    panel.innerHTML += `<p style="color:var(--text-dim);font-size:12px;margin:12px 0;">暂无分类，右键图片 → 设置分类即可创建</p>`
+    panel.innerHTML += `<p style="color:var(--text-dim);font-size:12px;margin:12px 0;">暂无分类，点击卡片右上角的分类按钮即可创建</p>`
   }
 
   for (const c of cats) {
@@ -2553,6 +2525,9 @@ function showCategoryManager() {
       const n = (await promptModal('重命名分类', c, '输入新分类名'))?.trim()
       if (n && n !== c) {
         await useOutputStore.getState().renameCategory(c, n)
+        if (useOutputStore.getState().filterCategory === c) {
+          useOutputStore.getState().setFilterCategory(n)
+        }
         overlay.remove()
         renderOutputsView()
         updateFilterPanel()
@@ -2566,6 +2541,10 @@ function showCategoryManager() {
       const ok = await confirmModal('删除分类', `删除分类「${c}」？${count} 个文件将变为未分类`)
       if (ok) {
         await useOutputStore.getState().deleteCategory(c)
+        if (useOutputStore.getState().filterCategory === c) {
+          // 分类删除后图片会进入“未分类”，继续展示这些图片而不是落入空视图。
+          useOutputStore.getState().setFilterCategory('__none__')
+        }
         overlay.remove()
         renderOutputsView()
         updateFilterPanel()

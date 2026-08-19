@@ -84,10 +84,10 @@ export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, i
   return `<div class="outputs-card ${isSelected ? 'selected' : ''}${file.status ? ` status-${file.status}` : ''}" data-id="${escAttr(file.id)}" data-path="${escAttr(file.path)}"${sig ? ` data-sig="${escAttr(sig)}"` : ''}>
     <div class="outputs-card-img">
       ${st ? `<div class="outputs-card-status-tag" style="background:${st.color}">${st.label}</div>` : ''}
-      <img src="${escAttr(thumbSrc || '')}" data-file-id="${escAttr(file.id)}" data-file-path="${escAttr(file.path)}" alt="${esc(file.filename)}" loading="lazy">
+      <img src="${escAttr(thumbSrc || '')}" data-file-id="${escAttr(file.id)}" data-file-path="${escAttr(file.path)}" data-file-version="${file.mtime}:${file.size}" alt="${esc(file.filename)}" loading="eager">
       <div class="outputs-card-actions-top">
         ${file.pinned ? `<span class="outputs-card-pinned-icon">${icon('pin', 12)}</span>` : ''}
-        <button class="outputs-card-fav-icon ${file.favorite ? 'active' : ''}" data-id="${escAttr(file.id)}" title="收藏">${icon('star', 14)}</button>
+        <button class="outputs-card-category-icon ${file.category ? 'active' : ''}" data-id="${escAttr(file.id)}" title="${file.category ? `当前分类：${esc(file.category)}；点击修改` : '设置分类'}">${icon('folder', 14)}</button>
       </div>
       <div class="outputs-card-overlay">
         <button class="outputs-card-btn outputs-pin-btn" data-id="${escAttr(file.id)}" title="${file.pinned ? '取消置顶' : '置顶'}">${icon(file.pinned ? 'pin' : 'pin', 13, file.pinned ? 'fill-icon' : '')}</button>
@@ -108,6 +108,7 @@ export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, i
       <div class="outputs-card-date">${fmtDate(file.mtime)}</div>
       <div class="outputs-card-actions">
         ${meta?.prompt ? `<button class="outputs-copy-prompt-btn" data-id="${escAttr(file.id)}" title="复制正面 Prompt">${icon('file-text', 12)} 正面</button>` : ''}
+        ${meta?.prompt ? `<button class="outputs-save-prompt-btn" data-id="${escAttr(file.id)}" title="将 Prompt 和图片存入 Prompt 库">${icon('book', 12)} 入库</button>` : ''}
         ${meta?.loras?.length ? `<button class="outputs-copy-lora-btn" data-id="${escAttr(file.id)}" title="复制 LoRA 标签">${icon('tag', 12)} LoRA</button>` : ''}
         ${meta?.hasWorkflow ? `<button class="outputs-dl-wf-btn" data-id="${escAttr(file.id)}" title="保存为 .json 文件，拖入 ComfyUI 画布即可导入">${icon('download', 12)} 下载工作流</button>` : ''}
         ${meta ? `<button class="outputs-meta-btn" data-id="${escAttr(file.id)}" title="查看元数据">${icon('info', 12)} 元数据</button>` : ''}
@@ -152,6 +153,7 @@ function renderListCard(file: OutputFile, selectedIds: Set<string>, metadataCach
         <button class="outputs-action-btn outputs-preview-btn" data-id="${escAttr(file.id)}" title="预览">${icon('eye', 14)}</button>
         <button class="outputs-action-btn outputs-rename-btn" data-id="${escAttr(file.id)}" data-name="${escAttr(file.filename)}" title="重命名">${icon('edit3', 14)}</button>
         ${meta?.prompt ? `<button class="outputs-action-btn outputs-copy-prompt-btn" data-id="${escAttr(file.id)}" title="复制正面 Prompt">${icon('file-text', 14)}</button>` : ''}
+        ${meta?.prompt ? `<button class="outputs-action-btn outputs-save-prompt-btn" data-id="${escAttr(file.id)}" title="将 Prompt 和图片存入 Prompt 库">${icon('book', 14)}</button>` : ''}
         ${meta?.loras?.length ? `<button class="outputs-action-btn outputs-copy-lora-btn" data-id="${escAttr(file.id)}" title="复制 LoRA 标签">${icon('tag', 14)}</button>` : ''}
         ${meta?.hasWorkflow ? `<button class="outputs-action-btn outputs-dl-wf-btn" data-id="${escAttr(file.id)}" title="保存为 .json 文件，拖入 ComfyUI 画布即可导入">${icon('fileJson', 14)}</button>` : ''}
         ${meta ? `<button class="outputs-action-btn outputs-meta-btn" data-id="${escAttr(file.id)}" title="查看元数据">${icon('info', 14)}</button>` : ''}

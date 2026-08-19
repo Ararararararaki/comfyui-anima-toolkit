@@ -1719,6 +1719,8 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 
 .outputs-copy-prompt-btn svg,
 
+.outputs-save-prompt-btn svg,
+
 .outputs-copy-lora-btn svg,
 
 .outputs-card-pinned-icon svg,
@@ -4699,4 +4701,142 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* ── 精密单色工作台（2026-08-18）──
+ * 以明度与边界而非颜色和发光表达层级，适合高密度本地管理场景。 */
+:root,
+[data-theme="mono"] {
+  --bg: #0a0a0a;
+  --bg2: #101010;
+  --bg3: #181818;
+  --bg4: rgba(255,255,255,0.055);
+  --text: #f1f1ee;
+  --text2: #b2b2ae;
+  --text3: rgba(241,241,238,0.48);
+  --border: rgba(255,255,255,0.10);
+  --border-hover: rgba(255,255,255,0.24);
+  --accent: #f1f1ee;
+  --accent2: #ffffff;
+  --accent-glow: transparent;
+  --card-radius: 6px;
+  --radius: 6px;
+  --shadow: none;
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --ease-standard: cubic-bezier(.2, 0, 0, 1);
+  --transition-fast: 120ms;
+  --transition-normal: 180ms;
+}
+
+[data-theme="mono-light"] {
+  --bg: #f4f4f1;
+  --bg2: #ffffff;
+  --bg3: #e8e8e4;
+  --bg4: rgba(0,0,0,0.05);
+  --text: #151515;
+  --text2: #5f5f5b;
+  --text3: rgba(21,21,21,0.52);
+  --border: rgba(0,0,0,0.13);
+  --border-hover: rgba(0,0,0,0.34);
+  --accent: #151515;
+  --accent2: #000000;
+  --accent-glow: transparent;
+  --card-radius: 6px;
+  --radius: 6px;
+  --shadow: none;
+}
+
+body { background: var(--bg); }
+body::before { background: none; }
+body::after { opacity: 0.007; }
+
+header {
+  min-height: 64px;
+  padding: 12px 24px;
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  border-bottom-color: var(--border);
+  backdrop-filter: blur(18px);
+}
+
+h1 { font-size: 18px; letter-spacing: -0.025em; }
+h1 .h1-icon { color: var(--text); }
+h1 small { color: var(--text3); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+
+.main-tabs {
+  gap: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg2);
+}
+
+.main-tab {
+  min-height: 34px;
+  padding: 7px 12px;
+  border-radius: 0;
+  border-right: 1px solid var(--border);
+  color: var(--text3);
+  font-size: 12px;
+  letter-spacing: .02em;
+}
+.main-tab:last-child { border-right: 0; }
+.main-tab:hover { background: var(--bg3); color: var(--text); }
+.main-tab.active {
+  background: var(--text);
+  color: var(--bg);
+  box-shadow: inset 0 -2px 0 var(--bg);
+}
+.main-tab .badge-tab { background: var(--bg4); border-radius: 999px; }
+.main-tab.active .badge-tab { background: color-mix(in srgb, var(--bg) 14%, transparent); }
+
+.btn,
+button,
+input,
+select,
+textarea { border-radius: 5px; }
+
+.btn {
+  min-height: 32px;
+  border-color: var(--border);
+  box-shadow: none;
+  font-weight: 600;
+  letter-spacing: .025em;
+}
+.btn-primary {
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--bg);
+  box-shadow: none;
+}
+.btn-primary:hover { background: var(--bg2); color: var(--text); border-color: var(--text); transform: none; }
+.btn-ghost { background: transparent; color: var(--text2); }
+.btn-ghost:hover { background: var(--bg3); color: var(--text); border-color: var(--border-hover); transform: none; }
+.btn:active, .main-tab:active, .outputs-toolbar-btn:active { transform: translateY(1px); }
+
+input, select, textarea,
+.search-wrap input {
+  border-color: var(--border);
+  background: var(--bg);
+  box-shadow: none;
+}
+input:focus, select:focus, textarea:focus,
+.search-wrap input:focus {
+  border-color: var(--text2);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 16%, transparent);
+}
+
+.card, .model-card, .prompt-card, .clothing-card,
+.modal-box, .settings-modal-box {
+  border-color: var(--border);
+  box-shadow: none;
+  background: var(--bg2);
+}
+.card:hover, .model-card:hover, .prompt-card:hover, .clothing-card:hover {
+  border-color: var(--border-hover);
+  box-shadow: none;
+}
+
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
 }
