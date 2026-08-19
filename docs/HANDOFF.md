@@ -2,6 +2,13 @@
 
 > 给下一位 agent 的工作交接。项目当前健康、全部已推送 GitHub。请先读本文 + 合并仓库 README，再动手。
 
+## 最新：Outputs 正片提取修复 + Ctrl+C 冲突 + LoRA 悬浮「复制全部」删除（2026-08-20）
+
+- **正片（正面 prompt）提取**：`20260819_1111/1108_anima_00001_.png` 等"CLIP 正片由其他节点注入"的图，Outputs「正面」按钮消失。根因：API(prompt) chunk 里 `CLIPTextEncode.inputs.text` 是**数组链接**（`["13",0]` → `Text Concatenate` → `PrimitiveStringMultiline.value`/`D站画廊 selection_data`），旧 `getNodeText` 三处不认：①类名 `Text Concatenate`(带空格)匹配不上 `TextConcat`；②拼接字段是 `text_a/text_b`（代码只读 `text1..10`）；③叶节点文字在 `value` 字段；④D站画廊的选中 prompt 在 `selection_data` JSON。已在 `src/services/outputMetadata.ts` 扩展 `getNodeText`：拼接节点按序聚合（text1..n/text_a..z/textA..）+ 叶节点 `value` + **D站画廊 `selection_data` 恢复** + 逗号归并；并在 `parseOutputMetadata` 加兜底：API 解析不到正片时回退 UI(workflow) chunk。**PARSER_VERSION 2→3** 触发 `backfillPrompts` 重跑，且 backfill 改为**只填空、不覆盖非空**（防用 UI 旧值覆盖 API 真值）。已用真实两张 PNG 验证：meta.prompt 由空 → 完整（`@dabaitu, leonid brezhnev, ...`）；tsc 通过。**重要**：API(prompt) chunk 是图实际执行的正片（比 UI workflow 存的旧选区更真），面板保持 API 优先。旧已入库条目由 PARSER_VERSION 升版回填或刷新重扫补齐。
+- **重命名弹窗 Ctrl+C 被劫持**：`copy` 事件兜底处理器缺焦点守卫——重命名弹窗选中文件名按 Ctrl+C 时被改造成复制图片。已在 `src/sections/Outputs.ts` copy 处理器加守卫：焦点在 INPUT/TEXTAREA/contentEditable 时放行浏览器默认复制（keydown 侧本有守卫）。
+- **LoRA 悬浮 tooltip 删「复制全部」**：`web/js/anima_batch_lora_widget.js` `_showTwTooltip` 里 `tw-copy-all` 按钮冗余（节点工具栏「全部触发词」已有）且悬浮层随鼠标离开消失点不到。已删按钮 HTML+点击处理+两条死 CSS，保留逐个触发词 chip/预览图/模型名。
+- **生效**：面板重建部署到运行插件目录 `app/`（新 bundle `index-BSzBjEdo.js`，重开面板窗口/硬刷新）；widget 已同步运行目录（硬刷新 Ctrl+Shift+R）。
+
 ## 最新：TK 相机控制相对拖拽修复 + 配套「标准正向撰写」skill（2026-08-20）
 
 - **相机拖拽 bug**：运行目录那份曾改成「双模式」——按住相机点=微调、其余位置=**absolute**（射线-球面求交，指针直接映射机位）→ 只能命中可见正前方、拖不到背面。已统一为**相对增量**：按下记录机位起点、移动叠加增量，方位周期化可连续绕 360° 穿越背面；保留相机点=微调。验证 `.scratch/verify_camera_drag.py` 7/7（真实 8188 画布，读 pos_x/pos_y 与 `_animaCam`）。改动已推送（`c6df924`），运行目录 widget 已同步生效（硬刷新 Ctrl+Shift+R）。

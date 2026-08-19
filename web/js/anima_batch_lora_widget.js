@@ -506,8 +506,6 @@
           .anima-tw-popover .tw-title { font-weight:600; font-size:10px; color:#8A8F98; margin-bottom:5px; letter-spacing:0.02em; }
           .anima-tw-popover .tw-word { background:rgba(94,106,210,0.12); color:#C8C9CB; padding:3px 8px; border-radius:4px; font-size:10px; margin:2px; display:inline-block; cursor:pointer; transition:all 0.15s ease-out; border:1px solid rgba(94,106,210,0.1); }
           .anima-tw-popover .tw-word:hover { background:rgba(94,106,210,0.25); color:#EDEDEF; }
-          .anima-tw-popover .tw-copy-all { display:inline-flex; align-items:center; gap:4px; margin-top:6px; padding:4px 10px; background:linear-gradient(135deg,#5E6AD2,#6872D9); color:#EDEDEF; border:none; border-radius:5px; cursor:pointer; font-size:9px; font-weight:500; transition:all 0.15s ease-out; box-shadow:0 0 0 1px rgba(94,106,210,0.2),inset 0 1px 0 0 rgba(255,255,255,0.1); }
-          .anima-tw-popover .tw-copy-all:hover { background:linear-gradient(135deg,#6872D9,#7B83E0); }
           .anima-tw-popover .tw-empty { color:rgba(255,255,255,0.3); font-size:10px; }
           .anima-lora-widget::-webkit-scrollbar { width:4px; }
           .anima-lora-widget::-webkit-scrollbar-track { background:transparent; }
@@ -1951,8 +1949,8 @@
       } else if (words === null) {
         wordHtml = '<span class="tw-empty">查询失败，可重新提取或悬停重试</span>';
       } else if (words.length) {
+        // 悬浮预览内不再放"复制全部"（节点工具栏「全部触发词」按钮已有此功能；悬浮层会随鼠标离开消失，点了也白点）
         wordHtml = words.map((w) => `<span class="tw-word" data-copy="${esc(w)}">${esc(w)}</span>`).join("");
-        wordHtml += `<button class="tw-copy-all">${svgIcon("clipboard", 11)}<span>复制全部</span></button>`;
       } else {
         wordHtml = '<span class="tw-empty">该 LoRA 无触发词</span>';
       }
@@ -1978,14 +1976,6 @@
           const text = wordEl.dataset.copy || wordEl.textContent;
           copyText(text);
           showToast(`已复制: ${text}`);
-          return;
-        }
-        const copyAllBtn = e.target.closest(".tw-copy-all");
-        if (copyAllBtn) {
-          e.stopPropagation();
-          const allText = words ? words.join(", ") + "," : "";
-          copyText(allText);
-          showToast("已复制全部触发词");
         }
       });
 

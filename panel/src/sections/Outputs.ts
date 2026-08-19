@@ -1495,6 +1495,9 @@ function bindOutputsEvents() {
   document.addEventListener('copy', (e) => {
     const section = document.getElementById('sectionOutputs')
     if (!section || section.classList.contains('section-hidden')) return
+    // 焦点在输入框/文本域/可编辑区时（如重命名弹窗选文件名复制）：放行浏览器默认复制，不劫持成复制图片。
+    const ae = document.activeElement as HTMLElement | null
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return
     const st = useOutputStore.getState()
     if (st.selectedIds.size === 0 || _copying) return
     e.preventDefault()

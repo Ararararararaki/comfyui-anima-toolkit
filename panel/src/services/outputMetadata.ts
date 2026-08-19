@@ -66,7 +66,7 @@ export async function decompressZlibAsync(data: Uint8Array): Promise<string> {
 /**
  * 解析器版本：解析逻辑变更时递增，Outputs 借此自动失效旧的元数据缓存并重新解析。
  */
-export const PARSER_VERSION = 2
+export const PARSER_VERSION = 3
 
 /**
  * 安全 JSON 解析：ComfyUI 的 json.dumps 会把 NaN/Infinity 原样写入（如 is_changed:[NaN]），
@@ -171,20 +171,54 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
   // 从节点提取文本内容（API format 的文本字段可能是数组链接 [srcId, slot]，递归解析上游文本）
   function getNodeText(node: any, visited = new Set<string>()): string {
     const inputs = node.inputs || {}
-    const ct = node.class_type || node.type || ''
+    const ct = (node.class_type || node.type || '').toLowerCase()
     // 直接文本字段（含 preview_text / prompt_text，如 PreviewAny / DanbooruTextPassthrough）
     for (const key of ['text', 'prompt', 'positive', 'negative', 'prompt_text', 'preview_text', 'preview_markdown']) {
       const v = inputs[key]
       if (typeof v === 'string' && v.length > 3) return v
     }
-    // TextConcatenate: text1 + text2 + ...
-    if (ct.includes('TextConcat') || ct.includes('Text Comb')) {
-      let combined = ''
-      for (let i = 1; i <= 10; i++) {
-        const k = `text${i}`
-        if (inputs[k] && typeof inputs[k] === 'string') combined += inputs[k]
+    // 生态节点：TK D站画廊把选中 prompt 存在 selection_data JSON（多选逗号连接，供拼接节点注入）
+    if (ct.includes('danboorugallery')) {
+      const sd = inputs.selection_data
+      if (typeof sd === 'string') {
+        try {
+          const data = JSON.parse(sd)
+          const list = data?.selections
+          if (Array.isArray(list)) {
+            const prompts = list
+              .map((s: any) => (s && typeof s === 'object' ? String(s.prompt || '') : ''))
+              .filter(Boolean)
+            if (prompts.length) return prompts.join(', ')
+          }
+        } catch { /* 非 JSON 忽略 */ }
       }
-      if (combined.length > 3) return combined
+    }
+    // 通用字符串叶节点：PrimitiveStringMultiline / String 等把文字放 value 字段（常被上游拼接节点引用）
+    if (/(primitive|string|multiline|textbox|text node|keyword)/i.test(ct)) {
+      const leaf = inputs.value ?? inputs.string ?? inputs.contents ?? inputs.content ?? inputs.data
+      if (typeof leaf === 'string' && leaf.length > 3) return leaf
+    }
+    // 文本拼接节点（Text Concatenate / TextConcat / Text Comb 等）：把 text1..n / text_a..z 按序拼接。
+    // 值可能是字面量，也可能是数组链接 [srcId, slot] → 递归解析上游文本（应对"text 由其他节点注入"）。
+    if (/concat|combine|concatenate|text.?comb/i.test(ct)) {
+      const parts: string[] = []
+      const nodeIdGuard = node.id !== undefined ? String(node.id) : ''
+      const pushPart = (v: any) => {
+        if (typeof v === 'string' && v.length > 3) { parts.push(v); return }
+        if (!Array.isArray(v) || v.length === 0) return
+        const src = nodeMap.get(v[0]) || nodeMap.get(Number(v[0]))
+        if (!src || src === node) return
+        const sid = String(src.id)
+        if (visited.has(sid) || sid === nodeIdGuard) return
+        visited.add(sid)
+        const t = getNodeText(src, visited)
+        if (t) parts.push(t)
+      }
+      for (let i = 1; i <= 24; i++) pushPart(inputs[`text${i}`])
+      for (const ch of 'abcdefghijklmnopqrstuvwxyz') pushPart(inputs[`text_${ch}`])
+      for (const ch of 'abcdefghijklmnopqrstuvwxyz') pushPart(inputs[`text${ch.toUpperCase()}`])
+      const joined = parts.join(', ').replace(/,\s*,/g, ',').trim()
+      if (joined.length > 3) return joined
     }
     // widgets_values（UI format fallback）
     if (Array.isArray(node.widgets_values)) {
@@ -850,6 +884,16 @@ export async function parseOutputMetadata(
     if (workflow) {
       const parsed = parseComfyUIWorkflow(workflow)
       const workflowJson = workflowData || promptData || ''
+      // 正片兜底（2026-08-20）：API(prompt) chunk 里正片由其他节点注入/拼接时可能取不全或取不到，
+      // 此时改用 workflow(UI) chunk 再解一次补正片（只补 prompt/negativePrompt，参数仍以 API 为准）。
+      if (!parsed.prompt && workflowData && parseSrc !== workflowData) {
+        const altWf = safeParseJSON(workflowData)
+        if (altWf) {
+          const altParsed = parseComfyUIWorkflow(altWf)
+          if (altParsed.prompt) parsed.prompt = altParsed.prompt
+          if (!parsed.negativePrompt && altParsed.negativePrompt) parsed.negativePrompt = altParsed.negativePrompt
+        }
+      }
       return {
         model: parsed.model || '',
         seed: parsed.seed || '',

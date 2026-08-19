@@ -71,9 +71,14 @@ export async function backfillPrompts(cache: Map<string, OutputMetadata>): Promi
     try {
       const workflow = JSON.parse(meta.workflowJson)
       const parsed = parseComfyUIWorkflow(workflow)
-      if (parsed.prompt && parsed.prompt !== meta.prompt) {
-        await outputsDb.metadata.update(id, { prompt: parsed.prompt, negativePrompt: parsed.negativePrompt || '' })
-        cache.set(id, { ...meta, prompt: parsed.prompt, negativePrompt: parsed.negativePrompt || '' })
+      // 只填空、不覆盖非空（2026-08-20）：新解析可能比 workflow 存的值更新更准（如 API 链路取回完整正片），
+      // 避免 backfill 用 UI 旧值把已正确的 prompt 覆盖回去。
+      const patch: { prompt?: string; negativePrompt?: string } = {}
+      if (parsed.prompt && !meta.prompt) patch.prompt = parsed.prompt
+      if (parsed.negativePrompt && !meta.negativePrompt) patch.negativePrompt = parsed.negativePrompt
+      if (Object.keys(patch).length) {
+        await outputsDb.metadata.update(id, patch)
+        cache.set(id, { ...meta, ...patch })
         fixed++
       }
     } catch { /* 跳过解析失败 */ }
