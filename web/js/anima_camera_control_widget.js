@@ -322,9 +322,13 @@
   }
 
   // ── 3D 空间画布数学：目标在原点，被控相机在球坐标 (r, az, el) ──
-  const CAM_EYE = [2.9, 2.5, 3.9];   // 观察者（画布视角）位置
+  // 较低、更远的观察者 + 更宽视场：上、下半球都留在画布内，拖拽范围可见。
+  const CAM_EYE = [3.4, 1.5, 4.8];   // 观察者（画布视角）位置
   const CAM_UP = [0, 1, 0];
-  const CAM_FOV = 42 * Math.PI / 180;
+  const CAM_FOV = 52 * Math.PI / 180;
+  const CAMERA_POINT_HIT_RADIUS = 24;
+  const FINE_DRAG_AZIMUTH_GAIN = 0.55;
+  const FINE_DRAG_ELEVATION_GAIN = 0.45;
   function v3sub(a, b) { return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]; }
   function v3cross(a, b) { return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]; }
   function v3norm(v) { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0]/l, v[1]/l, v[2]/l]; }
@@ -473,18 +477,21 @@
       this._syncControls(); // 刷新预览（computeCamera 走 loadConfig 合并默认值）
     }
 
-    // 3D 画布拖拽：相对增量（按住后移动增量控制旋转）。
-    // 不依赖指针位置与球面的交点 → 画布任何位置都能拖，方向直觉：
-    // 横拖=绕目标水平转（拖满画布宽≈180°），纵拖=俯仰（拖满画布高≈90°）。
-    // 按下时记录起点值，移动时在起点上叠加增量（非绝对跳转）。
+    // 3D 画布统一相对拖拽：按下时记录机位起点，移动时在起点上叠加增量（非绝对跳转）。
+    // 任一位置起拖都能连续绕到背面（方位周期化 ±1 同为背面），不再受「射线-球面只能命中可见正前方」的限制。
+    // 按住相机点起拖 = 低灵敏度微调（fine）；其余位置 = 标准灵敏度（横向拖满画布宽≈180°，纵向拖满高≈90°）。
     _canvasDrag(e) {
       if (!this.canvas) return;
+      const rect = this.canvas.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) return;
       if (e.type === "pointerdown") {
-        // 记录拖拽起点（按下时的机位），并标记为手动操作
+        const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+        const cp = this._cameraPoint;
+        const isFine = cp && Math.hypot(sx - cp[0], sy - cp[1]) <= CAMERA_POINT_HIT_RADIUS;
+        this._dragMode = isFine ? "fine" : "normal";
         this._dragStart = {
           x: e.clientX, y: e.clientY,
-          px: parseFloat(this.w.px?.value ?? 0),
-          py: parseFloat(this.w.py?.value ?? 0),
+          px: parseFloat(this.w.px?.value ?? 0), py: parseFloat(this.w.py?.value ?? 0),
         };
         this._setW(this.w.preset, "自定义");
         this._clearNl();
@@ -492,16 +499,10 @@
       }
       const st = this._dragStart;
       if (!st) return;
-      const rect = this.canvas.getBoundingClientRect();
-      if (rect.width < 1 || rect.height < 1) return;
-      const dx = (e.clientX - st.x) / rect.width;   // 相对画布宽：-1..1
-      const dy = (e.clientY - st.y) / rect.height;  // 相对画布高：-1..1
-      // 方位：横拖满宽=180°（px 范围 ±1 对应 ±180°）；px 周期化（±1 同为背面，可连续绕圈）
-      let px = st.px + dx * 1.0;
-      px = ((px + 1) % 2 + 2) % 2 - 1;
-      // 俯仰：纵拖满高=90°（py 范围 ±1 对应 ±90°）；向上拖=俯视（py 增）
-      let py = st.py - dy * 1.0;
-      py = clamp(py, -1, 1);
+      const azGain = this._dragMode === "fine" ? FINE_DRAG_AZIMUTH_GAIN : 1.0; // 满宽≈180°
+      const elGain = this._dragMode === "fine" ? FINE_DRAG_ELEVATION_GAIN : 1.0; // 满高≈90°
+      const px = ((st.px + (e.clientX - st.x) / rect.width * azGain + 1) % 2 + 2) % 2 - 1;
+      const py = clamp(st.py - (e.clientY - st.y) / rect.height * elGain, -1, 1);
       this._setW(this.w.px, Math.round(px * 100) / 100);
       this._setW(this.w.py, Math.round(py * 100) / 100);
       this._setW(this.w.preset, "自定义");
@@ -572,6 +573,7 @@
 
       // 相机点 + 视线虚线 + 朝向三角
       const cp = cam3DProject(cam, W, H);
+      this._cameraPoint = cp;
       if (cp) {
         ctx.strokeStyle = "rgba(255,165,0,0.55)";
         ctx.lineWidth = 1.2;
@@ -715,14 +717,18 @@
       container.appendChild(presetWrap);
       this.presetSelect = presetSelect;
 
-      // ── 3D 空间画布（拖拽=机位方向，滚轮=远近）──
+      // ── 3D 空间画布（拖相机点微调，其余位置直接定位；滚轮=远近）──
       const canvas = document.createElement("canvas");
       canvas.className = "anima-cam-canvas";
       canvas.width = 250;
       canvas.height = 170;
-      canvas.title = "拖动选择机位方向（前/后/左/右/上/下），滚轮调节远近";
+      canvas.title = "拖相机点微调；从其他位置拖动可直接定位机位；滚轮调节远近";
       this.canvas = canvas;
       bindDrag(canvas, (e) => this._canvasDrag(e));
+      const clearCanvasDrag = () => { this._dragMode = null; this._dragStart = null; };
+      canvas.addEventListener("pointerup", clearCanvasDrag);
+      canvas.addEventListener("pointercancel", clearCanvasDrag);
+      canvas.addEventListener("lostpointercapture", clearCanvasDrag);
       canvas.addEventListener("wheel", (e) => {
         e.preventDefault();
         const pz = clamp(parseFloat(this.w.pz?.value ?? 0) - Math.sign(e.deltaY) * 0.05, -1, 1);
@@ -943,8 +949,8 @@
 .anima-cam-preset-select:focus { outline:none; border-color:#8b5cf6; }
 .anima-cam-canvas { width:100%; height:auto; background:linear-gradient(180deg,#171a22 0%,#0e1014 100%); border:1px solid var(--border-color, #2f3440); border-radius:10px; cursor:grab; touch-action:none; display:block; box-shadow:inset 0 1px 6px rgba(0,0,0,.35); }
 .anima-cam-canvas:active { cursor:grabbing; }
-.anima-cam-row { display:flex; align-items:center; gap:8px; }
-.anima-cam-roll-label { font-size:11px; color:var(--fg-color, #999); flex:0 0 auto; min-width:32px; }
+.anima-cam-row { display:flex; align-items:center; gap:6px; }
+.anima-cam-roll-label { font-size:11px; color:var(--fg-color, #999); flex:0 0 auto; min-width:40px; }
 .anima-cam-nl { flex:1; min-width:0; background:var(--comfy-input-bg, #1b1e26); color:var(--fg-color, #ddd); border:1px solid var(--border-color, #383d4a); border-radius:6px; font-size:11px; padding:4px 8px; }
 .anima-cam-nl:focus { outline:none; border-color:#8b5cf6; }
 .anima-cam-track { position:relative; background:#1b1e26; border:1px solid #383d4a; border-radius:8px; touch-action:none; box-shadow:inset 0 1px 3px rgba(0,0,0,.3); }
@@ -954,11 +960,11 @@
 .anima-cam-fill.h.roll.wt { left:0; }
 .anima-cam-wt-chk { accent-color:#8b5cf6; cursor:pointer; margin:0; }
 .anima-cam-wt-hint { font-size:10px; color:var(--fg-color,#999); cursor:pointer; user-select:none; }
-.anima-scrub { display:flex; align-items:center; gap:3px; flex:1; min-width:0; }
-.anima-scrub-btn { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; padding:0; border:1px solid #383d4a; border-radius:5px; background:rgba(255,255,255,0.05); color:#8A8F98; cursor:pointer; flex-shrink:0; transition:all 0.12s ease-out; }
+.anima-scrub { display:flex; align-items:center; gap:4px; flex:0 0 168px; min-width:0; }
+.anima-scrub-btn { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; padding:0; border:1px solid #383d4a; border-radius:5px; background:rgba(255,255,255,0.05); color:#8A8F98; cursor:pointer; flex-shrink:0; transition:all 0.12s ease-out; }
 .anima-scrub-btn:hover { background:rgba(139,92,246,0.2); color:#EDEDEF; border-color:#6d5bd0; box-shadow:0 0 0 1px rgba(139,92,246,0.2); }
 .anima-scrub-btn:active { transform:scale(0.9); }
-.anima-scrub-val { flex:1; min-width:0; font-size:11px; font-weight:600; text-align:center; background:transparent; color:#EDEDEF; border:none; padding:2px 0; outline:none; font-variant-numeric:tabular-nums; font-family:inherit; }
+.anima-scrub-val { flex:1; min-width:0; font-size:11px; font-weight:600; text-align:center; background:transparent; color:#EDEDEF; border:none; padding:3px 0; outline:none; font-variant-numeric:tabular-nums; font-family:inherit; }
 .anima-scrub-val:hover { background:rgba(255,255,255,0.05); border-radius:3px; }
 .anima-scrub-val:focus { background:rgba(139,92,246,0.14); border-radius:3px; }
 .anima-cam-fill { position:absolute; background:linear-gradient(90deg,#7c5cf6,#a78bfa); border-radius:6px; box-shadow:0 0 6px rgba(139,92,246,.35); }
