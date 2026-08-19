@@ -66,7 +66,7 @@ export async function decompressZlibAsync(data: Uint8Array): Promise<string> {
 /**
  * 解析器版本：解析逻辑变更时递增，Outputs 借此自动失效旧的元数据缓存并重新解析。
  */
-export const PARSER_VERSION = 3
+export const PARSER_VERSION = 4
 
 /**
  * 安全 JSON 解析：ComfyUI 的 json.dumps 会把 NaN/Infinity 原样写入（如 is_changed:[NaN]），

@@ -31,6 +31,54 @@ async function withUserMetadata(base: OutputFile): Promise<OutputFile> {
   }
 }
 
+/** 元数据落库（配额容错，防历史条目被 IndexedDB 配额静默丢弃）：
+ * 先全量写；QuotaExceeded 时去掉冗余 rawMetadata 再试；仍失败清（可再生成的）缩略图再试；最后仍失败才跳过并 console 报告。 */
+export async function putMetadataQuotaSafe(outputMeta: OutputMetadata): Promise<void> {
+  const tryPut = (m: OutputMetadata) => outputsDb.metadata.put(m)
+  try {
+    await tryPut(outputMeta)
+    return
+  } catch (err) {
+    const isQuota = err && (err as any)?.name === 'QuotaExceededError'
+    if (!isQuota) return // 非配额错误：由调用方 try 兜底
+    const slim: OutputMetadata = { ...outputMeta, rawMetadata: {} }
+    try {
+      await tryPut(slim)
+      console.warn('[scan] 配额满：已降级存储（去掉 rawMetadata）')
+      return
+    } catch { /* 继续 */ }
+    try {
+      const { clearThumbnailCache } = await import('./outputThumbnail')
+      await clearThumbnailCache()
+    } catch { /* ignore */ }
+    try {
+      await tryPut(slim)
+      console.warn('[scan] 配额满：清缩略图后重试成功')
+      return
+    } catch { /* 继续 */ }
+    console.error('[scan] 配额满且降级仍失败，跳过该条元数据（文件行已保留，重扫可再补）', err)
+    showToast('⚠️ 浏览器存储已满，部分图片元数据未保存；建议在浏览器「清除站点数据」后重新扫描')
+  }
+}
+
+/** 存储占用诊断：输出按日期文件数 vs 元数据数 + 浏览器存储占用，供定位"历史日期没加载/配额截断" */
+export async function logStorageReport(): Promise<void> {
+  try {
+    const est = await (navigator.storage?.estimate?.() ?? Promise.resolve(null))
+    const usageMB = est?.usage ? +(est.usage / 1048576).toFixed(1) : -1
+    const quotaMB = est?.quota ? Math.round(est.quota / 1048576) : -1
+    const pct = usageMB >= 0 && quotaMB > 0 ? Math.round((usageMB / quotaMB) * 100) : -1
+    const files = await outputsDb.files.count().catch(() => -1)
+    const meta = await outputsDb.metadata.count().catch(() => -1)
+    const thumbs = await outputsDb.thumbnails.count().catch(() => -1)
+    console.groupCollapsed('[Outputs] 存储诊断')
+    console.table({ 文件数: files, 元数据数: meta, 缩略图数: thumbs, 占用MB: usageMB, 配额MB: quotaMB, 占用百分比: `${pct}%` })
+    console.groupEnd()
+    if (pct > 80) showToast(`⚠️ 浏览器存储已用约 ${pct}%，可能导致旧图片不加载；建议在浏览器「清除站点数据」后重新选择输出目录扫描`)
+    if (meta >= 0 && files > 0 && meta < files * 0.9) showToast(`ℹ️ 元数据数(${meta}) < 文件数(${files})：存在未解析条目，点「重新解析」补齐`)
+  } catch { /* ignore */ }
+}
+
 const IMAGE_EXTENSIONS = /\.(png|jpg|jpeg|webp|gif|bmp)$/i
 
 /** 清理重复记录：相同 path 只保留最新的 mtime 的一条 */
@@ -164,9 +212,9 @@ async function processFile(
         prompt: meta.prompt || '',
         negativePrompt: meta.negativePrompt || '',
         workflowJson: meta.workflowJson || '',
-        rawMetadata: meta.raw || {},
+        rawMetadata: {},
       }
-      await outputsDb.metadata.put(outputMeta)
+      await putMetadataQuotaSafe(outputMeta)
     }
 
     return outputFile
@@ -207,9 +255,9 @@ export async function reparseAllMetadata(dirHandle: FileSystemDirectoryHandle): 
           prompt: meta.prompt || '',
           negativePrompt: meta.negativePrompt || '',
           workflowJson: meta.workflowJson || '',
-          rawMetadata: meta.raw || {},
+          rawMetadata: {},
         }
-        await outputsDb.metadata.put(outputMeta)
+        await putMetadataQuotaSafe(outputMeta)
         useOutputStore.getState().putMetadata(outputMeta)
       }
     } catch {
@@ -310,6 +358,17 @@ export async function scanOutputDir(dirHandle: FileSystemDirectoryHandle): Promi
 
     // 阶段 3: 从 DB 恢复未变更文件
     const restoredFiles = await restoreFilesFromDb(diff.unchanged)
+
+    // 阶段 3.5 自愈：manifest 判定"未变更"，但 DB files 表缺失对应行（如早期存储配额/写入失败导致 files 行没写进去）
+    // → 这些文件既不会从 DB 恢复、也不会被重扫，导致"磁盘有图但列表永远缺失"（如 8.12 及之前）。
+    // 这里把这类文件转进 changed，强制按磁盘重建 files+metadata，补回后再入 manifest（幂等）。
+    const restoredIds = new Set(restoredFiles.map(f => f.id))
+    const missingOnDisk = diff.unchanged.filter(m => !restoredIds.has(m.id))
+    if (missingOnDisk.length) {
+      console.warn(`[scan] 检测到 ${missingOnDisk.length} 个文件在 DB 缺失（可能曾因存储配额写入失败），转重扫补回`)
+      diff.changed.push(...missingOnDisk)
+    }
+
     processedCount += diff.unchanged.length
 
     // 清理已删除文件的 DB 记录
@@ -368,9 +427,9 @@ export async function scanOutputDir(dirHandle: FileSystemDirectoryHandle): Promi
                 prompt: meta.prompt || '',
                 negativePrompt: meta.negativePrompt || '',
                 workflowJson: meta.workflowJson || '',
-                rawMetadata: meta.raw || {},
+                rawMetadata: {},
               }
-              await outputsDb.metadata.put(outputMeta)
+              await putMetadataQuotaSafe(outputMeta)
               metaUpdates.push(outputMeta)
             }
 
@@ -429,6 +488,7 @@ export async function scanOutputDir(dirHandle: FileSystemDirectoryHandle): Promi
     const changed = diff.changed.length
     const restored = diff.unchanged.length
     showToast(`扫描完成: 新增 ${changed}，恢复 ${restored}，共 ${allFiles.length} 张图片`)
+    logStorageReport() // 存储诊断：文件数 vs 元数据数 + 配额占用，定位历史日期未加载
   } catch (err) {
     if ((err as Error).name === 'AbortError') {
       useOutputStore.setState({ scanStatus: 'idle', loading: false })
@@ -498,9 +558,9 @@ export async function scanOutputDirIncremental(dirHandle: FileSystemDirectoryHan
                 steps: meta.steps || '', cfg: meta.cfg || '', sampler: meta.sampler || '',
                 vae: meta.vae || '', clipSkip: meta.clipSkip || 0,
                 prompt: meta.prompt || '', negativePrompt: meta.negativePrompt || '',
-                workflowJson: meta.workflowJson || '', rawMetadata: meta.raw || {},
+                workflowJson: meta.workflowJson || '', rawMetadata: {},
               }
-              await outputsDb.metadata.put(outputMeta)
+              await putMetadataQuotaSafe(outputMeta)
               metaUpdates.push(outputMeta)
             }
             return outputFile
