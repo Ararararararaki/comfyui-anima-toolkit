@@ -173,7 +173,7 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
   // 覆盖任意型号的拼接/组装节点（Text Concatenate、String Combiner、Prompt Builder…）、叶节点（Primitive/String/textbox…）、
   // 以及"文本来自其输入链路"的透传/过滤节点（Danbooru Tag Sorter、Clean Tags、Tag Mapper…）。
   const _TEXT_KEY_RE = /(text|prompt|caption|description|tags|keyword|string|content|value|nl_prompt|extra_tags|subtitle|quality|style|character|background|general|identity|rating|aspect_ratio|length)$/i
-  const _CONFIG_KEY_RE = /^(delimiter|separator|clean_whitespace|seed|width|height|steps|cfg|sampler_name|scheduler|denoise|device|type|model|clip|unet|vae|batch_size|anything|preset|roll|pos_x|pos_y|pos_z|excel_file|category_mapping|new_category_order|regex_blacklist|tag_blacklist|validation|is_comment|force_reload)$/i
+  const _CONFIG_KEY_RE = /^(delimiter|separator|clean_whitespace|seed|width|height|steps|cfg|sampler_name|scheduler|denoise|device|type|model|clip|unet|vae|batch_size|anything|preset|roll|pos_x|pos_y|pos_z|excel_file|category_mapping|new_category_order|regex_blacklist|tag_blacklist|validation|is_comment|force_reload|config|settings|json|data_json|schema)$/i
   const _LEAF_CT_RE = /^(primitive|string|multiline|textbox|keyword|property|single.?line|text.?input)/i
   const _JOIN_CT_RE = /(concat|combine|concatenate|joining|join|assemble|merge|compose|builder|section|smith|text.?comb)/i
 
@@ -251,9 +251,13 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
       for (const w of node.widgets_values) if (typeof w === 'string' && w.length > 5) return w
     }
 
-    // 6) 通用递归：任意剩余数组链接（透传/过滤类：Danbooru Tag Sorter / Clean Tags → 上游文本）
+    // 6) 兜底：剩余的内容输入——数组链接（透传/过滤类：Danbooru Tag Sorter / Clean Tags → 上游文本），
+    //    以及 key 属内容白名单的字符串（如 CLIP 的 text；单内容串+黑名单数组链接时第 4 步不触发，这里补上）。
+    //    config/settings 等非内容 key 的字符串一律跳过，绝不进正片。
     for (const [k, v] of Object.entries(inputs)) {
       if (_CONFIG_KEY_RE.test(k)) continue
+      if (typeof v === 'string' && v.length > 3 && _isContentKey(k)) return v
+      if (!Array.isArray(v) || v.length === 0) continue
       const t = resolveSource(v)
       if (t) return t
     }
