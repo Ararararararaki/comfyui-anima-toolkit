@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import asyncio
 import io
 import json
+import os
 from pathlib import Path
 import threading
 import time
@@ -46,6 +47,41 @@ FREE_METATAGS = frozenset({
     "duration", "md5", "pixiv_id", "pixiv", "parent", "child", "upvote", "embedded",
     "tagcount",
 })
+
+
+# ---------- Danbooru 连通性：走系统代理（与源插件 PROXY_CONFIG="auto" 同约定） ----------
+# 直连 danbooru.donmai.us 在本机网络下时通时断（照 Clash 代理即稳定），requests 默认只读 env 代理、
+# 不读系统代理；这里是按源插件同样的语义解析代理：
+#   显式 DANBOORU_PROXY_CONFIG 或 PROXY_CONFIG("http://...") > env HTTPS/HTTP_PROXY > 系统代理(WinINET) > 直连
+PROXY_CONFIG = "auto"  # "auto" | "http://127.0.0.1:7890" | ""/None/off = 直连
+
+
+def _resolve_danbooru_proxies() -> dict[str, str] | None:
+    cfg = os.environ.get("DANBOORU_PROXY_CONFIG", PROXY_CONFIG or "").strip()
+    if cfg.lower() not in {"", "auto", "none", "direct", "off"}:
+        return {"http": cfg, "https": cfg}
+    if PROXY_CONFIG.lower() not in {"", "auto", "none", "direct", "off"}:
+        return {"http": PROXY_CONFIG, "https": PROXY_CONFIG}
+    for env_name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        value = os.environ.get(env_name, "").strip()
+        if value and value.lower() not in {"", "none", "direct", "off"}:
+            return {"http": value, "https": value}
+    # requests 不读系统代理；落地用 urllib 的 getproxies()（Windows 下=读注册表 WinINET 系统代理）
+    try:
+        system = urllib.request.getproxies()
+        proxy = system.get("https") or system.get("http")
+        if proxy and proxy.lower() not in {"", "none", "direct", "off"}:
+            return {"http": proxy, "https": proxy}
+    except Exception:
+        pass
+    return None
+
+
+_danbooru_session = requests.Session()
+_danbooru_session.headers.update(DANBOORU_HEADERS)
+_danbooru_proxies = _resolve_danbooru_proxies()
+if _danbooru_proxies:
+    _danbooru_session.proxies.update(_danbooru_proxies)
 
 
 class _RateLimiter:
@@ -209,10 +245,9 @@ def _fetch_posts(request: SearchRequest) -> tuple[list[dict[str, Any]], bool]:
             return cached, True
 
     _rate_limiter.wait()
-    response = requests.get(
+    response = _danbooru_session.get(
         DANBOORU_POSTS_URL,
         params={"tags": request.tags, "page": request.page, "limit": request.limit},
-        headers=DANBOORU_HEADERS,
         timeout=15,
     )
     response.raise_for_status()
@@ -269,7 +304,7 @@ async def anima_danbooru_image(request: web.Request) -> web.Response:
     try:
         response = await asyncio.get_running_loop().run_in_executor(
             None,
-            lambda: requests.get(image_url, headers={"User-Agent": DANBOORU_HEADERS["User-Agent"]}, timeout=25),
+            lambda: _danbooru_session.get(image_url, timeout=25),
         )
         response.raise_for_status()
     except requests.Timeout:
@@ -304,7 +339,7 @@ async def anima_danbooru_suggest(request: web.Request) -> web.Response:
     term = query[0]
     def fetch():
         _rate_limiter.wait()
-        response = requests.get(f"https://danbooru.donmai.us/tags.json", params={"search[name_matches]": f"{term}*", "search[order]": "count", "limit": 8}, headers=DANBOORU_HEADERS, timeout=12)
+        response = _danbooru_session.get("https://danbooru.donmai.us/tags.json", params={"search[name_matches]": f"{term}*", "search[order]": "count", "limit": 8}, timeout=12)
         response.raise_for_status(); return response.json()
     try:
         tags = await asyncio.get_running_loop().run_in_executor(None, fetch)
@@ -347,7 +382,8 @@ class DanbooruGallery:
         if not _is_allowed_danbooru_url(image_url):
             raise ValueError("不允许的 Danbooru 图片 URL")
         request = urllib.request.Request(image_url, headers={"User-Agent": DANBOORU_HEADERS["User-Agent"]})
-        with urllib.request.urlopen(request, timeout=25) as response:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler(_danbooru_proxies or {}))
+        with opener.open(request, timeout=25) as response:
             image_bytes = response.read()
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         image_array = np.asarray(image).astype(np.float32) / 255.0

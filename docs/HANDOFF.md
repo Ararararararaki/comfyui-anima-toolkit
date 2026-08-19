@@ -12,6 +12,8 @@
 - **验证**：`node --check` + `python -m py_compile` 通过；`tests/verify_danbooru_dropdown.py` 全绿（24 项）；ComfyUI 已重启（py 生效），实机 `/anima/danbooru/posts?tags=order%3Ascore` → 200+6图+warnings，`tags=1girl%20solo%20order:score` → 400 中文限制提示。发布源与运行目录 SHA 一致。
 - **生效**：py 已随重启生效；JS 需硬刷新 `Ctrl+Shift+R`。
 
+- **⚠️ 追加修复（2026-08-19 深夜）：搜索全部“请求超时”根治 = Danbooru 请求统一走系统代理**。后端之前用裸 `requests.get` 直连——`requests` 只读 env 代理、不读系统代理；本机直连 danbooru 时通时断（走 Clash 127.0.0.1:7890 即稳定，启动器也注明直连不推荐）。新增 `_resolve_danbooru_proxies()`（与源插件 `PROXY_CONFIG="auto"` 同约定）：显式 `DANBOORU_PROXY_CONFIG`/`PROXY_CONFIG` > env `HTTPS/HTTP_PROXY` > 系统代理（`urllib.request.getproxies()` 读 WinINET）> 直连兜底；`posts`/`image`/`suggest`/节点图片下载 `_download_image` 全部统一走共享 `_danbooru_session`（已附 headers+proxies）。实测 `1girl` 从 15s→504 变为 0.4s→200；Playwright 24/24 仍绿。改代理（含 Clash 开关）后需重启 ComfyUI 生效（同启动器约定）。
+
 ## 最新：TK D站画廊下拉控件重构（2026-08-19）
 
 - **交互**：分级、筛选、分类统一为选择框外观的 portal 下拉；菜单挂到 `document.body`，不会再被节点 `overflow:hidden` 裁切。
