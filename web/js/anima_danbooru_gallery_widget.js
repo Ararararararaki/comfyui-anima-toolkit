@@ -283,8 +283,16 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         };
         const caption = document.createElement("span");
         caption.className = "adg-caption";
-        caption.textContent = `#${post.id || "?"} · ${post.image_width || "?"}×${post.image_height || "?"}`;
+        const isVid = this.isVideoPost(post);
+        caption.textContent = `#${post.id || "?"} · ${post.image_width || "?"}×${post.image_height || "?"}${isVid ? " · MP4" : ""}`;
         selectButton.append(preview, caption);
+        if (isVid) {
+          const badge = document.createElement("span");
+          badge.className = "adg-video-badge";
+          badge.textContent = "视频";
+          badge.style.cssText = "position:absolute;top:6px;left:6px;z-index:3;background:rgba(0,0,0,.72);color:#fbbf24;font-size:10px;line-height:1.4;padding:1px 6px;border-radius:4px;pointer-events:none;";
+          selectButton.prepend(badge);
+        }
         selectButton.addEventListener("click", () => {
           const wasSelected = card.classList.contains("is-selected");
           this.grid.querySelectorAll(".adg-card.is-selected").forEach((other) => {
@@ -473,8 +481,17 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       }
     }
 
+    isVideoPost(post) {
+      return String(post.file_ext || "").toLowerCase() === "mp4"
+        || /\.(mp4|webm|m4v|mov|mkv)$/i.test(post.file_url || post.large_file_url || "");
+    }
+
     openImagePreview(post) {
-      const imageUrl = post.large_file_url || post.file_url || post.preview_file_url;
+      const isVid = this.isVideoPost(post);
+      // 视频帖没有可显示的"大图"（large 是 mp4）→ 用封面 jpg 兜底
+      const imageUrl = isVid
+        ? (post.preview_file_url || post.large_file_url || "")
+        : (post.large_file_url || post.file_url || post.preview_file_url);
       if (!imageUrl) return;
       this.removeDialog();
       const overlay = document.createElement("div");
@@ -485,6 +502,13 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       image.alt = `Danbooru #${post.id || ""}`;
       image.src = `/anima/danbooru/image?url=${encodeURIComponent(imageUrl)}`;
       overlay.append(image);
+      if (isVid) {
+        const hint = document.createElement("div");
+        hint.className = "adg-image-preview-hint";
+        hint.textContent = "视频帖：此处显示封面（原文件为 MP4，点卡片「下载」可获取原视频）";
+        hint.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#fbbf24;font-size:12px;padding:6px 12px;border-radius:8px;z-index:5;";
+        overlay.append(hint);
+      }
       overlay.addEventListener("mousedown", (event) => { if (event.target === overlay) this.removeDialog(); });
       document.body.append(overlay);
     }

@@ -9,10 +9,14 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 from typing import Any
 from urllib.parse import urlparse
+import urllib.error
 import urllib.request
 
 from aiohttp import web
@@ -232,6 +236,47 @@ def _friendly_danbooru_error(error: requests.RequestException) -> str:
         if raw_message:
             return f"D站 返回错误（HTTP {status_code}）：{raw_message}"
     return f"Danbooru 请求失败：{error}"
+
+
+def _looks_like_video(image_url: str, content_type: str, data: bytes) -> bool:
+    """判断下载内容是否是视频（D站 有动画 mp4 帖；PIL 打不开 → 需要 ffmpeg 抽帧）。
+    判定：Content-Type video/*、URL 扩展名为 .mp4/.webm/.m4v/.mov/.mkv、或 moov/mp4 魔数 'ftyp'。"""
+    ct = (content_type or "").lower()
+    if ct.startswith("video/"):
+        return True
+    if image_url.split("?", 1)[0].lower().endswith((".mp4", ".webm", ".m4v", ".mov", ".mkv")):
+        return True
+    if data[:16].lower().endswith(b"ftyp"):
+        return True
+    return False
+
+
+def _extract_video_frame(video_bytes: bytes) -> bytes:
+    """用 ffmpeg 取视频首帧成 PNG 字节；ffmpeg 缺失/抽帧失败抛中文提示。"""
+    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+    path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            tmp.write(video_bytes)
+            path = tmp.name
+        try:
+            proc = subprocess.run(
+                [ffmpeg, "-y", "-i", path, "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=25,
+            )
+        except FileNotFoundError:
+            raise ValueError("视频帖无法转图片：未检测到 ffmpeg（图生图不支持直接使用视频；可跳过该视频帖，或安装 ffmpeg 后重试）") from None
+        except subprocess.TimeoutExpired:
+            raise ValueError("视频帖抽帧超时，请跳过该视频帖") from None
+        if proc.returncode != 0 or not proc.stdout:
+            raise ValueError("视频帖抽帧失败（视频可能损坏或不受支持），请跳过该视频帖")
+        return proc.stdout
+    finally:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 def _is_allowed_danbooru_url(url: str) -> bool:
@@ -496,8 +541,17 @@ class DanbooruGallery:
         request = urllib.request.Request(image_url, headers={"User-Agent": DANBOORU_HEADERS["User-Agent"]})
         proxies = _resolve_danbooru_proxies()  # 实时解析，避免启动时固化死代理
         opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies or {}))
-        with opener.open(request, timeout=30) as response:
-            image_bytes = response.read()
+        try:
+            with opener.open(request, timeout=30) as response:
+                content_type = response.headers.get("Content-Type", "")
+                image_bytes = response.read()
+        except urllib.error.HTTPError as error:
+            raise ValueError(f"图片下载失败 HTTP {error.code}（原图可能已失效/被删除，可换一张图）") from error
+        except urllib.error.URLError as error:
+            raise ValueError(f"图片下载失败：连接错误（请确认 Clash/代理已开启，必要时重启 ComfyUI）: {error.reason}") from error
+        # D站 动画帖是 mp4：PIL 打不开 → 用 ffmpeg 抽首帧当图，避免"下载失败/黑图"
+        if _looks_like_video(image_url, content_type, image_bytes):
+            image_bytes = _extract_video_frame(image_bytes)
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         image_array = np.asarray(image).astype(np.float32) / 255.0
         return torch.from_numpy(image_array)[None,]
@@ -512,16 +566,29 @@ class DanbooruGallery:
 
         images: list[torch.Tensor] = []
         prompts: list[str] = []
+        failures: list[str] = []
         for selection in selection_list:
             if not isinstance(selection, dict):
                 continue
-            prompts.append(str(selection.get("prompt", "")))
+            prompt = str(selection.get("prompt", ""))
             image_url = str(selection.get("image_url", ""))
             try:
                 images.append(self._download_image(image_url))
-            except Exception:
-                images.append(self._empty_image())
-        return (images or [self._empty_image()], prompts or [""])
+                prompts.append(prompt)
+            except Exception as error:
+                failures.append(f"[{prompt[:24] or image_url[:48]}] {error}")
+        if not images:
+            # 不再静默输出黑图：全部下载失败 → 抛错，ComfyUI 队列停止，杜绝"图生图出黑屏"
+            detail = "\n".join(f"  - {f}" for f in failures[:6])
+            if len(failures) > 6:
+                detail += f"\n  … 另有 {len(failures) - 6} 张失败"
+            raise RuntimeError(
+                "D站 图片下载全部失败，无法执行（已停止，避免输出黑图）。"
+                "可检查网络/代理并重启 ComfyUI，或取消勾选失效图片后重跑。\n" + detail
+            )
+        if len(failures) > 0:
+            print(f"[D站画廊] 跳过 {len(failures)} 张下载失败的图（原图可能已失效），使用剩余 {len(images)} 张继续")
+        return (images, prompts)
 
 
 NODE_CLASS_MAPPINGS = {DanbooruGallery.NAME: DanbooruGallery}
