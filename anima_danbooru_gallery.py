@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 import asyncio
+import atexit
+import base64
 import io
 import json
 import os
@@ -15,8 +17,7 @@ import tempfile
 import threading
 import time
 from typing import Any
-from urllib.parse import urlparse
-import urllib.error
+from urllib.parse import urlencode, urlparse
 import urllib.request
 
 from aiohttp import web
@@ -238,6 +239,282 @@ def _friendly_danbooru_error(error: requests.RequestException) -> str:
     return f"Danbooru 请求失败：{error}"
 
 
+# ---------- Cloudflare 风控自救：内置浏览器网关 ----------
+# Danbooru 的 Cloudflare 会对机房/代理出口 IP 做「Just a moment / 请稍候」交互式人机校验：
+#   requests / urllib / curl / curl_cffi / cloudscraper 全都会被拦（导入依赖的 UA/TLS/JS 行为不足）。
+#   实测只有「真实浏览器渲染引擎内的 fetch」（本机 Edge/Chrome）能稳定通过。
+# 因此当 requests 路径被风控（403/503 校验页，或表现为超时/断连）时，惰性拉起一个
+#   最小化于屏幕外的隐形式 Edge 窗口做网关，后续搜索/原图/下载全部改走真实页面 fetch；
+#   网关一旦成功即常驻复用（避免反复开窗），ComfyUI 退出时 atexit 自动清理。
+CF_BLOCKED_MSG = (
+    "D站 当前被 Cloudflare 风控拦截；插件已自动尝试内置浏览器网关（Edge）仍未成功。"
+    "请稍后再试，或在 Clash Verge 中切换「🔰 选择节点」的节点/地区。"
+)
+CF_CHALLENGE_ANCHORS = (
+    "just a moment", "please wait", "请稍候",
+    "cf-chl", "__cf_chl", "checking your browser",
+)
+
+
+def _is_cloudflare_challenge(status: int, body: str) -> bool:
+    """识别 Cloudflare 的交互式人机校验页（403/503 + 特征锚点）。"""
+    if status not in (403, 503):
+        return False
+    low = (body or "")[:2048].lower()
+    return any(anchor in low for anchor in CF_CHALLENGE_ANCHORS)
+
+
+def _resp_is_cf(resp: requests.Response) -> bool:
+    """仅当响应像是校验页/HTML 时才解码正文做风控判断，避免无谓解码大图字节。"""
+    ctype = (resp.headers.get("Content-Type") or "").lower()
+    if resp.status_code in (403, 503) or "html" in ctype or "text" in ctype:
+        try:
+            return _is_cloudflare_challenge(resp.status_code, resp.text)
+        except Exception:
+            return False
+    return False
+
+
+_browser_lock = threading.Lock()
+_browser: "_DanbooruBrowser | None" = None
+_browser_working = False  # 网关成功过一次后置 True：后续请求直连网关，跳过 requests 往返
+
+
+def _safe_get(mapping: Any, key: str, default: Any) -> Any:
+    return mapping.get(key, default) if isinstance(mapping, dict) else default
+
+
+class _DanbooruBrowser:
+    """内置浏览器网关：用真实 Edge/Chrome 渲染引擎过 Cloudflare，供 API 与图片下载复用。"""
+
+    _WARM_INTERVAL_SECONDS = 1100  # CF 的 __cf_bm/cf_clearance 约半小时有效，提前续活
+
+    def __init__(self) -> None:
+        self._playwright: Any = None
+        self._context: Any = None
+        self._page: Any = None
+        self._channel: str = ""
+        self._lock = threading.Lock()
+        self._last_warm = 0.0
+
+    def start(self) -> bool:
+        try:
+            from playwright.sync_api import sync_playwright
+        except Exception as error:
+            print(f"[D站画廊·风控网关] 未安装 playwright（需 pip install playwright 才能自动过风控）：{error}")
+            return False
+        try:
+            self._playwright = sync_playwright().start()
+        except Exception as error:
+            print(f"[D站画廊·风控网关] playwright 驱动启动失败：{error}")
+            return False
+        launch_kwargs: dict[str, Any] = dict(
+            headless=False,  # 无头模式过不了 CF 的交互式校验（已实测），用静默有头模式
+            args=[
+                "--window-position=-5000,-5000",  # 窗口移出屏幕，对用户不可见地常驻
+                "--window-size=640,480",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-sync",
+            ],
+            viewport={"width": 640, "height": 480},
+        )
+        px = _resolve_danbooru_proxies()
+        if px:
+            server = px.get("https") or px.get("http")
+            if server:
+                launch_kwargs["proxy"] = {"server": server}
+        context = None
+        for channel in ("msedge", "chrome"):
+            try:
+                context = self._playwright.chromium.launch_persistent_context(
+                    user_data_dir=tempfile.mkdtemp(prefix="anima_dbrowser_"),
+                    channel=channel,
+                    **launch_kwargs,
+                )
+                self._channel = channel
+                break
+            except Exception:
+                context = None
+        if context is None:
+            print("[D站画廊·风控网关] 本机未找到可用的 Edge/Chrome，无法自动过风控")
+            self.shutdown()
+            return False
+        self._context = context
+        self._page = context.new_page()
+        try:
+            self._warm()
+        except Exception as error:
+            print(f"[D站画廊·风控网关] 预热 Danbooru 失败：{error}；网关不可用")
+            self.shutdown()
+            return False
+        return True
+
+    def shutdown(self) -> None:
+        try:
+            if self._context is not None:
+                self._context.close()
+        except Exception:
+            pass
+        try:
+            if self._playwright is not None:
+                self._playwright.stop()
+        except Exception:
+            pass
+        self._context = None
+        self._page = None
+        self._playwright = None
+
+    def _warm(self) -> None:
+        page = self._page
+        page.goto("https://danbooru.donmai.us/", wait_until="domcontentloaded", timeout=60000)
+        try:
+            page.wait_for_function(
+                "() => (document.title || '').includes('Danbooru') && document.readyState === 'complete'",
+                timeout=45000,
+            )
+        except Exception:
+            print("[D站画廊·风控网关] 浏览器校验未完全就绪，继续尝试")
+        self._last_warm = time.time()
+
+    def _run(self, script: str, argument: Any) -> Any:
+        with self._lock:
+            if time.time() - self._last_warm > self._WARM_INTERVAL_SECONDS:
+                self._warm()
+            return self._page.evaluate(script, argument)
+
+    def json(self, url: str, params: dict[str, Any]) -> Any:
+        full = url + "?" + urlencode(params)
+        result = self._run(
+            "async (u) => { const r = await fetch(u, {headers: {'Accept':'application/json'}}); "
+            "const t = await r.text(); return {s: r.status, t}; }",
+            full,
+        )
+        status = _safe_get(result, "s", 0)
+        text = str(_safe_get(result, "t", "") or "")
+        if status == 200:
+            return json.loads(text)
+        raise RuntimeError(f"D站 搜索失败（HTTP {status}）：{text[:240]}")
+
+    def bytes(self, url: str) -> tuple[bytes, str]:
+        result = self._run(
+            "async (u) => { const r = await fetch(u); "
+            "const b = await r.arrayBuffer(); const d = new Uint8Array(b); "
+            "const CH = 65536; const parts = []; "
+            "for (let i = 0; i < d.length; i += CH) { parts.push(String.fromCharCode.apply(null, d.subarray(i, i + CH))); } "
+            "return {s: r.status, ct: r.headers.get('content-type') || '', b64: btoa(parts.join(''))}; }",
+            url,
+        )
+        status = _safe_get(result, "s", 0)
+        if status != 200:
+            raise RuntimeError(f"图片获取失败（HTTP {status}）")
+        data = base64.b64decode(_safe_get(result, "b64", "") or "")
+        ctype = str(_safe_get(result, "ct", "") or "application/octet-stream")
+        return data, ctype
+
+
+def _get_browser() -> "_DanbooruBrowser | None":
+    global _browser
+    with _browser_lock:
+        if _browser is None:
+            candidate = _DanbooruBrowser()
+            if not candidate.start():
+                return None
+            _browser = candidate
+        return _browser
+
+
+def _browser_json_or_none(url: str, params: dict[str, Any]) -> Any:
+    browser = _get_browser()
+    if browser is None:
+        return None
+    try:
+        return browser.json(url, params)
+    except Exception as error:
+        print(f"[D站画廊] 浏览器网关搜索失败：{error}")
+        return None
+
+
+def _browser_bytes_or_none(url: str) -> tuple[bytes, str] | None:
+    browser = _get_browser()
+    if browser is None:
+        return None
+    try:
+        return browser.bytes(url)
+    except Exception as error:
+        print(f"[D站画廊] 浏览器网关图片失败：{error}")
+        return None
+
+
+def _close_browser() -> None:
+    global _browser
+    with _browser_lock:
+        if _browser is not None:
+            try:
+                _browser.shutdown()
+            except Exception:
+                pass
+            _browser = None
+
+
+atexit.register(_close_browser)
+
+
+def _danbooru_json(url: str, params: dict[str, Any], timeout: int = 20) -> Any:
+    """requests 优先；被风控（校验页/超时/断连）时自动切内置浏览器网关。返回 API JSON。"""
+    global _browser_working
+    if _browser_working:
+        got = _browser_json_or_none(url, params)
+        if got is not None:
+            return got
+        _browser_working = False  # 网关失能 → 回退 requests 重试
+    _apply_danbooru_proxy()
+    try:
+        resp = _danbooru_session.get(url, params=params, timeout=timeout)
+    except (requests.Timeout, requests.ConnectionError) as error:
+        # 被风控/节点不稳常表现为超时或断连 → 不重复空转，直接切浏览器网关兜底
+        got = _browser_json_or_none(url, params)
+        if got is not None:
+            _browser_working = True
+            return got
+        raise error
+    if not _resp_is_cf(resp):
+        resp.raise_for_status()
+        return resp.json()
+    got = _browser_json_or_none(url, params)
+    if got is not None:
+        _browser_working = True
+        return got
+    raise RuntimeError(CF_BLOCKED_MSG)
+
+
+def _danbooru_get_image(url: str, timeout: int = 30) -> tuple[bytes, str]:
+    """下载 Danbooru 图片/视频字节（requests 优先，被风控/失败时切内置浏览器网关）。"""
+    global _browser_working
+    if _browser_working:
+        got = _browser_bytes_or_none(url)
+        if got is not None:
+            return got
+        _browser_working = False
+    _apply_danbooru_proxy()
+    try:
+        resp = _danbooru_session.get(url, timeout=timeout)
+    except (requests.Timeout, requests.ConnectionError) as error:
+        got = _browser_bytes_or_none(url)
+        if got is not None:
+            _browser_working = True
+            return got
+        raise RuntimeError(f"D站 连不上（可能被风控/代理失效）：{error}。请在 Clash Verge 换节点或重启 ComfyUI 后重试") from error
+    if not _resp_is_cf(resp):
+        resp.raise_for_status()
+        return resp.content, resp.headers.get("Content-Type", "application/octet-stream").split(";", 1)[0]
+    got = _browser_bytes_or_none(url)
+    if got is not None:
+        _browser_working = True
+        return got
+    raise RuntimeError(CF_BLOCKED_MSG)
+
+
 def _looks_like_video(image_url: str, content_type: str, data: bytes) -> bool:
     """判断下载内容是否是视频（D站 有动画 mp4 帖；PIL 打不开 → 需要 ffmpeg 抽帧）。
     判定：Content-Type video/*、URL 扩展名为 .mp4/.webm/.m4v/.mov/.mkv、或 moov/mp4 魔数 'ftyp'。"""
@@ -334,19 +611,9 @@ def _fetch_posts(request: SearchRequest) -> tuple[list[dict[str, Any]], bool]:
 
     _rate_limiter.wait()
 
-    def _do_request():
-        _apply_danbooru_proxy()
-        params = {"tags": request.tags, "page": request.page, "limit": request.limit}
-        params.update(_account_params())  # 登录后：解除匿名 2 标签限制 + 更少限流
-        return _danbooru_session.get(DANBOORU_POSTS_URL, params=params, timeout=30)
-
-    try:
-        response = _do_request()
-    except (requests.Timeout, requests.ConnectionError):
-        # 代理/网络可能刚失效：重解析代理后重试一次
-        response = _do_request()
-    response.raise_for_status()
-    data = response.json()
+    params = {"tags": request.tags, "page": request.page, "limit": request.limit}
+    params.update(_account_params())  # 登录后：解除匿名 2 标签限制 + 更少限流
+    data = _danbooru_json(DANBOORU_POSTS_URL, params)
     if not isinstance(data, list):
         raise ValueError("Danbooru 返回的 posts 不是列表")
     posts = [post for post in data if isinstance(post, dict)]
@@ -390,6 +657,8 @@ async def anima_danbooru_posts(request: web.Request) -> web.Response:
         return web.json_response({"error": f"连不上 Danbooru：{getattr(error, '__class__', error.__class__).__name__}。请确认 Clash/代理已开启；实在不行重启一次 ComfyUI 让代理配置生效", "registered": registered}, status=502)
     except requests.RequestException as error:
         return web.json_response({"error": _friendly_danbooru_error(error), "registered": registered}, status=502)
+    except RuntimeError as error:
+        return web.json_response({"error": str(error), "registered": registered}, status=502)
     except (TypeError, ValueError) as error:
         return web.json_response({"error": str(error), "registered": registered}, status=502)
     return web.json_response({"posts": posts, "query": search_request.tags, "cached": cached, "warnings": warnings, "registered": registered})
@@ -401,23 +670,18 @@ async def anima_danbooru_image(request: web.Request) -> web.Response:
     if not _is_allowed_danbooru_url(image_url):
         return web.json_response({"error": "只允许代理 donmai.us 的 HTTPS 图片"}, status=400)
     def _get():
-        _apply_danbooru_proxy()
-        return _danbooru_session.get(image_url, timeout=30)
+        return _danbooru_get_image(image_url)
     try:
-        response = await asyncio.get_running_loop().run_in_executor(None, _get)
-        response.raise_for_status()
+        data, content_type = await asyncio.get_running_loop().run_in_executor(None, _get)
     except requests.Timeout:
-        # 代理/网络可能刚失效：重解析代理后重试一次
-        try:
-            response = await asyncio.get_running_loop().run_in_executor(None, _get)
-            response.raise_for_status()
-        except requests.Timeout:
-            return web.json_response({"error": "图片代理超时（已重试）：请确认 Clash/代理已开启"}, status=504)
+        return web.json_response({"error": "图片代理超时（已自动重试并尝试浏览器网关）：请确认 Clash/代理已开启"}, status=504)
     except requests.RequestException as error:
         return web.json_response({"error": f"图片代理失败：{error}"}, status=502)
+    except RuntimeError as error:
+        return web.json_response({"error": str(error)}, status=502)
     return web.Response(
-        body=response.content,
-        content_type=response.headers.get("Content-Type", "image/jpeg").split(";", 1)[0],
+        body=data,
+        content_type=content_type.split(";", 1)[0],
         headers={"Cache-Control": "public, max-age=3600"},
     )
 
@@ -462,11 +726,9 @@ async def anima_danbooru_suggest(request: web.Request) -> web.Response:
     term = query[0]
     def fetch():
         _rate_limiter.wait()
-        _apply_danbooru_proxy()
         params = {"search[name_matches]": f"{term}*", "search[order]": "count", "limit": 8}
         params.update(_account_params())
-        response = _danbooru_session.get("https://danbooru.donmai.us/tags.json", params=params, timeout=20)
-        response.raise_for_status(); return response.json()
+        return _danbooru_json("https://danbooru.donmai.us/tags.json", params, timeout=20)
     try:
         tags = await asyncio.get_running_loop().run_in_executor(None, fetch)
         names = [x.get("name") for x in tags if isinstance(x, dict) and x.get("name")]
@@ -538,17 +800,8 @@ class DanbooruGallery:
     def _download_image(image_url: str) -> torch.Tensor:
         if not _is_allowed_danbooru_url(image_url):
             raise ValueError("不允许的 Danbooru 图片 URL")
-        request = urllib.request.Request(image_url, headers={"User-Agent": DANBOORU_HEADERS["User-Agent"]})
-        proxies = _resolve_danbooru_proxies()  # 实时解析，避免启动时固化死代理
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies or {}))
-        try:
-            with opener.open(request, timeout=30) as response:
-                content_type = response.headers.get("Content-Type", "")
-                image_bytes = response.read()
-        except urllib.error.HTTPError as error:
-            raise ValueError(f"图片下载失败 HTTP {error.code}（原图可能已失效/被删除，可换一张图）") from error
-        except urllib.error.URLError as error:
-            raise ValueError(f"图片下载失败：连接错误（请确认 Clash/代理已开启，必要时重启 ComfyUI）: {error.reason}") from error
+        # requests 优先，被风控时自动切内置浏览器网关（见 _danbooru_get_image）
+        image_bytes, content_type = _danbooru_get_image(image_url)
         # D站 动画帖是 mp4：PIL 打不开 → 用 ffmpeg 抽首帧当图，避免"下载失败/黑图"
         if _looks_like_video(image_url, content_type, image_bytes):
             image_bytes = _extract_video_frame(image_bytes)
