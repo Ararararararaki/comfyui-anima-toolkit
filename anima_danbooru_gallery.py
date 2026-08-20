@@ -47,7 +47,9 @@ REQUEST_INTERVAL_SECONDS = 0.2
 # Danbooru 对这几种 "慢排序" 在无时间窗时会对全库排序导致数据库超时（500）。
 # 自动附带一个免费 metatag 时间窗即可稳定返回（与前端 anima_danbooru_gallery_widget.js 常量保持一致）。
 SLOW_ORDERS = frozenset({"score", "favcount", "random"})
-DEFAULT_SLOW_ORDER_WINDOW = "1week"
+# 慢排序时间窗必须带 < 前缀（D站 的 age:1week 是「恰好一周前」等值语义会显示过期内容；
+# age:<1week 才是近一周）。前端 anima_danbooru_gallery_widget.js currentQuery 同样拼 age:<。
+DEFAULT_SLOW_ORDER_WINDOW = "<1week"
 FREE_METATAGS = frozenset({
     "rating", "status", "is", "age", "date", "id", "limit", "score", "downvotes",
     "favcount", "width", "height", "ratio", "mpixels", "filesize", "filetype",

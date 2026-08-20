@@ -24,7 +24,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
     }
   }, true);
 
-  const MAX_TAGS = 5;
+  const MAX_TAGS = 8; // 搜索框最多保留 8 个标签（后端 MAX_SEARCH_TAGS=12；Member 上限 2、Gold 6，足够覆盖）
   const FREE_METATAGS = new Set(["rating", "status", "is", "age", "date", "id", "limit", "score", "downvotes", "favcount", "width", "height", "ratio", "mpixels", "filesize", "filetype", "duration", "md5", "pixiv_id", "pixiv", "parent", "child", "upvote", "embedded", "tagcount"]);
   // 慢排序：D站 对无时间窗的评分/收藏/随机排序会数据库超时 500，前端自动附带一个免费 metatag 时间窗（与后端常量一致）。
   const SLOW_ORDERS = new Set(["score", "favcount", "random"]);
@@ -165,10 +165,24 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       const f = this.settings.filters;
       // 评分/收藏/随机排序若不带时间窗，D站 会对全库排序造成数据库超时 500：
       // 自动附带一个时间窗（age 是免费 metatag，不占计数槽）。用户显式设置了 age 时尊重用户选择。
-      const autoWindow = Boolean(f.order && SLOW_ORDERS.has(f.order) && !f.age);
+      const autoWindow = Boolean(f.order && SLOW_ORDERS.has(f.order) && !f.age && !f.ageDays);
       this._autoWindow = autoWindow;
-      const age = autoWindow ? DEFAULT_SLOW_ORDER_AGE : f.age;
-      const parts = [normalizeTags(raw), this.settings.rating.length ? `rating:${this.settings.rating.join(",")}` : "", age ? `age:${age}` : "", f.minScore ? `score:>${f.minScore}` : "", f.minFavs ? `favcount:>${f.minFavs}` : "", f.order ? `order:${f.order}` : ""];
+      const age = autoWindow ? DEFAULT_SLOW_ORDER_AGE : (f.age || (f.ageDays ? `${f.ageDays}days` : ""));
+      // ⚠️ age 必须带 < 前缀（D站 的 age:1day 是「恰好一天前」等值语义，会显示过期内容；< 才是近 N 天）
+      const ageToken = age ? `age:<${age}` : "";
+      const RATIO_TOKENS = { wide: "ratio:>1", tall: "ratio:<1", square: "ratio:>=0.9 ratio:<=1.1", ultrawide: "ratio:>=1.5" };
+      const FILETYPE_TOKENS = { static: "-filetype:gif -filetype:mp4 -filetype:webm", gif: "filetype:gif", video: "filetype:mp4" };
+      const parts = [
+        normalizeTags(raw),
+        this.settings.rating.length ? `rating:${this.settings.rating.join(",")}` : "",
+        ageToken,
+        f.minScore ? `score:>${f.minScore}` : "",
+        f.minFavs ? `favcount:>${f.minFavs}` : "",
+        f.minMpixels ? `mpixels:>=${f.minMpixels}` : "",
+        RATIO_TOKENS[f.ratio] || "",
+        FILETYPE_TOKENS[f.filetype] || "",
+        f.order ? `order:${f.order}` : "",
+      ];
       return parts.filter(Boolean).join(" ");
     }
 
