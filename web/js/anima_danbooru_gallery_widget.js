@@ -95,13 +95,15 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.tooltip = null;
       this.domWidget = null;
       this.filterControls = null;
-      this.registered = false; // 是否已登录 Danbooru（登录后标签上限 2→6）
+      this.registered = false; // 是否已登录 Danbooru
+      this.tagLimitValue = 2;  // 计数标签上限（后端按账号等级动态：Member=2 / Gold+=6，随 /account 刷新）
     }
 
     async refreshAccount() {
       try {
         const d = await (await fetch("/anima/danbooru/account")).json();
         this.registered = Boolean(d?.logged_in);
+        if (typeof d?.tag_limit === "number") this.tagLimitValue = d.tag_limit;
       } catch {
         this.registered = false;
       }
@@ -171,8 +173,9 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
     }
 
     tagLimit() {
-      // 匿名最多 2 个计数标签；登录 Danbooru 账号后放宽到 6（值需与后端 /anima/danbooru/posts 一致）
-      return this.registered ? 6 : DANBOORU_TAG_LIMIT;
+      // 计数标签上限：匿名/Member=2，Gold+=6。后端按账号等级动态返回（/account、/posts 响应带 tag_limit），
+      // 前端优先用后端值，拉取前用保守默认 2。
+      return typeof this.tagLimitValue === "number" && this.tagLimitValue > 0 ? this.tagLimitValue : DANBOORU_TAG_LIMIT;
     }
 
     async search({ resetPage = false, force = false, skipFuzzy = false } = {}) {
@@ -224,8 +227,17 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           limit: String(this.settings.limit),
           force: force ? "1" : "0",
         });
-        const response = await fetch(`/anima/danbooru/posts?${parameters}`, { signal: this.controller.signal });
-        const data = await response.json();
+        // 45s 兜底超时（后端已多路重试，正常远快于此；防极端网络下无限转圈）
+        let timedOut = false;
+        const timer = setTimeout(() => { timedOut = true; this.controller?.abort(); }, 45000);
+        let response, data;
+        try {
+          response = await fetch(`/anima/danbooru/posts?${parameters}`, { signal: this.controller.signal });
+          data = await response.json();
+        } finally {
+          clearTimeout(timer);
+        }
+        if (typeof data?.tag_limit === "number") this.tagLimitValue = data.tag_limit;
         if (currentRequest !== this.requestId) return;
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
         this.posts = Array.isArray(data.posts) ? data.posts : [];
@@ -243,6 +255,12 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         if (this._droppedOrder) notices.push(`已自动移除「${ORDER_LABELS[this._droppedOrder] || this._droppedOrder}」排序，按最新显示（匿名最多 2 个计数标签）`);
         this.setStatus(`${source}：${this.posts.length} 张 · 第 ${this.page} 页` + (notices.length ? `（${notices.join("；")}）` : ""));
       } catch (error) {
+        if (timedOut) {
+          this.posts = [];
+          this.renderPosts();
+          this.setStatus("搜索超时（45 秒）：D站 或代理网络不稳定，已自动多路重试仍失败。请检查 Clash 节点后重试", "error");
+          return;
+        }
         if (error?.name === "AbortError") return;
         if (currentRequest !== this.requestId) return;
         this.posts = [];
@@ -697,9 +715,10 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           });
           const j = await r.json();
           this.registered = Boolean(j?.logged_in);
+          if (typeof j?.tag_limit === "number") this.tagLimitValue = j.tag_limit;
           const st = content.querySelector(".adg-account-status");
           if (st) st.textContent = this.registered ? `✓ 已登录 · ${j?.username || ""}` : "ℹ 已退出（匿名 2 标签限制）";
-          this.setStatus(this.registered ? "D站 登录成功，标签上限已解除至 6 个" : "D站 已退出登录", "success");
+          this.setStatus(this.registered ? `D站 登录成功，当前计数标签上限 ${this.tagLimitValue} 个` : "D站 已退出登录", "success");
           this.search({ resetPage: true });
         } catch {
           this.setStatus("保存登录失败，请重试", "error");
