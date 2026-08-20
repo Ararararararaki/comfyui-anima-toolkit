@@ -152,6 +152,22 @@
   transition: background .12s ease-out, border-color .12s ease-out;
 }
 .adg-quick-preset:hover { border-color: #9988ff; background: rgba(139, 92, 246, .28); }
+.adg-exclude-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+.adg-exclude-empty { font-size: 11px; color: var(--text2, #888); padding: 2px 0; }
+.adg-exclude-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  border: 1px solid rgba(248, 113, 113, .45);
+  border-radius: 999px;
+  color: #fca5a5;
+  background: rgba(220, 38, 38, .14);
+  cursor: pointer;
+  transition: background .12s ease-out;
+}
+.adg-exclude-chip:hover { background: rgba(220, 38, 38, .3); border-color: #f87171; }
 
 .adg-pagination { display: flex; gap: 3px; align-items: center; margin-left: auto; }
 .adg-pagination button { width: 24px; padding: 4px 0; }

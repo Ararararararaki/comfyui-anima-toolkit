@@ -67,10 +67,11 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         presets: Array.isArray(saved.presets) ? saved.presets : [],
         activeCategory: typeof saved.activeCategory === "string" ? saved.activeCategory : "",
         filters: normalizeFilters(saved.filters),
+        excludeTags: Array.isArray(saved.excludeTags) ? saved.excludeTags.map(String).filter((t) => /^[a-z0-9_]+$/.test(t)).slice(0, 8) : [],
         lastQuery: typeof saved.lastQuery === "string" ? saved.lastQuery : "",
       };
     } catch {
-      return { limit: 24, rating: [], gridHeight: 620, categories: [], postCategories: {}, presets: [], activeCategory: "", filters: { ...FILTER_DEFAULTS }, lastQuery: "" };
+      return { limit: 24, rating: [], gridHeight: 620, categories: [], postCategories: {}, presets: [], activeCategory: "", filters: { ...FILTER_DEFAULTS }, excludeTags: [], lastQuery: "" };
     }
   }
 
@@ -183,6 +184,8 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         FILETYPE_TOKENS[f.filetype] || "",
         f.order ? `order:${f.order}` : "",
       ];
+      // 排除标签不拼进查询词（D站 把 -tag 当普通标签计数，会占搜索槽位）：
+      // 改为拿到结果后本地过滤（见 search()），槽位零占用、可任意添加。
       return parts.filter(Boolean).join(" ");
     }
 
@@ -255,11 +258,28 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         if (typeof data?.tag_limit === "number") this.tagLimitValue = data.tag_limit;
         if (currentRequest !== this.requestId) return;
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-        this.posts = Array.isArray(data.posts) ? data.posts : [];
-        if (!this.posts.length) {
+        const rawPosts = Array.isArray(data.posts) ? data.posts : [];
+        // 本地排除过滤：排除标签不占 D站 计数槽（查询不含 -tag），拿到结果后按 tag_string 过滤
+        const excludeTags = this.settings.excludeTags || [];
+        let excludedCount = 0;
+        if (excludeTags.length) {
+          const tagSet = new Set(excludeTags);
+          const filtered = [];
+          for (const post of rawPosts) {
+            const postTags = String(post?.tag_string || "").split(" ");
+            if (postTags.some((t) => tagSet.has(t))) excludedCount += 1;
+            else filtered.push(post);
+          }
+          this.posts = filtered;
+        } else {
+          this.posts = rawPosts;
+        }
+        if (!rawPosts.length) {
           this.fetchSuggestions(this.queryWidget?.value || query, true);
           // 精确搜索无结果 → 模糊纠错（把近似标签替换成真实标签）自动重搜一次
           if (!skipFuzzy) await this.fuzzyRetry(query);
+        } else if (!this.posts.length) {
+          this.setStatus(`该页 ${rawPosts.length} 张全部被排除标签过滤（${excludeTags.join("、")}），请调整排除标签`, "error");
         }
         this.renderPosts();
         this.renderPagination();
@@ -268,7 +288,8 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         if (Array.isArray(data.warnings) && data.warnings.length) notices.push(...data.warnings.map(String));
         if (this._autoWindow && this.settings.filters.order) notices.push(`「${ORDER_LABELS[this.settings.filters.order] || this.settings.filters.order}」排序已自动限定近 1 周，否则 D站 会超时`);
         if (this._droppedOrder) notices.push(`已自动移除「${ORDER_LABELS[this._droppedOrder] || this._droppedOrder}」排序，按最新显示（匿名最多 2 个计数标签）`);
-        this.setStatus(`${source}：${this.posts.length} 张 · 第 ${this.page} 页` + (notices.length ? `（${notices.join("；")}）` : ""));
+        const exclNotice = excludeTags.length ? `已排除 ${excludeTags.join("、")} ${excludedCount} 张` : "";
+        this.setStatus(`${source}：${this.posts.length} 张 · 第 ${this.page} 页` + (exclNotice ? `（${exclNotice}）` : "") + (notices.length ? `（${notices.join("；")}）` : ""));
       } catch (error) {
         if (timedOut) {
           this.posts = [];
@@ -682,6 +703,71 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       heightInput.value = String(this.settings.gridHeight);
       heightLabel.append(heightInput);
       content.append(pageLabel, heightLabel);
+
+      // ── 排除标签（搜索结果不含这些标签；每个占 1 个计数槽）──
+      const exclTitle = document.createElement("div");
+      exclTitle.className = "adg-field";
+      exclTitle.textContent = "排除标签（搜索不含这些）";
+      const exclTip = document.createElement("div");
+      exclTip.style.cssText = "font-size:10px;color:var(--text2,#999);margin:2px 0 4px;";
+      exclTip.textContent = "不占计数标签名额，可任意添加；搜索后在本地过滤（每页可能略少于设定张数）。例：填 furry → 结果不含 furry";
+      const exclInput = document.createElement("input");
+      exclInput.placeholder = "输入标签，空格/逗号分隔，如：furry scat";
+      exclInput.style.cssText = "flex:1;min-width:0;";
+      const exclList = document.createElement("div");
+      exclList.className = "adg-exclude-list";
+      const renderExcl = () => {
+        exclList.innerHTML = "";
+        if (!this.settings.excludeTags.length) {
+          const empty = document.createElement("span");
+          empty.className = "adg-exclude-empty";
+          empty.textContent = "（无）";
+          exclList.append(empty);
+          return;
+        }
+        for (const tag of this.settings.excludeTags) {
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "adg-exclude-chip";
+          chip.textContent = `− ${tag} ✕`;
+          chip.title = "点击移除";
+          chip.onclick = () => {
+            this.settings.excludeTags = this.settings.excludeTags.filter((t) => t !== tag);
+            this.saveSettings();
+            renderExcl();
+            this.setStatus(`已移除排除标签：${tag}`);
+            this.search({ resetPage: true });
+          };
+          exclList.append(chip);
+        }
+      };
+      const addExcl = () => {
+        const tags = exclInput.value.trim().toLowerCase()
+          .split(/[\s,，、]+/)
+          .map((t) => t.replace(/^[-~]+/, ""))
+          .filter((t) => /^[a-z0-9_]+$/.test(t));
+        if (!tags.length) return;
+        const merged = [...new Set([...this.settings.excludeTags, ...tags])].slice(0, 8);
+        this.settings.excludeTags = merged;
+        this.saveSettings();
+        exclInput.value = "";
+        renderExcl();
+        this.setStatus(`已添加排除标签：${tags.join("、")}（搜索自动加 - 前缀）`, "success");
+        this.search({ resetPage: true });
+      };
+      const exclAdd = document.createElement("button");
+      exclAdd.type = "button";
+      exclAdd.className = "primary";
+      exclAdd.textContent = "添加";
+      exclAdd.style.cssText = "padding:4px 10px;border-radius:6px;background:#8b5cf6;color:#fff;border:none;cursor:pointer;font-size:11px;flex-shrink:0;";
+      exclAdd.onclick = addExcl;
+      exclInput.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); addExcl(); } };
+      const exclRow = document.createElement("div");
+      exclRow.className = "adg-exclude-row";
+      exclRow.style.cssText = "display:flex;gap:6px;align-items:center;";
+      exclRow.append(exclInput, exclAdd);
+      renderExcl();
+      content.append(exclTitle, exclTip, exclRow, exclList);
 
       // ── D站 账号（登录后解除匿名 2 标签限制，更少限流）──
       this.refreshAccount().then((reg) => {
