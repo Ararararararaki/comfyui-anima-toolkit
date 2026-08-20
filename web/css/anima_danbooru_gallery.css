@@ -194,6 +194,10 @@
 
 /* 顶部搜索框（DOM 输入，回车直接搜索） */
 .adg-queryrow { flex: none; display: flex; }
+
+/* 组件容器提升层级：新 ComfyUI 前端会在节点内容上叠一层 bg-component-node-background，
+   否则该面罩会拦截点击（点搜索框变成选节点/弹 Value）。 */
+.anima-danbooru-gallery { position: relative; z-index: 3; }
 .adg-query {
   flex: 1;
   min-width: 0;

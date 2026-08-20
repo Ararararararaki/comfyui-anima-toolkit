@@ -5,6 +5,25 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
   const NODE_NAME = "DanbooruGallery";
   const STORAGE_KEY = "anima_danbooru_gallery_settings_v1";
   const FAVORITES_STORAGE_KEY = "anima_danbooru_gallery_favorites_v1";
+
+  // 新 ComfyUI 前端会在节点内容上叠一层“激活面罩”：节点未激活时，第一次点击 DOM 控件会被面罩吃掉。
+  // 这里用文档级捕获监听：只要指针落在某个画廊搜索框矩形内，就在下一帧（等节点完成激活）把焦点给输入框。
+  const _danQueryFocusTargets = new Set();
+  document.addEventListener("pointerdown", (event) => {
+    if (!_danQueryFocusTargets.size) return;
+    for (const ui of _danQueryFocusTargets) {
+      const inp = ui.queryInput;
+      if (!inp || !inp.isConnected) continue;
+      const rect = inp.getBoundingClientRect();
+      const x = event.clientX, y = event.clientY;
+      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+        requestAnimationFrame(() => {
+          try { if (inp.isConnected && document.activeElement !== inp) inp.focus({ preventScroll: true }); } catch {}
+        });
+      }
+    }
+  }, true);
+
   const MAX_TAGS = 5;
   const FREE_METATAGS = new Set(["rating", "status", "is", "age", "date", "id", "limit", "score", "downvotes", "favcount", "width", "height", "ratio", "mpixels", "filesize", "filetype", "duration", "md5", "pixiv_id", "pixiv", "parent", "child", "upvote", "embedded", "tagcount"]);
   // 慢排序：D站 对无时间窗的评分/收藏/随机排序会数据库超时 500，前端自动附带一个免费 metatag 时间窗（与后端常量一致）。
@@ -715,6 +734,16 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       queryInput.type = "text";
       queryInput.placeholder = "标签（模糊匹配，回车直接搜）如：1girl long hair…";
       queryInput.value = this.settings.lastQuery || "";
+      // 让搜索框能被正常点击聚焦：ComfyUI 在捕获阶段会把点击/焦点抢给节点容器，
+      // stopPropagation 挡不住；这里 mousedown preventDefault + 下一帧强制 focus，确保输入落在框内
+      const focusLock = () => {
+        requestAnimationFrame(() => {
+          try { if (document.activeElement !== queryInput) queryInput.focus({ preventScroll: true }); } catch {}
+        });
+      };
+      queryInput.addEventListener("pointerdown", (e) => { e.stopPropagation(); focusLock(); });
+      queryInput.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); focusLock(); });
+      queryInput.addEventListener("click", (e) => { e.stopPropagation(); focusLock(); });
       queryInput.oninput = () => {
         if (this.queryWidget) this.queryWidget.value = queryInput.value;
         this.fetchSuggestions(queryInput.value);
@@ -727,6 +756,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       };
       queryRow.append(queryInput);
       this.queryInput = queryInput;
+      _danQueryFocusTargets.add(this);
       const toolbar = document.createElement("div");
       toolbar.className = "adg-toolbar";
       const addAction = (label, title, action) => {
@@ -809,6 +839,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
     }
 
     dispose() {
+      _danQueryFocusTargets.delete(this);
       this.controller?.abort();
       this.filterControls?.destroy();
       this.hidePromptTooltip();
@@ -843,10 +874,9 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           selectionWidget.type = "hidden";
           ui.selectionWidget = selectionWidget;
         }
-        const queryWidget = this.addWidget?.("text", "搜索标签", ui.settings.lastQuery, () => {}, { serialize: true });
-        // 搜索改由组件顶部真实 DOM 输入框承载；此处保留同名隐藏 widget 仅用于工作流保存/恢复
-        if (queryWidget) { queryWidget.computeSize = () => [0, -4]; queryWidget.draw = () => {}; queryWidget.type = "hidden"; }
-        ui.queryWidget = queryWidget || { value: ui.settings.lastQuery };
+        // 搜索改由组件顶部真实 DOM 输入框承载；不再创建画布 text widget——
+        // 旧 ComfyUI 前端会把 hidden widget 当可点击对象，触发「Value」编辑弹窗并从 LGraphCanvas.active_canvas 解构而崩溃。
+        ui.queryWidget = { value: ui.settings.lastQuery };
         const element = ui.build();
         const domWidget = this.addDOMWidget?.("anima_danbooru_gallery", "custom", element, { serialize: false, hideOnZoom: false });
         if (domWidget) domWidget.computeSize = (width) => [Math.max(360, width || 760), 620];
