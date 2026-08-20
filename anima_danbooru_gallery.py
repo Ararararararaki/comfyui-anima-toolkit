@@ -515,6 +515,68 @@ def _danbooru_get_image(url: str, timeout: int = 30) -> tuple[bytes, str]:
     raise RuntimeError(CF_BLOCKED_MSG)
 
 
+# ---------- 模糊标签纠错（搜索无结果时把近似词替换成真实标签） ----------
+_fuzzy_cache_lock = threading.Lock()
+_fuzzy_name_cache: dict[str, list[str]] = {}
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """编辑距离（Levenshtein）：用于挑和输入词最接近的真实标签。"""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, char_a in enumerate(a, 1):
+        cur = [i]
+        for j, char_b in enumerate(b, 1):
+            cur.append(min(cur[-1] + 1, prev[j] + 1, prev[j - 1] + (char_a != char_b)))
+        prev = cur
+    return prev[-1]
+
+
+def _fuzzy_tag_candidates(token: str, limit: int = 8) -> list[str]:
+    """返回 token 最近的候选真实标签（前缀优先、子串兜底），按 编辑距离+热度 排序。
+
+    若 token 本身就是有效标签，第一个候选即它自己（距离 0）。带进程内缓存避免重复请求。
+    """
+    key = token.lower()
+    with _fuzzy_cache_lock:
+        cached = _fuzzy_name_cache.get(key)
+    if cached is not None:
+        return cached
+    candidates: list[str] = []
+    for pattern in (f"{key}*", f"*{key}*"):
+        try:
+            data = _danbooru_json(
+                "https://danbooru.donmai.us/tags.json",
+                {"search[name_matches]": pattern, "search[order]": "count", "limit": 25},
+                timeout=20,
+            )
+            if isinstance(data, list):
+                candidates += [str(x.get("name")) for x in data if isinstance(x, dict) and x.get("name")]
+        except Exception:
+            break
+        if candidates:
+            break
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for name in candidates:
+        if name not in seen and len(name) <= 64:
+            seen.add(name)
+            uniq.append(name)
+    uniq.sort(key=lambda name: (_edit_distance(key, name),))
+    result = uniq[:limit]
+    with _fuzzy_cache_lock:
+        _fuzzy_name_cache[key] = result
+    return result
+
+
+MAX_FUZZY_TOKENS = 8
+
+
 def _looks_like_video(image_url: str, content_type: str, data: bytes) -> bool:
     """判断下载内容是否是视频（D站 有动画 mp4 帖；PIL 打不开 → 需要 ffmpeg 抽帧）。
     判定：Content-Type video/*、URL 扩展名为 .mp4/.webm/.m4v/.mov/.mkv、或 moov/mp4 魔数 'ftyp'。"""
@@ -750,22 +812,49 @@ async def anima_danbooru_translate(request: web.Request) -> web.Response:
     return web.json_response({"translations": result})
 
 
-@PromptServer.instance.routes.get("/anima/danbooru/suggest")
-async def anima_danbooru_suggest(request: web.Request) -> web.Response:
-    query = normalize_search_tags(request.query.get("q", "")).split(" ")[-1:]
-    if not query:
-        return web.json_response({"suggestions": [], "didYouMean": [], "rewrites": []})
-    term = query[0]
-    def fetch():
-        _rate_limiter.wait()
-        response = _danbooru_session.get("https://danbooru.donmai.us/tags.json", params={"search[name_matches]": f"{term}*", "search[order]": "count", "limit": 8}, timeout=12)
-        response.raise_for_status(); return response.json()
-    try:
-        tags = await asyncio.get_running_loop().run_in_executor(None, fetch)
-        names = [x.get("name") for x in tags if isinstance(x, dict) and x.get("name")]
-    except Exception:
-        names = []
-    return web.json_response({"suggestions": names, "didYouMean": names[:3], "rewrites": names[:3]})
+@PromptServer.instance.routes.get("/anima/danbooru/fuzzy")
+async def anima_danbooru_fuzzy(request: web.Request) -> web.Response:
+    """搜索无结果时的模糊纠错：把不属于真实标签的词替换为最近的真实标签（元标签原样保留）。"""
+    raw_tags = request.query.get("tags", "").strip()
+    seen: set[str] = set()
+    tokens: list[str] = []
+    for token in str(raw_tags or "").split():
+        t = token.lower()
+        if t and t not in seen:
+            seen.add(t)
+            tokens.append(t)
+    tokens = tokens[:MAX_FUZZY_TOKENS]
+
+    replacements: dict[str, str] = {}
+    corrected: list[str] = []
+    for token in tokens:
+        marker = ""
+        body = token
+        if body.startswith(("-", "~")):
+            marker, body = body[0], body[1:]
+        prefix, sep, _ = body.partition(":")
+        if sep and prefix in FREE_METATAGS:
+            corrected.append(token)  # 元标签（rating:/age:/score:/order:…）原样保留
+            continue
+        if not body:
+            corrected.append(token)
+            continue
+        candidates = _fuzzy_tag_candidates(body)
+        if candidates and candidates[0] == body:
+            corrected.append(token)          # 已是有效标签 → 不动
+        elif candidates:
+            found = marker + candidates[0]
+            if found != token:
+                replacements[token] = found
+            corrected.append(found)
+        else:
+            corrected.append(token)          # 无近似 → 保留原文
+    return web.json_response({
+        "tags": raw_tags,
+        "corrected": " ".join(corrected),
+        "changed": bool(replacements),
+        "replacements": replacements,
+    })
 
 
 class DanbooruGallery:

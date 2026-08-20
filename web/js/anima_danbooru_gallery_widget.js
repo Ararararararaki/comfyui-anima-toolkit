@@ -69,6 +69,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.suggestions = null;
       this.selectionWidget = null;
       this.queryWidget = null;
+      this.queryInput = null;
       this.dialogId = `anima-danbooru-dialog-${node.id}`;
       this.favorites = this.loadFavorites();
       this.translationCache = new Map();
@@ -130,6 +131,14 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.status.dataset.tone = tone;
     }
 
+    // 同步搜索框内容到 DOM 输入 + 隐藏的序列化 widget（两者始终一致）
+    setQuery(value) {
+      const v = String(value ?? "");
+      if (this.queryInput) this.queryInput.value = v;
+      if (this.queryWidget) this.queryWidget.value = v;
+      this.fetchSuggestions(v);
+    }
+
     currentQuery() {
       const raw = this.queryWidget?.value || this.settings.lastQuery || "";
       const f = this.settings.filters;
@@ -147,8 +156,12 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       return this.registered ? 6 : DANBOORU_TAG_LIMIT;
     }
 
-    async search({ resetPage = false, force = false } = {}) {
+    async search({ resetPage = false, force = false, skipFuzzy = false } = {}) {
       this._droppedOrder = false;
+      // 工作流恢复/外部修改时，确保输入框与序列化 widget 一致（widget 是权威值）
+      if (this.queryInput && this.queryWidget && String(this.queryInput.value) !== String(this.queryWidget.value ?? "")) {
+        this.queryInput.value = this.queryWidget.value ?? "";
+      }
       let query = this.currentQuery();
       if (!query) {
         this.posts = [];
@@ -178,7 +191,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       if (resetPage) this.page = 1;
       this.settings.lastQuery = normalizeTags(this.queryWidget?.value || "");
       this.saveSettings();
-      this.queryWidget.value = this.settings.lastQuery;
+      this.setQuery(this.settings.lastQuery);
 
       this.controller?.abort();
       this.controller = new AbortController();
@@ -197,7 +210,11 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         if (currentRequest !== this.requestId) return;
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
         this.posts = Array.isArray(data.posts) ? data.posts : [];
-        if (!this.posts.length) this.fetchSuggestions(this.queryWidget.value, true);
+        if (!this.posts.length) {
+          this.fetchSuggestions(this.queryWidget?.value || query, true);
+          // 精确搜索无结果 → 模糊纠错（把近似标签替换成真实标签）自动重搜一次
+          if (!skipFuzzy) await this.fuzzyRetry(query);
+        }
         this.renderPosts();
         this.renderPagination();
         const source = data.cached ? "缓存" : "D站";
@@ -216,7 +233,20 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         if (currentRequest === this.requestId && this.grid) this.grid.removeAttribute("aria-busy");
       }
     }
-    async fetchSuggestions(q, empty = false) { if (!this.suggestions || !q?.trim()) return; try { const d = await (await fetch(`/anima/danbooru/suggest?q=${encodeURIComponent(q)}`)).json(); const a = empty ? d.didYouMean : d.suggestions; const r = d.rewrites || []; this.suggestions.innerHTML = a?.length ? `${empty ? '你是不是想搜：' : '智能提示：'}${a.map(x => `<button data-q="${x}">${x}</button>`).join('')} ${r.length ? `扩展：${r.join(' / ')}` : ''}` : ''; this.suggestions.querySelectorAll('button').forEach(b => b.onclick = () => { this.queryWidget.value = b.dataset.q; this.search({resetPage:true}); }); } catch {} }
+    async fetchSuggestions(q, empty = false) { if (!this.suggestions || !q?.trim()) return; try { const d = await (await fetch(`/anima/danbooru/suggest?q=${encodeURIComponent(q)}`)).json(); const a = empty ? d.didYouMean : d.suggestions; const r = d.rewrites || []; this.suggestions.innerHTML = a?.length ? `${empty ? '你是不是想搜：' : '智能提示：'}${a.map(x => `<button data-q="${x}">${x}</button>`).join('')} ${r.length ? `扩展：${r.join(' / ')}` : ''}` : ''; this.suggestions.querySelectorAll('button').forEach(b => b.onclick = () => { this.setQuery(b.dataset.q); this.search({resetPage:true}); }); } catch {} }
+
+    // 模糊纠错后自动重搜（仅执行一次；此后用户再点搜索会走新的精确词）
+    async fuzzyRetry(query) {
+      try {
+        const fz = await (await fetch(`/anima/danbooru/fuzzy?tags=${encodeURIComponent(query)}`)).json();
+        if (fz && fz.changed && fz.corrected && fz.corrected !== query) {
+          const note = Object.entries(fz.replacements || {}).map(([a, b]) => `${a} → ${b}`).join("，");
+          this.setQuery(fz.corrected);
+          this.setStatus(`模糊匹配：${note}，已自动换用完整标签搜索`);
+          return this.search({ resetPage: false, force: false, skipFuzzy: true });
+        }
+      } catch { /* 模糊接口失败则不打扰，保留原有“你是不是想搜”提示 */ }
+    }
 
     updateSelection() {
       const selected = [...this.grid.querySelectorAll(".adg-card.is-selected")].map((card) => ({
@@ -677,6 +707,26 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.filterControls?.destroy();
       const root = document.createElement("section");
       root.className = "anima-danbooru-gallery";
+      // ── 搜索输入框：真实 DOM 输入（替代画布文本 widget），回车直接搜索 ──
+      const queryRow = document.createElement("div");
+      queryRow.className = "adg-queryrow";
+      const queryInput = document.createElement("input");
+      queryInput.className = "adg-query";
+      queryInput.type = "text";
+      queryInput.placeholder = "标签（模糊匹配，回车直接搜）如：1girl long hair…";
+      queryInput.value = this.settings.lastQuery || "";
+      queryInput.oninput = () => {
+        if (this.queryWidget) this.queryWidget.value = queryInput.value;
+        this.fetchSuggestions(queryInput.value);
+      };
+      queryInput.onkeydown = (event) => {
+        if (event.key === "Enter" && !event.isComposing) {
+          event.preventDefault();
+          this.search({ resetPage: true });
+        }
+      };
+      queryRow.append(queryInput);
+      this.queryInput = queryInput;
       const toolbar = document.createElement("div");
       toolbar.className = "adg-toolbar";
       const addAction = (label, title, action) => {
@@ -718,7 +768,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         if (preset.value === "") return;
         const p = this.settings.presets[Number(preset.value)];
         if (!p) return;
-        this.queryWidget.value = p.query;
+        this.setQuery(p.query);
         this.settings.rating = normalizeRatings(p.rating);
         this.settings.filters = normalizeFilters(p.filters);
         this.saveSettings();
@@ -743,13 +793,13 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       const grid = document.createElement("div");
       grid.className = "adg-grid";
       const suggestions = document.createElement('div'); suggestions.className = 'adg-suggestions'; this.suggestions = suggestions;
-      root.append(toolbar, suggestions, info, status, grid);
+      root.append(queryRow, toolbar, suggestions, info, status, grid);
       this.root = root;
       this.status = status;
       this.grid = grid;
       this.applyGridHeight();
       const initialQuery = this.settings.lastQuery || "1girl";
-      this.queryWidget.value = initialQuery;
+      this.setQuery(initialQuery);
       this.setStatus("正在自动加载图片…");
       this.renderPosts();
       this.renderPagination();
@@ -794,8 +844,9 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           ui.selectionWidget = selectionWidget;
         }
         const queryWidget = this.addWidget?.("text", "搜索标签", ui.settings.lastQuery, () => {}, { serialize: true });
+        // 搜索改由组件顶部真实 DOM 输入框承载；此处保留同名隐藏 widget 仅用于工作流保存/恢复
+        if (queryWidget) { queryWidget.computeSize = () => [0, -4]; queryWidget.draw = () => {}; queryWidget.type = "hidden"; }
         ui.queryWidget = queryWidget || { value: ui.settings.lastQuery };
-        if (queryWidget) { const cb = queryWidget.callback; queryWidget.callback = function(v){ cb?.apply(this, arguments); ui.fetchSuggestions(v); }; }
         const element = ui.build();
         const domWidget = this.addDOMWidget?.("anima_danbooru_gallery", "custom", element, { serialize: false, hideOnZoom: false });
         if (domWidget) domWidget.computeSize = (width) => [Math.max(360, width || 760), 620];

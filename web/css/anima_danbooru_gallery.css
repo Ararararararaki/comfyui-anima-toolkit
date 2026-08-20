@@ -191,3 +191,20 @@
   .adg-card,
   .adg-card-actions { transition: none; }
 }
+
+/* 顶部搜索框（DOM 输入，回车直接搜索） */
+.adg-queryrow { flex: none; display: flex; }
+.adg-query {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid #55566a;
+  border-radius: 6px;
+  color: #ededf2;
+  background: #23232c;
+  font-size: 12px;
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.adg-query::placeholder { color: #7b7b8d; }
+.adg-query:focus { border-color: #a895ff; box-shadow: 0 0 0 2px rgba(168, 149, 255, .18); }
