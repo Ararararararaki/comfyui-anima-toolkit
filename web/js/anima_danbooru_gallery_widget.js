@@ -218,6 +218,9 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.controller?.abort();
       this.controller = new AbortController();
       const currentRequest = ++this.requestId;
+      // 45s 兜底超时标记（声明在 try 外：catch 需要读它；若声明在 try 内，
+      // 快速切换筛选触发 abort 竞态时 catch 会抛 ReferenceError 导致状态栏卡死）
+      let timedOut = false;
       this.setStatus(`正在搜索：${query}`);
       if (this.grid) this.grid.setAttribute("aria-busy", "true");
       try {
@@ -227,8 +230,6 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           limit: String(this.settings.limit),
           force: force ? "1" : "0",
         });
-        // 45s 兜底超时（后端已多路重试，正常远快于此；防极端网络下无限转圈）
-        let timedOut = false;
         const timer = setTimeout(() => { timedOut = true; this.controller?.abort(); }, 45000);
         let response, data;
         try {
@@ -751,7 +752,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       const queryInput = document.createElement("input");
       queryInput.className = "adg-query";
       queryInput.type = "text";
-      queryInput.placeholder = "标签（模糊匹配，回车直接搜）如：1girl long hair…";
+      queryInput.placeholder = "标签（多个用空格分隔，回车直接搜）如：1girl long hair…";
       queryInput.value = this.settings.lastQuery || "";
       // 让搜索框能被正常点击聚焦：ComfyUI 在捕获阶段会把点击/焦点抢给节点容器，
       // stopPropagation 挡不住；这里 mousedown preventDefault + 下一帧强制 focus，确保输入落在框内
