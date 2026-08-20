@@ -327,8 +327,10 @@
   const CAM_UP = [0, 1, 0];
   const CAM_FOV = 52 * Math.PI / 180;
   const CAMERA_POINT_HIT_RADIUS = 24;
-  const FINE_DRAG_AZIMUTH_GAIN = 0.55;
+  const FINE_DRAG_AZIMUTH_GAIN = 0.55;   // 按住相机点：低灵敏度微调
   const FINE_DRAG_ELEVATION_GAIN = 0.45;
+  const NORMAL_AZIMUTH_GAIN = 1.6;       // 普通拖拽：横向拖满画布宽≈288°（提高灵敏度）
+  const NORMAL_ELEVATION_GAIN = 1.1;     // 纵向拖满画布高≈99°
   function v3sub(a, b) { return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]; }
   function v3cross(a, b) { return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]; }
   function v3norm(v) { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0]/l, v[1]/l, v[2]/l]; }
@@ -477,9 +479,12 @@
       this._syncControls(); // 刷新预览（computeCamera 走 loadConfig 合并默认值）
     }
 
-    // 3D 画布统一相对拖拽：按下时记录机位起点，移动时在起点上叠加增量（非绝对跳转）。
-    // 任一位置起拖都能连续绕到背面（方位周期化 ±1 同为背面），不再受「射线-球面只能命中可见正前方」的限制。
-    // 按住相机点起拖 = 低灵敏度微调（fine）；其余位置 = 标准灵敏度（横向拖满画布宽≈180°，纵向拖满高≈90°）。
+    // 3D 画布统一相对拖拽（跟随式增量）：
+    // - 按下记录机位起点；移动时用「本次事件相对上一次事件的位移」累加（而非相对起点的总位移），
+    //   方向中途改向立即跟手，不会"拖到一半往回要拖回原点才转向"。
+    // - 方位用连续角度累加（内部不 clamp），只有写 widget/显示时才归一到 [-1,1)：
+    //   跨过背面是平滑穿过，不会因为 ±1 边界导致"突然像反向跳变"。
+    // 按住相机点起拖 = 低灵敏度微调（fine）；其余位置 = 标准高灵敏度。
     _canvasDrag(e) {
       if (!this.canvas) return;
       const rect = this.canvas.getBoundingClientRect();
@@ -493,16 +498,29 @@
           x: e.clientX, y: e.clientY,
           px: parseFloat(this.w.px?.value ?? 0), py: parseFloat(this.w.py?.value ?? 0),
         };
+        this._lastX = e.clientX;
+        this._lastY = e.clientY;
+        this._curPx = this._dragStart.px; // 连续角度（不 clamp），syn_cam 用 sin/cos 天然周期
+        this._curPy = this._dragStart.py;
         this._setW(this.w.preset, "自定义");
         this._clearNl();
         return;
       }
       const st = this._dragStart;
       if (!st) return;
-      const azGain = this._dragMode === "fine" ? FINE_DRAG_AZIMUTH_GAIN : 1.0; // 满宽≈180°
-      const elGain = this._dragMode === "fine" ? FINE_DRAG_ELEVATION_GAIN : 1.0; // 满高≈90°
-      const px = ((st.px + (e.clientX - st.x) / rect.width * azGain + 1) % 2 + 2) % 2 - 1;
-      const py = clamp(st.py - (e.clientY - st.y) / rect.height * elGain, -1, 1);
+      if (this._lastX === undefined) this._lastX = st.x;
+      if (this._lastY === undefined) this._lastY = st.y;
+      const azGain = this._dragMode === "fine" ? FINE_DRAG_AZIMUTH_GAIN : NORMAL_AZIMUTH_GAIN;
+      const elGain = this._dragMode === "fine" ? FINE_DRAG_ELEVATION_GAIN : NORMAL_ELEVATION_GAIN;
+      // 相对上一次事件的增量（跟手、方向恒定）
+      const dx = (e.clientX - this._lastX) / rect.width;
+      const dy = (e.clientY - this._lastY) / rect.height;
+      this._lastX = e.clientX;
+      this._lastY = e.clientY;
+      this._curPx = ((this._curPx + dx * azGain + 1) % 2 + 2) % 2 - 1;
+      this._curPy = clamp(this._curPy - dy * elGain, -1, 1);
+      const px = this._curPx;
+      const py = this._curPy;
       this._setW(this.w.px, Math.round(px * 100) / 100);
       this._setW(this.w.py, Math.round(py * 100) / 100);
       this._setW(this.w.preset, "自定义");
@@ -725,7 +743,7 @@
       canvas.title = "拖相机点微调；从其他位置拖动可直接定位机位；滚轮调节远近";
       this.canvas = canvas;
       bindDrag(canvas, (e) => this._canvasDrag(e));
-      const clearCanvasDrag = () => { this._dragMode = null; this._dragStart = null; };
+      const clearCanvasDrag = () => { this._dragMode = null; this._dragStart = null; this._lastX = undefined; this._lastY = undefined; this._curPx = undefined; this._curPy = undefined; };
       canvas.addEventListener("pointerup", clearCanvasDrag);
       canvas.addEventListener("pointercancel", clearCanvasDrag);
       canvas.addEventListener("lostpointercapture", clearCanvasDrag);
