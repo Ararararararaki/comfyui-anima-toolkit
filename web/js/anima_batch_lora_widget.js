@@ -322,6 +322,9 @@
     folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
     globe: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
     refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+    edit: '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
+    save: '<path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/>',
+    trash: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
   };
   function svgIcon(name, size = 12) {
     return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;pointer-events:none;">${_ICON_PATHS[name] || ""}</svg>`;
@@ -550,7 +553,7 @@
       const clearBtn = this._btn("", "btn-clear", "清空当前 LoRA 列表", "x");
       clearBtn.style.padding = "4px 8px"; // 纯图标按钮，缩写宽度
       const panelBtn = this._btn("面板", "btn-verify", "打开本地管理面板（TK Toolkit）", "globe");
-      const groupsBtn = this._btn("组", "btn-browse", "LoRA 组：保存当前列表 / 切换 / 删除", "folder");
+      const groupsBtn = this._btn("组", "btn-browse", "LoRA 组：保存当前列表 / 切换 / 重命名 / 删除（悬浮组名预览组内 LoRA）", "folder");
       const updateBtn = this._btn("更新", "btn-browse", "检查插件版本更新", "refresh");
       toolbar.append(verifyBtn, extractBtn, copyAllTwBtn, browseBtn, groupsBtn, clearBtn, panelBtn, updateBtn);
 
@@ -1128,7 +1131,7 @@
       setTimeout(attempt, 500);
     }
 
-    // ── LoRA 组管理（一键切换 / 删除） ──
+    // ── LoRA 组管理（保存 / 一键切换 / 重命名 / 删除 / 悬浮预览） ──
     _groupsModal(listEl) {
       fetch("/anima/meta").then((r) => r.json()).catch(() => ({ loraGroups: [] }))
         .then((metaData) => {
@@ -1137,10 +1140,10 @@
           overlay.className = "modal-overlay";
           overlay.style.cssText = "position:fixed;inset:0;background:rgba(10,10,15,0.85);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);";
           const modal = document.createElement("div");
-          modal.style.cssText = "background:#14141c;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;width:340px;max-height:75vh;overflow-y:auto;color:#EDEDEF;";
+          modal.style.cssText = "background:#14141c;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;width:360px;max-height:75vh;overflow-y:auto;color:#EDEDEF;";
           const title = document.createElement("h3");
-          title.style.cssText = "margin:0 0 8px;font-size:13px;";
-          title.textContent = `📁 LoRA 组（${groups.length}）`;
+          title.style.cssText = "margin:0 0 8px;font-size:13px;display:flex;align-items:center;gap:6px;";
+          title.innerHTML = svgIcon("folder", 13) + ` LoRA 组（${groups.length}）`;
           modal.appendChild(title);
 
           // ── 保存当前列表为新组（合并「保存组」按钮功能） ──
@@ -1153,17 +1156,19 @@
             nameInput.placeholder = `保存当前 ${active.length} 个 LoRA 为新组...`;
             nameInput.style.cssText = "flex:1;padding:6px 8px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;outline:none;";
             const saveBtn = document.createElement("button");
-            saveBtn.textContent = "💾 保存";
-            saveBtn.style.cssText = "padding:5px 12px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:6px;cursor:pointer;font-size:11px;box-shadow:0 0 0 1px rgba(94,106,210,0.3);";
+            saveBtn.title = "保存当前列表为新组";
+            saveBtn.style.cssText = "display:inline-flex;align-items:center;gap:5px;padding:5px 12px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:6px;cursor:pointer;font-size:11px;box-shadow:0 0 0 1px rgba(94,106,210,0.3);";
+            saveBtn.innerHTML = svgIcon("save", 11) + "保存";
             const doSave = async () => {
               const name = nameInput.value.trim();
               if (!name) { showToast("请输入组名"); return; }
               const meta = await fetch("/anima/meta").then((r) => r.json()).catch(() => ({ loraGroups: [] }));
               const gs = meta.loraGroups || [];
+              if (gs.some((g) => g.name === name)) { showToast(`已存在同名组「${name}」`); return; }
               gs.push({ name, loras: active.map((l) => ({ name: l.name, weight: l.weight })) });
               meta.loraGroups = gs;
               await fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(meta) }).catch(() => {});
-              showToast(`✅ 已保存组「${name}」（${active.length} 个 LoRA）`);
+              showToast(`已保存组「${name}」（${active.length} 个 LoRA）`);
               overlay.remove();
               this._groupsModal(listEl);
             };
@@ -1179,33 +1184,100 @@
             empty.textContent = "暂无组，在上方输入组名保存当前列表";
             modal.appendChild(empty);
           }
+          const dotClosePopover = () => { document.querySelectorAll(".anima-group-popover").forEach((el) => el.remove()); };
+          modal.addEventListener("scroll", dotClosePopover);
           groups.forEach((g) => {
             const row = document.createElement("div");
-            row.style.cssText = "display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.06);";
+            row.style.cssText = "display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.06);";
+
+            // ── 组图标（内联 SVG，替代 emoji） ──
+            const iconSpan = document.createElement("span");
+            iconSpan.style.cssText = "flex-shrink:0;display:inline-flex;color:#C8C9CB;";
+            iconSpan.innerHTML = svgIcon("folder", 12);
+            row.appendChild(iconSpan);
+
+            // ── 组名（含数量）；悬浮预览组内 LoRA ──
             const label = document.createElement("span");
-            label.style.cssText = "flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
-            label.textContent = `📁 ${g.name}（${(g.loras || []).length}）`;
+            label.style.cssText = "flex:1;font-size:12px;min-width:0;display:flex;align-items:center;gap:3px;cursor:default;";
+            const nameSpan = document.createElement("span");
+            nameSpan.className = "gname";
+            nameSpan.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+            nameSpan.textContent = g.name;
+            const countSpan = document.createElement("span");
+            countSpan.style.cssText = "flex-shrink:0;color:#8A8F98;font-size:10px;";
+            countSpan.textContent = `（${(g.loras || []).length}）`;
+            label.append(nameSpan, countSpan);
+            label.title = `悬浮查看组内 LoRA：${g.name}`;
+            let hoverTimer = null;
+            label.onmouseenter = () => { clearTimeout(hoverTimer); hoverTimer = setTimeout(() => this._showGroupPopover(row, g), 300); };
+            label.onmouseleave = () => { clearTimeout(hoverTimer); dotClosePopover(); };
+            row.appendChild(label);
+
+            // ── 重命名（行内编辑） ──
+            const editBtn = document.createElement("button");
+            editBtn.title = "重命名组";
+            editBtn.style.cssText = "display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:5px;border:none;background:transparent;color:#8A8F98;cursor:pointer;flex-shrink:0;";
+            editBtn.innerHTML = svgIcon("edit", 11);
+            editBtn.onclick = () => {
+              dotClosePopover();
+              const prev = g.name;
+              const input = document.createElement("input");
+              input.type = "text";
+              input.value = prev;
+              input.style.cssText = "flex:1;min-width:0;padding:4px 6px;background:#0a0a0c;color:#EDEDEF;border:1px solid #5E6AD2;border-radius:5px;font-size:12px;outline:none;";
+              label.replaceWith(input);
+              input.focus();
+              input.select();
+              let done = false;
+              const reopen = () => { if (done) return; done = true; overlay.remove(); this._groupsModal(listEl); };
+              const commit = async () => {
+                if (done) return; done = true;
+                const next = input.value.trim();
+                if (!next || next === prev) { overlay.remove(); this._groupsModal(listEl); return; }
+                const meta = await fetch("/anima/meta").then((r) => r.json()).catch(() => ({ loraGroups: [] }));
+                const gs = meta.loraGroups || [];
+                if (gs.some((x) => x.name === next)) { showToast(`已存在同名组「${next}」`); overlay.remove(); this._groupsModal(listEl); return; }
+                const target = gs.find((x) => x.name === prev);
+                if (target) target.name = next;
+                meta.loraGroups = gs;
+                await fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(meta) }).catch(() => {});
+                showToast(`组已重命名：${prev} → ${next}`);
+                overlay.remove();
+                this._groupsModal(listEl);
+              };
+              input.onkeydown = (e) => {
+                if (e.key === "Enter") commit();
+                else if (e.key === "Escape") reopen();
+              };
+              input.onblur = () => { commit(); };
+            };
+            row.appendChild(editBtn);
+
             const loadBtn = document.createElement("button");
             loadBtn.textContent = "切换";
-            loadBtn.style.cssText = "padding:3px 8px;border:1px solid rgba(94,106,210,0.4);border-radius:5px;cursor:pointer;font-size:11px;background:rgba(94,106,210,0.15);color:#9aa5ff;";
+            loadBtn.style.cssText = "padding:3px 8px;border:1px solid rgba(94,106,210,0.4);border-radius:5px;cursor:pointer;font-size:11px;background:rgba(94,106,210,0.15);color:#9aa5ff;flex-shrink:0;";
             loadBtn.onclick = () => {
+              dotClosePopover();
               this.loras = (g.loras || []).map((l) => ({ name: l.name, weight: l.weight, disabled: this._prefDisabled(l.name) }));
               this._commit();
               if (listEl) this._render(listEl);
               overlay.remove();
-              showToast(`✅ 已切换组「${g.name}」（${this.loras.length} 个 LoRA）`);
+              showToast(`已切换组「${g.name}」（${this.loras.length} 个 LoRA）`);
             };
+            row.appendChild(loadBtn);
+
             const delBtn = document.createElement("button");
             delBtn.textContent = "删除";
-            delBtn.style.cssText = "padding:3px 8px;border:1px solid rgba(255,80,80,0.3);border-radius:5px;cursor:pointer;font-size:11px;background:transparent;color:#f66;";
+            delBtn.style.cssText = "padding:3px 8px;border:1px solid rgba(255,80,80,0.3);border-radius:5px;cursor:pointer;font-size:11px;background:transparent;color:#f66;flex-shrink:0;";
             delBtn.onclick = async () => {
+              dotClosePopover();
               if (!window.confirm(`删除组「${g.name}」？`)) return;
               metaData.loraGroups = metaData.loraGroups.filter((x) => x.name !== g.name);
               await fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(metaData) }).catch(() => {});
               overlay.remove();
               this._groupsModal(listEl);
             };
-            row.append(label, loadBtn, delBtn);
+            row.appendChild(delBtn);
             modal.appendChild(row);
           });
           overlay.appendChild(modal);
@@ -1915,6 +1987,61 @@
       picker.style.top = Math.max(4, rect.top) + "px";
       const rm = (e) => { if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener("mousedown", rm, true); } };
       setTimeout(() => document.addEventListener("mousedown", rm, true), 10);
+    }
+
+    // ── 组悬浮预览：列出组内每个 LoRA（名称+权重，触发词已知则附上） ──
+    _showGroupPopover(anchorEl, group) {
+      document.querySelectorAll(".anima-group-popover").forEach((el) => el.remove());
+      const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+      const popover = document.createElement("div");
+      popover.className = "anima-group-popover anima-tw-popover";
+      popover.style.maxWidth = "360px";
+      popover.style.maxHeight = "70vh";
+      popover.style.overflowY = "auto";
+      const loras = group.loras || [];
+      let items = "";
+      if (!loras.length) {
+        items = '<span class="tw-empty">空组</span>';
+      } else {
+        items = loras.map((l) => {
+          const tw = (l.trigger_words && l.trigger_words.length) ? l.trigger_words : this.triggerWordMap[l.name];
+          const weight = (l.weight ?? 1);
+          const wordHtml = (tw !== undefined && tw !== null && tw.length)
+            ? `<div style="display:flex;flex-wrap:wrap;gap:2px;margin:3px 0 6px;">${tw.map((x) => `<span class="tw-word" data-copy="${esc(x)}">${esc(x)}</span>`).join("")}</div>`
+            : `<div style="font-size:9px;color:rgba(255,255,255,0.3);margin:2px 0 6px;">触发词未获取</div>`;
+          return `<div style="border-bottom:1px solid rgba(255,255,255,0.05);padding:3px 0;"><div class="tw-title" style="font-size:10px;color:#EDEDEF;font-weight:600;">${esc(l.name)} <span style="opacity:.5;font-weight:400;">×${weight}</span></div>${wordHtml}</div>`;
+        }).join("");
+      }
+      popover.innerHTML = `<div class="tw-title" style="font-size:11px;color:#EDEDEF;font-weight:600;margin-bottom:5px;">${esc(group.name)}（${loras.length}）</div>${items}`;
+      document.body.appendChild(popover);
+
+      // 定位（与单 LoRA 弹窗一致）
+      const rect = anchorEl.getBoundingClientRect();
+      const pRect = popover.getBoundingClientRect();
+      let left = Math.max(4, Math.min(rect.left, window.innerWidth - pRect.width - 4));
+      let top = rect.bottom + 4;
+      if (top + pRect.height > window.innerHeight) { top = rect.top - pRect.height - 4; }
+      popover.style.left = left + "px";
+      popover.style.top = top + "px";
+
+      // 点击触发词复制
+      popover.addEventListener("click", (e) => {
+        const wordEl = e.target.closest(".tw-word");
+        if (wordEl) {
+          e.stopPropagation();
+          copyText(wordEl.dataset.copy || wordEl.textContent);
+          showToast(`已复制: ${wordEl.textContent}`);
+        }
+      });
+
+      // 点击外部关闭（hover 由 mouseleave 处理）
+      const closeHandler = (e) => {
+        if (!popover.contains(e.target) && !anchorEl.contains(e.target)) {
+          document.querySelectorAll(".anima-group-popover").forEach((el) => el.remove());
+          document.removeEventListener("click", closeHandler, true);
+        }
+      };
+      document.addEventListener("click", closeHandler, true);
     }
 
     // ── 触发词 tooltip 弹窗 ──
