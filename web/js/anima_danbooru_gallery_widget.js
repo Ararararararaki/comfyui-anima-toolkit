@@ -115,6 +115,14 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.settings));
     }
 
+    // 重建工具栏「搜索预设」下拉选项（保存/删除预设后调用）
+    renderPresetOptions() {
+      if (!this.presetSelect) return;
+      const keepValue = this.presetSelect.value;
+      this.presetSelect.innerHTML = `<option value="">搜索预设</option>${this.settings.presets.map((p, i) => `<option value="${i}">${p.name}</option>`).join("")}`;
+      if (keepValue !== "") this.presetSelect.value = keepValue;
+    }
+
     applyGridHeight() {
       const height = this.settings.gridHeight;
       if (this.root) {
@@ -711,23 +719,57 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         none.onclick = () => assign("", "无分类");
         content.append(none);
 
-        // 已有分类（带计数与当前勾选）
-        const counts = {};
-        for (const cid of Object.values(this.settings.postCategories)) counts[cid] = (counts[cid] || 0) + 1;
-        for (const cat of this.settings.categories) {
-          const row = document.createElement("button");
-          row.type = "button";
-          row.className = "adg-category-item" + (cat.id === currentCatId ? " is-current" : "");
-          const name = document.createElement("span");
-          name.className = "adg-category-item-name";
-          name.textContent = cat.name;
-          const meta = document.createElement("span");
-          meta.className = "adg-category-item-meta";
-          meta.textContent = `${counts[cat.id] || 0} 张${cat.id === currentCatId ? " · 当前" : ""}`;
-          row.append(name, meta);
-          row.onclick = () => assign(cat.id, cat.name);
-          content.append(row);
-        }
+        // 已有分类（带计数与当前勾选；✕ 删除——其中的图片变回未分类）
+        const existingWrap = document.createElement("div");
+        existingWrap.className = "adg-category-existing";
+        const renderExisting = () => {
+          existingWrap.innerHTML = "";
+          const counts = {};
+          for (const cid of Object.values(this.settings.postCategories)) counts[cid] = (counts[cid] || 0) + 1;
+          for (const cat of this.settings.categories) {
+            const row = document.createElement("div");
+            row.className = "adg-category-row";
+            row.classList.toggle("is-selected", cat.id === currentCatId);
+            const pick = document.createElement("button");
+            pick.type = "button";
+            pick.className = "adg-menu-choice adg-category-pick";
+            const name = document.createElement("span");
+            name.className = "adg-menu-choice-text";
+            name.textContent = cat.name;
+            const meta = document.createElement("span");
+            meta.className = "adg-category-item-meta";
+            meta.textContent = `${counts[cat.id] || 0} 张${cat.id === currentCatId ? " · 当前" : ""}`;
+            pick.append(name, meta);
+            pick.onclick = () => assign(cat.id, cat.name);
+            const ops = document.createElement("span");
+            ops.className = "adg-category-ops";
+            const remove = document.createElement("button");
+            remove.type = "button";
+            remove.className = "adg-category-op adg-category-op-remove";
+            remove.title = "删除分类（其中的图片变回未分类）";
+            remove.textContent = "✕";
+            remove.onclick = (event) => {
+              event.stopPropagation();
+              const cats = this.settings.categories.filter((c) => c.id !== cat.id);
+              const postCategories = {};
+              for (const [pid, cid] of Object.entries(this.settings.postCategories)) {
+                if (cid !== cat.id) postCategories[pid] = cid;
+              }
+              this.settings.categories = cats;
+              this.settings.postCategories = postCategories;
+              if (this.settings.activeCategory === cat.id) this.settings.activeCategory = "";
+              this.saveSettings();
+              this.filterControls?.refresh();
+              renderExisting();
+              this.setStatus(`已删除分类：${cat.name}`);
+            };
+            ops.append(remove);
+            row.append(pick, ops);
+            existingWrap.append(row);
+          }
+        };
+        renderExisting();
+        content.append(existingWrap);
 
         // 从标签一键建分类（单张时取该图标签；点标签 = 建分类并归类，零打字）
         const firstPost = ids.length === 1 ? this.posts.find((p) => String(p.id) === ids[0]) : null;
@@ -787,6 +829,72 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
 
       this.openDialog({ title: ids.length ? "设置分类" : "新建分类", content, onApply: () => {} });
       setTimeout(() => newInput.focus(), 50);
+    }
+
+    // 搜索预设管理：点行应用预设；✕ 删除预设（点选式，不弹 prompt 打字）
+    openPresetManager() {
+      const content = document.createElement("div");
+      content.className = "adg-category-picker";
+      const head = document.createElement("div");
+      head.className = "adg-menu-title";
+      head.textContent = "已保存的搜索预设（点行应用，✕ 删除）：";
+      content.append(head);
+      const list = document.createElement("div");
+      list.className = "adg-category-existing";
+      const renderRows = () => {
+        list.innerHTML = "";
+        if (!this.settings.presets.length) {
+          const empty = document.createElement("div");
+          empty.className = "adg-exclude-empty";
+          empty.textContent = "（暂无预设——先点「存预设」保存当前搜索和筛选）";
+          list.append(empty);
+          return;
+        }
+        this.settings.presets.forEach((preset, index) => {
+          const row = document.createElement("div");
+          row.className = "adg-category-row";
+          const pick = document.createElement("button");
+          pick.type = "button";
+          pick.className = "adg-menu-choice adg-category-pick";
+          const name = document.createElement("span");
+          name.className = "adg-menu-choice-text";
+          name.textContent = preset.name;
+          const meta = document.createElement("span");
+          meta.className = "adg-category-item-meta";
+          meta.textContent = preset.query || "（无查询词）";
+          pick.append(name, meta);
+          pick.onclick = () => {
+            this.setQuery(preset.query);
+            this.settings.rating = normalizeRatings(preset.rating);
+            this.settings.filters = normalizeFilters(preset.filters);
+            this.saveSettings();
+            this.filterControls.refresh();
+            this.search({ resetPage: true });
+            this.removeDialog();
+          };
+          const ops = document.createElement("span");
+          ops.className = "adg-category-ops";
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.className = "adg-category-op adg-category-op-remove";
+          remove.title = "删除该搜索预设";
+          remove.textContent = "✕";
+          remove.onclick = (event) => {
+            event.stopPropagation();
+            this.settings.presets.splice(index, 1);
+            this.saveSettings();
+            this.renderPresetOptions();
+            renderRows();
+            this.setStatus(`已删除搜索预设：${preset.name}`);
+          };
+          ops.append(remove);
+          row.append(pick, ops);
+          list.append(row);
+        });
+      };
+      renderRows();
+      content.append(list);
+      this.openDialog({ title: "搜索预设管理", content, onApply: () => {} });
     }
 
     openDialog({ title, content, onApply }) {
@@ -1059,7 +1167,8 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.batchCatBtn = batchCatBtn;
       addAction("＋类", "新建分类（点选弹层）", () => this.openCategoryPicker([]));
       const preset = document.createElement("select"); preset.title = "搜索预设";
-      preset.innerHTML = `<option value="">搜索预设</option>${this.settings.presets.map((p, i) => `<option value="${i}">${p.name}</option>`).join("")}`;
+      this.presetSelect = preset;
+      this.renderPresetOptions();
       preset.onchange = () => {
         if (preset.value === "") return;
         const p = this.settings.presets[Number(preset.value)];
@@ -1078,8 +1187,9 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         if (!name?.trim()) return;
         this.settings.presets.push({ name: name.trim(), query: this.queryWidget.value, rating: [...this.settings.rating], filters: { ...this.settings.filters } });
         this.saveSettings();
-        preset.add(new Option(name.trim(), String(this.settings.presets.length - 1)));
+        this.renderPresetOptions();
       });
+      addAction("删预设", "管理并删除已保存的搜索预设（点行应用）", () => this.openPresetManager());
       const pagination = document.createElement("div"); pagination.className = "adg-pagination"; toolbar.append(pagination); this.pagination = pagination;
       const info = document.createElement("div");
       info.className = "adg-info";

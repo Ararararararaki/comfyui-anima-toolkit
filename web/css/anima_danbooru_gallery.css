@@ -170,6 +170,7 @@
 .adg-exclude-chip:hover { background: rgba(220, 38, 38, .3); border-color: #f87171; }
 /* ── 点选式分类菜单 ── */
 .adg-category-picker { display: flex; flex-direction: column; gap: 5px; min-width: 260px; }
+.adg-category-existing { display: flex; flex-direction: column; gap: 5px; }
 .adg-category-item {
   display: flex;
   justify-content: space-between;
