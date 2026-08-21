@@ -165,6 +165,7 @@
       this.recentEl = null; // 最近文件行容器
       this.batchActive = false; // 批次展开进行中（吞掉前端 auto_queue 自动重排）
       this.targetStatusEl = null; // 注入目标状态行
+      this.summaryEl = null; // 隐藏 widget 摘要行
     }
 
     _setW(widget, value) {
@@ -285,6 +286,7 @@
         return;
       }
       let total = 0;
+      const rows = [];
       for (const g of this.cachedGroups) {
         const key = g.file + "::" + g.name;
         const wrap = document.createElement("div");
@@ -304,6 +306,27 @@
         row.appendChild(info);
         wrap.appendChild(row);
 
+        // 悬浮预览（400ms 延迟出现；替代原生 title 的长预览）
+        let pvTimer = null;
+        wrap.addEventListener("mouseenter", () => {
+          if (!(g.prompts || []).length) return;
+          pvTimer = setTimeout(() => {
+            let tip = wrap.querySelector(".anima-batch-preview");
+            if (!tip) {
+              tip = document.createElement("div");
+              tip.className = "anima-batch-preview";
+              const first = (g.prompts || []).slice(0, 3).join("\n———\n") || g.name;
+              tip.textContent = first.length > 400 ? first.slice(0, 400) + "…" : first;
+              wrap.appendChild(tip);
+            }
+          }, 400);
+        });
+        wrap.addEventListener("mouseleave", () => {
+          if (pvTimer) { clearTimeout(pvTimer); pvTimer = null; }
+          const tip = wrap.querySelector(".anima-batch-preview");
+          if (tip) tip.remove();
+        });
+
         // 本组机位按钮（有值时高亮）
         const camVal = this.cameraValues.get(key) || "";
         const camBtn = document.createElement("button");
@@ -319,14 +342,53 @@
         });
         wrap.appendChild(camBtn);
 
+        // 拖拽排序把手（组执行顺序 = 数组顺序）
+        const handle = document.createElement("span");
+        handle.className = "anima-batch-drag-handle";
+        handle.textContent = "≡";
+        handle.title = "拖拽调整组执行顺序";
+        handle.draggable = true;
+        handle.addEventListener("dragstart", (ev) => {
+          ev.stopPropagation();
+          this._dragIdx = this.cachedGroups.indexOf(g);
+          try { ev.dataTransfer.setData("text/plain", "x"); ev.dataTransfer.effectAllowed = "move"; } catch (e) { /* 忽略 */ }
+        });
+        handle.addEventListener("dragend", () => { this._dragIdx = -1; });
+        wrap.appendChild(handle);
+
+        // 放置目标行（同文件限制：跨文件拖拽无意义——cachedGroups 中不同文件按文件顺序排）
+        wrap.addEventListener("dragover", (ev) => {
+          if (this._dragIdx == null || this._dragIdx < 0) return;
+          ev.preventDefault();
+          wrap.classList.add("drag-over");
+        });
+        wrap.addEventListener("dragleave", () => wrap.classList.remove("drag-over"));
+        wrap.addEventListener("drop", (ev) => {
+          ev.preventDefault();
+          wrap.classList.remove("drag-over");
+          if (this._dragIdx == null || this._dragIdx < 0) return;
+          const from = this._dragIdx;
+          const to = this.cachedGroups.indexOf(g);
+          if (from === to) return;
+          const arr = this.cachedGroups;
+          const [moved] = arr.splice(from, 1);
+          arr.splice(to, 0, moved);
+          this._dragIdx = -1;
+          this._renderGroups();
+          this._persistSelection(); // groups_selection 名字顺序=执行顺序
+          if (this.countEl) this.countEl.textContent = `共 ${arr.length} 组 · 已调整顺序`;
+        });
+
         // 展开的机位编辑器
         if (this.openCamKey === key) {
           wrap.appendChild(this._buildCamEditor(g, key));
         }
 
-        this.listEl.appendChild(wrap);
+        rows.push(wrap);
         if (this.checked.has(key)) total += g.count ?? (g.prompts || []).length ?? 0;
       }
+      // 顺序渲染（按拖拽后的数组顺序）
+      for (const w of rows) this.listEl.appendChild(w);
       if (this.countEl) this.countEl.textContent = `共 ${this.cachedGroups.length} 组 · 选中 ${total} 条提示词`;
     }
 
@@ -458,6 +520,7 @@
       mkOpt(this.negSel, "负向提示词目标（可选）…", targets, false);
       mkOpt(this.camSel, "相机控制节点（可选）…", cams, true);
       this._renderTargetStatus();
+      this._renderSummary();
     }
 
     // 注入目标状态行：绿色=就绪，红色=缺失/未选（批生成会被阻止）
@@ -495,6 +558,31 @@
         this.targetStatusEl.className = "anima-batch-target-status warn";
         this.targetStatusEl.innerHTML = "⛔ " + esc(msg);
       }
+    }
+
+    // 隐藏 widget 摘要：文件数 / 正向·负向·相机目标（节点名）/ 子目录开关
+    _renderSummary() {
+      if (!this.summaryEl) return;
+      const app = window.comfyAPI?.app?.app;
+      const fmtTarget = (t) => {
+        const s = String(t || "").trim();
+        if (!s) return "未设置";
+        const [id, key] = s.split(".");
+        const n = app ? findNode(app, id) : null;
+        if (n && n.title) return `${n.title || n.type || id}·${key || ""}`;
+        return s;
+      };
+      const files = ((this.w.prompt_files?.value || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean));
+      const pos = fmtTarget(this.w.positive_target?.value);
+      const neg = fmtTarget(this.w.negative_target?.value);
+      const cam = fmtTarget(this.w.camera_target?.value);
+      const sub = this.w.output_subfolder?.value !== false;
+      this.summaryEl.innerHTML =
+        `<span class="s-f">📄 ${files.length} 个文件</span>` +
+        `<span class="s-t">正:${esc(pos)}</span>` +
+        `<span class="s-t">负:${esc(neg)}</span>` +
+        `<span class="s-t">相机:${esc(cam)}</span>` +
+        `<span class="s-o">${sub ? "子目录✓" : "子目录✗"}</span>`;
     }
 
     build() {
@@ -547,6 +635,11 @@
           if (typeof w.draw === "function") { w.draw = () => {}; }
         }
       }
+
+      // 隐藏 widget 摘要行（prompt_files/目标选择/子目录 可读摘要；2026-08-17 新增）
+      this.summaryEl = document.createElement("div");
+      this.summaryEl.className = "anima-batch-summary";
+      container.appendChild(this.summaryEl);
 
       // 文件区：当前文件显示 + 「选择文件」按钮（可导航目录浏览器）
       const fileRow = document.createElement("div");
@@ -885,6 +978,7 @@
           camera_target: this.w.camera_target?.value || "",
         });
         this._renderTargetStatus();
+        this._renderSummary();
       };
       this.posSel.addEventListener("change", () => { this._setW(this.w.positive_target, this.posSel.value); persistTargets(); });
       this.negSel.addEventListener("change", () => { this._setW(this.w.negative_target, this.negSel.value); persistTargets(); });
@@ -1617,7 +1711,7 @@ function init() {
 .anima-batch-count { font-size:11px; color:#c586ff; }
 .anima-batch-hint { font-size:10px; color:var(--fg-color,#999); line-height:1.4; }
 .anima-batch-list { max-height:200px; overflow:auto; display:flex; flex-direction:column; gap:2px; }
-.anima-batch-group { display:flex; flex-direction:column; gap:2px; padding:3px 0; border-bottom:1px dashed rgba(255,255,255,0.07); }
+.anima-batch-group { display:flex; flex-direction:column; gap:2px; padding:3px 0; border-bottom:1px dashed rgba(255,255,255,0.07); position:relative; }
 .anima-batch-row { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--fg-color,#ccc); }
 .anima-batch-row input { margin:0; flex-shrink:0; }
 .anima-batch-row-info { flex:1; min-width:0; cursor:help; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -1666,6 +1760,17 @@ function init() {
 .anima-batch-nav-pathrow { padding:4px 2px; }
 .anima-batch-nav-input { width:100%; box-sizing:border-box; background:var(--comfy-input-bg,#1b1e26); color:var(--fg-color,#ddd); border:1px solid var(--border-color,#383d4a); border-radius:4px; font-size:10px; padding:3px 6px; }
 .anima-batch-nav-input:focus { outline:none; border-color:#8b5cf6; }
+/* 隐藏 widget 摘要行（2026-08-17） */
+.anima-batch-summary { display:flex; flex-wrap:wrap; gap:4px 10px; font-size:10px; color:var(--fg-color,#999); padding:2px 2px; }
+.anima-batch-summary .s-f { color:#c9b8ff; }
+.anima-batch-summary .s-t { max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.anima-batch-summary .s-o { color:#4aba8b; }
+/* 组拖拽排序（2026-08-17） */
+.anima-batch-drag-handle { flex:0 0 auto; font-size:11px; color:var(--fg-color,#666); cursor:grab; padding:0 3px; user-select:none; }
+.anima-batch-drag-handle:hover { color:#c9b8ff; }
+.anima-batch-group.drag-over { border:1px dashed #8b5cf6; background:rgba(139,92,246,.12); }
+/* 组悬浮预览（2026-08-17） */
+.anima-batch-preview { position:absolute; left:0; right:0; bottom:100%; z-index:60; background:#1b1e26; border:1px solid #8b5cf6; border-radius:4px; padding:4px 6px; font-size:10px; color:#ddd; white-space:pre-wrap; max-height:140px; overflow:auto; box-shadow:0 4px 14px rgba(0,0,0,.4); }
 /* 注入目标状态行（2026-08-17：目标缺失时醒目提示） */
 .anima-batch-target-status { font-size:10px; line-height:1.4; padding:3px 6px; border-radius:4px; margin:2px 0; }
 .anima-batch-target-status.ok { color:#4aba8b; background:rgba(74,186,139,0.08); }
