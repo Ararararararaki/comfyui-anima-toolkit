@@ -26,11 +26,10 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api\/danbooru/, ''),
         secure: false,
       },
+      // 多源翻译走 ComfyUI 后端（dev 与生产同一实现；后端不可用时翻译失败属预期）
       '/api/translate': {
-        target: 'https://api.mymemory.translated.net',
+        target: comfyuiUrl,
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api\/translate/, '/get'),
-        secure: false,
       },
       // Bridge + node API proxy (dev mode: frontend → Vite → ComfyUI)
       '/anima': {

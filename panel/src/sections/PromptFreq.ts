@@ -7,8 +7,34 @@ import { outputsDb } from '../db/outputsDb'
 import { hashPath } from '../services/outputManifest'
 import type { OutputFile, OutputMetadata } from '../types/outputs'
 
-// 翻译内存缓存（MyMemory 免费配额有限）
+// 翻译内存缓存（按「源|文本」键，切换翻译源后可重新翻译）
 const _transCache = new Map<string, string>()
+
+// ── 翻译源（与后端 __init__.py /api/translate 的 source 参数一一对应）──
+const TRANS_SOURCES = [
+  { id: 'auto', label: '自动' },
+  { id: 'local', label: '本地词典' },
+  { id: 'deeplx', label: 'DeepLX' },
+  { id: 'mymemory', label: 'MyMemory' },
+  { id: 'google', label: 'Google' },
+  { id: 'dashscope', label: '通义' },
+]
+const TRANS_SOURCE_KEY = 'anima_tk_trans_source'
+
+function transSourceLabel(): string {
+  const hit = TRANS_SOURCES.find(s => s.id === _transSource)
+  return hit ? hit.label : '自动'
+}
+
+function readSavedTransSource(): string {
+  try {
+    const s = localStorage.getItem(TRANS_SOURCE_KEY) || ''
+    if (s && TRANS_SOURCES.some(x => x.id === s)) return s
+  } catch { /* localStorage 不可用时用默认 */ }
+  return 'auto'
+}
+
+let _transSource = readSavedTransSource()
 
 // ── PNG 元数据解析 ──
 
@@ -246,15 +272,79 @@ async function parsePngChunks(buf: ArrayBuffer): Promise<{
 
 async function translateText(text: string): Promise<string> {
   if (!text) return ''
-  if (_transCache.has(text)) return _transCache.get(text)!
+  const src = _transSource
+  const key = src + '|' + text
+  if (_transCache.has(key)) return _transCache.get(key)!
   try {
-    const url = `/api/translate?q=${encodeURIComponent(text.slice(0, 500))}&langpair=en|zh-CN`
-    const resp = await fetch(url)
+    const url = `/api/translate?q=${encodeURIComponent(text.slice(0, 500))}&langpair=en|zh-CN&source=${encodeURIComponent(src)}`
+    const resp = await fetch(url, { signal: AbortSignal.timeout(25000) })
     const data = await resp.json()
-    const translated = data?.responseData?.translatedText || ''
-    _transCache.set(text, translated)
+    // 新后端统一返回 {ok, translatedText, source}；兼容旧 MyMemory 直代理响应
+    const translated = data?.ok ? (data.translatedText || '') : (data?.responseData?.translatedText || '')
+    if (translated) _transCache.set(key, translated)
     return translated
   } catch { return '' }
+}
+
+// 翻译源下拉菜单（单个全局元素，跟随按钮定位；点外部/Esc 关闭）
+let _srcMenuEl: HTMLElement | null = null
+
+function closeSrcMenu() {
+  _srcMenuEl?.remove()
+  _srcMenuEl = null
+}
+
+function updateSrcButtons() {
+  const label = transSourceLabel()
+  document.querySelectorAll<HTMLElement>('.prompt-freq-png-src').forEach(b => {
+    b.innerHTML = icon('languages', 11) + '<span>' + esc(label) + '</span>' + icon('chevronDown', 10)
+  })
+}
+
+function buildSrcMenu(anchor: HTMLElement): void {
+  closeSrcMenu()
+  const menu = document.createElement('div')
+  menu.className = 'trans-src-menu'
+  menu.innerHTML = TRANS_SOURCES.map(s =>
+    `<button type="button" class="trans-src-item ${s.id === _transSource ? 'active' : ''}" data-src="${s.id}" title="${s.id === 'auto' ? '按 本地词典 → DeepLX → MyMemory → Google → 通义 顺序自动回退' : ''}">${s.id === _transSource ? icon('check', 12) : ''}<span>${esc(s.label)}</span></button>`
+  ).join('')
+  const rect = anchor.getBoundingClientRect()
+  menu.style.cssText = `position:fixed;z-index:99999;top:${rect.bottom + 4}px;left:${Math.max(4, Math.min(rect.left, window.innerWidth - 168))}px;`
+  menu.addEventListener('click', (e) => {
+    const item = (e.target as HTMLElement).closest('.trans-src-item') as HTMLElement | null
+    if (!item) return
+    _transSource = item.dataset.src || 'auto'
+    try { localStorage.setItem(TRANS_SOURCE_KEY, _transSource) } catch { /* ignore */ }
+    closeSrcMenu()
+    updateSrcButtons()
+    // 换源后旧译文视为过期：清掉“已翻译”标记，再点「翻译全部」会用新源重翻而非折叠
+    document.querySelectorAll<HTMLElement>('.prompt-freq-png-segments').forEach(w => {
+      w.removeAttribute('data-translated')
+    })
+    document.querySelectorAll<HTMLElement>('.prompt-freq-png-seg-trans').forEach(s => {
+      s.removeAttribute('data-src')
+    })
+    showToast('翻译源：' + transSourceLabel())
+  })
+  document.body.appendChild(menu)
+  _srcMenuEl = menu
+  // 点外部 / Esc 关闭（延迟注册，避免本次点击立即触发）
+  setTimeout(() => {
+    const onDoc = (ev: MouseEvent) => {
+      const t = ev.target as HTMLElement
+      if (t.closest('.trans-src-menu') || t.closest('.prompt-freq-png-src')) return
+      closeSrcMenu()
+      document.removeEventListener('mousedown', onDoc)
+    }
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') {
+        closeSrcMenu()
+        document.removeEventListener('keydown', onKey)
+      }
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+  }, 0)
 }
 
 // ── 保存到 Prompt 库 ──
@@ -292,7 +382,7 @@ async function savePngToLibrary(p: UploadedPng): Promise<void> {
   await addPrompt(entry)
   p.saved = true
   renderPromptFreq()
-  showToast('✅ 已保存到 Prompt 库，可在「📖 Prompt 库」查看')
+  showToast('✅ 已保存到 Prompt 库，可在顶部「Prompt 库」查看')
 }
 
 // ── 发送到 Outputs ──
@@ -431,9 +521,9 @@ export function renderPromptFreq() {
         <div class="prompt-freq-png-header">
           ${p.previewThumb ? `<img class="prompt-freq-png-thumb" src="${esc(p.previewThumb)}" alt="" data-pid="${esc(p.id)}" title="点击放大预览">` : ''}
           <span>${esc(p.fileName)}${p.uiWorkflow ? '<span class="prompt-freq-png-flow" title="已内嵌 UI 格式工作流，可导入 ComfyUI"> 📄UI</span>' : (p.workflowJson ? '<span class="prompt-freq-png-flow" title="仅 API 执行参数，无画布工作流"> 📄API</span>' : '')}</span>
-          <span>
-            <button class="prompt-freq-png-send ${p.sent ? 'sent' : ''}" data-pid="${esc(p.id)}" title="发送到 Outputs">${p.sent ? icon('check', 12) + '已发送' : icon('upload', 12) + '发送到 Outputs'}</button>
-            <button class="prompt-freq-png-save ${p.saved ? 'saved' : ''}" data-pid="${esc(p.id)}">${p.saved ? icon('check', 12) + '已保存' : icon('book', 12) + '保存到 Prompt 库'}</button>
+          <span class="prompt-freq-png-ops">
+            <button class="prompt-freq-png-send ${p.sent ? 'sent' : ''} ${!state.dirHandle ? 'needs-dir' : ''}" data-pid="${esc(p.id)}" title="${p.sent ? '已发送到 Outputs' : (state.dirHandle ? '发送到 Outputs（先选分类再保存文件）' : '未选择输出目录，点击前往 Outputs 选择')}" ${p.sent ? 'disabled' : ''}>${p.sent ? icon('check', 12) + '已发送' : (state.dirHandle ? icon('upload', 12) + '发送到 Outputs' : icon('folder', 12) + '选择输出目录')}</button>
+            <button class="prompt-freq-png-save ${p.saved ? 'saved' : ''} ${!p.positive.trim() ? 'no-prompt' : ''}" data-pid="${esc(p.id)}" title="${p.saved ? '已保存到 Prompt 库，可在顶部「Prompt 库」查看' : (p.positive.trim() ? '保存到 Prompt 库' : '该图未解析出 Prompt，无法保存')}" ${p.saved || !p.positive.trim() ? 'disabled' : ''}>${p.saved ? icon('check', 12) + '已保存' : icon('book', 12) + '保存到 Prompt 库'}</button>
             <button class="prompt-freq-png-del" data-pid="${esc(p.id)}" title="移除" aria-label="移除">${icon('x', 12)}</button>
           </span>
         </div>
@@ -457,6 +547,7 @@ export function renderPromptFreq() {
           <div class="prompt-freq-png-actions">
             <button class="prompt-freq-png-copyall" data-text="${esc(p.positive)}">${icon('copy', 12)}复制全部</button>
             <button class="prompt-freq-png-transall" data-role="pos">${icon('globe', 12)}翻译全部</button>
+            <button class="prompt-freq-png-src" data-role="pos" title="选择翻译源（当前：${esc(transSourceLabel())}）">${icon('languages', 11)}<span>${esc(transSourceLabel())}</span>${icon('chevronDown', 10)}</button>
           </div>`
       }
 
@@ -475,6 +566,7 @@ export function renderPromptFreq() {
           <div class="prompt-freq-png-actions">
             <button class="prompt-freq-png-copyall" data-text="${esc(p.negative)}">${icon('copy', 12)}复制全部</button>
             <button class="prompt-freq-png-transall" data-role="neg">${icon('globe', 12)}翻译全部</button>
+            <button class="prompt-freq-png-src" data-role="neg" title="选择翻译源（当前：${esc(transSourceLabel())}）">${icon('languages', 11)}<span>${esc(transSourceLabel())}</span>${icon('chevronDown', 10)}</button>
           </div>`
       }
 
@@ -506,7 +598,6 @@ export function renderPromptFreq() {
       if (p.uiWorkflow || p.workflowJson) {
         html += `<div class="prompt-freq-png-actions" style="margin-top:8px">
           <button class="prompt-freq-png-dlflow" data-pid="${esc(p.id)}" title="保存为 .json 文件，拖入 ComfyUI 画布即可导入">${icon('download', 12)} 下载工作流 .json</button>
-          <button class="prompt-freq-png-golib" data-pid="${esc(p.id)}">${icon('book', 12)} 去 Prompt 库</button>
         </div>`
       }
 
@@ -561,8 +652,9 @@ export function bindPromptFreqEvents() {
 
       const slots = segWrap.querySelectorAll<HTMLElement>('.prompt-freq-png-seg-trans')
 
-      // 本区已有翻译 → 只折叠/展开本区
-      if (segWrap.dataset.translated === '1') {
+      // 本区已用「当前翻译源」翻译过 → 只折叠/展开本区；切换过源则用新源重新翻译
+      const allSameSource = [...slots].every(s => s.dataset.src === _transSource)
+      if (segWrap.dataset.translated === '1' && allSameSource) {
         slots.forEach(s => { s.style.display = s.style.display === 'none' ? 'block' : 'none' })
         return
       }
@@ -593,10 +685,21 @@ export function bindPromptFreqEvents() {
         els[i].textContent = r || ''
         els[i].style.display = r ? 'block' : 'none'
         els[i].dataset.translated = '1'
+        els[i].dataset.src = _transSource
       }
 
       setBtnIcon(transAllBtn, 'globe', '翻译全部')
       segWrap.dataset.translated = '1'
+      if (results.every(r => !r)) {
+        showToast('⚠️ 翻译失败：请检查网络后重试，或点「翻译源」换一个试试')
+      }
+      return
+    }
+
+    // 翻译源下拉
+    const srcBtn = target.closest('.prompt-freq-png-src') as HTMLElement
+    if (srcBtn) {
+      buildSrcMenu(srcBtn)
       return
     }
 
@@ -619,11 +722,17 @@ export function bindPromptFreqEvents() {
       return
     }
 
-    // 发送到 Outputs
+    // 发送到 Outputs（未选目录时引导去 Outputs 栏目选择）
     const sendBtn = target.closest('.prompt-freq-png-send') as HTMLElement
     if (sendBtn) {
       const p = _uploadedPngs.find(x => x.id === sendBtn.dataset.pid)
-      if (p && !p.sent) sendPngToOutputs(p)
+      if (!p || p.sent) return
+      if (!useOutputStore.getState().dirHandle) {
+        showToast('⚠️ 请先在 Outputs 栏目选择输出目录')
+        ;(document.querySelector('.main-tab[data-section="outputs"]') as HTMLElement)?.click()
+        return
+      }
+      sendPngToOutputs(p)
       return
     }
 
@@ -670,13 +779,6 @@ export function bindPromptFreqEvents() {
       } catch {
         showToast('⚠️ 下载失败')
       }
-      return
-    }
-
-    // 去 Prompt 库
-    const goLibBtn = target.closest('.prompt-freq-png-golib') as HTMLElement
-    if (goLibBtn) {
-      ;(document.querySelector('.main-tab[data-section="prompt"]') as HTMLElement)?.click()
       return
     }
 

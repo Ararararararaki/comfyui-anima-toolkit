@@ -711,9 +711,188 @@ async def proxy_danbooru(request):
     return await _proxy("https://danbooru.donmai.us/" + request.match_info["path"], request)
 
 
+# ─── 翻译（多源：本地词典 / DeepLX / MyMemory / Google / DashScope 通义）───
+# 面板「图片解析」的翻译全部走这里：source=auto 时按顺序回退，任何单源失败都不影响整体。
+
+_TRANSLATE_CACHE: dict = {}
+_TRANSLATE_CACHE_TTL = 3600 * 24  # 翻译结果缓存 1 天（内容稳定，省配额）
+_TRANSLATE_DICT: dict | None = None
+_TRANSLATE_DICT_MTIME = 0.0
+_TRANSLATE_ORDER = ("local", "deeplx", "mymemory", "google", "dashscope")
+
+
+def _get_env(name: str) -> str | None:
+    """读环境变量；进程启动早于 setx 时从用户级注册表兜底（Windows）。"""
+    v = os.environ.get(name)
+    if v:
+        return v
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
+            v, _ = winreg.QueryValueEx(k, name)
+        return str(v) if v else None
+    except Exception:
+        return None
+
+
+def _load_translate_dict() -> dict:
+    """本地 Danbooru 标签中文字典（data/danbooru_tags_zh.json，mtime 指纹热重载）。"""
+    global _TRANSLATE_DICT, _TRANSLATE_DICT_MTIME
+    if _TRANSLATE_DICT is not None:
+        return _TRANSLATE_DICT
+    for p in (
+        os.path.join(PLUGIN_DIR, "data", "danbooru_tags_zh.json"),
+        os.path.join(PLUGIN_DIR, "danbooru_tags_zh.json"),
+    ):
+        try:
+            mtime = os.path.getmtime(p)
+            if _TRANSLATE_DICT is not None and mtime == _TRANSLATE_DICT_MTIME:
+                return _TRANSLATE_DICT
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            d = {str(k).strip().lower(): str(v) for k, v in data.items() if v}
+            _TRANSLATE_DICT, _TRANSLATE_DICT_MTIME = d, mtime
+            return d
+        except OSError:
+            continue
+        except Exception as e:
+            print(f"[Anima] 翻译词典加载失败 {p}: {e}")
+            continue
+    _TRANSLATE_DICT = {}
+    return _TRANSLATE_DICT
+
+
+def _deepl_langs(langpair: str) -> tuple[str, str]:
+    """en|zh-CN → ("EN","ZH")；DeepLX/DeepL 用大写双字母码。"""
+    src, _, dst = (langpair or "en|zh-CN").partition("|")
+    m = {"en": "EN", "auto": "AUTO", "zh": "ZH", "zh-cn": "ZH", "zh-tw": "ZH",
+         "ja": "JA", "ko": "KO", "fr": "FR", "de": "DE", "es": "ES", "ru": "RU"}
+    return m.get(src.strip().lower(), src.strip().upper() or "AUTO"), \
+        m.get(dst.strip().lower(), dst.strip().upper() or "ZH")
+
+
+async def _translate_via(source: str, text: str, src_lang: str, dst_lang: str) -> str:
+    """单源翻译；失败抛异常（自动链路靠异常切源）。"""
+    if source == "local":
+        hit = _load_translate_dict().get(text.strip().lower())
+        if not hit:
+            raise LookupError("本地词典未收录该词")
+        return hit
+
+    if source == "deeplx":
+        sl, tl = _deepl_langs(f"{src_lang}|{dst_lang}")
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as s:
+                async with s.post("http://127.0.0.1:1188/translate",
+                                  json={"text": text[:2000], "source_lang": sl, "target_lang": tl}) as r:
+                    body = await r.json()
+        except Exception as e:
+            raise RuntimeError(f"DeepLX 连接失败: {e}") from e
+        if body.get("code") == 200 and body.get("data"):
+            return str(body["data"])
+        raise RuntimeError(f"DeepLX 返回 {body.get('code', '?')}")
+
+    if source == "mymemory":
+        import urllib.parse
+        url = ("https://api.mymemory.translated.net/get?q="
+               + urllib.parse.quote(text[:500])
+               + "&langpair=" + urllib.parse.quote(f"{src_lang}|{dst_lang}"))
+        session = await _get_session()
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as r:
+            body = await r.json()
+        if body.get("responseStatus") == 200 and body.get("responseData", {}).get("translatedText"):
+            return str(body["responseData"]["translatedText"])
+        raise RuntimeError(body.get("responseDetails") or f"MyMemory 状态 {body.get('responseStatus')}")
+
+    if source == "google":
+        import urllib.parse
+        url = ("https://translate.googleapis.com/translate_a/single?client=gtx"
+               f"&sl={src_lang}&tl={dst_lang}&dt=t&q=" + urllib.parse.quote(text[:2000]))
+        session = await _get_session()
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as r:
+            data = await r.json()
+        parts = []
+        if isinstance(data, list) and data and isinstance(data[0], list):
+            for row in data[0]:
+                if isinstance(row, list) and row and row[0]:
+                    parts.append(str(row[0]))
+        if parts:
+            return "".join(parts)
+        raise RuntimeError("Google 返回空")
+
+    if source == "dashscope":
+        key = _get_env("DASHSCOPE_API_KEY")
+        if not key:
+            raise RuntimeError("未配置 DASHSCOPE_API_KEY")
+        base = (_get_env("DASHSCOPE_BASE_URL") or
+                "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
+        model = _get_env("DASHSCOPE_MODEL") or "qwen-turbo"
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content":
+                 "你是翻译助手。把用户给出的英文图片标签/提示词翻译成简体中文，"
+                 "保持原有结构（逗号分隔、括号、下划线等），只输出译文，不要解释。"},
+                {"role": "user", "content": text[:4000]},
+            ],
+            "temperature": 0.1,
+            "max_tokens": 2048,
+        }
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as s:
+                async with s.post(base + "/chat/completions", json=payload,
+                                  headers={"Authorization": "Bearer " + key,
+                                           "Content-Type": "application/json"}) as r:
+                    body = await r.json()
+        except Exception as e:
+            raise RuntimeError(f"DashScope 连接失败: {e}") from e
+        content = ((body.get("choices") or [{}])[0].get("message") or {}).get("content")
+        if content:
+            return str(content).strip()
+        raise RuntimeError("DashScope 返回空")
+
+    raise RuntimeError(f"未知翻译源: {source}")
+
+
 @PromptServer.instance.routes.get("/api/translate")
 async def proxy_translate(request):
-    return await _proxy("https://api.mymemory.translated.net/get", request)
+    """多源翻译。参数：q 文本；langpair 如 en|zh-CN；source=auto|local|deeplx|mymemory|google|dashscope
+    （缺省 auto=按序回退直到成功）；strict=1 时只用指定源不回退（调试用）。
+    返回 {ok, translatedText, source, attempts}。"""
+    q = (request.query.get("q") or "").strip()
+    if not q:
+        return web.json_response({"ok": False, "error": "缺少 q 参数"}, status=400)
+    langpair = request.query.get("langpair") or "en|zh-CN"
+    want = (request.query.get("source") or "auto").strip().lower() or "auto"
+    strict = request.query.get("strict") == "1"
+    if want != "auto" and want not in _TRANSLATE_ORDER:
+        return web.json_response({"ok": False, "error": f"未知翻译源: {want}"}, status=400)
+    src_lang, dst_lang = langpair.split("|", 1) if "|" in langpair else ("en", "zh-CN")
+    order = (want,) if want != "auto" else _TRANSLATE_ORDER
+
+    attempts: dict = {}
+    for source in order:
+        ck = f"{source}|{q}"
+        cached = _TRANSLATE_CACHE.get(ck)
+        if cached and cached[0] > time.time():
+            return web.json_response({"ok": True, "translatedText": cached[1], "source": source,
+                                      "fromCache": True, "attempts": attempts})
+        try:
+            out = await _translate_via(source, q, src_lang, dst_lang)
+            if out and out.strip():
+                _TRANSLATE_CACHE[ck] = (time.time() + _TRANSLATE_CACHE_TTL, out.strip())
+                _cleanup_cache(_TRANSLATE_CACHE, _TRANSLATE_CACHE_TTL)
+                return web.json_response({"ok": True, "translatedText": out.strip(), "source": source,
+                                          "fromCache": False, "attempts": attempts})
+        except Exception as e:
+            attempts[source] = str(e)
+            continue
+    if strict:
+        return web.json_response({"ok": False, "error": attempts.get(want, "翻译失败"),
+                                  "attempts": attempts}, status=502)
+    return web.json_response({"ok": False,
+                              "error": "所有翻译源均失败: " + "; ".join(f"{k}: {v}" for k, v in attempts.items()),
+                              "attempts": attempts}, status=502)
 
 
 # ─── LoRA metadata persistence (categories / favorite / pinned) ───

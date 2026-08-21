@@ -4411,15 +4411,32 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 
 .prompt-freq-png-flow { font-size: 11px; color: var(--accent); margin-left: 3px; }
 
-.prompt-freq-png-save { font-size: 10px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg3); color: var(--text2); cursor: pointer; transition: all .12s; margin-right: 6px; }
+.prompt-freq-png-ops { display: inline-flex; gap: 6px; align-items: center; margin-left: 8px; }
 
-.prompt-freq-png-save:hover { border-color: var(--accent); color: var(--accent); }
+.prompt-freq-png-send, .prompt-freq-png-save { font-size: 10px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg3); color: var(--text2); cursor: pointer; transition: all .12s; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
 
-.prompt-freq-png-save.saved { color: #22c55e; border-color: currentColor; cursor: default; }
+.prompt-freq-png-send:hover, .prompt-freq-png-save:hover { border-color: var(--accent); color: var(--accent); }
 
-.prompt-freq-png-golib { font-size: 10px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg3); color: var(--text2); cursor: pointer; transition: all .12s; }
+.prompt-freq-png-send:disabled, .prompt-freq-png-save:disabled, .prompt-freq-png-send.sent, .prompt-freq-png-save.saved { cursor: default; }
 
-.prompt-freq-png-golib:hover { border-color: var(--accent); color: var(--accent); }
+.prompt-freq-png-send.sent, .prompt-freq-png-save.saved { color: #22c55e; border-color: currentColor; opacity: .85; }
+
+.prompt-freq-png-send:disabled, .prompt-freq-png-save:disabled { opacity: .45; }
+
+.prompt-freq-png-send.needs-dir { border-color: var(--accent); color: var(--accent); }
+
+/* 翻译源下拉按钮 + 菜单 */
+.prompt-freq-png-src { flex-shrink: 0; }
+
+.trans-src-menu { position: fixed; min-width: 148px; z-index: 99999; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 4px; box-shadow: 0 10px 30px rgba(0,0,0,.45); }
+
+.trans-src-item { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 10px; font-size: 12px; border: none; background: transparent; color: var(--text); cursor: pointer; border-radius: 5px; text-align: left; }
+
+.trans-src-item:hover { background: var(--bg3); }
+
+.trans-src-item.active { color: var(--accent); }
+
+.trans-src-item svg { flex-shrink: 0; }
 
 .prompt-freq-upload.drag-over { border-color: var(--accent); background: rgba(99,102,241,0.08); color: var(--accent); }
 
