@@ -312,26 +312,82 @@ export class GalleryFilterControls {
     root.className = "adg-menu-section";
     const title = document.createElement("div");
     title.className = "adg-menu-title";
-    title.textContent = "本地分类";
+    title.textContent = "本地分类（点选筛选；✎ 重命名 / ✕ 删除）";
     root.append(title);
     const categories = [{ id: "", name: "全部分类" }, ...settings.categories];
+    // 每类计数（postCategories 统计）
+    const counts = {};
+    for (const cid of Object.values(settings.postCategories)) counts[cid] = (counts[cid] || 0) + 1;
     for (const category of categories) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "adg-menu-choice";
-      button.classList.toggle("is-selected", category.id === settings.activeCategory);
+      if (!category.id) {
+        const all = document.createElement("button");
+        all.type = "button";
+        all.className = "adg-menu-choice";
+        all.classList.toggle("is-selected", category.id === settings.activeCategory);
+        const text = document.createElement("span");
+        text.className = "adg-menu-choice-text";
+        text.textContent = `${category.name}（${Object.keys(settings.postCategories).length} 张已归类）`;
+        all.append(text);
+        all.onclick = () => {
+          this.commit({ activeCategory: category.id }, { render: true });
+          this.refresh();
+          this.categoryDropdown.close();
+        };
+        root.append(all);
+        continue;
+      }
+      const row = document.createElement("div");
+      row.className = "adg-category-row";
+      row.classList.toggle("is-selected", category.id === settings.activeCategory);
+      const pick = document.createElement("button");
+      pick.type = "button";
+      pick.className = "adg-menu-choice adg-category-pick";
       const text = document.createElement("span");
       text.className = "adg-menu-choice-text";
-      text.textContent = category.name;
+      text.textContent = `${category.name}（${counts[category.id] || 0}）`;
       const mark = document.createElement("span");
       mark.textContent = category.id === settings.activeCategory ? "✓" : "";
-      button.append(text, mark);
-      button.onclick = () => {
+      pick.append(text, mark);
+      pick.onclick = () => {
         this.commit({ activeCategory: category.id }, { render: true });
         this.refresh();
         this.categoryDropdown.close();
       };
-      root.append(button);
+      const ops = document.createElement("span");
+      ops.className = "adg-category-ops";
+      const rename = document.createElement("button");
+      rename.type = "button";
+      rename.className = "adg-category-op";
+      rename.title = "重命名分类";
+      rename.textContent = "✎";
+      rename.onclick = (event) => {
+        event.stopPropagation();
+        const name = prompt("重命名分类", category.name);
+        if (!name?.trim()) return;
+        const cats = settings.categories.map((c) => (c.id === category.id ? { ...c, name: name.trim() } : c));
+        this.commit({ categories: cats }, { render: true });
+        this.refresh();
+      };
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "adg-category-op adg-category-op-remove";
+      remove.title = "删除分类（其中的图片变回未分类）";
+      remove.textContent = "✕";
+      remove.onclick = (event) => {
+        event.stopPropagation();
+        const cats = settings.categories.filter((c) => c.id !== category.id);
+        const postCategories = {};
+        for (const [pid, cid] of Object.entries(settings.postCategories)) {
+          if (cid !== category.id) postCategories[pid] = cid;
+        }
+        const patch = { categories: cats, postCategories };
+        if (settings.activeCategory === category.id) patch.activeCategory = "";
+        this.commit(patch, { render: true });
+        this.refresh();
+      };
+      ops.append(rename, remove);
+      row.append(pick, ops);
+      root.append(row);
     }
     return root;
   }

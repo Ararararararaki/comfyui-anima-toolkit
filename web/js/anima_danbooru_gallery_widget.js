@@ -331,6 +331,11 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.selectionWidget.callback?.(value);
       this.node.graph?.change?.();
       this.setStatus(selected.length ? `已选择 ${selected.length} 张图片` : "已清除选择");
+      // 批量归类按钮联动（选中 ≥2 张可用）
+      if (this.batchCatBtn) {
+        this.batchCatBtn.disabled = selected.length < 2;
+        this.batchCatBtn.textContent = selected.length >= 2 ? `归类选中 ${selected.length} 张` : "归类选中";
+      }
     }
 
     postTags(post) {
@@ -396,14 +401,21 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           badge.style.cssText = "position:absolute;top:6px;left:6px;z-index:3;background:rgba(0,0,0,.72);color:#fbbf24;font-size:10px;line-height:1.4;padding:1px 6px;border-radius:4px;pointer-events:none;";
           selectButton.prepend(badge);
         }
-        selectButton.addEventListener("click", () => {
+        selectButton.addEventListener("click", (event) => {
+          const multi = event.ctrlKey || event.metaKey || event.shiftKey;
           const wasSelected = card.classList.contains("is-selected");
-          this.grid.querySelectorAll(".adg-card.is-selected").forEach((other) => {
-            other.classList.remove("is-selected");
-            other.querySelector(".adg-card-select")?.setAttribute("aria-pressed", "false");
-          });
-          card.classList.toggle("is-selected", !wasSelected);
-          selectButton.setAttribute("aria-pressed", !wasSelected ? "true" : "false");
+          if (multi) {
+            // Ctrl/Shift + 点击：切换该卡选中状态（不清其他）→ 多选用于批量归类/批量选择
+            card.classList.toggle("is-selected", !wasSelected);
+            selectButton.setAttribute("aria-pressed", !wasSelected ? "true" : "false");
+          } else {
+            this.grid.querySelectorAll(".adg-card.is-selected").forEach((other) => {
+              other.classList.remove("is-selected");
+              other.querySelector(".adg-card-select")?.setAttribute("aria-pressed", "false");
+            });
+            card.classList.toggle("is-selected", !wasSelected);
+            selectButton.setAttribute("aria-pressed", !wasSelected ? "true" : "false");
+          }
           this.updateSelection();
         });
         const actions = document.createElement("div");
@@ -421,7 +433,20 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         addAction("Prompt", "查看、编辑和复制 Prompt", () => this.openPromptEditor(card, post));
         addAction("入库", "保存图片和 Prompt 到本地工具箱 Prompt 库", () => this.saveToPromptLibrary(post));
         addAction("下载", "下载原图", () => this.downloadPost(post));
-        addAction("分类", "设置本地分类", () => { const names = ["无分类", ...this.settings.categories.map(c => c.name)]; const choice = prompt(`输入分类名称：\n${names.join(" / ")}`, this.settings.categories.find(c => c.id === this.settings.postCategories[String(post.id)])?.name || "无分类"); if (choice === null) return; const found = this.settings.categories.find(c => c.name === choice.trim()); if (choice.trim() === "" || choice.trim() === "无分类") delete this.settings.postCategories[String(post.id)]; else if (found) this.settings.postCategories[String(post.id)] = found.id; else { const c = { id: `c_${Date.now()}`, name: choice.trim() }; this.settings.categories.push(c); this.settings.postCategories[String(post.id)] = c.id; } this.saveSettings(); this.renderPosts(); });
+        addAction("分类", "设置本地分类（点选，支持标签一键建分类）", () => this.openCategoryPicker([post.id]));
+        // 分类徽章：已归类的卡片左上角显示分类名
+        const catId = this.settings.postCategories[String(post.id)];
+        if (catId) {
+          const catName = this.settings.categories.find((c) => c.id === catId)?.name;
+          if (catName) {
+            const badge = document.createElement("span");
+            badge.className = "adg-cat-badge";
+            badge.textContent = catName;
+            badge.title = `本地分类：${catName}（点卡片「分类」可修改）`;
+            badge.style.cssText = "position:absolute;top:6px;left:6px;z-index:3;background:rgba(109,85,240,.85);color:#fff;font-size:10px;line-height:1.4;padding:1px 6px;border-radius:4px;pointer-events:none;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+            card.append(badge);
+          }
+        }
         card.append(selectButton, actions);
         card.addEventListener("mouseenter", (event) => this.showPromptTooltip(card, event));
         card.addEventListener("mousemove", (event) => this.positionTooltip(event));
@@ -649,6 +674,119 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
 
     removeDialog() {
       document.getElementById(this.dialogId)?.remove();
+    }
+
+    // 点选式分类菜单（替代原 prompt 打字）：
+    // 已有分类点即归类；「从标签新建」用该图标签一键建分类；内联输入新建兜底
+    // postIds 为空 = 纯新建分类模式（不归类任何图）
+    openCategoryPicker(postIds) {
+      const ids = (postIds || []).map(String);
+      const content = document.createElement("div");
+      content.className = "adg-category-picker";
+
+      const head = document.createElement("div");
+      head.className = "adg-menu-title";
+      head.textContent = ids.length ? `将 ${ids.length} 张图归入：` : "新建分类：";
+      content.append(head);
+
+      const assign = (catId, catName) => {
+        if (catId) ids.forEach((id) => { this.settings.postCategories[id] = catId; });
+        else ids.forEach((id) => { delete this.settings.postCategories[id]; });
+        this.saveSettings();
+        this.renderPosts();
+        this.filterControls?.refresh();
+        this.removeDialog();
+        this.setStatus(ids.length ? `已归类 ${ids.length} 张 → ${catName}` : `已创建分类：${catName}`, "success");
+      };
+
+      if (ids.length) {
+        // 当前归类状态（单张时显示）
+        const currentCatId = ids.length === 1 ? this.settings.postCategories[ids[0]] || "" : "";
+
+        // 无分类
+        const none = document.createElement("button");
+        none.type = "button";
+        none.className = "adg-category-item";
+        none.textContent = "✕ 无分类（移除归类）";
+        none.onclick = () => assign("", "无分类");
+        content.append(none);
+
+        // 已有分类（带计数与当前勾选）
+        const counts = {};
+        for (const cid of Object.values(this.settings.postCategories)) counts[cid] = (counts[cid] || 0) + 1;
+        for (const cat of this.settings.categories) {
+          const row = document.createElement("button");
+          row.type = "button";
+          row.className = "adg-category-item" + (cat.id === currentCatId ? " is-current" : "");
+          const name = document.createElement("span");
+          name.className = "adg-category-item-name";
+          name.textContent = cat.name;
+          const meta = document.createElement("span");
+          meta.className = "adg-category-item-meta";
+          meta.textContent = `${counts[cat.id] || 0} 张${cat.id === currentCatId ? " · 当前" : ""}`;
+          row.append(name, meta);
+          row.onclick = () => assign(cat.id, cat.name);
+          content.append(row);
+        }
+
+        // 从标签一键建分类（单张时取该图标签；点标签 = 建分类并归类，零打字）
+        const firstPost = ids.length === 1 ? this.posts.find((p) => String(p.id) === ids[0]) : null;
+        if (firstPost) {
+          const tags = this.postTags(firstPost).slice(0, 10);
+          if (tags.length) {
+            const tagTitle = document.createElement("div");
+            tagTitle.className = "adg-menu-title";
+            tagTitle.textContent = "从标签一键建分类（点标签即归类）：";
+            content.append(tagTitle);
+            const tagWrap = document.createElement("div");
+            tagWrap.className = "adg-category-tags";
+            for (const tag of tags) {
+              const chip = document.createElement("button");
+              chip.type = "button";
+              chip.className = "adg-category-tag";
+              chip.textContent = tag.replace(/_/g, " ");
+              chip.onclick = () => {
+                const displayName = tag.replace(/_/g, " ");
+                const existing = this.settings.categories.find((c) => c.name === displayName);
+                const cat = existing || { id: `c_${Date.now()}`, name: displayName };
+                if (!existing) this.settings.categories.push(cat);
+                assign(cat.id, displayName);
+              };
+              tagWrap.append(chip);
+            }
+            content.append(tagWrap);
+          }
+        }
+      }
+
+      // 新建分类（内联输入兜底）
+      const newTitle = document.createElement("div");
+      newTitle.className = "adg-menu-title";
+      newTitle.textContent = ids.length ? "新建分类：" : "输入分类名称（回车确认）：";
+      const newRow = document.createElement("div");
+      newRow.className = "adg-category-newrow";
+      const newInput = document.createElement("input");
+      newInput.type = "text";
+      newInput.placeholder = "输入分类名称，回车确认";
+      const create = () => {
+        const name = newInput.value.trim();
+        if (!name) return;
+        const existing = this.settings.categories.find((c) => c.name === name);
+        const cat = existing || { id: `c_${Date.now()}`, name };
+        if (!existing) this.settings.categories.push(cat);
+        assign(cat.id, name);
+      };
+      newInput.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); create(); } };
+      const newBtn = document.createElement("button");
+      newBtn.type = "button";
+      newBtn.className = "primary";
+      newBtn.textContent = ids.length ? "创建并归类" : "创建";
+      newBtn.onclick = create;
+      newRow.append(newInput, newBtn);
+      content.append(newTitle, newRow);
+
+      this.openDialog({ title: ids.length ? "设置分类" : "新建分类", content, onApply: () => {} });
+      setTimeout(() => newInput.focus(), 50);
     }
 
     openDialog({ title, content, onApply }) {
@@ -905,13 +1043,21 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.filterControls.mountFilters(toolbar);
       addAction("刷新", "绕过缓存重新搜索", () => this.search({ force: true }));
       this.filterControls.mountCategory(toolbar);
-      addAction("＋类", "新建分类", () => {
-        const name = prompt("分类名称");
-        if (!name?.trim()) return;
-        this.settings.categories.push({ id: `c_${Date.now()}`, name: name.trim() });
-        this.saveSettings();
-        this.filterControls.refresh();
-      });
+      // 批量归类：选中 ≥2 张后可用（点选分类菜单，替代逐张 prompt）
+      const batchCatBtn = document.createElement("button");
+      batchCatBtn.type = "button";
+      batchCatBtn.className = "adg-batch-cat";
+      batchCatBtn.textContent = "归类选中";
+      batchCatBtn.disabled = true;
+      batchCatBtn.title = "先点选多张卡片，再批量归入同一分类";
+      batchCatBtn.onclick = () => {
+        const ids = [...this.grid.querySelectorAll(".adg-card.is-selected")]
+          .map((c) => c.dataset.postId).filter(Boolean);
+        if (ids.length) this.openCategoryPicker(ids);
+      };
+      toolbar.append(batchCatBtn);
+      this.batchCatBtn = batchCatBtn;
+      addAction("＋类", "新建分类（点选弹层）", () => this.openCategoryPicker([]));
       const preset = document.createElement("select"); preset.title = "搜索预设";
       preset.innerHTML = `<option value="">搜索预设</option>${this.settings.presets.map((p, i) => `<option value="${i}">${p.name}</option>`).join("")}`;
       preset.onchange = () => {
