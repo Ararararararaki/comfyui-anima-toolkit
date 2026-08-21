@@ -964,11 +964,18 @@
     if (!api) return setTimeout(init, 500);
     api.registerExtension({
       name: "TK.PromptCards.Widget",
+      // beforeRegisterNodeDef 在新前端（ESM）传入的 nodeData.name 可能是注册名而非显示名；
+      // 匹配显示名/注册名/type 任一命中即包装。诊断日志仅在开发时可开。
       async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name !== NODE_NAME) return;
+        const nd = nodeData || {};
+        const names = [nd.name, nd.display_name, nd.title, nd.type, nd.comfyClass].filter(Boolean).map(String);
+        const isOurs = names.includes(NODE_NAME) || names.includes("TKPromptCards");
+        if (!isOurs) return;
         const orig = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
           const r = orig?.apply(this, arguments);
+          // 防重：nodeCreated 兜底可能已构建（新前端两种回调都会触发）
+          if (this._cardsUI) return r;
           const w = (n) => this.widgets?.find((x) => x.name === n);
           const ui = new CardsUI(this, {
             positive: w("positive"),
@@ -982,6 +989,25 @@
           ui.build();
           return r;
         };
+      },
+      // nodeCreated 兜底：部分前端版本不调 beforeRegisterNodeDef，走官方逐节点回调
+      async nodeCreated(node) {
+        const cls = String(node?.type || node?.comfyClass || node?.constructor?.type || "");
+        if (cls !== "TKPromptCards" || node._cardsUI) return;
+        try {
+          const w = (n) => node.widgets?.find((x) => x.name === n);
+          const ui = new CardsUI(node, {
+            positive: w("positive"),
+            opt_text: w("opt_text"),
+            lora_syntax: w("lora_syntax"),
+            extra_dirs: null,
+          });
+          ui.w.extra_dirs = w("extra_dirs");
+          node._cardsUI = ui;
+          ui.build();
+        } catch (e) {
+          console.error("[TK Prompt Cards] nodeCreated 构建失败:", e);
+        }
       },
       async setup() {
         window.__tkCardsDebug = window.__tkCardsDebug || {};
