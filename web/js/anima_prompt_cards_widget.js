@@ -862,6 +862,32 @@
     }
 
     // ── ③ 卡片视图 ──
+    // 删除卡片分类（二次确认；卡片归并到「通用」）
+    async delCardCat(catId) {
+      if (!confirm(`删除分类？该分类下的卡片将移入「通用」。\n此操作不可撤销。`)) return;
+      const cat = this.cardCats.find((c) => c.id === catId);
+      if (!cat) return;
+      const db = await openCardDB();
+      await storeDel(db, CARD_CAT_STORE, catId);
+      this.cardCats = this.cardCats.filter((c) => c.id !== catId);
+      const fallback = this.cardCats.find((c) => c.id === "card_all") || this.cardCats[0] || null;
+      let moved = 0;
+      if (fallback) {
+        for (const c of this.cards) {
+          if (c.categoryId === catId) {
+            c.categoryId = fallback.id;
+            c.updatedAt = Date.now();
+            await this.putCard(c);
+            moved++;
+          }
+        }
+      }
+      if (this.curCat === catId) this.curCat = "";
+      this._renderCatTabs();
+      this._renderCards();
+      this._flash(`已删除分类「${cat.name}」${fallback ? `，${moved} 张卡片移入「${fallback.name}」` : ""}`);
+    }
+
     _renderCatTabs() {
       if (!this.catTabsEl) return;
       this.catTabsEl.innerHTML = "";
@@ -871,8 +897,17 @@
         tab.type = "button";
         tab.className = "tk-cards-cat" + (this.curCat === id ? " on" : "");
         tab.textContent = label + (draggable ? " ≡" : "");
-        tab.title = draggable ? "点击切换 · 拖拽调整分类顺序（新分类从尾部加，拖到同类附近）" : "";
+        tab.title = draggable ? "点击切换 · 拖拽调整分类顺序 · hover ✕ 删除分类" : "";
         if (draggable) {
+          const del = document.createElement("span");
+          del.className = "tk-cards-cat-del";
+          del.textContent = "✕";
+          del.title = "删除分类（卡片移入「通用」）";
+          del.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            this.delCardCat(id);
+          });
+          tab.appendChild(del);
           tab.draggable = true;
           tab.addEventListener("dragstart", (ev) => {
             this._dragCatId = id;
@@ -1736,6 +1771,9 @@
 .tk-cards-card.drag-over { border:1px dashed #8b5cf6; background:rgba(139,92,246,.15); }
 .tk-cards-cat[draggable="true"] { cursor:grab; }
 .tk-cards-cat.drag-over { border-color:#8b5cf6; background:rgba(139,92,246,.2); }
+.tk-cards-cat-del { position:relative; margin-left:3px; display:none; color:#ff8a8a; font-size:9px; cursor:pointer; }
+.tk-cards-cat:hover .tk-cards-cat-del { display:inline; }
+.tk-cards-cat-del:hover { color:#ff5555; }
 .tk-cards-card.star { border-color:#f5c518; background:rgba(245,197,24,.05); }
 .tk-cards-card-en { font-size:10px; color:#e8e8e8; word-break:break-all; }
 .tk-cards-card-zh { font-size:9px; color:#9a9aa2; }
