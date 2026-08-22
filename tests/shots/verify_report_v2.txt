@@ -1,0 +1,14 @@
+节点添加 OK
+.tk-cards-ui 渲染 OK
+区[① 工具箱 prompt 库]: True
+区[② 当前提示词]: True
+区[③ 卡片视图]: True
+分类页签: ['全部', '未分类 (0)', '人物 (0)', '画师风格 (0)', '背景环境 (0)', '光影氛围 (0)', '细节增强 (0)', '常用 (0)', '+ 新分类']
+chips: ['1girl', 'long hair', '白色过膝袜', '绝对领域']
+卡片视图条目: ['1girl']
+①库浏览行数: 1
+点击卡片后 textarea: '1girl, long hair, 白色过膝袜、绝对领域'
+再点一次（去重）: '1girl, long hair, 白色过膝袜、绝对领域' same=True
+IndexedDB 新增: {"total": 1, "added": [{"prompt": "1girl", "notes": "1个女孩", "cat": "uncategorized"}]}
+清理测试条目完成
+无页面 JS 错误

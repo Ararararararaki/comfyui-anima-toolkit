@@ -1,0 +1,20 @@
+模拟库版本: {"version": 10, "stores": ["artists", "promptCategories", "prompts"]}
+UI 渲染 OK
+①区列表: '库为空 — 面板提取、批文件导入或下方存卡后这里会出现条目'
+分类页签: ['全部', '未分类 (0)', '人物 (0)', '画师风格 (0)', '背景环境 (0)', '光影氛围 (0)', '细节增强 (0)', '常用 (0)', '+ 新分类']
+chips: ['blue eyes', '白色连衣裙', '长发']
+卡片视图: ['blue eyes']
+①区行数: 1
+库状态: {"version": 10, "total": 1, "mine": [{"notes": "蓝眼睛", "kind": "card"}]}
+清理完成
+!!! 页面错误:
+  console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+  console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+  console.error: ComfyApp graph accessed before initialization
+  console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+  console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+  console.error: [bsk_prompt_hint] CodeMirror 未加载
+  console.error: [bsk_prompt_mode] CodeMirror 未加载
+  console.error: [vite:preloadError] {url: null, fileType: unknown, chunkName: null, message: CodeMirror is not defined}
+  console.error: [vite:preloadError] {url: null, fileType: unknown, chunkName: null, message: CodeMirror is not defined}
+  console.error: [VS Assets] vs_state.js 未加载
