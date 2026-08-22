@@ -924,11 +924,35 @@
           });
           tab.addEventListener("dragend", () => { this._dragCatId = null; });
           tab.addEventListener("dragover", (ev) => {
-            if (!this._dragCatId || this._dragCatId === id) return;
+            if (!this._dragCatId && !this._dragCardId) return;
+            if (this._dragCatId && this._dragCatId === id) return;
             ev.preventDefault();
+            tab.classList.add("drag-over");
           });
+          tab.addEventListener("dragleave", () => tab.classList.remove("drag-over"));
           tab.addEventListener("drop", async (ev) => {
             ev.preventDefault();
+            tab.classList.remove("drag-over");
+            // 卡片拖到分类页签 → 转移分类
+            if (this._dragCardId) {
+              const cardId = this._dragCardId;
+              const fromCat = this._dragCardCat;
+              this._dragCardId = null;
+              this._dragCardCat = null;
+              if (cardId === id) return;
+              const card = this.cards.find((x) => x.id === cardId);
+              if (!card) return;
+              card.categoryId = id;
+              card.order = undefined; // 落到目标分类末尾（未编排 → 时间序）
+              card.updatedAt = Date.now();
+              await this.putCard(card);
+              this.curCat = id;
+              this._renderCatTabs();
+              this._renderCards();
+              this._flash(`卡片已移入「${CAT_NAME(this.cardCats.find((c) => c.id === id))}」`);
+              return;
+            }
+            // 分类拖拽 → 排序
             const fromId = this._dragCatId;
             this._dragCatId = null;
             if (!fromId || fromId === id) return;
@@ -1068,10 +1092,10 @@
         catBtn.type = "button";
         catBtn.className = "tk-cards-cat-btn";
         catBtn.textContent = "▣";
-        catBtn.title = "快速分类（移到其他分类）";
+        catBtn.title = "快速分类（大弹窗选择；也可把卡片 ≡ 拖到分类页签上转移）";
         catBtn.addEventListener("click", (ev) => {
           ev.stopPropagation();
-          this.quickCategorize(c.id, el);
+          this.quickCategorize(c.id);
         });
         // 删除（二次确认）
         const del = document.createElement("button");
@@ -1164,39 +1188,51 @@
       }
     }
 
-    // 快速分类：卡片 hover 出「▣ 分类」按钮 → 弹出本库分类菜单 → 点击即移动
-    async quickCategorize(id, anchorEl) {
+    // 卡片快速分类：▣ 大弹窗（搜索 + 完整列表，不截断）
+    quickCategorize(id) {
       const c = this.cards.find((x) => x.id === id);
       if (!c) return;
-      const old = document.querySelector(".tk-cards-quickcat");
-      if (old) old.remove();
-      const menu = document.createElement("div");
-      menu.className = "tk-cards-quickcat";
-      menu.textContent = "";
-      for (const cat of this.cardCats) {
-        const item = document.createElement("button");
-        item.type = "button";
-        item.className = "tk-cards-quickcat-item" + (c.categoryId === cat.id ? " on" : "");
-        item.textContent = CAT_NAME(cat);
-        item.addEventListener("click", async (ev) => {
-          ev.stopPropagation();
-          c.categoryId = cat.id;
-          c.updatedAt = Date.now();
-          await this.putCard(c);
-          menu.remove();
-          this._renderCatTabs();
-          this._renderCards();
-          this._flash(`已移至「${CAT_NAME(cat)}」`);
-        });
-        menu.appendChild(item);
-      }
-      anchorEl.appendChild(menu);
-      document.addEventListener("click", function rm(e) {
-        if (!e.target.closest(".tk-cards-quickcat") && !e.target.closest(".tk-cards-cat-btn")) {
-          menu.remove();
-          document.removeEventListener("click", rm);
+      const overlay = document.createElement("div");
+      overlay.className = "tk-cards-overlay";
+      overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-catpick-box">
+        <div class="tk-cards-overlay-head"><b>移动卡片分类 · ${esc(String(c.prompt || "").slice(0, 40))}</b><button type="button" class="tk-cards-btn" data-a="close">✕</button></div>
+        <input class="tk-cards-search" placeholder="搜索分类…" data-a="search">
+        <div class="tk-cards-catpick-list"></div></div>`;
+      document.body.appendChild(overlay);
+      const listEl = overlay.querySelector(".tk-cards-catpick-list");
+      const searchEl = overlay.querySelector('[data-a="search"]');
+      const close = () => overlay.remove();
+      overlay.querySelector('[data-a="close"]').addEventListener("click", close);
+      overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+      const render = () => {
+        const q = (searchEl.value || "").toLowerCase();
+        listEl.innerHTML = "";
+        for (const cat of this.cardCats) {
+          if (q && !CAT_NAME(cat).toLowerCase().includes(q)) continue;
+          const item = document.createElement("button");
+          item.type = "button";
+          item.className = "tk-cards-quickcat-item tk-cards-catpick-item" + (c.categoryId === cat.id ? " on" : "");
+          item.textContent = CAT_NAME(cat);
+          item.addEventListener("click", async (ev) => {
+            ev.stopPropagation();
+            if (c.categoryId === cat.id) { close(); return; }
+            c.categoryId = cat.id;
+            c.updatedAt = Date.now();
+            await this.putCard(c);
+            close();
+            this._renderCatTabs();
+            this._renderCards();
+            this._flash(`已移至「${CAT_NAME(cat)}」`);
+          });
+          listEl.appendChild(item);
         }
-      });
+        if (!listEl.children.length) {
+          listEl.innerHTML = `<div class="tk-cards-empty">无匹配分类</div>`;
+        }
+      };
+      searchEl.addEventListener("input", render);
+      render();
+      searchEl.focus();
     }
 
     // 就地编辑（双击卡片）
@@ -1770,6 +1806,12 @@
 .tk-cards-quickcat-item { font-size:9px; text-align:left; padding:3px 6px; background:transparent; border:none; color:var(--fg-color,#ccc); cursor:pointer; border-radius:3px; }
 .tk-cards-quickcat-item:hover { background:rgba(139,92,246,.2); color:#e6dcff; }
 .tk-cards-quickcat-item.on { color:#c9b8ff; font-weight:600; }
+/* 快速分类大弹窗 */
+.tk-cards-catpick-box { width:min(420px,92vw); max-height:70vh; }
+.tk-cards-catpick-list { display:grid; grid-template-columns:1fr 1fr; gap:4px; overflow:auto; max-height:50vh; }
+.tk-cards-catpick-item { font-size:11px; padding:6px 10px; background:var(--comfy-input-bg,#222); border:1px solid var(--border-color,#444); border-radius:5px; color:var(--fg-color,#ccc); cursor:pointer; text-align:left; }
+.tk-cards-catpick-item:hover { border-color:#8b5cf6; background:rgba(139,92,246,.15); color:#e6dcff; }
+.tk-cards-catpick-item.on { border-color:#8b5cf6; color:#c9b8ff; font-weight:600; background:rgba(139,92,246,.18); }
 /* 拖拽排序（卡片/分类） */
 .tk-cards-grip { position:absolute; top:1px; left:2px; display:none; color:#777; font-size:9px; cursor:grab; user-select:none; }
 .tk-cards-card:hover .tk-cards-grip { display:block; }
