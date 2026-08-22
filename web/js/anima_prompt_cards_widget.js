@@ -933,23 +933,22 @@
           tab.addEventListener("drop", async (ev) => {
             ev.preventDefault();
             tab.classList.remove("drag-over");
-            // 卡片拖到分类页签 → 转移分类
+            // 卡片拖到分类页签 → 转移分类（保持当前分类视图不跳转）
             if (this._dragCardId) {
               const cardId = this._dragCardId;
-              const fromCat = this._dragCardCat;
               this._dragCardId = null;
               this._dragCardCat = null;
-              if (cardId === id) return;
               const card = this.cards.find((x) => x.id === cardId);
               if (!card) return;
+              if (card.categoryId === id) return;
+              const fromName = CAT_NAME(this.cardCats.find((c) => c.id === card.categoryId));
               card.categoryId = id;
               card.order = undefined; // 落到目标分类末尾（未编排 → 时间序）
               card.updatedAt = Date.now();
               await this.putCard(card);
-              this.curCat = id;
               this._renderCatTabs();
               this._renderCards();
-              this._flash(`卡片已移入「${CAT_NAME(this.cardCats.find((c) => c.id === id))}」`);
+              this._flash(`「${(card.prompt || "").slice(0, 20)}」已从「${fromName}」移入「${CAT_NAME(this.cardCats.find((c) => c.id === id))}」（当前视图不变）`);
               return;
             }
             // 分类拖拽 → 排序
