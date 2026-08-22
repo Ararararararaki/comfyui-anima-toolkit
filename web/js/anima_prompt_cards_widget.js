@@ -32,9 +32,16 @@
     return fetch(path);
   }
   async function fetchJson(path, opts) {
-    const r = await apiFetch(path, opts);
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    return r.json();
+    // 统一 12s 超时：翻译链路最慢可到 ~1 分钟（五源回退），UI 不能被拖死
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), 12000) : null;
+    try {
+      const r = await apiFetch(path, ctrl ? { ...(opts || {}), signal: ctrl.signal } : opts);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
   function postJson(path, body) {
     return fetchJson(path, {
@@ -53,7 +60,7 @@
   function openDB() {
     if (_dbPromise) return _dbPromise;
     _dbPromise = new Promise((resolve, reject) => {
-      if (!window.indexedDB) { reject(new Error("IndexedDB 不可用")); return; }
+      // 先尝试 v1 打开（库不存在时走 onupgradeneeded 建表）
       const req = indexedDB.open(DB_NAME, 1);
       req.onupgradeneeded = () => {
         const db = req.result;
@@ -65,7 +72,17 @@
         }
       };
       req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
+      req.onerror = () => {
+        // 关键：面板升级过库版本（如 v10），请求 v1 会抛 VersionError——
+        // 此时无版本重开（打开现有库、不触发升级、绝不降级）。
+        if (req.error && req.error.name === "VersionError") {
+          const req2 = indexedDB.open(DB_NAME);
+          req2.onsuccess = () => resolve(req2.result);
+          req2.onerror = () => reject(req2.error);
+        } else {
+          reject(req.error);
+        }
+      };
     });
     return _dbPromise;
   }
@@ -411,20 +428,17 @@
       this.prompts = this.prompts.filter((p) => p.id !== id);
     }
 
-    // 保存卡片（tag 级 / 组合卡），自动翻译
+    // 保存卡片（tag 级 / 组合卡）。先落库（立即可用），自动翻译异步补注释（不阻塞存卡）
     async addCard(catId, card, { multi = false } = {}) {
       const en = String(card.en || card.prompt || "").trim();
       if (!en) { this._flash("内容为空"); return; }
       const cat = catId || this.curCat || "uncategorized";
-      let zh = String(card.zh || card.notes || "").trim();
-      if (!zh) {
-        try { zh = await translateAuto(en); } catch (e) { zh = ""; }
-      }
+      const zh0 = String(card.zh || card.notes || "").trim();
       const entry = {
         id: genId("p_"),
         prompt: en,
         displayText: en.slice(0, 40) + (en.length > 40 ? "…" : ""),
-        notes: zh || "",
+        notes: zh0,
         tags: [],
         images: [],
         primaryImage: "",
@@ -442,7 +456,19 @@
       this._renderLibList();
       this._renderCatTabs();
       this._renderCards();
-      this._flash(`已保存到「${CAT_NAME(this.cats.find((c) => c.id === cat))}」${zh ? "" : "（翻译失败，注释待补）"}`);
+      this._flash(`已保存到「${CAT_NAME(this.cats.find((c) => c.id === cat))}」`);
+      // 异步翻译补中文注释（失败不阻塞，卡片保留「待翻译」）
+      if (!zh0) {
+        translateAuto(en).then((nz) => {
+          if (!nz || nz === en) return;
+          entry.notes = nz;
+          this.putEntry(entry).then(() => {
+            this._renderCards();
+            this._renderLibList();
+            this._flash(`已翻译注释：${nz.slice(0, 30)}`);
+          });
+        }).catch(() => { /* 翻译失败保留待翻译 */ });
+      }
     }
 
     async removeEntry(id) {
@@ -815,7 +841,29 @@
     }
 
     // ── build ──
+    // 防御：真实浏览器里 nodeCreated 回调可能早于节点 widgets 初始化，
+    // 导致 this.w.positive 为 undefined → 所有 _setW 静默空转（"功能全挂"）。
+    // 这里延迟重试直到三个核心 widget 就绪后再构建 UI。
     build() {
+      const tryInit = (attempt) => {
+        if (attempt > 30) {
+          console.error("[TK Prompt Cards] widgets 长时间未就绪，放弃构建（请确认节点为标准 TK Prompt Cards）");
+          return;
+        }
+        const w = (n) => this.node.widgets?.find((x) => x.name === n);
+        if (!w("positive") || !w("opt_text") || !w("lora_syntax")) {
+          setTimeout(() => tryInit(attempt + 1), 300);
+          return;
+        }
+        this.w.positive = w("positive");
+        this.w.opt_text = w("opt_text");
+        this.w.lora_syntax = w("lora_syntax");
+        this._initUI();
+      };
+      tryInit(0);
+    }
+
+    _initUI() {
       const container = document.createElement("div");
       container.className = "tk-cards-ui";
       this.rootEl = container;
