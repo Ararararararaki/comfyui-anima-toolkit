@@ -22,6 +22,7 @@ import time
 import threading
 import asyncio
 
+import aiohttp
 import folder_paths
 from aiohttp import web
 from server import PromptServer
@@ -323,6 +324,181 @@ async def cards_lora_triggers(request):
     if words:
         _TRIGGER_CACHE[name] = (now + _TRIGGER_TTL, words)
     return web.json_response({"name": name, "triggerWords": words})
+
+
+# ── LLM 自动分类（卡片库；Ollama 本地优先，其次 OpenAI 兼容反代）──
+
+LLM_CONF_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+LLM_CONF_PATH = os.path.join(LLM_CONF_DIR, "llm_config.json")
+LLM_CONF_LOCK = threading.Lock()
+OLLAMA_BASE = "http://127.0.0.1:11434"
+
+_LLM_CONFIG_DEFAULT = {"mode": "auto", "base_url": "", "api_key": "", "model": ""}
+
+
+def _load_llm_conf() -> dict:
+    with LLM_CONF_LOCK:
+        try:
+            if os.path.exists(LLM_CONF_PATH):
+                with open(LLM_CONF_PATH, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                if isinstance(d, dict):
+                    return {**_LLM_CONFIG_DEFAULT, **d}
+        except Exception as e:
+            print(f"[TK Prompt Cards] LLM 配置读取失败: {e}")
+    return dict(_LLM_CONFIG_DEFAULT)
+
+
+def _save_llm_conf(conf: dict):
+    with LLM_CONF_LOCK:
+        os.makedirs(LLM_CONF_DIR, exist_ok=True)
+        with open(LLM_CONF_PATH, "w", encoding="utf-8") as f:
+            json.dump(conf, f, ensure_ascii=False, indent=2)
+
+
+async def _ollama_available() -> tuple[bool, str]:
+    """探测本地 Ollama；返回 (可用, 建议模型名)。"""
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as s:
+            async with s.get(OLLAMA_BASE + "/api/tags") as r:
+                if r.status == 200:
+                    data = await r.json()
+                    models = [m.get("name", "") for m in (data.get("models") or [])]
+                    for prefer in ("qwen2.5", "qwen2", "llama3.1", "llama3", "gemma2", "mistral"):
+                        for m in models:
+                            if m.startswith(prefer):
+                                return True, m
+                    if models:
+                        return True, models[0]
+    except Exception:
+        pass
+    return False, ""
+
+
+async def _llm_chat(messages: list, conf: dict, timeout: int = 90) -> str:
+    """调用 LLM（Ollama 或 OpenAI 兼容反代），返回文本。"""
+    mode = conf.get("mode", "auto")
+    base = (conf.get("base_url") or "").strip().rstrip("/")
+    key = (conf.get("api_key") or "").strip()
+    model = (conf.get("model") or "").strip()
+    ok, ollama_model = await _ollama_available()
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as s:
+        if mode == "ollama" or (mode == "auto" and ok):
+            async with s.post(OLLAMA_BASE + "/api/chat",
+                              json={"model": model or ollama_model, "messages": messages,
+                                    "stream": False, "options": {"temperature": 0.1}}) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    return str(data.get("message", {}).get("content", "") or "")
+                raise RuntimeError(f"Ollama http_{r.status}")
+        if mode == "api" or (mode == "auto" and base and model):
+            if not (base and model):
+                raise RuntimeError("LLM API 配置不完整（需 base_url + model）")
+            url = base + "/chat/completions"
+            hdrs = {"Content-Type": "application/json"}
+            if key:
+                hdrs["Authorization"] = "Bearer " + key
+            async with s.post(url, json={"model": model, "messages": messages, "temperature": 0.1}, headers=hdrs) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    return str((data.get("choices") or [{}])[0].get("message", {}).get("content", "") or "")
+                raise RuntimeError(f"API http_{r.status}")
+    raise RuntimeError("未配置可用的 LLM：请开启 Ollama，或在设置中配置 API 反代（base_url/model/api_key）")
+
+
+@PromptServer.instance.routes.get("/anima/llm/config")
+async def llm_config_get(request):
+    conf = _load_llm_conf()
+    ok, ollama_model = await _ollama_available()
+    return web.json_response({
+        "mode": conf.get("mode", "auto"),
+        "base_url": conf.get("base_url", ""),
+        "model": conf.get("model", ""),
+        "hasApiKey": bool(conf.get("api_key")),
+        "ollama": {"available": ok, "model": ollama_model},
+    })
+
+
+@PromptServer.instance.routes.post("/anima/llm/config")
+async def llm_config_set(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "bad json"}, status=400)
+    conf = _load_llm_conf()
+    if "mode" in body:
+        conf["mode"] = str(body["mode"]) if str(body["mode"]) in ("auto", "ollama", "api") else "auto"
+    if "base_url" in body:
+        conf["base_url"] = str(body["base_url"] or "").strip()
+    if "api_key" in body:
+        conf["api_key"] = str(body["api_key"] or "").strip()
+    if "model" in body:
+        conf["model"] = str(body["model"] or "").strip()
+    _save_llm_conf(conf)
+    return web.json_response({"ok": True})
+
+
+def _extract_json_array(text: str) -> list:
+    """从容错文本提取 JSON 数组（LLM 常带 ```json 或前后废话）。"""
+    if not text:
+        return []
+    m = re.search(r"\[[\s\S]*\]", text)
+    if not m:
+        return []
+    try:
+        data = json.loads(m.group(0))
+        if isinstance(data, list):
+            return [str(x).strip() for x in data]
+    except Exception:
+        pass
+    out = []
+    for line in text.splitlines():
+        s = line.strip().strip('",[]').strip()
+        if s and s != "```" and not s.startswith("json"):
+            out.append(s)
+    return out
+
+
+@PromptServer.instance.routes.post("/anima/cards/classify")
+async def cards_classify(request):
+    """LLM 自动分类。body: {cards: [{id, text}], cats: [分类名...]} → [{id, categoryName}]。
+
+    每次最多 60 张；LLM 返回的分类名由前端映射回分类 id（未知名字归「通用」）。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "bad json"}, status=400)
+    cards = body.get("cards")
+    cats = body.get("cats")
+    if not isinstance(cards, list) or not cards:
+        return web.json_response({"ok": False, "error": "cards 不能为空"}, status=400)
+    if not isinstance(cats, list) or not cats:
+        return web.json_response({"ok": False, "error": "cats 不能为空"}, status=400)
+    cats = [str(c) for c in cats if str(c).strip()]
+    conf = _load_llm_conf()
+
+    batch = cards[:60]
+    lines = []
+    for c in batch:
+        text = str(c.get("text") or "").strip()[:120]
+        lines.append(f"{c.get('id')}: {text}")
+    system = ("你是提示词卡片分类助手。根据给定的分类列表，为每张卡片选择最合适的分类。"
+              "严格只输出 JSON 数组（与输入行一一对应），每个元素是分类列表中的名称之一，不要输出任何其他内容。")
+    user = f"分类列表：{json.dumps(cats, ensure_ascii=False)}\n\n卡片：\n" + "\n".join(lines)
+
+    try:
+        out = await _llm_chat([{"role": "system", "content": system},
+                               {"role": "user", "content": user}], conf)
+    except Exception as e:
+        return web.json_response({"ok": False, "error": f"LLM 调用失败：{e}"}, status=502)
+
+    parsed = _extract_json_array(out)
+    result = []
+    for i, c in enumerate(batch):
+        name = parsed[i] if i < len(parsed) else ""
+        result.append({"id": str(c.get("id")), "categoryName": name})
+    return web.json_response({"ok": True, "result": result})
 
 
 # ── 节点 ──

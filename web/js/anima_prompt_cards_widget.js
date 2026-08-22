@@ -472,8 +472,46 @@
           this._renderChips();
           this._flash(`已切换：${(p.displayText || p.prompt || "").slice(0, 30)}`);
         });
+        // 双击就地编辑（标题/内容/注释/分类，写回 prompt 库）
+        el.addEventListener("dblclick", (ev) => {
+          if (ev.target.closest(".tk-cards-del")) return;
+          this.beginLibEdit(p, el);
+        });
         this.libListEl.appendChild(el);
       }
+    }
+
+    // ①条目就地编辑（displayText 标题 / prompt / notes / 分类）
+    beginLibEdit(p, el) {
+      const orig = el.innerHTML;
+      el.innerHTML = `<div class="tk-cards-edit">
+        <input value="${escAttr(p.displayText || "")}" data-f="title" placeholder="标题">
+        <textarea data-f="prompt" placeholder="提示词内容" style="min-height:44px;resize:vertical;background:var(--comfy-input-bg,#1b1e26);color:var(--fg-color,#ddd);border:1px solid var(--border-color,#444);border-radius:3px;font-size:10px;padding:2px 4px;width:100%;box-sizing:border-box;">${esc(p.prompt || "")}</textarea>
+        <input value="${escAttr(p.notes || "")}" data-f="notes" placeholder="注释（可选）">
+        <select data-f="cat" class="tk-cards-catpick">
+          ${this.cats.map((c) => `<option value="${escAttr(c.id)}" ${c.id === p.categoryId ? "selected" : ""}>${esc(CAT_NAME(c))}</option>`).join("")}
+        </select>
+        <div class="tk-cards-edit-btns">
+          <button type="button" class="tk-cards-btn" data-a="save">✓ 保存</button>
+          <button type="button" class="tk-cards-btn" data-a="cancel">✕</button></div></div>`;
+      const commit = async () => {
+        const titleInp = el.querySelector('[data-f="title"]');
+        const promptInp = el.querySelector('[data-f="prompt"]');
+        p.displayText = (titleInp && titleInp.value.trim()) || p.displayText;
+        p.prompt = (promptInp && promptInp.value.trim()) || p.prompt;
+        const notesInp = el.querySelector('[data-f="notes"]');
+        if (notesInp) p.notes = notesInp.value.trim();
+        const catSel = el.querySelector('[data-f="cat"]');
+        if (catSel) p.categoryId = catSel.value;
+        p.updatedAt = Date.now();
+        const db = await openDB();
+        await storePut(db, PROMPT_STORE, p);
+        this._renderLibList();
+        this._flash("已保存到 prompt 库");
+      };
+      el.querySelector('[data-a="save"]').addEventListener("click", commit);
+      el.querySelector('[data-a="cancel"]').addEventListener("click", () => { el.innerHTML = orig; });
+      el.querySelector('input')?.focus();
     }
 
     // ── 批文件导入（input/prompts）──
@@ -1183,6 +1221,75 @@
       render();
     }
 
+    // ── AI 自动分类（LLM）──
+    async aiClassify() {
+      const todo = this.cards.filter((c) => String(c.prompt || "").trim());
+      if (!todo.length) { this._flash("卡片库为空"); return; }
+      if (!this.cardCats.length) { this._flash("没有可用分类"); return; }
+      const catNames = this.cardCats.map((c) => c.name);
+      const name2id = {};
+      for (const c of this.cardCats) name2id[c.name] = c.id;
+      const fallbackId = name2id["通用"] || (this.cardCats[0] && this.cardCats[0].id) || "";
+      this._flash(`AI 分类中：${todo.length} 张（每批 60，LLM 判定）…`);
+      let okN = 0, missN = 0;
+      for (let i = 0; i < todo.length; i += 60) {
+        const batch = todo.slice(i, i + 60);
+        let res;
+        try {
+          res = await postJson("/anima/cards/classify", {
+            cards: batch.map((c) => ({ id: c.id, text: c.prompt })),
+            cats: catNames,
+          });
+        } catch (e) {
+          this._flash("AI 分类失败：" + (e.message || e) + "（未配置 LLM？点「LLM」设置 Ollama 或 API 反代）", 5000);
+          return;
+        }
+        if (!res.ok) {
+          this._flash("AI 分类失败：" + (res.error || ""), 5000);
+          return;
+        }
+        for (const r of res.result || []) {
+          const card = this.cards.find((x) => x.id === r.id);
+          if (!card) continue;
+          const catId = name2id[r.categoryName];
+          if (!catId) { missN++; continue; }
+          if (card.categoryId !== catId) {
+            card.categoryId = catId;
+            card.updatedAt = Date.now();
+            await this.putCard(card);
+            okN++;
+          }
+        }
+      }
+      if (missN > 0) {
+        this._flash(`AI 分类完成：${okN} 张已归类，${missN} 张分类名不匹配（未变动，可手动 ▣ 分类）`);
+      } else {
+        this._flash(`AI 分类完成：${okN} 张已归类`);
+      }
+      this._renderCatTabs();
+      this._renderCards();
+    }
+
+    // LLM 配置（Ollama 本地 或 OpenAI 兼容反代）
+    async llmSettings() {
+      let conf = {};
+      try { conf = await fetchJson("/anima/llm/config"); } catch (e) { /* 忽略 */ }
+      const mode = prompt(`LLM 模式（auto=Ollama 优先 / ollama / api）：`, conf.mode || "auto");
+      if (mode === null) return;
+      const baseUrl = prompt(`API 反代 base_url（OpenAI 兼容，如 http://127.0.0.1:8080/v1；Ollama 模式可留空）：`, conf.base_url || "");
+      if (baseUrl === null) return;
+      const model = prompt(`模型名（Ollama 自动探测，可留空）：`, conf.model || "");
+      if (model === null) return;
+      const key = prompt(`API Key（反代需要时填；Ollama 可留空）：`, "");
+      if (key === null) return;
+      try {
+        await postJson("/anima/llm/config", { mode, base_url: baseUrl, model, api_key: key });
+        this._flash("LLM 配置已保存（Ollama 探测：" + (conf.ollama && conf.ollama.available ? "可用 " + conf.ollama.model : "不可用") + "）");
+      } catch (e) {
+        this._flash("配置保存失败：" + (e.message || e));
+      }
+    }
+
     async batchTranslate() {
       const todo = this.cards.filter((p) => !String(p.notes || "").trim() && String(p.prompt || "").trim());
       if (!todo.length) { this._flash("没有待翻译的卡片"); return; }
@@ -1310,6 +1417,16 @@
       libTabAll.className = "tk-cards-btn tk-cards-btn-main";
       libTabAll.textContent = "库浏览";
       libTabAll.addEventListener("click", () => this._switchLibPane("lib"));
+      // 刷新（面板新入库/改动后即时同步，无需刷页面）
+      const libRefresh = document.createElement("button");
+      libRefresh.type = "button";
+      libRefresh.className = "tk-cards-btn";
+      libRefresh.textContent = "刷新";
+      libRefresh.title = "重新读取 prompt 库与卡片库（面板新增/改动后点此同步）";
+      libRefresh.addEventListener("click", () => {
+        this.reloadAll();
+        this._flash("已刷新（prompt 库 + 卡片库）");
+      });
       // 清理误入卡（历史版本把卡片写进了 prompt 库；只在存在 kind=card 条目时显示）
       this.cleanBtn = document.createElement("button");
       this.cleanBtn.type = "button";
@@ -1320,6 +1437,7 @@
       this.cleanBtn.addEventListener("click", () => this.cleanMisfiledCards());
       libBtns.appendChild(libTabAll);
       libBtns.appendChild(libTab);
+      libBtns.appendChild(libRefresh);
       libBtns.appendChild(this.cleanBtn);
       libHead.appendChild(libBtns);
       // ①区分类过滤下拉（prompt 库分类，与面板同步）
@@ -1425,11 +1543,19 @@
       tlBtn.type = "button"; tlBtn.className = "tk-cards-btn"; tlBtn.textContent = "补翻";
       tlBtn.title = "批量翻译缺中文注释的卡片";
       tlBtn.addEventListener("click", () => this.batchTranslate());
+      const aiBtn = document.createElement("button");
+      aiBtn.type = "button"; aiBtn.className = "tk-cards-btn tk-cards-btn-main"; aiBtn.textContent = "AI 分类";
+      aiBtn.title = "用 LLM 自动为卡片分类（Ollama 本地 或 API 反代；分类名不匹配的归「通用」）";
+      aiBtn.addEventListener("click", () => this.aiClassify());
+      const llmBtn = document.createElement("button");
+      llmBtn.type = "button"; llmBtn.className = "tk-cards-btn"; llmBtn.textContent = "LLM";
+      llmBtn.title = "配置自动分类的 LLM（Ollama / OpenAI 兼容反代）";
+      llmBtn.addEventListener("click", () => this.llmSettings());
       const exBtn = document.createElement("button");
       exBtn.type = "button"; exBtn.className = "tk-cards-btn"; exBtn.textContent = "导出";
       exBtn.title = "导出卡片为批文件（input/prompts/）";
       exBtn.addEventListener("click", () => this.exportCards());
-      cardBtns.appendChild(loraBtn); cardBtns.appendChild(tlBtn); cardBtns.appendChild(exBtn);
+      cardBtns.appendChild(loraBtn); cardBtns.appendChild(tlBtn); cardBtns.appendChild(aiBtn); cardBtns.appendChild(llmBtn); cardBtns.appendChild(exBtn);
       cardHead.appendChild(cardBtns);
       this.catTabsEl = document.createElement("div");
       this.catTabsEl.className = "tk-cards-cats";
