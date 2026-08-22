@@ -754,17 +754,83 @@
       this._flash(`翻译完成：${okN}/${parts.length} 段（中文注释仅显示，不会入库）`);
     }
 
-    // ②区「一键入卡」：当前所有片段直接存入卡片库（带已翻译的中文注释）
+    // ②区「AI 入卡」：当前所有片段 → LLM 自动判定分类 → 确认清单（可改判）→ 确认后入库
     async cardsAddAll() {
       const parts = splitTags(this.curText());
       if (!parts.length) { this._flash("当前提示词为空"); return; }
-      let n = 0;
-      for (const p of parts) {
-        const zh = this.piecesZh.get(p.text) || "";
-        await this.addCard(this.curCat, { en: p.text, zh, weight: p.weight });
-        n++;
+      if (!this.cardCats.length) { this._flash("没有可用分类"); return; }
+      const catNames = this.cardCats.map((c) => c.name);
+      const name2id = {};
+      for (const c of this.cardCats) name2id[c.name] = c.id;
+      const fallbackId = name2id["通用"] || (this.cardCats[0] && this.cardCats[0].id) || "";
+
+      // 1) LLM 判定分类
+      let suggestions = {};
+      try {
+        const res = await postJson("/anima/cards/classify", {
+          cards: parts.map((p, i) => ({ id: String(i), text: p.text })),
+          cats: catNames,
+        });
+        if (res.ok) {
+          for (const r of res.result || []) {
+            suggestions[r.id] = r.categoryName;
+          }
+        } else {
+          throw new Error(res.error || "classify 失败");
+        }
+      } catch (e) {
+        // LLM 不可用：询问是否按当前分类直接入卡
+        const ok = confirm("LLM 分类不可用（" + (e.message || e) + "）。\n是否仍按当前分类直接入卡？（可先点「LLM」配置 Ollama/API 反代）");
+        if (!ok) return;
+        let n = 0;
+        for (const p of parts) {
+          await this.addCard(this.curCat, { en: p.text, zh: this.piecesZh.get(p.text) || "", weight: p.weight });
+          n++;
+        }
+        this._flash(`已按当前分类入卡：${n} 段`);
+        return;
       }
-      this._flash(`已全部入卡：${n} 段 → 卡片库「${CAT_NAME(this.cardCats.find((c) => c.id === this.curCat))}」`);
+
+      // 2) 确认清单 overlay
+      this._flash("LLM 已判定，等待你确认分类…");
+      const overlay = document.createElement("div");
+      overlay.className = "tk-cards-overlay";
+      const rowsHtml = parts.map((p, i) => {
+        const zh = this.piecesZh.get(p.text) || "";
+        const sug = suggestions[String(i)] || "";
+        const catId = name2id[sug] || fallbackId;
+        const opts = this.cardCats.map((c) =>
+          `<option value="${escAttr(c.id)}" ${c.id === catId ? "selected" : ""}>${esc(CAT_NAME(c))}</option>`).join("");
+        return `<div class="tk-cards-ai-row" data-i="${i}">
+          <div class="tk-cards-ai-text">${esc(p.weight ? `(${p.text}:${p.weight})` : p.text)}${zh ? `<span class="tk-cards-ai-zh">${esc(zh)}</span>` : ""}</div>
+          <select class="tk-cards-ai-cat">${opts}</select></div>`;
+      }).join("");
+      overlay.innerHTML = `<div class="tk-cards-overlay-box">
+        <div class="tk-cards-overlay-head"><b>AI 分类确认 · ${parts.length} 段（可逐条改判）</b><button type="button" class="tk-cards-btn" data-a="close">✕</button></div>
+        <div class="tk-cards-ai-list">${rowsHtml}</div>
+        <div class="tk-cards-ai-actions">
+          <button type="button" class="tk-cards-btn" data-a="cancel">取消</button>
+          <button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="confirm">✓ 确认入卡 ${parts.length} 张</button>
+        </div></div>`;
+      document.body.appendChild(overlay);
+      const close = () => overlay.remove();
+      overlay.querySelector('[data-a="close"]').addEventListener("click", close);
+      overlay.querySelector('[data-a="cancel"]').addEventListener("click", close);
+      overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+      overlay.querySelector('[data-a="confirm"]').addEventListener("click", async () => {
+        const rows = overlay.querySelectorAll(".tk-cards-ai-row");
+        let n = 0;
+        for (const row of rows) {
+          const i = parseInt(row.getAttribute("data-i"), 10);
+          const p = parts[i];
+          if (!p) continue;
+          const catId = row.querySelector(".tk-cards-ai-cat").value;
+          await this.addCard(catId, { en: p.text, zh: this.piecesZh.get(p.text) || "", weight: p.weight });
+          n++;
+        }
+        close();
+        this._flash(`已确认入卡：${n} 段（按确认的分类归档）`);
+      });
     }
 
     // 整段存为组合卡
@@ -1497,8 +1563,8 @@
       translateBtn.title = "只翻译当前所有片段并显示中文小字（不入库，不污染分类）";
       translateBtn.addEventListener("click", () => this.translatePiecesOnly());
       const cardsAddBtn = document.createElement("button");
-      cardsAddBtn.type = "button"; cardsAddBtn.className = "tk-cards-btn tk-cards-btn-main"; cardsAddBtn.textContent = "⇥ 一键入卡";
-      cardsAddBtn.title = "把当前所有片段存入卡片库（带已翻译的中文注释）";
+      cardsAddBtn.type = "button"; cardsAddBtn.className = "tk-cards-btn tk-cards-btn-main"; cardsAddBtn.textContent = "⇥ AI 入卡";
+      cardsAddBtn.title = "当前所有片段交 LLM 自动判定分类 → 确认清单（可改判）→ 分类入库";
       cardsAddBtn.addEventListener("click", () => this.cardsAddAll());
       curBtns.appendChild(clipboardBtn); curBtns.appendChild(pngBtn); curBtns.appendChild(draftBtn); curBtns.appendChild(clearBtn); curBtns.appendChild(translateBtn); curBtns.appendChild(cardsAddBtn);
       curHead.appendChild(curBtns);
@@ -1684,6 +1750,14 @@
 .tk-cards-lora-row { display:flex; align-items:center; gap:6px; padding:3px 4px; border-radius:4px; }
 .tk-cards-lora-row:hover { background:rgba(139,92,246,.08); }
 .tk-cards-lora-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#ddd; }
+/* AI 分类确认清单 */
+.tk-cards-ai-list { overflow:auto; max-height:50vh; display:flex; flex-direction:column; gap:4px; }
+.tk-cards-ai-row { display:flex; align-items:center; gap:8px; padding:4px 6px; border:1px solid var(--border-color,#2e2e34); border-radius:5px; }
+.tk-cards-ai-row:hover { border-color:#8b5cf6; }
+.tk-cards-ai-text { flex:1; min-width:0; font-size:10px; color:#e8e8e8; word-break:break-all; display:flex; flex-direction:column; }
+.tk-cards-ai-zh { font-size:9px; color:#9a9aa2; }
+.tk-cards-ai-cat { flex:0 0 130px; background:var(--comfy-input-bg,#222); color:var(--fg-color,#ddd); border:1px solid var(--border-color,#444); border-radius:4px; font-size:10px; padding:2px 4px; }
+.tk-cards-ai-actions { display:flex; justify-content:flex-end; gap:6px; }
 `;
     document.head.appendChild(s);
   }
