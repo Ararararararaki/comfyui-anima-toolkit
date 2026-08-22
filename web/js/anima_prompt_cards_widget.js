@@ -271,8 +271,9 @@
     constructor(node, w) {
       this.node = node;
       this.w = w; // {positive, opt_text, lora_syntax}
-      this.prompts = [];   // ① prompt 库缓存（anima-lora，只读浏览/切换/导入）
+      this.prompts = [];   // ① prompt 库缓存（anima-lora，浏览/切换/导入/删除）
       this.cats = [];      // ① prompt 库分类
+      this.curLibCat = ""; // ① 当前分类过滤（"" = 全部）
       this.cards = [];     // ③ 卡片库缓存（anima-tk-cards，tag 级短语）
       this.cardCats = [];  // ③ 卡片分类
       this.curCat = "";    // ③ 当前卡片分类 id（"" = 全部）
@@ -281,6 +282,8 @@
       this.rootEl = null;
       this.libListEl = null;    // ①区条目列表
       this.libSearchEl = null;
+      this.libCatSel = null;    // ①区分类过滤下拉
+      this.cleanBtn = null;     // ①区「清理【卡】」
       this.fileSel = null;
       this.groupListEl = null;
       this.curTextEl = null;
@@ -323,7 +326,23 @@
         console.error("[TK Prompt Cards] prompt 库加载失败:", e);
         this._flash("prompt 库加载失败：" + (e.message || e));
       }
+      this._renderLibCatSel();
       this._renderLibList();
+    }
+
+    // ①区分类下拉（prompt 库分类，与面板同步）
+    _renderLibCatSel() {
+      if (!this.libCatSel) return;
+      const cur = this.curLibCat;
+      this.libCatSel.innerHTML = `<option value="">全部分类</option>` +
+        this.cats.map((c) => {
+          const n = this.prompts.filter((p) => p.categoryId === c.id).length;
+          return `<option value="${escAttr(c.id)}" ${c.id === cur ? "selected" : ""}>${esc(CAT_NAME(c))} (${n})</option>`;
+        }).join("");
+      if (cur && !this.cats.some((c) => c.id === cur)) {
+        this.curLibCat = "";
+        this.libCatSel.value = "";
+      }
     }
 
     async reloadCards() {
@@ -348,12 +367,27 @@
       this._renderCards();
     }
 
-    // ── ① 工具箱 prompt 库浏览（网格 3 列；悬浮预览主图）──
+    // 清理误入 prompt 库的卡片（历史版本把 kind=card 全写进了 anima-lora）
+    async cleanMisfiledCards() {
+      const victims = this.prompts.filter((p) => p.kind === "card");
+      if (!victims.length) { this._flash("没有需要清理的卡片"); return; }
+      if (!confirm(`确认删除 ${victims.length} 条误入 prompt 库的卡片（带【卡】标记）？\n完整生图词条不受影响。`)) return;
+      const db = await openDB();
+      let n = 0;
+      for (const v of victims) {
+        await storeDel(db, PROMPT_STORE, v.id);
+        n++;
+      }
+      await this.reloadLib();
+      this._flash(`已清理 ${n} 条误入卡片，prompt 库剩余 ${this.prompts.length} 条`);
+    }
+
+    // ── ① 工具箱 prompt 库浏览（网格 3 列 + 缩略图 + 分类过滤 + 删除）──
     _renderLibList() {
       if (!this.libListEl) return;
       const q = (this.search || "").toLowerCase();
       let list = this.prompts.slice();
-      if (this.curCat) list = list.filter((p) => p.categoryId === this.curCat);
+      if (this.curLibCat) list = list.filter((p) => p.categoryId === this.curLibCat);
       if (q) {
         list = list.filter((p) =>
           String(p.prompt || "").toLowerCase().includes(q) ||
@@ -363,19 +397,19 @@
         );
       }
       list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      // 清理按钮可见性：存在误入卡片时显示
+      if (this.cleanBtn) {
+        this.cleanBtn.style.display = this.prompts.some((p) => p.kind === "card") ? "" : "none";
+      }
       this.libListEl.innerHTML = "";
       if (!list.length) {
-        this.libListEl.innerHTML = `<div class="tk-cards-empty">库为空 — 面板提取、批文件导入或下方存卡后这里会出现条目</div>`;
+        this.libListEl.innerHTML = `<div class="tk-cards-empty">库为空 — 面板提取、批文件导入后这里会出现条目</div>`;
         return;
       }
-      const hideTip = (el) => {
-        const tip = el.querySelector(".tk-cards-lib-tip");
-        if (tip) tip.remove();
-      };
       for (const p of list) {
         const el = document.createElement("div");
         el.className = "tk-cards-lib-item" + (p.kind === "card" ? " is-card" : "");
-        el.title = "点击切换为当前提示词（仅替换，不自动入队）";
+        el.title = "点击切换为当前提示词（仅替换，不自动入队）；hover ✕ 删除该词条";
         const imgSrc = p.primaryImage || (p.images && p.images[0]) || "";
         if (imgSrc) {
           const thumb = document.createElement("div");
@@ -401,38 +435,38 @@
         sub.textContent = String(p.prompt || "").slice(0, 60);
         el.appendChild(head);
         el.appendChild(sub);
-        // 悬浮预览：有图显示图（≥2 张则轮播第一张），无图显示文本
-        let pvTimer = null;
-        el.addEventListener("mouseenter", () => {
-          pvTimer = setTimeout(() => {
-            let tip = el.querySelector(".tk-cards-lib-tip");
-            if (!tip) {
-              tip = document.createElement("div");
-              tip.className = "tk-cards-lib-tip";
-              if (imgSrc) {
-                const im = document.createElement("img");
-                im.src = imgSrc;
-                tip.appendChild(im);
-              } else {
-                tip.textContent = String(p.prompt || p.notes || "").slice(0, 400);
-              }
-              el.appendChild(tip);
-              // fixed 定位跟随条目位置（避免被节点/画布裁剪）
-              const r = el.getBoundingClientRect();
-              const off = 8;
-              let tx = r.left, ty = r.bottom + off;
-              if (ty + 260 > window.innerHeight) ty = r.top - 260 - off;
-              if (tx + 240 > window.innerWidth) tx = r.right - 240;
-              tip.style.left = Math.max(4, tx) + "px";
-              tip.style.top = Math.max(4, ty) + "px";
-            }
-          }, 400);
+        // 删除按钮（hover 显示，二次确认；同步删除 prompt 库条目）
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "tk-cards-del";
+        del.textContent = "✕";
+        del.title = "从 prompt 库删除该词条（需二次确认）";
+        let delArmed = false;
+        const disarmDel = () => {
+          delArmed = false;
+          del.classList.remove("arm");
+          del.textContent = "✕";
+        };
+        del.addEventListener("click", async (ev) => {
+          ev.stopPropagation();
+          if (!delArmed) {
+            delArmed = true;
+            del.classList.add("arm");
+            del.textContent = "✓删?";
+            clearTimeout(del._armT);
+            del._armT = setTimeout(disarmDel, 2500);
+            return;
+          }
+          clearTimeout(del._armT);
+          const db = await openDB();
+          await storeDel(db, PROMPT_STORE, p.id);
+          this.prompts = this.prompts.filter((x) => x.id !== p.id);
+          this._renderLibList();
+          this._flash("已从 prompt 库删除该词条");
         });
-        el.addEventListener("mouseleave", () => {
-          if (pvTimer) { clearTimeout(pvTimer); pvTimer = null; }
-          hideTip(el);
-        });
+        el.appendChild(del);
         el.addEventListener("click", (ev) => {
+          if (ev.target.closest(".tk-cards-del")) return;
           this._setW(this.w.positive, p.prompt || "");
           if (this.curTextEl) this.curTextEl.value = p.prompt || "";
           this._renderChips();
@@ -721,18 +755,51 @@
     _renderCatTabs() {
       if (!this.catTabsEl) return;
       this.catTabsEl.innerHTML = "";
-      const mk = (label, id) => {
+      this.catTabsEl.setAttribute("data-root", "1");
+      const mk = (label, id, draggable) => {
         const tab = document.createElement("button");
         tab.type = "button";
         tab.className = "tk-cards-cat" + (this.curCat === id ? " on" : "");
-        tab.textContent = label;
+        tab.textContent = label + (draggable ? " ≡" : "");
+        tab.title = draggable ? "点击切换 · 拖拽调整分类顺序（新分类从尾部加，拖到同类附近）" : "";
+        if (draggable) {
+          tab.draggable = true;
+          tab.addEventListener("dragstart", (ev) => {
+            this._dragCatId = id;
+            try { ev.dataTransfer.setData("text/plain", "cat:" + id); ev.dataTransfer.effectAllowed = "move"; } catch (e) {}
+          });
+          tab.addEventListener("dragend", () => { this._dragCatId = null; });
+          tab.addEventListener("dragover", (ev) => {
+            if (!this._dragCatId || this._dragCatId === id) return;
+            ev.preventDefault();
+          });
+          tab.addEventListener("drop", async (ev) => {
+            ev.preventDefault();
+            const fromId = this._dragCatId;
+            this._dragCatId = null;
+            if (!fromId || fromId === id) return;
+            const from = this.cardCats.findIndex((c) => c.id === fromId);
+            const to = this.cardCats.findIndex((c) => c.id === id);
+            if (from < 0 || to < 0) return;
+            const arr = this.cardCats.slice();
+            const [moved] = arr.splice(from, 1);
+            arr.splice(to, 0, moved);
+            arr.forEach((c, i) => { c.sortOrder = i; });
+            const db = await openCardDB();
+            for (const c of arr) await storePut(db, CARD_CAT_STORE, c);
+            this.cardCats = arr;
+            this._renderCatTabs();
+            this._renderCards();
+            this._flash("分类顺序已调整");
+          });
+        }
         tab.addEventListener("click", () => { this.curCat = id; this._renderCatTabs(); this._renderCards(); });
         this.catTabsEl.appendChild(tab);
       };
-      mk("全部", "");
+      mk("全部", "", false);
       for (const c of this.cardCats) {
         const n = this.cards.filter((p) => p.categoryId === c.id).length;
-        mk(`${CAT_NAME(c)} (${n})`, c.id);
+        mk(`${CAT_NAME(c)} (${n})`, c.id, true);
       }
       const addTab = document.createElement("button");
       addTab.type = "button";
@@ -750,6 +817,197 @@
         this._renderCatTabs(); this._renderCards();
       });
       this.catTabsEl.appendChild(addTab);
+    }
+
+    // 分类内卡片当前顺序（order 优先，其次收藏/时间）
+    _catOrderIds(catId) {
+      const list = this.cards.filter((c) => c.categoryId === catId);
+      list.sort((a, b) => {
+        const ao = a.order != null ? a.order : Number.MAX_SAFE_INTEGER;
+        const bo = b.order != null ? b.order : Number.MAX_SAFE_INTEGER;
+        if (ao !== bo) return ao - bo;
+        return (b.isFavorite ? 1 : 0) - (a.isFavorite ? 1 : 0) || (b.createdAt || 0) - (a.createdAt || 0);
+      });
+      return list.map((c) => c.id);
+    }
+
+    // 按新顺序重排分类内卡片（order 0..n-1）
+    async _applyCardOrder(catId, ids) {
+      const orderMap = {};
+      ids.forEach((id, i) => { orderMap[id] = i; });
+      for (const c of this.cards) {
+        if (c.categoryId !== catId) continue;
+        if (c.order !== orderMap[c.id]) {
+          c.order = orderMap[c.id];
+          c.updatedAt = Date.now();
+          await this.putCard(c);
+        }
+      }
+    }
+
+    _sortCardList(list) {
+      list.sort((a, b) => {
+        const ao = a.order != null ? a.order : Number.MAX_SAFE_INTEGER;
+        const bo = b.order != null ? b.order : Number.MAX_SAFE_INTEGER;
+        if (ao !== bo) return ao - bo;
+        return (b.isFavorite ? 1 : 0) - (a.isFavorite ? 1 : 0) || (b.createdAt || 0) - (a.createdAt || 0);
+      });
+      return list;
+    }
+
+    _renderCards() {
+      if (!this.cardGridEl) return;
+      let list = this.cards.slice();
+      if (this.curCat) list = list.filter((p) => p.categoryId === this.curCat);
+      this._sortCardList(list);
+      this.cardGridEl.innerHTML = "";
+      if (!list.length) {
+        this.cardGridEl.innerHTML = `<div class="tk-cards-empty">暂无卡片 — ②区点片段「存卡」或「一键入卡」，或「浏览 LoRA」批量收藏</div>`;
+        return;
+      }
+      for (const c of list) {
+        const el = document.createElement("div");
+        el.className = "tk-cards-card" + (c.isFavorite ? " star" : "");
+        el.setAttribute("data-id", c.id);
+        el.title = "单击追加 · 双击编辑 · 拖 ≡ 排序 · ↑ 置顶 · ✕ 删除";
+        const en = document.createElement("div");
+        en.className = "tk-cards-card-en";
+        en.textContent = String(c.prompt || "").length > 60 ? String(c.prompt).slice(0, 58) + "…" : (c.prompt || "");
+        en.title = (c.prompt || "") + (c.lora ? `\nLoRA: ${c.lora}` : "");
+        const zh = document.createElement("div");
+        zh.className = "tk-cards-card-zh";
+        zh.textContent = c.notes || "（待翻译）";
+        const meta = document.createElement("div");
+        meta.className = "tk-cards-card-meta";
+        meta.innerHTML = `<span class="tk-cards-star" title="星标">${c.isFavorite ? "★" : "☆"}</span>` +
+          (c.weight ? `<span class="tk-cards-w">${esc(c.weight)}</span>` : "") +
+          (c.lora ? `<span class="tk-cards-lora">L:${esc(String(c.lora).split("/").pop().replace(/\.safetensors$/, ""))}</span>` : "") +
+          (c.multi ? `<span class="tk-cards-multi">组合</span>` : "");
+        // 拖拽把手（排序）
+        const grip = document.createElement("span");
+        grip.className = "tk-cards-grip";
+        grip.textContent = "≡";
+        grip.title = "拖拽调整卡片顺序";
+        grip.draggable = true;
+        grip.addEventListener("dragstart", (ev) => {
+          this._dragCardId = c.id;
+          this._dragCardCat = c.categoryId;
+          try { ev.dataTransfer.setData("text/plain", "card:" + c.id); ev.dataTransfer.effectAllowed = "move"; } catch (e) {}
+        });
+        grip.addEventListener("dragend", () => { this._dragCardId = null; this._dragCardCat = null; });
+        // 置顶（移到分类最前）
+        const pin = document.createElement("button");
+        pin.type = "button";
+        pin.className = "tk-cards-pin";
+        pin.textContent = "↑";
+        pin.title = "置顶（移到当前分类最前）";
+        pin.addEventListener("click", async (ev) => {
+          ev.stopPropagation();
+          const ids = this._catOrderIds(c.categoryId).filter((x) => x !== c.id);
+          ids.unshift(c.id);
+          await this._applyCardOrder(c.categoryId, ids);
+          this._renderCards();
+          this._flash("已置顶");
+        });
+        // 快速分类
+        const catBtn = document.createElement("button");
+        catBtn.type = "button";
+        catBtn.className = "tk-cards-cat-btn";
+        catBtn.textContent = "▣";
+        catBtn.title = "快速分类（移到其他分类）";
+        catBtn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          this.quickCategorize(c.id, el);
+        });
+        // 删除（二次确认）
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "tk-cards-del";
+        del.textContent = "✕";
+        del.title = "删除卡片（需二次点击确认；删除后可撤销）";
+        el.appendChild(en);
+        el.appendChild(zh);
+        el.appendChild(meta);
+        el.appendChild(grip);
+        el.appendChild(pin);
+        el.appendChild(catBtn);
+        el.appendChild(del);
+        let delArmed = false;
+        const disarmDel = () => {
+          delArmed = false;
+          del.classList.remove("arm");
+          del.textContent = "✕";
+        };
+        del.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          if (!delArmed) {
+            delArmed = true;
+            del.classList.add("arm");
+            del.textContent = "✓删?";
+            clearTimeout(del._armT);
+            del._armT = setTimeout(disarmDel, 2500);
+            return;
+          }
+          clearTimeout(del._armT);
+          this.removeEntry(c.id);
+        });
+        // 放置目标（插入到目标卡片之前）
+        el.addEventListener("dragover", (ev) => {
+          if (!this._dragCardId || this._dragCardId === c.id) return;
+          ev.preventDefault();
+          el.classList.add("drag-over");
+        });
+        el.addEventListener("dragleave", () => el.classList.remove("drag-over"));
+        el.addEventListener("drop", async (ev) => {
+          ev.preventDefault();
+          el.classList.remove("drag-over");
+          const fromId = this._dragCardId;
+          const fromCat = this._dragCardCat;
+          this._dragCardId = null;
+          this._dragCardCat = null;
+          if (!fromId || fromId === c.id) return;
+          const catId = fromCat || c.categoryId || "";
+          // 跨分类拖拽：先改目标分类再排（from 在 catId 里才重排；否则仅改分类）
+          const fromEntry = this.cards.find((x) => x.id === fromId);
+          if (fromEntry && fromEntry.categoryId !== c.categoryId) {
+            fromEntry.categoryId = c.categoryId;
+            fromEntry.order = undefined;
+            fromEntry.updatedAt = Date.now();
+            await this.putCard(fromEntry);
+            this.curCat = c.categoryId;
+          }
+          const ids = this._catOrderIds(c.categoryId).filter((x) => x !== fromId);
+          const toIdx = ids.indexOf(c.id);
+          ids.splice(toIdx < 0 ? ids.length : toIdx, 0, fromId);
+          await this._applyCardOrder(c.categoryId, ids);
+          this._renderCatTabs();
+          this._renderCards();
+          this._flash("卡片顺序已调整");
+        });
+        el.addEventListener("click", (ev) => {
+          if (delArmed) { disarmDel(); return; }
+          if (ev.target.closest(".tk-cards-star") || ev.target.closest(".tk-cards-del") ||
+              ev.target.closest(".tk-cards-cat-btn") || ev.target.closest(".tk-cards-pin") ||
+              ev.target.closest(".tk-cards-grip")) return;
+          const cur = this.curText();
+          const next = appendCardToPrompt(cur, c);
+          this._setW(this.w.positive, next);
+          if (this.curTextEl) this.curTextEl.value = next;
+          this._renderChips();
+          if (next === cur) this._flash("该卡片已在提示词中（已去重）");
+        });
+        el.addEventListener("dblclick", (ev) => {
+          if (ev.target.closest(".tk-cards-star") || ev.target.closest(".tk-cards-del") ||
+              ev.target.closest(".tk-cards-cat-btn") || ev.target.closest(".tk-cards-pin") ||
+              ev.target.closest(".tk-cards-grip")) return;
+          this.beginEdit(c.id, el, c);
+        });
+        el.querySelector(".tk-cards-star").addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          this.toggleFavorite(c.id);
+        });
+        this.cardGridEl.appendChild(el);
+      }
     }
 
     // 快速分类：卡片 hover 出「▣ 分类」按钮 → 弹出本库分类菜单 → 点击即移动
@@ -785,96 +1043,6 @@
           document.removeEventListener("click", rm);
         }
       });
-    }
-
-    _renderCards() {
-      if (!this.cardGridEl) return;
-      let list = this.cards.slice();
-      if (this.curCat) list = list.filter((p) => p.categoryId === this.curCat);
-      list.sort((a, b) => (b.isFavorite ? 1 : 0) - (a.isFavorite ? 1 : 0) || (b.createdAt || 0) - (a.createdAt || 0));
-      this.cardGridEl.innerHTML = "";
-      if (!list.length) {
-        this.cardGridEl.innerHTML = `<div class="tk-cards-empty">暂无卡片 — ②区点片段「存卡」或「一键入卡」，或「浏览 LoRA」批量收藏</div>`;
-        return;
-      }
-      for (const c of list) {
-        const el = document.createElement("div");
-        el.className = "tk-cards-card" + (c.isFavorite ? " star" : "");
-        el.setAttribute("data-id", c.id);
-        el.title = "单击追加 · 双击编辑 · hover ✕ 删除 / ▣ 分类";
-        const en = document.createElement("div");
-        en.className = "tk-cards-card-en";
-        en.textContent = String(c.prompt || "").length > 60 ? String(c.prompt).slice(0, 58) + "…" : (c.prompt || "");
-        en.title = (c.prompt || "") + (c.lora ? `\nLoRA: ${c.lora}` : "");
-        const zh = document.createElement("div");
-        zh.className = "tk-cards-card-zh";
-        zh.textContent = c.notes || "（待翻译）";
-        const meta = document.createElement("div");
-        meta.className = "tk-cards-card-meta";
-        meta.innerHTML = `<span class="tk-cards-star" title="星标置顶">${c.isFavorite ? "★" : "☆"}</span>` +
-          (c.weight ? `<span class="tk-cards-w">${esc(c.weight)}</span>` : "") +
-          (c.lora ? `<span class="tk-cards-lora">L:${esc(String(c.lora).split("/").pop().replace(/\.safetensors$/, ""))}</span>` : "") +
-          (c.multi ? `<span class="tk-cards-multi">组合</span>` : "");
-        // 快速分类按钮（hover 显示）
-        const catBtn = document.createElement("button");
-        catBtn.type = "button";
-        catBtn.className = "tk-cards-cat-btn";
-        catBtn.textContent = "▣";
-        catBtn.title = "快速分类（移到其他分类）";
-        catBtn.addEventListener("click", (ev) => {
-          ev.stopPropagation();
-          this.quickCategorize(c.id, el);
-        });
-        // 删除按钮（hover 显示；点击两次确认防误删）
-        const del = document.createElement("button");
-        del.type = "button";
-        del.className = "tk-cards-del";
-        del.textContent = "✕";
-        del.title = "删除卡片（需二次点击确认；删除后可撤销）";
-        el.appendChild(en);
-        el.appendChild(zh);
-        el.appendChild(meta);
-        el.appendChild(catBtn);
-        el.appendChild(del);
-        let delArmed = false;
-        const disarmDel = () => {
-          delArmed = false;
-          del.classList.remove("arm");
-          del.textContent = "✕";
-        };
-        del.addEventListener("click", (ev) => {
-          ev.stopPropagation();
-          if (!delArmed) {
-            delArmed = true;
-            del.classList.add("arm");
-            del.textContent = "✓删?";
-            clearTimeout(del._armT);
-            del._armT = setTimeout(disarmDel, 2500);
-            return;
-          }
-          clearTimeout(del._armT);
-          this.removeEntry(c.id);
-        });
-        el.addEventListener("click", (ev) => {
-          if (delArmed) { disarmDel(); return; }
-          if (ev.target.closest(".tk-cards-star") || ev.target.closest(".tk-cards-del") || ev.target.closest(".tk-cards-cat-btn")) return;
-          const cur = this.curText();
-          const next = appendCardToPrompt(cur, c);
-          this._setW(this.w.positive, next);
-          if (this.curTextEl) this.curTextEl.value = next;
-          this._renderChips();
-          if (next === cur) this._flash("该卡片已在提示词中（已去重）");
-        });
-        el.addEventListener("dblclick", (ev) => {
-          if (ev.target.closest(".tk-cards-star") || ev.target.closest(".tk-cards-del") || ev.target.closest(".tk-cards-cat-btn")) return;
-          this.beginEdit(c.id, el, c);
-        });
-        el.querySelector(".tk-cards-star").addEventListener("click", (ev) => {
-          ev.stopPropagation();
-          this.toggleFavorite(c.id);
-        });
-        this.cardGridEl.appendChild(el);
-      }
     }
 
     // 就地编辑（双击卡片）
@@ -1142,9 +1310,25 @@
       libTabAll.className = "tk-cards-btn tk-cards-btn-main";
       libTabAll.textContent = "库浏览";
       libTabAll.addEventListener("click", () => this._switchLibPane("lib"));
+      // 清理误入卡（历史版本把卡片写进了 prompt 库；只在存在 kind=card 条目时显示）
+      this.cleanBtn = document.createElement("button");
+      this.cleanBtn.type = "button";
+      this.cleanBtn.className = "tk-cards-btn tk-cards-btn-danger";
+      this.cleanBtn.textContent = "清理【卡】";
+      this.cleanBtn.title = "删除误入 prompt 库的卡片条目（kind=card，带【卡】标记）；完整词条不受影响";
+      this.cleanBtn.style.display = "none";
+      this.cleanBtn.addEventListener("click", () => this.cleanMisfiledCards());
       libBtns.appendChild(libTabAll);
       libBtns.appendChild(libTab);
+      libBtns.appendChild(this.cleanBtn);
       libHead.appendChild(libBtns);
+      // ①区分类过滤下拉（prompt 库分类，与面板同步）
+      this.libCatSel = document.createElement("select");
+      this.libCatSel.className = "tk-cards-select";
+      this.libCatSel.addEventListener("change", () => {
+        this.curLibCat = this.libCatSel.value;
+        this._renderLibList();
+      });
       this.libSearchEl = document.createElement("input");
       this.libSearchEl.className = "tk-cards-search";
       this.libSearchEl.placeholder = "搜索库（prompt/标题/注释/tag）…";
@@ -1159,6 +1343,7 @@
       this.groupListEl.className = "tk-cards-groups";
       this.groupListEl.style.display = "none";
       libSec.appendChild(libHead);
+      libSec.appendChild(this.libCatSel);
       libSec.appendChild(this.libSearchEl);
       libSec.appendChild(this.libListEl);
       libSec.appendChild(this.fileSel);
@@ -1267,6 +1452,7 @@
 
     _switchLibPane(which) {
       const lib = which === "lib";
+      this.libCatSel.style.display = lib ? "" : "none";
       this.libSearchEl.style.display = lib ? "" : "none";
       this.libListEl.style.display = lib ? "" : "none";
       this.fileSel.style.display = lib ? "none" : "";
@@ -1290,6 +1476,8 @@
 .tk-cards-btn:hover { border-color:#8b5cf6; color:#d6c8ff; }
 .tk-cards-btn:disabled { opacity:.4; cursor:default; }
 .tk-cards-btn-main { background:rgba(139,92,246,0.2); border-color:#8b5cf6; color:#d6c8ff; font-weight:600; }
+.tk-cards-btn-danger { background:rgba(255,90,90,.12); border-color:#ff6b6b; color:#ff9d9d; }
+.tk-cards-btn-danger:hover { background:rgba(255,90,90,.25); color:#ffd0d0; }
 .tk-cards-select { width:100%; background:var(--comfy-input-bg,#222); color:var(--fg-color,#ddd); border:1px solid var(--border-color,#444); border-radius:4px; font-size:10px; padding:3px 4px; max-width:100%; }
 .tk-cards-search { width:100%; box-sizing:border-box; background:var(--comfy-input-bg,#1b1e26); color:var(--fg-color,#ddd); border:1px solid var(--border-color,#383d4a); border-radius:4px; font-size:10px; padding:3px 6px; }
 .tk-cards-search:focus { outline:none; border-color:#8b5cf6; }
@@ -1330,6 +1518,7 @@
 .tk-cards-card:hover { border-color:#8b5cf6; background:rgba(139,92,246,.08); }
 .tk-cards-del { position:absolute; top:1px; right:2px; display:none; background:transparent; border:none; color:#ff8a8a; font-size:10px; cursor:pointer; padding:0 2px; line-height:1; }
 .tk-cards-card:hover .tk-cards-del { display:block; }
+.tk-cards-lib-item:hover .tk-cards-del { display:block; }
 .tk-cards-del:hover { color:#ff5555; }
 .tk-cards-del.arm { display:block; color:#ff5555; background:rgba(255,80,80,.18); border-radius:3px; font-weight:700; }
 .tk-cards-cat-btn { position:absolute; top:1px; right:14px; display:none; background:transparent; border:none; color:#c9b8ff; font-size:9px; cursor:pointer; padding:0 2px; line-height:1; }
@@ -1339,6 +1528,16 @@
 .tk-cards-quickcat-item { font-size:9px; text-align:left; padding:3px 6px; background:transparent; border:none; color:var(--fg-color,#ccc); cursor:pointer; border-radius:3px; }
 .tk-cards-quickcat-item:hover { background:rgba(139,92,246,.2); color:#e6dcff; }
 .tk-cards-quickcat-item.on { color:#c9b8ff; font-weight:600; }
+/* 拖拽排序（卡片/分类） */
+.tk-cards-grip { position:absolute; top:1px; left:2px; display:none; color:#777; font-size:9px; cursor:grab; user-select:none; }
+.tk-cards-card:hover .tk-cards-grip { display:block; }
+.tk-cards-grip:hover { color:#c9b8ff; }
+.tk-cards-pin { position:absolute; top:1px; right:26px; display:none; background:transparent; border:none; color:#ffb86c; font-size:9px; cursor:pointer; padding:0 2px; line-height:1; }
+.tk-cards-card:hover .tk-cards-pin { display:block; }
+.tk-cards-pin:hover { color:#ffd9a0; }
+.tk-cards-card.drag-over { border:1px dashed #8b5cf6; background:rgba(139,92,246,.15); }
+.tk-cards-cat[draggable="true"] { cursor:grab; }
+.tk-cards-cat.drag-over { border-color:#8b5cf6; background:rgba(139,92,246,.2); }
 .tk-cards-card.star { border-color:#f5c518; background:rgba(245,197,24,.05); }
 .tk-cards-card-en { font-size:10px; color:#e8e8e8; word-break:break-all; }
 .tk-cards-card-zh { font-size:9px; color:#9a9aa2; }
