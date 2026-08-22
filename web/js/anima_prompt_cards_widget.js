@@ -26,15 +26,20 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const escAttr = (s) => esc(s);
 
-  function apiFetch(path) {
+  function apiFetch(path, opts) {
+    // 新前端 fetchApi 会给路径自动加 /api 前缀（/anima/* 自定义路由会被改成
+    // /api/anima/* 导致 404）：这里直接用原生 fetch（同源页面最稳），
+    // 仅在 fetch 不可用时回退 fetchApi。
+    if (typeof fetch === "function") return fetch(path, opts);
     const api = window.comfyAPI?.api?.api || window.api;
-    if (api?.fetchApi) return api.fetchApi(path);
-    return fetch(path);
+    if (api?.fetchApi) return api.fetchApi(path, opts);
+    return Promise.reject(new Error("fetch 不可用"));
   }
   async function fetchJson(path, opts) {
-    // 统一 12s 超时：翻译链路最慢可到 ~1 分钟（五源回退），UI 不能被拖死
+    // 默认 12s 超时；opts.timeout 可覆盖（LLM 分类等长任务传更长）
+    const timeoutMs = (opts && opts.timeout) || 12000;
     const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-    const timer = ctrl ? setTimeout(() => ctrl.abort(), 12000) : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
     try {
       const r = await apiFetch(path, ctrl ? { ...(opts || {}), signal: ctrl.signal } : opts);
       if (!r.ok) throw new Error("HTTP " + r.status);
@@ -43,11 +48,12 @@
       if (timer) clearTimeout(timer);
     }
   }
-  function postJson(path, body) {
+  function postJson(path, body, timeoutMs) {
     return fetchJson(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      timeout: timeoutMs,
     });
   }
 
@@ -764,13 +770,13 @@
       for (const c of this.cardCats) name2id[c.name] = c.id;
       const fallbackId = name2id["通用"] || (this.cardCats[0] && this.cardCats[0].id) || "";
 
-      // 1) LLM 判定分类
+      // 1) LLM 判定分类（长超时：LLM 推理可能 10-60s）
       let suggestions = {};
       try {
         const res = await postJson("/anima/cards/classify", {
           cards: parts.map((p, i) => ({ id: String(i), text: p.text })),
           cats: catNames,
-        });
+        }, 90000);
         if (res.ok) {
           for (const r of res.result || []) {
             suggestions[r.id] = r.categoryName;
@@ -1305,7 +1311,7 @@
           res = await postJson("/anima/cards/classify", {
             cards: batch.map((c) => ({ id: c.id, text: c.prompt })),
             cats: catNames,
-          });
+          }, 90000);
         } catch (e) {
           this._flash("AI 分类失败：" + (e.message || e) + "（未配置 LLM？点「LLM」设置 Ollama 或 API 反代）", 5000);
           return;
