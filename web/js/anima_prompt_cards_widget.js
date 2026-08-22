@@ -212,6 +212,19 @@
     card.categoryId = ids[0] || ""; // 兼容旧字段（主分类）
     return card;
   }
+  const CAT_HINTS = {
+    "通用": "未归类/通用标签",
+    "角色": "动漫角色名/人名/角色昵称",
+    "画风": "风格/画师/渲染方式/画质风格",
+    "姿势": "动作/姿态/体位/肢体",
+    "场景": "环境/背景/地点/道具",
+    "质量词": "品质评分词：masterpiece、best quality、highres、score 等",
+    "LoRA 触发词": "LoRA/模型的触发词",
+    "服饰": "服装/穿着/配饰",
+  };
+  function catsInfoOf(cardCats) {
+    return (cardCats || []).map((c) => ({ name: c.name, hint: CAT_HINTS[c.name] || "" }));
+  }
   function cardInCat(card, catId) {
     return catIdsOf(card).includes(catId);
   }
@@ -827,12 +840,13 @@
       for (const c of this.cardCats) name2id[c.name] = c.id;
       const fallbackId = name2id["通用"] || (this.cardCats[0] && this.cardCats[0].id) || "";
 
-      // 1) LLM 判定分类（长超时：LLM 推理可能 10-60s）
+      // 1) LLM 判定分类（长超时：LLM 推理可能 10-60s；小批 30 提质量）
       let suggestions = {};
       try {
         const res = await postJson("/anima/cards/classify", {
           cards: parts.map((p, i) => ({ id: String(i), text: p.text })),
           cats: catNames,
+          cats_info: catsInfoOf(this.cardCats),
         }, 90000);
         if (res.ok) {
           for (const r of res.result || []) {
@@ -1468,15 +1482,16 @@
       const name2id = {};
       for (const c of this.cardCats) name2id[c.name] = c.id;
       const fallbackId = name2id["通用"] || (this.cardCats[0] && this.cardCats[0].id) || "";
-      this._flash(`AI 分类中：${todo.length} 张（每批 60，LLM 判定）…`);
+      this._flash(`AI 分类中：${todo.length} 张（每批 30，LLM 判定）…`);
       let okN = 0, missN = 0;
-      for (let i = 0; i < todo.length; i += 60) {
-        const batch = todo.slice(i, i + 60);
+      for (let i = 0; i < todo.length; i += 30) {
+        const batch = todo.slice(i, i + 30);
         let res;
         try {
           res = await postJson("/anima/cards/classify", {
             cards: batch.map((c) => ({ id: c.id, text: c.prompt })),
             cats: catNames,
+            cats_info: catsInfoOf(this.cardCats),
           }, 90000);
         } catch (e) {
           this._flash("AI 分类失败：" + (e.message || e) + "（未配置 LLM？点「LLM」设置 Ollama 或 API 反代）", 5000);

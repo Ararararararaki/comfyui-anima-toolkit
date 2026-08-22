@@ -467,9 +467,10 @@ def _extract_json_array(text: str) -> list:
 
 @PromptServer.instance.routes.post("/anima/cards/classify")
 async def cards_classify(request):
-    """LLM 自动分类。body: {cards: [{id, text}], cats: [分类名...]} → [{id, categoryName}]。
+    """LLM 自动分类（质量版提示词：准则 + few-shot + 分类释义）。
 
-    每次最多 60 张；LLM 返回的分类名由前端映射回分类 id（未知名字归「通用」）。
+    body: {cards: [{id, text}], cats: [分类名...], cats_info: [{name, hint}]}
+    → [{id, categoryName}]。批次上限 30（小批提升分类质量）。
     """
     try:
         body = await request.json()
@@ -482,16 +483,44 @@ async def cards_classify(request):
     if not isinstance(cats, list) or not cats:
         return web.json_response({"ok": False, "error": "cats 不能为空"}, status=400)
     cats = [str(c) for c in cats if str(c).strip()]
+    # 分类释义（可选）：cats_info 提供 name→hint，帮助模型理解自定义分类
+    cats_info = body.get("cats_info") or []
+    hints = {}
+    if isinstance(cats_info, list):
+        for ci in cats_info:
+            if isinstance(ci, dict) and ci.get("name"):
+                hints[str(ci["name"])] = str(ci.get("hint") or "").strip()
+    cat_labels = [f"{c}" + (f"（{hints[c]}）" if hints.get(c) else "") for c in cats]
     conf = _load_llm_conf()
 
-    batch = cards[:60]
+    batch = cards[:30]
     lines = []
     for c in batch:
         text = str(c.get("text") or "").strip()[:120]
         lines.append(f"{c.get('id')}: {text}")
-    system = ("你是提示词卡片分类助手。根据给定的分类列表，为每张卡片选择最合适的分类。"
-              "严格只输出 JSON 数组（与输入行一一对应），每个元素是分类列表中的名称之一，不要输出任何其他内容。")
-    user = f"分类列表：{json.dumps(cats, ensure_ascii=False)}\n\n卡片：\n" + "\n".join(lines)
+
+    system = (
+        "你是提示词标签分类助手。把每个提示词标签（卡片）归入最合适的分类。\n"
+        "分类准则：\n"
+        "1. 角色名/动漫角色/人名 → 角色类\n"
+        "2. 画风/风格/画师/渲染方式 → 画风类\n"
+        "3. 服装/服饰/穿着 → 服饰类（如有）\n"
+        "4. 动作/姿势/姿态/体位 → 姿势类\n"
+        "5. 场景/环境/背景/地点/道具 → 场景类\n"
+        "6. 品质/评分词（masterpiece、best quality、highres 等）→ 质量词类\n"
+        "7. LoRA/模型触发词 → LoRA 触发词类（如有）\n"
+        "8. 无法明确归类或列表中没有合适项 → 通用类\n"
+        "歧义标签选择最可能的分类；宁选「通用」也不硬塞错误分类。\n"
+        "只输出 JSON 数组：每个元素是「分类列表」中的名称之一，与输入行一一对应。"
+        "不要输出任何解释、编号或多余文本。"
+    )
+    user = (
+        f"分类列表：{json.dumps(cat_labels, ensure_ascii=False)}\n\n"
+        "示例（演示归类逻辑，分类名可能与你的列表不同）：\n"
+        '输入卡片：\n1: skadi (arknights)\n2: masterpiece, best quality\n3: sitting on a chair, legs crossed\n'
+        '输出：["角色", "质量词", "姿势"]\n\n'
+        "待分类卡片（行号: 内容）：\n" + "\n".join(lines)
+    )
 
     try:
         out = await _llm_chat([{"role": "system", "content": system},
@@ -503,6 +532,13 @@ async def cards_classify(request):
     result = []
     for i, c in enumerate(batch):
         name = parsed[i] if i < len(parsed) else ""
+        # 归一容错：模型可能原样复制「名称（释义）」或带引号/空格
+        if name not in cats:
+            base = str(name).split("（")[0].strip()
+            if base in cats:
+                name = base
+            else:
+                name = ""
         result.append({"id": str(c.get("id")), "categoryName": name})
     return web.json_response({"ok": True, "result": result})
 
