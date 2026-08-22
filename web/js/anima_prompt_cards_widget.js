@@ -1352,7 +1352,7 @@
       if (baseUrl === null) return;
       const model = prompt(`模型名（Ollama 自动探测，可留空）：`, conf.model || "");
       if (model === null) return;
-      const key = prompt(`API Key（反代需要时填；Ollama 可留空）：`, "");
+      const key = prompt(`API Key（反代需要时填；Ollama 可留空。留空=保持已有 Key！若当前配置正常请直接留空回车）`, "");
       if (key === null) return;
       try {
         await postJson("/anima/llm/config", { mode, base_url: baseUrl, model, api_key: key });

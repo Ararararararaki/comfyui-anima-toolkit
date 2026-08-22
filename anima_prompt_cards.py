@@ -328,7 +328,7 @@ async def cards_lora_triggers(request):
 
 # ── LLM 自动分类（卡片库；Ollama 本地优先，其次 OpenAI 兼容反代）──
 
-LLM_CONF_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+LLM_CONF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 LLM_CONF_PATH = os.path.join(LLM_CONF_DIR, "llm_config.json")
 LLM_CONF_LOCK = threading.Lock()
 OLLAMA_BASE = "http://127.0.0.1:11434"
@@ -431,7 +431,13 @@ async def llm_config_set(request):
     if "base_url" in body:
         conf["base_url"] = str(body["base_url"] or "").strip()
     if "api_key" in body:
-        conf["api_key"] = str(body["api_key"] or "").strip()
+        new_key = str(body["api_key"] or "").strip()
+        if new_key:
+            conf["api_key"] = new_key
+        # 留空 = 保留已有 key（防止 UI 保存时误清空导致 502）
+        # 显式清除用 "api_key_clear": true
+        if body.get("api_key_clear"):
+            conf["api_key"] = ""
     if "model" in body:
         conf["model"] = str(body["model"] or "").strip()
     _save_llm_conf(conf)
