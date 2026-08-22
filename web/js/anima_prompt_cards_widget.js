@@ -140,22 +140,19 @@
 
   const CJK_RE = /[\u4e00-\u9fff\u3400-\u4dbf]/;
 
-  // 拆分提示词 → 卡片片段（[{text, weight}]）：
-  // 换行 > 中文顿号/逗号/分号 > 英文逗号兜底；>60 且含英文逗号视为整句不拆
+  // 拆分提示词 → 片段列表（[{text, weight}]）：
+  // 按换行分段，段内按所有逗号（中文顿号/逗号/分号/英文逗号）全部分割。
+  // 2026-08-18 用户要求：所有逗号都应分割（不做长句保留；组合卡展开=内部 tag 可拆）。
   function splitTags(text) {
     const out = [];
     for (let rawLine of String(text || "").split(/\r?\n/)) {
       const line = rawLine.trim();
       if (!line) continue;
-      const cnParts = line.split(/[、，;；]/).map((s) => s.trim()).filter(Boolean);
-      for (let part of cnParts) {
-        if (part.length > 60 && part.includes(",")) { out.push({ text: part, weight: "" }); continue; }
-        const enParts = part.split(",").map((s) => s.trim()).filter(Boolean);
-        for (let p of enParts) {
-          const m = p.match(/^\((.+):([0-9.]+)\)$/);
-          if (m) { out.push({ text: m[1].trim(), weight: m[2] }); continue; }
-          out.push({ text: p, weight: "" });
-        }
+      const parts = line.split(/[、，,;；]/).map((s) => s.trim()).filter(Boolean);
+      for (let p of parts) {
+        const m = p.match(/^\((.+):([0-9.]+)\)$/);
+        if (m) { out.push({ text: m[1].trim(), weight: m[2] }); continue; }
+        out.push({ text: p, weight: "" });
       }
     }
     return out;
@@ -313,13 +310,7 @@
         sub.textContent = String(p.prompt || "").slice(0, 90);
         row.appendChild(head);
         row.appendChild(sub);
-        const save = document.createElement("button");
-        save.type = "button";
-        save.className = "tk-cards-btn tk-cards-lib-more";
-        save.textContent = "…";
-        save.title = "更多操作（待扩展）";
         row.addEventListener("click", (ev) => {
-          if (ev.target === save) return;
           this._setW(this.w.positive, p.prompt || "");
           if (this.curTextEl) this.curTextEl.value = p.prompt || "";
           this._renderChips();
@@ -514,25 +505,31 @@
       const parts = splitTags(this.curText());
       this.chipsEl.innerHTML = "";
       if (!parts.length) {
-        this.chipsEl.innerHTML = `<div class="tk-cards-empty">输入提示词后自动按逗号分组（点击片段=存为卡片；右键=移除）</div>`;
+        this.chipsEl.innerHTML = `<div class="tk-cards-empty">输入提示词后自动按逗号分组（点击片段=存为卡片；hover ✕=移除）</div>`;
         return;
       }
       for (const p of parts) {
         const chip = document.createElement("span");
         chip.className = "tk-cards-chip";
-        chip.title = "点击存为卡片；右键删除该片段";
+        chip.title = "点击存为卡片；hover ✕ 移除该片段";
         chip.textContent = p.weight ? `(${p.text}:${p.weight})` : p.text;
         chip.addEventListener("click", (ev) => {
           ev.stopPropagation();
           this.addCard(this.curCat, { en: p.text, zh: "", weight: p.weight });
         });
-        chip.addEventListener("contextmenu", (ev) => {
-          ev.preventDefault();
+        const x = document.createElement("button");
+        x.type = "button";
+        x.className = "tk-cards-chip-x";
+        x.textContent = "✕";
+        x.title = "从当前提示词移除该片段";
+        x.addEventListener("click", (ev) => {
+          ev.stopPropagation();
           const next = removePiece(this.curText(), p);
           this._setW(this.w.positive, next);
           if (this.curTextEl) this.curTextEl.value = next;
           this._renderChips();
         });
+        chip.appendChild(x);
         this.chipsEl.appendChild(chip);
       }
     }
@@ -609,7 +606,7 @@
         const el = document.createElement("div");
         el.className = "tk-cards-card" + (c.isFavorite ? " star" : "");
         el.setAttribute("data-id", c.id);
-        el.title = "单击追加到当前提示词（去重） · 双击编辑 · 右键删除";
+        el.title = "单击追加到当前提示词（去重） · 双击编辑 · hover ✕ 删除";
         const en = document.createElement("div");
         en.className = "tk-cards-card-en";
         en.textContent = String(c.prompt || "").length > 60 ? String(c.prompt).slice(0, 58) + "…" : (c.prompt || "");
@@ -623,11 +620,22 @@
           (c.weight ? `<span class="tk-cards-w">${esc(c.weight)}</span>` : "") +
           (c.lora ? `<span class="tk-cards-lora">L:${esc(String(c.lora).split("/").pop().replace(/\.safetensors$/, ""))}</span>` : "") +
           (c.multi ? `<span class="tk-cards-multi">组合</span>` : "");
+        // 删除按钮（hover 显示；避免右键与 ComfyUI 冲突）
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "tk-cards-del";
+        del.textContent = "✕";
+        del.title = "删除卡片（可撤销）";
+        del.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          this.removeEntry(c.id);
+        });
         el.appendChild(en);
         el.appendChild(zh);
         el.appendChild(meta);
+        el.appendChild(del);
         el.addEventListener("click", (ev) => {
-          if (ev.target.closest(".tk-cards-star")) return;
+          if (ev.target.closest(".tk-cards-star") || ev.target.closest(".tk-cards-del")) return;
           const cur = this.curText();
           const next = appendCardToPrompt(cur, c);
           this._setW(this.w.positive, next);
@@ -636,16 +644,12 @@
           if (next === cur) this._flash("该卡片已在提示词中（已去重）");
         });
         el.addEventListener("dblclick", (ev) => {
-          if (ev.target.closest(".tk-cards-star")) return;
+          if (ev.target.closest(".tk-cards-star") || ev.target.closest(".tk-cards-del")) return;
           this.beginEdit(c.id, el, c);
         });
         el.querySelector(".tk-cards-star").addEventListener("click", (ev) => {
           ev.stopPropagation();
           this.toggleFavorite(c.id);
-        });
-        el.addEventListener("contextmenu", (ev) => {
-          ev.preventDefault();
-          this.removeEntry(c.id);
         });
         this.cardGridEl.appendChild(el);
       }
@@ -911,12 +915,12 @@
       const libTab = document.createElement("button");
       libTab.type = "button";
       libTab.className = "tk-cards-btn";
-      libTab.textContent = "📂 批文件导入";
+      libTab.textContent = "批文件";
       libTab.addEventListener("click", () => this._switchLibPane("batch"));
       const libTabAll = document.createElement("button");
       libTabAll.type = "button";
       libTabAll.className = "tk-cards-btn tk-cards-btn-main";
-      libTabAll.textContent = "📚 库浏览";
+      libTabAll.textContent = "库浏览";
       libTabAll.addEventListener("click", () => this._switchLibPane("lib"));
       libBtns.appendChild(libTabAll);
       libBtns.appendChild(libTab);
@@ -950,16 +954,20 @@
       const curBtns = document.createElement("div");
       curBtns.className = "tk-cards-sec-btns";
       const clipboardBtn = document.createElement("button");
-      clipboardBtn.type = "button"; clipboardBtn.className = "tk-cards-btn"; clipboardBtn.textContent = "📋 剪切板";
+      clipboardBtn.type = "button"; clipboardBtn.className = "tk-cards-btn"; clipboardBtn.textContent = "📋";
+      clipboardBtn.title = "从剪切板导入并拆分";
       clipboardBtn.addEventListener("click", () => this.importClipboard());
       const pngBtn = document.createElement("button");
-      pngBtn.type = "button"; pngBtn.className = "tk-cards-btn"; pngBtn.textContent = "🖼 解析图片";
+      pngBtn.type = "button"; pngBtn.className = "tk-cards-btn"; pngBtn.textContent = "🖼";
+      pngBtn.title = "解析 PNG 元数据为提示词";
       pngBtn.addEventListener("click", () => this.showPngDialog());
       const draftBtn = document.createElement("button");
-      draftBtn.type = "button"; draftBtn.className = "tk-cards-btn"; draftBtn.textContent = "↩ 草稿";
+      draftBtn.type = "button"; draftBtn.className = "tk-cards-btn"; draftBtn.textContent = "↩";
+      draftBtn.title = "恢复草稿（切组/切库前自动暂存）";
       draftBtn.addEventListener("click", () => this.restoreDraft());
       const clearBtn = document.createElement("button");
-      clearBtn.type = "button"; clearBtn.className = "tk-cards-btn"; clearBtn.textContent = "清空";
+      clearBtn.type = "button"; clearBtn.className = "tk-cards-btn"; clearBtn.textContent = "✕";
+      clearBtn.title = "清空当前提示词";
       clearBtn.addEventListener("click", () => { this._setW(this.w.positive, ""); if (this.curTextEl) this.curTextEl.value = ""; this._renderChips(); });
       curBtns.appendChild(clipboardBtn); curBtns.appendChild(pngBtn); curBtns.appendChild(draftBtn); curBtns.appendChild(clearBtn);
       curHead.appendChild(curBtns);
@@ -975,7 +983,7 @@
       const saveAllBtn = document.createElement("button");
       saveAllBtn.type = "button"; saveAllBtn.className = "tk-cards-btn tk-cards-btn-main";
       saveAllBtn.textContent = "＋ 整段存组合卡";
-      saveAllBtn.title = "把当前提示词整段存入当前分类（点它=整段追加，展开=内部 tag 可拆）";
+      saveAllBtn.title = "把当前提示词整段存入当前分类（点它=整段追加，可拆 tag 编辑）";
       saveAllBtn.addEventListener("click", () => this.saveCurrentAsCard());
       const undoBtn = document.createElement("button");
       undoBtn.type = "button"; undoBtn.className = "tk-cards-btn";
@@ -1001,13 +1009,16 @@
       kindAll.textContent = "全部";
       kindAll.addEventListener("click", () => { this.curKind = this.curKind === "all" ? "card" : "all"; kindAll.classList.toggle("tk-cards-btn-main", this.curKind === "all"); this._renderCatTabs(); this._renderCards(); });
       const loraBtn = document.createElement("button");
-      loraBtn.type = "button"; loraBtn.className = "tk-cards-btn tk-cards-btn-main"; loraBtn.textContent = "📚 浏览 LoRA";
+      loraBtn.type = "button"; loraBtn.className = "tk-cards-btn tk-cards-btn-main"; loraBtn.textContent = "LoRA";
+      loraBtn.title = "浏览 LoRA → 一键收藏触发词卡片 / 追加触发词";
       loraBtn.addEventListener("click", () => this.showLoraDialog());
       const tlBtn = document.createElement("button");
-      tlBtn.type = "button"; tlBtn.className = "tk-cards-btn"; tlBtn.textContent = "🌐 批量补翻";
+      tlBtn.type = "button"; tlBtn.className = "tk-cards-btn"; tlBtn.textContent = "补翻";
+      tlBtn.title = "批量翻译缺中文注释的卡片";
       tlBtn.addEventListener("click", () => this.batchTranslate());
       const exBtn = document.createElement("button");
-      exBtn.type = "button"; exBtn.className = "tk-cards-btn"; exBtn.textContent = "⇪ 导出批文件";
+      exBtn.type = "button"; exBtn.className = "tk-cards-btn"; exBtn.textContent = "导出";
+      exBtn.title = "导出卡片为批文件（input/prompts/）";
       exBtn.addEventListener("click", () => this.exportCards());
       cardBtns.appendChild(kindAll); cardBtns.appendChild(loraBtn); cardBtns.appendChild(tlBtn); cardBtns.appendChild(exBtn);
       cardHead.appendChild(cardBtns);
@@ -1046,12 +1057,12 @@
     const s = document.createElement("style");
     s.id = "anima-cards-style";
     s.textContent = `
-.tk-cards-ui { display:flex; flex-direction:column; gap:6px; width:100%; min-width:280px; font-size:11px; color:var(--fg-color,#ccc); }
-.tk-cards-status { font-size:10px; color:#8b5cf6; min-height:12px; }
-.tk-cards-sec { display:flex; flex-direction:column; gap:4px; border:1px solid var(--border-color,#2a2a2a); border-radius:6px; padding:5px; background:rgba(255,255,255,0.02); }
-.tk-cards-sec-head { display:flex; align-items:center; justify-content:space-between; font-size:11px; color:#c9b8ff; }
-.tk-cards-sec-btns { display:flex; gap:4px; flex-wrap:wrap; }
-.tk-cards-btn { font-size:10px; padding:2px 8px; background:var(--comfy-input-bg,#222); color:var(--fg-color,#bbb); border:1px solid var(--border-color,#4a4a52); border-radius:4px; cursor:pointer; transition:border-color .15s,color .15s,background .15s; }
+.tk-cards-ui { display:flex; flex-direction:column; gap:4px; width:100%; min-width:260px; font-size:11px; color:var(--fg-color,#ccc); }
+.tk-cards-status { font-size:10px; color:#8b5cf6; min-height:11px; }
+.tk-cards-sec { display:flex; flex-direction:column; gap:3px; border:1px solid var(--border-color,#2a2a2a); border-radius:5px; padding:3px 4px; background:rgba(255,255,255,0.02); }
+.tk-cards-sec-head { display:flex; align-items:center; justify-content:space-between; font-size:10px; color:#c9b8ff; min-height:14px; }
+.tk-cards-sec-btns { display:flex; gap:3px; flex-wrap:wrap; }
+.tk-cards-btn { font-size:9px; padding:1px 6px; background:var(--comfy-input-bg,#222); color:var(--fg-color,#bbb); border:1px solid var(--border-color,#4a4a52); border-radius:3px; cursor:pointer; transition:border-color .15s,color .15s,background .15s; }
 .tk-cards-btn:hover { border-color:#8b5cf6; color:#d6c8ff; }
 .tk-cards-btn:disabled { opacity:.4; cursor:default; }
 .tk-cards-btn-main { background:rgba(139,92,246,0.2); border-color:#8b5cf6; color:#d6c8ff; font-weight:600; }
@@ -1073,8 +1084,11 @@
 .tk-cards-textarea { width:100%; min-height:64px; box-sizing:border-box; background:var(--comfy-input-bg,#1b1e26); color:var(--fg-color,#ddd); border:1px solid var(--border-color,#383d4a); border-radius:4px; font-size:11px; padding:4px 6px; resize:vertical; }
 .tk-cards-textarea:focus { outline:none; border-color:#8b5cf6; }
 .tk-cards-chips { display:flex; flex-wrap:wrap; gap:4px; max-height:90px; overflow:auto; }
-.tk-cards-chip { font-size:10px; padding:2px 7px; background:rgba(139,92,246,.12); border:1px solid rgba(139,92,246,.4); border-radius:10px; cursor:pointer; color:#d6c8ff; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tk-cards-chip { font-size:10px; padding:1px 14px 1px 6px; position:relative; background:rgba(139,92,246,.12); border:1px solid rgba(139,92,246,.4); border-radius:10px; cursor:pointer; color:#d6c8ff; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tk-cards-chip:hover { border-color:#8b5cf6; background:rgba(139,92,246,.25); }
+.tk-cards-chip-x { position:absolute; top:0; right:0; bottom:0; display:none; background:transparent; border:none; color:#ff8a8a; font-size:9px; cursor:pointer; padding:0 3px; }
+.tk-cards-chip:hover .tk-cards-chip-x { display:block; }
+.tk-cards-chip-x:hover { color:#ff5555; }
 .tk-cards-cur-tools { display:flex; gap:4px; }
 .tk-cards-cats { display:flex; flex-wrap:wrap; gap:4px; }
 .tk-cards-cat { font-size:10px; padding:2px 8px; background:var(--comfy-input-bg,#222); color:var(--fg-color,#999); border:1px solid var(--border-color,#444); border-radius:10px; cursor:pointer; }
@@ -1082,8 +1096,11 @@
 .tk-cards-cat.on { background:rgba(139,92,246,.2); border-color:#8b5cf6; color:#e6dcff; font-weight:600; }
 .tk-cards-cat-add { border-style:dashed; color:#888; }
 .tk-cards-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:5px; max-height:240px; overflow:auto; }
-.tk-cards-card { border:1px solid var(--border-color,#383d4a); border-radius:6px; padding:4px 6px; cursor:pointer; background:rgba(255,255,255,.02); display:flex; flex-direction:column; gap:2px; transition:border-color .15s,background .15s; }
+.tk-cards-card { position:relative; border:1px solid var(--border-color,#383d4a); border-radius:5px; padding:3px 5px; cursor:pointer; background:rgba(255,255,255,.02); display:flex; flex-direction:column; gap:1px; transition:border-color .15s,background .15s; }
 .tk-cards-card:hover { border-color:#8b5cf6; background:rgba(139,92,246,.08); }
+.tk-cards-del { position:absolute; top:1px; right:2px; display:none; background:transparent; border:none; color:#ff8a8a; font-size:10px; cursor:pointer; padding:0 2px; line-height:1; }
+.tk-cards-card:hover .tk-cards-del { display:block; }
+.tk-cards-del:hover { color:#ff5555; }
 .tk-cards-card.star { border-color:#f5c518; background:rgba(245,197,24,.05); }
 .tk-cards-card-en { font-size:10px; color:#e8e8e8; word-break:break-all; }
 .tk-cards-card-zh { font-size:9px; color:#9a9aa2; }

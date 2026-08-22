@@ -36,7 +36,11 @@ function eq(name, actual, expected) {
 eq('中文顿号拆分', dbg.splitTags('单身, 白色过膝袜、绝对领域'), [{text:'单身',weight:''},{text:'白色过膝袜',weight:''},{text:'绝对领域',weight:''}]);
 eq('英文逗号拆分', dbg.splitTags('masterpiece, best quality, 1girl'), [
   {text:'masterpiece',weight:''},{text:'best quality',weight:''},{text:'1girl',weight:''}]);
-eq('长句不拆', (() => { const long = 'A cinematic wide-format anime illustration of an elegant silver-haired young woman crouching beside a long, shallow reflecting pool in a vast futuristic public plaza, viewed in profile.'; const r = dbg.splitTags(long); return r.length === 1 && r[0].text === long; })(), true);
+eq('长句也全拆（用户要求所有逗号都分割）', (() => {
+  const long = 'A cinematic illustration of a girl, long hair, blue eyes, in a park';
+  const r = dbg.splitTags(long);
+  return r.length === 4 && r[0].text === 'A cinematic illustration of a girl';
+})(), true);
 eq('权重括号', dbg.splitTags('(long hair:1.2), solo'), [{text:'long hair',weight:'1.2'},{text:'solo',weight:''}]);
 eq('换行拆分', dbg.splitTags('1girl\nsolo focus'), [{text:'1girl',weight:''},{text:'solo focus',weight:''}]);
 eq('空输入', dbg.splitTags(''), []);
