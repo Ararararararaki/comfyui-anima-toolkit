@@ -620,10 +620,18 @@
       this.cards = this.cards.filter((p) => p.id !== id);
     }
 
-    // 保存卡片（tag 级 / 组合卡）→ 卡片库。先落库（立即可用），自动翻译异步补注释
+    // 保存卡片（tag 级 / 组合卡）→ 卡片库。先落库（立即可用），自动翻译异步补注释。
+    // 查重：全库存在相同英文文本（忽略大小写/首尾空白）→ 跳过并提示，不产生重复卡。
     async addCard(catId, card, { multi = false } = {}) {
       const en = String(card.en || card.prompt || "").trim();
-      if (!en) { this._flash("内容为空"); return; }
+      if (!en) { this._flash("内容为空"); return { skipped: true }; }
+      const enKey = en.toLowerCase();
+      const dup = this.cards.find((c) => String(c.prompt || "").trim().toLowerCase() === enKey);
+      if (dup) {
+        const catName = CAT_NAME(this.cardCats.find((c) => c.id === dup.categoryId)) || "未知分类";
+        this._flash(`已跳过：库中已存在「${en.slice(0, 24)}…」于「${catName}」`, 3000);
+        return { skipped: true, dupCat: dup.categoryId };
+      }
       const cat = catId || this.curCat || (this.cardCats[0] && this.cardCats[0].id) || "uncategorized";
       const zh0 = String(card.zh || card.notes || "").trim();
       const entry = {
@@ -655,6 +663,7 @@
           });
         }).catch(() => { /* 翻译失败保留待翻译 */ });
       }
+      return { skipped: false };
     }
 
     async removeEntry(id) {
@@ -788,12 +797,12 @@
         // LLM 不可用：询问是否按当前分类直接入卡
         const ok = confirm("LLM 分类不可用（" + (e.message || e) + "）。\n是否仍按当前分类直接入卡？（可先点「LLM」配置 Ollama/API 反代）");
         if (!ok) return;
-        let n = 0;
+        let n = 0, skipN = 0;
         for (const p of parts) {
-          await this.addCard(this.curCat, { en: p.text, zh: this.piecesZh.get(p.text) || "", weight: p.weight });
-          n++;
+          const r = await this.addCard(this.curCat, { en: p.text, zh: this.piecesZh.get(p.text) || "", weight: p.weight });
+          if (r && r.skipped) skipN++; else n++;
         }
-        this._flash(`已按当前分类入卡：${n} 段`);
+        this._flash(`已按当前分类入卡：${n} 段${skipN ? `，${skipN} 段已存在已跳过` : ""}`);
         return;
       }
 
@@ -825,17 +834,17 @@
       overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
       overlay.querySelector('[data-a="confirm"]').addEventListener("click", async () => {
         const rows = overlay.querySelectorAll(".tk-cards-ai-row");
-        let n = 0;
+        let n = 0, skipN = 0;
         for (const row of rows) {
           const i = parseInt(row.getAttribute("data-i"), 10);
           const p = parts[i];
           if (!p) continue;
           const catId = row.querySelector(".tk-cards-ai-cat").value;
-          await this.addCard(catId, { en: p.text, zh: this.piecesZh.get(p.text) || "", weight: p.weight });
-          n++;
+          const r = await this.addCard(catId, { en: p.text, zh: this.piecesZh.get(p.text) || "", weight: p.weight });
+          if (r && r.skipped) skipN++; else n++;
         }
         close();
-        this._flash(`已确认入卡：${n} 段（按确认的分类归档）`);
+        this._flash(`已确认入卡：${n} 段${skipN ? `（${skipN} 段库中已存在已跳过）` : ""}`);
       });
     }
 
