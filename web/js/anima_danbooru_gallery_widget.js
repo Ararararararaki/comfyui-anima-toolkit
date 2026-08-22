@@ -26,11 +26,20 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
 
   const MAX_TAGS = 8; // 搜索框最多保留 8 个标签（后端 MAX_SEARCH_TAGS=12；Member 上限 2、Gold 6，足够覆盖）
   const FREE_METATAGS = new Set(["rating", "status", "is", "age", "date", "id", "limit", "score", "downvotes", "favcount", "width", "height", "ratio", "mpixels", "filesize", "filetype", "duration", "md5", "pixiv_id", "pixiv", "parent", "child", "upvote", "embedded", "tagcount"]);
-  // 慢排序：D站 对无时间窗的评分/收藏/随机排序会数据库超时 500，前端自动附带一个免费 metatag 时间窗（与后端常量一致）。
-  const SLOW_ORDERS = new Set(["score", "favcount", "random"]);
-  const DEFAULT_SLOW_ORDER_AGE = "1week";
   const DANBOORU_TAG_LIMIT = 2;
   const ORDER_LABELS = { score: "评分", favcount: "收藏", random: "随机", rank: "综合" };
+
+  // 搜索栏按空格分词的词级替换：点击补全建议时只替换光标所在的那一个标签，
+  // 保留其余标签与空格（光标在词后/词中/空白处均正确处理；空栏 = 直接填入）。
+  function replaceWordAt(raw, pos, replacement) {
+    const str = String(raw ?? "");
+    const at = Math.max(0, Math.min(str.length, Number.isFinite(pos) ? pos : str.length));
+    let end = at;
+    while (end < str.length && str[end] !== " ") end++;
+    let start = at;
+    while (start > 0 && str[start - 1] !== " ") start--;
+    return str.slice(0, start) + replacement + str.slice(end);
+  }
 
   function normalizeTags(rawValue) {
     const seen = new Set();
@@ -172,11 +181,9 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
     currentQuery() {
       const raw = this.queryWidget?.value || this.settings.lastQuery || "";
       const f = this.settings.filters;
-      // 评分/收藏/随机排序若不带时间窗，D站 会对全库排序造成数据库超时 500：
-      // 自动附带一个时间窗（age 是免费 metatag，不占计数槽）。用户显式设置了 age 时尊重用户选择。
-      const autoWindow = Boolean(f.order && SLOW_ORDERS.has(f.order) && !f.age && !f.ageDays);
-      this._autoWindow = autoWindow;
-      const age = autoWindow ? DEFAULT_SLOW_ORDER_AGE : (f.age || (f.ageDays ? `${f.ageDays}days` : ""));
+      // 评分/收藏/随机排序不再默认附加时间窗（用户显式设置 age/天数时遵循用户选择）。
+      // 全库排序被 D站 拒绝时由后端自动降级附加时间窗重试（响应 warnings 会提示）。
+      const age = f.age || (f.ageDays ? `${f.ageDays}days` : "");
       // ⚠️ age 必须带 < 前缀（D站 的 age:1day 是「恰好一天前」等值语义，会显示过期内容；< 才是近 N 天）
       const ageToken = age ? `age:<${age}` : "";
       const RATIO_TOKENS = { wide: "ratio:>1", tall: "ratio:<1", square: "ratio:>=0.9 ratio:<=1.1", ultrawide: "ratio:>=1.5" };
@@ -204,6 +211,13 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
     }
 
     async search({ resetPage = false, force = false, skipFuzzy = false } = {}) {
+      // 分类浏览模式下发起新搜索 = 回到普通搜索视图（分类只作用于本地浏览，搜索条件与分类无关）
+      if (this.settings.activeCategory) {
+        this.settings.activeCategory = "";
+        this.saveSettings();
+        this.filterControls?.refresh();
+      }
+      this._searchSnapshot = null; // 新搜索后 posts 即将被覆盖，分类快照失效
       this._droppedOrder = false;
       // 工作流恢复/外部修改时，确保输入框与序列化 widget 一致（widget 是权威值）
       if (this.queryInput && this.queryWidget && String(this.queryInput.value) !== String(this.queryWidget.value ?? "")) {
@@ -294,7 +308,6 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         const source = data.cached ? "缓存" : "D站";
         const notices = [];
         if (Array.isArray(data.warnings) && data.warnings.length) notices.push(...data.warnings.map(String));
-        if (this._autoWindow && this.settings.filters.order) notices.push(`「${ORDER_LABELS[this.settings.filters.order] || this.settings.filters.order}」排序已自动限定近 1 周，否则 D站 会超时`);
         if (this._droppedOrder) notices.push(`已自动移除「${ORDER_LABELS[this._droppedOrder] || this._droppedOrder}」排序，按最新显示（匿名最多 2 个计数标签）`);
         const exclNotice = excludeTags.length ? `已排除 ${excludeTags.join("、")} ${excludedCount} 张` : "";
         this.setStatus(`${source}：${this.posts.length} 张 · 第 ${this.page} 页` + (exclNotice ? `（${exclNotice}）` : "") + (notices.length ? `（${notices.join("；")}）` : ""));
@@ -314,7 +327,75 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         if (currentRequest === this.requestId && this.grid) this.grid.removeAttribute("aria-busy");
       }
     }
-    async fetchSuggestions(q, empty = false) { if (!this.suggestions || !q?.trim()) return; try { const d = await (await fetch(`/anima/danbooru/suggest?q=${encodeURIComponent(q)}`)).json(); const a = empty ? d.didYouMean : d.suggestions; const r = d.rewrites || []; this.suggestions.innerHTML = a?.length ? `${empty ? '你是不是想搜：' : '智能提示：'}${a.map(x => `<button data-q="${x}">${x}</button>`).join('')} ${r.length ? `扩展：${r.join(' / ')}` : ''}` : ''; this.suggestions.querySelectorAll('button').forEach(b => b.onclick = () => { this.setQuery(b.dataset.q); this.search({resetPage:true}); }); } catch {} }
+    // 分类切换 = 本地分类浏览模式：不再过滤当前搜索页，而是按 id 从 D站 拉取
+    // 该分类全部已归类图片（id 是免费 metatag，不占计数槽；一次最多 48 个 id，分批合取）。
+    async applyActiveCategory(catId) {
+      this.settings.activeCategory = catId;
+      this.saveSettings();
+      this.filterControls?.refresh();
+      this.controller?.abort();
+      if (!catId) {
+        // 全部分类：恢复进入分类浏览前的普通搜索视图
+        this.posts = this._searchSnapshot || this.posts;
+        this.renderPosts();
+        this.renderPagination();
+        this.setStatus(this.posts.length ? "已切换为全部分类（恢复之前的搜索结果）" : "");
+        return;
+      }
+      // 进入分类浏览前保存普通搜索视图快照（切回时恢复）
+      this._searchSnapshot = this._searchSnapshot || this.posts;
+      const catName = this.settings.categories.find((c) => c.id === catId)?.name || catId;
+      const ids = Object.entries(this.settings.postCategories)
+        .filter(([, cid]) => cid === catId)
+        .map(([pid]) => pid);
+      if (!ids.length) {
+        this.posts = [];
+        this.renderPosts();
+        this.renderPagination();
+        this.setStatus(`分类「${catName}」还没有图片：在搜索页点图片卡片的「分类」即可归类`, "");
+        return;
+      }
+      const targetId = catId;
+      this.setStatus(`正在加载分类「${catName}」${ids.length} 张…`);
+      if (this.grid) this.grid.setAttribute("aria-busy", "true");
+      const posts = [];
+      try {
+        for (let i = 0; i < ids.length; i += 48) {
+          const batch = ids.slice(i, i + 48).join(",");
+          const params = new URLSearchParams({ tags: `id:${batch}`, page: "1", limit: "48" });
+          const response = await fetch(`/anima/danbooru/posts?${params}`);
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+          if (Array.isArray(data.posts)) posts.push(...data.posts);
+          // 竞态：期间用户又切换了分类/发起了搜索 → 放弃本次渲染
+          if (this.settings.activeCategory !== targetId) return;
+        }
+      } catch (error) {
+        if (this.settings.activeCategory === targetId) {
+          this.posts = [];
+          this.renderPosts();
+          this.renderPagination();
+          this.setStatus(`加载分类「${catName}」失败：${error?.message || "未知错误"}`, "error");
+        }
+        return;
+      } finally {
+        if (this.grid) this.grid.removeAttribute("aria-busy");
+      }
+      this.posts = posts;
+      this.renderPosts();
+      this.renderPagination();
+      const missing = ids.length - posts.length;
+      this.setStatus(`分类「${catName}」：${posts.length} 张已归类图片（覆盖全部搜索历史）${missing ? `，${missing} 张原图已失效跳过` : ""}`);
+    }
+
+    async fetchSuggestions(q, empty = false) { if (!this.suggestions || !q?.trim()) return; try { const d = await (await fetch(`/anima/danbooru/suggest?q=${encodeURIComponent(q)}`)).json(); const a = empty ? d.didYouMean : d.suggestions; const r = d.rewrites || []; this.suggestions.innerHTML = a?.length ? `${empty ? '你是不是想搜：' : '智能提示：'}${a.map(x => `<button data-q="${x}">${x}</button>`).join('')} ${r.length ? `扩展：${r.join(' / ')}` : ''}` : ''; this.suggestions.querySelectorAll('button').forEach(b => b.onclick = () => {
+        // 智能提示 = 词级替换：只替换光标所在标签（保留其余标签）；「你是不是想搜」为空结果纠错，整栏替换
+        const input = this.queryInput;
+        const raw = input?.value ?? this.queryWidget?.value ?? "";
+        const pos = input?.selectionStart ?? raw.length;
+        this.setQuery(empty ? b.dataset.q : replaceWordAt(raw, pos, b.dataset.q));
+        this.search({ resetPage: true });
+      }); } catch {} }
 
     // 模糊纠错后自动重搜（仅执行一次；此后用户再点搜索会走新的精确词）
     async fuzzyRetry(query) {
@@ -471,6 +552,14 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
     renderPagination() {
       if (!this.pagination) return;
       this.pagination.replaceChildren();
+      if (this.settings.activeCategory) {
+        const badge = document.createElement("span");
+        badge.className = "adg-cat-mode-badge";
+        badge.textContent = "本地分类浏览";
+        badge.title = "当前为该分类全部已归类图片；搜索或翻页即返回普通搜索";
+        this.pagination.append(badge);
+        return;
+      }
       for (const page of this.pageWindow()) {
         const button = document.createElement("button");
         button.type = "button"; button.textContent = String(page); button.classList.toggle("active", page === this.page);
@@ -1144,6 +1233,11 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           if (patch.filters) patch.filters = normalizeFilters(patch.filters);
           Object.assign(this.settings, patch);
           this.saveSettings();
+          // 分类切换 = 本地浏览模式（按 id 全量拉取），不走通用渲染/搜索
+          if (patch.activeCategory !== undefined) {
+            this.applyActiveCategory(patch.activeCategory);
+            return;
+          }
           if (render) this.renderPosts();
           if (search) this.search({ resetPage: true });
         },

@@ -145,6 +145,73 @@ with sync_playwright() as p:
     check("切回全部分类保留搜索视图", int(all_posts) == int(live_posts), f"posts={all_posts}")
     check("分类徽标消失", badge_after == 0)
 
+    # ── 5) 搜索建议点击 = 词级替换（只替换光标所在标签，保留其余）──
+    page.evaluate(
+        """() => {
+          const ui = window.__agentTestUI;
+          ui.suggestions.innerHTML = ''; // 清掉初始 1girl* 联想，避免读到旧按钮
+          ui.queryInput.value = "1girl blue";
+          ui.queryWidget.value = "1girl blue";
+          ui.queryInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }"""
+    )
+    page.wait_for_function(
+        """() => [...document.querySelectorAll('.adg-suggestions button[data-q]')].some(b => b.dataset.q.startsWith('blue'))""",
+        timeout=20_000,
+    )
+    suggest_q = page.evaluate(
+        """() => {
+          const btns = [...document.querySelectorAll('.adg-suggestions button[data-q]')];
+          const m = btns.find(b => b.dataset.q.startsWith('blue') && b.dataset.q !== 'blue');
+          return m ? m.dataset.q : null;
+        }"""
+    )
+    check("真实联想建议含 blue 前缀标签", bool(suggest_q), f"suggest={suggest_q!r}")
+    if suggest_q:
+        # 光标放在 "blue" 末尾（"1girl blue" 长度 10，blue 从 6 到 10）
+        page.evaluate(
+            """(q) => {
+              const ui = window.__agentTestUI;
+              ui.queryInput.focus();
+              ui.queryInput.setSelectionRange(10, 10);
+              const btn = [...document.querySelectorAll('.adg-suggestions button[data-q]')].find(b => b.dataset.q === q);
+              if (!btn) return 'no-btn';
+              btn.click();
+              return 'clicked';
+            }""",
+            suggest_q,
+        )
+        page.wait_for_function(
+            """() => String(window.__agentTestUI.queryInput.value || '').startsWith('1girl ') && !String(window.__agentTestUI.queryInput.value || '').endsWith('blue')""",
+            timeout=15_000,
+        )
+        final_query = page.evaluate("window.__agentTestUI.queryInput.value")
+        check("点击建议只替换光标词", final_query == f"1girl {suggest_q}", f"query={final_query!r}")
+        # 其余标签保留：再验证多标签场景
+        page.evaluate(
+            """(q) => {
+              const ui = window.__agentTestUI;
+              ui.suggestions.innerHTML = '';
+              ui.queryInput.value = "1girl blue solo";
+              ui.queryWidget.value = "1girl blue solo";
+              ui.queryInput.setSelectionRange(10, 10); // blue 末尾
+              ui.fetchSuggestions('1girl blue', false).then(() => {
+                const btn = [...document.querySelectorAll('.adg-suggestions button[data-q]')].find(b => b.dataset.q === q);
+                if (!btn) return;
+                // 直接走真实按钮 onclick（内部会读 selectionStart）
+                btn.click();
+              });
+            }""",
+            suggest_q,
+        )
+        page.wait_for_function(
+            """(q) => String(window.__agentTestUI.queryInput.value || '') === `1girl ${q} solo`""",
+            predicate_arg=suggest_q,
+            timeout=15_000,
+        )
+        keep_query = page.evaluate("window.__agentTestUI.queryInput.value")
+        check("多标签时只替换中部词、首尾保留", keep_query == f"1girl {suggest_q} solo", f"query={keep_query!r}")
+
     page.screenshot(path=str(SCREENSHOT), full_page=False)
     browser.close()
 

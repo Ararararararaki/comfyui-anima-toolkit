@@ -820,22 +820,44 @@ def _put_cached_posts(request: SearchRequest, posts: list[dict[str, Any]]) -> No
             _search_cache.popitem(last=False)
 
 
-def _fetch_posts(request: SearchRequest) -> tuple[list[dict[str, Any]], bool]:
+def _fetch_posts(request: SearchRequest) -> tuple[list[dict[str, Any]], bool, bool]:
+    """返回 (posts, cached, slow_window_used)。
+
+    slow_window_used：慢排序无时间窗请求被 D站 拒绝（全库排序数据库超时 500/超时）后，
+    自动降级附加时间窗重试了一次并成功——不再是默认限定（见 /anima/danbooru/posts）。
+    """
     if not request.force:
         cached = _cached_posts(request)
         if cached is not None:
-            return cached, True
+            return cached, True, False
 
     _rate_limiter.wait()
 
-    params = {"tags": request.tags, "page": request.page, "limit": request.limit}
-    params.update(_account_params())  # 登录后：解除匿名 2 标签限制 + 更少限流
-    data = _danbooru_json(DANBOORU_POSTS_URL, params)
-    if not isinstance(data, list):
-        raise ValueError("Danbooru 返回的 posts 不是列表")
-    posts = [post for post in data if isinstance(post, dict)]
+    order_value = _order_value(request.tags)
+    params_kw = _account_params()  # 登录后：解除匿名 2 标签限制 + 更少限流
+
+    def query(tags: str) -> list[dict[str, Any]]:
+        params = {"tags": tags, "page": request.page, "limit": request.limit}
+        params.update(params_kw)
+        data = _danbooru_json(DANBOORU_POSTS_URL, params)
+        if not isinstance(data, list):
+            raise ValueError("Danbooru 返回的 posts 不是列表")
+        return [post for post in data if isinstance(post, dict)]
+
+    slow_window_used = False
+    try:
+        posts = query(request.tags)
+    except (requests.HTTPError, requests.Timeout):
+        # 慢排序（评分/收藏/随机）无时间窗 = 全库排序，D站 数据库会超时（500/超时）。
+        # 默认不再附加时间窗（尊重用户想看全部时间范围）；仅当请求确实失败时才降级重试一
+        # 次并上报 warning。用户显式设置 age: 的时间窗始终优先（_has_age_tag 拦截）。
+        if order_value in SLOW_ORDERS and not _has_age_tag(request.tags):
+            posts = query((request.tags + " age:" + DEFAULT_SLOW_ORDER_WINDOW).strip())
+            slow_window_used = True
+        else:
+            raise
     _put_cached_posts(request, posts)
-    return posts, False
+    return posts, False, slow_window_used
 
 
 @PromptServer.instance.routes.get("/anima/danbooru/posts")
@@ -845,13 +867,6 @@ async def anima_danbooru_posts(request: web.Request) -> web.Response:
         return web.json_response({"posts": [], "query": "", "cached": False})
 
     warnings: list[str] = []
-    order_value = _order_value(tags)
-    if order_value in SLOW_ORDERS and not _has_age_tag(tags):
-        # 排序唯一 owner（order:*）；评分/收藏/随机无时间窗查询会让 Danbooru 数据库超时 500，
-        # 自动附带一个免费 metatag 时间窗（前端的 currentQuery() 同样会预加，这里是权威兜底）。
-        tags = (tags + " age:" + DEFAULT_SLOW_ORDER_WINDOW).strip()
-        warnings.append(f"「{order_value}」排序已自动附加近 1 周时间窗（否则 Danbooru 会数据库超时）")
-
     registered = _registered()
     tag_limit = _account_tag_limit()
     if count_restricted_search_tags(tags) > tag_limit:
@@ -869,7 +884,7 @@ async def anima_danbooru_posts(request: web.Request) -> web.Response:
         force=request.query.get("force", "").lower() in {"1", "true", "yes"},
     )
     try:
-        posts, cached = await asyncio.get_running_loop().run_in_executor(None, _fetch_posts, search_request)
+        posts, cached, slow_window_used = await asyncio.get_running_loop().run_in_executor(None, _fetch_posts, search_request)
     except requests.Timeout:
         return web.json_response({"error": "Danbooru 请求超时：已自动尝试直连/代理/浏览器网关多条路径仍失败，请确认 Clash/代理已开启并换节点后重试", "registered": registered, "tag_limit": tag_limit}, status=504)
     except requests.ConnectionError as error:
@@ -880,6 +895,10 @@ async def anima_danbooru_posts(request: web.Request) -> web.Response:
         return web.json_response({"error": str(error), "registered": registered, "tag_limit": tag_limit}, status=502)
     except (TypeError, ValueError) as error:
         return web.json_response({"error": str(error), "registered": registered, "tag_limit": tag_limit}, status=502)
+    if slow_window_used:
+        warnings.append(
+            f"「{order_value}」全库排序触发 D站 超时，本次已自动降级限定近 1 周（加标签缩小范围或换用其它排序即可看全部时间）"
+        )
     return web.json_response({"posts": posts, "query": search_request.tags, "cached": cached, "warnings": warnings, "registered": registered, "tag_limit": tag_limit})
 
 

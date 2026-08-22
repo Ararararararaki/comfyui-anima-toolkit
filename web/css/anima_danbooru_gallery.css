@@ -241,6 +241,7 @@
 .adg-pagination button { width: 24px; padding: 4px 0; }
 .adg-pagination input { width: 42px; padding: 4px; border: 1px solid #55566a; border-radius: 5px; color: #eee; background: #1b1b22; font-size: 11px; }
 .adg-pagination button:disabled { opacity: .35; cursor: not-allowed; }
+.adg-cat-mode-badge { font-size: 11px; color: #8b5cf6; border: 1px dashed #8b5cf6aa; border-radius: 6px; padding: 2px 8px; white-space: nowrap; }
 .adg-info { color: #aeb1bd; }
 .adg-status { min-height: 17px; color: #8e94a7; }
 .adg-status[data-tone="error"] { color: #ff8b8b; }
