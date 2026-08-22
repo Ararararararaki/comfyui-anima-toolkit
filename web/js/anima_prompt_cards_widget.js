@@ -194,6 +194,28 @@
     return (prefix || "p_") + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
   }
 
+  // ── 卡片多分类（categories 数组；兼容存量 categoryId 单值）──
+  function catIdsOf(card) {
+    if (Array.isArray(card.categories)) {
+      const ids = card.categories.filter(Boolean);
+      if (ids.length) return ids;
+    }
+    if (card.categoryId) return [card.categoryId];
+    return [];
+  }
+  // 归一化：categoryId 迁移进 categories（第一个），后续统一用 categories
+  function normalizeCardCats(card) {
+    const ids = catIdsOf(card);
+    if (!Array.isArray(card.categories) || JSON.stringify(card.categories) !== JSON.stringify(ids)) {
+      card.categories = ids;
+    }
+    card.categoryId = ids[0] || ""; // 兼容旧字段（主分类）
+    return card;
+  }
+  function cardInCat(card, catId) {
+    return catIdsOf(card).includes(catId);
+  }
+
   // ── 文本工具 ──
 
   const CJK_RE = /[\u4e00-\u9fff\u3400-\u4dbf]/;
@@ -608,6 +630,7 @@
 
     // ── 卡片 CRUD（anima-tk-cards 专用库，不污染 prompt 库）──
     async putCard(entry) {
+      normalizeCardCats(entry);
       const db = await openCardDB();
       await storePut(db, CARD_STORE, entry);
       const idx = this.cards.findIndex((p) => p.id === entry.id);
@@ -621,18 +644,42 @@
     }
 
     // 保存卡片（tag 级 / 组合卡）→ 卡片库。先落库（立即可用），自动翻译异步补注释。
-    // 查重：全库存在相同英文文本（忽略大小写/首尾空白）→ 跳过并提示，不产生重复卡。
+    // 查重：同一英文文本支持多个分类——
+    //   目标分类已有该词 → 跳过提示；
+    //   同词存在于其他分类 → 给已有卡追加该分类（合并，不新建重复卡）。
     async addCard(catId, card, { multi = false } = {}) {
       const en = String(card.en || card.prompt || "").trim();
       if (!en) { this._flash("内容为空"); return { skipped: true }; }
       const enKey = en.toLowerCase();
       const dup = this.cards.find((c) => String(c.prompt || "").trim().toLowerCase() === enKey);
-      if (dup) {
-        const catName = CAT_NAME(this.cardCats.find((c) => c.id === dup.categoryId)) || "未知分类";
-        this._flash(`已跳过：库中已存在「${en.slice(0, 24)}…」于「${catName}」`, 3000);
-        return { skipped: true, dupCat: dup.categoryId };
-      }
       const cat = catId || this.curCat || (this.cardCats[0] && this.cardCats[0].id) || "uncategorized";
+      const catName = CAT_NAME(this.cardCats.find((c) => c.id === cat));
+      if (dup) {
+        if (cardInCat(dup, cat)) {
+          this._flash(`已跳过：「${en.slice(0, 24)}」已存在于「${catName}」`, 3000);
+          return { skipped: true, dupCat: cat };
+        }
+        // 同词其他分类 → 合并追加分类（不新建重复卡；注释取已有优先，缺失时补翻译）
+        const hasCats = catIdsOf(dup);
+        if (!hasCats.includes(cat)) {
+          dup.categories = hasCats.concat([cat]);
+          dup.updatedAt = Date.now();
+          await this.putCard(dup);
+        }
+        this.curCat = cat;
+        this._renderCatTabs();
+        this._renderCards();
+        this._flash(`「${en.slice(0, 24)}」已添加分类「${catName}」`);
+        if (!String(dup.notes || "").trim()) {
+          translateAuto(en).then((nz) => {
+            if (!nz || nz === en) return;
+            dup.notes = nz;
+            dup.updatedAt = Date.now();
+            this.putCard(dup).then(() => { this._renderCards(); this._flash(`已翻译注释：${nz.slice(0, 30)}`); });
+          }).catch(() => {});
+        }
+        return { skipped: false, merged: true };
+      }
       const zh0 = String(card.zh || card.notes || "").trim();
       const entry = {
         id: genId("p_"),
@@ -641,6 +688,7 @@
         weight: String(card.weight || "").trim(),
         lora: String(card.lora || "").trim(),
         multi: !!multi,
+        categories: [cat],
         categoryId: cat,
         isFavorite: false,
         createdAt: Date.now(),
@@ -806,8 +854,9 @@
         return;
       }
 
-      // 2) 确认清单 overlay
+      // 2) 确认清单 overlay（可改判分类、可移除词）
       this._flash("LLM 已判定，等待你确认分类…");
+      const removedSet = new Set();
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay";
       const rowsHtml = parts.map((p, i) => {
@@ -818,10 +867,11 @@
           `<option value="${escAttr(c.id)}" ${c.id === catId ? "selected" : ""}>${esc(CAT_NAME(c))}</option>`).join("");
         return `<div class="tk-cards-ai-row" data-i="${i}">
           <div class="tk-cards-ai-text">${esc(p.weight ? `(${p.text}:${p.weight})` : p.text)}${zh ? `<span class="tk-cards-ai-zh">${esc(zh)}</span>` : ""}</div>
-          <select class="tk-cards-ai-cat">${opts}</select></div>`;
+          <select class="tk-cards-ai-cat">${opts}</select>
+          <button type="button" class="tk-cards-ai-rm" data-rm="${i}" title="移除该词（不入库）">✕</button></div>`;
       }).join("");
       overlay.innerHTML = `<div class="tk-cards-overlay-box">
-        <div class="tk-cards-overlay-head"><b>AI 分类确认 · ${parts.length} 段（可逐条改判）</b><button type="button" class="tk-cards-btn" data-a="close">✕</button></div>
+        <div class="tk-cards-overlay-head"><b>AI 分类确认 · ${parts.length} 段（可改判分类 / ✕ 移除词）</b><button type="button" class="tk-cards-btn" data-a="close">✕</button></div>
         <div class="tk-cards-ai-list">${rowsHtml}</div>
         <div class="tk-cards-ai-actions">
           <button type="button" class="tk-cards-btn" data-a="cancel">取消</button>
@@ -829,14 +879,33 @@
         </div></div>`;
       document.body.appendChild(overlay);
       const close = () => overlay.remove();
+      const updateConfirm = () => {
+        const btn = overlay.querySelector('[data-a="confirm"]');
+        if (btn) btn.textContent = `✓ 确认入卡 ${parts.length - removedSet.size} 张`;
+      };
+      overlay.querySelectorAll(".tk-cards-ai-rm").forEach((rmBtn) => {
+        rmBtn.addEventListener("click", () => {
+          const i = parseInt(rmBtn.getAttribute("data-rm"), 10);
+          const row = overlay.querySelector(`.tk-cards-ai-row[data-i="${i}"]`);
+          if (removedSet.has(i)) {
+            removedSet.delete(i);
+            row.classList.remove("removed");
+          } else {
+            removedSet.add(i);
+            row.classList.add("removed");
+          }
+          updateConfirm();
+        });
+      });
       overlay.querySelector('[data-a="close"]').addEventListener("click", close);
       overlay.querySelector('[data-a="cancel"]').addEventListener("click", close);
       overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
       overlay.querySelector('[data-a="confirm"]').addEventListener("click", async () => {
         const rows = overlay.querySelectorAll(".tk-cards-ai-row");
-        let n = 0, skipN = 0;
+        let n = 0, skipN = 0, rmN = removedSet.size;
         for (const row of rows) {
           const i = parseInt(row.getAttribute("data-i"), 10);
+          if (removedSet.has(i)) continue; // 用户移除的词不入库
           const p = parts[i];
           if (!p) continue;
           const catId = row.querySelector(".tk-cards-ai-cat").value;
@@ -844,7 +913,7 @@
           if (r && r.skipped) skipN++; else n++;
         }
         close();
-        this._flash(`已确认入卡：${n} 段${skipN ? `（${skipN} 段库中已存在已跳过）` : ""}`);
+        this._flash(`已确认入卡：${n} 段${skipN ? `（${skipN} 段库中已存在已跳过）` : ""}${rmN ? `；已移除 ${rmN} 段` : ""}`);
       });
     }
 
@@ -881,15 +950,15 @@
       this.cardCats = this.cardCats.filter((c) => c.id !== catId);
       const fallback = this.cardCats.find((c) => c.id === "card_all") || this.cardCats[0] || null;
       let moved = 0;
-      if (fallback) {
-        for (const c of this.cards) {
-          if (c.categoryId === catId) {
-            c.categoryId = fallback.id;
-            c.updatedAt = Date.now();
-            await this.putCard(c);
-            moved++;
-          }
-        }
+      // 从所有卡片移除该分类；失去全部分类的卡片归入「通用」
+      for (const c of this.cards) {
+        if (!cardInCat(c, catId)) continue;
+        let cats = catIdsOf(c).filter((x) => x !== catId);
+        if (!cats.length && fallback) cats = [fallback.id];
+        c.categories = cats;
+        c.updatedAt = Date.now();
+        await this.putCard(c);
+        moved++;
       }
       if (this.curCat === catId) this.curCat = "";
       this._renderCatTabs();
@@ -933,22 +1002,23 @@
           tab.addEventListener("drop", async (ev) => {
             ev.preventDefault();
             tab.classList.remove("drag-over");
-            // 卡片拖到分类页签 → 转移分类（保持当前分类视图不跳转）
+            // 卡片拖到分类页签 → 追加该分类（多分类；已含则提示不变）
             if (this._dragCardId) {
               const cardId = this._dragCardId;
               this._dragCardId = null;
               this._dragCardCat = null;
               const card = this.cards.find((x) => x.id === cardId);
               if (!card) return;
-              if (card.categoryId === id) return;
-              const fromName = CAT_NAME(this.cardCats.find((c) => c.id === card.categoryId));
-              card.categoryId = id;
-              card.order = undefined; // 落到目标分类末尾（未编排 → 时间序）
+              if (cardInCat(card, id)) {
+                this._flash(`「${(card.prompt || "").slice(0, 20)}」已属于「${CAT_NAME(this.cardCats.find((c) => c.id === id))}」`);
+                return;
+              }
+              card.categories = catIdsOf(card).concat([id]);
               card.updatedAt = Date.now();
               await this.putCard(card);
               this._renderCatTabs();
               this._renderCards();
-              this._flash(`「${(card.prompt || "").slice(0, 20)}」已从「${fromName}」移入「${CAT_NAME(this.cardCats.find((c) => c.id === id))}」（当前视图不变）`);
+              this._flash(`「${(card.prompt || "").slice(0, 20)}」已加入「${CAT_NAME(this.cardCats.find((c) => c.id === id))}」（当前视图不变）`);
               return;
             }
             // 分类拖拽 → 排序
@@ -975,7 +1045,7 @@
       };
       mk("全部", "", false);
       for (const c of this.cardCats) {
-        const n = this.cards.filter((p) => p.categoryId === c.id).length;
+        const n = this.cards.filter((p) => cardInCat(p, c.id)).length;
         mk(`${CAT_NAME(c)} (${n})`, c.id, true);
       }
       const addTab = document.createElement("button");
@@ -998,7 +1068,7 @@
 
     // 分类内卡片当前顺序（order 优先，其次收藏/时间）
     _catOrderIds(catId) {
-      const list = this.cards.filter((c) => c.categoryId === catId);
+      const list = this.cards.filter((c) => cardInCat(c, catId));
       list.sort((a, b) => {
         const ao = a.order != null ? a.order : Number.MAX_SAFE_INTEGER;
         const bo = b.order != null ? b.order : Number.MAX_SAFE_INTEGER;
@@ -1013,7 +1083,7 @@
       const orderMap = {};
       ids.forEach((id, i) => { orderMap[id] = i; });
       for (const c of this.cards) {
-        if (c.categoryId !== catId) continue;
+        if (!cardInCat(c, catId)) continue;
         if (c.order !== orderMap[c.id]) {
           c.order = orderMap[c.id];
           c.updatedAt = Date.now();
@@ -1035,7 +1105,7 @@
     _renderCards() {
       if (!this.cardGridEl) return;
       let list = this.cards.slice();
-      if (this.curCat) list = list.filter((p) => p.categoryId === this.curCat);
+      if (this.curCat) list = list.filter((p) => cardInCat(p, this.curCat));
       this._sortCardList(list);
       this.cardGridEl.innerHTML = "";
       if (!list.length) {
@@ -1068,7 +1138,7 @@
         grip.draggable = true;
         grip.addEventListener("dragstart", (ev) => {
           this._dragCardId = c.id;
-          this._dragCardCat = c.categoryId;
+          this._dragCardCat = (catIdsOf(c)[0]) || "";
           try { ev.dataTransfer.setData("text/plain", "card:" + c.id); ev.dataTransfer.effectAllowed = "move"; } catch (e) {}
         });
         grip.addEventListener("dragend", () => { this._dragCardId = null; this._dragCardCat = null; });
@@ -1139,24 +1209,23 @@
           ev.preventDefault();
           el.classList.remove("drag-over");
           const fromId = this._dragCardId;
-          const fromCat = this._dragCardCat;
           this._dragCardId = null;
           this._dragCardCat = null;
           if (!fromId || fromId === c.id) return;
-          const catId = fromCat || c.categoryId || "";
-          // 跨分类拖拽：先改目标分类再排（from 在 catId 里才重排；否则仅改分类）
+          const targetCat = (catIdsOf(c)[0]) || "";
+          // 拖到另一张卡片上：目标卡的主分类；跨分类时把 from 卡加入该分类（多分类语义）
           const fromEntry = this.cards.find((x) => x.id === fromId);
-          if (fromEntry && fromEntry.categoryId !== c.categoryId) {
-            fromEntry.categoryId = c.categoryId;
+          if (fromEntry && targetCat && !cardInCat(fromEntry, targetCat)) {
+            fromEntry.categories = catIdsOf(fromEntry).concat([targetCat]);
             fromEntry.order = undefined;
             fromEntry.updatedAt = Date.now();
             await this.putCard(fromEntry);
-            this.curCat = c.categoryId;
+            this.curCat = targetCat;
           }
-          const ids = this._catOrderIds(c.categoryId).filter((x) => x !== fromId);
+          const ids = this._catOrderIds(targetCat).filter((x) => x !== fromId);
           const toIdx = ids.indexOf(c.id);
           ids.splice(toIdx < 0 ? ids.length : toIdx, 0, fromId);
-          await this._applyCardOrder(c.categoryId, ids);
+          await this._applyCardOrder(targetCat, ids);
           this._renderCatTabs();
           this._renderCards();
           this._flash("卡片顺序已调整");
@@ -1187,48 +1256,66 @@
       }
     }
 
-    // 卡片快速分类：▣ 大弹窗（搜索 + 完整列表，不截断）
+    // 卡片快速分类：▣ 多选弹窗（勾选分类=包含；同一词可属多个分类）
     quickCategorize(id) {
       const c = this.cards.find((x) => x.id === id);
       if (!c) return;
+      const curCats = catIdsOf(c);
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay";
       overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-catpick-box">
-        <div class="tk-cards-overlay-head"><b>移动卡片分类 · ${esc(String(c.prompt || "").slice(0, 40))}</b><button type="button" class="tk-cards-btn" data-a="close">✕</button></div>
+        <div class="tk-cards-overlay-head"><b>设置卡片分类（可多选）· ${esc(String(c.prompt || "").slice(0, 40))}</b><button type="button" class="tk-cards-btn" data-a="close">✕</button></div>
         <input class="tk-cards-search" placeholder="搜索分类…" data-a="search">
-        <div class="tk-cards-catpick-list"></div></div>`;
+        <div class="tk-cards-catpick-list"></div>
+        <div class="tk-cards-ai-actions">
+          <button type="button" class="tk-cards-btn" data-a="cancel">取消</button>
+          <button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="ok">✓ 保存分类</button>
+        </div></div>`;
       document.body.appendChild(overlay);
       const listEl = overlay.querySelector(".tk-cards-catpick-list");
       const searchEl = overlay.querySelector('[data-a="search"]');
       const close = () => overlay.remove();
       overlay.querySelector('[data-a="close"]').addEventListener("click", close);
+      overlay.querySelector('[data-a="cancel"]').addEventListener("click", close);
       overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
       const render = () => {
         const q = (searchEl.value || "").toLowerCase();
         listEl.innerHTML = "";
         for (const cat of this.cardCats) {
           if (q && !CAT_NAME(cat).toLowerCase().includes(q)) continue;
-          const item = document.createElement("button");
-          item.type = "button";
-          item.className = "tk-cards-quickcat-item tk-cards-catpick-item" + (c.categoryId === cat.id ? " on" : "");
-          item.textContent = CAT_NAME(cat);
-          item.addEventListener("click", async (ev) => {
-            ev.stopPropagation();
-            if (c.categoryId === cat.id) { close(); return; }
-            c.categoryId = cat.id;
-            c.updatedAt = Date.now();
-            await this.putCard(c);
-            close();
-            this._renderCatTabs();
-            this._renderCards();
-            this._flash(`已移至「${CAT_NAME(cat)}」`);
+          const lab = document.createElement("label");
+          lab.className = "tk-cards-catpick-item" + (curCats.includes(cat.id) ? " on" : "");
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = curCats.includes(cat.id);
+          cb.addEventListener("change", () => {
+            const i = curCats.indexOf(cat.id);
+            if (cb.checked) { if (i < 0) curCats.push(cat.id); }
+            else { if (i >= 0) curCats.splice(i, 1); }
+            lab.classList.toggle("on", cb.checked);
           });
-          listEl.appendChild(item);
+          const span = document.createElement("span");
+          span.textContent = CAT_NAME(cat);
+          lab.appendChild(cb);
+          lab.appendChild(span);
+          listEl.appendChild(lab);
         }
         if (!listEl.children.length) {
           listEl.innerHTML = `<div class="tk-cards-empty">无匹配分类</div>`;
         }
       };
+      overlay.querySelector('[data-a="ok"]').addEventListener("click", async () => {
+        const finalCats = curCats.length ? curCats.slice() : catIdsOf(c).slice(); // 至少保留原分类
+        if (JSON.stringify(catIdsOf(c).slice().sort()) !== JSON.stringify(finalCats.slice().sort())) {
+          c.categories = finalCats;
+          c.updatedAt = Date.now();
+          await this.putCard(c);
+        }
+        close();
+        this._renderCatTabs();
+        this._renderCards();
+        this._flash(`已更新分类（${finalCats.length} 个）`);
+      });
       searchEl.addEventListener("input", render);
       render();
       searchEl.focus();
@@ -1404,11 +1491,15 @@
           if (!card) continue;
           const catId = name2id[r.categoryName];
           if (!catId) { missN++; continue; }
-          if (card.categoryId !== catId) {
-            card.categoryId = catId;
-            card.updatedAt = Date.now();
-            await this.putCard(card);
-            okN++;
+          if (!cardInCat(card, catId)) {
+            // 多分类语义：追加判定分类（保留原分类）
+            const cats = catIdsOf(card);
+            if (!cats.includes(catId)) {
+              card.categories = cats.concat([catId]);
+              card.updatedAt = Date.now();
+              await this.putCard(card);
+              okN++;
+            }
           }
         }
       }
@@ -1466,7 +1557,7 @@
       if (!n) return;
       const groups = [];
       for (const c of this.cardCats) {
-        const cards = this.cards.filter((p) => p.categoryId === c.id && String(p.prompt || "").trim());
+        const cards = this.cards.filter((p) => cardInCat(p, c.id) && String(p.prompt || "").trim());
         if (!cards.length) continue;
         groups.push({
           name: CAT_NAME(c),
@@ -1851,6 +1942,9 @@
 .tk-cards-ai-text { flex:1; min-width:0; font-size:10px; color:#e8e8e8; word-break:break-all; display:flex; flex-direction:column; }
 .tk-cards-ai-zh { font-size:9px; color:#9a9aa2; }
 .tk-cards-ai-cat { flex:0 0 130px; background:var(--comfy-input-bg,#222); color:var(--fg-color,#ddd); border:1px solid var(--border-color,#444); border-radius:4px; font-size:10px; padding:2px 4px; }
+.tk-cards-ai-rm { flex:0 0 auto; background:transparent; border:none; color:#ff8a8a; font-size:12px; cursor:pointer; padding:0 4px; line-height:1; }
+.tk-cards-ai-rm:hover { color:#ff5555; }
+.tk-cards-ai-row.removed { opacity:.3; pointer-events:none; }
 .tk-cards-ai-actions { display:flex; justify-content:flex-end; gap:6px; }
 `;
     document.head.appendChild(s);
