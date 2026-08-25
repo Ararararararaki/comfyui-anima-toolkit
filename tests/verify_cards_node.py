@@ -56,7 +56,7 @@ with sync_playwright() as p:
     ui.first.screenshot(path=os.path.join(OUT, "03_cards_ui.png"))
 
     # 三区标题抽查
-    for label in ["① 本地提示词库", "② 当前提示词", "③ 卡片库"]:
+    for label in ["① 工具箱 prompt 库", "② 当前提示词", "③ 卡片视图"]:
         found = ui.first.locator(f"text={label}").count()
         log(f"区[{label}] 存在: {found > 0}")
 

@@ -77,7 +77,7 @@ def _migrate_legacy(data: dict) -> dict:
     """旧格式（v1：字符串分类 + {分类名: [卡片]}）→ v2 信封。卡片补 id、多分类。"""
     cats = []
     for i, name in enumerate(data.get("categories") or []):
-        cats.append({"id": f"legacy_{i}", "name": str(name), "icon": "", "sortOrder": i})
+        cats.append({"id": f"legacy_{i}", "name": str(name), "icon": "", "hint": "", "sortOrder": i})
     if not cats:
         cats = list(DEFAULT_CARD_CATS)
     cards = []
@@ -86,7 +86,7 @@ def _migrate_legacy(data: dict) -> dict:
         for cat_name, items in raw.items():
             cat = next((c for c in cats if c["name"] == str(cat_name)), None)
             if cat is None:
-                cat = {"id": f"legacy_{len(cats)}", "name": str(cat_name), "icon": "", "sortOrder": len(cats)}
+                cat = {"id": f"legacy_{len(cats)}", "name": str(cat_name), "icon": "", "hint": "", "sortOrder": len(cats)}
                 cats.append(cat)
             for it in items or []:
                 if not isinstance(it, dict):
@@ -285,7 +285,8 @@ async def cards_save(request):
             if not cid:
                 cid = f"cat_{int(time.time()*1000)}_{i}"
             cats.append({"id": cid, "name": str(c.get("name") or "未命名").strip() or "未命名",
-                         "icon": str(c.get("icon") or ""), "sortOrder": int(c.get("sortOrder") if c.get("sortOrder") is not None else i)})
+                         "icon": str(c.get("icon") or ""), "hint": str(c.get("hint") or "").strip(),
+                         "sortOrder": int(c.get("sortOrder") if c.get("sortOrder") is not None else i)})
         cards = []
         seen_ids = set()
         for it in body.get("cards") or []:
@@ -524,6 +525,42 @@ async def llm_config_set(request):
     return web.json_response({"ok": True})
 
 
+@PromptServer.instance.routes.post("/anima/llm/test")
+async def llm_config_test(request):
+    """测试本次表单配置，不写入本地配置文件。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "bad json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"ok": False, "error": "body must be object"}, status=400)
+    conf = _load_llm_conf()
+    for key in ("mode", "base_url", "model"):
+        if key in body:
+            conf[key] = str(body.get(key) or "").strip()
+    if body.get("api_key"):
+        conf["api_key"] = str(body.get("api_key") or "").strip()
+    started = time.monotonic()
+    try:
+        reply = await _llm_chat([
+            {"role": "system", "content": "Reply with the single word OK."},
+            {"role": "user", "content": "Connection test. Reply with OK."},
+        ], conf, timeout=20)
+    except Exception as e:
+        return web.json_response({"ok": False, "error": f"连接测试失败：{e}"}, status=502)
+    ollama_ok, ollama_model = await _ollama_available()
+    mode = conf.get("mode", "auto")
+    actual_mode = "ollama" if mode == "ollama" or (mode == "auto" and ollama_ok) else "api"
+    actual_model = (conf.get("model") or (ollama_model if actual_mode == "ollama" else "")).strip()
+    return web.json_response({
+        "ok": True,
+        "mode": actual_mode,
+        "model": actual_model,
+        "latencyMs": int((time.monotonic() - started) * 1000),
+        "reply": str(reply or "").strip()[:80],
+    })
+
+
 def _extract_json_array(text: str) -> list:
     """从容错文本提取 JSON 数组（LLM 常带 ```json 或前后废话）。"""
     if not text:
@@ -534,7 +571,7 @@ def _extract_json_array(text: str) -> list:
     try:
         data = json.loads(m.group(0))
         if isinstance(data, list):
-            return [str(x).strip() for x in data]
+            return data
     except Exception:
         pass
     out = []
@@ -591,14 +628,16 @@ async def cards_classify(request):
         "7. LoRA/模型触发词 → LoRA 触发词类（如有）\n"
         "8. 无法明确归类或列表中没有合适项 → 通用类\n"
         "歧义标签选择最可能的分类；宁选「通用」也不硬塞错误分类。\n"
-        "只输出 JSON 数组：每个元素是「分类列表」中的名称之一，与输入行一一对应。"
-        "不要输出任何解释、编号或多余文本。"
+        "只输出 JSON 数组：每个元素都包含 categoryName、confidence（0 到 1）和 reason，"
+        "categoryName 必须是分类列表中的名称，并与输入行一一对应。不要输出任何解释、编号或多余文本。"
     )
     user = (
         f"分类列表：{json.dumps(cat_labels, ensure_ascii=False)}\n\n"
         "示例（演示归类逻辑，分类名可能与你的列表不同）：\n"
         '输入卡片：\n1: skadi (arknights)\n2: masterpiece, best quality\n3: sitting on a chair, legs crossed\n'
-        '输出：["角色", "质量词", "姿势"]\n\n'
+        '输出：[{"categoryName":"角色","confidence":0.95,"reason":"动漫角色名"},'
+        '{"categoryName":"质量词","confidence":0.99,"reason":"质量评分词"},'
+        '{"categoryName":"姿势","confidence":0.96,"reason":"动作与姿态"}]\n\n'
         "待分类卡片（行号: 内容）：\n" + "\n".join(lines)
     )
 
@@ -611,7 +650,20 @@ async def cards_classify(request):
     parsed = _extract_json_array(out)
     result = []
     for i, c in enumerate(batch):
-        name = parsed[i] if i < len(parsed) else ""
+        raw = parsed[i] if i < len(parsed) else ""
+        if isinstance(raw, dict):
+            name = str(raw.get("categoryName") or raw.get("category") or "").strip()
+            reason = str(raw.get("reason") or "").strip()[:160]
+            try:
+                confidence = float(raw.get("confidence"))
+            except (TypeError, ValueError):
+                confidence = None
+            if confidence is not None and not 0 <= confidence <= 1:
+                confidence = None
+        else:
+            name = str(raw or "").strip()
+            reason = ""
+            confidence = None
         # 归一容错：模型可能原样复制「名称（释义）」或带引号/空格
         if name not in cats:
             base = str(name).split("（")[0].strip()
@@ -619,7 +671,7 @@ async def cards_classify(request):
                 name = base
             else:
                 name = ""
-        result.append({"id": str(c.get("id")), "categoryName": name})
+        result.append({"id": str(c.get("id")), "categoryName": name, "reason": reason, "confidence": confidence})
     return web.json_response({"ok": True, "result": result})
 
 

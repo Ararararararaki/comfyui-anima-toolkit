@@ -34,9 +34,9 @@ with sync_playwright() as p:
     pg.wait_for_timeout(300)
     dialogs = []
     pg.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
-    pg.locator("text=AI 入卡").first.click()
+    pg.locator("text=智能入卡").first.click()
     pg.wait_for_timeout(3000)
-    print("AI入卡按钮:", pg.locator("text=AI 入卡").count() > 0)
+    print("智能入卡按钮:", pg.locator("text=智能入卡").count() > 0)
     print("confirm 弹窗（LLM 不可用应触发）:", len(dialogs))
     print("确认清单 overlay（此时不应出现）:", pg.locator(".tk-cards-ai-list").count())
     print("errors:", errs if errs else "none")
