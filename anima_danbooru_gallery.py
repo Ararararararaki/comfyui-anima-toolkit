@@ -1090,13 +1090,13 @@ async def anima_danbooru_fuzzy(request: web.Request) -> web.Response:
 
 
 class DanbooruGallery:
-    """将画廊的用户选择转换为 ComfyUI 可连接的图像和提示词列表。"""
+    """将画廊的用户选择转换为 ComfyUI 可连接的图像和提示词列表，并输出结构化元数据。"""
 
     NAME = "DanbooruGallery"
     CATEGORY = "TK/Danbooru"
-    RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("images", "prompts")
-    OUTPUT_IS_LIST = (True, True)
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("images", "prompts", "metadata_json")
+    OUTPUT_IS_LIST = (True, True, False)
     FUNCTION = "get_selected_data"
     OUTPUT_NODE = True
 
@@ -1130,16 +1130,45 @@ class DanbooruGallery:
         image_array = np.asarray(image).astype(np.float32) / 255.0
         return torch.from_numpy(image_array)[None,]
 
+    @staticmethod
+    def _selection_meta(sel: dict, ok: bool, error: str | None = None) -> dict:
+        """选择项 → 结构化元数据（下游筛选/复现用；字段缺失置 None）。"""
+        def num(v):
+            try:
+                f = float(v)
+                return int(f) if f == int(f) else f
+            except (TypeError, ValueError):
+                return None
+        def s(v):
+            return str(v or "") or None
+        return {
+            "image_url": s(sel.get("image_url")),
+            "prompt": s(sel.get("prompt")),
+            "danbooru_id": num(sel.get("post_id")),
+            "tags": sel.get("tags") if isinstance(sel.get("tags"), list) else None,
+            "rating": s(sel.get("rating")),
+            "score": num(sel.get("score")),
+            "fav_count": num(sel.get("favcount") if sel.get("favcount") is not None else sel.get("fav_count")),
+            "width": num(sel.get("width")),
+            "height": num(sel.get("height")),
+            "file_ext": s(sel.get("file_ext")),
+            "video": bool(sel.get("video")),
+            "source_url": s(sel.get("source_url")),
+            "ok": ok,
+            "error": error or None,
+        }
+
     def get_selected_data(self, selection_data="{}"):
         try:
             selection_list = json.loads(selection_data or "{}").get("selections", [])
         except (TypeError, ValueError, json.JSONDecodeError):
             selection_list = []
         if not isinstance(selection_list, list) or not selection_list:
-            return ([self._empty_image()], [""])
+            return ([self._empty_image()], [""], "{}")
 
         images: list[torch.Tensor] = []
         prompts: list[str] = []
+        metadata: list[dict] = []
         failures: list[str] = []
         for selection in selection_list:
             if not isinstance(selection, dict):
@@ -1149,8 +1178,10 @@ class DanbooruGallery:
             try:
                 images.append(self._download_image(image_url))
                 prompts.append(prompt)
+                metadata.append(self._selection_meta(selection, ok=True))
             except Exception as error:
                 failures.append(f"[{prompt[:24] or image_url[:48]}] {error}")
+                metadata.append(self._selection_meta(selection, ok=False, error=str(error)))
         if not images:
             # 不再静默输出黑图：全部下载失败 → 抛错，ComfyUI 队列停止，杜绝"图生图出黑屏"
             detail = "\n".join(f"  - {f}" for f in failures[:6])
@@ -1162,7 +1193,8 @@ class DanbooruGallery:
             )
         if len(failures) > 0:
             print(f"[D站画廊] 跳过 {len(failures)} 张下载失败的图（原图可能已失效），使用剩余 {len(images)} 张继续")
-        return (images, prompts)
+        return (images, prompts, json.dumps(
+            {"items": metadata, "failures": failures}, ensure_ascii=False))
 
 
 NODE_CLASS_MAPPINGS = {DanbooruGallery.NAME: DanbooruGallery}

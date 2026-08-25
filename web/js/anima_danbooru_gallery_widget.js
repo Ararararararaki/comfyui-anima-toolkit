@@ -411,10 +411,23 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
     }
 
     updateSelection() {
-      const selected = [...this.grid.querySelectorAll(".adg-card.is-selected")].map((card) => ({
-        image_url: card.dataset.imageUrl || "",
-        prompt: card.dataset.prompt || "",
-      }));
+      const selected = [...this.grid.querySelectorAll(".adg-card.is-selected")].map((card) => {
+        const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+        return {
+          image_url: card.dataset.imageUrl || "",
+          prompt: card.dataset.prompt || "",
+          post_id: card.dataset.postId || "",
+          tags: card.dataset.tags ? JSON.parse(card.dataset.tags) : [],
+          rating: card.dataset.rating || "",
+          score: num(card.dataset.score),
+          favcount: num(card.dataset.favcount),
+          width: num(card.dataset.width),
+          height: num(card.dataset.height),
+          file_ext: card.dataset.fileExt || "",
+          video: card.dataset.video === "1",
+          source_url: card.dataset.sourceUrl || "",
+        };
+      });
       const value = JSON.stringify({ selections: selected });
       this.selectionWidget.value = value;
       this.selectionWidget.callback?.(value);
@@ -466,6 +479,15 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         card.dataset.prompt = this.postPrompt(post);
         card.dataset.tags = JSON.stringify(this.postTags(post));
         card.dataset.postId = String(post.id || "");
+        // 结构化元数据（2026-08-24：metadata_json 输出数据源）
+        card.dataset.rating = String(post.rating || "");
+        card.dataset.score = String(post.score ?? "");
+        card.dataset.favcount = String(post.fav_count ?? "");
+        card.dataset.width = String(post.image_width ?? "");
+        card.dataset.height = String(post.image_height ?? "");
+        card.dataset.fileExt = String(post.file_ext || "");
+        card.dataset.video = this.isVideoPost(post) ? "1" : "0";
+        card.dataset.sourceUrl = post.file_url || post.large_file_url || imageUrl;
         const selectButton = document.createElement("button");
         selectButton.type = "button";
         selectButton.className = "adg-card-select";
