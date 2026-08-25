@@ -41,6 +41,27 @@
     "角色中景": { pos_x: 0, pos_y: 0, pos_z: 0, roll: 0 },
   };
 
+  // ── 用户自定义预设（后端 data/camera_presets.json，2026-08-24）──
+  let CUSTOM_PRESETS = {};
+
+  async function loadCustomPresets() {
+    try {
+      const r = await (await fetch("/anima/camera/presets")).json();
+      if (r && r.ok && r.custom) CUSTOM_PRESETS = r.custom || {};
+    } catch (e) {
+      CUSTOM_PRESETS = {};
+    }
+    return CUSTOM_PRESETS;
+  }
+  async function camPost(path, body) {
+    const r = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    });
+    return r.json();
+  }
+
   // ── 忠实 JS 端口：compute（与后端一致，用于实时预览） ──
   const fmtWeight = (w) => (Math.round(parseFloat(w) * 100) / 100).toFixed(2);
   const splitTags = (t) => String(t || "").split(",").map((s) => s.trim()).filter((s) => s.length > 0);
@@ -425,7 +446,7 @@
     }
 
     _applyPreset(name) {
-      const p = PRESETS[name];
+      const p = PRESETS[name] || CUSTOM_PRESETS[name];
       if (!p) return;
       this._setW(this.w.px, p.pos_x);
       this._setW(this.w.py, p.pos_y);
@@ -858,11 +879,125 @@
         }
         presetSelect.appendChild(og);
       }
+      // 我的预设（用户自定义，后端持久化；加载后追加）
+      const customOG = document.createElement("optgroup");
+      customOG.label = "我的预设";
+      presetSelect.appendChild(customOG);
+      const renderCustom = () => {
+        customOG.innerHTML = "";
+        for (const name of Object.keys(CUSTOM_PRESETS).sort()) {
+          customOG.appendChild(new Option(name, name));
+        }
+        if (this.presetSelect) this.presetSelect.value = this.w.preset?.value || "自定义";
+      };
       presetSelect.addEventListener("change", () => this._applyPreset(presetSelect.value));
       presetWrap.appendChild(presetLabel);
       presetWrap.appendChild(presetSelect);
       container.appendChild(presetWrap);
       this.presetSelect = presetSelect;
+
+      // ── 我的预设管理（保存当前机位 / 删除 / 导入导出，2026-08-24）──
+      const mgr = document.createElement("div");
+      mgr.className = "anima-cam-presets-mgr";
+      const pName = document.createElement("input");
+      pName.type = "text";
+      pName.className = "anima-cam-presets-name";
+      pName.placeholder = "预设名（保存当前机位）";
+      const saveP = document.createElement("button");
+      saveP.type = "button"; saveP.textContent = "存";
+      saveP.title = "把当前机位（含附加 tag）保存为用户预设，预设持久化在后端，重启/换浏览器不丢";
+      const delP = document.createElement("button");
+      delP.type = "button"; delP.textContent = "删";
+      delP.title = "删除下拉里当前选中的自定义预设";
+      const expP = document.createElement("button");
+      expP.type = "button"; expP.textContent = "导出";
+      expP.title = "导出全部自定义预设为 JSON 备份";
+      const impP = document.createElement("button");
+      impP.type = "button"; impP.textContent = "导入";
+      impP.title = "从 JSON 备份导入自定义预设（合并，同名覆盖）";
+      const mgrHint = document.createElement("span");
+      mgrHint.className = "anima-cam-presets-hint";
+      mgr.append(pName, saveP, delP, expP, impP, mgrHint);
+      container.appendChild(mgr);
+      const hint = (t) => {
+        mgrHint.textContent = t;
+        setTimeout(() => { if (mgrHint.textContent === t) mgrHint.textContent = ""; }, 3500);
+      };
+
+      saveP.addEventListener("click", async () => {
+        const name = (pName.value || "").trim();
+        if (!name) { hint("请输入预设名"); return; }
+        const px = parseFloat(this.w.px?.value ?? 0), py = parseFloat(this.w.py?.value ?? 0);
+        const pz = parseFloat(this.w.pz?.value ?? 0), rl = parseFloat(this.w.roll?.value ?? 0);
+        try {
+          const r = await camPost("/anima/camera/presets", {
+            name, pos_x: px, pos_y: py, pos_z: pz, roll: rl,
+            extra: (this.w.extra_tags?.value || "").trim(),
+          });
+          if (r && r.ok) {
+            CUSTOM_PRESETS[name] = { pos_x: px, pos_y: py, pos_z: pz, roll: rl,
+                                     extra: (this.w.extra_tags?.value || "").trim() };
+            renderCustom();
+            pName.value = "";
+            hint(`已保存预设「${name}」`);
+          } else {
+            hint((r && r.error) || "保存失败");
+          }
+        } catch (e) { hint("保存失败：" + (e.message || e)); }
+      });
+      delP.addEventListener("click", async () => {
+        const name = presetSelect.value;
+        if (!name || !CUSTOM_PRESETS[name]) { hint("当前选中的不是自定义预设"); return; }
+        if (!confirm(`删除自定义预设「${name}」？`)) return;
+        try {
+          const r = await camPost("/anima/camera/presets/delete", { name });
+          if (r && r.ok) {
+            delete CUSTOM_PRESETS[name];
+            renderCustom();
+            this._setW(this.w.preset, "自定义");
+            this._syncControls();
+            hint(`已删除「${name}」`);
+          } else { hint((r && r.error) || "删除失败"); }
+        } catch (e) { hint("删除失败：" + (e.message || e)); }
+      });
+      expP.addEventListener("click", async () => {
+        try {
+          const r = await (await fetch("/anima/camera/presets/export")).json();
+          const blob = new Blob([JSON.stringify(r, null, 1)], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "anima-camera-presets-" + new Date().toISOString().slice(0, 10) + ".json";
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 5000);
+          hint("自定义预设已导出（JSON）");
+        } catch (e) { hint("导出失败：" + (e.message || e)); }
+      });
+      impP.addEventListener("click", () => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".json,application/json";
+        input.onchange = async () => {
+          const f = input.files && input.files[0];
+          if (!f) return;
+          try {
+            const data = JSON.parse(await f.text());
+            const presets = (data && data.presets && typeof data.presets === "object") ? data.presets : data;
+            if (!presets || typeof presets !== "object") { hint("备份文件格式不对"); return; }
+            const r = await camPost("/anima/camera/presets/import", { presets });
+            if (r && r.ok) {
+              await loadCustomPresets();
+              renderCustom();
+              hint(`已导入 ${r.count} 条预设${r.skipped_builtin ? `（跳过 ${r.skipped_builtin} 条内置同名）` : ""}`);
+            } else { hint((r && r.error) || "导入失败"); }
+          } catch (e) { hint("导入失败：" + (e.message || e)); }
+        };
+        input.click();
+      });
+
+      loadCustomPresets().then(renderCustom);
 
       // ── 3D 空间画布（拖相机点微调，其余位置直接定位；滚轮=远近）──
       const canvas = document.createElement("canvas");
@@ -1120,6 +1255,13 @@
 .anima-cam-presets { display:flex; flex-direction:column; gap:3px; }
 .anima-cam-preset-select { width:100%; background:var(--comfy-input-bg, #1b1e26); color:var(--fg-color, #ddd); border:1px solid var(--border-color, #383d4a); border-radius:6px; font-size:11px; padding:4px 6px; cursor:pointer; }
 .anima-cam-preset-select:hover { border-color:#6d5bd0; }
+/* 我的预设管理行（2026-08-24） */
+.anima-cam-presets-mgr { display:flex; flex-wrap:wrap; gap:4px; align-items:center; margin-top:4px; }
+.anima-cam-presets-name { flex:1 1 90px; min-width:0; background:var(--comfy-input-bg,#1b1e26); color:var(--fg-color,#ddd); border:1px solid var(--border-color,#383d4a); border-radius:4px; font-size:10px; padding:3px 6px; }
+.anima-cam-presets-name:focus { outline:none; border-color:#8b5cf6; }
+.anima-cam-presets-mgr button { font-size:10px; padding:2px 7px; background:var(--comfy-input-bg,#222); color:var(--fg-color,#bbb); border:1px solid var(--border-color,#4a4a52); border-radius:4px; cursor:pointer; flex:0 0 auto; }
+.anima-cam-presets-mgr button:hover { border-color:#8b5cf6; color:#c9b8ff; }
+.anima-cam-presets-hint { font-size:10px; color:#4aba8b; flex:1 1 100%; min-height:1.2em; }
 .anima-cam-preset-select:focus { outline:none; border-color:#8b5cf6; }
 .anima-cam-canvas { width:100%; height:auto; background:linear-gradient(180deg,#171a22 0%,#0e1014 100%); border:1px solid var(--border-color, #2f3440); border-radius:10px; cursor:grab; touch-action:none; display:block; box-shadow:inset 0 1px 6px rgba(0,0,0,.35); }
 .anima-cam-canvas:active { cursor:grabbing; }

@@ -11,8 +11,10 @@
 #
 # 优先级：自然语言 > 预设 > 手动 pos_x/y/z/roll。
 
+import os
 import json
 import math
+import threading
 from aiohttp import web
 from server import PromptServer
 
@@ -126,6 +128,72 @@ PRESETS = {
 
 CUSTOM_PRESET = "自定义"
 PRESET_NAMES = [CUSTOM_PRESET] + list(PRESETS.keys())
+
+
+# ============ 用户自定义预设（data/camera_presets.json，2026-08-24） ============
+# 结构：{名称: {"pos_x","pos_y","pos_z","roll","extra"}}，与内置 PRESETS 同构。
+# 保存/重命名/删除/导入导出走 /anima/camera/presets* API；节点 preset 下拉
+# 与 camera_preview（批量联动）都会合并自定义预设。
+
+_CAM_PRESETS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "camera_presets.json")
+_CAM_PRESETS_LOCK = threading.Lock()
+
+
+def _load_custom_presets() -> dict:
+    with _CAM_PRESETS_LOCK:
+        try:
+            if os.path.exists(_CAM_PRESETS_PATH):
+                with open(_CAM_PRESETS_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    out = {}
+                    for name, p in data.items():
+                        if not isinstance(p, dict):
+                            continue
+                        out[str(name)] = {
+                            "pos_x": float(p.get("pos_x", 0.0)),
+                            "pos_y": float(p.get("pos_y", 0.0)),
+                            "pos_z": float(p.get("pos_z", 0.0)),
+                            "roll": float(p.get("roll", 0.0)),
+                            "extra": str(p.get("extra", "") or ""),
+                        }
+                    return out
+        except Exception as e:
+            print(f"[TK Camera Control] 自定义预设读取失败（按空处理）: {e}")
+    return {}
+
+
+def _save_custom_presets(presets: dict):
+    with _CAM_PRESETS_LOCK:
+        os.makedirs(os.path.dirname(_CAM_PRESETS_PATH), exist_ok=True)
+        tmp = _CAM_PRESETS_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(presets, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, _CAM_PRESETS_PATH)
+
+
+def _preset_entry(name: str) -> dict | None:
+    """内置或自定义预设 → 参数 dict（含 extra）。"""
+    p = PRESETS.get(name)
+    if p is not None:
+        return p
+    return _load_custom_presets().get(name)
+
+
+def _safe_preset_name(name: str) -> str:
+    s = str(name or "").strip().replace("/", "_").replace("\\", "_").replace(":", "_")[:40]
+    for ch in '*?<>|"':
+        s = s.replace(ch, "_")
+    return s or "预设"
+
+
+def all_preset_names() -> list:
+    """节点下拉选项：自定义 + 内置 + 用户自定义（去重保序）。"""
+    names = [CUSTOM_PRESET] + list(PRESETS.keys())
+    for n in _load_custom_presets().keys():
+        if n not in names:
+            names.append(n)
+    return names
 
 
 def _has_any(text: str, keywords) -> bool:
@@ -468,7 +536,7 @@ class AnimaCameraControl:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "preset": (PRESET_NAMES, {"default": CUSTOM_PRESET, "label": "机位预设"}),
+                "preset": (all_preset_names(), {"default": CUSTOM_PRESET, "label": "机位预设"}),
                 "nl_prompt": ("STRING", {
                     "default": "",
                     "multiline": False,
@@ -504,23 +572,27 @@ class AnimaCameraControl:
             }
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("相机提示词",)
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("相机提示词", "camera_meta")
     FUNCTION = "execute"
-    DESCRIPTION = "可视化控制相机机位，输出对应相机提示词（忠实复刻 BSK 算法：方位 2D 比例 + 高度/距离档位 + 倾斜 + extras；支持一键预设与自然语言）"
+    DESCRIPTION = "可视化控制相机机位，输出对应相机提示词（忠实复刻 BSK 算法：方位 2D 比例 + 高度/距离档位 + 倾斜 + extras；支持一键预设（含用户自定义）与自然语言）；第二输出 camera_meta 为 JSON 结构化参数（mode/preset/坐标/生效开关），供下游节点/脚本消费"
 
     def execute(self, preset, nl_prompt, pos_x, pos_y, pos_z, roll, extra_tags, config):
         px, py, pz, rl = float(pos_x), float(pos_y), float(pos_z), float(roll)
 
-        # 优先级：自然语言 > 预设 > 手动
+        # 优先级：自然语言 > 预设（内置/自定义） > 手动
         nl = (nl_prompt or "").strip()
+        mode = "nl" if nl else ("preset" if (preset and preset != CUSTOM_PRESET) else "manual")
         if nl:
             px, py, pz, rl = parse_camera_nl(nl, (px, py, pz, rl))
             extra_preset = ""
-        elif preset and preset != CUSTOM_PRESET and preset in PRESETS:
-            p = PRESETS[preset]
-            px, py, pz, rl = p["pos_x"], p["pos_y"], p["pos_z"], p.get("roll", 0.0)
-            extra_preset = p.get("extra", "")
+        elif preset and preset != CUSTOM_PRESET:
+            p = _preset_entry(preset)
+            if p is not None:
+                px, py, pz, rl = p["pos_x"], p["pos_y"], p["pos_z"], p.get("roll", 0.0)
+                extra_preset = p.get("extra", "")
+            else:
+                extra_preset = ""
         else:
             extra_preset = ""
 
@@ -538,8 +610,28 @@ class AnimaCameraControl:
             prompt = (prompt.rstrip().rstrip(",") + ", " + suffix + ",").strip(", ").strip() + ","
             prompt = prompt.strip()
 
+        # 结构化元数据（第二输出）：实际生效参数 + 生效开关
+        try:
+            cfg = json.loads(config) if config else {}
+        except Exception:
+            cfg = {}
+        meta = {
+            "mode": mode,
+            "preset": preset if (preset and preset != CUSTOM_PRESET) else "",
+            "nl_prompt": nl,
+            "pos": {"x": round(px, 4), "y": round(py, 4), "z": round(pz, 4), "roll": round(rl, 4)},
+            "extra_tags": extras,
+            "enabled": {
+                "azimuth": bool((cfg.get("azimuth") or {}).get("enabled", True)),
+                "elevation": bool((cfg.get("elevation") or {}).get("enabled", True)),
+                "distance": bool((cfg.get("distance") or {}).get("enabled", True)),
+                "tilt": bool((cfg.get("tilt") or {}).get("enabled", True)),
+            },
+            "extras_enabled": {k: bool((cfg.get("extras") or {}).get(k, {}).get("enabled")) for k in
+                               ("lens", "dof", "movement", "composition", "style")},
+        }
         # 兜底：无任何输出时返回空串（下游可安全拼接）
-        return (prompt,)
+        return (prompt, json.dumps(meta, ensure_ascii=False))
 
 
 NODE_CLASS_MAPPINGS = {
@@ -571,14 +663,17 @@ async def camera_preview(request):
     preset = (request.query.get("preset") or "").strip()
     nl = (request.query.get("nl") or "").strip()
 
-    # 复刻 execute 的优先级
+    # 复刻 execute 的优先级（含用户自定义预设）
     if nl:
         x, y, z, roll = parse_camera_nl(nl, (x, y, z, roll))
         extra_preset = ""
-    elif preset and preset != CUSTOM_PRESET and preset in PRESETS:
-        p = PRESETS[preset]
-        x, y, z, roll = p["pos_x"], p["pos_y"], p["pos_z"], p.get("roll", 0.0)
-        extra_preset = p.get("extra", "")
+    elif preset and preset != CUSTOM_PRESET:
+        p = _preset_entry(preset)
+        if p is not None:
+            x, y, z, roll = p["pos_x"], p["pos_y"], p["pos_z"], p.get("roll", 0.0)
+            extra_preset = p.get("extra", "")
+        else:
+            extra_preset = ""
     else:
         extra_preset = ""
 
@@ -599,3 +694,103 @@ async def camera_preview(request):
         prompt = prompt.strip()
 
     return web.json_response({"prompt": prompt})
+
+
+# ============ 用户自定义预设 API（2026-08-24） ============
+
+@PromptServer.instance.routes.get("/anima/camera/presets")
+async def camera_presets_get(request):
+    """列出预设：builtin（内置只读）+ custom（用户自定义）。"""
+    return web.json_response({
+        "ok": True,
+        "builtin": PRESETS,
+        "custom": _load_custom_presets(),
+    })
+
+
+@PromptServer.instance.routes.post("/anima/camera/presets")
+async def camera_presets_save(request):
+    """保存/覆盖一条自定义预设。body: {name, pos_x, pos_y, pos_z, roll, extra}。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "bad json"}, status=400)
+    name = _safe_preset_name(body.get("name") or "")
+    if not name:
+        return web.json_response({"ok": False, "error": "预设名不能为空"}, status=400)
+    if name in PRESETS:
+        return web.json_response({"ok": False, "error": f"「{name}」是内置预设，不能覆盖"}, status=409)
+    try:
+        entry = {
+            "pos_x": float(body.get("pos_x", 0.0)),
+            "pos_y": float(body.get("pos_y", 0.0)),
+            "pos_z": float(body.get("pos_z", 0.0)),
+            "roll": float(body.get("roll", 0.0)),
+            "extra": str(body.get("extra", "") or "").strip(),
+        }
+    except (TypeError, ValueError):
+        return web.json_response({"ok": False, "error": "pos_x/y/z/roll 必须是数字"}, status=400)
+    custom = _load_custom_presets()
+    custom[name] = entry
+    _save_custom_presets(custom)
+    return web.json_response({"ok": True, "name": name, "count": len(custom)})
+
+
+@PromptServer.instance.routes.post("/anima/camera/presets/delete")
+async def camera_presets_delete(request):
+    """删除自定义预设。body: {name}。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "bad json"}, status=400)
+    name = str(body.get("name") or "").strip()
+    custom = _load_custom_presets()
+    if name not in custom:
+        return web.json_response({"ok": False, "error": f"自定义预设「{name}」不存在"}, status=404)
+    del custom[name]
+    _save_custom_presets(custom)
+    return web.json_response({"ok": True, "count": len(custom)})
+
+
+@PromptServer.instance.routes.get("/anima/camera/presets/export")
+async def camera_presets_export(request):
+    """导出全部自定义预设（JSON 备份）。"""
+    return web.json_response({"ok": True, "device": "anima-camera-presets", "presets": _load_custom_presets()})
+
+
+@PromptServer.instance.routes.post("/anima/camera/presets/import")
+async def camera_presets_import(request):
+    """导入自定义预设（合并，同名覆盖）。body: {presets: {名称: {...}}} 或直接 {名称: {...}}。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "bad json"}, status=400)
+    raw = body.get("presets") if isinstance(body, dict) and isinstance(body.get("presets"), dict) else body
+    if not isinstance(raw, dict) or not raw:
+        return web.json_response({"ok": False, "error": "presets 不能为空"}, status=400)
+    custom = _load_custom_presets()
+    added = 0
+    n_conflict_builtin = 0
+    for name, p in raw.items():
+        if not isinstance(p, dict):
+            continue
+        sname = _safe_preset_name(name)
+        if not sname:
+            continue
+        if sname in PRESETS and sname not in custom:
+            n_conflict_builtin += 1
+            continue
+        try:
+            custom[sname] = {
+                "pos_x": float(p.get("pos_x", 0.0)),
+                "pos_y": float(p.get("pos_y", 0.0)),
+                "pos_z": float(p.get("pos_z", 0.0)),
+                "roll": float(p.get("roll", 0.0)),
+                "extra": str(p.get("extra", "") or "").strip(),
+            }
+            added += 1
+        except (TypeError, ValueError):
+            continue
+    _save_custom_presets(custom)
+    return web.json_response({"ok": True, "count": added,
+                              "skipped_builtin": n_conflict_builtin})
