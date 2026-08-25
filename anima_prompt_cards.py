@@ -654,27 +654,16 @@ class TKPromptCards:
                     "placeholder": "<lora:name:weight>",
                     "tooltip": "当前 LoRA 语法文本（前端点击触发词卡片时自动维护），输出端口直连 TK Batch LoRA Loader。",
                 }),
-                "negative": ("STRING", {
-                    "default": "",
-                    "multiline": True,
-                    "placeholder": "负面提示词（可选）",
-                    "tooltip": "负面提示词文本：单独输出 STRING，可接负向 CLIPTextEncode 或直接接线负向目标。",
-                }),
-                "negative_clip": ("CLIP",),
             },
         }
 
-    # 输出槽位 0~2 与旧版本一致（正向 STRING / 正向 CONDITIONING / lora_syntax），
-    # 新槽位追加在尾部，旧工作流连线不受影响。
-    RETURN_TYPES = ("STRING", "CONDITIONING", "STRING", "STRING", "CONDITIONING")
-    RETURN_NAMES = ("STRING", "CONDITIONING", "lora_syntax", "negative", "negative_conditioning")
+    RETURN_TYPES = ("STRING", "CONDITIONING", "STRING")
+    RETURN_NAMES = ("STRING", "CONDITIONING", "lora_syntax")
     FUNCTION = "execute"
     DESCRIPTION = ("提示词卡片库编辑器：本地批文件一键切换、卡片库（英中对照 tag）拼接当前提示词；"
-                   "可选 clip 输入直接编码出正向 CONDITIONING；lora_syntax 输出直连 TK Batch LoRA Loader 加载触发词对应 LoRA；"
-                   "新增负面输入/输出：negative STRING + negative_clip 编码出负面 CONDITIONING（完整正负面工作流入口）")
+                   "可选 clip 输入直接编码出 CONDITIONING；lora_syntax 输出直连 TK Batch LoRA Loader 加载触发词对应 LoRA")
 
-    def execute(self, positive="", clip=None, opt_text="", lora_syntax="",
-                negative="", negative_clip=None):
+    def execute(self, positive="", clip=None, opt_text="", lora_syntax=""):
         text = str(positive or "").strip()
         extra = str(opt_text or "").strip()
         if extra:
@@ -691,19 +680,7 @@ class TKPromptCards:
                 print(f"[TK Prompt Cards] CLIP 编码失败（退化为纯 STRING）: {e}")
                 conditioning = None
 
-        neg_text = str(negative or "").strip()
-        neg_conditioning = None
-        if negative_clip is not None and neg_text:
-            try:
-                neg_tokens = negative_clip.tokenize(neg_text)
-                neg_out = negative_clip.encode_from_tokens(neg_tokens, return_pooled=True, return_dict=True)
-                neg_cond = neg_out.pop("cond")
-                neg_conditioning = [[neg_cond, neg_out]]
-            except Exception as e:
-                print(f"[TK Prompt Cards] 负面 CLIP 编码失败（退化为纯 STRING）: {e}")
-                neg_conditioning = None
-
-        return (text, conditioning, str(lora_syntax or "").strip(), neg_text, neg_conditioning)
+        return (text, conditioning, str(lora_syntax or "").strip())
 
 
 NODE_CLASS_MAPPINGS = {"TKPromptCards": TKPromptCards}

@@ -1909,9 +1909,6 @@
       if (mounted) {
         for (const w of this.node.widgets || []) {
           if (!w || w.name === "anima_cards_panel") continue;
-          // negative / negative_clip 保留为标准 widget（负面文本输入 + 负面 CLIP 连线端口），
-          // 不随卡片 UI 隐藏——否则负面输入无落点（2026-08-24 正负面输出支持）
-          if (w.name === "negative" || w.name === "negative_clip") continue;
           w.hidden = true; w.options = w.options || {}; w.options.hidden = true;
           if (w.element) w.element.style.display = "none";
           if (typeof w.draw === "function") w.draw = () => {};
