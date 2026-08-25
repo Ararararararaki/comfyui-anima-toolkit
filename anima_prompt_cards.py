@@ -159,6 +159,59 @@ _CLIP_LIKE = re.compile(r"CLIPTextEncode|PromptUI|TextEncode|PromptEditor", re.I
 _MAX_PNG_UPLOAD_SIZE = 20 * 1024 * 1024
 
 
+def _workflow_text_roles(nodes: dict) -> dict[str, str]:
+    """沿 workflow 连线识别文本节点最终进入 positive/negative 的角色。"""
+    forward: dict[str, list[tuple[str, str]]] = {}
+    reverse: dict[str, list[str]] = {}
+    for consumer_id, node in nodes.items():
+        if not isinstance(node, dict):
+            continue
+        for key, value in (node.get("inputs") or {}).items():
+            if not (isinstance(value, list) and len(value) >= 2):
+                continue
+            source_id = str(value[0])
+            consumer = str(consumer_id)
+            forward.setdefault(source_id, []).append((consumer, str(key).lower()))
+            reverse.setdefault(consumer, []).append(source_id)
+
+    def downstream_roles(start: str) -> set[str]:
+        found: set[str] = set()
+        queue = [start]
+        seen = {start}
+        while queue:
+            current = queue.pop(0)
+            for neighbor, key in forward.get(current, []):
+                if "negative" in key:
+                    found.add("negative")
+                elif "positive" in key:
+                    found.add("positive")
+                if neighbor not in seen:
+                    seen.add(neighbor)
+                    queue.append(neighbor)
+        return found
+
+    roles: dict[str, set[str]] = {}
+    for start in nodes:
+        start = str(start)
+        found = downstream_roles(start)
+        # 展示/拼接节点通常把真正的文本节点放在输入里：回溯源节点，
+        # 但每个源节点仍只沿下游方向找 positive/negative，避免正负分支串线。
+        queue = [(start, 0)]
+        seen = {start}
+        while queue:
+            current, depth = queue.pop(0)
+            if found or depth >= 4:
+                continue
+            for source_id in reverse.get(current, []):
+                found.update(downstream_roles(source_id))
+                if source_id not in seen:
+                    seen.add(source_id)
+                    queue.append((source_id, depth + 1))
+        if found:
+            roles[start] = found
+    return {node_id: "/".join(sorted(found)) for node_id, found in roles.items()}
+
+
 def _parse_png_meta(filepath: str) -> dict:
     """读取 PNG 的 tEXt 块（ComfyUI 保存的 prompt/workflow JSON），提取文本类输入。"""
     from PIL import Image
@@ -176,10 +229,12 @@ def _parse_png_meta(filepath: str) -> dict:
     except Exception:
         prompt_data = None
 
+    text_roles = {}
     if isinstance(prompt_data, dict):
         out = prompt_data.get("output")
         if not isinstance(out, dict):
             out = prompt_data
+        text_roles = _workflow_text_roles(out)
         for nid, node in out.items():
             if not isinstance(node, dict):
                 continue
@@ -191,26 +246,34 @@ def _parse_png_meta(filepath: str) -> dict:
                 if isinstance(v, str) and k in _TEXT_KEYS and len(v.strip()) > 1:
                     texts.append({
                         "node": str(nid), "class": cls, "key": k, "text": v,
+                        "role": text_roles.get(str(nid), ""),
                     })
 
-    # 正片挑选：CLIP 类节点的 positive/text 优先，取最长；否则所有候选中取最长
+    # 正片挑选：先按 workflow 连线角色，再退化到显式 positive/非 negative 候选。
     positive = ""
     negative = ""
+    positive_candidates = [t for t in texts if "positive" in t.get("role", "") or t["key"] == "positive"]
+    negative_candidates = [t for t in texts if "negative" in t.get("role", "") or t["key"] == "negative"]
+    if positive_candidates:
+        positive = max((t["text"] for t in positive_candidates), key=len, default="")
+    if negative_candidates:
+        negative = max((t["text"] for t in negative_candidates), key=len, default="")
+    best_non_negative = None
     best_clip = None
     for t in texts:
-        if t["key"] == "positive":
-            if positive is None or t["key"] == "positive" and (not positive or len(t["text"]) > len(positive)):
-                positive = t["text"]
-        elif t["key"] == "negative":
-            if not negative or len(t["text"]) > len(negative):
-                negative = t["text"]
-        elif t["key"] == "text" and _CLIP_LIKE.search(t["class"]):
+        if "negative" in t.get("role", "") or t["key"] == "negative":
+            continue
+        if not best_non_negative or len(t["text"]) > len(best_non_negative):
+            best_non_negative = t["text"]
+        if t["key"] == "text" and _CLIP_LIKE.search(t["class"]):
             if best_clip is None or len(t["text"]) > len(best_clip):
                 best_clip = t["text"]
     if not positive and best_clip:
-        positive = best_clip
+        positive = best_non_negative or best_clip
     if not positive and texts:
-        positive = max((t["text"] for t in texts if t["key"] != "negative"), key=len, default="")
+        positive = best_non_negative or max((t["text"] for t in texts if t["key"] != "negative"), key=len, default="")
+    if not negative and negative_candidates:
+        negative = max((t["text"] for t in negative_candidates), key=len, default="")
 
     return {
         "ok": True,

@@ -1667,6 +1667,7 @@
           if (delArmed) { disarmDel(); return; }
           if (ev.target.closest(".tk-cards-star") || ev.target.closest(".tk-cards-del") ||
               ev.target.closest(".tk-cards-cat-btn") || ev.target.closest(".tk-cards-pin") ||
+              ev.target.closest(".tk-cards-retranslate") ||
               ev.target.closest(".tk-cards-grip")) return;
           if (ev.ctrlKey || ev.metaKey) {
             if (this.selectedCardIds.has(c.id)) this.selectedCardIds.delete(c.id); else this.selectedCardIds.add(c.id);
@@ -1684,6 +1685,7 @@
         el.addEventListener("dblclick", (ev) => {
           if (ev.target.closest(".tk-cards-star") || ev.target.closest(".tk-cards-del") ||
               ev.target.closest(".tk-cards-cat-btn") || ev.target.closest(".tk-cards-pin") ||
+              ev.target.closest(".tk-cards-retranslate") ||
               ev.target.closest(".tk-cards-grip")) return;
           this.beginEdit(c.id, el, c);
         });
@@ -1691,6 +1693,13 @@
           ev.stopPropagation();
           this.toggleFavorite(c.id);
         });
+        const retranslate = document.createElement("button");
+        retranslate.type = "button";
+        retranslate.className = "tk-cards-retranslate";
+        retranslate.textContent = "重译";
+        retranslate.title = "重新翻译这张卡片的中文注释（覆盖原注释）";
+        retranslate.addEventListener("click", (ev) => { ev.stopPropagation(); this.retranslateCard(c.id); });
+        meta.appendChild(retranslate);
         this.cardGridEl.appendChild(el);
       }
     }
@@ -2130,23 +2139,74 @@
       });
     }
 
-    async batchTranslate() {
-      const todo = this.cards.filter((p) => !String(p.notes || "").trim() && String(p.prompt || "").trim());
-      if (!todo.length) { this._flash("没有待翻译的卡片"); return; }
-      this._flash(`批量翻译中：${todo.length} 张（DeepLX → DashScope 回退）`);
-      let okN = 0;
+    async retranslateCard(id) {
+      const card = this.cards.find((p) => p.id === id);
+      if (!card || !String(card.prompt || "").trim()) { this._flash("这张卡片没有可翻译的英文 tag"); return; }
+      this._flash(`正在重译：${String(card.prompt).slice(0, 28)}…`, 30000);
+      try {
+        const zh = await translateAuto(card.prompt);
+        if (!zh || zh === card.prompt) { this._flash("翻译服务没有返回新的中文注释"); return; }
+        card.notes = zh;
+        card.updatedAt = Date.now();
+        await this.putCard(card);
+        this._renderCards();
+        this._flash("单卡重译完成");
+      } catch (e) {
+        this._flash("单卡重译失败：" + (e.message || e), 5000);
+      }
+    }
+
+    showBatchTranslateDialog() {
+      const all = this.cards.filter((p) => String(p.prompt || "").trim());
+      const missing = all.filter((p) => !String(p.notes || "").trim());
+      if (!all.length) { this._flash("没有可翻译的卡片"); return; }
+      const overlay = document.createElement("div");
+      overlay.className = "tk-cards-overlay";
+      overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-batch-translate-box">
+        <div class="tk-cards-overlay-head"><b>批量重译卡片</b><button type="button" class="tk-cards-btn" data-a="close">关闭</button></div>
+        <div class="tk-cards-settings-note">重译会覆盖现有中文注释。可只处理还没有注释的卡片。</div>
+        <label class="tk-cards-field"><span>处理范围</span><select data-f="scope"><option value="all">全部卡片（${all.length} 张，覆盖已有注释）</option><option value="missing">仅未翻译（${missing.length} 张）</option></select></label>
+        <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="start">开始重译</button></div>
+      </div>`;
+      document.body.appendChild(overlay);
+      const close = () => overlay.remove();
+      overlay.querySelector('[data-a="close"]').addEventListener("click", close);
+      overlay.querySelector('[data-a="cancel"]').addEventListener("click", close);
+      overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
+      overlay.addEventListener("keydown", (ev) => { if (ev.key === "Escape") close(); });
+      overlay.querySelector('[data-a="start"]').addEventListener("click", async () => {
+        const scope = overlay.querySelector('[data-f="scope"]').value;
+        close();
+        await this.batchTranslate(scope);
+      });
+    }
+
+    async batchTranslate(scope = "all") {
+      const all = this.cards.filter((p) => String(p.prompt || "").trim());
+      const todo = scope === "missing" ? all.filter((p) => !String(p.notes || "").trim()) : all;
+      if (!todo.length) { this._flash("该范围没有可翻译的卡片"); return; }
+      const total = todo.length;
+      let cursor = 0, okN = 0, failN = 0;
+      this._flash(`批量重译中：0 / ${total}（DeepLX → DashScope 回退）`, 120000);
       const workers = Array.from({ length: 3 }, async () => {
-        while (todo.length) {
-          const p = todo.pop();
+        while (true) {
+          const index = cursor++;
+          if (index >= todo.length) return;
+          const card = todo[index];
           try {
-            const zh = await translateAuto(p.prompt);
-            if (zh) { p.notes = zh; p.updatedAt = Date.now(); okN++; await this.putCard(p); }
-          } catch (e) { /* 单卡失败跳过 */ }
+            const zh = await translateAuto(card.prompt);
+            if (!zh || zh === card.prompt) { failN++; continue; }
+            card.notes = zh;
+            card.updatedAt = Date.now();
+            await this.putCard(card);
+            okN++;
+            this._flash(`批量重译中：${okN + failN} / ${total}`, 120000);
+          } catch (e) { failN++; }
         }
       });
       await Promise.all(workers);
       this._renderCards();
-      this._flash(`批量翻译完成：成功 ${okN} / ${todo.length + okN}`);
+      this._flash(`批量重译完成：成功 ${okN} / ${total}${failN ? `，失败或无新译文 ${failN}` : ""}`);
     }
 
     async exportCards() {
@@ -2471,9 +2531,9 @@
       loraBtn.title = "浏览 LoRA → 一键收藏触发词卡片 / 追加触发词";
       loraBtn.addEventListener("click", () => this.showLoraDialog());
       const tlBtn = document.createElement("button");
-      tlBtn.type = "button"; tlBtn.className = "tk-cards-btn"; tlBtn.textContent = "补翻";
-      tlBtn.title = "批量翻译缺中文注释的卡片";
-      tlBtn.addEventListener("click", () => this.batchTranslate());
+      tlBtn.type = "button"; tlBtn.className = "tk-cards-btn"; tlBtn.textContent = "批量重译";
+      tlBtn.title = "选择范围并批量重新翻译卡片中文注释";
+      tlBtn.addEventListener("click", () => this.showBatchTranslateDialog());
       const aiBtn = document.createElement("button");
       aiBtn.type = "button"; aiBtn.className = "tk-cards-btn tk-cards-btn-main"; aiBtn.textContent = "智能分类";
       aiBtn.title = "用 LLM 自动为卡片分类（Ollama 本地 或 API 反代；分类名不匹配的归「通用」）";
@@ -2620,6 +2680,7 @@
  .tk-cards-settings-status.is-success { border-color:rgba(155,178,182,.7); color:#c2d7d9; }
  .tk-cards-settings-status.is-error { border-color:rgba(203,133,133,.7); color:#e2aaaa; }
  .tk-cards-settings-note, .tk-cards-category-note { color:var(--tk-muted); font-size:10px; line-height:1.5; }
+ .tk-cards-batch-translate-box { width:min(480px,92vw); }
  .tk-cards-category-manager { width:min(680px,94vw); }
  .tk-cards-category-list { max-height:52vh; overflow:auto; display:flex; flex-direction:column; gap:6px; }
  .tk-cards-category-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto; align-items:center; gap:6px; padding:7px; border:1px solid var(--tk-border-soft); border-radius:4px; background:#151719; }
@@ -2648,6 +2709,8 @@
  .tk-cards-card-zh { flex:0 0 auto; color:var(--tk-muted); font-size:10px; }
  .tk-cards-card-meta { flex:0 0 auto; display:flex; align-items:center; gap:5px; min-height:22px; color:var(--tk-muted); font-size:10px; }
  .tk-cards-star { min-width:28px; min-height:22px; display:inline-flex; align-items:center; cursor:pointer; color:var(--tk-warn); font-size:14px; }
+ .tk-cards-retranslate { min-height:22px; padding:2px 7px; border:1px solid var(--tk-border); border-radius:4px; background:#202326; color:var(--tk-info); cursor:pointer; font-size:10px; }
+ .tk-cards-retranslate:hover, .tk-cards-retranslate:focus-visible { border-color:var(--tk-accent); background:#2b2f32; color:var(--tk-accent-strong); outline:none; }
  .tk-cards-w { color:var(--tk-accent); }
  .tk-cards-lora { color:var(--tk-info); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100px; }
 .tk-cards-multi { color:#ffb86c; border:1px solid rgba(255,184,108,.4); border-radius:3px; padding:0 3px; }
