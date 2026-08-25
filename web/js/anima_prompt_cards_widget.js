@@ -1,8 +1,12 @@
 // TK Prompt Cards 节点前端 —— 卡片库提示词编辑器
 //
-// 数据层：直接读写 TK Toolkit（civitai 面板）的 IndexedDB「anima-lora」
-//   （面板由 ComfyUI 同域服务，节点与面板共享同一 prompt 库，改动即时互见）
-//   prompts 表：面板条目（整段提示词）与节点卡片（tag 级，kind='card'）共存；
+// 数据层（2026-08-24 统一）：
+//   卡片库（tag 级词组）→ 后端 input/prompt_cards/cards.json（v2 信封，单一数据源），
+//     换浏览器 / 清站点数据不丢；旧浏览器 IndexedDB「anima-tk-cards」仅作一次性迁移源；
+//     支持 JSON 备份导出 / 替换式导入（「导出库 / 导入库」按钮）。
+//   工具箱 prompt 库 → 直读 TK Toolkit（civitai 面板）的 IndexedDB「anima-lora」
+//     （面板由 ComfyUI 同域服务，节点与面板共享同一 prompt 库，改动即时互见）
+//     prompts 表：面板条目（整段提示词）与节点卡片（tag 级，kind='card'）共存；
 //     prompt=英文文本 / notes=中文注释 / isFavorite=星标 / 扩展字段 weight/lora/multi/kind
 //   promptCategories 表：分类（与面板共用）
 //
@@ -13,13 +17,14 @@
 //      剪切板导入 + PNG 解析 + 整段存为组合卡
 //   ③ 卡片视图：kind=card 条目网格（分类页签/全部）；点击追加（智能去重）、双击就地编辑、
 //      右键软删除+撤销、星标置顶、批量补翻、浏览 LoRA 存触发词卡（同步 lora_syntax）、
-//      导出批文件
+//      导出批文件 / 导出库 JSON 备份 / 导入库恢复
 //
-// 后端复用：/api/translate（五源回退）、/anima/cards/image（PNG 解析）、
-//   /anima/cards/lora-triggers /anima/loras、/anima/cards/export（导出批文件）、
-//   /anima/prompt/list|parse（批文件浏览/导入）
+// 后端复用：/api/translate（五源回退）、/anima/cards（卡片库全量读写）、
+//   /anima/cards/image（PNG 解析）、/anima/cards/lora-triggers /anima/loras、
+//   /anima/cards/export（导出批文件）、/anima/prompt/list|parse（批文件浏览/导入）
 //
-// 2026-08-17 新建；08-18 存储层切换为 TK Toolkit IndexedDB 联动。
+// 2026-08-17 新建；08-18 工具箱库切为 TK Toolkit IndexedDB 联动；
+// 08-24 卡片库切回后端 cards.json（v2 信封，单一数据源 + 备份导出/导入）。
 
 (function () {
   const NODE_NAME = "TK Prompt Cards";
@@ -166,6 +171,99 @@
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
+  }
+
+  // ── 卡片库统一存储（2026-08-24：IndexedDB → 后端 cards.json v2 信封 单一数据源）──
+  // 卡片库（tag 级词组）改由后端 /anima/cards 持久化（input/prompt_cards/cards.json），
+  // 换浏览器/清站点数据不丢；IndexedDB 旧卡库仅做一次性迁移源。
+  // 前端对象字段 {prompt, notes, isFavorite, createdAt...} ↔ v2 信封 {en, zh, star, ts...}
+  let _cardLibCache = null; // {version, categories, cards} 后端正本内存镜像
+  let _cardLibSaveChain = Promise.resolve();
+
+  function cardFromEnvelope(c) {
+    return {
+      id: String(c.id || genId("c_")),
+      prompt: String(c.en || ""),
+      notes: String(c.zh || ""),
+      weight: String(c.weight || ""),
+      lora: String(c.lora || ""),
+      src: String(c.src || ""),
+      multi: !!c.multi,
+      categories: Array.isArray(c.categories) ? c.categories.slice() : [],
+      categoryId: (Array.isArray(c.categories) && c.categories[0]) || "",
+      isFavorite: !!c.star,
+      ts: Number(c.ts || Date.now()),
+      createdAt: Number(c.ts || Date.now()),
+      updatedAt: Number(c.ts || Date.now()),
+    };
+  }
+  function cardToEnvelope(p) {
+    return {
+      id: String(p.id || genId("c_")),
+      en: String(p.prompt || "").trim(),
+      zh: String(p.notes || ""),
+      weight: String(p.weight || ""),
+      star: !!p.isFavorite,
+      lora: String(p.lora || ""),
+      src: String(p.src || ""),
+      ts: Number(p.ts || p.updatedAt || Date.now()),
+      multi: !!p.multi,
+      categories: catIdsOf(p),
+    };
+  }
+
+  // 一次性迁移：后端卡库为空且旧 IndexedDB 卡库有数据 → 读旧库组装 v2
+  async function _migrateCardDbFromIndexedDB() {
+    try {
+      const db = await openCardDB();
+      const [cards, ccats] = await Promise.all([
+        storeAll(db, CARD_STORE),
+        storeAll(db, CARD_CAT_STORE),
+      ]);
+      if ((!cards || !cards.length) && (!ccats || !ccats.length)) return null;
+      const cats = (ccats && ccats.length)
+        ? ccats.slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
+        : CARD_DEFAULT_CATS.map((c) => ({ ...c }));
+      const list = (cards || [])
+        .map((c) => cardToEnvelope({ ...(c || {}), prompt: String(c.en || c.prompt || "") }))
+        .filter((c) => c.en);
+      return { version: 2, updated: Date.now(), categories: cats, cards: list };
+    } catch (e) {
+      console.warn("[TK Prompt Cards] 旧 IndexedDB 卡片库迁移读取失败:", e);
+      return null;
+    }
+  }
+
+  async function loadCardLib() {
+    const r = await fetchJson("/anima/cards");
+    if (!r || !Array.isArray(r.cards) || !Array.isArray(r.categories)) {
+      throw new Error("卡片库读取失败（后端返回异常）");
+    }
+    if (!r.cards.length && !r.categories.length) {
+      // 后端空库且本地旧 IndexedDB 有卡 → 迁移（一次性）并写回
+      const migrated = await _migrateCardDbFromIndexedDB();
+      if (migrated && migrated.cards.length) {
+        r.cards = migrated.cards;
+        r.categories = migrated.categories;
+        r.version = 2;
+        await saveCardLib(r);
+        console.log(`[TK Prompt Cards] 已从旧 IndexedDB 迁移 ${r.cards.length} 张卡片到后端 cards.json`);
+      }
+    }
+    _cardLibCache = r;
+    return r;
+  }
+
+  async function saveCardLib(cache) {
+    if (cache) _cardLibCache = cache;
+    if (!_cardLibCache) throw new Error("卡片库尚未加载");
+    const body = _cardLibCache;
+    const run = async () => {
+      const r = await postJson("/anima/cards", body);
+      if (!r || !r.ok) throw new Error((r && r.error) || "卡片库保存失败");
+    };
+    _cardLibSaveChain = _cardLibSaveChain.then(run, run);
+    await _cardLibSaveChain;
   }
 
   // 默认分类（与面板 DEFAULT_CATEGORIES 一致；仅在库为空时初始化）
@@ -391,18 +489,11 @@
 
     async reloadCards() {
       try {
-        const db = await openCardDB();
-        const [cards, ccats] = await Promise.all([
-          storeAll(db, CARD_STORE),
-          storeAll(db, CARD_CAT_STORE),
-        ]);
-        this.cards = cards || [];
-        if (!ccats || !ccats.length) {
-          for (const c of CARD_DEFAULT_CATS) await storePut(db, CARD_CAT_STORE, c);
-          this.cardCats = CARD_DEFAULT_CATS.slice();
-        } else {
-          this.cardCats = ccats.slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
-        }
+        const lib = await loadCardLib();
+        this.cards = (lib.cards || []).map(cardFromEnvelope);
+        let ccats = (lib.categories || []).slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+        if (!ccats.length) ccats = CARD_DEFAULT_CATS.map((c) => ({ ...c }));
+        this.cardCats = ccats;
       } catch (e) {
         console.error("[TK Prompt Cards] 卡片库加载失败:", e);
         this._flash("卡片库加载失败：" + (e.message || e));
@@ -644,18 +735,23 @@
       this._flash(`已导入 ${n} 条 → 工具箱 prompt 库（未分类）`);
     }
 
-    // ── 卡片 CRUD（anima-tk-cards 专用库，不污染 prompt 库）──
+    // ── 卡片 CRUD（后端 cards.json 单一数据源；不污染 prompt 库）──
     async putCard(entry) {
       normalizeCardCats(entry);
-      const db = await openCardDB();
-      await storePut(db, CARD_STORE, entry);
-      const idx = this.cards.findIndex((p) => p.id === entry.id);
-      if (idx >= 0) this.cards[idx] = entry; else this.cards.push(entry);
+      if (!_cardLibCache) await loadCardLib();
+      const env = cardToEnvelope(entry);
+      const arr = _cardLibCache.cards;
+      const idx = arr.findIndex((x) => x.id === env.id);
+      if (idx >= 0) arr[idx] = env; else arr.push(env);
+      await saveCardLib();
+      const fIdx = this.cards.findIndex((p) => p.id === entry.id);
+      if (fIdx >= 0) this.cards[fIdx] = entry; else this.cards.push(entry);
     }
 
     async delCard(id) {
-      const db = await openCardDB();
-      await storeDel(db, CARD_STORE, id);
+      if (!_cardLibCache) await loadCardLib();
+      _cardLibCache.cards = _cardLibCache.cards.filter((x) => x.id !== id);
+      await saveCardLib();
       this.cards = this.cards.filter((p) => p.id !== id);
     }
 
@@ -1065,21 +1161,27 @@
       if (!confirm(`删除分类？该分类下的卡片将移入「通用」。\n此操作不可撤销。`)) return;
       const cat = this.cardCats.find((c) => c.id === catId);
       if (!cat) return;
-      const db = await openCardDB();
-      await storeDel(db, CARD_CAT_STORE, catId);
-      this.cardCats = this.cardCats.filter((c) => c.id !== catId);
-      const fallback = this.cardCats.find((c) => c.id === "card_all") || this.cardCats[0] || null;
+      if (!_cardLibCache) await loadCardLib();
+      _cardLibCache.categories = _cardLibCache.categories.filter((c) => c.id !== catId);
+      const fallback = _cardLibCache.categories.find((c) => c.id === "card_all") || _cardLibCache.categories[0] || null;
       let moved = 0;
-      // 从所有卡片移除该分类；失去全部分类的卡片归入「通用」
-      for (const c of this.cards) {
-        if (!cardInCat(c, catId)) continue;
-        let cats = catIdsOf(c).filter((x) => x !== catId);
+      for (const c of _cardLibCache.cards) {
+        if (!(c.categories || []).includes(catId)) continue;
+        let cats = (c.categories || []).filter((x) => x !== catId);
         if (!cats.length && fallback) cats = [fallback.id];
         c.categories = cats;
-        c.updatedAt = Date.now();
-        await this.putCard(c);
         moved++;
       }
+      this.cardCats = this.cardCats.filter((c) => c.id !== catId);
+      for (const cc of this.cards) {
+        if (!cardInCat(cc, catId)) continue;
+        let cats = catIdsOf(cc).filter((x) => x !== catId);
+        if (!cats.length && fallback) cats = [fallback.id];
+        cc.categories = cats;
+        cc.categoryId = cats[0] || "";
+        cc.updatedAt = Date.now();
+      }
+      await saveCardLib();
       if (this.curCat === catId) this.curCat = "";
       this._renderCatTabs();
       this._renderCards();
@@ -1152,8 +1254,9 @@
             const [moved] = arr.splice(from, 1);
             arr.splice(to, 0, moved);
             arr.forEach((c, i) => { c.sortOrder = i; });
-            const db = await openCardDB();
-            for (const c of arr) await storePut(db, CARD_CAT_STORE, c);
+            if (!_cardLibCache) await loadCardLib();
+            _cardLibCache.categories = arr;
+            await saveCardLib();
             this.cardCats = arr;
             this._renderCatTabs();
             this._renderCards();
@@ -1177,8 +1280,9 @@
         const n = (name || "").trim();
         if (!n) return;
         const cat = { id: "cat_" + Date.now(), name: n, icon: "", sortOrder: this.cardCats.length };
-        const db = await openCardDB();
-        await storePut(db, CARD_CAT_STORE, cat);
+        if (!_cardLibCache) await loadCardLib();
+        _cardLibCache.categories.push(cat);
+        await saveCardLib();
         this.cardCats.push(cat);
         this.curCat = cat.id;
         this._renderCatTabs(); this._renderCards();
@@ -1695,6 +1799,59 @@
       }
     }
 
+    // 导出卡片库（v2 信封 JSON 备份：换机/换浏览器/清站点数据恢复用）
+    async exportCardLib() {
+      if (!_cardLibCache) await loadCardLib();
+      const data = JSON.stringify(_cardLibCache, null, 1);
+      const blob = new Blob([data], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "tk-cards-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      this._flash(`已导出 ${_cardLibCache.cards.length} 张卡片（JSON 备份）`);
+    }
+
+    // 导入卡片库（JSON 备份恢复 = 替换当前库；兼容旧 {分类名: [卡]} 结构）
+    async importCardLib() {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".json,application/json";
+      input.onchange = async () => {
+        const f = input.files && input.files[0];
+        if (!f) return;
+        try {
+          const text = await f.text();
+          const data = JSON.parse(text);
+          let cards = Array.isArray(data.cards) ? data.cards : null;
+          if (!cards && data.cards && typeof data.cards === "object") {
+            cards = Object.values(data.cards).flat();
+          }
+          if (!Array.isArray(cards)) { this._flash("备份文件格式不对（缺少 cards 数组）"); return; }
+          const catCount = Array.isArray(data.categories) ? data.categories.length : 0;
+          if (!confirm(`导入将替换当前卡片库（${cards.length} 张卡片${catCount ? `，${catCount} 个分类` : ""}）。确认？`)) return;
+          const body = {
+            version: 2, updated: Date.now(),
+            categories: Array.isArray(data.categories) && data.categories.length
+              ? data.categories : CARD_DEFAULT_CATS.map((c) => ({ ...c })),
+            cards: cards
+              .map((c) => cardToEnvelope({ ...(c || {}), prompt: String(c.en || c.prompt || "") }))
+              .filter((c) => c.en),
+          };
+          const r = await postJson("/anima/cards", body);
+          if (!r || !r.ok) throw new Error((r && r.error) || "导入失败");
+          await this.reloadCards();
+          this._flash(`已导入 ${r.count || body.cards.length} 张卡片（替换式恢复）`);
+        } catch (e) {
+          this._flash("导入失败：" + (e.message || e));
+        }
+      };
+      input.click();
+    }
+
     _flash(msg, ms = 2500) {
       if (!this.statusEl) return;
       this.statusEl.textContent = msg;
@@ -1929,7 +2086,16 @@
       exBtn.type = "button"; exBtn.className = "tk-cards-btn"; exBtn.textContent = "导出";
       exBtn.title = "导出卡片为批文件（input/prompts/）";
       exBtn.addEventListener("click", () => this.exportCards());
+      const bkuBtn = document.createElement("button");
+      bkuBtn.type = "button"; bkuBtn.className = "tk-cards-btn"; bkuBtn.textContent = "导出库";
+      bkuBtn.title = "导出卡片库 JSON 备份（后端 cards.json 当前内容；换机/换浏览器恢复用）";
+      bkuBtn.addEventListener("click", () => this.exportCardLib());
+      const bkiBtn = document.createElement("button");
+      bkiBtn.type = "button"; bkiBtn.className = "tk-cards-btn"; bkiBtn.textContent = "导入库";
+      bkiBtn.title = "从 JSON 备份恢复卡片库（替换式导入）";
+      bkiBtn.addEventListener("click", () => this.importCardLib());
       cardBtns.appendChild(loraBtn); cardBtns.appendChild(tlBtn); cardBtns.appendChild(aiBtn); cardBtns.appendChild(llmBtn); cardBtns.appendChild(exBtn);
+      cardBtns.appendChild(bkuBtn); cardBtns.appendChild(bkiBtn);
       cardHead.appendChild(cardBtns);
       this.catTabsEl = document.createElement("div");
       this.catTabsEl.className = "tk-cards-cats";

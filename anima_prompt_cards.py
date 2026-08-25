@@ -41,19 +41,76 @@ from .anima_prompt_parser import (
 )
 
 # ── 卡片库存储（input/prompt_cards/cards.json）──
+# 2026-08-24 起升级为 v2 信封（节点卡片库的单一数据源，替代浏览器 IndexedDB）：
+#   {
+#     "version": 2,
+#     "updated": <ms>,
+#     "categories": [{"id","name","icon","sortOrder"}],   // 卡片分类（tag 级词组分类）
+#     "cards": [{"id","en","zh","weight","star","lora","src","ts","multi","categories":[...]}]
+#   }
+# 旧格式（categories=字符串列表 + cards={分类名: [无 id 卡片]}）读取时自动迁移并落盘。
 
 CARDS_DIR = os.path.join(folder_paths.get_input_directory(), "prompt_cards")
 CARDS_PATH = os.path.join(CARDS_DIR, "cards.json")
 CARDS_LOCK = threading.Lock()
 
-PRESET_CATEGORIES = ["角色", "服饰", "姿势", "场景", "画风", "质量词", "LoRA 触发词"]
+# 旧版预置分类（字符串格式）在 _migrate_legacy 中由 DEFAULT_CARD_CATS 对应迁移
+
+# 卡片分类默认集（与前端 CARD_DEFAULT_CATS 保持一致）
+DEFAULT_CARD_CATS = [
+    {"id": "card_all", "name": "通用", "icon": "", "sortOrder": 0},
+    {"id": "card_char", "name": "角色", "icon": "", "sortOrder": 1},
+    {"id": "card_style", "name": "画风", "icon": "", "sortOrder": 2},
+    {"id": "card_pose", "name": "姿势", "icon": "", "sortOrder": 3},
+    {"id": "card_scene", "name": "场景", "icon": "", "sortOrder": 4},
+    {"id": "card_quality", "name": "质量词", "icon": "", "sortOrder": 5},
+    {"id": "card_lora", "name": "LoRA 触发词", "icon": "", "sortOrder": 6},
+]
 
 
 def _blank_cards():
-    return {
-        "categories": list(PRESET_CATEGORIES),
-        "cards": {c: [] for c in PRESET_CATEGORIES},
-    }
+    return {"version": 2, "updated": int(time.time() * 1000),
+            "categories": list(DEFAULT_CARD_CATS), "cards": []}
+
+
+def _migrate_legacy(data: dict) -> dict:
+    """旧格式（v1：字符串分类 + {分类名: [卡片]}）→ v2 信封。卡片补 id、多分类。"""
+    cats = []
+    for i, name in enumerate(data.get("categories") or []):
+        cats.append({"id": f"legacy_{i}", "name": str(name), "icon": "", "sortOrder": i})
+    if not cats:
+        cats = list(DEFAULT_CARD_CATS)
+    cards = []
+    raw = data.get("cards")
+    if isinstance(raw, dict):
+        for cat_name, items in raw.items():
+            cat = next((c for c in cats if c["name"] == str(cat_name)), None)
+            if cat is None:
+                cat = {"id": f"legacy_{len(cats)}", "name": str(cat_name), "icon": "", "sortOrder": len(cats)}
+                cats.append(cat)
+            for it in items or []:
+                if not isinstance(it, dict):
+                    continue
+                en = str(it.get("en", "")).strip()
+                if not en:
+                    continue
+                cards.append({
+                    "id": it.get("id") or f"c_{int(time.time()*1000)}_{len(cards)}_{abs(hash(en)) % 100000}",
+                    "en": en,
+                    "zh": str(it.get("zh", "") or ""),
+                    "weight": str(it.get("weight", "") or ""),
+                    "star": bool(it.get("star")),
+                    "lora": str(it.get("lora", "") or ""),
+                    "src": str(it.get("src", "") or ""),
+                    "ts": int(it.get("ts") or time.time() * 1000),
+                    "multi": bool(it.get("multi")),
+                    "categories": [cat["id"]],
+                })
+    # 预置分类兜底
+    for c in DEFAULT_CARD_CATS:
+        if not any(x["id"] == c["id"] for x in cats):
+            cats.append(c)
+    return {"version": 2, "updated": int(time.time() * 1000), "categories": cats, "cards": cards}
 
 
 def _load_cards() -> dict:
@@ -63,16 +120,19 @@ def _load_cards() -> dict:
                 with open(CARDS_PATH, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if isinstance(data, dict):
-                    cats = [str(c) for c in (data.get("categories") or [])]
-                    cards = data.get("cards")
-                    if not isinstance(cards, dict):
-                        cards = {}
-                    for c in PRESET_CATEGORIES:
-                        if c not in cats:
-                            cats.append(c)
-                        if c not in cards or not isinstance(cards[c], list):
-                            cards[c] = []
-                    return {"categories": cats, "cards": cards}
+                    if data.get("version") == 2 and isinstance(data.get("categories"), list) \
+                            and isinstance(data.get("cards"), list):
+                        # 分类被清空时兜底默认分类（避免前端分类栏空白）
+                        if not data["categories"]:
+                            data["categories"] = list(DEFAULT_CARD_CATS)
+                        return data
+                    # 旧格式 → 迁移并落盘（幂等）
+                    migrated = _migrate_legacy(data)
+                    try:
+                        _save_cards_locked(migrated)
+                    except Exception:
+                        pass
+                    return migrated
         except Exception as e:
             print(f"[TK Prompt Cards] 卡片库读取失败（按空库继续）: {e}")
     return _blank_cards()
@@ -80,11 +140,15 @@ def _load_cards() -> dict:
 
 def _save_cards(data: dict):
     with CARDS_LOCK:
-        os.makedirs(CARDS_DIR, exist_ok=True)
-        tmp = CARDS_PATH + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, CARDS_PATH)
+        _save_cards_locked(data)
+
+
+def _save_cards_locked(data: dict):
+    os.makedirs(CARDS_DIR, exist_ok=True)
+    tmp = CARDS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, CARDS_PATH)
 
 
 # ── PNG 元数据解析 ──
@@ -195,52 +259,68 @@ async def _lora_trigger_words_civitai(name: str) -> list[str]:
 
 @PromptServer.instance.routes.get("/anima/cards")
 async def cards_get(request):
+    """全库读取（v2 信封：{version, categories:[{id,name,icon,sortOrder}], cards:[...]}）。"""
     return web.json_response(_load_cards())
 
 
 @PromptServer.instance.routes.post("/anima/cards")
 async def cards_save(request):
+    """全量保存（v2 信封为唯一持久化格式；兼容旧格式 body 输入）。
+
+    也承担卡库 JSON 导入：前端把备份/导出文件的内容原样 POST 即恢复。
+    """
     try:
         body = await request.json()
     except Exception:
         return web.json_response({"ok": False, "error": "bad json"}, status=400)
     if not isinstance(body, dict):
         return web.json_response({"ok": False, "error": "body must be object"}, status=400)
-    cats = [str(c).strip() for c in (body.get("categories") or []) if str(c).strip()]
-    cards = {}
-    raw = body.get("cards")
-    if isinstance(raw, dict):
-        for cat, items in raw.items():
-            cat = str(cat)
-            if cat not in cats:
-                cats.append(cat)
-            if not isinstance(items, list):
+
+    if body.get("version") == 2:
+        cats = []
+        for i, c in enumerate(body.get("categories") or []):
+            if not isinstance(c, dict):
                 continue
-            cards[cat] = []
-            for it in items:
-                if not isinstance(it, dict):
-                    continue
-                en = str(it.get("en", "")).strip()
-                if not en:
-                    continue
-                cards[cat].append({
-                    "en": en,
-                    "zh": str(it.get("zh", "") or ""),
-                    "weight": str(it.get("weight", "") or "") or "",
-                    "star": bool(it.get("star")),
-                    "lora": str(it.get("lora", "") or "") or "",
-                    "src": str(it.get("src", "") or "") or "",
-                    "ts": int(it.get("ts") or time.time() * 1000),
-                })
-        # 预置分类兜底
-        for c in PRESET_CATEGORIES:
-            if c not in cats:
-                cats.append(c)
-            if c not in cards:
-                cards[c] = []
-    data = {"categories": cats, "cards": cards}
-    _save_cards(data)
-    return web.json_response({"ok": True, "count": sum(len(v) for v in cards.values())})
+            cid = str(c.get("id") or f"cat_{int(time.time()*1000)}_{i}").strip()
+            if not cid:
+                cid = f"cat_{int(time.time()*1000)}_{i}"
+            cats.append({"id": cid, "name": str(c.get("name") or "未命名").strip() or "未命名",
+                         "icon": str(c.get("icon") or ""), "sortOrder": int(c.get("sortOrder") if c.get("sortOrder") is not None else i)})
+        cards = []
+        seen_ids = set()
+        for it in body.get("cards") or []:
+            if not isinstance(it, dict):
+                continue
+            en = str(it.get("en", "")).strip()
+            if not en:
+                continue
+            cid = str(it.get("id") or "").strip() or f"c_{int(time.time()*1000)}_{len(cards)}"
+            if cid in seen_ids:
+                cid = cid + f"_{len(cards)}"
+            seen_ids.add(cid)
+            cats_of = [str(x) for x in (it.get("categories") or []) if str(x)]
+            if not cats_of and it.get("categoryId"):
+                cats_of = [str(it["categoryId"])]
+            cards.append({
+                "id": cid,
+                "en": en,
+                "zh": str(it.get("zh", "") or ""),
+                "weight": str(it.get("weight", "") or ""),
+                "star": bool(it.get("star")),
+                "lora": str(it.get("lora", "") or ""),
+                "src": str(it.get("src", "") or ""),
+                "ts": int(it.get("ts") or time.time() * 1000),
+                "multi": bool(it.get("multi")),
+                "categories": cats_of[:8],
+            })
+        data = {"version": 2, "updated": int(time.time() * 1000), "categories": cats, "cards": cards}
+        _save_cards(data)
+        return web.json_response({"ok": True, "count": len(cards), "version": 2})
+
+    # 旧格式 body（分类名字符串列表 + {分类名: [卡片]}）→ 迁移后保存
+    migrated = _migrate_legacy(body)
+    _save_cards(migrated)
+    return web.json_response({"ok": True, "count": len(migrated["cards"]), "version": 2})
 
 
 @PromptServer.instance.routes.post("/anima/cards/export")
