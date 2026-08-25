@@ -59,6 +59,13 @@ with sync_playwright() as p:
     for label in ["① 工具箱 prompt 库", "② 当前提示词", "③ 卡片视图"]:
         found = ui.first.locator(f"text={label}").count()
         log(f"区[{label}] 存在: {found > 0}")
+    log(f"PNG 拖拽区存在: {ui.first.locator('.tk-cards-png-drop').count() > 0}")
+    log(f"PNG 选择按钮存在: {ui.first.locator('text=选择 PNG').count() > 0}")
+
+    # 卡片文字不能被 flex 行压缩成不可见高度
+    if ui.first.locator(".tk-cards-card").count():
+        text_height = ui.first.locator(".tk-cards-card-en").first.evaluate("el => el.getBoundingClientRect().height")
+        log(f"卡片英文文本高度可见: {text_height >= 10} ({text_height:.1f}px)")
 
     # ③ 卡片库分类页签（预置分类应有 角色/服饰/...）
     tabs = ui.first.locator(".tk-cards-cat").all_text_contents()

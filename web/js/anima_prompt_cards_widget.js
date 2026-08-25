@@ -1804,23 +1804,39 @@
       }
     }
 
+    async importPngFile(file) {
+      if (!file) return;
+      if (!/\.png$/i.test(file.name || "") && file.type !== "image/png") {
+        this._flash("只支持 PNG 图片");
+        return;
+      }
+      this._flash(`正在解析：${file.name || "PNG"}…`, 30000);
+      const form = new FormData();
+      form.append("file", file, file.name || "prompt.png");
+      const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(() => ctrl.abort(), 30000) : null;
+      try {
+        const response = await apiFetch("/anima/cards/image", ctrl ? { method: "POST", body: form, signal: ctrl.signal } : { method: "POST", body: form });
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        if (!result.positive) { this._flash("该 PNG 没有可用的提示词元数据"); return; }
+        this._setW(this.w.positive, result.positive);
+        if (this.curTextEl) this.curTextEl.value = result.positive;
+        this._renderChips();
+        this._flash(`已解析 ${result.filename || file.name || "PNG"}（${result.positive.length} 字符）`);
+      } catch (e) {
+        this._flash("图片解析失败：" + (e.name === "AbortError" ? "请求超时" : (e.message || e)), 5000);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+
     showPngDialog() {
-      const path = prompt("输入图片路径（相对 input/ 或绝对路径，PNG 含工作流元数据）：");
-      const p = (path || "").trim();
-      if (!p) return;
-      (async () => {
-        try {
-          const r = await postJson("/anima/cards/image", { path: p });
-          if (!r.ok) { this._flash(r.error || "解析失败"); return; }
-          if (!r.positive) { this._flash("该 PNG 没有可用的提示词元数据"); return; }
-          this._setW(this.w.positive, r.positive);
-          if (this.curTextEl) this.curTextEl.value = r.positive;
-          this._renderChips();
-          this._flash(`已从图片解析提示词（${r.positive.length} 字符）`);
-        } catch (e) {
-          this._flash("图片解析失败：" + (e.message || e));
-        }
-      })();
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/png,.png";
+      input.addEventListener("change", () => this.importPngFile(input.files?.[0]));
+      input.click();
     }
 
     async showLoraDialog() {
@@ -2373,8 +2389,8 @@
       clipboardBtn.title = "从剪切板导入并拆分";
       clipboardBtn.addEventListener("click", () => this.importClipboard());
       const pngBtn = document.createElement("button");
-      pngBtn.type = "button"; pngBtn.className = "tk-cards-btn"; pngBtn.textContent = "解析 PNG";
-      pngBtn.title = "解析 PNG 元数据为提示词";
+      pngBtn.type = "button"; pngBtn.className = "tk-cards-btn"; pngBtn.textContent = "选择 PNG";
+      pngBtn.title = "选择 PNG 文件并解析元数据为提示词";
       pngBtn.addEventListener("click", () => this.showPngDialog());
       const draftBtn = document.createElement("button");
       draftBtn.type = "button"; draftBtn.className = "tk-cards-btn"; draftBtn.textContent = "恢复草稿";
@@ -2396,10 +2412,21 @@
       curHead.appendChild(curBtns);
       this.curTextEl = document.createElement("textarea");
       this.curTextEl.className = "tk-cards-textarea";
-      this.curTextEl.placeholder = "当前提示词（点库条目/卡片/粘贴/解析图片填充；输入时卡片库联想补全）";
+      this.curTextEl.placeholder = "当前提示词（点库条目/卡片/粘贴/拖入 PNG 填充；输入时卡片库联想补全）";
       this.curTextEl.value = this.w.positive?.value || "";
       this.curTextEl.addEventListener("input", () => this.onCurInput());
       this.curTextEl.addEventListener("keydown", (e) => this._suggestKeyDown(e));
+      this.pngDropEl = document.createElement("div");
+      this.pngDropEl.className = "tk-cards-png-drop";
+      this.pngDropEl.innerHTML = `<span>拖入 PNG 解析提示词</span><button type="button" class="tk-cards-btn" data-a="choose-png">选择文件</button>`;
+      this.pngDropEl.querySelector('[data-a="choose-png"]').addEventListener("click", () => this.showPngDialog());
+      this.pngDropEl.addEventListener("dragover", (ev) => { ev.preventDefault(); this.pngDropEl.classList.add("is-dragging"); });
+      this.pngDropEl.addEventListener("dragleave", () => this.pngDropEl.classList.remove("is-dragging"));
+      this.pngDropEl.addEventListener("drop", (ev) => {
+        ev.preventDefault();
+        this.pngDropEl.classList.remove("is-dragging");
+        this.importPngFile(ev.dataTransfer?.files?.[0]);
+      });
       this.suggestEl = document.createElement("div");
       this.suggestEl.className = "tk-cards-suggest";
       this.suggestEl.style.display = "none";
@@ -2423,6 +2450,7 @@
        undoBtn.textContent = "撤销删除";
       undoBtn.addEventListener("click", () => this.undoDelete());
       curTools.appendChild(saveAllBtn); curTools.appendChild(undoBtn);
+      curBody.appendChild(this.pngDropEl);
       curBody.appendChild(this.curTextEl);
       curBody.appendChild(this.suggestEl);
       curBody.appendChild(this.chipsEl);
@@ -2547,6 +2575,8 @@
  .tk-cards-group:hover { background:rgba(255,255,255,.05); }
 .tk-cards-group-info { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:help; }
  .tk-cards-textarea { width:100%; min-height:82px; box-sizing:border-box; background:#141618; color:var(--tk-text); border:1px solid var(--tk-border); border-radius:4px; font-size:12px; padding:7px 8px; resize:vertical; }
+ .tk-cards-png-drop { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:34px; padding:5px 8px; border:1px dashed #555a5e; border-radius:4px; background:#141618; color:var(--tk-muted); font-size:10px; }
+ .tk-cards-png-drop.is-dragging { border-color:var(--tk-accent); background:#292d30; color:var(--tk-accent-strong); }
 /* ②区卡片库联想下拉 */
  .tk-cards-suggest { position:absolute; left:8px; right:8px; z-index:80; margin-top:2px; display:flex; flex-direction:column; overflow:hidden; border:1px solid var(--tk-border); border-radius:5px; background:#1b1e20; box-shadow:0 8px 18px rgba(0,0,0,.45); }
  .tk-cards-suggest-item { display:flex; align-items:center; gap:7px; padding:7px 9px; font-size:11px; cursor:pointer; color:var(--tk-text); }
@@ -2568,8 +2598,8 @@
  .tk-cards-cat:hover { border-color:var(--tk-accent); color:var(--tk-text); }
  .tk-cards-cat.on { border-color:var(--tk-accent); background:#34383b; color:var(--tk-accent-strong); font-weight:650; }
  .tk-cards-cat-add { border-style:dashed; color:var(--tk-muted); }
- .tk-cards-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:7px; max-height:280px; overflow:auto; }
- .tk-cards-card { position:relative; min-height:92px; padding:32px 8px 8px; border:1px solid var(--tk-border-soft); border-radius:5px; cursor:pointer; background:#151719; display:flex; flex-direction:column; gap:4px; transition:border-color .15s ease,background .15s ease; }
+ .tk-cards-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); grid-auto-rows:minmax(112px,auto); gap:7px; max-height:300px; overflow:auto; }
+ .tk-cards-card { position:relative; min-height:112px; padding:32px 8px 8px; border:1px solid var(--tk-border-soft); border-radius:5px; cursor:pointer; background:#151719; display:flex; flex-direction:column; gap:4px; transition:border-color .15s ease,background .15s ease; }
  .tk-cards-card:hover, .tk-cards-card:focus-within { border-color:var(--tk-accent); background:#1d2022; }
  .tk-cards-del, .tk-cards-cat-btn, .tk-cards-pin { position:absolute; top:4px; display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; padding:0; border:1px solid transparent; border-radius:4px; background:transparent; cursor:pointer; font-size:11px; line-height:1; }
  .tk-cards-del { right:4px; color:var(--tk-danger); }
@@ -2614,9 +2644,9 @@
  .tk-cards-cat-del:hover { color:#f0b5b5; }
  .tk-cards-card.star { border-color:var(--tk-warn); background:rgba(198,167,106,.06); }
  .tk-cards-card.is-selected { border-color:var(--tk-info); background:rgba(155,178,182,.12); box-shadow:inset 0 0 0 1px rgba(155,178,182,.32); }
- .tk-cards-card-en { color:var(--tk-text); font-size:11px; line-height:1.35; word-break:break-word; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
- .tk-cards-card-zh { color:var(--tk-muted); font-size:10px; }
- .tk-cards-card-meta { display:flex; align-items:center; gap:5px; min-height:22px; color:var(--tk-muted); font-size:10px; }
+ .tk-cards-card-en { flex:0 0 auto; min-height:15px; color:var(--tk-text); font-size:11px; line-height:1.35; word-break:break-word; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+ .tk-cards-card-zh { flex:0 0 auto; color:var(--tk-muted); font-size:10px; }
+ .tk-cards-card-meta { flex:0 0 auto; display:flex; align-items:center; gap:5px; min-height:22px; color:var(--tk-muted); font-size:10px; }
  .tk-cards-star { min-width:28px; min-height:22px; display:inline-flex; align-items:center; cursor:pointer; color:var(--tk-warn); font-size:14px; }
  .tk-cards-w { color:var(--tk-accent); }
  .tk-cards-lora { color:var(--tk-info); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100px; }

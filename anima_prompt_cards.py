@@ -21,6 +21,7 @@ import json
 import time
 import threading
 import asyncio
+import tempfile
 
 import aiohttp
 import folder_paths
@@ -155,6 +156,7 @@ def _save_cards_locked(data: dict):
 
 _TEXT_KEYS = {"text", "positive", "negative", "prompt", "input_str"}
 _CLIP_LIKE = re.compile(r"CLIPTextEncode|PromptUI|TextEncode|PromptEditor", re.I)
+_MAX_PNG_UPLOAD_SIZE = 20 * 1024 * 1024
 
 
 def _parse_png_meta(filepath: str) -> dict:
@@ -374,7 +376,47 @@ async def cards_export(request):
 
 @PromptServer.instance.routes.post("/anima/cards/image")
 async def cards_image(request):
-    """PNG 元数据解析。body: {"path": 相对 input/ 或绝对路径}。"""
+    """PNG 元数据解析；支持 multipart file 上传和旧 path JSON 兼容入口。"""
+    if request.content_type.startswith("multipart/"):
+        field = None
+        tmp_path = None
+        try:
+            reader = await request.multipart()
+            while True:
+                candidate = await reader.next()
+                if candidate is None:
+                    break
+                if candidate.name == "file":
+                    field = candidate
+                    break
+            if field is None:
+                return web.json_response({"ok": False, "error": "缺少 PNG 文件"}, status=400)
+            filename = str(field.filename or "prompt.png")
+            content_type = str(field.headers.get("Content-Type", "") or "").lower()
+            if not filename.lower().endswith(".png") and content_type != "image/png":
+                return web.json_response({"ok": False, "error": "目前仅支持 PNG 图片"}, status=400)
+            with tempfile.NamedTemporaryFile(prefix="tk_prompt_", suffix=".png", delete=False) as tmp:
+                tmp_path = tmp.name
+                total = 0
+                while True:
+                    chunk = await field.read_chunk(size=1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > _MAX_PNG_UPLOAD_SIZE:
+                        return web.json_response({"ok": False, "error": "PNG 文件不能超过 20MB"}, status=413)
+                    tmp.write(chunk)
+            result = _parse_png_meta(tmp_path)
+            result["filename"] = os.path.basename(filename)
+            return web.json_response(result)
+        except Exception as e:
+            return web.json_response({"ok": False, "error": f"上传解析失败: {e}"}, status=400)
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
     try:
         body = await request.json()
     except Exception:
