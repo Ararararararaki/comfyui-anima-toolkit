@@ -1,17 +1,30 @@
-# Anima Prompt Batch — 批量提示词注入（控制器节点 + 文件 API）
+# Anima Prompt Batch — 批量提示词注入（控制器节点 + 文件 API + 批任务控制器）
 #
 # 后端职责：
 #   1. 提示词文件分组解析（parse_prompt_groups）：忠实复刻桌面「批生图」的三种标题格式
 #      （## 组N markdown 分段 / 【N】标题 / NN 数字序号标题 + 整文件兜底）
 #   2. HTTP API：/anima/prompt/list（列文件）、/anima/prompt/parse（解析分组）、
 #      /anima/prompt/read（读原文）
+#   3. 批任务控制器（/anima/batch/*，2026-08-24 新增）：
+#      - 批次清单持久化（data/batches/<id>.json：模板 + 逐条任务 + 状态），
+#        ComfyUI 重启 / 浏览器刷新后可从清单恢复；
+#      - 服务端展开入队：模板注入（正向/负向/相机词/输出子目录）→ validate_prompt
+#        → PromptQueue.put，逐条链式执行（一组跑完才入队下一组），
+#        不依赖浏览器劫持 app.queuePrompt，API/无浏览器模式同样可用；
+#      - 稳定的任务状态：每条任务一个自铸造 prompt_id，extra_data 带
+#        anima_batch={batch_id,idx} 标记，按 prompt_id/标记从 /queue、/history
+#        精确匹配（不再用组名子串反查）；
+#      - 暂停 / 继续 / 跳过 / 重试 / 取消（重试支持失败组与重启中断组）。
 #
-# 真正的「顺序生成一批多组图片」由前端 widget（anima_prompt_batch_widget.js）
-# 在队列时展开完成：读本节点配置 → 逐组逐条注入目标文本节点 → 依次入队。
 # 本节点是「配置载体」，其 STRING 输出仅返回第一条提示词供预览/调试（可选接线）。
 
 import os
+import re
 import json
+import copy
+import time
+import uuid
+import threading
 import folder_paths
 from aiohttp import web
 from server import PromptServer
@@ -345,3 +358,545 @@ async def prompt_read(request):
     except Exception as e:
         return web.json_response({"ok": False, "error": str(e)}, status=500)
     return web.json_response({"ok": True, "path": path, "content": content})
+
+
+# ============ 批任务控制器（/anima/batch/*） ============
+#
+# 批次 = 一次批量任务。清单持久化到 data/batches/<id>.json，内含：
+#   - template：API prompt 模板（前端 graphToPrompt().output，含全部节点 inputs）
+#   - jobs：逐条任务（组/文本/负向/相机/子目录/状态/prompt_id）
+# 执行模型：链式——每次只入队一条（validate → PromptQueue.put），该条跑完
+# （history 出现终态）才入队下一条；暂停 = 停止推进；重试/恢复 = 重置状态后推进。
+# 每条任务自铸造 uuid 作 prompt_id，入队时在 extra_data 打 anima_batch 标记，
+# 状态对账按 prompt_id 精确匹配 /queue 与 /history，无需字符串反查。
+
+BATCH_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "batches")
+_BATCH_LOCK = threading.Lock()
+_BATCH_NUMBER_LOCK = threading.Lock()
+_BATCH_FILE_LOCKS: dict[str, threading.Lock] = {}
+_BATCH_FILES_LOCK = threading.Lock()
+_BATCH_NUMBER = int(time.time() * 1000) % 100000
+
+# 任务状态
+ST_PENDING = "pending"      # 未入队（含重启中断后待重跑）
+ST_QUEUED = "queued"        # 已在 ComfyUI 排队
+ST_RUNNING = "running"      # 正在执行
+ST_DONE = "done"            # 成功（history success）
+ST_FAILED = "failed"        # 失败（history error 或入队失败）
+ST_SKIPPED = "skipped"      # 被跳过
+ST_INTERRUPTED = "interrupted"  # 曾入队但队列被清/重启，无终态
+ST_RETRY = "retry"          # 已请求重试，等待重新入队
+ST_TERMINAL = {ST_DONE, ST_FAILED, ST_SKIPPED, ST_INTERRUPTED}
+
+# 批次状态
+BS_RUNNING = "running"
+BS_PAUSED = "paused"
+BS_FINISHED = "finished"
+BS_CANCELLED = "cancelled"
+
+
+def _batch_lock(batch_id: str) -> threading.Lock:
+    with _BATCH_FILES_LOCK:
+        lk = _BATCH_FILE_LOCKS.get(batch_id)
+        if lk is None:
+            lk = threading.Lock()
+            _BATCH_FILE_LOCKS[batch_id] = lk
+        return lk
+
+
+def _batch_path(batch_id: str) -> str:
+    return os.path.join(BATCH_DIR, batch_id + ".json")
+
+
+def _load_batch(batch_id: str) -> dict | None:
+    try:
+        with open(_batch_path(batch_id), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and isinstance(data.get("jobs"), list):
+            return data
+    except Exception:
+        return None
+    return None
+
+
+def _save_batch(batch: dict):
+    os.makedirs(BATCH_DIR, exist_ok=True)
+    batch["updated"] = time.time()
+    tmp = _batch_path(batch["id"]) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(batch, f, ensure_ascii=False)
+    os.replace(tmp, _batch_path(batch["id"]))
+
+
+def _next_batch_number() -> float:
+    global _BATCH_NUMBER
+    with _BATCH_NUMBER_LOCK:
+        _BATCH_NUMBER += 1
+        return float(_BATCH_NUMBER)
+
+
+def _job_summary(job: dict) -> dict:
+    return {
+        "idx": job.get("idx", 0),
+        "group": job.get("group", ""),
+        "status": job.get("status", ST_PENDING),
+        "error": job.get("error") or None,
+        "prompt_id": (job.get("prompt_id") or "")[:8],
+        "camera": job.get("camera") or None,
+        "neg": bool(job.get("neg")),
+        "outputs": job.get("outputs") or [],
+    }
+
+
+def _batch_summary(batch: dict) -> dict:
+    counts = {s: 0 for s in (ST_PENDING, ST_QUEUED, ST_RUNNING, ST_DONE,
+                             ST_FAILED, ST_SKIPPED, ST_INTERRUPTED, ST_RETRY)}
+    for j in batch.get("jobs", []):
+        counts[j.get("status", ST_PENDING)] = counts.get(j.get("status", ST_PENDING), 0) + 1
+    return {
+        "id": batch["id"],
+        "created": batch.get("created", 0),
+        "updated": batch.get("updated", 0),
+        "state": batch.get("state", BS_FINISHED),
+        "node_ref": batch.get("node_ref") or "",
+        "total": len(batch.get("jobs", [])),
+        "counts": counts,
+    }
+
+
+def _inject_into_template(template: dict, job: dict) -> tuple[dict, str | None]:
+    """深拷贝模板并注入本任务的文本/负向/相机/输出子目录。返回 (prompt, error)。"""
+    prompt = copy.deepcopy(template)
+
+    pos_id = str(job.get("posId") or "")
+    pos_key = job.get("posKey") or ""
+    text = str(job.get("text") or "")
+    node = prompt.get(pos_id)
+    if node is None:
+        return None, f"注入目标节点 {pos_id} 不在当前工作流中（画布已改动？请重新选择目标）"
+    if not isinstance(node.get("inputs"), dict) or pos_key not in node.get("inputs", {}):
+        return None, f"注入目标 {pos_id}.{pos_key} 不存在（可用输入：{', '.join(list((node.get('inputs') or {}).keys())[:8])}）"
+    node["inputs"][pos_key] = text
+
+    # 负向：仅当本任务有负向文本且指定了目标节点
+    neg_id = str(job.get("negId") or "")
+    neg_key = job.get("negKey") or ""
+    neg_text = job.get("neg")
+    if neg_id and neg_key and neg_text:
+        nnode = prompt.get(neg_id)
+        if nnode is None:
+            return None, f"负向目标节点 {neg_id} 不在当前工作流中"
+        if not isinstance(nnode.get("inputs"), dict) or neg_key not in nnode.get("inputs", {}):
+            return None, f"负向目标 {neg_id}.{neg_key} 不存在"
+        nnode["inputs"][neg_key] = str(neg_text)
+
+    # 输出子目录：覆盖所有 SaveImage / PreviewImage / imageSave 的 filename_prefix
+    if job.get("subfolder"):
+        safe = _safe_group_name(job.get("group") or "")
+        now = time.localtime()
+        date_dir = time.strftime("%Y-%m-%d", now)
+        stamp = time.strftime("%Y%m%d_%H%M", now)
+        prefix = f"{date_dir}/{stamp}_{safe}_anima"
+        changed = 0
+        for nid, nd in prompt.items():
+            if not isinstance(nd, dict):
+                continue
+            cls = str(nd.get("class_type") or "")
+            if not re.search(r"SaveImage|PreviewImage|imageSave", cls, re.I):
+                continue
+            ins = nd.get("inputs")
+            if isinstance(ins, dict) and "filename_prefix" in ins:
+                ins["filename_prefix"] = prefix
+                changed += 1
+        if changed == 0:
+            return None, f"工作流中没有 SaveImage/PreviewImage 节点（子目录输出需要保存节点）"
+    return prompt, None
+
+
+async def _queue_prompt_inner(prompt: dict, extra_data: dict, batch_id: str, idx: int, number: float) -> tuple[str | None, str | None]:
+    """validate + PromptQueue.put。返回 (prompt_id, error)。"""
+    import execution
+    from server import PromptServer
+    prompt_id = str(uuid.uuid4())
+    try:
+        valid = await execution.validate_prompt(prompt_id, prompt, None)
+    except Exception as e:
+        return None, f"工作流校验异常：{e}"
+    if not valid[0]:
+        return None, f"工作流校验失败：{valid[1]}"
+    outputs_to_execute = valid[2]
+    ed = dict(extra_data or {})
+    ed["anima_batch"] = {"batch": batch_id, "idx": idx}
+    ed["create_time"] = int(time.time() * 1000)
+    sensitive = {}
+    try:
+        for k in execution.SENSITIVE_EXTRA_DATA_KEYS:
+            if k in ed:
+                sensitive[k] = ed.pop(k)
+    except Exception:
+        sensitive = {}
+    PromptServer.instance.prompt_queue.put(
+        (number, prompt_id, prompt, ed, outputs_to_execute, sensitive))
+    return prompt_id, None
+
+
+async def _enqueue_job(batch: dict, job: dict) -> None:
+    """把单条任务入队（含模板注入 + validate + put）。失败 → 任务 failed。"""
+    prompt, err = _inject_into_template(batch.get("template") or {}, job)
+    if err:
+        job["status"] = ST_FAILED
+        job["error"] = err
+        return
+    pid, perr = await _queue_prompt_inner(prompt, {}, batch["id"], job.get("idx", 0), _next_batch_number())
+    if perr:
+        job["status"] = ST_FAILED
+        job["error"] = perr
+        return
+    job["prompt_id"] = pid
+    job["status"] = ST_QUEUED
+    job["error"] = None
+
+
+def _sync_job_status(batch: dict) -> bool:
+    """按 prompt_id 对账 /queue 与 /history，更新任务状态。返回是否有变化。"""
+    from server import PromptServer
+    q = PromptServer.instance.prompt_queue
+    try:
+        running, pending = q.get_current_queue_volatile()
+    except Exception:
+        running, pending = [], []
+    running_ids = {item[1] for item in running}
+    pending_ids = {item[1] for item in pending}
+
+    changed = False
+    for job in batch.get("jobs", []):
+        pid = job.get("prompt_id")
+        st = job.get("status", ST_PENDING)
+        if not pid:
+            continue
+        if st in (ST_QUEUED, ST_RUNNING):
+            if pid in running_ids:
+                if st != ST_RUNNING:
+                    job["status"] = ST_RUNNING
+                    changed = True
+                continue
+            if pid in pending_ids:
+                if st != ST_QUEUED:
+                    job["status"] = ST_QUEUED
+                    changed = True
+                continue
+            h = q.get_history(prompt_id=pid)
+            if pid in h:
+                entry = h[pid]
+                status = entry.get("status") or {}
+                ok = status.get("status_str") == "success" or status.get("completed") is True
+                job["status"] = ST_DONE if ok else ST_FAILED
+                job["error"] = None if ok else _history_error(entry)
+                outputs = _history_outputs(entry)
+                if json.dumps(outputs, ensure_ascii=False) != json.dumps(job.get("outputs") or [], ensure_ascii=False):
+                    job["outputs"] = outputs
+                changed = True
+            else:
+                # 曾入队但队列/历史都没有 → 队列被清空 / ComfyUI 重启
+                job["status"] = ST_INTERRUPTED
+                job["error"] = "任务已入队但未产生结果（队列清空或 ComfyUI 重启），可重试"
+                changed = True
+    return changed
+
+
+def _history_error(entry: dict) -> str:
+    status = entry.get("status") or {}
+    msgs = status.get("messages") or []
+    for m in msgs:
+        if not isinstance(m, (list, tuple)) or len(m) < 2:
+            continue
+        kind = str(m[0])
+        if re.search(r"EXECUTION_ERROR|EXECUTION_INTERRUPTED|execution_error|execution_interrupted", kind, re.I):
+            data = m[1]
+            if isinstance(data, str):
+                return data[:400]
+            try:
+                return json.dumps(data, ensure_ascii=False)[:400]
+            except Exception:
+                return str(data)[:400]
+    s = status.get("status_str") or ""
+    return s if s and s != "success" else "执行失败"
+
+
+def _history_outputs(entry: dict) -> list:
+    out = []
+    outputs = entry.get("outputs") or {}
+    for nid, nd in outputs.items():
+        if not isinstance(nd, dict):
+            continue
+        for img in nd.get("images") or []:
+            if isinstance(img, dict):
+                out.append({
+                    "node": str(nid),
+                    "filename": img.get("filename"),
+                    "subfolder": img.get("subfolder") or "",
+                    "type": img.get("type") or "",
+                })
+    return out[:20]
+
+
+async def _advance_batch(batch: dict) -> bool:
+    """链式推进：无在途任务且未暂停时，把下一个待执行任务入队。
+
+    返回是否有变化（入队 / 状态流转到 finished），供上层决定是否落盘。
+    """
+    if batch.get("state") != BS_RUNNING:
+        return False
+    inflight = any(j.get("status") in (ST_QUEUED, ST_RUNNING) for j in batch.get("jobs", []))
+    if inflight:
+        return False
+    for job in batch.get("jobs", []):
+        if job.get("status") in (ST_PENDING, ST_RETRY):
+            await _enqueue_job(batch, job)
+            return True
+    if all(j.get("status") in ST_TERMINAL for j in batch.get("jobs", [])):
+        batch["state"] = BS_FINISHED
+        return True
+    return False
+
+
+async def _refresh_batch(batch: dict, save: bool = True) -> dict:
+    """对账状态 + 推进 + 写盘。"""
+    changed = _sync_job_status(batch)
+    if await _advance_batch(batch):
+        changed = True
+    if changed:
+        if save:
+            _save_batch(batch)
+    return _batch_summary(batch)
+
+
+@PromptServer.instance.routes.post("/anima/batch/run")
+async def batch_run(request):
+    """创建并启动批次（服务端展开执行）。
+
+    body: {
+      template: {nodeId: {class_type, inputs}}   // 当前工作流 API prompt（前端 graphToPrompt().output）
+      jobs: [{group, text, posId, posKey, neg?, negId?, negKey?, camera?, subfolder?}]
+      node_ref?: string                          // 发起节点画布 id（刷新后恢复匹配）
+    }
+    → {ok, batchId, summary}
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "bad json"}, status=400)
+    template = body.get("template")
+    jobs = body.get("jobs")
+    if not isinstance(template, dict) or not template:
+        return web.json_response({"ok": False, "error": "缺少 template（当前工作流 API prompt）"}, status=400)
+    if not isinstance(jobs, list) or not jobs:
+        return web.json_response({"ok": False, "error": "jobs 不能为空（请至少勾选一组）"}, status=400)
+    payload = []
+    for i, j in enumerate(jobs):
+        if not isinstance(j, dict):
+            return web.json_response({"ok": False, "error": f"jobs[{i}] 必须是对象"}, status=400)
+        text = str(j.get("text") or "")
+        if not text.strip():
+            return web.json_response({"ok": False, "error": f"jobs[{i}]（{j.get('group') or '?'}）提示词为空"}, status=400)
+        payload.append({
+            "idx": i,
+            "group": str(j.get("group") or f"组{i+1}"),
+            "text": text,
+            "posId": str(j.get("posId") or ""),
+            "posKey": str(j.get("posKey") or ""),
+            "negId": str(j.get("negId") or ""),
+            "negKey": str(j.get("negKey") or ""),
+            "neg": str(j.get("neg") or "") if j.get("neg") else None,
+            "camera": str(j.get("camera") or "") if j.get("camera") else None,
+            "subfolder": bool(j.get("subfolder")),
+            "status": ST_PENDING,
+            "prompt_id": None,
+            "error": None,
+            "outputs": [],
+        })
+    batch_id = f"b{int(time.time()*1000)}{uuid.uuid4().hex[:6]}"
+    batch = {
+        "id": batch_id,
+        "created": time.time(),
+        "updated": time.time(),
+        "state": BS_RUNNING,
+        "node_ref": str(body.get("node_ref") or ""),
+        "template": template,
+        "jobs": payload,
+    }
+    with _batch_lock(batch_id):
+        _save_batch(batch)
+        summary = await _refresh_batch(batch)
+    return web.json_response({"ok": True, "batchId": batch_id, "summary": summary})
+
+
+async def _load_and_lock(batch_id: str):
+    """按 id 加载批次；返回 (batch, lock) 或 (None, None)。"""
+    batch = _load_batch(batch_id)
+    if batch is None:
+        return None, None
+    return batch, _batch_lock(batch_id)
+
+
+@PromptServer.instance.routes.post("/anima/batch/{batch_id}/pause")
+async def batch_pause(request):
+    bid = request.match_info["batch_id"]
+    batch, lk = await _load_and_lock(bid)
+    if batch is None:
+        return web.json_response({"ok": False, "error": "批次不存在"}, status=404)
+    with lk:
+        if batch.get("state") == BS_RUNNING:
+            batch["state"] = BS_PAUSED
+            _save_batch(batch)
+        summary = _batch_summary(batch)
+    return web.json_response({"ok": True, "summary": summary})
+
+
+@PromptServer.instance.routes.post("/anima/batch/{batch_id}/resume")
+async def batch_resume(request):
+    bid = request.match_info["batch_id"]
+    batch, lk = await _load_and_lock(bid)
+    if batch is None:
+        return web.json_response({"ok": False, "error": "批次不存在"}, status=404)
+    with lk:
+        if batch.get("state") in (BS_PAUSED, BS_FINISHED, BS_CANCELLED):
+            batch["state"] = BS_RUNNING
+        await _refresh_batch(batch)
+        summary = _batch_summary(batch)
+    return web.json_response({"ok": True, "summary": summary})
+
+
+@PromptServer.instance.routes.post("/anima/batch/{batch_id}/cancel")
+async def batch_cancel(request):
+    """取消：删除本批次尚未运行的排队项；正在运行的让其自然完成。"""
+    from server import PromptServer
+    bid = request.match_info["batch_id"]
+    batch, lk = await _load_and_lock(bid)
+    if batch is None:
+        return web.json_response({"ok": False, "error": "批次不存在"}, status=404)
+    with lk:
+        for job in batch.get("jobs", []):
+            pid = job.get("prompt_id")
+            if pid and job.get("status") in (ST_QUEUED,):
+                try:
+                    PromptServer.instance.prompt_queue.delete_queue_item(lambda a: a[1] == pid)
+                except Exception:
+                    pass
+                job["status"] = ST_SKIPPED
+                job["error"] = "批次已取消（排队中该任务被移除）"
+        batch["state"] = BS_CANCELLED
+        _save_batch(batch)
+        summary = _batch_summary(batch)
+    return web.json_response({"ok": True, "summary": summary})
+
+
+@PromptServer.instance.routes.post("/anima/batch/{batch_id}/skip")
+async def batch_skip(request):
+    """跳过一条任务：未入队的直接跳过；排队中的从队列删除；运行中的拒绝。"""
+    from server import PromptServer
+    bid = request.match_info["batch_id"]
+    try:
+        body = await request.json()
+        idx = int(body.get("idx", -1))
+    except Exception:
+        return web.json_response({"ok": False, "error": "bad json"}, status=400)
+    batch, lk = await _load_and_lock(bid)
+    if batch is None:
+        return web.json_response({"ok": False, "error": "批次不存在"}, status=404)
+    with lk:
+        jobs = batch.get("jobs", [])
+        if idx < 0 or idx >= len(jobs):
+            return web.json_response({"ok": False, "error": f"idx {idx} 越界"}, status=400)
+        job = jobs[idx]
+        if job.get("status") == ST_RUNNING:
+            return web.json_response({"ok": False, "error": "该任务正在执行，无法跳过（可稍后再试）"}, status=409)
+        pid = job.get("prompt_id")
+        if pid and job.get("status") == ST_QUEUED:
+            try:
+                PromptServer.instance.prompt_queue.delete_queue_item(lambda a: a[1] == pid)
+            except Exception:
+                pass
+        job["status"] = ST_SKIPPED
+        job["error"] = "已跳过"
+        await _refresh_batch(batch)
+        summary = _batch_summary(batch)
+    return web.json_response({"ok": True, "summary": summary})
+
+
+@PromptServer.instance.routes.post("/anima/batch/{batch_id}/retry")
+async def batch_retry(request):
+    """重试一条任务（失败/跳过/中断/未执行均可）。"""
+    bid = request.match_info["batch_id"]
+    try:
+        body = await request.json()
+        idx = int(body.get("idx", -1))
+    except Exception:
+        return web.json_response({"ok": False, "error": "bad json"}, status=400)
+    batch, lk = await _load_and_lock(bid)
+    if batch is None:
+        return web.json_response({"ok": False, "error": "批次不存在"}, status=404)
+    with lk:
+        jobs = batch.get("jobs", [])
+        if idx < 0 or idx >= len(jobs):
+            return web.json_response({"ok": False, "error": f"idx {idx} 越界"}, status=400)
+        job = jobs[idx]
+        if job.get("status") in (ST_QUEUED, ST_RUNNING):
+            return web.json_response({"ok": False, "error": "该任务尚在队列/执行中，无需重试"}, status=409)
+        job["status"] = ST_RETRY
+        job["prompt_id"] = None
+        job["error"] = None
+        job["outputs"] = []
+        if batch.get("state") in (BS_PAUSED, BS_FINISHED, BS_CANCELLED):
+            batch["state"] = BS_RUNNING
+        await _refresh_batch(batch)
+        summary = _batch_summary(batch)
+    return web.json_response({"ok": True, "summary": summary})
+
+
+@PromptServer.instance.routes.get("/anima/batch/{batch_id}/status")
+async def batch_status(request):
+    bid = request.match_info["batch_id"]
+    batch = _load_batch(bid)
+    if batch is None:
+        return web.json_response({"ok": False, "error": "批次不存在"}, status=404)
+    with _batch_lock(bid):
+        await _refresh_batch(batch)
+        summary = _batch_summary(batch)
+        jobs = [_job_summary(j) for j in batch.get("jobs", [])]
+    return web.json_response({
+        "ok": True,
+        "batch": {k: summary[k] for k in ("id", "created", "updated", "state", "node_ref", "total")},
+        "summary": summary,
+        "jobs": jobs,
+    })
+
+
+@PromptServer.instance.routes.get("/anima/batch/list")
+async def batch_list(request):
+    """列出批次（按创建时间倒序）。node=<画布节点id> 可选过滤。limit 默认 20。"""
+    node_ref = request.query.get("node", "").strip()
+    try:
+        limit = min(int(request.query.get("limit", "20")), 100)
+    except Exception:
+        limit = 20
+    os.makedirs(BATCH_DIR, exist_ok=True)
+    out = []
+    try:
+        names = [n for n in os.listdir(BATCH_DIR) if n.endswith(".json") and not n.endswith(".tmp.json")]
+    except OSError:
+        names = []
+    for n in sorted(names, reverse=True):
+        try:
+            with open(os.path.join(BATCH_DIR, n), "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):
+            continue
+        if node_ref and str(data.get("node_ref") or "") != node_ref:
+            continue
+        out.append(_batch_summary(data))
+        if len(out) >= limit:
+            break
+    return web.json_response({"ok": True, "batches": out})

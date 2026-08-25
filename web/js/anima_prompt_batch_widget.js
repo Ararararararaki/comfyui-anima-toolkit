@@ -31,6 +31,8 @@
     const pad = (n) => String(n).padStart(2, "0");
     return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
+  // 批次短 id（展示用）
+  const shortId = (id) => String(id || "").slice(-8);
 
   // ── 注入目标选择持久化（localStorage，防工作流重载/图重建后选择丢失）──
   // 2026-08-17 修复：用户反馈「正向提示词注入节点被清空」→ 批生成在无注入状态下
@@ -100,8 +102,14 @@
     if (api?.fetchApi) return api.fetchApi(path);
     return fetch(path);
   }
-  async function fetchJson(path) {
-    const r = await apiFetch(path);
+  async function fetchJson(path, method, body) {
+    // POST 一律原生 fetch（避免新前端 fetchApi 给 /anima/* 自动加 /api 前缀导致 404）
+    let r;
+    if (method) {
+      r = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: body || "{}" });
+    } else {
+      r = await apiFetch(path);
+    }
     if (!r.ok) throw new Error("HTTP " + r.status);
     return r.json();
   }
@@ -166,6 +174,13 @@
       this.batchActive = false; // 批次展开进行中（吞掉前端 auto_queue 自动重排）
       this.targetStatusEl = null; // 注入目标状态行
       this.summaryEl = null; // 隐藏 widget 摘要行
+      // ── 批任务控制器状态（2026-08-24：服务端批次，刷新/重启可恢复）──
+      this.batchId = null;       // 当前批次 id
+      this.batchState = null;    // 最近一次 summary
+      this.batchJobs = [];       // jobs 快照（面板渲染）
+      this.batchTimer = null;    // 状态轮询 timer
+      this.batchBusy = false;    // 提交/操作进行中
+      this.recoverEl = null;     // 恢复面板容器
     }
 
     _setW(widget, value) {
@@ -927,6 +942,14 @@
       refreshBtn.addEventListener("click", () => this._fillTargets());
       btnRow.appendChild(parseBtn);
       btnRow.appendChild(refreshBtn);
+      // ▶ 开始批次：服务端批任务控制器（暂停/恢复/重试/恢复），也拦截 ComfyUI 原生 Queue
+      const batchBtn = document.createElement("button");
+      batchBtn.type = "button";
+      batchBtn.className = "anima-batch-btn anima-batch-start-btn";
+      batchBtn.textContent = "▶ 开始批次";
+      batchBtn.title = "按勾选分组顺序批量生成：服务端逐条执行，支持暂停/继续/失败重试，刷新页面或重启 ComfyUI 后仍可恢复";
+      batchBtn.addEventListener("click", () => this.startBatch());
+      btnRow.appendChild(batchBtn);
       container.appendChild(btnRow);
 
       // 计数
@@ -943,6 +966,11 @@
       this.resultEl = document.createElement("div");
       this.resultEl.className = "anima-batch-report-wrap";
       container.appendChild(this.resultEl);
+
+      // 恢复面板（刷新/重启后未完成批次）
+      this.recoverEl = document.createElement("div");
+      this.recoverEl.className = "anima-batch-recover";
+      container.appendChild(this.recoverEl);
 
       // 初始恢复勾选 + 渲染（配置恢复后）
       try {
@@ -1014,6 +1042,8 @@
         }, delay);
       };
       tryFill(50, 6);
+      // 刷新/重启后：检查未完成批次（服务端清单）
+      setTimeout(() => this._renderRecover(), 1200);
     }
 
     _mkSelect(label) {
@@ -1059,6 +1089,363 @@
         }
       }
       return jobs;
+    }
+
+    // ── 批任务控制器（后端 /anima/batch/*，2026-08-24）──
+    // 服务端创建批次 → 链式入队 → 轮询状态；刷新/重启后可从批次清单恢复。
+    _targetProblems() {
+      const app = window.comfyAPI?.app?.app;
+      const posT = (this.w.positive_target?.value || "").trim();
+      const negT = (this.w.negative_target?.value || "").trim();
+      const problems = [];
+      const check = (label, t, required) => {
+        if (!t) { if (required) problems.push(`未选择「${label}」`); return; }
+        const [id, key] = t.split(".");
+        const n = findNode(app, id);
+        if (!n) {
+          problems.push(`「${label}」目标节点 ${id} 不存在（工作流已改动？请重新选择）`);
+        } else if (!n.widgets?.find((x) => x.name === key)) {
+          const avail = (n.widgets || []).map((x) => x.name).join(", ") || "无";
+          problems.push(`「${label}」目标 ${id}.${key} 不存在（该节点可用 widget：${avail}）`);
+        }
+      };
+      check("正向提示词注入节点", posT, true);
+      check("负向提示词注入节点", negT, false);
+      return problems;
+    }
+
+    // 机位描述 → 最终相机词（后端 /anima/camera/preview，复用画布相机计算规则）
+    async _cameraPromptFor(desc) {
+      try {
+        const q = cameraToQuery(desc);
+        const r = await fetchJson("/anima/camera/preview?" + q);
+        return (r && r.prompt) || "";
+      } catch (e) { return ""; }
+    }
+
+    // 当前画布 API prompt 模板（graphToPrompt 优先）
+    async _templateAsync() {
+      const app = window.comfyAPI?.app?.app;
+      if (app && typeof app.graphToPrompt === "function") {
+        try {
+          const g = app.graphToPrompt();
+          if (g && g.output) return g.output;
+        } catch (e) { /* 落入 api.getPrompt */ }
+      }
+      const api = window.comfyAPI?.api?.api || window.api;
+      if (api && typeof api.getPrompt === "function") {
+        try {
+          const p = await api.getPrompt();
+          return (p && (p.output || p.prompt)) || null;
+        } catch (e) { return null; }
+      }
+      return null;
+    }
+
+    _setBatchStatus(msg, isError) {
+      if (!this.resultEl) return;
+      const old = this.resultEl.querySelector(".anima-batch-statusline");
+      if (old) old.remove();
+      const line = document.createElement("div");
+      line.className = "anima-batch-statusline" + (isError ? " anima-batch-statusline-err" : "");
+      line.textContent = msg;
+      this.resultEl.prepend(line);
+    }
+
+    // 启动批次（服务端执行）
+    async startBatch() {
+      const app = window.comfyAPI?.app?.app;
+      if (!app || this.batchBusy) return;
+      // 自动最新模式：开始前刷新为最新提示词文件（失败不阻塞）
+      if (this.autoLatest) {
+        try {
+          const path = await this.fetchLatestPath();
+          if (path && (this.w.prompt_files?.value || "") !== path) {
+            this.checked.clear();
+            this._setW(this.w.prompt_files, path);
+            if (this.fileCur) this.fileCur.textContent = path;
+            rememberFile(path, 0);
+            if (typeof this._renderRecents === "function") this._renderRecents();
+            await this._parseFiles();
+          }
+        } catch (e) { /* 自动刷新失败不阻塞 */ }
+      }
+      // 注入目标校验（阻止静默提交「无注入的重复提示词」）
+      const problems = this._targetProblems();
+      if (problems.length) { this._showBatchError("批生成被阻止：" + problems.join("；")); return; }
+
+      const jobs = this.buildJobs(app);
+      if (!jobs.length) { this._showBatchError("没有可执行的提示词（请先「解析分组」并勾选至少一组）"); return; }
+
+      // 相机词预计算：全局相机节点 / 每组独立机位 → 最终词并入任务文本
+      const camId = (this.w.camera_target?.value || "").trim();
+      let camGlobal = "";
+      if (camId) {
+        const cam = readCameraPrompt(app, camId);
+        if (cam) {
+          const q = `x=${cam.px}&y=${cam.py}&z=${cam.pz}&roll=${cam.rl}&config=${encodeURIComponent(cam.cfg)}&extra=${encodeURIComponent(cam.extra)}&preset=${encodeURIComponent(cam.preset)}&nl=${encodeURIComponent(cam.nl)}`;
+          try { const r = await fetchJson("/anima/camera/preview?" + q); camGlobal = (r && r.prompt) || ""; }
+          catch (e) { camGlobal = ""; }
+        }
+      }
+      for (const job of jobs) {
+        let cam = "";
+        if (job.camera) cam = await this._cameraPromptFor(job.camera);
+        else if (camGlobal) cam = camGlobal;
+        if (cam) job.text = mergeCamera(job.text, cam);
+      }
+
+      const template = await this._templateAsync();
+      if (!template) {
+        this._showBatchError("无法获取当前工作流模板（请先保存/打开画布工作流再开始批次）");
+        return;
+      }
+
+      this.batchBusy = true;
+      this._setBatchStatus("提交批次…");
+      try {
+        const payload = {
+          template,
+          node_ref: String(this.node.id || ""),
+          jobs: jobs.map((j) => ({
+            group: j.groupName || "组",
+            text: j.text,
+            posId: j.posId,
+            posKey: j.posKey,
+            negId: j.negId || "",
+            negKey: j.negKey || "",
+            neg: j.neg || null,
+            camera: j.camera || null,
+            subfolder: !!j.subfolder,
+          })),
+        };
+        const r = await fetchJson("/anima/batch/run", "POST", JSON.stringify(payload));
+        if (!r || !r.ok || !r.batchId) throw new Error((r && r.error) || "批次创建失败");
+        this.batchId = r.batchId;
+        this._setBatchStatus(`批次 ${shortId(r.batchId)} 已开始`);
+        this._renderRecover();
+        this.schedulePoll();
+      } catch (e) {
+        this._showBatchError("批次提交失败：" + String((e && e.message) || e));
+      } finally {
+        this.batchBusy = false;
+      }
+    }
+
+    _stopPolling() {
+      if (this.batchTimer) { clearTimeout(this.batchTimer); this.batchTimer = null; }
+    }
+
+    schedulePoll() {
+      this._stopPolling();
+      this.batchTimer = setTimeout(() => this.pollBatch(), 1500);
+    }
+
+    async pollBatch() {
+      if (!this.batchId) return;
+      try {
+        const r = await fetchJson("/anima/batch/" + encodeURIComponent(this.batchId) + "/status");
+        if (!r || !r.ok) throw new Error((r && r.error) || "状态获取失败");
+        this.batchState = r.summary || null;
+        this.batchJobs = r.jobs || [];
+        this._renderBatchPanel();
+        const st = (r.batch && r.batch.state) || "";
+        const c = (r.summary && r.summary.counts) || {};
+        const busy = (c.queued || 0) + (c.running || 0) + (c.pending || 0) + (c.retry || 0);
+        if (st === "finished" || st === "cancelled") {
+          this._stopPolling();
+          this._setBatchStatus(`批次 ${shortId(this.batchId)}：${st === "finished" ? "已完成" : "已停止"}`);
+          this._renderRecover();
+        } else if (st === "paused") {
+          this._stopPolling();
+          this._setBatchStatus(`批次 ${shortId(this.batchId)}：已暂停（点「继续」恢复推进）`);
+        } else if (busy === 0) {
+          // 理论不可达（running 必有在途）；兜底停止
+          this._stopPolling();
+        } else {
+          this.schedulePoll();
+        }
+      } catch (e) {
+        this._stopPolling();
+        this._setBatchStatus("批次状态获取失败（请刷新页面并在批次面板恢复）：" + String((e && e.message) || e), true);
+      }
+    }
+
+    async _batchAction(action, idx) {
+      if (!this.batchId) return;
+      const path = "/anima/batch/" + encodeURIComponent(this.batchId) + "/" + action;
+      try {
+        const r = await fetchJson(path, "POST", idx == null ? "{}" : JSON.stringify({ idx }));
+        if (!r || !r.ok) throw new Error((r && r.error) || "操作失败");
+        if (action === "resume" || action === "retry") this.schedulePoll();
+        await this.pollBatch();
+      } catch (e) {
+        this._setBatchStatus("操作失败：" + String((e && e.message) || e), true);
+      }
+    }
+
+    _ctrlButtons() {
+      const st = (this.batchState && this.batchState.state) || "";
+      const make = (label, act, title) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "anima-batch-btn anima-batch-ctrl";
+        b.textContent = label;
+        b.title = title || "";
+        b.addEventListener("click", () => this._batchAction(act));
+        return b;
+      };
+      const out = [];
+      if (st === "running") out.push(make("⏸ 暂停", "pause", "暂停提交后续任务（正在执行的任务会自然完成）"));
+      if (st === "paused") out.push(make("▶ 继续", "resume", "继续推进未执行任务"));
+      if (st !== "finished" && st !== "cancelled") out.push(make("⏹ 取消", "cancel", "取消批次：移除排队任务，正在执行的让其完成"));
+      return out;
+    }
+
+    // 批次面板渲染（结果区复用）
+    _renderBatchPanel() {
+      if (!this.resultEl) return;
+      this.resultEl.querySelectorAll(".anima-batch-batchpanel").forEach((el) => el.remove());
+      const s = this.batchState || {};
+      const counts = s.counts || {};
+      const jobs = this.batchJobs || [];
+      const wrap = document.createElement("div");
+      wrap.className = "anima-batch-report anima-batch-batchpanel";
+      const stTxt = { running: "运行中", paused: "已暂停", finished: "完成", cancelled: "已取消" }[s.state] || s.state || "";
+      const head = document.createElement("div");
+      head.className = "anima-batch-report-summary";
+      head.innerHTML =
+        `<b>批次 ${esc(shortId(this.batchId))}</b>（${esc(stTxt)}）` +
+        ` · ✓ ${counts.done || 0} · ✗ ${counts.failed || 0} · ⏸ ${counts.skipped || 0}` +
+        ` · ⏳ ${(counts.queued || 0) + (counts.running || 0)} · 待 ${counts.pending || 0}`;
+      wrap.appendChild(head);
+
+      const ctrl = document.createElement("div");
+      ctrl.className = "anima-batch-ctrls";
+      for (const b of this._ctrlButtons()) ctrl.appendChild(b);
+      wrap.appendChild(ctrl);
+
+      // 按组聚合
+      const byGroup = new Map();
+      for (const j of jobs) {
+        const k = j.group || "组";
+        if (!byGroup.has(k)) byGroup.set(k, []);
+        byGroup.get(k).push(j);
+      }
+      for (const [gname, gjobs] of byGroup) {
+        const g = document.createElement("div");
+        g.className = "anima-batch-group";
+        const done = gjobs.filter((x) => x.status === "done").length;
+        const bad = gjobs.filter((x) => x.status === "failed" || x.status === "interrupted").length;
+        const gh = document.createElement("div");
+        gh.className = "anima-batch-group-head";
+        gh.innerHTML = `<span>${esc(gname)}</span><span class="anima-batch-group-stat">${done}/${gjobs.length} ✓${bad ? " · ✗ " + bad : ""}</span>`;
+        g.appendChild(gh);
+        for (const j of gjobs) {
+          const row = document.createElement("div");
+          row.className = "anima-batch-job anima-batch-job-" + esc(j.status || "pending");
+          const icons = { pending: "○", queued: "⏳", running: "▶", done: "✓", failed: "✗", skipped: "–", interrupted: "↯", retry: "↻" };
+          const errTxt = j.error ? String(j.error) : "";
+          const outFiles = (j.outputs || []).map((o) => ((o.subfolder ? o.subfolder + "/" : "") + (o.filename || "")).replace(/[<>&"']/g, (x) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[x]))).join(" ");
+          row.innerHTML =
+            `<span class="anima-batch-job-ic">${icons[j.status] || "○"}</span>` +
+            `<span class="anima-batch-job-n">#${(j.idx || 0) + 1}</span>` +
+            `<span class="anima-batch-job-err" title="${errTxt ? esc(errTxt) : ""}">${errTxt ? esc(errTxt).slice(0, 140) : (outFiles ? "→ " + outFiles : "")}</span>`;
+          if (j.status === "failed" || j.status === "interrupted" || j.status === "skipped") {
+            const rb = document.createElement("button");
+            rb.type = "button";
+            rb.className = "anima-batch-btn anima-batch-job-btn";
+            rb.textContent = "重试";
+            rb.title = "重新执行这条";
+            rb.addEventListener("click", () => this._batchAction("retry", j.idx));
+            row.appendChild(rb);
+          }
+          if (j.status === "queued" || j.status === "pending" || j.status === "retry") {
+            const sb = document.createElement("button");
+            sb.type = "button";
+            sb.className = "anima-batch-btn anima-batch-job-btn";
+            sb.textContent = "跳过";
+            sb.title = "跳过这条，继续后面的任务";
+            sb.addEventListener("click", () => this._batchAction("skip", j.idx));
+            row.appendChild(sb);
+          }
+          g.appendChild(row);
+        }
+        wrap.appendChild(g);
+      }
+      this.resultEl.appendChild(wrap);
+    }
+
+    // 恢复面板：刷新/重启后列出未完成批次（优先本节点发起的）
+    async _renderRecover() {
+      if (!this.recoverEl) return;
+      try {
+        const r = await fetchJson("/anima/batch/list?limit=8");
+        const all = (r && r.batches) || [];
+        const active = all.filter((b) => b.state === "running" || b.state === "paused");
+        const mine = active.filter((b) => b.node_ref === String(this.node.id || ""));
+        const shown = (mine.length ? mine : active).filter((b) => b.id !== this.batchId).slice(0, 3);
+        const el = this.recoverEl;
+        el.innerHTML = "";
+        if (!shown.length) { el.style.display = "none"; return; }
+        el.style.display = "";
+        for (const b of shown) {
+          const c = b.counts || {};
+          const row = document.createElement("div");
+          row.className = "anima-batch-recover-row";
+          const stTxt = b.state === "paused" ? "已暂停" : "运行中";
+          row.innerHTML =
+            `<span class="anima-batch-recover-id">批次 ${esc(shortId(b.id))}</span>` +
+            `<span class="anima-batch-recover-meta">${esc(stTxt)} · ${(c.done || 0)}/${b.total}</span>`;
+          const go = document.createElement("button");
+          go.type = "button";
+          go.className = "anima-batch-btn anima-batch-job-btn";
+          go.textContent = "恢复";
+          go.title = "继续此批次并重跑中断任务";
+          go.addEventListener("click", () => this._recoverBatch(b.id));
+          const stop = document.createElement("button");
+          stop.type = "button";
+          stop.className = "anima-batch-btn anima-batch-job-btn";
+          stop.textContent = "取消";
+          stop.title = "取消该批次";
+          stop.addEventListener("click", async () => {
+            try {
+              const oldId = this.batchId;
+              this.batchId = b.id;
+              await this._batchAction("cancel");
+              this.batchId = oldId;
+              this._renderRecover();
+            } catch (e) { /* 忽略 */ }
+          });
+          row.appendChild(go);
+          row.appendChild(stop);
+          el.appendChild(row);
+        }
+      } catch (e) { /* 列表不可用（旧后端）则隐藏恢复面板 */ }
+    }
+
+    // 恢复：resume + 把中断（重启/清队）的任务重跑
+    async _recoverBatch(id) {
+      try {
+        const r = await fetchJson("/anima/batch/" + encodeURIComponent(id) + "/status");
+        const jobs = (r && r.jobs) || [];
+        this.batchId = id;
+        this.batchState = r.summary || null;
+        this.batchJobs = jobs;
+        for (const j of jobs) {
+          if (j.status === "interrupted") {
+            try { await fetchJson("/anima/batch/" + encodeURIComponent(id) + "/retry", "POST", JSON.stringify({ idx: j.idx })); }
+            catch (e) { /* 单条重试失败不阻塞恢复 */ }
+          }
+        }
+        const rr = await fetchJson("/anima/batch/" + encodeURIComponent(id) + "/resume", "POST", "{}");
+        this.batchState = (rr && rr.summary) || null;
+        this._setBatchStatus(`批次 ${shortId(id)} 已恢复`);
+        this._renderRecover();
+        this.schedulePoll();
+      } catch (e) {
+        this._setBatchStatus("批次恢复失败：" + String((e && e.message) || e), true);
+      }
     }
 
     // 批次跑完后汇总各组结果：等待队列清空 → 拉 /history → 按组名匹配 → 渲染
@@ -1385,171 +1772,17 @@
       const trigger = (options && options.intent && options.intent.trigger_source) || "";
       if (trigger === "auto_queue") return false;
 
-      // ── 注入目标校验（2026-08-17 修复）：目标缺失/失效时【阻止批次】并给出可见报错，
+      // ── 2026-08-24 起改走「服务端批任务控制器」：
+      //    不再逐条注入画布 widget + 逐条 orig() 入队（画布可能被污染、无批次状态、
+      //    刷新/重启丢进度、API 模式不可用），统一由 /anima/batch/run 在服务端
+      //    链式展开执行（目标校验/相机词/子目录/状态追踪都在 startBatch 与后端完成）。
+      // ── 注入目标校验（2026-08-17 语义保留）：目标缺失/失效时阻止批次并可见报错，
       //    绝不再静默提交「无注入的重复提示词」（曾导致 N 份相同提示词入队 + 任务异常中断）
-      const posT = (ui.w.positive_target?.value || "").trim();
-      const negT = (ui.w.negative_target?.value || "").trim();
-      const problems = [];
-      const checkTarget = (label, t, required) => {
-        if (!t) {
-          if (required) problems.push(`未选择「${label}」`);
-          return;
-        }
-        const [id, key] = t.split(".");
-        const n = findNode(app, id);
-        if (!n) {
-          problems.push(`「${label}」目标节点 ${id} 不存在（工作流已改动？请重新选择）`);
-        } else if (!n.widgets?.find((x) => x.name === key)) {
-          const avail = (n.widgets || []).map((x) => x.name).join(", ") || "无";
-          problems.push(`「${label}」目标 ${id}.${key} 不存在（该节点可用 widget：${avail}）`);
-        }
-      };
-      checkTarget("正向提示词注入节点", posT, true);
-      checkTarget("负向提示词注入节点", negT, false);
-      if (problems.length) {
-        ui._showBatchError("批生成被阻止：" + problems.join("；"));
+      if (ui && typeof ui.startBatch === "function") {
+        await ui.startBatch();
         return false;
       }
-
-      // 自动最新模式：队列前刷新为最新提示词文件（失败不阻塞，走原逻辑）
-      if (ui.autoLatest) {
-        try {
-          const path = await ui.fetchLatestPath();
-          if (path && (ui.w.prompt_files?.value || "") !== path) {
-            ui.checked.clear();
-            ui._setW(ui.w.prompt_files, path);
-            if (ui.fileCur) ui.fileCur.textContent = path;
-            rememberFile(path, 0);
-            if (typeof ui._renderRecents === "function") ui._renderRecents();
-            await ui._parseFiles();
-          }
-        } catch (e) { /* 自动刷新失败不阻塞队列 */ }
-      }
-
-      // 异步解析相机词（若指定相机节点）
-      let cameraMap = null;
-      const camId = (ui.w.camera_target?.value || "").trim();
-      if (camId) {
-        const cam = readCameraPrompt(app, camId);
-        if (cam) {
-          cameraMap = await (async () => {
-            try {
-              const q = `x=${cam.px}&y=${cam.py}&z=${cam.pz}&roll=${cam.rl}&config=${encodeURIComponent(cam.cfg)}&extra=${encodeURIComponent(cam.extra)}&preset=${encodeURIComponent(cam.preset)}&nl=${encodeURIComponent(cam.nl)}`;
-              const r = await fetchJson(`/anima/camera/preview?${q}`);
-              return r.prompt || "";
-            } catch { return ""; }
-          })();
-        }
-      }
-
-      const jobs = ui.buildJobs(app);
-      if (!jobs.length) return orig(number, batchCount, options);
-
-      // 批量前快照所有 SaveImage 的 filename_prefix，跑完恢复——
-      // 否则批量把画布上的前缀改成 batch/组名 后不还原，用户下次手动跑单图会存进 batch/ 子目录
-      const prefixSnapshot = new Map();
-      if (jobs.some((j) => j.subfolder)) {
-        for (const n of getNodes(app)) {
-          const cls = n.type || n.comfyClass || "";
-          if (!/SaveImage|PreviewImage|imageSave/i.test(cls)) continue;
-          const w = n.widgets?.find((x) => x.name === "filename_prefix");
-          if (w) prefixSnapshot.set(n, w.value);
-        }
-      }
-      const restorePrefix = () => {
-        for (const [n, v] of prefixSnapshot) {
-          const w = n.widgets?.find((x) => x.name === "filename_prefix");
-          if (w) setTextWidget(n, "filename_prefix", v);
-        }
-      };
-
-      // 批量前快照负向目标节点原值（仅对本次会用到的目标节点），每组注入后立即恢复，
-      // 避免上一组负向泄漏到下一组、也避免批量后节点残留。
-      const negSnapshot = new Map();
-      for (const job of jobs) {
-        if (!job.negId || !job.negKey || !job.neg) continue;
-        const nk = job.negId + "." + job.negKey;
-        if (negSnapshot.has(nk)) continue;
-        const n = findNode(app, job.negId);
-        if (n) negSnapshot.set(nk, { node: n, key: job.negKey, value: getWidgetValue(n, job.negKey) });
-      }
-      const restoreNeg = (job) => {
-        if (!job.negId || !job.negKey || !job.neg) return;
-        const snap = negSnapshot.get(job.negId + "." + job.negKey);
-        if (snap) setTextWidget(snap.node, snap.key, snap.value);
-      };
-
-      try {
-        ui.batchActive = true;
-        // 逐条注入并顺序入队（复用原生 seed/进度/历史）
-        for (const job of jobs) {
-          const posNode = findNode(app, job.posId);
-          if (!posNode) {
-            ui._showBatchError(`批生成中止：正向目标节点 ${job.posId} 不存在（工作流已改动？请重新选择）`);
-            return false;
-          }
-          // 注入整段提示词（后端已把「背景/人物」行合并进组提示词）；
-          // 注入失败（widget 不存在/名字不符）立即中止，绝不静默提交未注入的提示词
-          if (!setTextWidget(posNode, job.posKey, job.text)) {
-            const avail = (posNode.widgets || []).map((x) => x.name).join(", ") || "无";
-            ui._showBatchError(`批生成中止：目标节点 ${job.posId} 没有 widget「${job.posKey}」（可用：${avail}）。请重新选择注入节点`);
-            return false;
-          }
-
-          // 负向提示词：仅当本组文件写了「负向:」且用户选择了负向目标节点时才注入；
-          // 无负向行时完全不碰负向节点，保持现有值不变。
-          if (job.negId && job.negKey && job.neg) {
-            const negNode = findNode(app, job.negId);
-            if (negNode && !setTextWidget(negNode, job.negKey, job.neg)) {
-              const avail = (negNode.widgets || []).map((x) => x.name).join(", ") || "无";
-              ui._showBatchError(`批生成中止：负向目标节点 ${job.negId} 没有 widget「${job.negKey}」（可用：${avail}）。请重新选择负向注入节点`);
-              return false;
-            }
-          }
-
-          // 相机词注入：把相机词拼到正向文本末尾（幂等：每次完整替换正向文本）
-          // 优先级：本组独立机位（job.camera） > 全局相机节点（cameraMap）
-          if (job.camera) {
-            try {
-              const q = cameraToQuery(job.camera);
-              const r = await fetchJson("/anima/camera/preview?" + q);
-              if (r && r.prompt) {
-                const cur = getWidgetValue(posNode, job.posKey);
-                setTextWidget(posNode, job.posKey, mergeCamera(cur, r.prompt));
-              }
-            } catch { /* 组相机解析失败时静默跳过，用已有文本 */ }
-          } else if (cameraMap) {
-            const cur = getWidgetValue(posNode, job.posKey);
-            setTextWidget(posNode, job.posKey, mergeCamera(cur, cameraMap));
-          }
-
-          // 每组输出子目录：覆盖 SaveImage filename_prefix
-          if (job.subfolder) {
-            applySubfolderPrefix(app, job.groupName);
-          }
-
-          // （区域注入已停用，见 installQueueExpansion 注释）
-          await orig(1, batchCount);
-
-          // 跑完立即恢复负向节点原值，防止泄漏到下一组
-          restoreNeg(job);
-        }
-
-        // 批次结果反馈：等队列清空后拉 /history，汇总到节点 UI
-        try {
-          if (ui.collectBatchReport) await ui.collectBatchReport(jobs);
-        } catch (e) {
-          console.error("[TK Prompt Batch] 批次结果汇总失败:", e);
-        }
-      } finally {
-        // 无论成功/失败/用户取消，都还原 filename_prefix 与负向节点
-        ui.batchActive = false;
-        restorePrefix();
-        for (const snap of negSnapshot.values()) {
-          setTextWidget(snap.node, snap.key, snap.value);
-        }
-      }
-      return true;
+      return orig(number, batchCount, options);
     };
   }
 
@@ -1775,6 +2008,31 @@ function init() {
 .anima-batch-target-status { font-size:10px; line-height:1.4; padding:3px 6px; border-radius:4px; margin:2px 0; }
 .anima-batch-target-status.ok { color:#4aba8b; background:rgba(74,186,139,0.08); }
 .anima-batch-target-status.warn { color:#ff9d5c; background:rgba(255,157,92,0.10); border:1px solid rgba(255,157,92,0.35); font-weight:600; }
+/* ── 批任务控制器面板（2026-08-24） ── */
+.anima-batch-start-btn { background:rgba(74,186,139,0.22) !important; border-color:#4aba8b !important; color:#bff3dd !important; font-weight:600; }
+.anima-batch-start-btn:hover { background:rgba(74,186,139,0.35) !important; }
+.anima-batch-statusline { font-size:10px; color:var(--fg-color,#aaa); padding:2px 6px; border-radius:4px; background:rgba(139,92,246,0.08); margin:2px 0; }
+.anima-batch-statusline-err { color:#ff9d5c; background:rgba(255,157,92,0.10); border:1px solid rgba(255,157,92,0.35); }
+.anima-batch-batchpanel { margin-top:6px; }
+.anima-batch-ctrls { display:flex; flex-wrap:wrap; gap:4px; padding:4px 0; }
+.anima-batch-ctrl { font-size:10px; padding:2px 8px; background:var(--comfy-input-bg,#222); color:var(--fg-color,#bbb); border:1px solid var(--border-color,#4a4a52); border-radius:4px; cursor:pointer; }
+.anima-batch-ctrl:hover { border-color:#8b5cf6; color:#c9b8ff; }
+.anima-batch-group-head { display:flex; justify-content:space-between; align-items:center; font-size:10px; color:var(--fg-color,#ccc); padding:2px 2px; }
+.anima-batch-group-stat { color:var(--fg-color,#888); font-variant-numeric:tabular-nums; }
+.anima-batch-job { display:flex; align-items:center; gap:6px; font-size:10px; padding:1px 2px; line-height:1.4; }
+.anima-batch-job-ic { flex:0 0 auto; width:12px; text-align:center; }
+.anima-batch-job-n { flex:0 0 auto; color:var(--fg-color,#777); font-variant-numeric:tabular-nums; }
+.anima-batch-job-err { flex:1; min-width:0; color:var(--fg-color,#999); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.anima-batch-job-btn { font-size:10px; padding:1px 7px; flex:0 0 auto; background:var(--comfy-input-bg,#222); color:var(--fg-color,#bbb); border:1px solid var(--border-color,#4a4a52); border-radius:4px; cursor:pointer; }
+.anima-batch-job-btn:hover { border-color:#8b5cf6; color:#c9b8ff; }
+.anima-batch-job-done .anima-batch-job-ic { color:#4aba8b; }
+.anima-batch-job-failed .anima-batch-job-ic, .anima-batch-job-interrupted .anima-batch-job-ic, .anima-batch-job-retry .anima-batch-job-ic { color:#ff9d5c; }
+.anima-batch-job-running .anima-batch-job-ic { color:#8b5cf6; }
+.anima-batch-job-queued .anima-batch-job-ic { color:#888; }
+.anima-batch-recover { display:none; margin-top:6px; border-top:1px dashed var(--border-color,#333); padding-top:4px; }
+.anima-batch-recover-row { display:flex; align-items:center; gap:6px; font-size:10px; padding:2px 0; }
+.anima-batch-recover-id { flex:0 0 auto; color:#c9b8ff; }
+.anima-batch-recover-meta { flex:1; min-width:0; color:var(--fg-color,#888); }
 `;
     document.head.appendChild(s);
   }
