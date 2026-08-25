@@ -440,7 +440,7 @@
     build() {
       this._ensureMeta();
       const container = document.createElement("div");
-      container.className = "anima-lora-widget anima-lora-workbench";
+      container.className = "anima-lora-widget";
 
       // ── 注入样式（每次都写入完整样式，防止旧样式缺失导致弹窗/卡片不可见） ──
       const styleId = "anima-widget-style";
@@ -514,20 +514,6 @@
           .anima-lora-widget::-webkit-scrollbar-track { background:transparent; }
           .anima-lora-widget::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:2px; }
 
-          /* A 色泽 + B 外层布局：只重排外框，保留原 .lora-row 的单行结构。 */
-          .anima-lora-workbench { max-height:460px; min-width:360px; }
-          .anima-lora-layout { display:grid; grid-template-columns:78px minmax(0,1fr); gap:8px; min-height:0; }
-          .anima-lora-rail { display:flex; flex-direction:column; gap:4px; min-width:0; margin:0; padding:6px; border:1px solid rgba(255,255,255,0.08); border-radius:5px; background:rgba(255,255,255,0.02); }
-          .anima-lora-rail-title { padding:2px 3px 5px; color:#9a9b98; font-size:9px; letter-spacing:.04em; border-bottom:1px solid rgba(255,255,255,0.08); }
-          .anima-lora-rail-current { display:flex; align-items:center; gap:4px; min-height:26px; padding:4px 5px; border-left:2px solid #d0cbc2; background:rgba(255,255,255,0.08); color:#e8e5df; font-size:9px; }
-          .anima-lora-rail button { width:100%; min-height:26px; justify-content:flex-start; padding:4px 5px !important; font-size:9px !important; border-radius:4px !important; }
-          .anima-lora-rail .btn-clear { margin-top:auto; }
-          .anima-lora-main { min-width:0; min-height:0; display:flex; flex-direction:column; }
-          .anima-lora-main-title { display:flex; justify-content:space-between; align-items:baseline; gap:6px; padding:2px 3px 6px; color:#e8e5df; font-size:11px; border-bottom:1px solid rgba(255,255,255,0.08); }
-          .anima-lora-main-meta { color:#9a9b98; font-size:9px; white-space:nowrap; }
-          .anima-lora-main > .list { max-height:360px; overflow-y:auto; min-height:0; }
-          @media (max-width:420px) { .anima-lora-workbench { min-width:0; } .anima-lora-layout { grid-template-columns:70px minmax(0,1fr); gap:5px; } .anima-lora-rail { padding:4px; } .anima-lora-main-meta { display:none; } }
-
            /* ── ModernDark 设计系统 ── */
           :root {
             --bg-deep:#020203; --bg-base:#050506; --bg-elev:#0a0a0c;
@@ -559,23 +545,17 @@
 
       // ── 工具栏 ──
       const toolbar = document.createElement("div");
-      toolbar.className = "toolbar anima-lora-rail";
+      toolbar.className = "toolbar";
       const verifyBtn = this._btn("验证标签", "btn-verify", "检查输入框中的 <lora:...> 标签能否在本地找到对应文件", "search");
       const extractBtn = this._btn("提取触发词", "btn-verify", "批量查询当前列表所有 LoRA 的触发词（自动刷新列表）", "download");
       const copyAllTwBtn = this._btn("全部触发词", "btn-verify", "一键复制已启用 LoRA 的所有触发词（英文逗号连接）", "clipboard");
-      const browseBtn = this._btn("本地浏览", "btn-browse", "打开本地 LoRA 浏览窗：添加 / 分类 LoRA", "folder");
+      const browseBtn = this._btn("本地 LoRA", "btn-browse", "打开本地 LoRA 浏览窗：预览 C 站图、点击添加 / 分类", "folder");
       const clearBtn = this._btn("", "btn-clear", "清空当前 LoRA 列表", "x");
       clearBtn.style.padding = "4px 8px"; // 纯图标按钮，缩写宽度
       const panelBtn = this._btn("面板", "btn-verify", "打开本地管理面板（TK Toolkit）", "globe");
       const groupsBtn = this._btn("组", "btn-browse", "LoRA 组：保存当前列表 / 切换 / 重命名 / 删除（悬浮组名预览组内 LoRA）", "folder");
       const updateBtn = this._btn("更新", "btn-browse", "检查插件版本更新", "refresh");
-      const currentBtn = document.createElement("div");
-      currentBtn.className = "anima-lora-rail-current";
-      currentBtn.innerHTML = svgIcon("folder", 12) + "<span>当前列表</span>";
-      const railTitle = document.createElement("div");
-      railTitle.className = "anima-lora-rail-title";
-      railTitle.textContent = "批处理";
-      toolbar.append(railTitle, currentBtn, browseBtn, groupsBtn, extractBtn, copyAllTwBtn, clearBtn, panelBtn, updateBtn);
+      toolbar.append(verifyBtn, extractBtn, copyAllTwBtn, browseBtn, groupsBtn, clearBtn, panelBtn, updateBtn);
 
       // 检查更新：点击手动检查；build 后自动查一次，有新版时按钮高亮成「有新版本」
       updateBtn.onclick = () => {
@@ -604,16 +584,7 @@
       const triggerEl = document.createElement("div");
       triggerEl.className = "trigger-box";
 
-      const layout = document.createElement("div");
-      layout.className = "anima-lora-layout";
-      const main = document.createElement("div");
-      main.className = "anima-lora-main";
-      const mainTitle = document.createElement("div");
-      mainTitle.className = "anima-lora-main-title";
-      mainTitle.innerHTML = '<span>LoRA stack</span><span class="anima-lora-main-meta">当前工作流 · 长条列表</span>';
-      main.append(mainTitle, statusEl, listEl, triggerEl);
-      layout.append(toolbar, main);
-      container.append(layout);
+      container.append(toolbar, statusEl, listEl, triggerEl);
 
       verifyBtn.onclick = () => this._verify(statusEl, listEl, triggerEl);
       extractBtn.onclick = () => this._extractAllTriggerWords(listEl);
@@ -639,7 +610,7 @@
       })(this.loraWidget.callback);
 
       const dw = this.node.addDOMWidget("anima_batch_ui", "custom", container, { serialize: false });
-      dw.computeSize = (width) => [Math.max(width || 280, 360), Math.min(460, 72 + Math.max(1, this.loras.length) * 30)];
+      dw.computeSize = (width) => [width || 280, Math.min(420, 72 + Math.max(1, this.loras.length) * 30)];
 
       // 让 lora_syntax 输入框多行/自适应高度
       this._enhanceLoraInput();
