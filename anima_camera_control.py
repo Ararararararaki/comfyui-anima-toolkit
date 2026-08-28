@@ -7,9 +7,9 @@
 #
 # 在 BSK 算法之上新增两类便捷控制（桌面批生图缺失的能力）：
 #   1. 一键预设（PRESETS）：按 anima-prompt 实际机位用法定制，点选即得
-#   2. 自然语言（parse_camera_nl）：写「俯视 近景」自动映射到 pos_x/y/z/roll
+#   2. 旧工作流兼容（parse_camera_nl）：保留历史 nl_prompt 的解析，不再作为当前 UI 入口
 #
-# 优先级：自然语言 > 预设 > 手动 pos_x/y/z/roll。
+# 兼容旧工作流时优先级：nl_prompt > 预设 > 手动 pos_x/y/z/roll。
 
 import os
 import json
@@ -411,7 +411,12 @@ class CameraControlCore:
                 right /= s
             AZ_POLE = 0.9
             az_gate = max(0.0, min(1.0, (1.0 - abs(float(pos_y))) / (1.0 - AZ_POLE)))
-            az_budget = float(cfg["azimuth"]["weight"]) * az_gate
+            # 先限制整个方位预算，再按方向比例分配。
+            # 如果直接对每个方向单独套 weight_max，当 azimuth.weight > weight_max
+            # 时，左右方向会在大段角度被钳成同一个最高值，3D 机位虽在移动，
+            # 提示词权重却不变。
+            az_weight = max(0.0, float(cfg["azimuth"].get("weight", 0.0)))
+            az_budget = min(az_weight, wmax) * az_gate
             for name, ratio in (("front", front), ("back", back), ("left", left), ("right", right)):
                 dir_cfg = cfg["azimuth"]["directions"].get(name, {})
                 if not dir_cfg.get("enabled", True):
@@ -540,8 +545,8 @@ class AnimaCameraControl:
                 "nl_prompt": ("STRING", {
                     "default": "",
                     "multiline": False,
-                    "placeholder": "自然语言：如「俯视 近景」/「从背后 全身」",
-                    "tooltip": "自然语言描述机位，自动映射参数（优先级高于预设与手动）。",
+                    "placeholder": "（旧工作流兼容字段）",
+                    "tooltip": "旧工作流兼容字段；当前 TK 相机控制 UI 不再显示自然语言输入。",
                 }),
                 "pos_x": ("FLOAT", {
                     "default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01,
@@ -575,12 +580,12 @@ class AnimaCameraControl:
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("相机提示词", "camera_meta")
     FUNCTION = "execute"
-    DESCRIPTION = "可视化控制相机机位，输出对应相机提示词（忠实复刻 BSK 算法：方位 2D 比例 + 高度/距离档位 + 倾斜 + extras；支持一键预设（含用户自定义）与自然语言）；第二输出 camera_meta 为 JSON 结构化参数（mode/preset/坐标/生效开关），供下游节点/脚本消费"
+    DESCRIPTION = "可视化控制相机机位，输出对应相机提示词（忠实复刻 BSK 算法：方位 2D 比例 + 高度/距离档位 + 倾斜 + extras；支持一键预设与用户自定义预设）；第二输出 camera_meta 为 JSON 结构化参数（mode/preset/坐标/生效开关），供下游节点/脚本消费；旧工作流的 nl_prompt 仅作兼容保留"
 
     def execute(self, preset, nl_prompt, pos_x, pos_y, pos_z, roll, extra_tags, config):
         px, py, pz, rl = float(pos_x), float(pos_y), float(pos_z), float(roll)
 
-        # 优先级：自然语言 > 预设（内置/自定义） > 手动
+        # 优先级：旧工作流 nl_prompt > 预设（内置/自定义） > 手动
         nl = (nl_prompt or "").strip()
         mode = "nl" if nl else ("preset" if (preset and preset != CUSTOM_PRESET) else "manual")
         if nl:

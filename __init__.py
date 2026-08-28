@@ -6,8 +6,15 @@ import os
 import re
 import time
 import json
+import csv
 import hashlib
+import importlib.util
+import socket
+import subprocess
+import sqlite3
+import unicodedata
 import threading
+from dataclasses import dataclass
 import aiohttp
 import asyncio
 import folder_paths
@@ -50,6 +57,7 @@ from .anima_prompt_cards import (
     NODE_CLASS_MAPPINGS as CARDS_NODE_CLASS_MAPPINGS,
     NODE_DISPLAY_NAME_MAPPINGS as CARDS_NODE_DISPLAY_NAME_MAPPINGS,
 )
+from . import anima_local_llm  # 本地 LLM 翻译 provider（手动启用；load/unload/status 路由在模块内注册）
 
 # 合并所有节点的注册表（ComfyUI 通过 __init__.py 顶层这两个变量发现所有节点）
 NODE_CLASS_MAPPINGS = {
@@ -96,6 +104,9 @@ _PROXY_OVERRIDE: str | None = None
 _PROXY_OVERRIDE_AT: float = 0.0
 _PROXY_OVERRIDE_TTL_OK = 60
 _PROXY_OVERRIDE_TTL_FAIL = 10
+_DEEPLX_EXE = r"E:\1gongju\DeepLX\deeplx_windows_amd64.exe"
+_DEEPLX_LOG = r"E:\1gongju\DeepLX\deeplx.log"
+_DEEPLX_PID_FILE = os.path.join(PLUGIN_DIR, "data", "deeplx.pid")
 
 def _cache_key(url, qs):
     return hashlib.md5(f"{url}?{qs}".encode()).hexdigest()
@@ -198,6 +209,172 @@ async def _get_session():
         return _PROXY_SESSION
 
 
+class DeepLXManager:
+    """DeepLX 本地进程的唯一管理者；只管理自己启动的进程。"""
+
+    def __init__(self, exe: str, log_path: str, pid_file: str, port: int = 1188):
+        self.exe = exe
+        self.log_path = log_path
+        self.pid_file = pid_file
+        self.port = port
+        self.process: subprocess.Popen | None = None
+        self._start_lock: asyncio.Lock | None = None
+
+    def _listening_sync(self) -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", self.port), timeout=0.4):
+                return True
+        except OSError:
+            return False
+
+    def _existing_pids_sync(self) -> list[int]:
+        """发现同名 DeepLX 进程，避免只依赖本实例的 Popen 引用。"""
+        if os.name != "nt":
+            return []
+        image_name = os.path.basename(os.environ.get("DEEPLX_EXE") or self.exe)
+        if not image_name:
+            return []
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"IMAGENAME eq {image_name}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=2,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                check=False,
+            )
+            pids: list[int] = []
+            for row in csv.reader(result.stdout.splitlines()):
+                if len(row) < 2 or row[0].casefold() != image_name.casefold():
+                    continue
+                try:
+                    pids.append(int(row[1]))
+                except ValueError:
+                    continue
+            return pids
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return []
+
+    def _write_pid(self, pid: int | None) -> None:
+        try:
+            if pid is None:
+                if os.path.isfile(self.pid_file):
+                    os.unlink(self.pid_file)
+                return
+            os.makedirs(os.path.dirname(self.pid_file), exist_ok=True)
+            with open(self.pid_file, "w", encoding="utf-8") as f:
+                f.write(str(pid))
+        except OSError:
+            pass
+
+    def _start_sync(self) -> bool:
+        if self._listening_sync():
+            return True
+        exe = os.environ.get("DEEPLX_EXE", self.exe).strip()
+        if not exe or not os.path.isfile(exe):
+            return False
+        if self.process is not None and self.process.poll() is None:
+            return self._listening_sync()
+        existing_pids = self._existing_pids_sync()
+        if existing_pids:
+            # 同名进程可能仍在启动；等待它接管 1188，绝不再起第二个实例。
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if self._listening_sync():
+                    return True
+                time.sleep(0.2)
+            return False
+        args = [exe]
+        proxy = os.environ.get("DEEPLX_PROXY", "").strip() or _detect_proxy()
+        if proxy:
+            args.extend(["-proxy", proxy])
+        log_path = os.environ.get("DEEPLX_LOG", self.log_path).strip() or os.devnull
+        try:
+            log_dir = os.path.dirname(log_path)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+            with open(log_path, "a", encoding="utf-8") as log_file:
+                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                self.process = subprocess.Popen(
+                    args,
+                    cwd=os.path.dirname(exe),
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    creationflags=flags,
+                )
+            self._write_pid(self.process.pid)
+        except (OSError, ValueError):
+            self.process = None
+            return False
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if self._listening_sync():
+                return True
+            time.sleep(0.2)
+        return False
+
+    async def ensure_started(self) -> bool:
+        if self._listening_sync():
+            return True
+        if self._start_lock is None:
+            self._start_lock = asyncio.Lock()
+        async with self._start_lock:
+            if self._listening_sync():
+                return True
+            return await asyncio.get_running_loop().run_in_executor(None, self._start_sync)
+
+    def status_sync(self) -> dict[str, object]:
+        listening = self._listening_sync()
+        managed_running = self.process is not None and self.process.poll() is None
+        existing_pids = self._existing_pids_sync()
+        process_running = managed_running or bool(existing_pids)
+        return {
+            "installed": bool(os.path.isfile(os.environ.get("DEEPLX_EXE") or self.exe)),
+            "listening": listening,
+            "process_running": process_running,
+            "managed": managed_running,
+            "pid": self.process.pid if managed_running else (existing_pids[0] if existing_pids else None),
+            "port": self.port,
+            "exe": os.environ.get("DEEPLX_EXE") or self.exe,
+            "log": os.environ.get("DEEPLX_LOG") or self.log_path,
+        }
+
+    def _stop_managed_sync(self) -> bool:
+        if self.process is None or self.process.poll() is not None:
+            return False
+        try:
+            self.process.terminate()
+            self.process.wait(timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                self.process.kill()
+                self.process.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        finally:
+            self.process = None
+            self._write_pid(None)
+        return True
+
+    async def restart(self) -> dict[str, object]:
+        if self._start_lock is None:
+            self._start_lock = asyncio.Lock()
+        async with self._start_lock:
+            stopped = await asyncio.get_running_loop().run_in_executor(None, self._stop_managed_sync)
+            started = await asyncio.get_running_loop().run_in_executor(None, self._start_sync)
+            return {"stopped": stopped, "started": started, **self.status_sync()}
+
+
+_DEEPLX_MANAGER = DeepLXManager(_DEEPLX_EXE, _DEEPLX_LOG, _DEEPLX_PID_FILE)
+
+
+async def _ensure_deeplx_started() -> bool:
+    return await _DEEPLX_MANAGER.ensure_started()
+
+
 async def _load_index():
     global INDEX_HTML
     path = os.path.join(APP_DIR, "index.html")
@@ -215,6 +392,7 @@ async def _proxy(url, request):
         cached = _PROXY_CACHE.get(ck)
         if cached and cached[0] > time.time():
             return web.Response(body=cached[3], status=cached[1], headers=cached[2])
+    target = None
     try:
         session = await _get_session()
         async with session.request(request.method, full) as resp:
@@ -372,6 +550,88 @@ async def lora_info(request):
 _DOWNLOAD_PROGRESS: dict = {}
 _DOWNLOAD_PROGRESS_LOCK = threading.Lock()
 
+# 下载目标只允许落到 ComfyUI 已注册的模型目录，避免 URL 下载变成任意路径写入。
+_DOWNLOAD_TARGET_TYPES = (
+    ("loras", "LoRA"),
+    ("checkpoints", "Checkpoint"),
+    ("vae", "VAE"),
+    ("embeddings", "Embedding"),
+    ("controlnet", "ControlNet"),
+    ("clip", "Text Encoder"),
+    ("clip_vision", "CLIP Vision"),
+    ("upscale_models", "Upscale"),
+    ("hypernetworks", "Hypernetwork"),
+    ("style_models", "Style Model"),
+)
+_CIVITAI_TYPE_TO_FOLDER = {
+    "checkpoint": "checkpoints",
+    "lora": "loras",
+    "lycoris": "loras",
+    "textualinversion": "embeddings",
+    "embedding": "embeddings",
+    "hypernetwork": "hypernetworks",
+    "aestheticgradient": "style_models",
+    "controlnet": "controlnet",
+    "upscaler": "upscale_models",
+    "upscale": "upscale_models",
+    "vae": "vae",
+}
+
+
+def _download_target_options() -> list[dict]:
+    """Return safe download destinations from ComfyUI's registered model roots."""
+    options = [{
+        "key": "auto",
+        "label": "自动（按 C 站模型类型）",
+        "type": "auto",
+        "index": None,
+        "path": None,
+    }]
+    for folder_type, label in _DOWNLOAD_TARGET_TYPES:
+        try:
+            paths = folder_paths.get_folder_paths(folder_type) or []
+        except Exception:
+            paths = []
+        for index, raw_path in enumerate(paths):
+            path = os.path.normpath(str(raw_path or "")).strip()
+            if not path:
+                continue
+            options.append({
+                "key": f"{folder_type}:{index}",
+                "label": f"{label} · {path}",
+                "type": folder_type,
+                "index": index,
+                "path": path,
+            })
+    return options
+
+
+def _resolve_download_target(target_key: str, model_type: str) -> tuple[str, str]:
+    """Resolve an explicit registered folder or map a Civitai type in auto mode."""
+    key = (target_key or "auto").strip() or "auto"
+    if key == "auto":
+        normalized_type = re.sub(r"[^a-z0-9]", "", str(model_type or "").lower())
+        folder_type = _CIVITAI_TYPE_TO_FOLDER.get(normalized_type, "loras")
+        key = folder_type
+    if ":" in key:
+        folder_type, raw_index = key.split(":", 1)
+        try:
+            index = int(raw_index)
+        except ValueError as error:
+            raise ValueError("下载目录选择无效") from error
+    else:
+        folder_type, index = key, 0
+    allowed = {folder_type for folder_type, _ in _DOWNLOAD_TARGET_TYPES}
+    if folder_type not in allowed or index < 0:
+        raise ValueError("下载目录选择无效")
+    try:
+        paths = folder_paths.get_folder_paths(folder_type) or []
+    except Exception as error:
+        raise ValueError(f"无法读取 ComfyUI 目录：{folder_type}") from error
+    if index >= len(paths) or not str(paths[index] or "").strip():
+        raise ValueError("下载目录不存在或未在 ComfyUI 注册")
+    return os.path.normpath(str(paths[index])), folder_type
+
 
 def _cleanup_progress(max_age: float = 600):
     """清理超过 max_age 秒未更新的下载进度记录，防止长期运行内存增长。"""
@@ -383,7 +643,7 @@ def _cleanup_progress(max_age: float = 600):
 
 @PromptServer.instance.routes.get("/anima/lora/download")
 async def lora_download(request):
-    """Download a Civitai LoRA by modelVersion id into the local loras folder.
+    """Download a Civitai model by version/model id into a registered model folder.
 
     Civitai download endpoint (/api/download/models/{id}) returns a 307 redirect;
     aiohttp 默认不跟随重定向，需显式 allow_redirects=True（session 走系统代理）。
@@ -394,6 +654,8 @@ async def lora_download(request):
     progress_id = request.query.get("progressId", "").strip()
     cookie = request.query.get("cookie", "").strip()
     token = request.query.get("token", "").strip()  # C 站 API Key（设置页生成），比 cookie 持久省事
+    target_key = request.query.get("target", "auto").strip() or "auto"
+    model_type = ""
 
     _cleanup_progress()
 
@@ -409,6 +671,7 @@ async def lora_download(request):
             async with session.get(u) as resp:
                 if resp.status == 200:
                     data = await resp.json()
+                    model_type = str(data.get("type") or "")
                     versions = data.get("modelVersions") or []
                     if versions:
                         version_id = str(versions[0].get("id") or "")
@@ -427,6 +690,7 @@ async def lora_download(request):
         async with session.get(u) as resp:
             if resp.status == 200:
                 d = await resp.json()
+                model_type = str((d.get("model") or {}).get("type") or d.get("modelType") or model_type)
                 files = d.get("files") or []
                 if files:
                     fn = str(files[0].get("name") or "")
@@ -435,11 +699,11 @@ async def lora_download(request):
     except Exception:
         api_filename = ""
 
-    lora_dirs = folder_paths.get_folder_paths("loras")
-    if not lora_dirs:
-        return web.json_response({"ok": False, "error": "loras folder not found"}, status=500)
-    lora_dir = lora_dirs[0]
-    os.makedirs(lora_dir, exist_ok=True)
+    try:
+        download_dir, resolved_folder_type = _resolve_download_target(target_key, model_type)
+    except ValueError as error:
+        return web.json_response({"ok": False, "error": str(error)}, status=400)
+    os.makedirs(download_dir, exist_ok=True)
 
     try:
         session = await _get_session()
@@ -454,7 +718,10 @@ async def lora_download(request):
         params = {}
         if token:
             params["token"] = token  # C 站下载接口认 ?token=<api-key>
-        async with session.get(url, allow_redirects=True, headers=hdrs, params=params) as resp:
+        # 大型 Checkpoint 常常超过数十分钟；共享会话的 total=30 秒只适合 API 查询，
+        # 若沿用会在约 6% 处因总超时中断。这里限制连接和单次读空闲时间，不限制总下载时长。
+        download_timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_connect=30, sock_read=120)
+        async with session.get(url, allow_redirects=True, headers=hdrs, params=params, timeout=download_timeout) as resp:
             # 检测重定向到 C 站登录页（需登录的模型，未带有效 Cookie 时）
             if "auth.civitai.com/login" in str(resp.url):
                 return web.json_response({"ok": False, "error": "该模型需登录 C 站才能下载：请在下载弹窗的 Cookie 栏填写浏览器里 civitai.com 的 Cookie 后重试，或在浏览器手动下载", "needLogin": True}, status=502)
@@ -464,7 +731,6 @@ async def lora_download(request):
                 return web.json_response({"ok": False, "error": f"download http_{resp.status}"}, status=502)
 
             # 文件名：C 站 API 的 files[0].name 优先，其次 Content-Disposition，最后 fallback
-            target = None
             filename = api_filename or fallback_name
             if not api_filename:
                 cd = resp.headers.get("Content-Disposition", "")
@@ -474,7 +740,7 @@ async def lora_download(request):
             filename = os.path.basename(filename or "lora.safetensors")
             if not os.path.splitext(filename)[1]:
                 filename += ".safetensors"
-            target = os.path.join(lora_dir, filename)
+            target = os.path.join(download_dir, filename)
 
             total = int(resp.headers.get("Content-Length", 0) or 0)
             done = 0
@@ -505,7 +771,7 @@ async def lora_download(request):
                     _DOWNLOAD_PROGRESS[progress_id]["status"] = "done"
                     _DOWNLOAD_PROGRESS[progress_id]["filename"] = filename
 
-            return web.json_response({"ok": True, "filename": filename, "path": target})
+            return web.json_response({"ok": True, "filename": filename, "path": target, "folderType": resolved_folder_type, "modelType": model_type or None})
     except Exception as e:
         # 异常中断：删除残留的半截文件，避免出现在 /anima/loras 列表中被误用
         if target and os.path.exists(target):
@@ -517,6 +783,12 @@ async def lora_download(request):
             with _DOWNLOAD_PROGRESS_LOCK:
                 _DOWNLOAD_PROGRESS[progress_id]["status"] = "error"
         return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.get("/anima/lora/download/targets")
+async def download_targets(request):
+    """Return the registered ComfyUI model roots available to the download dialog."""
+    return web.json_response({"ok": True, "targets": _download_target_options()})
 
 
 @PromptServer.instance.routes.get("/anima/lora/download/status")
@@ -717,14 +989,176 @@ async def proxy_danbooru(request):
     return await _proxy("https://danbooru.donmai.us/" + request.match_info["path"], request)
 
 
-# ─── 翻译（多源：本地词典 / DeepLX / MyMemory / Google / DashScope 通义）───
+# ─── 翻译（多源：本地词典 / 本地 LLM(Qwen/Gemma 手动启用) / DeepLX / MyMemory / Google / DashScope 通义）───
 # 面板「图片解析」的翻译全部走这里：source=auto 时按顺序回退，任何单源失败都不影响整体。
+# local_llm 默认不加载；Prompt Cards 显式选择该源时按需加载本地模型，翻译会话结束后释放。
+# 2026-08-26：Argos 已按用户要求移除（语义保留基准 5/20 不合格，由本地 LLM 取代）。
 
-_TRANSLATE_CACHE: dict = {}
-_TRANSLATE_CACHE_TTL = 3600 * 24  # 翻译结果缓存 1 天（内容稳定，省配额）
+_TRANSLATION_CACHE_TTL = 3600 * 24  # SQLite provider 缓存 1 天（内容稳定，省配额）
 _TRANSLATE_DICT: dict | None = None
 _TRANSLATE_DICT_MTIME = 0.0
-_TRANSLATE_ORDER = ("local", "deeplx", "mymemory", "google", "dashscope")
+_TRANSLATE_ORDER = ("local", "local_llm", "deeplx", "mymemory", "google", "dashscope")
+_TRANSLATION_DB_PATH = os.path.join(PLUGIN_DIR, "data", "translation_cache.sqlite3")
+_TRANSLATOR_VERSION = "tk-translation-router-v1"
+
+
+class TranslationProviderError(RuntimeError):
+    """可分类的 provider 错误；保留旧调用方可理解的字符串。"""
+
+    def __init__(self, message: str, code: str = "provider_error"):
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass
+class ProviderState:
+    health: str = "unknown"
+    last_success: float = 0.0
+    last_error: str = ""
+    error_code: str = ""
+    success_count: int = 0
+    failure_count: int = 0
+    consecutive_failures: int = 0
+    cooldown_until: float = 0.0
+    latency_ms: float | None = None
+
+
+_PROVIDER_STATES = {name: ProviderState() for name in _TRANSLATE_ORDER}
+_PROVIDER_STATE_LOCK = threading.Lock()
+_PROVIDER_COOLDOWN_SECONDS = {
+    "not_found": 0,
+    "unsupported": 0,
+    "upstream_rate_limit": 480,
+    "quota_exhausted": 3600,
+    "account_arrears": 3600,
+    "authentication_error": 1800,
+    "model_permission_error": 3600,
+    "service_unavailable": 45,
+    "network_error": 60,
+    "quality_rejected": 120,
+    "provider_error": 60,
+}
+_LAST_TRANSLATION_PROVIDER = ""
+
+_TRANSLATION_DB_READY = False
+_TRANSLATION_DB_LOCK = threading.Lock()
+
+
+def _normalize_translation_text(value: str) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold().strip()
+    return re.sub(r"\s+", " ", text)
+
+
+def _ensure_translation_db() -> None:
+    global _TRANSLATION_DB_READY
+    if _TRANSLATION_DB_READY:
+        return
+    with _TRANSLATION_DB_LOCK:
+        if _TRANSLATION_DB_READY:
+            return
+        os.makedirs(os.path.dirname(_TRANSLATION_DB_PATH), exist_ok=True)
+        with sqlite3.connect(_TRANSLATION_DB_PATH, timeout=5) as db:
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS translation_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    source_text TEXT NOT NULL,
+                    normalized_source_text TEXT NOT NULL,
+                    source_language TEXT NOT NULL,
+                    target_language TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    translated_text TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    translator_version TEXT NOT NULL,
+                    user_confirmed INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_translation_cache_lookup
+                ON translation_cache(normalized_source_text, source_language, target_language, provider);
+                CREATE TABLE IF NOT EXISTS prompt_glossary (
+                    glossary_key TEXT PRIMARY KEY,
+                    source_text TEXT NOT NULL,
+                    normalized_source_text TEXT NOT NULL,
+                    source_language TEXT NOT NULL,
+                    target_language TEXT NOT NULL,
+                    translated_text TEXT NOT NULL,
+                    tag_text TEXT NOT NULL DEFAULT '',
+                    timestamp REAL NOT NULL,
+                    translator_version TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_prompt_glossary_lookup
+                ON prompt_glossary(normalized_source_text, source_language, target_language);
+            """)
+        _TRANSLATION_DB_READY = True
+
+
+def _translation_key(text: str, source_language: str, target_language: str, provider: str) -> str:
+    raw = "|".join((_normalize_translation_text(text), source_language.lower(), target_language.lower(), provider.lower()))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _glossary_key(text: str, source_language: str, target_language: str) -> str:
+    raw = "|".join((_normalize_translation_text(text), source_language.lower(), target_language.lower()))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _get_glossary(text: str, source_language: str, target_language: str) -> dict[str, str] | None:
+    _ensure_translation_db()
+    key = _glossary_key(text, source_language, target_language)
+    with sqlite3.connect(_TRANSLATION_DB_PATH, timeout=5) as db:
+        row = db.execute(
+            "SELECT translated_text, tag_text, translator_version FROM prompt_glossary WHERE glossary_key = ?",
+            (key,),
+        ).fetchone()
+    if not row:
+        return None
+    return {"translated_text": str(row[0]), "tag_text": str(row[1] or ""), "translator_version": str(row[2] or "")}
+
+
+def _put_glossary(text: str, source_language: str, target_language: str, translated: str, tag_text: str = "") -> None:
+    _ensure_translation_db()
+    now = time.time()
+    with sqlite3.connect(_TRANSLATION_DB_PATH, timeout=5) as db:
+        db.execute(
+            """INSERT INTO prompt_glossary
+               (glossary_key, source_text, normalized_source_text, source_language, target_language,
+                translated_text, tag_text, timestamp, translator_version)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(glossary_key) DO UPDATE SET
+                 source_text=excluded.source_text, translated_text=excluded.translated_text,
+                 tag_text=excluded.tag_text, timestamp=excluded.timestamp,
+                 translator_version=excluded.translator_version""",
+            (_glossary_key(text, source_language, target_language), text, _normalize_translation_text(text),
+             source_language, target_language, translated, tag_text, now, _TRANSLATOR_VERSION),
+        )
+
+
+def _get_provider_cache(text: str, source_language: str, target_language: str, provider: str) -> str | None:
+    _ensure_translation_db()
+    key = _translation_key(text, source_language, target_language, provider)
+    with sqlite3.connect(_TRANSLATION_DB_PATH, timeout=5) as db:
+        row = db.execute(
+            "SELECT translated_text, timestamp FROM translation_cache WHERE cache_key = ?",
+            (key,),
+        ).fetchone()
+    if not row or float(row[1] or 0) + _TRANSLATION_CACHE_TTL <= time.time():
+        return None
+    return str(row[0])
+
+
+def _put_provider_cache(text: str, source_language: str, target_language: str, provider: str, translated: str) -> None:
+    _ensure_translation_db()
+    now = time.time()
+    with sqlite3.connect(_TRANSLATION_DB_PATH, timeout=5) as db:
+        db.execute(
+            """INSERT INTO translation_cache
+               (cache_key, source_text, normalized_source_text, source_language, target_language,
+                provider, translated_text, timestamp, translator_version, user_confirmed)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+               ON CONFLICT(cache_key) DO UPDATE SET translated_text=excluded.translated_text,
+                 timestamp=excluded.timestamp, translator_version=excluded.translator_version""",
+            (_translation_key(text, source_language, target_language, provider), text,
+             _normalize_translation_text(text), source_language, target_language, provider,
+             translated, now, _TRANSLATOR_VERSION),
+        )
 
 
 def _get_env(name: str) -> str | None:
@@ -741,23 +1175,207 @@ def _get_env(name: str) -> str | None:
         return None
 
 
+def _provider_configured(provider: str) -> bool:
+    if provider == "local":
+        return bool(_load_translate_dict())
+    if provider == "local_llm":
+        from .anima_local_llm import is_ready as _llm_ready
+        return _llm_ready()
+    if provider == "deeplx":
+        exe = os.environ.get("DEEPLX_EXE") or _DEEPLX_MANAGER.exe
+        return os.path.isfile(exe)
+    if provider == "dashscope":
+        return bool(_get_env("DASHSCOPE_API_KEY"))
+    # MyMemory/Google are keyless adapters; their health is learned on request.
+    return True
+
+
+def _classify_provider_error(error: BaseException) -> str:
+    message = str(error).lower()
+    if "arrearage" in message or "overdue" in message or "欠费" in message:
+        return "account_arrears"
+    if "unpurchased" in message or "accessdenied" in message or "model permission" in message or "无权限" in message:
+        return "model_permission_error"
+    if "quota" in message or "额度" in message or "all available free" in message:
+        return "quota_exhausted"
+    if "429" in message or "too many requests" in message or "rate limit" in message or "限流" in message:
+        return "upstream_rate_limit"
+    if "401" in message or "unauthorized" in message or "api key" in message or "鉴权" in message:
+        return "authentication_error"
+    if "未收录" in message or "not installed" in message or "unsupported" in message or "不支持" in message:
+        return "not_found" if "未收录" in message or "not installed" in message else "unsupported"
+    if "未启动" in message or "not found" in message or "cannot connect" in message or "connection refused" in message:
+        return "service_unavailable"
+    if "timeout" in message or "timed out" in message or "network" in message or "连接失败" in message:
+        return "network_error"
+    if "quality" in message or "译文质量" in message:
+        return "quality_rejected"
+    code = getattr(error, "code", "")
+    if code:
+        if str(code).endswith("_429"):
+            return "upstream_rate_limit"
+        if str(code).endswith("_401"):
+            return "authentication_error"
+        if str(code).endswith("_403"):
+            return "model_permission_error"
+        if str(code).endswith("_408") or re.search(r"_5\d\d$", str(code)):
+            return "network_error"
+        return str(code)
+    return "provider_error"
+
+
+def _provider_record_success(provider: str, latency_ms: float) -> None:
+    global _LAST_TRANSLATION_PROVIDER
+    now = time.time()
+    with _PROVIDER_STATE_LOCK:
+        state = _PROVIDER_STATES.setdefault(provider, ProviderState())
+        state.health = "healthy"
+        state.last_success = now
+        state.last_error = ""
+        state.error_code = ""
+        state.success_count += 1
+        state.consecutive_failures = 0
+        state.cooldown_until = 0.0
+        state.latency_ms = round(latency_ms, 1)
+        _LAST_TRANSLATION_PROVIDER = provider
+
+
+def _provider_record_failure(provider: str, error: BaseException, latency_ms: float) -> str:
+    code = _classify_provider_error(error)
+    cooldown = _PROVIDER_COOLDOWN_SECONDS.get(code, 60)
+    now = time.time()
+    with _PROVIDER_STATE_LOCK:
+        state = _PROVIDER_STATES.setdefault(provider, ProviderState())
+        state.health = "cooldown" if cooldown > 0 else "unhealthy"
+        state.last_error = str(error)[:400]
+        state.error_code = code
+        state.failure_count += 1
+        state.consecutive_failures += 1
+        state.cooldown_until = now + cooldown
+        state.latency_ms = round(latency_ms, 1)
+    return code
+
+
+def _provider_is_cooling(provider: str) -> bool:
+    with _PROVIDER_STATE_LOCK:
+        state = _PROVIDER_STATES.setdefault(provider, ProviderState())
+        return state.cooldown_until > time.time()
+
+
+def _provider_snapshot(provider: str) -> dict[str, object]:
+    with _PROVIDER_STATE_LOCK:
+        state = _PROVIDER_STATES.setdefault(provider, ProviderState())
+        snapshot = {
+            "health": state.health,
+            "configured": _provider_configured(provider),
+            "last_success": state.last_success or None,
+            "last_error": state.last_error,
+            "error_code": state.error_code,
+            "success_count": state.success_count,
+            "failure_count": state.failure_count,
+            "success_rate": round(state.success_count / max(1, state.success_count + state.failure_count), 3),
+            "consecutive_failures": state.consecutive_failures,
+            "cooldown_until": state.cooldown_until or None,
+            "cooldown_seconds": max(0, int(state.cooldown_until - time.time())),
+            "latency_ms": state.latency_ms,
+        }
+    if provider == "deeplx":
+        manager = _DEEPLX_MANAGER.status_sync()
+        snapshot["manager"] = manager
+        if manager["listening"] and snapshot["health"] == "unknown":
+            snapshot["health"] = "healthy"
+        elif not manager["listening"] and snapshot["error_code"] == "":
+            snapshot["health"] = "service_unavailable"
+            snapshot["error_code"] = "service_unavailable"
+            snapshot["last_error"] = "DeepLX 未监听"
+    return snapshot
+
+
+def _provider_order_for(source: str) -> list[str]:
+    if source != "auto":
+        return [source]
+    now = time.time()
+    def sort_key(provider: str) -> tuple:
+        with _PROVIDER_STATE_LOCK:
+            state = _PROVIDER_STATES.setdefault(provider, ProviderState())
+            cooling = state.cooldown_until > now
+            health_rank = {"healthy": 0, "unknown": 1, "service_unavailable": 3, "cooldown": 4}.get(state.health, 2)
+            latency = state.latency_ms if state.latency_ms is not None else 99999
+            failures = state.consecutive_failures
+            total = state.success_count + state.failure_count
+            success_rate = state.success_count / max(1, total)
+        # 本地词典与手动启用模型优先（命中即权威且质量可控）：
+        # 词典 > 本地 LLM（已加载）> 网络源；health 只在其内部比较。
+        local_rank = 0 if provider == "local" else (1 if provider == "local_llm" else 2)
+        return (cooling, local_rank, health_rank, -success_rate, failures, latency, _TRANSLATE_ORDER.index(provider))
+    return sorted((p for p in _TRANSLATE_ORDER if _provider_configured(p)), key=sort_key)
+
+
+def _translation_quality(source_text: str, translated_text: str, source_lang: str, target_lang: str) -> dict[str, object]:
+    source = str(source_text or "").strip()
+    output = str(translated_text or "").strip()
+    compact_source = re.sub(r"[\s\W_]+", "", unicodedata.normalize("NFKC", source).casefold())
+    compact_output = re.sub(r"[\s\W_]+", "", unicodedata.normalize("NFKC", output).casefold())
+    cjk = sum(1 for char in output if "\u4e00" <= char <= "\u9fff")
+    latin = sum(1 for char in output if ("a" <= char.lower() <= "z"))
+    letters = cjk + latin
+    cjk_ratio = cjk / max(1, len(output.replace(" ", "")))
+    latin_ratio = latin / max(1, letters)
+    length_ratio = len(output) / max(1, len(source))
+    fatal: list[str] = []
+    warnings: list[str] = []
+    low = output.casefold()
+    if not output:
+        fatal.append("empty_output")
+    if re.match(r"^\s*(?:<!doctype|<html|<head|\{\s*[\"']?(?:error|message|status)|http\s*[/]?\d|502\b|429\b)", low):
+        fatal.append("error_page_or_http_text")
+    if compact_source and compact_source == compact_output and source_lang.casefold() != target_lang.casefold():
+        fatal.append("same_as_input")
+    target_is_en = target_lang.casefold().startswith("en")
+    target_is_zh = target_lang.casefold().startswith("zh")
+    if target_is_en and cjk_ratio > 0.20:
+        fatal.append("cjk_residue")
+    if target_is_en and output and latin_ratio < 0.18:
+        warnings.append("low_english_ratio")
+    if target_is_zh and output and cjk_ratio < 0.12:
+        warnings.append("low_chinese_ratio")
+    if len(source) >= 4 and (length_ratio < 0.05 or length_ratio > 12):
+        warnings.append("length_anomaly")
+    score = 1.0
+    score -= 0.55 * len(fatal)
+    score -= 0.12 * len(warnings)
+    return {
+        "status": "rejected" if fatal else ("warning" if warnings else "ok"),
+        "score": round(max(0.0, min(1.0, score)), 3),
+        "issues": fatal,
+        "warnings": warnings,
+        "cjk_ratio": round(cjk_ratio, 3),
+        "latin_ratio": round(latin_ratio, 3),
+        "length_ratio": round(length_ratio, 3),
+    }
+
+
+def _quality_error(quality: dict[str, object]) -> TranslationProviderError:
+    issues = ", ".join(str(item) for item in quality.get("issues", [])) or "quality_check"
+    return TranslationProviderError(f"译文质量检查未通过: {issues}", "quality_rejected")
+
+
 def _load_translate_dict() -> dict:
-    """本地 Danbooru 标签中文字典（data/danbooru_tags_zh.json，mtime 指纹热重载）。"""
+    """本地 Danbooru 标签中文字典（data/danbooru_tags_zh.json，mtime+size 指纹热重载）。"""
     global _TRANSLATE_DICT, _TRANSLATE_DICT_MTIME
-    if _TRANSLATE_DICT is not None:
-        return _TRANSLATE_DICT
     for p in (
         os.path.join(PLUGIN_DIR, "data", "danbooru_tags_zh.json"),
         os.path.join(PLUGIN_DIR, "danbooru_tags_zh.json"),
     ):
         try:
             mtime = os.path.getmtime(p)
-            if _TRANSLATE_DICT is not None and mtime == _TRANSLATE_DICT_MTIME:
+            size = os.path.getsize(p)
+            if _TRANSLATE_DICT is not None and (mtime, size) == _TRANSLATE_DICT_MTIME:
                 return _TRANSLATE_DICT
             with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
             d = {str(k).strip().lower(): str(v) for k, v in data.items() if v}
-            _TRANSLATE_DICT, _TRANSLATE_DICT_MTIME = d, mtime
+            _TRANSLATE_DICT, _TRANSLATE_DICT_MTIME = d, (mtime, size)
             return d
         except OSError:
             continue
@@ -782,33 +1400,67 @@ async def _translate_via(source: str, text: str, src_lang: str, dst_lang: str) -
     if source == "local":
         hit = _load_translate_dict().get(text.strip().lower())
         if not hit:
-            raise LookupError("本地词典未收录该词")
+            raise TranslationProviderError("本地词典未收录该词", "not_found")
         return hit
 
+    if source == "local_llm":
+        # 手动启用的本地翻译模型（TranslateGemma / NLLB，anima_local_llm.py）。
+        # 推理放线程池，避免阻塞 ComfyUI 事件循环。
+        from .anima_local_llm import translate as _llm_translate
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None, lambda: _llm_translate(text[:2000], src_lang, dst_lang)
+            )
+        except Exception as error:
+            raise TranslationProviderError(f"本地 LLM 失败: {error}", "provider_error") from error
+        if result and str(result).strip():
+            return str(result).strip()
+        raise RuntimeError("本地 LLM 返回空")
+
     if source == "deeplx":
+        if not await _ensure_deeplx_started():
+            raise RuntimeError("DeepLX 未启动且未找到可用的本地程序")
         sl, tl = _deepl_langs(f"{src_lang}|{dst_lang}")
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as s:
                 async with s.post("http://127.0.0.1:1188/translate",
                                   json={"text": text[:2000], "source_lang": sl, "target_lang": tl}) as r:
-                    body = await r.json()
+                    raw = await r.text()
+                    try:
+                        body = json.loads(raw)
+                    except (TypeError, ValueError):
+                        body = {}
         except Exception as e:
-            raise RuntimeError(f"DeepLX 连接失败: {e}") from e
+            raise TranslationProviderError(f"DeepLX 连接失败: {e}", "service_unavailable") from e
+        if r.status != 200:
+            raise TranslationProviderError(f"DeepLX 上游 HTTP {r.status}: {raw[:160]}", f"upstream_http_{r.status}")
         if body.get("code") == 200 and body.get("data"):
             return str(body["data"])
-        raise RuntimeError(f"DeepLX 返回 {body.get('code', '?')}")
+        code = body.get("code", "?")
+        raise TranslationProviderError(f"DeepLX 上游返回 {code}: {raw[:160]}", f"upstream_http_{code}")
 
     if source == "mymemory":
         import urllib.parse
         url = ("https://api.mymemory.translated.net/get?q="
                + urllib.parse.quote(text[:500])
                + "&langpair=" + urllib.parse.quote(f"{src_lang}|{dst_lang}"))
+        email = _get_env("MYMEMORY_EMAIL")
+        if email:
+            # 匿名池经常被耗尽；de= 邮箱参数走该邮箱独立免费额度（上限更高）
+            url += "&de=" + urllib.parse.quote(email)
         session = await _get_session()
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as r:
-            body = await r.json()
+            raw = await r.text()
+            try:
+                body = json.loads(raw)
+            except (TypeError, ValueError):
+                body = {}
+        if r.status != 200:
+            raise TranslationProviderError(f"MyMemory HTTP {r.status}: {raw[:160]}", f"upstream_http_{r.status}")
         if body.get("responseStatus") == 200 and body.get("responseData", {}).get("translatedText"):
             return str(body["responseData"]["translatedText"])
-        raise RuntimeError(body.get("responseDetails") or f"MyMemory 状态 {body.get('responseStatus')}")
+        raise TranslationProviderError(body.get("responseDetails") or f"MyMemory 状态 {body.get('responseStatus')}: {raw[:160]}", f"upstream_http_{body.get('responseStatus', '?')}")
 
     if source == "google":
         import urllib.parse
@@ -816,7 +1468,13 @@ async def _translate_via(source: str, text: str, src_lang: str, dst_lang: str) -
                f"&sl={src_lang}&tl={dst_lang}&dt=t&q=" + urllib.parse.quote(text[:2000]))
         session = await _get_session()
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as r:
-            data = await r.json()
+            raw = await r.text()
+            try:
+                data = json.loads(raw)
+            except (TypeError, ValueError):
+                data = []
+        if r.status != 200:
+            raise TranslationProviderError(f"Google HTTP {r.status}: {raw[:160]}", f"upstream_http_{r.status}")
         parts = []
         if isinstance(data, list) and data and isinstance(data[0], list):
             for row in data[0]:
@@ -824,7 +1482,7 @@ async def _translate_via(source: str, text: str, src_lang: str, dst_lang: str) -
                     parts.append(str(row[0]))
         if parts:
             return "".join(parts)
-        raise RuntimeError("Google 返回空")
+        raise TranslationProviderError("Google 返回空", "empty_output")
 
     if source == "dashscope":
         key = _get_env("DASHSCOPE_API_KEY")
@@ -837,8 +1495,10 @@ async def _translate_via(source: str, text: str, src_lang: str, dst_lang: str) -
             "model": model,
             "messages": [
                 {"role": "system", "content":
-                 "你是翻译助手。把用户给出的英文图片标签/提示词翻译成简体中文，"
-                 "保持原有结构（逗号分隔、括号、下划线等），只输出译文，不要解释。"},
+                 ("你是翻译助手。把用户给出的中文自然语言或图片标签翻译成英文，"
+                  "保持原有结构，只输出译文，不要解释。" if dst_lang.lower().startswith("en") else
+                  "你是翻译助手。把用户给出的英文图片标签/提示词翻译成简体中文，"
+                  "保持原有结构（逗号分隔、括号、下划线等），只输出译文，不要解释。")},
                 {"role": "user", "content": text[:4000]},
             ],
             "temperature": 0.1,
@@ -849,56 +1509,205 @@ async def _translate_via(source: str, text: str, src_lang: str, dst_lang: str) -
                 async with s.post(base + "/chat/completions", json=payload,
                                   headers={"Authorization": "Bearer " + key,
                                            "Content-Type": "application/json"}) as r:
-                    body = await r.json()
+                    raw = await r.text()
+                    try:
+                        body = json.loads(raw)
+                    except (TypeError, ValueError):
+                        body = {}
         except Exception as e:
-            raise RuntimeError(f"DashScope 连接失败: {e}") from e
+            raise TranslationProviderError(f"DashScope 连接失败: {e}", "network_error") from e
+        if r.status != 200:
+            detail = body.get("error") if isinstance(body, dict) else raw[:160]
+            if isinstance(detail, dict):
+                detail = detail.get("message") or detail.get("code") or detail
+            raise TranslationProviderError(f"DashScope HTTP {r.status}: {detail}", f"upstream_http_{r.status}")
         content = ((body.get("choices") or [{}])[0].get("message") or {}).get("content")
         if content:
             return str(content).strip()
-        raise RuntimeError("DashScope 返回空")
+        raise TranslationProviderError("DashScope 返回空", "empty_output")
 
     raise RuntimeError(f"未知翻译源: {source}")
 
 
+_TAG_TRANSLATION_TRAILING = " \t.,;:!?，。；：、…·"
+
+
+def _normalize_tag_translation(translated: str) -> str:
+    """译文输出规范化（Prompt Cards 标签风格）：全小写、首字母不大写、末尾统一英文逗号。"""
+    text = (translated or "").strip()
+    if not text:
+        return translated or ""
+    text = text.lower().rstrip(_TAG_TRANSLATION_TRAILING)
+    return text + ","
+
+
+class TranslationRouter:
+    """统一翻译入口：缓存、provider 选择、QA、熔断和可解释错误都在此处。"""
+
+    @staticmethod
+    def _effective_languages(source_text: str, source_language: str, target_language: str) -> tuple[str, str]:
+        src = source_language.strip().lower() or "auto"
+        dst = target_language.strip().lower() or "en"
+        if src == "auto":
+            src = "zh" if any("\u4e00" <= char <= "\u9fff" for char in source_text) else "en"
+        return src, dst.split("-", 1)[0]
+
+    @staticmethod
+    def _success(source_text: str, translated: str, source_language: str, target_language: str,
+                 provider: str, cache_type: str, attempts: dict[str, object] | None = None) -> dict[str, object]:
+        translated = _normalize_tag_translation(translated)
+        quality = _translation_quality(source_text, translated, source_language, target_language)
+        return {
+            "ok": True,
+            "translatedText": translated,
+            "source": provider,  # 兼容旧前端字段
+            "provider": provider,
+            "cacheType": cache_type,
+            "fromCache": cache_type != "provider_call",
+            "quality": quality,
+            "attempts": attempts or {},
+        }
+
+    async def translate(self, text: str, langpair: str, want: str = "auto") -> dict[str, object]:
+        source_text = str(text or "").strip()
+        raw_src, _, raw_dst = (langpair or "en|zh-CN").partition("|")
+        source_language, target_language = self._effective_languages(source_text, raw_src or "auto", raw_dst or "en")
+        glossary = _get_glossary(source_text, source_language, target_language)
+        if glossary:
+            result = self._success(source_text, glossary["translated_text"], source_language, target_language, "user_glossary", "glossary")
+            result["tagText"] = glossary["tag_text"]
+            return result
+
+        attempts: dict[str, object] = {}
+        order = _provider_order_for(want)
+        if not order:
+            return {"ok": False, "error": f"翻译源 {want} 未配置或不可用", "error_code": "not_configured", "provider": want,
+                    "attempts": attempts, "provider_status": _provider_snapshot(want) if want in _PROVIDER_STATES else None, "canUseAuto": want != "auto"}
+        for provider in order:
+            if _provider_is_cooling(provider):
+                snapshot = _provider_snapshot(provider)
+                attempts[provider] = {
+                    "status": "skipped",
+                    "error_code": "cooldown",
+                    "cooldown_seconds": snapshot.get("cooldown_seconds", 0),
+                }
+                continue
+            if not _provider_configured(provider):
+                attempts[provider] = {"status": "skipped", "error_code": "not_configured"}
+                if want != "auto":
+                    break
+                continue
+            # local（本地词典）零成本且词典热重载后应立即生效，不读不写 provider cache，
+            # 否则旧词典时代的缓存译文会永久锁死新词条。
+            # local_llm（本地模型）同样不读不写：模型延迟 ~5ms，缓存零收益；且 NLLB 时代
+            # 曾以同名 provider 写入劣质译文（"he was tied to his legs,"），会毒化 gemma/qwen 实时输出。
+            cached = _get_provider_cache(source_text, source_language, target_language, provider) if provider not in ("local", "local_llm") else None
+            if cached:
+                quality = _translation_quality(source_text, cached, source_language, target_language)
+                if quality["status"] != "rejected":
+                    _provider_record_success(provider, 0.0)
+                    return self._success(source_text, cached, source_language, target_language, provider, "provider_cache", attempts)
+            started = time.perf_counter()
+            try:
+                translated = await _translate_via(provider, source_text, source_language, target_language)
+                quality = _translation_quality(source_text, translated, source_language, target_language)
+                if quality["status"] == "rejected":
+                    raise _quality_error(quality)
+                latency = (time.perf_counter() - started) * 1000
+                if provider not in ("local", "local_llm"):
+                    _put_provider_cache(source_text, source_language, target_language, provider, translated.strip())
+                _provider_record_success(provider, latency)
+                return self._success(source_text, translated.strip(), source_language, target_language, provider, "provider_call", attempts)
+            except Exception as error:
+                latency = (time.perf_counter() - started) * 1000
+                error_code = _provider_record_failure(provider, error, latency)
+                attempts[provider] = {
+                    "status": "failed",
+                    "error_code": error_code,
+                    "error": str(error)[:400],
+                    "latency_ms": round(latency, 1),
+                }
+                if want != "auto":
+                    break
+        return {
+            "ok": False,
+            "error": "所有翻译源均失败" if want == "auto" else f"翻译源 {want} 失败",
+            "error_code": next((v.get("error_code") for v in attempts.values() if isinstance(v, dict) and v.get("error_code")), "provider_error"),
+            "provider": want,
+            "attempts": attempts,
+            "provider_status": _provider_snapshot(want) if want != "auto" else None,
+            "canUseAuto": want != "auto",
+        }
+
+
+_TRANSLATION_ROUTER = TranslationRouter()
+
+
+@PromptServer.instance.routes.get("/anima/translate/status")
+async def anima_translate_status(request):
+    result = {
+        "providers": {provider: _provider_snapshot(provider) for provider in _TRANSLATE_ORDER},
+        "actual_provider": _LAST_TRANSLATION_PROVIDER or None,
+        "auto_order": _provider_order_for("auto"),
+        "deeplx": _DEEPLX_MANAGER.status_sync(),
+    }
+    try:
+        from .anima_local_llm import state_snapshot as _llm_state
+        result["local_llm"] = _llm_state()
+    except Exception:
+        pass
+    return web.json_response(result)
+
+
+@PromptServer.instance.routes.post("/anima/translate/glossary")
+async def anima_translate_glossary_save(request):
+    try:
+        body = await request.json()
+    except (ValueError, AttributeError):
+        return web.json_response({"ok": False, "error": "请求体必须是 JSON"}, status=400)
+    source_text = str(body.get("source_text") or "").strip() if isinstance(body, dict) else ""
+    translated_text = str(body.get("translated_text") or "").strip() if isinstance(body, dict) else ""
+    tag_text = str(body.get("tag_text") or "").strip() if isinstance(body, dict) else ""
+    if not source_text or not translated_text:
+        return web.json_response({"ok": False, "error": "source_text 和 translated_text 不能为空"}, status=400)
+    source_language = str(body.get("source_language") or ("zh" if any("\u4e00" <= c <= "\u9fff" for c in source_text) else "en")).strip().lower()
+    target_language = str(body.get("target_language") or "en").strip().lower().split("-", 1)[0]
+    if len(source_text) > 1000 or len(translated_text) > 2000 or len(tag_text) > 2000:
+        return web.json_response({"ok": False, "error": "词典内容过长"}, status=400)
+    _put_glossary(source_text, source_language, target_language, translated_text, tag_text)
+    return web.json_response({"ok": True, "source_text": source_text, "translated_text": translated_text, "tag_text": tag_text})
+
+
+@PromptServer.instance.routes.get("/anima/translate/glossary")
+async def anima_translate_glossary_get(request):
+    source_text = str(request.query.get("q") or "").strip()
+    if not source_text:
+        return web.json_response({"ok": True, "entry": None})
+    source_language = str(request.query.get("source_language") or ("zh" if any("\u4e00" <= c <= "\u9fff" for c in source_text) else "en")).strip().lower()
+    target_language = str(request.query.get("target_language") or "en").strip().lower().split("-", 1)[0]
+    return web.json_response({"ok": True, "entry": _get_glossary(source_text, source_language, target_language)})
+
+
+@PromptServer.instance.routes.post("/anima/translate/deeplx/restart")
+async def anima_translate_deeplx_restart(request):
+    return web.json_response(await _DEEPLX_MANAGER.restart())
+
+
 @PromptServer.instance.routes.get("/api/translate")
 async def proxy_translate(request):
-    """多源翻译。参数：q 文本；langpair 如 en|zh-CN；source=auto|local|deeplx|mymemory|google|dashscope
-    （缺省 auto=按序回退直到成功）；strict=1 时只用指定源不回退（调试用）。
+    """多源翻译。参数：q 文本；langpair 如 en|zh-CN；source=auto|local|local_llm|deeplx|mymemory|google|dashscope
+    （缺省 auto=按健康度/延迟动态回退；指定 source 始终只用该源）。
     返回 {ok, translatedText, source, attempts}。"""
     q = (request.query.get("q") or "").strip()
     if not q:
         return web.json_response({"ok": False, "error": "缺少 q 参数"}, status=400)
     langpair = request.query.get("langpair") or "en|zh-CN"
     want = (request.query.get("source") or "auto").strip().lower() or "auto"
-    strict = request.query.get("strict") == "1"
     if want != "auto" and want not in _TRANSLATE_ORDER:
         return web.json_response({"ok": False, "error": f"未知翻译源: {want}"}, status=400)
     src_lang, dst_lang = langpair.split("|", 1) if "|" in langpair else ("en", "zh-CN")
-    order = (want,) if want != "auto" else _TRANSLATE_ORDER
-
-    attempts: dict = {}
-    for source in order:
-        ck = f"{source}|{q}"
-        cached = _TRANSLATE_CACHE.get(ck)
-        if cached and cached[0] > time.time():
-            return web.json_response({"ok": True, "translatedText": cached[1], "source": source,
-                                      "fromCache": True, "attempts": attempts})
-        try:
-            out = await _translate_via(source, q, src_lang, dst_lang)
-            if out and out.strip():
-                _TRANSLATE_CACHE[ck] = (time.time() + _TRANSLATE_CACHE_TTL, out.strip())
-                _cleanup_cache(_TRANSLATE_CACHE, _TRANSLATE_CACHE_TTL)
-                return web.json_response({"ok": True, "translatedText": out.strip(), "source": source,
-                                          "fromCache": False, "attempts": attempts})
-        except Exception as e:
-            attempts[source] = str(e)
-            continue
-    if strict:
-        return web.json_response({"ok": False, "error": attempts.get(want, "翻译失败"),
-                                  "attempts": attempts}, status=502)
-    return web.json_response({"ok": False,
-                              "error": "所有翻译源均失败: " + "; ".join(f"{k}: {v}" for k, v in attempts.items()),
-                              "attempts": attempts}, status=502)
+    result = await _TRANSLATION_ROUTER.translate(q, langpair, want)
+    return web.json_response(result, status=200 if result.get("ok") else 502)
 
 
 # ─── LoRA metadata persistence (categories / favorite / pinned) ───

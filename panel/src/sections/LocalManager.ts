@@ -819,20 +819,27 @@ function bindLocalEvents() {
     renderLocalView()
   })
 
-  // 从 C 站链接批量下载 LoRA（复用后端 /anima/lora/download，支持 modelId 或 modelVersionId）
+  // 从 C 站链接批量下载模型（复用后端 /anima/lora/download，支持 LoRA/Checkpoint/VAE 等）
   $$('localUrlBtn')?.addEventListener('click', () => {
     const overlay = document.createElement('div')
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(2,2,3,0.72);z-index:99999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);'
     const modal = document.createElement('div')
     modal.className = 'ld-modal'
-    modal.innerHTML = `<h3>🔗 从 C 站链接批量下载 LoRA</h3>
-      <div class="ld-sub">每行一个链接（civitai.com/models/...），可带可不带 modelVersionId</div>
+    modal.innerHTML = `<h3>🔗 从 C 站链接批量下载模型</h3>
+      <div class="ld-sub">支持 LoRA、Checkpoint、VAE 等模型；每行一个链接，可带可不带 modelVersionId</div>
       <textarea class="ld-urls" rows="6" placeholder="https://civitai.com/models/2658471/denia-wuthering-wavesanima&#10;https://civitai.com/models/2529695/xxx?modelVersionId=3094753"></textarea>
       <div style="display:flex;gap:6px;margin-top:8px;">
         <input class="ld-token" type="password" value="${escAttr(localStorage.getItem('anima_civitai_token') || '')}" placeholder="C 站 API Key（只读权限即可，下载需登录的模型用）">
         <button class="ld-tokenlink" title="打开 C 站账号设置（账号 → API Keys 生成，选只读权限）">${icon('key', 12)} 生成 API Key</button>
       </div>
       <div class="ld-sub" style="margin-top:4px;">只读权限的 API Key 即可下载需登录的模型</div>
+      <div class="ld-target-row">
+        <label for="ld-target">保存到</label>
+        <select id="ld-target" class="ld-target" title="选择 ComfyUI 已注册的模型目录">
+          <option value="auto">自动（按 C 站模型类型）</option>
+        </select>
+      </div>
+      <div class="ld-sub ld-target-tip">自动模式：Checkpoint → models/checkpoints，LoRA → models/loras；也可选择其他已注册目录。</div>
       <div class="ld-list"></div>
       <div class="ld-log"></div>
       <div class="ld-actions">
@@ -848,10 +855,24 @@ function bindLocalEvents() {
     overlay.addEventListener('click', (e) => { if (e.target === overlay && downOnOverlay) close() })
     modal.querySelector('.ld-cancel')?.addEventListener('click', close)
     modal.querySelector('.ld-tokenlink')?.addEventListener('click', () => window.open('https://civitai.com/user/account', '_blank'))
+    const targetSelect = modal.querySelector('#ld-target') as HTMLSelectElement
+    const targetTip = modal.querySelector('.ld-target-tip') as HTMLElement
+    const savedTarget = (() => { try { return localStorage.getItem('anima_civitai_download_target') || 'auto' } catch { return 'auto' } })()
+    fetch('/anima/lora/download/targets')
+      .then(r => r.json())
+      .then(data => {
+        const targets = Array.isArray(data?.targets) ? data.targets : []
+        if (!targets.length) return
+        targetSelect.replaceChildren(...targets.map((target: { label: string; key: string }) => new Option(target.label, target.key)))
+        targetSelect.value = targets.some((target: { key: string }) => target.key === savedTarget) ? savedTarget : 'auto'
+      })
+      .catch(() => { targetTip.textContent = '目录列表加载失败，将使用自动目录；请确认 ComfyUI 后端在线。' })
     modal.querySelector('.ld-start')?.addEventListener('click', async () => {
       const ta = modal.querySelector('.ld-urls') as HTMLTextAreaElement
       const urls = (ta?.value || '').split('\n').map(s => s.trim()).filter(Boolean)
       if (!urls.length) { showToast('请输入链接'); return }
+      const targetKey = targetSelect?.value || 'auto'
+      try { localStorage.setItem('anima_civitai_download_target', targetKey) } catch { /* ignore */ }
       const logEl = modal.querySelector('.ld-log') as HTMLElement
       const listEl = modal.querySelector('.ld-list') as HTMLElement
       const startBtn = modal.querySelector('.ld-start') as HTMLButtonElement
@@ -862,6 +883,7 @@ function bindLocalEvents() {
         const mm = url.match(/civitai\.com\/models\/(\d+)/)
         const qs = vm ? `versionId=${vm[1]}` : mm ? `modelId=${mm[1]}` : null
         if (!qs) { fail++; logEl.textContent += `✗ 无法解析: ${url.slice(0, 50)}\n`; continue }
+        const downloadQs = `${qs}&target=${encodeURIComponent(targetKey)}`
         const progressId = 'dl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
 
         const row = document.createElement('div')
@@ -914,7 +936,7 @@ function bindLocalEvents() {
           const tokenVal = (modal.querySelector('.ld-token') as HTMLInputElement)?.value?.trim() || ''
           if (tokenVal) { try { localStorage.setItem('anima_civitai_token', tokenVal) } catch { /* ignore */ } }
           const tokenQ = tokenVal ? `&token=${encodeURIComponent(tokenVal)}` : ''
-          fetch(`/anima/lora/download?${qs}&progressId=${progressId}${tokenQ}`)
+          fetch(`/anima/lora/download?${downloadQs}&progressId=${progressId}${tokenQ}`)
             .then((r) => r.json())
             .then((j) => {
               stop()

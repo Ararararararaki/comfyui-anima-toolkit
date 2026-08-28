@@ -4458,6 +4458,16 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 
 .ld-tokenlink:hover { border-color: var(--accent); }
 
+.ld-target-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+
+.ld-target-row label { flex: 0 0 auto; color: var(--text2); font-size: 11px; }
+
+.ld-target { flex: 1; min-width: 0; padding: 7px 8px; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font-size: 10px; outline: none; }
+
+.ld-target:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+
+.ld-target-tip { margin-top: 4px; margin-bottom: 0; }
+
 .ld-list { margin-top: 8px; max-height: 130px; overflow-y: auto; }
 
 .ld-log { margin-top: 8px; max-height: 60px; overflow-y: auto; font-size: 10px; color: var(--text3); white-space: pre-wrap; }

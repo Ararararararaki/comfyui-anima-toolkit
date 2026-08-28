@@ -200,7 +200,7 @@ export class GalleryFilterControls {
     const settings = this.readSettings();
     const draft = new Set(settings.rating);
     const root = document.createElement("div");
-    root.className = "adg-menu-section";
+    root.className = "adg-menu-section adg-rating-menu-content";
     const title = document.createElement("div");
     title.className = "adg-menu-title";
     title.textContent = "图片分级（可多选）";
@@ -242,12 +242,13 @@ export class GalleryFilterControls {
     const settings = this.readSettings();
     const draft = { ...settings.filters };
     const root = document.createElement("div");
-    root.className = "adg-menu-section";
+    root.className = "adg-menu-section adg-filter-menu-content";
     const title = document.createElement("div");
     title.className = "adg-menu-title";
     title.textContent = "高级筛选";
-    root.append(
-      title,
+    const filterGrid = document.createElement("div");
+    filterGrid.className = "adg-filter-grid";
+    filterGrid.append(
       this.createCascadeRow({
         label: "时间",
         value: draft.age || draft.ageDays,
@@ -267,6 +268,7 @@ export class GalleryFilterControls {
       this.createCascadeRow({ label: "文件类型", value: draft.filetype, options: FILETYPE_OPTIONS, onSelect: (value) => { draft.filetype = value; } }),
       this.createCascadeRow({ label: "排序", value: draft.order, options: ORDER_OPTIONS, onSelect: (value) => { draft.order = value; } }),
     );
+    root.append(title, filterGrid);
     // 一键快捷预设：直接应用整组筛选 + 搜索
     const presets = document.createElement("div");
     presets.className = "adg-quick-presets";

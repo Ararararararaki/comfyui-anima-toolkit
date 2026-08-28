@@ -28,6 +28,104 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
   const FREE_METATAGS = new Set(["rating", "status", "is", "age", "date", "id", "limit", "score", "downvotes", "favcount", "width", "height", "ratio", "mpixels", "filesize", "filetype", "duration", "md5", "pixiv_id", "pixiv", "parent", "child", "upvote", "embedded", "tagcount"]);
   const DANBOORU_TAG_LIMIT = 2;
   const ORDER_LABELS = { score: "评分", favcount: "收藏", random: "随机", rank: "综合" };
+  const PROMPT_CATEGORY_ORDER = Object.freeze(["artist", "copyright", "character", "general", "meta"]);
+  const PROMPT_CATEGORY_LABELS = Object.freeze({
+    artist: "画师",
+    copyright: "版权/作品",
+    character: "角色",
+    general: "通用",
+    meta: "元数据",
+  });
+  // 保持旧工作流默认结果：角色 → 版权/作品 → 通用。
+  const DEFAULT_PROMPT_OUTPUT = Object.freeze({
+    categories: ["character", "copyright", "general"],
+    replaceUnderscores: true,
+    escapeBrackets: false,
+  });
+  const DEFAULT_PROMPT_LIBRARY_CATEGORIES = Object.freeze([
+    { id: "uncategorized", name: "未分类", icon: "", sortOrder: 0 },
+    { id: "cat_faces", name: "人物", icon: "", sortOrder: 1 },
+    { id: "cat_style", name: "画师风格", icon: "", sortOrder: 2 },
+    { id: "cat_env", name: "背景环境", icon: "", sortOrder: 3 },
+    { id: "cat_light", name: "光影氛围", icon: "", sortOrder: 4 },
+    { id: "cat_detail", name: "细节增强", icon: "", sortOrder: 5 },
+    { id: "cat_fav", name: "常用", icon: "", sortOrder: 6 },
+  ]);
+
+  function normalizePromptOutputSettings(value) {
+    const source = value && typeof value === "object" ? value : {};
+    const categories = Array.isArray(source.categories)
+      ? [...new Set(source.categories.map(String).filter((name) => PROMPT_CATEGORY_ORDER.includes(name)))]
+      : [];
+    return {
+      categories: categories.length ? categories : [...DEFAULT_PROMPT_OUTPUT.categories],
+      replaceUnderscores: source.replaceUnderscores !== false,
+      escapeBrackets: source.escapeBrackets === true,
+    };
+  }
+
+  function formatPromptTag(tag, settings) {
+    let formatted = String(tag || "").trim();
+    if (settings.replaceUnderscores) formatted = formatted.replace(/_/g, " ");
+    if (settings.escapeBrackets) {
+      formatted = formatted.replace(/\\([()])/g, "$1");
+      formatted = formatted.replaceAll("(", "\\(").replaceAll(")", "\\)");
+    }
+    return formatted;
+  }
+
+  function promptCardKey(value) {
+    return String(value || "")
+      .replace(/\\([()])/g, "$1")
+      .replace(/_/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  }
+
+  function splitPromptParts(value) {
+    return [...new Set(String(value || "")
+      .split(/[、，,;；\n]/)
+      .map((part) => part.trim())
+      .filter(Boolean))];
+  }
+
+  function openPromptLibraryDB() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open("anima-lora");
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains("prompts")) {
+          const store = db.createObjectStore("prompts", { keyPath: "id" });
+          store.createIndex("sourceModelId", "sourceModelId");
+          store.createIndex("tags", "tags", { multiEntry: true });
+          store.createIndex("categoryId", "categoryId");
+          store.createIndex("isFavorite", "isFavorite");
+          store.createIndex("displayText", "displayText");
+          store.createIndex("createdAt", "createdAt");
+        }
+        if (!db.objectStoreNames.contains("promptCategories")) db.createObjectStore("promptCategories", { keyPath: "id" });
+        if (!db.objectStoreNames.contains("artists")) db.createObjectStore("artists", { keyPath: "tag" });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("无法打开 Prompt 库"));
+    });
+  }
+
+  function readPromptLibraryCategories(database) {
+    return new Promise((resolve) => {
+      if (!database.objectStoreNames.contains("promptCategories")) {
+        resolve(DEFAULT_PROMPT_LIBRARY_CATEGORIES.map((category) => ({ ...category })));
+        return;
+      }
+      const request = database.transaction("promptCategories", "readonly").objectStore("promptCategories").getAll();
+      request.onsuccess = () => {
+        const categories = (request.result || []).filter((category) => category && category.id).sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+        resolve(categories.length ? categories : DEFAULT_PROMPT_LIBRARY_CATEGORIES.map((category) => ({ ...category })));
+      };
+      request.onerror = () => resolve(DEFAULT_PROMPT_LIBRARY_CATEGORIES.map((category) => ({ ...category })));
+    });
+  }
 
   // 搜索栏按空格分词的词级替换：点击补全建议时只替换光标所在的那一个标签，
   // 保留其余标签与空格（光标在词后/词中/空白处均正确处理；空栏 = 直接填入）。
@@ -77,10 +175,13 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         activeCategory: typeof saved.activeCategory === "string" ? saved.activeCategory : "",
         filters: normalizeFilters(saved.filters),
         excludeTags: Array.isArray(saved.excludeTags) ? saved.excludeTags.map(String).filter((t) => /^[a-z0-9_]+$/.test(t)).slice(0, 8) : [],
+        promptOutput: normalizePromptOutputSettings(saved.promptOutput),
+        promptOutputEnabled: saved.promptOutputEnabled !== false,
+        promptExcludePattern: typeof saved.promptExcludePattern === "string" ? saved.promptExcludePattern.slice(0, 500) : "",
         lastQuery: typeof saved.lastQuery === "string" ? saved.lastQuery : "",
       };
     } catch {
-      return { limit: 24, rating: [], gridHeight: 620, categories: [], postCategories: {}, presets: [], activeCategory: "", filters: { ...FILTER_DEFAULTS }, excludeTags: [], lastQuery: "" };
+      return { limit: 24, rating: [], gridHeight: 620, categories: [], postCategories: {}, presets: [], activeCategory: "", filters: { ...FILTER_DEFAULTS }, excludeTags: [], promptOutput: normalizePromptOutputSettings(), promptOutputEnabled: true, promptExcludePattern: "", lastQuery: "" };
     }
   }
 
@@ -105,6 +206,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.tooltip = null;
       this.domWidget = null;
       this.filterControls = null;
+      this.promptEdits = new Map();
       this.registered = false; // 是否已登录 Danbooru
       this.tagLimitValue = 2;  // 计数标签上限（后端按账号等级动态：Member=2 / Gold+=6，随 /account 刷新）
     }
@@ -411,13 +513,17 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
     }
 
     updateSelection() {
+      const promptOutputEnabled = this.settings.promptOutputEnabled !== false;
       const selected = [...this.grid.querySelectorAll(".adg-card.is-selected")].map((card) => {
         const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+        let promptGroups = {};
+        try { promptGroups = JSON.parse(card.dataset.promptGroups || "{}"); } catch { promptGroups = {}; }
         return {
           image_url: card.dataset.imageUrl || "",
-          prompt: card.dataset.prompt || "",
+          prompt: promptOutputEnabled ? (card.dataset.prompt || "") : "",
           post_id: card.dataset.postId || "",
           tags: card.dataset.tags ? JSON.parse(card.dataset.tags) : [],
+          prompt_groups: promptGroups,
           rating: card.dataset.rating || "",
           score: num(card.dataset.score),
           favcount: num(card.dataset.favcount),
@@ -428,7 +534,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           source_url: card.dataset.sourceUrl || "",
         };
       });
-      const value = JSON.stringify({ selections: selected });
+      const value = JSON.stringify({ prompt_output_enabled: promptOutputEnabled, prompt_settings: this.promptOutputSettings(), selections: selected });
       this.selectionWidget.value = value;
       this.selectionWidget.callback?.(value);
       this.node.graph?.change?.();
@@ -440,23 +546,162 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       }
     }
 
-    postTags(post) {
-      const groups = ["tag_string_character", "tag_string_copyright", "tag_string_general"];
+    promptOutputSettings() {
+      const settings = normalizePromptOutputSettings(this.settings.promptOutput);
+      this.settings.promptOutput = settings;
+      return settings;
+    }
+
+    updatePromptOutputButton() {
+      if (!this.promptOutputBtn) return;
+      const enabled = this.settings.promptOutputEnabled !== false;
+      this.promptOutputBtn.textContent = enabled ? "Prompt 输出 开" : "Prompt 输出 关";
+      this.promptOutputBtn.setAttribute("aria-pressed", String(enabled));
+      this.promptOutputBtn.title = enabled
+        ? "关闭后即使下游连线，节点也不会输出正向 Prompt"
+        : "已关闭 Prompt 输出，点击恢复节点正向 Prompt 输出";
+      this.promptOutputBtn.classList.toggle("is-disabled", !enabled);
+    }
+
+    rawPromptGroups(post) {
+      const groups = Object.fromEntries(PROMPT_CATEGORY_ORDER.map((category) => [category, []]));
       const seen = new Set();
+      const add = (category, tag) => {
+        const clean = String(tag || "").trim();
+        if (!clean || seen.has(clean)) return;
+        groups[category].push(clean);
+        seen.add(clean);
+      };
+      for (const category of PROMPT_CATEGORY_ORDER) {
+        for (const tag of String(post?.[`tag_string_${category}`] || "").split(" ")) add(category, tag);
+      }
+      // 兼容某些接口只返回总 tag_string 的旧数据。
+      if (Object.values(groups).every((tags) => tags.length === 0)) {
+        for (const tag of String(post?.tag_string || "").split(" ")) add("general", tag);
+      }
+      return groups;
+    }
+
+    buildPromptForPost(post, promptOutput = null, excludePattern = "") {
+      const settings = normalizePromptOutputSettings(promptOutput || this.promptOutputSettings());
+      let excludeRegex = null;
+      if (String(excludePattern || "").trim()) {
+        try { excludeRegex = new RegExp(String(excludePattern).trim(), "i"); } catch { excludeRegex = null; }
+      }
+      const rawGroups = this.rawPromptGroups(post);
+      const groups = Object.fromEntries(PROMPT_CATEGORY_ORDER.map((category) => [category, []]));
       const tags = [];
-      for (const group of groups) {
-        for (const tag of String(post[group] || "").split(" ")) {
-          if (tag && !seen.has(tag)) {
-            seen.add(tag);
-            tags.push(tag);
-          }
+      const seen = new Set();
+      for (const category of settings.categories) {
+        for (const tag of rawGroups[category] || []) {
+          if (seen.has(tag)) continue;
+          if (excludeRegex && excludeRegex.test(tag)) continue;
+          seen.add(tag);
+          groups[category].push(tag);
+          tags.push(tag);
         }
       }
-      return tags;
+      return {
+        prompt: tags.map((tag) => formatPromptTag(tag, settings)).filter(Boolean).join(", "),
+        tags,
+        groups,
+        settings: { ...settings, categories: [...settings.categories] },
+      };
+    }
+
+    postTags(post) {
+      return this.buildPromptForPost(post).tags;
     }
 
     postPrompt(post) {
-      return this.postTags(post).map((tag) => tag.replace(/_/g, " ")).join(", ");
+      return this.buildPromptForPost(post).prompt;
+    }
+
+    async ensureTagTranslations(tags) {
+      const unique = [...new Set((tags || []).map((tag) => String(tag || "").trim()).filter(Boolean))];
+      const missing = unique.filter((tag) => !this.translationCache.has(tag));
+      if (missing.length) {
+        try {
+          const response = await fetch("/anima/danbooru/translate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tags: missing }),
+          });
+          const data = await response.json();
+          for (const tag of missing) this.translationCache.set(tag, String(data.translations?.[tag] || "").trim());
+        } catch {
+          for (const tag of missing) this.translationCache.set(tag, "");
+        }
+      }
+      return Object.fromEntries(unique
+        .map((tag) => [tag, String(this.translationCache.get(tag) || "").trim()])
+        .filter(([, zh]) => zh));
+    }
+
+    async ensurePromptTranslations(parts) {
+      const unique = splitPromptParts(parts.join(", "));
+      const lookupTags = [...new Set(unique.flatMap((part) => [part, part.replace(/\s+/g, "_")]))];
+      const source = await this.ensureTagTranslations(lookupTags);
+      const byKey = new Map(Object.entries(source).map(([key, value]) => [promptCardKey(key), value]));
+      return Object.fromEntries(unique.map((part) => [part, byKey.get(promptCardKey(part)) || ""]));
+    }
+
+    renderBilingualPromptEditor(container, parts, translations, { prefix = "adg-save-bilingual", onInput } = {}) {
+      container.replaceChildren();
+      const unique = splitPromptParts(parts.join(", "));
+      const translationMap = new Map(Object.entries(translations || {}).map(([key, value]) => [promptCardKey(key), String(value || "").trim()]));
+      const header = document.createElement("div");
+      header.className = `${prefix}-header`;
+      const englishHeader = document.createElement("span");
+      englishHeader.textContent = "英文 Prompt";
+      const chineseHeader = document.createElement("span");
+      chineseHeader.textContent = "中文翻译";
+      header.append(englishHeader, chineseHeader);
+      const list = document.createElement("div");
+      list.className = `${prefix}-list`;
+      const rows = [];
+      const editor = {
+        rows,
+        read: () => {
+          const entries = rows
+            .map(({ en, zh }) => ({ en: en.value.trim(), zh: zh.value.trim() }))
+            .filter(({ en }) => en);
+          return {
+            parts: entries.map(({ en }) => en),
+            prompt: entries.map(({ en }) => en).join(", "),
+            translations: Object.fromEntries(entries.map(({ en, zh }) => [en, zh])),
+          };
+        },
+      };
+      for (const part of unique) {
+        const row = document.createElement("div");
+        row.className = `${prefix}-card`;
+        const en = document.createElement("input");
+        en.type = "text";
+        en.className = `${prefix}-en`;
+        en.value = part;
+        en.setAttribute("aria-label", `英文 Prompt：${part}`);
+        const zh = document.createElement("input");
+        zh.type = "text";
+        zh.className = `${prefix}-zh`;
+        zh.value = translationMap.get(promptCardKey(part)) || "";
+        zh.placeholder = "待翻译，可手动修改";
+        zh.setAttribute("aria-label", `中文翻译：${part}`);
+        const rowState = { en, zh };
+        rows.push(rowState);
+        en.addEventListener("input", () => onInput?.(editor, "en", rowState));
+        zh.addEventListener("input", () => onInput?.(editor, "zh", rowState));
+        row.append(en, zh);
+        list.append(row);
+      }
+      container.append(header, list);
+      if (!unique.length) {
+        const empty = document.createElement("div");
+        empty.className = `${prefix}-empty`;
+        empty.textContent = "没有可编辑的 Prompt 片段";
+        container.append(empty);
+      }
+      return editor;
     }
 
     renderPosts() {
@@ -476,8 +721,14 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         const card = document.createElement("article");
         card.className = "adg-card";
         card.dataset.imageUrl = imageUrl;
-        card.dataset.prompt = this.postPrompt(post);
-        card.dataset.tags = JSON.stringify(this.postTags(post));
+        const promptResult = this.buildPromptForPost(post);
+        const promptEdit = this.promptEdits.get(String(post.id || ""));
+        const promptText = promptEdit?.prompt || promptResult.prompt;
+        const promptTags = Array.isArray(promptEdit?.tags) ? promptEdit.tags : promptResult.tags;
+        card.dataset.prompt = promptText;
+        card.dataset.tags = JSON.stringify(promptTags);
+        card.dataset.promptTranslations = JSON.stringify(promptEdit?.translations || {});
+        card.dataset.promptGroups = JSON.stringify(promptResult.groups);
         card.dataset.postId = String(post.id || "");
         // 结构化元数据（2026-08-24：metadata_json 输出数据源）
         card.dataset.rating = String(post.rating || "");
@@ -598,9 +849,285 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       }
     }
 
+    async choosePromptSaveOptions(post) {
+      let database = null;
+      let categories = DEFAULT_PROMPT_LIBRARY_CATEGORIES.map((category) => ({ ...category }));
+      try {
+        database = await openPromptLibraryDB();
+        categories = await readPromptLibraryCategories(database);
+      } catch {
+        // 保存阶段仍会再次打开数据库；这里使用默认分类保证选项弹层可用。
+      } finally {
+        database?.close();
+      }
+
+      const current = this.promptOutputSettings();
+      const rawGroups = this.rawPromptGroups(post);
+      const content = document.createElement("div");
+      content.className = "adg-prompt-settings adg-save-options";
+      const intro = document.createElement("div");
+      intro.className = "adg-prompt-settings-tip";
+      intro.textContent = "选择本次入库的 Prompt 库分类，以及要写入 Prompt 和双语卡片的 D 站标签类别。不会修改全局 Prompt 设置。";
+      content.append(intro);
+
+      const libraryTitle = document.createElement("div");
+      libraryTitle.className = "adg-prompt-settings-title";
+      libraryTitle.textContent = "Prompt 库分类";
+      const librarySelect = document.createElement("select");
+      librarySelect.className = "adg-save-category-select";
+      librarySelect.setAttribute("aria-label", "Prompt 库分类");
+      for (const category of categories) {
+        const option = document.createElement("option");
+        option.value = String(category.id);
+        option.textContent = category.icon ? `${category.icon} ${category.name}` : String(category.name || category.id);
+        librarySelect.append(option);
+      }
+      const preferred = categories.find((category) => category.id === "uncategorized") || categories[0];
+      if (preferred) librarySelect.value = String(preferred.id);
+      content.append(libraryTitle, librarySelect);
+
+      const promptTitle = document.createElement("div");
+      promptTitle.className = "adg-prompt-settings-title";
+      promptTitle.textContent = "本次 Prompt 包含";
+      const promptList = document.createElement("div");
+      promptList.className = "adg-prompt-category-list";
+      const categoryInputs = new Map();
+      for (const category of PROMPT_CATEGORY_ORDER) {
+        const tags = rawGroups[category] || [];
+        const label = document.createElement("label");
+        label.className = "adg-prompt-category-choice";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.name = category;
+        input.checked = current.categories.includes(category) && tags.length > 0;
+        input.disabled = tags.length === 0;
+        const text = document.createElement("span");
+        text.textContent = `${PROMPT_CATEGORY_LABELS[category]}（${tags.length}）`;
+        label.append(input, text);
+        promptList.append(label);
+        categoryInputs.set(category, input);
+      }
+      content.append(promptTitle, promptList);
+
+      const excludeTitle = document.createElement("div");
+      excludeTitle.className = "adg-prompt-settings-title";
+      excludeTitle.textContent = "排除提示词（可选）";
+      const excludeInput = document.createElement("input");
+      excludeInput.type = "text";
+      excludeInput.className = "adg-save-exclude-input";
+      excludeInput.value = this.settings.promptExcludePattern || "";
+      excludeInput.placeholder = "例如：censor|text|logo|username|hair|eyes";
+      excludeInput.title = "大小写不敏感正则，匹配到的 D 站标签不会进入本次 Prompt 或双语卡片";
+      const excludeHelp = document.createElement("div");
+      excludeHelp.className = "adg-prompt-settings-tip";
+      excludeHelp.textContent = "按标签原文模糊匹配，例如 hair 会排除 long_hair、hair ornament 等；只影响本次入库。";
+      content.append(excludeTitle, excludeInput, excludeHelp);
+
+      const defaultSaveTitle = `D站 #${post.id || ""}`;
+      const titleTitle = document.createElement("div");
+      titleTitle.className = "adg-prompt-settings-title";
+      titleTitle.textContent = "Prompt 标题";
+      const titleInput = document.createElement("input");
+      titleInput.type = "text";
+      titleInput.className = "adg-save-title-input";
+      titleInput.value = defaultSaveTitle;
+      titleInput.placeholder = defaultSaveTitle;
+      titleInput.maxLength = 120;
+      content.append(titleTitle, titleInput);
+
+      const promptContentTitle = document.createElement("div");
+      promptContentTitle.className = "adg-prompt-settings-title";
+      promptContentTitle.textContent = "入库 Prompt 内容（可编辑）";
+      const promptInput = document.createElement("textarea");
+      promptInput.className = "adg-save-prompt-input";
+      promptInput.rows = 4;
+      promptInput.spellcheck = false;
+      const selectedSettings = () => ({
+        categories: PROMPT_CATEGORY_ORDER.filter((category) => categoryInputs.get(category)?.checked),
+        replaceUnderscores: current.replaceUnderscores,
+        escapeBrackets: current.escapeBrackets,
+      });
+      const savedEdit = this.promptEdits.get(String(post.id || ""));
+      promptInput.value = savedEdit?.prompt || this.buildPromptForPost(post, selectedSettings(), excludeInput.value).prompt;
+      content.append(promptContentTitle, promptInput);
+
+      const previewTitle = document.createElement("div");
+      previewTitle.className = "adg-prompt-settings-title";
+      previewTitle.textContent = "双语卡片预览";
+      const previewStatus = document.createElement("div");
+      previewStatus.className = "adg-save-preview-status";
+      const previewGrid = document.createElement("div");
+      previewGrid.className = "adg-save-bilingual-grid";
+      content.append(previewTitle, previewStatus, previewGrid);
+      let promptDirty = Boolean(savedEdit?.prompt);
+      let previewEditor = null;
+      const manualTranslations = new Map(Object.entries(savedEdit?.translations || {}).map(([key, value]) => [promptCardKey(key), String(value || "").trim()]));
+      let previewRequest = 0;
+      const captureManualTranslations = () => {
+        for (const { en, zh } of previewEditor?.rows || []) {
+          const key = promptCardKey(en.value);
+          if (key) manualTranslations.set(key, zh.value.trim());
+        }
+      };
+      const renderPreview = (parts, translations) => {
+        if (!parts.length) {
+          previewGrid.replaceChildren();
+          previewEditor = null;
+          previewStatus.textContent = "当前没有可预览的 Prompt 片段";
+          return;
+        }
+        previewStatus.textContent = `共 ${parts.length} 张双语卡片`;
+        captureManualTranslations();
+        previewEditor = this.renderBilingualPromptEditor(previewGrid, parts, {
+          ...translations,
+          ...Object.fromEntries(manualTranslations),
+        }, {
+          prefix: "adg-save-bilingual",
+          onInput: (editor, field) => {
+            captureManualTranslations();
+            promptDirty = true;
+            if (field === "en") promptInput.value = editor.read().prompt;
+          },
+        });
+      };
+      const refreshPreview = async () => {
+        const requestId = ++previewRequest;
+        captureManualTranslations();
+        const generated = this.buildPromptForPost(post, selectedSettings(), excludeInput.value);
+        if (!promptDirty) promptInput.value = generated.prompt;
+        const parts = splitPromptParts(promptInput.value);
+        previewStatus.textContent = "正在加载双语预览…";
+        const translations = await this.ensurePromptTranslations(parts);
+        if (requestId !== previewRequest) return;
+        renderPreview(parts, translations);
+      };
+      for (const input of categoryInputs.values()) input.addEventListener("change", () => { if (!promptDirty) refreshPreview(); });
+      excludeInput.addEventListener("input", () => { if (!promptDirty) refreshPreview(); });
+      promptInput.addEventListener("input", () => { promptDirty = true; refreshPreview(); });
+
+      return new Promise((resolve) => {
+        refreshPreview();
+        this.openDialog({
+          title: `保存 D 站 #${post.id || ""} 到 Prompt 库`,
+          content,
+          onCancel: () => resolve(null),
+          onApply: () => {
+            const selectedCategories = PROMPT_CATEGORY_ORDER.filter((category) => categoryInputs.get(category)?.checked);
+            if (!selectedCategories.length) {
+              this.setStatus("至少选择一个 Prompt 类别", "error");
+              return false;
+            }
+            const excludePattern = excludeInput.value.trim();
+            if (excludePattern) {
+              try { new RegExp(excludePattern, "i"); } catch (error) {
+                this.setStatus(`排除正则无效：${error.message || error}`, "error");
+                excludeInput.focus();
+                return false;
+              }
+            }
+            this.settings.promptExcludePattern = excludePattern;
+            this.saveSettings();
+            const generated = this.buildPromptForPost(post, {
+              categories: selectedCategories,
+              replaceUnderscores: current.replaceUnderscores,
+              escapeBrackets: current.escapeBrackets,
+            }, excludePattern);
+            const promptText = (promptDirty ? promptInput.value : generated.prompt).trim();
+            if (!promptText) {
+              this.setStatus("排除规则过滤后没有可保存的 Prompt", "error");
+              promptInput.focus();
+              return false;
+            }
+            resolve({
+              categoryId: librarySelect.value || "uncategorized",
+              categoryOptions: categories,
+              excludePattern,
+              title: titleInput.value.trim() || defaultSaveTitle,
+              promptText,
+              tagTranslations: previewEditor?.read().translations || {},
+              promptOutput: {
+                categories: selectedCategories,
+                replaceUnderscores: current.replaceUnderscores,
+                escapeBrackets: current.escapeBrackets,
+              },
+            });
+          },
+        });
+      });
+    }
+
+    async savePromptCards(promptResult, translations, postId) {
+      const response = await fetch("/anima/cards");
+      if (!response.ok) throw new Error(`卡片库读取 HTTP ${response.status}`);
+      const library = await response.json();
+      const categories = Array.isArray(library.categories) && library.categories.length
+        ? library.categories
+        : [{ id: "card_all", name: "通用", icon: "", sortOrder: 0 }];
+      const categoryId = categories.find((category) => category.id === "card_all")?.id || categories[0].id;
+      const cards = Array.isArray(library.cards) ? library.cards : [];
+      const byPrompt = new Map();
+      for (const card of cards) {
+        const key = promptCardKey(card?.en);
+        if (key && !byPrompt.has(key)) byPrompt.set(key, card);
+      }
+
+      const now = Date.now();
+      let created = 0;
+      let updated = 0;
+      let translatedCount = 0;
+      for (const tag of promptResult.tags || []) {
+        const en = formatPromptTag(tag, promptResult.settings);
+        if (!en) continue;
+        const zh = String(translations?.[tag] || "").trim();
+        if (zh) translatedCount++;
+        const key = promptCardKey(en);
+        const existing = byPrompt.get(key);
+        if (existing) {
+          // 不覆盖用户手工修订过的译文，只补全历史空译文。
+          if (zh && !String(existing.zh || "").trim()) {
+            existing.zh = zh;
+            existing.ts = now;
+            updated++;
+          }
+          continue;
+        }
+        const card = {
+          id: `danbooru_${postId || "unknown"}_${now}_${created}`,
+          en,
+          zh,
+          weight: "",
+          star: false,
+          lora: "",
+          src: `danbooru:${postId || ""}`,
+          ts: now,
+          multi: false,
+          categories: [categoryId],
+        };
+        cards.push(card);
+        byPrompt.set(key, card);
+        created++;
+      }
+      if (created || updated) {
+        library.version = 2;
+        library.categories = categories;
+        library.cards = cards;
+        const saveResponse = await fetch("/anima/cards", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(library),
+        });
+        const saved = await saveResponse.json();
+        if (!saveResponse.ok || !saved?.ok) throw new Error(saved?.error || `卡片库保存 HTTP ${saveResponse.status}`);
+        window.dispatchEvent(new CustomEvent("anima-prompt-cards-updated", { detail: { source: "danbooru" } }));
+      }
+      return { created, updated, translated: translatedCount, total: (promptResult.tags || []).length };
+    }
+
     async saveToPromptLibrary(post) {
       const imageUrl = post.large_file_url || post.file_url || post.preview_file_url;
       if (!imageUrl) return;
+      const saveOptions = await this.choosePromptSaveOptions(post);
+      if (!saveOptions) return;
       this.setStatus(`正在保存 #${post.id || ""} 到 Prompt 库…`);
       try {
         const imageResponse = await fetch(`/anima/danbooru/image?url=${encodeURIComponent(imageUrl)}`);
@@ -612,47 +1139,56 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           reader.onerror = () => reject(new Error("预览图转换失败"));
           reader.readAsDataURL(imageBlob);
         });
-        const tags = this.postTags(post);
-        const prompt = tags.map((tag) => tag.replace(/_/g, " ")).join(", ");
+        const generatedPromptResult = this.buildPromptForPost(post, saveOptions.promptOutput, saveOptions.excludePattern);
+        const prompt = String(saveOptions.promptText || generatedPromptResult.prompt).trim();
+        const tags = splitPromptParts(prompt);
+        const fetchedTranslations = await this.ensurePromptTranslations(tags);
+        const customTranslations = new Map(Object.entries(saveOptions.tagTranslations || {}).map(([key, value]) => [promptCardKey(key), String(value || "").trim()]));
+        const translations = Object.fromEntries(tags.map((tag) => [
+          tag,
+          customTranslations.has(promptCardKey(tag)) ? customTranslations.get(promptCardKey(tag)) : (fetchedTranslations[tag] || ""),
+        ]));
+        const promptResult = { ...generatedPromptResult, prompt, tags };
         const now = Date.now();
         const entry = {
           id: `p_${now}_${Math.random().toString(36).slice(2, 8)}`,
           prompt,
-          displayText: `Danbooru #${post.id || ""}`,
+          displayText: saveOptions.title || `D站 #${post.id || ""}`,
           images: [imageDataUrl],
           primaryImage: imageDataUrl,
           tags,
+          promptGroups: promptResult.groups,
+          tagTranslations: translations,
           loras: [],
-          categoryId: "uncategorized",
+          categoryId: saveOptions.categoryId || "uncategorized",
           notes: `来源：Danbooru #${post.id || ""}`,
           isFavorite: false,
           createdAt: now,
           updatedAt: now,
         };
-        const database = await new Promise((resolve, reject) => {
-          const request = indexedDB.open("anima-lora");
-          request.onupgradeneeded = () => {
-            const db = request.result;
-            if (!db.objectStoreNames.contains("prompts")) {
-              const store = db.createObjectStore("prompts", { keyPath: "id" });
-              store.createIndex("sourceModelId", "sourceModelId"); store.createIndex("tags", "tags", { multiEntry: true }); store.createIndex("categoryId", "categoryId"); store.createIndex("isFavorite", "isFavorite"); store.createIndex("displayText", "displayText"); store.createIndex("createdAt", "createdAt");
-            }
-            if (!db.objectStoreNames.contains("promptCategories")) db.createObjectStore("promptCategories", { keyPath: "id" });
-            if (!db.objectStoreNames.contains("artists")) db.createObjectStore("artists", { keyPath: "tag" });
-          };
-          request.onsuccess = () => resolve(request.result);
-          request.onerror = () => reject(request.error || new Error("无法打开 Prompt 库"));
-        });
+        const database = await openPromptLibraryDB();
         await new Promise((resolve, reject) => {
           const transaction = database.transaction(["prompts", "promptCategories"], "readwrite");
           const categories = transaction.objectStore("promptCategories");
-          categories.get("uncategorized").onsuccess = (event) => { if (!event.target.result) categories.add({ id: "uncategorized", name: "未分类", icon: "", sortOrder: 0 }); };
+          for (const category of saveOptions.categoryOptions || []) categories.put(category);
           transaction.objectStore("prompts").add(entry);
           transaction.oncomplete = resolve;
           transaction.onerror = () => reject(transaction.error || new Error("写入 Prompt 库失败"));
         });
         database.close();
-        this.setStatus(`已保存 #${post.id || ""} 到 Prompt 库`);
+        let cardResult = null;
+        let cardError = null;
+        try {
+          cardResult = await this.savePromptCards(promptResult, translations, post.id);
+        } catch (error) {
+          cardError = error;
+        }
+        if (cardResult) {
+          const missing = Math.max(0, cardResult.total - cardResult.translated);
+          this.setStatus(`已保存 #${post.id || ""}：Prompt 库 + 卡片库 ${cardResult.created} 张${cardResult.updated ? `，补全 ${cardResult.updated} 张` : ""}${missing ? `，${missing} 张待翻译` : ""}`);
+        } else {
+          this.setStatus(`已保存 #${post.id || ""} 到 Prompt 库，但卡片库同步失败：${cardError?.message || "未知错误"}`, "error");
+        }
       } catch (error) {
         this.setStatus(`保存 Prompt 库失败：${error?.message || "未知错误"}`, "error");
       }
@@ -669,16 +1205,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       document.body.append(tooltip);
       this.tooltip = tooltip;
       this.positionTooltip(event);
-      const missing = tags.filter((tag) => !this.translationCache.has(tag));
-      if (missing.length) {
-        try {
-          const response = await fetch("/anima/danbooru/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tags: missing }) });
-          const data = await response.json();
-          for (const tag of missing) this.translationCache.set(tag, data.translations?.[tag] || "");
-        } catch {
-          for (const tag of missing) this.translationCache.set(tag, "");
-        }
-      }
+      await this.ensureTagTranslations(tags);
       if (this.tooltip !== tooltip) return;
       tooltip.replaceChildren(...tags.map((tag) => {
         const line = document.createElement("div");
@@ -760,31 +1287,67 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       document.body.append(overlay);
     }
 
-    openPromptEditor(card, post) {
+    async openPromptEditor(card, post) {
+      const prompt = card.dataset.prompt || this.postPrompt(post);
+      const parts = splitPromptParts(prompt);
+      let savedTranslations = {};
+      try { savedTranslations = JSON.parse(card.dataset.promptTranslations || "{}"); } catch { savedTranslations = {}; }
+      const fetchedTranslations = await this.ensurePromptTranslations(parts);
+      const translations = { ...fetchedTranslations, ...savedTranslations };
       const content = document.createElement("div");
       content.className = "adg-prompt-editor";
-      const textarea = document.createElement("textarea");
-      textarea.value = card.dataset.prompt || this.postPrompt(post);
-      textarea.spellcheck = false;
+      const intro = document.createElement("div");
+      intro.className = "adg-dialog-intro";
+      intro.textContent = "每行对应一个提示词；修改英文会更新 Prompt，修改中文会更新对应翻译。";
+      const groupSummary = document.createElement("div");
+      groupSummary.className = "adg-prompt-groups";
+      let promptGroups = {};
+      try { promptGroups = JSON.parse(card.dataset.promptGroups || "{}"); } catch { promptGroups = {}; }
+      for (const category of PROMPT_CATEGORY_ORDER) {
+        const count = Array.isArray(promptGroups[category]) ? promptGroups[category].length : 0;
+        if (!count) continue;
+        const chip = document.createElement("span");
+        chip.textContent = `${PROMPT_CATEGORY_LABELS[category]} ${count}`;
+        groupSummary.append(chip);
+      }
       const copy = document.createElement("button");
       copy.type = "button";
       copy.textContent = "复制 Prompt";
       copy.onclick = async () => {
+        const current = editor.read().prompt;
         try {
-          await navigator.clipboard.writeText(textarea.value);
+          await navigator.clipboard.writeText(current);
           this.setStatus("Prompt 已复制");
         } catch {
-          textarea.select();
+          const fallback = document.createElement("textarea");
+          fallback.value = current;
+          document.body.append(fallback);
+          fallback.select();
           document.execCommand("copy");
+          fallback.remove();
           this.setStatus("Prompt 已复制");
         }
       };
-      content.append(textarea, copy);
+      const bilingualEditor = document.createElement("div");
+      bilingualEditor.className = "adg-prompt-bilingual-editor";
+      const editor = this.renderBilingualPromptEditor(bilingualEditor, parts, translations, {
+        prefix: "adg-prompt-bilingual",
+      });
+      content.append(intro, groupSummary, bilingualEditor, copy);
       this.openDialog({
         title: `Prompt #${post.id || ""}`,
         content,
         onApply: () => {
-          card.dataset.prompt = textarea.value.trim();
+          const result = editor.read();
+          if (!result.prompt) {
+            this.setStatus("Prompt 不能为空", "error");
+            return false;
+          }
+          const edit = { prompt: result.prompt, tags: result.parts, translations: result.translations };
+          this.promptEdits.set(String(post.id || ""), edit);
+          card.dataset.prompt = edit.prompt;
+          card.dataset.tags = JSON.stringify(edit.tags);
+          card.dataset.promptTranslations = JSON.stringify(edit.translations);
           if (card.classList.contains("is-selected")) this.updateSelection();
           this.setStatus("Prompt 已更新");
         },
@@ -793,6 +1356,81 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
 
     removeDialog() {
       document.getElementById(this.dialogId)?.remove();
+    }
+
+    openPromptSettings() {
+      const current = this.promptOutputSettings();
+      const content = document.createElement("div");
+      content.className = "adg-prompt-settings";
+      const intro = document.createElement("div");
+      intro.className = "adg-prompt-settings-tip";
+      intro.textContent = "控制卡片 Prompt、节点 prompts 输出，以及 metadata_json 里的分组。默认保持旧输出顺序。";
+      content.append(intro);
+
+      const categoryTitle = document.createElement("div");
+      categoryTitle.className = "adg-prompt-settings-title";
+      categoryTitle.textContent = "输出类别（按 Danbooru 类别去重）";
+      const categoryList = document.createElement("div");
+      categoryList.className = "adg-prompt-category-list";
+      const categoryInputs = new Map();
+      for (const category of PROMPT_CATEGORY_ORDER) {
+        const label = document.createElement("label");
+        label.className = "adg-prompt-category-choice";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.name = category;
+        input.checked = current.categories.includes(category);
+        const text = document.createElement("span");
+        text.textContent = PROMPT_CATEGORY_LABELS[category];
+        label.append(input, text);
+        categoryList.append(label);
+        categoryInputs.set(category, input);
+      }
+      content.append(categoryTitle, categoryList);
+
+      const formatTitle = document.createElement("div");
+      formatTitle.className = "adg-prompt-settings-title";
+      formatTitle.textContent = "格式";
+      const formatList = document.createElement("div");
+      formatList.className = "adg-prompt-format-list";
+      const makeFormatChoice = (name, labelText, checked) => {
+        const label = document.createElement("label");
+        label.className = "adg-prompt-format-choice";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = checked;
+        const text = document.createElement("span");
+        text.textContent = labelText;
+        label.append(input, text);
+        formatList.append(label);
+        return input;
+      };
+      const replaceUnderscores = makeFormatChoice("replaceUnderscores", "下划线转空格（long_hair → long hair）", current.replaceUnderscores);
+      const escapeBrackets = makeFormatChoice("escapeBrackets", "转义括号（(tag) → \\(tag\\)）", current.escapeBrackets);
+      content.append(formatTitle, formatList);
+
+      this.openDialog({
+        title: "Prompt 输出设置",
+        content,
+        onApply: () => {
+          const categories = PROMPT_CATEGORY_ORDER.filter((category) => categoryInputs.get(category)?.checked);
+          this.settings.promptOutput = normalizePromptOutputSettings({
+            categories,
+            replaceUnderscores: replaceUnderscores.checked,
+            escapeBrackets: escapeBrackets.checked,
+          });
+          this.saveSettings();
+          const selectedIds = new Set([...this.grid.querySelectorAll(".adg-card.is-selected")].map((card) => card.dataset.postId));
+          this.renderPosts();
+          for (const card of this.grid.querySelectorAll(".adg-card")) {
+            if (!selectedIds.has(card.dataset.postId)) continue;
+            card.classList.add("is-selected");
+            card.querySelector(".adg-card-select")?.setAttribute("aria-pressed", "true");
+          }
+          this.updateSelection();
+          this.setStatus(`Prompt 输出已更新：${this.settings.promptOutput.categories.map((category) => PROMPT_CATEGORY_LABELS[category]).join("、")}`, "success");
+        },
+      });
     }
 
     // 点选式分类菜单（替代原 prompt 打字）：
@@ -938,40 +1576,78 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       newRow.append(newInput, newBtn);
       content.append(newTitle, newRow);
 
-      this.openDialog({ title: ids.length ? "设置分类" : "新建分类", content, onApply: () => {} });
+      this.openDialog({ title: ids.length ? "设置分类" : "新建分类", content, onApply: () => {}, showApply: false });
       setTimeout(() => newInput.focus(), 50);
     }
 
-    // 搜索预设管理：点行应用预设；✕ 删除预设（点选式，不弹 prompt 打字）
+    // 搜索预设统一管理：保存当前搜索、点行应用、行尾删除。
     openPresetManager() {
       const content = document.createElement("div");
-      content.className = "adg-category-picker";
+      content.className = "adg-preset-manager";
       const head = document.createElement("div");
-      head.className = "adg-menu-title";
-      head.textContent = "已保存的搜索预设（点行应用，✕ 删除）：";
+      head.className = "adg-dialog-intro";
+      head.textContent = "保存当前标签、分级和筛选条件；点击预设名称即可应用。";
       content.append(head);
+
+      const saveRow = document.createElement("div");
+      saveRow.className = "adg-preset-save-row";
+      const nameInput = document.createElement("input");
+      nameInput.className = "adg-preset-name-input";
+      nameInput.placeholder = "新预设名称";
+      nameInput.setAttribute("aria-label", "新预设名称");
+      const saveButton = document.createElement("button");
+      saveButton.type = "button";
+      saveButton.className = "primary";
+      saveButton.textContent = "保存当前";
+      saveButton.onclick = () => {
+        const name = nameInput.value.trim();
+        if (!name) {
+          nameInput.focus();
+          this.setStatus("请输入预设名称", "error");
+          return;
+        }
+        const preset = {
+          name,
+          query: this.queryWidget?.value || this.settings.lastQuery || "",
+          rating: [...this.settings.rating],
+          filters: { ...this.settings.filters },
+        };
+        const existing = this.settings.presets.findIndex((item) => item.name === name);
+        if (existing >= 0) this.settings.presets[existing] = preset;
+        else this.settings.presets.push(preset);
+        this.saveSettings();
+        this.renderPresetOptions();
+        nameInput.value = "";
+        renderRows();
+        this.setStatus(`${existing >= 0 ? "已更新" : "已保存"}搜索预设：${name}`, "success");
+      };
+      nameInput.onkeydown = (event) => { if (event.key === "Enter") { event.preventDefault(); saveButton.click(); } };
+      saveRow.append(nameInput, saveButton);
+      content.append(saveRow);
+
       const list = document.createElement("div");
-      list.className = "adg-category-existing";
+      list.className = "adg-preset-list";
       const renderRows = () => {
         list.innerHTML = "";
         if (!this.settings.presets.length) {
           const empty = document.createElement("div");
-          empty.className = "adg-exclude-empty";
-          empty.textContent = "（暂无预设——先点「存预设」保存当前搜索和筛选）";
+          empty.className = "adg-preset-empty";
+          empty.textContent = "暂无预设";
           list.append(empty);
           return;
         }
         this.settings.presets.forEach((preset, index) => {
           const row = document.createElement("div");
-          row.className = "adg-category-row";
+          row.className = "adg-preset-row";
           const pick = document.createElement("button");
           pick.type = "button";
-          pick.className = "adg-menu-choice adg-category-pick";
+          pick.className = "adg-preset-pick";
+          pick.title = `应用预设：${preset.name}`;
           const name = document.createElement("span");
-          name.className = "adg-menu-choice-text";
+          name.className = "adg-preset-row-name";
           name.textContent = preset.name;
           const meta = document.createElement("span");
-          meta.className = "adg-category-item-meta";
+          meta.className = "adg-preset-row-meta";
           meta.textContent = preset.query || "（无查询词）";
           pick.append(name, meta);
           pick.onclick = () => {
@@ -984,12 +1660,13 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
             this.removeDialog();
           };
           const ops = document.createElement("span");
-          ops.className = "adg-category-ops";
+          ops.className = "adg-preset-row-ops";
           const remove = document.createElement("button");
           remove.type = "button";
-          remove.className = "adg-category-op adg-category-op-remove";
+          remove.className = "adg-preset-remove";
           remove.title = "删除该搜索预设";
-          remove.textContent = "✕";
+          remove.setAttribute("aria-label", `删除预设：${preset.name}`);
+          remove.textContent = "删除";
           remove.onclick = (event) => {
             event.stopPropagation();
             this.settings.presets.splice(index, 1);
@@ -1005,10 +1682,11 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       };
       renderRows();
       content.append(list);
-      this.openDialog({ title: "搜索预设管理", content, onApply: () => {} });
+      this.openDialog({ title: "搜索预设管理", content, onApply: () => {}, showApply: false });
+      setTimeout(() => nameInput.focus(), 50);
     }
 
-    openDialog({ title, content, onApply }) {
+    openDialog({ title, content, onApply, onCancel, showApply = true }) {
       this.removeDialog();
       const overlay = document.createElement("div");
       overlay.id = this.dialogId;
@@ -1024,25 +1702,39 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       const cancel = document.createElement("button");
       cancel.type = "button";
       cancel.textContent = "取消";
-      cancel.onclick = () => this.removeDialog();
-      const apply = document.createElement("button");
-      apply.type = "button";
-      apply.className = "primary";
-      apply.textContent = "应用";
-      apply.onclick = () => {
-        onApply();
+      const close = () => {
+        onCancel?.();
         this.removeDialog();
       };
-      actions.append(cancel, apply);
+      cancel.onclick = close;
+      actions.append(cancel);
+      if (showApply) {
+        const apply = document.createElement("button");
+        apply.type = "button";
+        apply.className = "primary";
+        apply.textContent = "应用";
+        apply.onclick = () => {
+          if (onApply?.() === false) return;
+          this.removeDialog();
+        };
+        actions.append(apply);
+      }
       dialog.append(heading, content, actions);
       overlay.append(dialog);
-      overlay.addEventListener("mousedown", (event) => { if (event.target === overlay) this.removeDialog(); });
+      overlay.addEventListener("mousedown", (event) => { if (event.target === overlay) close(); });
       document.body.append(overlay);
     }
 
     openSettings() {
       const content = document.createElement("div");
-      content.className = "adg-settings-fields";
+      content.className = "adg-settings-fields adg-settings-dialog";
+      const viewSection = document.createElement("section");
+      viewSection.className = "adg-settings-section";
+      const viewTitle = document.createElement("div");
+      viewTitle.className = "adg-settings-title";
+      viewTitle.textContent = "显示";
+      const viewGrid = document.createElement("div");
+      viewGrid.className = "adg-settings-grid";
       const pageLabel = document.createElement("label");
       pageLabel.className = "adg-field";
       pageLabel.textContent = "每页图片数";
@@ -1059,18 +1751,22 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       heightInput.step = "20";
       heightInput.value = String(this.settings.gridHeight);
       heightLabel.append(heightInput);
-      content.append(pageLabel, heightLabel);
+      viewGrid.append(pageLabel, heightLabel);
+      viewSection.append(viewTitle, viewGrid);
+      content.append(viewSection);
 
       // ── 排除标签（搜索结果不含这些标签；每个占 1 个计数槽）──
+      const excludeSection = document.createElement("section");
+      excludeSection.className = "adg-settings-section";
       const exclTitle = document.createElement("div");
-      exclTitle.className = "adg-field";
+      exclTitle.className = "adg-settings-title";
       exclTitle.textContent = "排除标签（搜索不含这些）";
       const exclTip = document.createElement("div");
-      exclTip.style.cssText = "font-size:10px;color:var(--text2,#999);margin:2px 0 4px;";
+      exclTip.className = "adg-settings-help";
       exclTip.textContent = "不占计数标签名额，可任意添加；搜索后在本地过滤（每页可能略少于设定张数）。例：填 furry → 结果不含 furry";
       const exclInput = document.createElement("input");
+      exclInput.className = "adg-settings-input";
       exclInput.placeholder = "输入标签，空格/逗号分隔，如：furry scat";
-      exclInput.style.cssText = "flex:1;min-width:0;";
       const exclList = document.createElement("div");
       exclList.className = "adg-exclude-list";
       const renderExcl = () => {
@@ -1114,30 +1810,30 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       };
       const exclAdd = document.createElement("button");
       exclAdd.type = "button";
-      exclAdd.className = "primary";
+      exclAdd.className = "primary adg-settings-inline-button";
       exclAdd.textContent = "添加";
-      exclAdd.style.cssText = "padding:4px 10px;border-radius:6px;background:#8b5cf6;color:#fff;border:none;cursor:pointer;font-size:11px;flex-shrink:0;";
       exclAdd.onclick = addExcl;
       exclInput.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); addExcl(); } };
       const exclRow = document.createElement("div");
-      exclRow.className = "adg-exclude-row";
-      exclRow.style.cssText = "display:flex;gap:6px;align-items:center;";
+      exclRow.className = "adg-settings-inline-row";
       exclRow.append(exclInput, exclAdd);
       renderExcl();
-      content.append(exclTitle, exclTip, exclRow, exclList);
+      excludeSection.append(exclTitle, exclTip, exclRow, exclList);
+      content.append(excludeSection);
 
       // ── D站 账号（登录后解除匿名 2 标签限制，更少限流）──
+      const accountSection = document.createElement("section");
+      accountSection.className = "adg-settings-section adg-account-section";
+      const accTitle = document.createElement("div");
+      accTitle.className = "adg-settings-title";
+      accTitle.textContent = "Danbooru 账号";
       this.refreshAccount().then((reg) => {
         content.querySelector(".adg-account-status")?.remove();
         const status = document.createElement("div");
         status.className = "adg-account-status";
-        status.style.cssText = "font-size:11px;color:var(--text2,#999);margin-top:4px;";
         status.textContent = reg ? "✓ 已登录 Danbooru（标签上限 6 个，多筛选更自由）" : "ℹ 未登录：匿名最多 2 个计数标签。登录后可同时组合更多标签+排序。";
-        content.append(status);
+        accountSection.prepend(status);
       });
-      const accTitle = document.createElement("div");
-      accTitle.className = "adg-field";
-      accTitle.textContent = "Danbooru 登录（解除标签上限）";
       const userLabel = document.createElement("label");
       userLabel.className = "adg-field";
       userLabel.textContent = "用户名";
@@ -1152,14 +1848,13 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       keyInput.placeholder = "粘贴 API Key";
       keyLabel.append(keyInput);
       const tip = document.createElement("div");
-      tip.style.cssText = "font-size:10px;color:var(--text2,#999);";
+      tip.className = "adg-settings-help";
       tip.textContent = "凭证仅存本机插件目录，不上传。清空保存 = 退出登录。";
-      content.append(accTitle, userLabel, keyLabel, tip);
+      accountSection.append(accTitle, userLabel, keyLabel, tip);
       const accBtn = document.createElement("button");
       accBtn.type = "button";
-      accBtn.className = "primary";
+      accBtn.className = "primary adg-settings-save-button";
       accBtn.textContent = "保存登录";
-      accBtn.style.cssText = "margin-top:6px;padding:4px 10px;border-radius:6px;background:#8b5cf6;color:#fff;border:none;cursor:pointer;font-size:11px;";
       accBtn.onclick = async () => {
         accBtn.disabled = true;
         accBtn.textContent = "保存中…";
@@ -1184,7 +1879,8 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         accBtn.disabled = false;
         accBtn.textContent = "保存登录";
       };
-      content.append(accBtn);
+      accountSection.append(accBtn);
+      content.append(accountSection);
 
       this.openDialog({
         title: "画廊设置",
@@ -1236,18 +1932,41 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       _danQueryFocusTargets.add(this);
       const toolbar = document.createElement("div");
       toolbar.className = "adg-toolbar";
-      const addAction = (label, title, action) => {
+      const makeToolbarGroup = (label, className) => {
+        const group = document.createElement("div");
+        group.className = `adg-toolbar-group ${className || ""}`.trim();
+        group.setAttribute("role", "group");
+        group.setAttribute("aria-label", label);
+        toolbar.append(group);
+        return group;
+      };
+      const mainGroup = makeToolbarGroup("主要操作", "adg-toolbar-main");
+      const filterGroup = makeToolbarGroup("筛选操作", "adg-toolbar-filters");
+      const categoryGroup = makeToolbarGroup("分类操作", "adg-toolbar-categories");
+      const presetGroup = makeToolbarGroup("搜索预设", "adg-toolbar-presets");
+      const addAction = (label, title, action, group = toolbar) => {
         const button = document.createElement("button");
         button.type = "button";
         button.textContent = label;
         button.title = title;
+        button.setAttribute("aria-label", title);
         button.onpointerdown = (event) => event.stopPropagation();
         button.onmousedown = (event) => event.stopPropagation();
         button.onclick = (event) => { event.stopPropagation(); action(); };
-        toolbar.append(button);
+        group.append(button);
+        return button;
       };
-      addAction("搜索", "按上方标签搜索", () => this.search({ resetPage: true }));
-      addAction("设置", "设置每页图片数", () => this.openSettings());
+      addAction("搜索", "按上方标签搜索", () => this.search({ resetPage: true }), mainGroup);
+      addAction("设置", "设置画廊显示、排除标签和 Danbooru 登录", () => this.openSettings(), mainGroup);
+      addAction("Prompt设置", "控制 Prompt 输出类别与格式", () => this.openPromptSettings(), mainGroup);
+      this.promptOutputBtn = addAction("", "", () => {
+        this.settings.promptOutputEnabled = this.settings.promptOutputEnabled === false;
+        this.saveSettings();
+        this.updatePromptOutputButton();
+        this.updateSelection();
+        this.setStatus(this.settings.promptOutputEnabled ? "Prompt 输出已开启" : "Prompt 输出已关闭：下游将收到空 Prompt", "success");
+      }, mainGroup);
+      this.updatePromptOutputButton();
       this.filterControls = new GalleryFilterControls({
         readSettings: () => this.settings,
         commit: (patch, { search = false, render = false } = {}) => {
@@ -1264,9 +1983,9 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           if (search) this.search({ resetPage: true });
         },
       });
-      this.filterControls.mountFilters(toolbar);
-      addAction("刷新", "绕过缓存重新搜索", () => this.search({ force: true }));
-      this.filterControls.mountCategory(toolbar);
+      this.filterControls.mountFilters(filterGroup);
+      addAction("刷新", "绕过缓存重新搜索", () => this.search({ force: true }), filterGroup);
+      this.filterControls.mountCategory(categoryGroup);
       // 批量归类：选中 ≥2 张后可用（点选分类菜单，替代逐张 prompt）
       const batchCatBtn = document.createElement("button");
       batchCatBtn.type = "button";
@@ -1279,10 +1998,11 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           .map((c) => c.dataset.postId).filter(Boolean);
         if (ids.length) this.openCategoryPicker(ids);
       };
-      toolbar.append(batchCatBtn);
+      categoryGroup.append(batchCatBtn);
       this.batchCatBtn = batchCatBtn;
-      addAction("＋类", "新建分类（点选弹层）", () => this.openCategoryPicker([]));
+      addAction("＋类", "新建分类（点选弹层）", () => this.openCategoryPicker([]), categoryGroup);
       const preset = document.createElement("select"); preset.title = "搜索预设";
+      preset.setAttribute("aria-label", "搜索预设");
       this.presetSelect = preset;
       this.renderPresetOptions();
       preset.onchange = () => {
@@ -1297,15 +2017,8 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         this.search({ resetPage: true });
         preset.value = "";
       };
-      toolbar.append(preset);
-      addAction("存预设", "保存当前搜索和筛选", () => {
-        const name = prompt("预设名称");
-        if (!name?.trim()) return;
-        this.settings.presets.push({ name: name.trim(), query: this.queryWidget.value, rating: [...this.settings.rating], filters: { ...this.settings.filters } });
-        this.saveSettings();
-        this.renderPresetOptions();
-      });
-      addAction("删预设", "管理并删除已保存的搜索预设（点行应用）", () => this.openPresetManager());
+      presetGroup.append(preset);
+      addAction("预设管理", "保存、应用或删除搜索预设", () => this.openPresetManager(), presetGroup);
       const pagination = document.createElement("div"); pagination.className = "adg-pagination"; toolbar.append(pagination); this.pagination = pagination;
       const info = document.createElement("div");
       info.className = "adg-info";

@@ -1,5 +1,5 @@
 // Anima Camera Control 节点前端 Widget
-// 便捷机位控制：一键预设 + 2D 罗盘（方位）+ 俯仰/景别滑杆 + 自然语言 + 实时预览
+// 便捷机位控制：一键预设 + 2D 罗盘（方位）+ 俯仰/景别滑杆 + 实时预览
 // 算法与后端 anima_camera_control.py（忠实复刻 BSK）保持一致。
 (function () {
   const NODE_NAME = "TK Camera Control";
@@ -118,7 +118,10 @@
       if (s > 0) { front /= s; back /= s; left /= s; right /= s; }
       const AZ_POLE = 0.9;
       const azGate = clamp((1 - Math.abs(parseFloat(py))) / (1 - AZ_POLE), 0, 1);
-      const azBudget = parseFloat(cfg.azimuth.weight) * azGate;
+      // 先限制整个方位预算，再按方向比例分配，避免 azimuth.weight > weight_max
+      // 时各方向分别被钳成最高值，造成 3D 机位移动而权重长时间不变。
+      const azWeight = Math.max(0, parseFloat(cfg.azimuth.weight) || 0);
+      const azBudget = Math.min(azWeight, wmax) * azGate;
       for (const [name, ratio] of [["front", front], ["back", back], ["left", left], ["right", right]]) {
         const dir = (cfg.azimuth.directions || {})[name] || {};
         if (dir.enabled === false) continue;
@@ -188,32 +191,6 @@
     for (const key of ["lens", "dof", "movement", "composition", "style"]) { const e = cfg.extras?.[key]; if (e?.enabled && (e.value || "").trim()) parts.push((e.value || "").trim()); }
     const result = parts.join(", ");
     return result ? result + "," : "";
-  }
-
-  // 自然语言解析（JS 端口，与后端一致，仅用于实时预览）
-  const _has = (t, keys) => keys.some((k) => t.includes(k));
-  function parseNl(text, base) {
-    let [px, py, pz, rl] = base || [0, 0, 0, 0];
-    const t = (text || "").toLowerCase();
-    if (_has(t, ["正上方", "鸟瞰", "航拍", "aerial", "directly above", "top-down", "top down", "bird's eye", "birds eye"])) py = 1.0;
-    else if (_has(t, ["俯视", "俯拍", "高角度", "高角", "from above", "high angle", "looking down", "overhead"])) py = 0.5;
-    else if (_has(t, ["仰视", "仰拍", "低角度", "低角", "from below", "low angle", "looking up"])) py = -0.5;
-    else if (_has(t, ["正下方", "directly below", "worm's eye", "worm eye"])) py = -1.0;
-    else if (_has(t, ["平视", "eye level", "eye-level", "straight-on", "straight on"])) py = 0.0;
-    if (_has(t, ["大特写", "extreme close", "extreme closeup"])) pz = 1.0;
-    else if (_has(t, ["特写", "close-up", "close up", "closeup"])) pz = 0.8;
-    else if (_has(t, ["近景", "medium close"])) pz = 0.4;
-    else if (_has(t, ["中景", "medium shot", "medium"])) pz = 0.0;
-    else if (_has(t, ["全身", "full body", "full shot", "全身照"])) pz = -0.5;
-    else if (_has(t, ["远景", "wide shot", "wide angle", "大远景"])) pz = -1.0;
-    if (_has(t, ["背面", "背后", "身后", "背影", "from behind", "back view"])) px = 1.0;
-    else if (_has(t, ["侧面", "侧拍", "侧视", "from the side", "side view", "profile"])) px = 0.5;
-    else if (_has(t, ["左侧", "从左", "from the left"])) px = 0.5;
-    else if (_has(t, ["右侧", "从右", "from the right"])) px = -0.5;
-    else if (_has(t, ["正面", "正对", "from front", "front view"])) px = 0.0;
-    if (_has(t, ["荷兰角", "倾斜", "dutch", "tilted"])) rl = 0.6;
-    else if (_has(t, ["水平", "level", "straight"])) rl = 0.0;
-    return [px, py, pz, rl];
   }
 
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -428,7 +405,7 @@
   class CameraUI {
     constructor(node, w) {
       this.node = node;
-      this.w = w; // {preset, nl, px, py, pz, roll, config, extra_tags}
+      this.w = w; // {preset, nl, px, py, pz, roll, config, extra_tags}; nl 仅为旧工作流兼容
       this.rootEl = null;
     }
 
@@ -438,11 +415,9 @@
       if (typeof widget.callback === "function") { try { widget.callback(value); } catch (e) {} }
     }
 
-    // 清除自然语言输入（widget 值 + 输入框文字）。手动操作（预设/画布/滑块）会显式改机位，
-    // 必须同时清 NL，否则后端执行时 NL 优先级最高，用户手动调整会被 NL 覆盖（输入框还残留旧文字）
+    // 手动操作时清除旧工作流可能带入的隐藏 nl_prompt，避免后端兼容逻辑覆盖当前机位。
     _clearNl() {
       if (this.w.nl) this._setW(this.w.nl, "");
-      if (this.nlInput) this.nlInput.value = "";
     }
 
     _applyPreset(name) {
@@ -454,16 +429,6 @@
       this._setW(this.w.roll, p.roll);
       this._setW(this.w.preset, name);
       this._clearNl();
-      this._syncControls();
-    }
-
-    _applyNl() {
-      const text = (this.w.nl?.value || "").trim();
-      if (!text) return;
-      const [px, py, pz, rl] = parseNl(text, [0, 0, 0, 0]);
-      this._setW(this.w.px, px); this._setW(this.w.py, py);
-      this._setW(this.w.pz, pz); this._setW(this.w.roll, rl);
-      this._setW(this.w.preset, "自定义");
       this._syncControls();
     }
 
@@ -743,9 +708,10 @@
         ctx.closePath(); ctx.fill();
       }
 
-      // 取景框：相机"画面"矩形，roll 绕视线旋转 → 一拖滑块就能看到画面倾斜（荷兰角）
+      // 取景框：相机"画面"矩形。Roll 只作为输出参数和文字读数，
+      // 不参与 3D 几何旋转，避免角度设置干扰左右方位判断。
       {
-        const rot = parseFloat(rl ?? 0) * Math.PI / 2;
+        const rot = 0;
         const look = v3norm(v3sub([0, 0, 0], cam));       // 视线方向（指向目标）
         let right = v3cross(look, CAM_UP);                 // 相机右方向
         if (Math.hypot(right[0], right[1], right[2]) < 1e-6) right = [1, 0, 0]; // 正上/正下时退化兜底
@@ -1137,33 +1103,6 @@
       plainRow.appendChild(plainTxt);
       container.appendChild(plainRow);
 
-      // ── 自然语言输入框（标准 widget 已隐藏，这里提供入口）──
-      const nlRow = document.createElement("div");
-      nlRow.className = "anima-cam-row";
-      const nlLbl = document.createElement("span");
-      nlLbl.className = "anima-cam-roll-label";
-      nlLbl.textContent = "自然语言";
-      const nlInput = document.createElement("input");
-      nlInput.className = "anima-cam-nl";
-      nlInput.type = "text";
-      nlInput.placeholder = "如：俯视 近景 / 从背后 全身";
-      nlInput.value = this.w.nl?.value || "";
-      nlRow.appendChild(nlLbl);
-      nlRow.appendChild(nlInput);
-      container.appendChild(nlRow);
-      this.nlInput = nlInput;
-      nlInput.addEventListener("input", () => {
-        this._setW(this.w.nl, nlInput.value);
-        if (nlInput.value && nlInput.value.trim()) {
-          const [px, py, pz, rl] = parseNl(nlInput.value, [0, 0, 0, 0]);
-          this._draw3D(px, py, pz, rl);
-          this._updatePreview(px, py, pz, rl);
-          this.stateEl.textContent = this._describe(px, py, pz, rl) + "（自然语言识别）";
-        } else {
-          this._syncControls();
-        }
-      });
-
       // ── 状态 + 预览 ──
       const stateEl = document.createElement("div");
       stateEl.className = "anima-cam-state";
@@ -1267,8 +1206,6 @@
 .anima-cam-canvas:active { cursor:grabbing; }
 .anima-cam-row { display:flex; align-items:center; gap:6px; }
 .anima-cam-roll-label { font-size:11px; color:var(--fg-color, #999); flex:0 0 auto; min-width:40px; }
-.anima-cam-nl { flex:1; min-width:0; background:var(--comfy-input-bg, #1b1e26); color:var(--fg-color, #ddd); border:1px solid var(--border-color, #383d4a); border-radius:6px; font-size:11px; padding:4px 8px; }
-.anima-cam-nl:focus { outline:none; border-color:#8b5cf6; }
 .anima-cam-track { position:relative; background:#1b1e26; border:1px solid #383d4a; border-radius:8px; touch-action:none; box-shadow:inset 0 1px 3px rgba(0,0,0,.3); }
 .anima-cam-track:hover { border-color:#6d5bd0; }
 .anima-cam-track.h.roll { flex:1; height:18px; cursor:ew-resize; }

@@ -75,6 +75,27 @@ check("尺寸数值化", m["width"] == 512 and m["height"] == 768, str((m["width
 check("file_ext/source_url", m["file_ext"] == "png" and "posts/12345" in (m["source_url"] or ""))
 check("ok/error", m["ok"] is True and m["error"] is None)
 
+print("== Prompt 分组与输出设置字段 ==")
+sel_with_groups = {
+    **sel,
+    "prompt_groups": {
+        "character": ["hatsune_miku"],
+        "general": ["long_hair", "(smile)"],
+    },
+}
+m = adg.DanbooruGallery._selection_meta(sel_with_groups, ok=True)
+check("Prompt 分组保留", m["prompt_groups"]["character"] == ["hatsune_miku"] and m["prompt_groups"]["general"][-1] == "(smile)", str(m["prompt_groups"]))
+settings = adg.DanbooruGallery._prompt_settings({
+    "categories": ["character", "general", "character", "unknown"],
+    "replaceUnderscores": False,
+    "escapeBrackets": True,
+})
+check("Prompt 设置规范化", settings == {
+    "categories": ["character", "general"],
+    "replaceUnderscores": False,
+    "escapeBrackets": True,
+}, str(settings))
+
 print("== 缺失字段 → None（旧选择数据兼容） ==")
 m = adg.DanbooruGallery._selection_meta({"image_url": "x", "prompt": "p"}, ok=False, error="boom")
 check("缺失字段 None", m["danbooru_id"] is None and m["tags"] is None and m["rating"] is None, str(m))
@@ -84,6 +105,31 @@ check("video 默认 False", m["video"] is False)
 print("== video 标记 ==")
 m = adg.DanbooruGallery._selection_meta({**sel, "video": True}, ok=True)
 check("video True", m["video"] is True)
+
+print("== 联想候选质量门槛 ==")
+tag_names = adg._positive_count_tag_names([
+    {"name": "real_tag", "post_count": 123},
+    {"name": "zero_tag", "post_count": 0},
+    {"name": "missing_count", "post_count": None},
+    {"name": "real_tag", "post_count": 456},
+])
+check("联想只保留 post_count>0", tag_names == ["real_tag"], str(tag_names))
+
+print("== Prompt 输出开关 ==")
+g = adg.DanbooruGallery()
+download_image = adg.DanbooruGallery._download_image
+adg.DanbooruGallery._download_image = staticmethod(lambda image_url: "image")
+try:
+    disabled_output = {
+        "prompt_output_enabled": False,
+        "selections": [{**sel, "prompt": "should not be emitted"}],
+    }
+    _, prompts, raw_meta = g.get_selected_data(json.dumps(disabled_output))
+    disabled_meta = json.loads(raw_meta)
+    check("关闭 Prompt 输出返回空字符串", prompts == [""], str(prompts))
+    check("关闭 Prompt 输出元数据同步为空", disabled_meta["items"][0]["prompt"] is None and disabled_meta["prompt_output_enabled"] is False, str(disabled_meta))
+finally:
+    adg.DanbooruGallery._download_image = download_image
 
 print("== 空选择分支（default 渲染） ==")
 g = adg.DanbooruGallery()

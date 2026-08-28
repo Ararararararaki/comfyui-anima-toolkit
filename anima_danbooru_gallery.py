@@ -11,6 +11,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -673,6 +674,16 @@ def _danbooru_get_image(url: str, timeout: int = 30) -> tuple[bytes, str]:
 # ---------- 模糊标签纠错（搜索无结果时把近似词替换成真实标签） ----------
 _fuzzy_cache_lock = threading.Lock()
 _fuzzy_name_cache: dict[str, list[str]] = {}
+_tag_verify_cache_lock = threading.Lock()
+_tag_verify_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_TAG_VERIFY_CACHE_TTL = 300.0
+_TAG_CATEGORY_NAMES = {
+    0: "general",
+    1: "artist",
+    3: "copyright",
+    4: "character",
+    5: "meta",
+}
 
 
 def _edit_distance(a: str, b: str) -> int:
@@ -711,7 +722,7 @@ def _fuzzy_tag_candidates(token: str, limit: int = 8) -> list[str]:
                 timeout=20,
             )
             if isinstance(data, list):
-                candidates += [str(x.get("name")) for x in data if isinstance(x, dict) and x.get("name")]
+                candidates += _positive_count_tag_names(data)
         except Exception:
             break
         if candidates:
@@ -727,6 +738,142 @@ def _fuzzy_tag_candidates(token: str, limit: int = 8) -> list[str]:
     with _fuzzy_cache_lock:
         _fuzzy_name_cache[key] = result
     return result
+
+
+def _positive_count_tag_names(items: Any) -> list[str]:
+    """只返回 D 站存在帖子记录的标签名称，排除 post_count=0 的补全候选。"""
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or not item.get("name"):
+            continue
+        try:
+            post_count = int(item.get("post_count") or 0)
+        except (TypeError, ValueError):
+            post_count = 0
+        name = str(item["name"])
+        if post_count > 0 and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
+
+
+def _normalize_tag_slug(value: Any) -> str:
+    """Danbooru 内部标签格式：小写、空格转下划线。"""
+    text = str(value or "").strip().lower()
+    return re.sub(r"\s+", "_", text)
+
+
+def _prompt_tag_text(tag: str) -> str:
+    """Anima 提示词格式：Danbooru 的下划线转普通空格。"""
+    return re.sub(r"\s+", " ", str(tag or "").replace("_", " ")).strip()
+
+
+def _normalize_zh_text(value: Any) -> str:
+    return re.sub(r"[\s\u3000]+", "", str(value or "").strip().lower())
+
+
+def _local_zh_tag_candidates(text: str, limit: int = 8) -> list[str]:
+    """从本地 Danbooru 中文词典反查标签；优先整句，随后才做较长中文片段匹配。"""
+    query = _normalize_zh_text(text)
+    if not query:
+        return []
+    translations = _load_translations()
+    exact: list[str] = []
+    fragments: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for raw_tag, raw_zh in translations.items():
+        tag = _normalize_tag_slug(raw_tag)
+        zh = _normalize_zh_text(raw_zh)
+        if not tag or not zh or tag in seen:
+            continue
+        if zh == query:
+            exact.append(tag)
+            seen.add(tag)
+        elif len(zh) >= 2 and zh in query and any("\u4e00" <= ch <= "\u9fff" for ch in zh):
+            fragments.append((len(zh), tag))
+    if exact:
+        return exact[:limit]
+    fragments.sort(key=lambda item: (-item[0], item[1]))
+    return [tag for _, tag in fragments[:limit]]
+
+
+def _remote_exact_tag(slug: str, limit: int = 4) -> list[dict[str, Any]]:
+    """验证标签是否仍存在于 Danbooru，并取类别/帖数等元数据。"""
+    key = _normalize_tag_slug(slug)
+    if not key:
+        return []
+    now = time.monotonic()
+    with _tag_verify_cache_lock:
+        cached = _tag_verify_cache.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+    result: list[dict[str, Any]] = []
+    try:
+        _rate_limiter.wait()
+        params = {"search[name_matches]": key, "search[order]": "count", "limit": limit}
+        params.update(_account_params())
+        data = _danbooru_json("https://danbooru.donmai.us/tags.json", params, timeout=20)
+        if isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                name = _normalize_tag_slug(item.get("name"))
+                if name != key:
+                    continue
+                result.append({
+                    "tag": name,
+                    "postCount": int(item.get("post_count") or 0),
+                    "category": _TAG_CATEGORY_NAMES.get(int(item.get("category") or 0), "general"),
+                })
+    except Exception:
+        result = []
+    with _tag_verify_cache_lock:
+        _tag_verify_cache[key] = (now + _TAG_VERIFY_CACHE_TTL, result)
+    return result
+
+
+def _resolve_danbooru_prompt_items(items: list[Any]) -> list[dict[str, Any]]:
+    """把中文/英文片段解析成可写入 Anima 的规范标签候选。"""
+    resolved: list[dict[str, Any]] = []
+    for index, raw in enumerate(items[:40]):
+        item = raw if isinstance(raw, dict) else {"text": raw}
+        text = str(item.get("text") or "").strip()[:300]
+        translation = str(item.get("translation") or "").strip()[:500]
+        if not text and not translation:
+            continue
+        candidates: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        # 中文词典能直接命中时优先，适合「白发」「长发」这类短标签。
+        local_tags = _local_zh_tag_candidates(text)
+        # 翻译若本身带逗号，逐段转成多个标签；最终由前端用英文逗号组装。
+        translated_parts = [p.strip() for p in re.split(r"[,，、;；]+", translation) if p.strip()]
+        translated_tags = [_normalize_tag_slug(part) for part in translated_parts]
+        for source, slugs in (("dictionary", local_tags), ("translation", translated_tags)):
+            for slug in slugs[:6]:
+                if not slug or slug in seen:
+                    continue
+                seen.add(slug)
+                verified = _remote_exact_tag(slug, limit=4)
+                meta = verified[0] if verified else {}
+                post_count = int(meta.get("postCount") or 0)
+                candidates.append({
+                    "tag": slug,
+                    "prompt": _prompt_tag_text(slug),
+                    "category": meta.get("category", ""),
+                    "postCount": post_count,
+                    "verified": post_count > 0,
+                    "matchType": "dictionary" if source == "dictionary" else "translated_exact",
+                    "confidence": 0.98 if source == "dictionary" and post_count > 0 else (0.92 if post_count > 0 else 0.72),
+                })
+        candidates.sort(key=lambda c: (not c["verified"], -float(c["confidence"]), c["tag"]))
+        resolved.append({
+            "id": str(item.get("id", index)),
+            "text": text,
+            "translation": translation,
+            "candidates": candidates[:8],
+        })
+    return resolved
 
 
 MAX_FUZZY_TOKENS = 8
@@ -1025,7 +1172,7 @@ async def anima_danbooru_suggest(request: web.Request) -> web.Response:
         return _danbooru_json("https://danbooru.donmai.us/tags.json", params, timeout=20)
     try:
         tags = await asyncio.get_running_loop().run_in_executor(None, fetch)
-        names = [x.get("name") for x in tags if isinstance(x, dict) and x.get("name")]
+        names = _positive_count_tag_names(tags)
     except Exception:
         names = []
     return web.json_response({"suggestions": names, "didYouMean": names[:3], "rewrites": names[:3]})
@@ -1042,6 +1189,25 @@ async def anima_danbooru_translate(request: web.Request) -> web.Response:
     translations = _load_translations()
     result = {str(tag): translations.get(str(tag)) for tag in tags[:160] if str(tag) in translations}
     return web.json_response({"translations": result})
+
+
+@PromptServer.instance.routes.post("/anima/danbooru/resolve")
+async def anima_danbooru_resolve(request: web.Request) -> web.Response:
+    """中文/英文片段 → Danbooru 规范标签候选；前端确认后再写入提示词。"""
+    try:
+        body = await request.json()
+    except (ValueError, AttributeError):
+        return web.json_response({"error": "请求体必须是 JSON"}, status=400)
+    items = body.get("items", []) if isinstance(body, dict) else []
+    if not isinstance(items, list):
+        return web.json_response({"error": "items 必须是数组"}, status=400)
+    try:
+        resolved = await asyncio.get_running_loop().run_in_executor(
+            None, _resolve_danbooru_prompt_items, items[:40]
+        )
+    except Exception as error:
+        return web.json_response({"error": f"标签校准失败：{error}"}, status=502)
+    return web.json_response({"items": resolved})
 
 
 @PromptServer.instance.routes.get("/anima/danbooru/fuzzy")
@@ -1131,6 +1297,39 @@ class DanbooruGallery:
         return torch.from_numpy(image_array)[None,]
 
     @staticmethod
+    def _prompt_groups(value: Any) -> dict[str, list[str]] | None:
+        """保留前端 Prompt 生成器的类别分组，供下游节点/脚本筛选。"""
+        if not isinstance(value, dict):
+            return None
+        groups: dict[str, list[str]] = {}
+        for category in ("artist", "copyright", "character", "general", "meta"):
+            tags = value.get(category)
+            if not isinstance(tags, list):
+                continue
+            clean = [str(tag).strip() for tag in tags if str(tag).strip()]
+            groups[category] = clean
+        return groups or None
+
+    @staticmethod
+    def _prompt_settings(value: Any) -> dict[str, Any] | None:
+        """规范化 Prompt 输出设置；旧工作流没有此字段时保持 None。"""
+        if not isinstance(value, dict):
+            return None
+        categories = value.get("categories")
+        if not isinstance(categories, list):
+            categories = []
+        categories = [
+            str(category)
+            for category in categories
+            if str(category) in {"artist", "copyright", "character", "general", "meta"}
+        ]
+        return {
+            "categories": list(dict.fromkeys(categories)),
+            "replaceUnderscores": value.get("replaceUnderscores") is not False,
+            "escapeBrackets": value.get("escapeBrackets") is True,
+        }
+
+    @staticmethod
     def _selection_meta(sel: dict, ok: bool, error: str | None = None) -> dict:
         """选择项 → 结构化元数据（下游筛选/复现用；字段缺失置 None）。"""
         def num(v):
@@ -1144,6 +1343,8 @@ class DanbooruGallery:
         return {
             "image_url": s(sel.get("image_url")),
             "prompt": s(sel.get("prompt")),
+            "prompt_output_enabled": bool(sel.get("prompt_output_enabled", True)),
+            "prompt_groups": DanbooruGallery._prompt_groups(sel.get("prompt_groups")),
             "danbooru_id": num(sel.get("post_id")),
             "tags": sel.get("tags") if isinstance(sel.get("tags"), list) else None,
             "rating": s(sel.get("rating")),
@@ -1160,9 +1361,14 @@ class DanbooruGallery:
 
     def get_selected_data(self, selection_data="{}"):
         try:
-            selection_list = json.loads(selection_data or "{}").get("selections", [])
+            payload = json.loads(selection_data or "{}")
+            selection_list = payload.get("selections", []) if isinstance(payload, dict) else []
+            prompt_settings = self._prompt_settings(payload.get("prompt_settings")) if isinstance(payload, dict) else None
+            prompt_output_enabled = payload.get("prompt_output_enabled", True) is not False if isinstance(payload, dict) else True
         except (TypeError, ValueError, json.JSONDecodeError):
             selection_list = []
+            prompt_settings = None
+            prompt_output_enabled = True
         if not isinstance(selection_list, list) or not selection_list:
             return ([self._empty_image()], [""], "{}")
 
@@ -1173,15 +1379,17 @@ class DanbooruGallery:
         for selection in selection_list:
             if not isinstance(selection, dict):
                 continue
-            prompt = str(selection.get("prompt", ""))
+            prompt = str(selection.get("prompt", "")) if prompt_output_enabled else ""
             image_url = str(selection.get("image_url", ""))
             try:
                 images.append(self._download_image(image_url))
                 prompts.append(prompt)
-                metadata.append(self._selection_meta(selection, ok=True))
+                output_selection = {**selection, "prompt": prompt, "prompt_output_enabled": prompt_output_enabled}
+                metadata.append(self._selection_meta(output_selection, ok=True))
             except Exception as error:
                 failures.append(f"[{prompt[:24] or image_url[:48]}] {error}")
-                metadata.append(self._selection_meta(selection, ok=False, error=str(error)))
+                output_selection = {**selection, "prompt": prompt, "prompt_output_enabled": prompt_output_enabled}
+                metadata.append(self._selection_meta(output_selection, ok=False, error=str(error)))
         if not images:
             # 不再静默输出黑图：全部下载失败 → 抛错，ComfyUI 队列停止，杜绝"图生图出黑屏"
             detail = "\n".join(f"  - {f}" for f in failures[:6])
@@ -1193,8 +1401,11 @@ class DanbooruGallery:
             )
         if len(failures) > 0:
             print(f"[D站画廊] 跳过 {len(failures)} 张下载失败的图（原图可能已失效），使用剩余 {len(images)} 张继续")
-        return (images, prompts, json.dumps(
-            {"items": metadata, "failures": failures}, ensure_ascii=False))
+        metadata_payload: dict[str, Any] = {"items": metadata, "failures": failures}
+        metadata_payload["prompt_output_enabled"] = prompt_output_enabled
+        if prompt_settings is not None:
+            metadata_payload["prompt_settings"] = prompt_settings
+        return (images, prompts, json.dumps(metadata_payload, ensure_ascii=False))
 
 
 NODE_CLASS_MAPPINGS = {DanbooruGallery.NAME: DanbooruGallery}

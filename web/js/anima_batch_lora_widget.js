@@ -1,6 +1,8 @@
 // Anima Batch LoRA Widget — 中文界面 + 桥接自动加载 + 触发词复制
 (function () {
   const NODE_NAME = "TK Batch LoRA Loader";
+  // bridge 一次性投递：已应用版本记录（localStorage），重启/刷新不重放历史残留
+  const BRIDGE_APPLIED_KEY = "anima_bridge_applied_ts";
   // 面板 URL / 图标：动态解析当前插件目录名（兼容任意 clone 目录名）
   let PANEL_BASE = "/extensions/ComfyUI-Anima-Batch-LoRA/app/";
   let ICON_URL = "/extensions/ComfyUI-Anima-Batch-LoRA/img/anima-btn.jpg";
@@ -157,14 +159,21 @@
     overlay.style.cssText = "position:fixed;inset:0;background:rgba(2,2,3,0.72);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);";
     const modal = document.createElement("div");
     modal.style.cssText = "background:#14141c;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:16px;width:94vw;max-width:520px;max-height:80vh;display:flex;flex-direction:column;color:#EDEDEF;box-shadow:0 0 0 1px rgba(255,255,255,0.05),0 20px 60px rgba(0,0,0,0.6);";
-    modal.innerHTML = `<h3 style="margin:0 0 8px;font-size:13px;">🔗 从 C 站链接批量下载 LoRA</h3>
-      <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">每行一个链接（civitai.com/models/...），可带可不带 modelVersionId</div>
+    modal.innerHTML = `<h3 style="margin:0 0 8px;font-size:13px;">🔗 从 C 站链接批量下载模型</h3>
+      <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">支持 LoRA、Checkpoint、VAE 等模型；每行一个链接，可带可不带 modelVersionId</div>
       <textarea class="bd-urls" rows="6" placeholder="https://civitai.com/models/2658471/denia-wuthering-wavesanima&#10;https://civitai.com/models/2529695/xxx?modelVersionId=3094753" style="flex:1;padding:8px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;font-family:monospace;resize:vertical;outline:none;"></textarea>
       <div style="display:flex;gap:6px;margin-top:8px;">
         <input class="bd-token" type="password" value="${(function(){ try { return localStorage.getItem('anima_civitai_token') || ''; } catch(e){ return ''; } })()}" placeholder="C 站 API Key（只读权限即可，下载需登录的模型用）" style="flex:1;padding:7px 9px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:10px;outline:none;min-width:0;">
         <button class="bd-tokenlink" title="打开 C 站账号设置（账号 → API Keys 生成，选只读权限）" style="padding:7px 10px;background:rgba(94,106,210,0.2);color:#9aa5ff;border:1px solid rgba(94,106,210,0.3);border-radius:6px;cursor:pointer;font-size:10px;flex-shrink:0;white-space:nowrap;">🔑 生成 API Key</button>
       </div>
       <div style="font-size:9px;color:#8A8F98;margin-top:4px;">只读权限的 API Key 即可下载需登录的模型</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:8px;">
+        <label style="font-size:10px;color:#BFC2CE;flex:0 0 auto;">保存到</label>
+        <select class="bd-target" title="选择 ComfyUI 已注册的模型目录" style="flex:1;min-width:0;padding:7px 8px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:10px;outline:none;">
+          <option value="auto">自动（按 C 站模型类型）</option>
+        </select>
+      </div>
+      <div class="bd-target-tip" style="font-size:9px;color:#8A8F98;margin-top:4px;">自动模式：Checkpoint → models/checkpoints，LoRA → models/loras；也可选择其他已注册目录。</div>
       <div class="bd-list" style="margin-top:8px;max-height:130px;overflow-y:auto;"></div>
       <div class="bd-log" style="margin-top:8px;max-height:60px;overflow-y:auto;font-size:10px;color:#8A8F98;white-space:pre-wrap;"></div>
       <div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end;">
@@ -180,9 +189,23 @@
     overlay.addEventListener("click", (e) => { if (e.target === overlay && _downOnOverlay) close(); });
     modal.querySelector(".bd-cancel").onclick = close;
     modal.querySelector(".bd-tokenlink").onclick = () => window.open("https://civitai.com/user/account", "_blank");
+    const targetSelect = modal.querySelector(".bd-target");
+    const targetTip = modal.querySelector(".bd-target-tip");
+    const savedTarget = (() => { try { return localStorage.getItem("anima_civitai_download_target") || "auto"; } catch { return "auto"; } })();
+    fetch("/anima/lora/download/targets")
+      .then((r) => r.json())
+      .then((data) => {
+        const targets = Array.isArray(data?.targets) ? data.targets : [];
+        if (!targets.length) return;
+        targetSelect.replaceChildren(...targets.map((target) => new Option(target.label, target.key)));
+        targetSelect.value = targets.some((target) => target.key === savedTarget) ? savedTarget : "auto";
+      })
+      .catch(() => { if (targetTip) targetTip.textContent = "目录列表加载失败，将使用自动目录；请确认 ComfyUI 后端在线。"; });
     modal.querySelector(".bd-start").onclick = async () => {
       const urls = modal.querySelector(".bd-urls").value.split("\n").map((s) => s.trim()).filter(Boolean);
       if (!urls.length) { showToast("请输入链接"); return; }
+      const targetKey = targetSelect?.value || "auto";
+      try { localStorage.setItem("anima_civitai_download_target", targetKey); } catch {}
       const logEl = modal.querySelector(".bd-log");
       const listEl = modal.querySelector(".bd-list");
       const startBtn = modal.querySelector(".bd-start");
@@ -191,7 +214,7 @@
       for (const url of urls) {
         const p = parseCivitaiUrl(url);
         if (!p) { fail++; logEl.textContent += `✗ 无法解析: ${url.slice(0,50)}\n`; continue; }
-        const qs = p.versionId ? `versionId=${p.versionId}` : `modelId=${p.modelId}`;
+        const qs = (p.versionId ? `versionId=${p.versionId}` : `modelId=${p.modelId}`) + `&target=${encodeURIComponent(targetKey)}`;
         const progressId = "dl_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
 
         // 进度条行
@@ -314,8 +337,6 @@
     grip: '<circle cx="9" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="18" r="1"/>',
     x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
     tag: '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5"/>',
-    chevronLeft: '<path d="m15 18-6-6 6-6"/>',
-    chevronRight: '<path d="m9 18 6-6-6-6"/>',
     search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
     download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
     clipboard: '<rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
@@ -370,6 +391,10 @@
         const existing = items.find((e) => e.name.toLowerCase() === name.toLowerCase());
         if (existing) {
           existing.disabled = true; // 同名项在 lora_syntax 里 → 标记禁用（恢复工作流保存的关闭状态）
+          const preservedWeight = parseFloat(disabledMap[name]);
+          if (Number.isFinite(preservedWeight) && preservedWeight >= 0 && preservedWeight <= 2) {
+            existing.weight = preservedWeight; // 禁用编码可能是 0.00，卡片仍显示用户原来的权重
+          }
         }
         // 不再 push 缺失项：localStorage 历史禁用记录不应让标签凭空出现/污染用户粘贴结果
       }
@@ -475,7 +500,7 @@
           .anima-lora-widget .lora-name { font-size:10px; min-width:50px; max-width:none; flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#C8C9CB; flex-shrink:1; cursor:pointer; padding:2px 4px; border-radius:4px; transition:all 0.15s ease-out; }
           .anima-lora-widget .lora-name:hover { background:rgba(94,106,210,0.12); color:#EDEDEF; }
           .anima-lora-widget .weight-group { display:flex; align-items:center; gap:2px; flex-shrink:0; }
-          .anima-lora-widget .weight-step { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; padding:0; border:none; border-radius:4px; background:rgba(255,255,255,0.06); color:#8A8F98; cursor:pointer; flex-shrink:0; transition:all 0.15s ease-out; }
+          .anima-lora-widget .weight-step { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; padding:0; border:none; border-radius:4px; background:rgba(255,255,255,0.06); color:#8A8F98; cursor:pointer; flex-shrink:0; transition:all 0.15s ease-out; font-family:"Geist Mono","JetBrains Mono",monospace; font-size:13px; line-height:1; font-weight:600; user-select:none; -webkit-user-select:none; }
           .anima-lora-widget .weight-step:hover { background:rgba(94,106,210,0.18); color:#EDEDEF; box-shadow:0 0 0 1px rgba(94,106,210,0.25); }
           .anima-lora-widget .weight-step:active { transform:scale(0.92); background:rgba(94,106,210,0.28); }
           .anima-lora-widget .weight-val { width:32px; font-size:9px; text-align:center; background:transparent; color:#EDEDEF; border:none; padding:1px 0; font-family:"Geist Mono","JetBrains Mono",monospace; outline:none; }
@@ -898,7 +923,8 @@
         decBtn.className = "weight-step";
         decBtn.type = "button";
         decBtn.title = "降低权重（按住左右拖动可连续调）";
-        decBtn.innerHTML = svgIcon("chevronLeft", 12);
+        decBtn.setAttribute("aria-label", "降低权重");
+        decBtn.textContent = "<";
 
         const valSpan = document.createElement("input");
         valSpan.className = "weight-val";
@@ -909,7 +935,8 @@
         incBtn.className = "weight-step";
         incBtn.type = "button";
         incBtn.title = "提高权重（按住左右拖动可连续调）";
-        incBtn.innerHTML = svgIcon("chevronRight", 12);
+        incBtn.setAttribute("aria-label", "提高权重");
+        incBtn.textContent = ">";
 
         weightGroup.append(decBtn, valSpan, incBtn);
 
@@ -1070,6 +1097,8 @@
     }
 
     // ── 从面板同步 LoRA（消费 /anima/bridge 数据，面板「发送到 ComfyUI」后节点即可看到） ──
+    // 投递语义：每个 bridge 版本只投递一次。localStorage 记录「已应用版本」，
+    // 重启/刷新不再重放历史残留（anima_bridge.json 兜底文件），用户手动删除的条目不复活。
     async _syncFromBridge(listEl, silent) {
       try {
         const resp = await fetch("/anima/bridge/status");
@@ -1078,6 +1107,11 @@
         if (!data || !data.bridge_found || !Array.isArray(data.loras) || !data.loras.length) return 0;
         const ts = data.updated_at || 0;
         if (this._lastBridgeTs && ts <= this._lastBridgeTs) return 0;
+        if (ts) {
+          let applied = 0;
+          try { applied = parseInt(localStorage.getItem(BRIDGE_APPLIED_KEY) || "0", 10) || 0; } catch (e) { applied = 0; }
+          if (ts <= applied) return 0;
+        }
         let added = 0;
         data.loras.forEach((l) => {
           if (!l || !l.name) return;
@@ -1090,6 +1124,9 @@
           }
         });
         this._lastBridgeTs = ts;
+        if (ts) {
+          try { localStorage.setItem(BRIDGE_APPLIED_KEY, String(ts)); } catch (e) {}
+        }
         if (added > 0) {
           this._commit();
           if (listEl) this._render(listEl);
