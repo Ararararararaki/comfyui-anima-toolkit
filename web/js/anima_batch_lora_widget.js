@@ -340,25 +340,26 @@
     };
   }
 
-  // ── 更新指引弹窗：有新版时显示两种更新方式 ──
-  function showUpdateGuide(v) {
+  // ── 更新弹窗：提交检查 + 一键安全更新 ──
+  function showUpdateDialog(v, onApplied) {
     const overlay = document.createElement("div");
     overlay.style.cssText = "position:fixed;inset:0;background:rgba(2,2,3,0.72);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);";
     const modal = document.createElement("div");
+    modal.className = "ug-modal";
     modal.style.cssText = "background:#14141c;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:16px;width:94vw;max-width:520px;max-height:80vh;overflow-y:auto;color:#EDEDEF;box-shadow:0 0 0 1px rgba(255,255,255,0.05),0 20px 60px rgba(0,0,0,0.6);";
-    modal.innerHTML = `<h3 style="margin:0 0 6px;font-size:13px;">🔄 发现新版本 ${v.latest || "?"}（当前 ${v.version || "?"}）</h3>
-      <div style="font-size:10px;color:#8A8F98;margin-bottom:10px;">任选一种方式更新，完成后重启 ComfyUI。</div>
-      <div style="font-weight:600;font-size:11px;margin-bottom:4px;">方式 1（增量，推荐）</div>
-      <div style="color:#C8C9CB;background:#0a0a0c;border:1px solid rgba(255,255,255,0.06);border-radius:6px;padding:8px;font-family:monospace;font-size:10px;margin-bottom:8px;line-height:1.6;">
-        打开 custom_nodes/ComfyUI-Anima-Batch-LoRA 目录 → 右键在终端打开 → 输入：<br><b>git pull</b><br>然后重启 ComfyUI
-      </div>
-      <div style="font-weight:600;font-size:11px;margin-bottom:4px;">方式 2（小白友好）</div>
+    const commitText = v.localCommit && v.remoteCommit ? `<div style="font-size:10px;color:#8A8F98;margin-bottom:8px;font-family:monospace;">${v.localCommit.slice(0, 8)} → ${v.remoteCommit.slice(0, 8)}</div>` : "";
+    const autoAvailable = v.canAutoUpdate !== false && Boolean(v.remoteCommit);
+    modal.innerHTML = `<h3 style="margin:0 0 6px;font-size:13px;">🔄 发现更新 ${v.latest || "?"}（当前 ${v.version || "?"}）</h3>
+      <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">${autoAvailable ? "可安全下载并覆盖发布文件；不会删除 data、模型或用户配置。" : "自动更新不可用，可打开 GitHub 手动更新。"}</div>
+      ${commitText}
+      <div class="ug-status" style="display:none;margin-bottom:10px;padding:7px 8px;border:1px solid rgba(155,178,182,.35);border-radius:6px;color:#c2d7d9;background:rgba(155,178,182,.08);font-size:10px;line-height:1.5;"></div>
       <div style="color:#C8C9CB;background:#0a0a0c;border:1px solid rgba(255,255,255,0.06);border-radius:6px;padding:8px;font-size:10px;margin-bottom:10px;line-height:1.6;">
-        GitHub 仓库页 → 绿色 Code → Download ZIP → 解压并覆盖到 custom_nodes/ComfyUI-Anima-Batch-LoRA → 重启 ComfyUI
+        更新完成后必须通过绘世 GUI 重启 ComfyUI，前端页面再按 <b>Ctrl + Shift + R</b> 强制刷新。
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;">
         <button class="ug-close" style="padding:5px 12px;background:rgba(255,255,255,0.08);color:#8A8F98;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;font-size:11px;">关闭</button>
-        <button class="ug-goto" style="padding:5px 14px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:6px;cursor:pointer;font-size:11px;">前往 GitHub</button>
+        <button class="ug-goto" style="padding:5px 14px;background:rgba(255,255,255,0.08);color:#EDEDEF;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;font-size:11px;">手动更新</button>
+        ${autoAvailable ? '<button class="ug-apply" style="padding:5px 14px;background:linear-gradient(135deg,#d0c9bb,#f0ece4);color:#17191b;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:650;">一键更新</button>' : ""}
       </div>`;
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
@@ -366,6 +367,35 @@
     overlay.onclick = (e) => { if (e.target === overlay) close(); };
     modal.querySelector(".ug-close").onclick = close;
     modal.querySelector(".ug-goto").onclick = () => window.open(v.url || "https://github.com/Ararararararaki/comfyui-anima-toolkit", "_blank");
+    const status = modal.querySelector(".ug-status");
+    const apply = modal.querySelector(".ug-apply");
+    apply?.addEventListener("click", async () => {
+      apply.disabled = true;
+      apply.textContent = "更新中…";
+      if (status) { status.style.display = "block"; status.textContent = "正在下载并校验更新包，请不要关闭 ComfyUI…"; }
+      try {
+        const response = await fetch("/anima/update/apply", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expectedCommit: v.remoteCommit || "" }),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        if (result.alreadyLatest) {
+          if (status) status.textContent = "当前已经是最新版本。";
+          apply.textContent = "已是最新";
+          return;
+        }
+        if (status) status.textContent = `更新完成：覆盖 ${result.updatedFiles || 0} 个发布文件。${result.restartHint || "请重启 ComfyUI"}`;
+        apply.textContent = "更新完成";
+        showToast("✅ 插件已更新，请通过绘世 GUI 重启 ComfyUI");
+        onApplied?.(result);
+      } catch (error) {
+        if (status) status.textContent = `更新失败：${error.message || error}`;
+        apply.disabled = false;
+        apply.textContent = "重试更新";
+      }
+    });
   }
 
   let _toastEl = null;
@@ -389,6 +419,7 @@
   const _ICON_PATHS = {
     grip: '<circle cx="9" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="18" r="1"/>',
     x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    check: '<path d="m5 12 4 4L19 6"/>',
     tag: '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5"/>',
     search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
     download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
@@ -638,23 +669,50 @@
       const updateBtn = this._btn("更新", "btn-browse", "检查插件版本更新", "refresh");
       toolbar.append(verifyBtn, extractBtn, copyAllTwBtn, browseBtn, groupsBtn, clearBtn, panelBtn, updateBtn);
 
-      // 检查更新：点击手动检查；build 后自动查一次，有新版时按钮高亮成「有新版本」
-      updateBtn.onclick = () => {
-        fetch("/anima/version").then((r) => r.json()).then((v) => {
-          if (v && v.behind) showToast(`🔄 有新版本 ${v.latest}（当前 ${v.version}），可点按钮前往 GitHub 更新`);
-          else if (v && v.latest) showToast(`当前已是最新版本 ${v.version}`);
-          else showToast("⚠️ 无法检查更新（网络或 GitHub 不可达）");
-        }).catch(() => showToast("⚠️ 无法检查更新"));
+      // 更新检查：版本号 + 提交/文件指纹；手动检查强制刷新，页面存续期间每 5 分钟复查。
+      let updateInfo = null;
+      let updateCheckBusy = false;
+      const updateAvailable = (info) => Boolean(info && (info.updateAvailable ?? info.behind));
+      const markUpdateApplied = (result) => {
+        updateInfo = { ...(updateInfo || {}), updateAvailable: false, behind: false, version: result.version || updateInfo?.latest };
+        updateBtn.disabled = true;
+        updateBtn.innerHTML = svgIcon("check", 12) + '<span>需重启</span>';
+        updateBtn.title = "插件文件已更新，请通过绘世启动器重启 ComfyUI";
       };
-      setTimeout(() => {
-        fetch("/anima/version").then((r) => r.json()).then((v) => {
-          if (v && v.behind) {
-            updateBtn.innerHTML = svgIcon("refresh", 12) + '<span>有新版本</span>';
-            updateBtn.title = `当前 ${v.version}，最新 ${v.latest}，点击查看更新方式`;
-            updateBtn.onclick = () => showUpdateGuide(v);
-          }
-        }).catch(() => {});
-      }, 2000);
+      const setUpdateButton = (info) => {
+        updateInfo = info || null;
+        updateBtn.disabled = false;
+        if (updateAvailable(info)) {
+          updateBtn.innerHTML = svgIcon("refresh", 12) + '<span>一键更新</span>';
+          updateBtn.title = `当前 ${info.version || "?"}，最新 ${info.latest || "?"}，点击执行安全更新`;
+          updateBtn.onclick = () => showUpdateDialog(updateInfo, markUpdateApplied);
+        } else {
+          updateBtn.innerHTML = svgIcon("refresh", 12) + '<span>更新</span>';
+          updateBtn.title = "立即检查插件更新";
+          updateBtn.onclick = () => checkUpdate(true, true);
+        }
+      };
+      const checkUpdate = (notify = false, force = false) => {
+        if (updateCheckBusy) return;
+        updateCheckBusy = true;
+        if (notify) updateBtn.disabled = true;
+        const query = force ? "?force=1" : "";
+        fetch("/anima/version" + query)
+          .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+          .then((info) => {
+            setUpdateButton(info);
+            if (notify) {
+              if (updateAvailable(info)) showUpdateDialog(info, markUpdateApplied);
+              else if (info?.latest) showToast(`当前已是最新版本 ${info.latest}`);
+              else showToast("⚠️ 无法检查更新（GitHub 网络不可达）");
+            }
+          })
+          .catch((error) => { if (notify) showToast(`⚠️ 无法检查更新：${error.message || error}`); })
+          .finally(() => { updateCheckBusy = false; if (!updateInfo || !updateAvailable(updateInfo)) updateBtn.disabled = false; });
+      };
+      setUpdateButton(null);
+      setTimeout(() => checkUpdate(false, false), 2000);
+      this._updateTimer = setInterval(() => checkUpdate(false, false), 5 * 60 * 1000);
 
       const statusEl = document.createElement("div");
       statusEl.className = "status";
@@ -718,6 +776,7 @@
       const origRemoved = this.node.onRemoved;
       this.node.onRemoved = function () {
         if (ui._bridgeTimer) { clearInterval(ui._bridgeTimer); ui._bridgeTimer = null; }
+        if (ui._updateTimer) { clearInterval(ui._updateTimer); ui._updateTimer = null; }
         if (typeof origRemoved === "function") return origRemoved.apply(this, arguments);
       };
     }

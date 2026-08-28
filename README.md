@@ -20,6 +20,7 @@
 - **「提取触发词 / 全部触发词」**:从当前标签里快速取用触发词
 - **「组」**:把常用的 LoRA 组合存起来,一键切换
 - **「面板」按钮**:直达本地管理面板
+- **「更新」按钮**:自动检查版本号、Git 提交和发布文件指纹;发现更新后可安全一键更新
 
 ### 2. 本地 LoRA 管理(面板)
 
@@ -139,7 +140,25 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/Ararararararaki/comfyui-anima-toolkit.git
 ```
 
-然后重启 ComfyUI。app 目录已经预先构建好,不用装依赖也不用重新构建,克隆完就能用。
+然后通过绘世启动器重启 ComfyUI。app 目录已经预先构建好,不用装依赖也不用重新构建,克隆完就能用。
+
+### 插件更新
+
+TK 批量 LoRA 加载器的「更新」按钮会在节点加载后检查一次,之后每 5 分钟复查一次。手动点击「更新」会立即强制检查;检查的不只是 `VERSION`,还包括 GitHub `main` 的提交和发布文件指纹,因此同一版本号下的代码推送也能被发现。
+
+发现更新后点击「一键更新」,后端会从 GitHub 下载更新 ZIP,完整下载并校验目录结构后,只覆盖插件发布文件(`__init__.py`、`anima_*.py`、`web/`、`app/` 等)。更新过程不会删除或覆盖 `data/`、模型、`input/`、`outputs/`、凭据和用户配置;校验失败也不会替换现有文件。
+
+更新完成后必须使用绘世启动器重启 ComfyUI,再在浏览器按 `Ctrl + Shift + R` 强制刷新。关闭节点窗口或浏览器不会影响更新请求,但结束 ComfyUI 进程会中断正在下载的更新包。
+
+如果「一键更新」因网络、权限或运行目录不可写而失败,可使用下面的手动方式:
+
+```text
+Git 安装: 在 custom_nodes/ComfyUI-Anima-Batch-LoRA 目录执行 git pull
+ZIP 安装: 下载 GitHub → Code → Download ZIP,将 ZIP 内层的仓库内容覆盖到
+          ComfyUI/custom_nodes/ComfyUI-Anima-Batch-LoRA
+```
+
+ZIP 安装后必须确认 `custom_nodes/ComfyUI-Anima-Batch-LoRA/__init__.py` 直接存在,不能多套一层 `仓库名-main/` 目录。更新和手动覆盖都完成后,仍需通过绘世启动器重启 ComfyUI。
 
 ## 开发者:从源码重建面板
 
