@@ -49,4 +49,10 @@ with_extension = module._find_lora_path(r"illustrious/NiffiV1.3-000018.safetenso
 assert without_extension == r"C:\models\Illustrious\NiffiV1.3-000018.safetensors", without_extension
 assert with_extension == r"C:\models\Illustrious\NiffiV1.3-000018.safetensors", with_extension
 assert module._normalize_lora_name(r"./Styles\Detail") == "styles/detail"
+listed = module._list_lora_entries()
+assert {item["relativePath"] for item in listed} == {
+    "Illustrious/NiffiV1.3-000018.safetensors",
+    "styles/detail.safetensors",
+}, listed
+assert next(item for item in listed if item["name"] == "styles/detail")["filename"] == "styles/detail.safetensors"
 print("PASS TK LoRA 子目录标签支持反斜杠/正斜杠及带扩展名引用")

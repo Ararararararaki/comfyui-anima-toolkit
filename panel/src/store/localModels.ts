@@ -3,6 +3,7 @@ import type { LocalLoraFile, LocalLoraMatch, PngMeta, TagFreq, LocalScanStatus }
 import { Cache } from './cache'
 import { fetchModelVersionByHash, fetchModelById } from '../api/civitai'
 import { showToast, stripExt } from '../utils'
+import { collectLoraFiles, isLoraFileName, normalizeRelativeLoraPath, pickerRelativeLoraPath, removeLoraFile } from '../services/localLoraScanner'
 
 let _lastBackendSync = 0
 
@@ -37,8 +38,9 @@ function pickDirFiles(): Promise<{ name: string; file: File }[]> {
       const files = Array.from(input.files || [])
       resolve(
         files
-          .filter((f) => /\.(safetensors|pt|ckpt|pth)$/i.test(f.name))
-          .map((f) => ({ name: f.name, file: f }))
+          .filter((f) => isLoraFileName(f.name))
+          .map((f) => ({ name: pickerRelativeLoraPath(f), file: f }))
+          .filter((entry) => entry.name.length > 0)
       )
     }
     input.oncancel = () => resolve([])
@@ -364,16 +366,7 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
           set({ dirHandle, scanStatus: 'scanning', scanProgress: { done: 0, total: 0 } })
           get().saveDirHandle()
           dirName = dirHandle.name
-          const iter = dirHandle.entries()
-          for (;;) {
-            const next = await iter.next()
-            if (next.done) break
-            const [name, handle] = next.value as [string, FileSystemFileHandle]
-            if ((handle as any).kind === 'file' && /\.(safetensors|pt|ckpt|pth)$/i.test(name)) {
-              const file = await handle.getFile()
-              entries.push({ name, file })
-            }
-          }
+          entries = await collectLoraFiles(dirHandle)
         } catch (e) {
           if ((e as Error).name === 'AbortError' || (e as Error).message?.includes('abort')) {
             set({ scanStatus: 'idle' })
@@ -409,22 +402,22 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
 
       for (let i = 0; i < entries.length; i++) {
         const { name, file } = entries[i]
-        const key = `${name}|${file.size}|${file.lastModified}`
+        const relativeName = normalizeRelativeLoraPath(name)
 
-        const cached = oldManifest[name]
+        const cached = oldManifest[relativeName]
         if (cached && cached.size === file.size && cached.lastModified === file.lastModified) {
           // 未变更: 保留上次的 sha256 和匹配状态
           unchanged++
-          const prev = oldFileMap.get(name)
+          const prev = oldFileMap.get(relativeName)
           results.push({
-            name, path: name, size: file.size, lastModified: file.lastModified,
+            name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
             sha256: cached.sha256,
             matched: prev?.matched || false,
             matchData: prev?.matchData || null,
             matchError: prev?.matchError || '',
             scanning: false,
           })
-          newManifest[name] = cached
+          newManifest[relativeName] = { ...cached, name: relativeName }
         } else {
           // 新文件或变更文件: 算 SHA-256
           const buf = await file.arrayBuffer()
@@ -432,10 +425,10 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
           const hashArr = Array.from(new Uint8Array(hashBuf))
           const sha256 = hashArr.map(b => b.toString(16).padStart(2, '0')).join('')
           results.push({
-            name, path: name, size: file.size, lastModified: file.lastModified,
+            name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
             sha256, matched: false, matchData: null, matchError: '', scanning: false,
           })
-          newManifest[name] = { name, size: file.size, lastModified: file.lastModified, sha256 }
+          newManifest[relativeName] = { name: relativeName, size: file.size, lastModified: file.lastModified, sha256 }
           if (cached) changed++; else added++
         }
         progressShow(i + 1, total, `扫描  (新${added} 变${changed} 同${unchanged})`)
@@ -443,7 +436,7 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       }
 
       // 清理 manifest 中已删除的文件，并统计"减少的 LoRA"
-      const currentNames = new Set(entries.map(e => e.name))
+      const currentNames = new Set(entries.map(e => normalizeRelativeLoraPath(e.name)))
       const removedNames = oldFiles.filter(f => !currentNames.has(f.name)).map(f => f.name)
       for (const k of Object.keys(oldManifest)) {
         if (!currentNames.has(k)) delete oldManifest[k]
@@ -547,7 +540,7 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       return
     }
     try {
-      await dh.removeEntry(name)
+      await removeLoraFile(dh, name)
       set(s => ({ files: s.files.filter(x => x.name !== name) }))
       // 同步清理 manifest
       const m = { ...get().manifest }
@@ -622,17 +615,13 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       const perm = await (dh as any).requestPermission({ mode: 'readwrite' })
       if (perm !== 'granted') return 0
       const oldManifest = get().manifest || {}
+      const entries = await collectLoraFiles(dh)
       let count = 0
-      const iter = (dh as any).entries()
-      for (;;) {
-        const next = await iter.next()
-        if (next.done) break
-        const [name, handle] = next.value as [string, FileSystemFileHandle]
-        if ((handle as any).kind !== 'file') continue
-        if (!/\.(safetensors|pt|ckpt|pth)$/i.test(name)) continue
+      for (const entry of entries) {
+        const name = normalizeRelativeLoraPath(entry.name)
         const cached = oldManifest[name]
         if (!cached) { count++; continue }
-        const file = await handle.getFile()
+        const file = entry.file
         if (file.size !== cached.size || file.lastModified !== cached.lastModified) count++
       }
       set({ newFileCount: count })

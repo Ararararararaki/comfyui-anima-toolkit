@@ -97,6 +97,47 @@ def _find_lora_path(lora_name: str) -> str | None:
     return None
 
 
+def _normalize_lora_list_path(value: str) -> str:
+    """Return a portable path relative to the configured loras directory."""
+    parts = str(value or "").strip().replace("\\", "/").split("/")
+    if ".." in parts:
+        return ""
+    return "/".join(part for part in parts if part and part != ".")
+
+
+def _list_lora_entries() -> list[dict]:
+    """Build the browser list from ComfyUI's recursive lora index.
+
+    ``folder_paths.get_filename_list`` already walks every registered lora
+    root and its subdirectories.  Normalize only the API representation so
+    the same workflow works on Windows and POSIX hosts while resolution still
+    goes through the original ComfyUI path lookup.
+    """
+    entries = []
+    for raw_filename in folder_paths.get_filename_list("loras"):
+        filename = _normalize_lora_list_path(raw_filename)
+        if not filename:
+            continue
+        name_no_ext = os.path.splitext(filename)[0]
+        full = folder_paths.get_full_path("loras", raw_filename)
+        size, mtime = 0, 0.0
+        if full and os.path.isfile(full):
+            try:
+                stat = os.stat(full)
+                size, mtime = stat.st_size, stat.st_mtime
+            except OSError:
+                pass
+        entries.append({
+            "filename": filename,
+            "relativePath": filename,
+            "name": name_no_ext,
+            "ext": os.path.splitext(filename)[1],
+            "size": size,
+            "lastModified": mtime,
+        })
+    return entries
+
+
 def _parse_lora_syntax(text: str) -> list[dict]:
     """Parse <lora:name:strength> or <lora:name:model_strength:clip_strength>."""
     pattern = r"<lora:([^:>]+):([^:>]+)(?::([^:>]+))?>"
@@ -305,27 +346,8 @@ async def verify_bridge(request):
 
 @PromptServer.instance.routes.get("/anima/loras")
 async def list_loras(request):
-    """List all available LoRA files for the widget browser."""
-    all_loras = folder_paths.get_filename_list("loras")
-    loras = []
-    for f in all_loras:
-        name_no_ext = os.path.splitext(f)[0]
-        # 补 size/lastModified：widget 前端「按大小/按日期」排序依赖这两个字段
-        size, mtime = 0, 0.0
-        full = folder_paths.get_full_path("loras", f)
-        if full and os.path.isfile(full):
-            try:
-                st = os.stat(full)
-                size, mtime = st.st_size, st.st_mtime
-            except OSError:
-                pass
-        loras.append({
-            "filename": f,
-            "name": name_no_ext,
-            "ext": os.path.splitext(f)[1],
-            "size": size,
-            "lastModified": mtime,
-        })
+    """List all available LoRA files, including every registered subdirectory."""
+    loras = _list_lora_entries()
     return web.json_response({"loras": loras, "total": len(loras)})
 
 

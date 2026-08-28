@@ -1489,7 +1489,7 @@
       modal.style.cssText = "background:linear-gradient(180deg,rgba(20,20,28,0.9),rgba(10,10,14,0.95)),radial-gradient(ellipse at top,rgba(94,106,210,0.06),transparent 60%);border-radius:14px;padding:16px;width:94vw;max-width:980px;max-height:88vh;display:flex;flex-direction:column;border:1px solid rgba(255,255,255,0.10);box-shadow:0 0 0 1px rgba(255,255,255,0.05),0 24px 70px rgba(0,0,0,0.7),0 0 100px rgba(94,106,210,0.08),inset 0 1px 0 0 rgba(255,255,255,0.06);";
       modal.innerHTML = `
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
-          <h3 style="margin:0;font-size:13px;color:#EDEDEF;font-weight:600;">📂 本地 LoRA</h3>
+          <h3 style="margin:0;font-size:13px;color:#EDEDEF;font-weight:600;">📂 本地 LoRA（含子目录）</h3>
           <span style="font-size:10px;color:rgba(255,255,255,0.35);" class="bm-total"></span>
           <span style="flex:1"></span>
           <button class="bm-mode" style="padding:3px 8px;background:rgba(94,106,210,0.2);color:#9aa5ff;border:1px solid rgba(94,106,210,0.3);border-radius:5px;cursor:pointer;font-size:9px;">☰ 列表</button>
