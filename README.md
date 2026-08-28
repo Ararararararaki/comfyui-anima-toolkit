@@ -95,7 +95,7 @@ Steam 风格界面,管理全部本地 LoRA:
   - **模糊搜索 + 回车直搜**:搜索不必完全匹配标签——输入近似词/拼写错误(如 `standin`)精确搜不到时会自动纠错成真实标签(如 `standing`)并重搜出图,搜索框同步更新为正确标签;搜索框直接按 **回车** 即可搜索,无需点「搜索」按钮。
 - **TK 批量 LoRA 加载器**:见第 1 节——批量挂 LoRA、触发词/全部触发词一键复制、本地 LoRA 可视化浏览、权重滑块、分组保存
 - **TK 图像选择**:多路图像路由(image1~image8,**用几路接几路 2~8 任意**;未接的自动跳过、至少一路有效)。**五种路由模式**:优先顺序(默认,首选为空自动按 image1→image8 兜底)/ 指定索引 / 随机 / Seed 稳定(同 seed 可复现) / 轮询(循环换源);另输出 **source_index(来源编号 1~8)+ source_name(imageN)**,下游可精确知道图源。典型场景:D站画廊图源接 image1、自定义图源接 image2/3…,生图来源一键切换,不必改连线;输出恒为列表,兼容 D站画廊列表输出与下游单输入节点
-- **TK Prompt Cards**(提示词卡片库编辑器):英中对照 tag 卡片拼/存提示词、②区中文片段选择翻译源并校准为 Danbooru 规范标签（支持单条翻译/自然语言语义解析；自动回退含本地 Argos，DeepLX 按需启动）、批文件一键切换、工具箱 Prompt 库条目双击弹窗编辑保存、①区库面板高度可拖拽调整、可选 CLIP 直接编码输出 CONDITIONING、`lora_syntax` 直连批量 LoRA 节点、LLM 自动分类、PNG 解析、导出批词文件
+- **TK Prompt Cards**(提示词卡片库编辑器):英中对照 tag 卡片拼/存提示词、②区中文片段选择翻译源并校准为 Danbooru 规范标签（支持单条翻译/自然语言语义解析；自动回退含本地 Argos，DeepLX 按需启动；支持百度翻译 APPID + API Key，设置位于翻译状态中的“百度设置”，接口参考[百度官方文档](https://fanyi-api.baidu.com/doc/21)）、批文件一键切换、工具箱 Prompt 库条目双击弹窗编辑保存、①区库面板高度可拖拽调整、可选 CLIP 直接编码输出 CONDITIONING、`lora_syntax` 直连批量 LoRA 节点、LLM 自动分类、PNG 解析、导出批词文件
 - **TK Trigger Words**(触发词):从 `<lora:name:weight>` 提取触发词(bridge 触发词优先,无记录时文件名兜底),支持手动追加、卡片编辑、一键复制
 - **TK Text Join**(文本合并):按逗号/空格/换行合并 4 路文本,自动清理连续逗号
 - **TK 空Latent**(预设空 Latent):Anima/Cosmos 5D 单帧空 latent,常用尺寸预设

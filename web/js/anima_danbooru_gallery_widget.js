@@ -153,6 +153,14 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
     return tokens.join(" ");
   }
 
+  function formatCount(value) {
+    const count = Number(value);
+    if (!Number.isFinite(count) || count <= 0) return "";
+    if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(count < 10_000_000 ? 1 : 0).replace(/\.0$/, "")}m`;
+    if (count >= 1_000) return `${(count / 1_000).toFixed(count < 10_000 ? 1 : 0).replace(/\.0$/, "")}k`;
+    return String(Math.round(count));
+  }
+
   function countedSearchTerms(query) {
     return String(query || "").split(/\s+/).filter(Boolean).filter((rawToken) => {
       const token = rawToken.replace(/^[-~]+/, "").toLowerCase();
@@ -197,6 +205,10 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.grid = null;
       this.status = null;
       this.suggestions = null;
+      this.suggestionRequestId = 0;
+      this.suggestionTimer = null;
+      this.suggestionController = null;
+      this.positionSuggestionsHandler = () => this.positionSuggestions();
       this.selectionWidget = null;
       this.queryWidget = null;
       this.queryInput = null;
@@ -272,12 +284,50 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.status.dataset.tone = tone;
     }
 
+    hideSuggestions() {
+      if (this.suggestionTimer) {
+        clearTimeout(this.suggestionTimer);
+        this.suggestionTimer = null;
+      }
+      this.suggestionController?.abort();
+      this.suggestionController = null;
+      this.suggestionRequestId += 1;
+      if (!this.suggestions) return;
+      this.suggestions.textContent = "";
+      this.suggestions.classList.remove("is-localized");
+      this.suggestions.style.display = "none";
+    }
+
+    positionSuggestions() {
+      const input = this.queryInput;
+      const suggestions = this.suggestions;
+      if (!input || !suggestions || suggestions.style.display === "none") return;
+      const rect = input.getBoundingClientRect();
+      suggestions.style.top = `${Math.round(rect.bottom + 3)}px`;
+      suggestions.style.left = `${Math.round(rect.left)}px`;
+      suggestions.style.width = `${Math.round(rect.width)}px`;
+    }
+
+    scheduleSuggestions(value) {
+      if (this.suggestionTimer) clearTimeout(this.suggestionTimer);
+      const query = String(value ?? "");
+      if (!query.trim()) {
+        this.hideSuggestions();
+        return;
+      }
+      this.suggestionTimer = setTimeout(() => {
+        this.suggestionTimer = null;
+        this.fetchSuggestions(query);
+      }, 180);
+    }
+
     // 同步搜索框内容到 DOM 输入 + 隐藏的序列化 widget（两者始终一致）
     setQuery(value) {
       const v = String(value ?? "");
       if (this.queryInput) this.queryInput.value = v;
       if (this.queryWidget) this.queryWidget.value = v;
-      this.fetchSuggestions(v);
+      if (this.queryInput && document.activeElement === this.queryInput) this.scheduleSuggestions(v);
+      else this.hideSuggestions();
     }
 
     currentQuery() {
@@ -490,14 +540,81 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.setStatus(`分类「${catName}」：${posts.length} 张已归类图片（覆盖全部搜索历史）${missing ? `，${missing} 张原图已失效跳过` : ""}`);
     }
 
-    async fetchSuggestions(q, empty = false) { if (!this.suggestions || !q?.trim()) return; try { const d = await (await fetch(`/anima/danbooru/suggest?q=${encodeURIComponent(q)}`)).json(); const a = empty ? d.didYouMean : d.suggestions; const r = d.rewrites || []; this.suggestions.innerHTML = a?.length ? `${empty ? '你是不是想搜：' : '智能提示：'}${a.map(x => `<button data-q="${x}">${x}</button>`).join('')} ${r.length ? `扩展：${r.join(' / ')}` : ''}` : ''; this.suggestions.querySelectorAll('button').forEach(b => b.onclick = () => {
-        // 智能提示 = 词级替换：只替换光标所在标签（保留其余标签）；「你是不是想搜」为空结果纠错，整栏替换
-        const input = this.queryInput;
-        const raw = input?.value ?? this.queryWidget?.value ?? "";
-        const pos = input?.selectionStart ?? raw.length;
-        this.setQuery(empty ? b.dataset.q : replaceWordAt(raw, pos, b.dataset.q));
-        this.search({ resetPage: true });
-      }); } catch {} }
+    async fetchSuggestions(q, empty = false) {
+      if (!this.suggestions || !q?.trim()) {
+        this.hideSuggestions();
+        return;
+      }
+      this.suggestionController?.abort();
+      this.suggestionController = new AbortController();
+      const requestId = ++this.suggestionRequestId;
+      try {
+        const response = await fetch(`/anima/danbooru/suggest?q=${encodeURIComponent(q)}`, { signal: this.suggestionController.signal });
+        const d = await response.json();
+        if (requestId !== this.suggestionRequestId || !this.suggestions) return;
+        const names = empty ? d.didYouMean : d.suggestions;
+        const details = !empty && Array.isArray(d.suggestionDetails) ? d.suggestionDetails : [];
+        const choices = details.length ? details : (Array.isArray(names) ? names : []);
+        const rewrites = Array.isArray(d.rewrites) ? d.rewrites : [];
+        const chineseQuery = [...String(q)].some((char) => /[\u4e00-\u9fff]/.test(char));
+        this.suggestions.textContent = "";
+        this.suggestions.classList.toggle("is-localized", details.length > 0);
+        this.suggestions.style.display = choices.length ? "flex" : "none";
+        if (!choices.length) return;
+        this.positionSuggestions();
+
+        const label = document.createElement("span");
+        label.className = "adg-suggestions-label";
+        label.textContent = details.length
+          ? (chineseQuery ? "中文匹配" : "智能提示")
+          : (empty ? "你是不是想搜" : "智能提示");
+        this.suggestions.append(label);
+
+        for (const choice of choices) {
+          const item = choice && typeof choice === "object" ? choice : { tag: choice };
+          const target = String(item.tag || item.query || "").trim();
+          if (!target) continue;
+          const button = document.createElement("button");
+          button.type = "button";
+          button.dataset.q = target;
+          button.onpointerdown = (event) => event.stopPropagation();
+          button.onmousedown = (event) => event.stopPropagation();
+          if (details.length) {
+            button.className = "adg-localized-suggestion";
+            const tag = document.createElement("span");
+            const translation = document.createElement("span");
+            const arrow = document.createElement("span");
+            const count = document.createElement("span");
+            tag.className = "adg-suggestion-tag";
+            translation.className = "adg-suggestion-translation";
+            arrow.className = "adg-suggestion-arrow";
+            count.className = "adg-suggestion-count";
+            tag.textContent = target.replaceAll("_", " ");
+            translation.textContent = String(item.translation || "");
+            arrow.textContent = translation.textContent ? " → " : "";
+            count.textContent = Number(item.postCount) > 0 ? formatCount(item.postCount) : "";
+            button.append(...(chineseQuery ? [translation, arrow, tag, count] : [tag, arrow, translation, count]));
+          } else {
+            button.textContent = target.replaceAll("_", " ");
+          }
+          button.onclick = () => {
+            // 智能提示 = 词级替换：只替换光标所在标签（保留其余标签）；「你是不是想搜」整栏替换
+            const input = this.queryInput;
+            const raw = input?.value ?? this.queryWidget?.value ?? "";
+            const pos = input?.selectionStart ?? raw.length;
+            this.setQuery(empty ? target : replaceWordAt(raw, pos, target));
+            this.search({ resetPage: true });
+          };
+          this.suggestions.append(button);
+        }
+        if (rewrites.length) {
+          const extension = document.createElement("span");
+          extension.className = "adg-suggestions-extension";
+          extension.textContent = `扩展：${rewrites.join(" / ")}`;
+          this.suggestions.append(extension);
+        }
+      } catch {}
+    }
 
     // 模糊纠错后自动重搜（仅执行一次；此后用户再点搜索会走新的精确词）
     async fuzzyRetry(query) {
@@ -514,11 +631,12 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
 
     updateSelection() {
       const promptOutputEnabled = this.settings.promptOutputEnabled !== false;
+      const imageSelections = [];
       const selected = [...this.grid.querySelectorAll(".adg-card.is-selected")].map((card) => {
         const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
         let promptGroups = {};
         try { promptGroups = JSON.parse(card.dataset.promptGroups || "{}"); } catch { promptGroups = {}; }
-        return {
+        const selection = {
           image_url: card.dataset.imageUrl || "",
           prompt: promptOutputEnabled ? (card.dataset.prompt || "") : "",
           post_id: card.dataset.postId || "",
@@ -533,8 +651,11 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           video: card.dataset.video === "1",
           source_url: card.dataset.sourceUrl || "",
         };
+        // 图片输出拥有独立的数据通道；Prompt 关闭时仍保留同一批图片 URL。
+        imageSelections.push({ image_url: selection.image_url });
+        return selection;
       });
-      const value = JSON.stringify({ prompt_output_enabled: promptOutputEnabled, prompt_settings: this.promptOutputSettings(), selections: selected });
+      const value = JSON.stringify({ prompt_output_enabled: promptOutputEnabled, prompt_settings: this.promptOutputSettings(), selections: selected, image_selections: imageSelections });
       this.selectionWidget.value = value;
       this.selectionWidget.callback?.(value);
       this.node.graph?.change?.();
@@ -1919,8 +2040,12 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       queryInput.addEventListener("click", (e) => { e.stopPropagation(); focusLock(); });
       queryInput.oninput = () => {
         if (this.queryWidget) this.queryWidget.value = queryInput.value;
-        this.fetchSuggestions(queryInput.value);
+        this.scheduleSuggestions(queryInput.value);
       };
+      queryInput.addEventListener("focus", () => this.scheduleSuggestions(queryInput.value));
+      queryInput.addEventListener("blur", () => setTimeout(() => {
+        if (document.activeElement !== queryInput && !this.suggestions?.contains(document.activeElement)) this.hideSuggestions();
+      }, 160));
       queryInput.onkeydown = (event) => {
         if (event.key === "Enter" && !event.isComposing) {
           event.preventDefault();
@@ -2027,8 +2152,11 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       status.className = "adg-status";
       const grid = document.createElement("div");
       grid.className = "adg-grid";
-      const suggestions = document.createElement('div'); suggestions.className = 'adg-suggestions'; this.suggestions = suggestions;
-      root.append(queryRow, toolbar, suggestions, info, status, grid);
+      const suggestions = document.createElement('div'); suggestions.className = 'adg-suggestions'; suggestions.style.display = 'none'; this.suggestions = suggestions;
+      document.body.append(suggestions);
+      window.addEventListener("resize", this.positionSuggestionsHandler);
+      document.addEventListener("scroll", this.positionSuggestionsHandler, true);
+      root.append(queryRow, toolbar, info, status, grid);
       this.root = root;
       this.status = status;
       this.grid = grid;
@@ -2048,6 +2176,9 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.controller?.abort();
       this.filterControls?.destroy();
       this.hidePromptTooltip();
+      window.removeEventListener("resize", this.positionSuggestionsHandler);
+      document.removeEventListener("scroll", this.positionSuggestionsHandler, true);
+      this.suggestions?.remove();
       this.removeDialog();
     }
   }

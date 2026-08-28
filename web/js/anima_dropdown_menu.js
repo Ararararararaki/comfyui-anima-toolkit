@@ -75,6 +75,7 @@ export class PortalDropdown {
     stopCanvasEvents(menu);
     document.body.append(menu);
     this.menu = menu;
+    menu.dataset.cascadeMode = content.dataset.cascadeMode || "hover";
     this.element.classList.add("is-open");
     this.element.setAttribute("aria-expanded", "true");
     this.wireCascades(menu);
@@ -128,6 +129,7 @@ export class PortalDropdown {
 
   wireCascades(menu) {
     const rows = [...menu.querySelectorAll(".adg-cascade-row")];
+    const hoverOpen = menu.dataset.cascadeMode !== "click";
     const closeOtherRows = (current) => rows.forEach((row) => {
       if (row !== current && !row.classList.contains("is-pinned")) row.classList.remove("is-open");
     });
@@ -173,16 +175,20 @@ export class PortalDropdown {
         row.classList.remove("is-open", "is-pinned");
         trigger.focus();
       };
-      row.addEventListener("mouseenter", onEnter);
-      row.addEventListener("mouseleave", onLeave);
+      if (hoverOpen) {
+        row.addEventListener("mouseenter", onEnter);
+        row.addEventListener("mouseleave", onLeave);
+      }
       trigger.addEventListener("click", onClick);
       trigger.addEventListener("keydown", onKeydown);
       submenu.addEventListener("keydown", onSubmenuKeydown);
       this.cascadeCleanup.push(() => {
         clearTimeout(openTimer);
         clearTimeout(closeTimer);
-        row.removeEventListener("mouseenter", onEnter);
-        row.removeEventListener("mouseleave", onLeave);
+        if (hoverOpen) {
+          row.removeEventListener("mouseenter", onEnter);
+          row.removeEventListener("mouseleave", onLeave);
+        }
         trigger.removeEventListener("click", onClick);
         trigger.removeEventListener("keydown", onKeydown);
         submenu.removeEventListener("keydown", onSubmenuKeydown);

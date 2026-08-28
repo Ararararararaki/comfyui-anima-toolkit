@@ -408,6 +408,7 @@
     ["local", "本地词典（标签反查）"],
     ["local_llm", "本地LLM（Qwen/Gemma）"],
     ["deeplx", "DeepLX"],
+    ["baidu", "百度翻译"],
     ["mymemory", "MyMemory"],
     ["google", "Google"],
     ["dashscope", "DashScope"],
@@ -1708,9 +1709,12 @@
           ? "释放本地 LLM 显存；之后选择本地LLM翻译时仍会按需加载"
           : "主动加载盘上的 Gemma；仅选择本地LLM翻译时才会自动按需加载";
         const localLlmAction = `<button type="button" class="tk-cards-btn ${llmReady ? "" : "tk-cards-btn-main"}" data-a="toggle-local-llm" title="${escAttr(llmActionTitle)}" ${llmBusy ? "disabled" : ""}>${llmActionLabel}</button><button type="button" class="tk-cards-resolve-save" data-a="manage-local-llm">管理模型</button>`;
-        this.translateStatusEl.innerHTML = `<span class="tk-cards-translate-actual">${esc(actual)}</span><span class="tk-cards-translate-provider-list">${items}</span><span class="tk-cards-translate-status-actions">${deeplxAction}${localLlmAction}</span>`;
+        const baidu = result.baidu || {};
+        const baiduAction = `<button type="button" class="tk-cards-resolve-save" data-a="manage-baidu" title="配置百度翻译 APPID、API Key 和模型选项">百度设置${baidu.configured ? "" : "（未配置）"}</button>`;
+        this.translateStatusEl.innerHTML = `<span class="tk-cards-translate-actual">${esc(actual)}</span><span class="tk-cards-translate-provider-list">${items}</span><span class="tk-cards-translate-status-actions">${deeplxAction}${baiduAction}${localLlmAction}</span>`;
         this.translateStatusEl.querySelector('[data-a="toggle-local-llm"]')?.addEventListener("click", () => this._toggleLocalLlm());
         this.translateStatusEl.querySelector('[data-a="manage-local-llm"]')?.addEventListener("click", () => this._manageLocalLlm());
+        this.translateStatusEl.querySelector('[data-a="manage-baidu"]')?.addEventListener("click", () => this._manageBaidu());
         this.translateStatusEl.querySelector('[data-a="restart-deeplx"]')?.addEventListener("click", async (event) => {
           const button = event.currentTarget;
           button.disabled = true;
@@ -1818,6 +1822,99 @@
         this._localLlmActionBusy = false;
         await this._refreshTranslationStatus();
       }
+    }
+
+    async _manageBaidu() {
+      const overlay = document.createElement("div");
+      overlay.className = "tk-cards-overlay";
+      overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-baidu-box" role="dialog" aria-modal="true">
+        <div class="tk-cards-overlay-head"><b>百度翻译设置</b><button type="button" class="tk-cards-btn" data-a="close">关闭</button></div>
+        <div class="tk-cards-category-note">使用百度官方大模型文本翻译 API。需要填写开发者信息中的 APPID；API Key 只保存在本机后端配置，不会回传或写入前端代码。</div>
+        <label class="tk-cards-field"><span>百度 APPID</span><input data-a="appid" autocomplete="off" placeholder="${"需要填写 APPID"}"></label>
+        <label class="tk-cards-field"><span>API Key</span><input data-a="api-key" type="password" autocomplete="new-password" placeholder="${"已保存时留空保持不变"}"></label>
+        <label class="tk-cards-field"><span>翻译模型</span><select data-a="model"><option value="llm">大模型翻译（llm）</option><option value="nmt">机器翻译（nmt）</option></select></label>
+        <label class="tk-cards-check"><input data-a="intervene" type="checkbox"><span>启用百度术语库干预（需要账号已开通）</span></label>
+        <div class="tk-cards-baidu-status" data-a="status">正在读取百度配置…</div>
+        <div class="tk-cards-edit-btns"><button type="button" class="tk-cards-btn" data-a="test">测试连接</button><button type="button" class="tk-cards-btn" data-a="clear">清除配置</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">保存配置</button></div>
+      </div>`;
+      document.body.appendChild(overlay);
+      const close = () => overlay.remove();
+      overlay.querySelector('[data-a="close"]')?.addEventListener("click", close);
+      overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
+      overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); close(); } });
+      const appid = overlay.querySelector('[data-a="appid"]');
+      const apiKey = overlay.querySelector('[data-a="api-key"]');
+      const model = overlay.querySelector('[data-a="model"]');
+      const intervene = overlay.querySelector('[data-a="intervene"]');
+      const status = overlay.querySelector('[data-a="status"]');
+      const test = overlay.querySelector('[data-a="test"]');
+      const clear = overlay.querySelector('[data-a="clear"]');
+      const save = overlay.querySelector('[data-a="save"]');
+      const show = (text, tone = "") => { if (status) { status.textContent = text; status.dataset.tone = tone; } };
+      try {
+        const config = await fetchJson("/anima/translate/baidu/config", { timeout: 8000 });
+        if (config.has_appid) appid.placeholder = "已保存，留空保持不变";
+        if (config.has_api_key) apiKey.placeholder = "已保存，留空保持不变";
+        model.value = config.model_type || "llm";
+        intervene.checked = config.need_intervene === true;
+        show(config.configured ? `已配置 · ${config.model_type === "nmt" ? "机器翻译" : "大模型翻译"}` : "未配置：请填写 APPID 和 API Key");
+      } catch (error) {
+        show(`读取配置失败：${error.message || error}`, "error");
+      }
+      test.addEventListener("click", async () => {
+        test.disabled = true;
+        show("测试中…");
+        try {
+          const result = await postJson("/anima/translate/baidu/test", {
+            appid: appid.value.trim(), api_key: apiKey.value.trim(), model_type: model.value,
+            need_intervene: intervene.checked, q: "你好，世界",
+          }, 40000);
+          if (!result.ok) throw new Error(result.error || "百度翻译测试失败");
+          show(`连接成功：${result.translatedText || "已返回译文"}`, "success");
+        } catch (error) {
+          show(`连接失败：${error.message || error}`, "error");
+        } finally {
+          test.disabled = false;
+        }
+      });
+      clear.addEventListener("click", async () => {
+        clear.disabled = true;
+        try {
+          await postJson("/anima/translate/baidu/config", { clear_appid: true, clear_api_key: true }, 12000);
+          appid.value = "";
+          apiKey.value = "";
+          appid.placeholder = "需要填写 APPID";
+          apiKey.placeholder = "已保存时留空保持不变";
+          show("百度配置已清除", "success");
+          await this._refreshTranslationStatus();
+        } catch (error) {
+          show(`清除失败：${error.message || error}`, "error");
+        } finally {
+          clear.disabled = false;
+        }
+      });
+      save.addEventListener("click", async () => {
+        save.disabled = true;
+        try {
+          const config = await postJson("/anima/translate/baidu/config", {
+            appid: appid.value.trim(), api_key: apiKey.value.trim(), model_type: model.value,
+            need_intervene: intervene.checked,
+          }, 12000);
+          if (!config.ok) throw new Error(config.error || "保存失败");
+          apiKey.value = "";
+          appid.value = "";
+          appid.placeholder = config.has_appid ? "已保存，留空保持不变" : "需要填写 APPID";
+          apiKey.placeholder = config.has_api_key ? "已保存，留空保持不变" : "需要填写 API Key";
+          show(config.configured ? "百度配置已保存并启用" : "已保存，但还缺少 APPID 或 API Key", config.configured ? "success" : "");
+          await this._refreshTranslationStatus();
+        } catch (error) {
+          show(`保存失败：${error.message || error}`, "error");
+        } finally {
+          save.disabled = false;
+        }
+      });
+      overlay.tabIndex = -1;
+      overlay.focus?.();
     }
 
     // 本地 LLM 翻译模型管理（手动启用/下载/卸载；普通启动不加载）

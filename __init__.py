@@ -1388,7 +1388,7 @@ async def proxy_danbooru(request):
     return await _proxy("https://danbooru.donmai.us/" + request.match_info["path"], request)
 
 
-# ─── 翻译（多源：本地词典 / 本地 LLM(Qwen/Gemma 手动启用) / DeepLX / MyMemory / Google / DashScope 通义）───
+# ─── 翻译（多源：本地词典 / 本地 LLM(Qwen/Gemma 手动启用) / DeepLX / 百度 / MyMemory / Google / DashScope 通义）───
 # 面板「图片解析」的翻译全部走这里：source=auto 时按顺序回退，任何单源失败都不影响整体。
 # local_llm 默认不加载；Prompt Cards 显式选择该源时按需加载本地模型，翻译会话结束后释放。
 # 2026-08-26：Argos 已按用户要求移除（语义保留基准 5/20 不合格，由本地 LLM 取代）。
@@ -1396,9 +1396,12 @@ async def proxy_danbooru(request):
 _TRANSLATION_CACHE_TTL = 3600 * 24  # SQLite provider 缓存 1 天（内容稳定，省配额）
 _TRANSLATE_DICT: dict | None = None
 _TRANSLATE_DICT_MTIME = 0.0
-_TRANSLATE_ORDER = ("local", "local_llm", "deeplx", "mymemory", "google", "dashscope")
+_TRANSLATE_ORDER = ("local", "local_llm", "deeplx", "baidu", "mymemory", "google", "dashscope")
 _TRANSLATION_DB_PATH = os.path.join(PLUGIN_DIR, "data", "translation_cache.sqlite3")
 _TRANSLATOR_VERSION = "tk-translation-router-v1"
+_BAIDU_TRANSLATE_ENDPOINT = "https://fanyi-api.baidu.com/ait/api/aiTextTranslate"
+_BAIDU_TRANSLATE_CONFIG_PATH = os.path.join(PLUGIN_DIR, "data", "translation_providers.json")
+_BAIDU_CONFIG_LOCK = threading.Lock()
 
 
 class TranslationProviderError(RuntimeError):
@@ -1574,6 +1577,94 @@ def _get_env(name: str) -> str | None:
         return None
 
 
+def _load_baidu_config() -> dict[str, object]:
+    """读取百度翻译本机配置；密钥只在后端使用，不回传给前端。"""
+    config: dict[str, object] = {}
+    try:
+        with open(_BAIDU_TRANSLATE_CONFIG_PATH, "r", encoding="utf-8") as file:
+            raw = json.load(file)
+        if isinstance(raw, dict):
+            config = raw
+    except (OSError, ValueError, TypeError):
+        pass
+    appid = str(config.get("appid") or _get_env("BAIDU_TRANSLATE_APPID") or "").strip()
+    api_key = str(config.get("api_key") or _get_env("BAIDU_TRANSLATE_API_KEY") or "").strip()
+    model_type = str(config.get("model_type") or "llm").strip().lower()
+    if model_type not in {"llm", "nmt"}:
+        model_type = "llm"
+    return {
+        "appid": appid[:200],
+        "api_key": api_key[:500],
+        "model_type": model_type,
+        "need_intervene": bool(config.get("need_intervene", False)),
+    }
+
+
+def _save_baidu_config(config: dict[str, object]) -> None:
+    with _BAIDU_CONFIG_LOCK:
+        os.makedirs(os.path.dirname(_BAIDU_TRANSLATE_CONFIG_PATH), exist_ok=True)
+        temp_path = _BAIDU_TRANSLATE_CONFIG_PATH + ".tmp"
+        with open(temp_path, "w", encoding="utf-8") as file:
+            json.dump(config, file, ensure_ascii=False, indent=2)
+        os.replace(temp_path, _BAIDU_TRANSLATE_CONFIG_PATH)
+
+
+def _baidu_config_snapshot() -> dict[str, object]:
+    config = _load_baidu_config()
+    return {
+        "configured": bool(config["appid"] and config["api_key"]),
+        "has_appid": bool(config["appid"]),
+        "has_api_key": bool(config["api_key"]),
+        "model_type": config["model_type"],
+        "need_intervene": config["need_intervene"],
+        "endpoint": _BAIDU_TRANSLATE_ENDPOINT,
+    }
+
+
+def _baidu_language(value: str, default: str) -> str:
+    language = str(value or default).strip().lower().replace("_", "-")
+    if language in {"zh-cn", "zh-sg", "zh-hans"}:
+        return "zh"
+    if language in {"zh-tw", "zh-hk", "zh-hant"}:
+        return "zh"
+    if language in {"auto", "en", "zh", "ja", "ko", "fr", "de", "es", "ru"}:
+        return language
+    return language.split("-", 1)[0] or default
+
+
+def _baidu_error_code(code: object) -> str:
+    mapping = {
+        "52001": "network_error",
+        "52002": "service_unavailable",
+        "52003": "authentication_error",
+        "54000": "provider_error",
+        "54001": "authentication_error",
+        "54003": "upstream_rate_limit",
+        "54004": "quota_exhausted",
+        "54005": "upstream_rate_limit",
+        "58000": "authentication_error",
+        "58001": "unsupported",
+        "58002": "service_unavailable",
+        "58003": "authentication_error",
+        "58004": "provider_error",
+        "59002": "provider_error",
+        "59003": "provider_error",
+        "59004": "upstream_rate_limit",
+        "59005": "provider_error",
+        "59006": "provider_error",
+        "59007": "provider_error",
+        "90107": "authentication_error",
+    }
+    text = str(code)
+    if text in {"401", "403"}:
+        return "authentication_error"
+    if text == "429":
+        return "upstream_rate_limit"
+    if text.isdigit() and 500 <= int(text) <= 599:
+        return "network_error"
+    return mapping.get(text, "provider_error")
+
+
 def _provider_configured(provider: str) -> bool:
     if provider == "local":
         return bool(_load_translate_dict())
@@ -1585,6 +1676,9 @@ def _provider_configured(provider: str) -> bool:
         return os.path.isfile(exe)
     if provider == "dashscope":
         return bool(_get_env("DASHSCOPE_API_KEY"))
+    if provider == "baidu":
+        config = _load_baidu_config()
+        return bool(config["appid"] and config["api_key"])
     # MyMemory/Google are keyless adapters; their health is learned on request.
     return True
 
@@ -1794,6 +1888,53 @@ def _deepl_langs(langpair: str) -> tuple[str, str]:
         m.get(dst.strip().lower(), dst.strip().upper() or "ZH")
 
 
+async def _translate_baidu(text: str, src_lang: str, dst_lang: str, config: dict[str, object] | None = None) -> str:
+    """调用百度大模型文本翻译 API；使用 Bearer API Key，不把密钥暴露给前端。"""
+    settings = config or _load_baidu_config()
+    appid = str(settings.get("appid") or "").strip()
+    api_key = str(settings.get("api_key") or "").strip()
+    if not appid or not api_key:
+        raise TranslationProviderError("百度翻译未配置 APPID 或 API Key", "not_configured")
+    payload: dict[str, object] = {
+        "appid": appid,
+        "from": _baidu_language(src_lang, "auto"),
+        "to": _baidu_language(dst_lang, "en"),
+        "q": str(text or "")[:2000],
+        "model_type": str(settings.get("model_type") or "llm"),
+    }
+    if bool(settings.get("need_intervene")):
+        payload["needIntervene"] = 1
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            async with session.post(
+                _BAIDU_TRANSLATE_ENDPOINT,
+                json=payload,
+                headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+            ) as response:
+                status = response.status
+                raw = await response.text()
+    except Exception as error:
+        raise TranslationProviderError(f"百度翻译连接失败: {error}", "network_error") from error
+    try:
+        body = json.loads(raw)
+    except (TypeError, ValueError):
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    error_code = body.get("error_code")
+    if status != 200 or error_code:
+        code = str(error_code or status)
+        message = str(body.get("error_msg") or body.get("message") or raw[:200]).strip()
+        raise TranslationProviderError(f"百度翻译 {code}: {message}", _baidu_error_code(error_code or status))
+    rows = body.get("trans_result")
+    if not isinstance(rows, list):
+        rows = (body.get("data") or {}).get("trans_result") if isinstance(body.get("data"), dict) else []
+    translated = "".join(str(row.get("dst") or "") for row in rows if isinstance(row, dict)).strip()
+    if translated:
+        return translated
+    raise TranslationProviderError("百度翻译返回空译文", "empty_output")
+
+
 async def _translate_via(source: str, text: str, src_lang: str, dst_lang: str) -> str:
     """单源翻译；失败抛异常（自动链路靠异常切源）。"""
     if source == "local":
@@ -1838,6 +1979,9 @@ async def _translate_via(source: str, text: str, src_lang: str, dst_lang: str) -
             return str(body["data"])
         code = body.get("code", "?")
         raise TranslationProviderError(f"DeepLX 上游返回 {code}: {raw[:160]}", f"upstream_http_{code}")
+
+    if source == "baidu":
+        return await _translate_baidu(text, src_lang, dst_lang)
 
     if source == "mymemory":
         import urllib.parse
@@ -2042,6 +2186,73 @@ class TranslationRouter:
 _TRANSLATION_ROUTER = TranslationRouter()
 
 
+@PromptServer.instance.routes.get("/anima/translate/baidu/config")
+async def anima_baidu_translate_config_get(request):
+    return web.json_response({"ok": True, **_baidu_config_snapshot()})
+
+
+@PromptServer.instance.routes.post("/anima/translate/baidu/config")
+async def anima_baidu_translate_config_save(request):
+    try:
+        body = await request.json()
+    except (ValueError, AttributeError):
+        return web.json_response({"ok": False, "error": "body 必须是 JSON"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"ok": False, "error": "body 必须是对象"}, status=400)
+    current = _load_baidu_config()
+    appid = str(body.get("appid") or "").strip()
+    api_key = str(body.get("api_key") or "").strip()
+    if appid:
+        current["appid"] = appid[:200]
+    elif body.get("clear_appid") is True:
+        current["appid"] = ""
+    if api_key:
+        current["api_key"] = api_key[:500]
+    elif body.get("clear_api_key") is True:
+        current["api_key"] = ""
+    model_type = str(body.get("model_type") or current.get("model_type") or "llm").strip().lower()
+    if model_type not in {"llm", "nmt"}:
+        return web.json_response({"ok": False, "error": "model_type 只能是 llm 或 nmt"}, status=400)
+    current["model_type"] = model_type
+    current["need_intervene"] = bool(body.get("need_intervene", current.get("need_intervene", False)))
+    try:
+        _save_baidu_config(current)
+    except OSError as error:
+        return web.json_response({"ok": False, "error": f"百度配置保存失败: {error}"}, status=500)
+    return web.json_response({"ok": True, **_baidu_config_snapshot()})
+
+
+@PromptServer.instance.routes.post("/anima/translate/baidu/test")
+async def anima_baidu_translate_test(request):
+    try:
+        body = await request.json()
+    except (ValueError, AttributeError):
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    config = _load_baidu_config()
+    for key in ("appid", "api_key"):
+        value = str(body.get(key) or "").strip()
+        if value:
+            config[key] = value[:500 if key == "api_key" else 200]
+    if body.get("model_type") in {"llm", "nmt"}:
+        config["model_type"] = body["model_type"]
+    if "need_intervene" in body:
+        config["need_intervene"] = bool(body["need_intervene"])
+    text = str(body.get("q") or "你好，世界").strip()[:2000]
+    started = time.perf_counter()
+    try:
+        translated = await _translate_baidu(text, "auto", "en", config)
+    except TranslationProviderError as error:
+        _provider_record_failure("baidu", error, (time.perf_counter() - started) * 1000)
+        return web.json_response({"ok": False, "error": str(error), "error_code": error.code}, status=502)
+    except Exception as error:
+        _provider_record_failure("baidu", error, (time.perf_counter() - started) * 1000)
+        return web.json_response({"ok": False, "error": f"百度翻译测试失败: {error}", "error_code": "provider_error"}, status=502)
+    _provider_record_success("baidu", (time.perf_counter() - started) * 1000)
+    return web.json_response({"ok": True, "provider": "baidu", "translatedText": translated})
+
+
 @PromptServer.instance.routes.get("/anima/translate/status")
 async def anima_translate_status(request):
     result = {
@@ -2049,6 +2260,7 @@ async def anima_translate_status(request):
         "actual_provider": _LAST_TRANSLATION_PROVIDER or None,
         "auto_order": _provider_order_for("auto"),
         "deeplx": _DEEPLX_MANAGER.status_sync(),
+        "baidu": _baidu_config_snapshot(),
     }
     try:
         from .anima_local_llm import state_snapshot as _llm_state

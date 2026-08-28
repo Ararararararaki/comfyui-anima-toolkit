@@ -622,6 +622,28 @@
           .anima-tw-popover .tw-word { background:rgba(94,106,210,0.12); color:#C8C9CB; padding:3px 8px; border-radius:4px; font-size:10px; margin:2px; display:inline-block; cursor:pointer; transition:all 0.15s ease-out; border:1px solid rgba(94,106,210,0.1); }
           .anima-tw-popover .tw-word:hover { background:rgba(94,106,210,0.25); color:#EDEDEF; }
           .anima-tw-popover .tw-empty { color:rgba(255,255,255,0.3); font-size:10px; }
+          .anima-group-modal { width:min(900px,94vw); max-height:82vh; overflow-y:auto; box-sizing:border-box; padding:16px; border:1px solid #34383c; border-radius:10px; color:#e7e4de; background:linear-gradient(180deg,#1d2023,#111315); box-shadow:0 0 0 1px rgba(255,255,255,.035),0 20px 60px rgba(0,0,0,.65),inset 0 1px rgba(255,255,255,.05); }
+          .anima-group-modal h3 { color:#f0ece4; }
+          .anima-group-save { display:flex; gap:8px; margin-bottom:12px; }
+          .anima-group-name-input { min-width:0; flex:1; padding:7px 9px; border:1px solid #34383c; border-radius:6px; outline:none; color:#e7e4de; background:#111315; font-size:11px; }
+          .anima-group-name-input:focus { border-color:#d0c9bb; box-shadow:0 0 0 2px rgba(208,201,187,.12); }
+          .anima-group-save-btn, .anima-group-load-btn { display:inline-flex; align-items:center; justify-content:center; gap:4px; border:1px solid #d0c9bb; border-radius:6px; color:#17191b; background:#d0c9bb; cursor:pointer; font-size:11px; font-weight:650; }
+          .anima-group-save-btn { padding:6px 12px; }
+          .anima-group-grid { display:grid; grid-template-columns:repeat(3,minmax(230px,1fr)); gap:8px; }
+          .anima-group-card { display:grid; grid-template-columns:auto minmax(0,1fr) auto auto auto; min-width:0; align-items:center; gap:6px; padding:9px 8px; border:1px solid #272b2e; border-radius:7px; background:#17191b; transition:border-color .15s ease,background .15s ease,transform .15s ease; }
+          .anima-group-card:hover { border-color:#626a70; background:#1d2023; transform:translateY(-1px); }
+          .anima-group-card .group-icon { display:inline-flex; flex-shrink:0; color:#9bb2b6; }
+          .anima-group-card .group-label { display:flex; min-width:0; align-items:center; gap:3px; cursor:default; }
+          .anima-group-card .group-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#e7e4de; font-size:11px; }
+          .anima-group-card .group-count { flex-shrink:0; color:#9b9a95; font-size:10px; }
+          .anima-group-card .group-edit-btn { display:inline-flex; width:24px; height:24px; align-items:center; justify-content:center; padding:0; border:1px solid transparent; border-radius:5px; color:#9b9a95; background:transparent; cursor:pointer; }
+          .anima-group-card .group-edit-btn:hover { border-color:#34383c; color:#f0ece4; background:#2a2d30; }
+          .anima-group-load-btn { padding:4px 8px; }
+          .anima-group-delete-btn { padding:4px 8px; border:1px solid rgba(203,133,133,.7); border-radius:6px; color:#e1a5a5; background:rgba(203,133,133,.10); cursor:pointer; font-size:11px; }
+          .anima-group-delete-btn:hover { border-color:#cb8585; color:#f0c0c0; background:rgba(203,133,133,.18); }
+          .anima-group-empty { color:#9b9a95; font-size:11px; margin:8px 0 12px; }
+          @media (max-width:740px) { .anima-group-grid { grid-template-columns:repeat(2,minmax(190px,1fr)); } }
+          @media (max-width:500px) { .anima-group-grid { grid-template-columns:1fr; } }
           .anima-lora-widget::-webkit-scrollbar { width:4px; }
           .anima-lora-widget::-webkit-scrollbar-track { background:transparent; }
           .anima-lora-widget::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:2px; }
@@ -1303,12 +1325,12 @@
         .then((metaData) => {
           const groups = metaData.loraGroups || [];
           const overlay = document.createElement("div");
-          overlay.className = "modal-overlay";
+          overlay.className = "modal-overlay anima-group-overlay";
           overlay.style.cssText = "position:fixed;inset:0;background:rgba(10,10,15,0.85);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);";
           const modal = document.createElement("div");
-          modal.style.cssText = "background:#14141c;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;width:360px;max-height:75vh;overflow-y:auto;color:#EDEDEF;";
+          modal.className = "anima-group-modal";
           const title = document.createElement("h3");
-          title.style.cssText = "margin:0 0 8px;font-size:13px;display:flex;align-items:center;gap:6px;";
+          title.style.cssText = "margin:0 0 12px;font-size:13px;display:flex;align-items:center;gap:6px;";
           title.innerHTML = svgIcon("folder", 13) + ` LoRA 组（${groups.length}）`;
           modal.appendChild(title);
 
@@ -1316,14 +1338,14 @@
           const active = this.loras.filter((l) => !l.disabled);
           if (active.length) {
             const saveWrap = document.createElement("div");
-            saveWrap.style.cssText = "display:flex;gap:6px;margin-bottom:8px;";
+            saveWrap.className = "anima-group-save";
             const nameInput = document.createElement("input");
             nameInput.type = "text";
             nameInput.placeholder = `保存当前 ${active.length} 个 LoRA 为新组...`;
-            nameInput.style.cssText = "flex:1;padding:6px 8px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;outline:none;";
+            nameInput.className = "anima-group-name-input";
             const saveBtn = document.createElement("button");
+            saveBtn.className = "anima-group-save-btn";
             saveBtn.title = "保存当前列表为新组";
-            saveBtn.style.cssText = "display:inline-flex;align-items:center;gap:5px;padding:5px 12px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:6px;cursor:pointer;font-size:11px;box-shadow:0 0 0 1px rgba(94,106,210,0.3);";
             saveBtn.innerHTML = svgIcon("save", 11) + "保存";
             const doSave = async () => {
               const name = nameInput.value.trim();
@@ -1346,31 +1368,32 @@
 
           if (!groups.length) {
             const empty = document.createElement("p");
-            empty.style.cssText = "color:#8A8F98;font-size:11px;margin:8px 0;";
+            empty.className = "anima-group-empty";
             empty.textContent = "暂无组，在上方输入组名保存当前列表";
             modal.appendChild(empty);
           }
+          const groupGrid = document.createElement("div");
+          groupGrid.className = "anima-group-grid";
           const dotClosePopover = () => { document.querySelectorAll(".anima-group-popover").forEach((el) => el.remove()); };
           modal.addEventListener("scroll", dotClosePopover);
           groups.forEach((g) => {
             const row = document.createElement("div");
-            row.style.cssText = "display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.06);";
+            row.className = "anima-group-card";
 
             // ── 组图标（内联 SVG，替代 emoji） ──
             const iconSpan = document.createElement("span");
-            iconSpan.style.cssText = "flex-shrink:0;display:inline-flex;color:#C8C9CB;";
+            iconSpan.className = "group-icon";
             iconSpan.innerHTML = svgIcon("folder", 12);
             row.appendChild(iconSpan);
 
             // ── 组名（含数量）；悬浮预览组内 LoRA ──
             const label = document.createElement("span");
-            label.style.cssText = "flex:1;font-size:12px;min-width:0;display:flex;align-items:center;gap:3px;cursor:default;";
+            label.className = "group-label";
             const nameSpan = document.createElement("span");
-            nameSpan.className = "gname";
-            nameSpan.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+            nameSpan.className = "group-name";
             nameSpan.textContent = g.name;
             const countSpan = document.createElement("span");
-            countSpan.style.cssText = "flex-shrink:0;color:#8A8F98;font-size:10px;";
+            countSpan.className = "group-count";
             countSpan.textContent = `（${(g.loras || []).length}）`;
             label.append(nameSpan, countSpan);
             label.title = `悬浮查看组内 LoRA：${g.name}`;
@@ -1381,8 +1404,8 @@
 
             // ── 重命名（行内编辑） ──
             const editBtn = document.createElement("button");
+            editBtn.className = "group-edit-btn";
             editBtn.title = "重命名组";
-            editBtn.style.cssText = "display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:5px;border:none;background:transparent;color:#8A8F98;cursor:pointer;flex-shrink:0;";
             editBtn.innerHTML = svgIcon("edit", 11);
             editBtn.onclick = () => {
               dotClosePopover();
@@ -1390,7 +1413,7 @@
               const input = document.createElement("input");
               input.type = "text";
               input.value = prev;
-              input.style.cssText = "flex:1;min-width:0;padding:4px 6px;background:#0a0a0c;color:#EDEDEF;border:1px solid #5E6AD2;border-radius:5px;font-size:12px;outline:none;";
+              input.className = "anima-group-name-input";
               label.replaceWith(input);
               input.focus();
               input.select();
@@ -1420,8 +1443,8 @@
             row.appendChild(editBtn);
 
             const loadBtn = document.createElement("button");
+            loadBtn.className = "anima-group-load-btn";
             loadBtn.textContent = "切换";
-            loadBtn.style.cssText = "padding:3px 8px;border:1px solid rgba(94,106,210,0.4);border-radius:5px;cursor:pointer;font-size:11px;background:rgba(94,106,210,0.15);color:#9aa5ff;flex-shrink:0;";
             loadBtn.onclick = () => {
               dotClosePopover();
               this.loras = (g.loras || []).map((l) => ({ name: l.name, weight: l.weight, disabled: this._prefDisabled(l.name) }));
@@ -1433,8 +1456,8 @@
             row.appendChild(loadBtn);
 
             const delBtn = document.createElement("button");
+            delBtn.className = "anima-group-delete-btn";
             delBtn.textContent = "删除";
-            delBtn.style.cssText = "padding:3px 8px;border:1px solid rgba(255,80,80,0.3);border-radius:5px;cursor:pointer;font-size:11px;background:transparent;color:#f66;flex-shrink:0;";
             delBtn.onclick = async () => {
               dotClosePopover();
               if (!window.confirm(`删除组「${g.name}」？`)) return;
@@ -1444,8 +1467,9 @@
               this._groupsModal(listEl);
             };
             row.appendChild(delBtn);
-            modal.appendChild(row);
+            groupGrid.appendChild(row);
           });
+          modal.appendChild(groupGrid);
           overlay.appendChild(modal);
           overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
           document.body.appendChild(overlay);

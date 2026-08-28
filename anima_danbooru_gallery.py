@@ -293,19 +293,48 @@ _translations: dict[str, str] | None = None
 _translation_path = Path(__file__).with_name("data") / "danbooru_tags_zh.json"
 
 
-def normalize_search_tags(raw_tags: str) -> str:
-    """规范化标签，保留搜索语义但避免重复和无意义请求。"""
+def _search_tag_rewrite(token: str) -> tuple[str, str | None]:
+    """把包含中文的搜索词反查为本地词典中的 Danbooru 英文标签。"""
+    marker = ""
+    body = token
+    if body.startswith(("-", "~")):
+        marker, body = body[0], body[1:]
+    prefix, separator, _ = body.partition(":")
+    if separator and prefix in FREE_METATAGS:
+        return token, None
+    if not any("\u4e00" <= char <= "\u9fff" for char in body):
+        return token, None
+    candidates = _local_zh_exact_tag_candidates(body, limit=1)
+    if not candidates:
+        return token, None
+    rewritten = marker + candidates[0]
+    return rewritten, f"{token} → {rewritten}"
+
+
+def normalize_search_tags_with_rewrites(raw_tags: str) -> tuple[str, list[str]]:
+    """规范化搜索标签，并返回中文词条实际采用的英文标签。"""
     seen: set[str] = set()
     normalized: list[str] = []
+    rewrites: list[str] = []
     for raw_token in str(raw_tags or "").strip().split():
         token = raw_token.strip().lower().replace(" ", "_")
         if not token or token in seen:
             continue
+        token, rewrite = _search_tag_rewrite(token)
+        if token in seen:
+            continue
         seen.add(token)
         normalized.append(token)
+        if rewrite:
+            rewrites.append(rewrite)
         if len(normalized) >= MAX_SEARCH_TAGS:
             break
-    return " ".join(normalized)
+    return " ".join(normalized), rewrites
+
+
+def normalize_search_tags(raw_tags: str) -> str:
+    """规范化标签，保留搜索语义但避免重复和无意义请求。"""
+    return normalize_search_tags_with_rewrites(raw_tags)[0]
 
 
 def count_restricted_search_tags(tags: str) -> int:
@@ -740,9 +769,9 @@ def _fuzzy_tag_candidates(token: str, limit: int = 8) -> list[str]:
     return result
 
 
-def _positive_count_tag_names(items: Any) -> list[str]:
-    """只返回 D 站存在帖子记录的标签名称，排除 post_count=0 的补全候选。"""
-    names: list[str] = []
+def _positive_count_tag_records(items: Any) -> list[dict[str, Any]]:
+    """返回有帖子记录的标签及其数量，排除 post_count=0 的补全候选。"""
+    records: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in items if isinstance(items, list) else []:
         if not isinstance(item, dict) or not item.get("name"):
@@ -754,8 +783,33 @@ def _positive_count_tag_names(items: Any) -> list[str]:
         name = str(item["name"])
         if post_count > 0 and name not in seen:
             seen.add(name)
-            names.append(name)
-    return names
+            try:
+                category = _TAG_CATEGORY_NAMES.get(int(item.get("category") or 0), "general")
+            except (TypeError, ValueError):
+                category = "general"
+            records.append({"tag": name, "postCount": post_count, "category": category})
+    return records
+
+
+def _positive_count_tag_names(items: Any) -> list[str]:
+    """兼容旧调用：只返回有帖子记录的标签名称。"""
+    return [record["tag"] for record in _positive_count_tag_records(items)]
+
+
+def _tag_translation(tag: str) -> str:
+    """返回标签对应的中文显示名；反向词典记录不作为中文译文。"""
+    value = _load_translations().get(str(tag), "")
+    return value if any("\u4e00" <= char <= "\u9fff" for char in value) else ""
+
+
+def _suggestion_details(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            **record,
+            "translation": _tag_translation(record["tag"]),
+        }
+        for record in records
+    ]
 
 
 def _normalize_tag_slug(value: Any) -> str:
@@ -798,7 +852,65 @@ def _local_zh_tag_candidates(text: str, limit: int = 8) -> list[str]:
     return [tag for _, tag in fragments[:limit]]
 
 
-def _remote_exact_tag(slug: str, limit: int = 4) -> list[dict[str, Any]]:
+def _local_zh_exact_tag_candidates(text: str, limit: int = 8) -> list[str]:
+    """只按完整中文译文反查，避免把长句误缩成其中某个中文片段。"""
+    query = _normalize_zh_text(text)
+    if not query:
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw_tag, raw_zh in _load_translations().items():
+        tag = _normalize_tag_slug(raw_tag)
+        if not tag or tag in seen or any("\u4e00" <= char <= "\u9fff" for char in tag):
+            continue
+        if _normalize_zh_text(raw_zh) == query:
+            seen.add(tag)
+            result.append(tag)
+            if len(result) >= limit:
+                break
+    return result
+
+
+_zh_suggest_cache_lock = threading.Lock()
+_zh_suggest_cache: OrderedDict[str, list[tuple[str, str]]] = OrderedDict()
+_ZH_SUGGEST_CACHE_MAX = 64
+
+
+def _local_zh_tag_search(text: str, limit: int = 24) -> list[tuple[str, str]]:
+    """按中文片段查找本地词典，返回（英文标签，中文显示名）候选。"""
+    query = _normalize_zh_text(text)
+    if not query or not any("\u4e00" <= char <= "\u9fff" for char in query):
+        return []
+    with _zh_suggest_cache_lock:
+        cached = _zh_suggest_cache.get(query)
+        if cached is not None:
+            return cached[:limit]
+
+    matches: list[tuple[int, int, str, str]] = []
+    seen: set[str] = set()
+    for raw_tag, raw_zh in _load_translations().items():
+        tag = _normalize_tag_slug(raw_tag)
+        zh_display = str(raw_zh or "").strip()
+        zh = _normalize_zh_text(zh_display)
+        # 词典同时保存英文→中文和中文→英文，反向记录不能作为双语候选。
+        if not tag or tag in seen or not zh or any("\u4e00" <= char <= "\u9fff" for char in tag):
+            continue
+        if query not in zh or not any("\u4e00" <= char <= "\u9fff" for char in zh):
+            continue
+        seen.add(tag)
+        # 以中文前缀优先；长度仅用于稳定排序，最终仍按 D 站帖数排序。
+        matches.append((0 if zh.startswith(query) else 1, len(zh), tag, zh_display))
+    matches.sort(key=lambda item: (item[0], item[1], item[2]))
+    result = [(tag, zh_display) for _, _, tag, zh_display in matches[:limit]]
+    with _zh_suggest_cache_lock:
+        _zh_suggest_cache[query] = result
+        _zh_suggest_cache.move_to_end(query)
+        while len(_zh_suggest_cache) > _ZH_SUGGEST_CACHE_MAX:
+            _zh_suggest_cache.popitem(last=False)
+    return result
+
+
+def _remote_exact_tag(slug: str, limit: int = 4, *, throttle: bool = True) -> list[dict[str, Any]]:
     """验证标签是否仍存在于 Danbooru，并取类别/帖数等元数据。"""
     key = _normalize_tag_slug(slug)
     if not key:
@@ -810,7 +922,8 @@ def _remote_exact_tag(slug: str, limit: int = 4) -> list[dict[str, Any]]:
             return cached[1]
     result: list[dict[str, Any]] = []
     try:
-        _rate_limiter.wait()
+        if throttle:
+            _rate_limiter.wait()
         params = {"search[name_matches]": key, "search[order]": "count", "limit": limit}
         params.update(_account_params())
         data = _danbooru_json("https://danbooru.donmai.us/tags.json", params, timeout=20)
@@ -1009,9 +1122,9 @@ def _fetch_posts(request: SearchRequest) -> tuple[list[dict[str, Any]], bool, bo
 
 @PromptServer.instance.routes.get("/anima/danbooru/posts")
 async def anima_danbooru_posts(request: web.Request) -> web.Response:
-    tags = normalize_search_tags(request.query.get("tags", ""))
+    tags, search_rewrites = normalize_search_tags_with_rewrites(request.query.get("tags", ""))
     if not tags:
-        return web.json_response({"posts": [], "query": "", "cached": False})
+        return web.json_response({"posts": [], "query": "", "cached": False, "searchRewrites": search_rewrites})
 
     warnings: list[str] = []
     registered = _registered()
@@ -1022,7 +1135,7 @@ async def anima_danbooru_posts(request: web.Request) -> web.Response:
             if registered else
             "（普通标签与排序各占 1 个；登录 Danbooru 账号可解除限制 或 减少标签/改用默认最新排序）"
         )
-        return web.json_response({"error": f"D站 搜索最多 {tag_limit} 个计数标签{hint}", "registered": registered, "tag_limit": tag_limit}, status=400)
+        return web.json_response({"error": f"D站 搜索最多 {tag_limit} 个计数标签{hint}", "registered": registered, "tag_limit": tag_limit, "searchRewrites": search_rewrites}, status=400)
 
     search_request = SearchRequest(
         tags=tags,
@@ -1033,20 +1146,20 @@ async def anima_danbooru_posts(request: web.Request) -> web.Response:
     try:
         posts, cached, slow_window_used = await asyncio.get_running_loop().run_in_executor(None, _fetch_posts, search_request)
     except requests.Timeout:
-        return web.json_response({"error": "Danbooru 请求超时：已自动尝试直连/代理/浏览器网关多条路径仍失败，请确认 Clash/代理已开启并换节点后重试", "registered": registered, "tag_limit": tag_limit}, status=504)
+        return web.json_response({"error": "Danbooru 请求超时：已自动尝试直连/代理/浏览器网关多条路径仍失败，请确认 Clash/代理已开启并换节点后重试", "registered": registered, "tag_limit": tag_limit, "searchRewrites": search_rewrites}, status=504)
     except requests.ConnectionError as error:
-        return web.json_response({"error": f"连不上 Danbooru：{getattr(error, '__class__', error.__class__).__name__}。请确认 Clash/代理已开启；实在不行重启一次 ComfyUI 让代理配置生效", "registered": registered, "tag_limit": tag_limit}, status=502)
+        return web.json_response({"error": f"连不上 Danbooru：{getattr(error, '__class__', error.__class__).__name__}。请确认 Clash/代理已开启；实在不行重启一次 ComfyUI 让代理配置生效", "registered": registered, "tag_limit": tag_limit, "searchRewrites": search_rewrites}, status=502)
     except requests.RequestException as error:
-        return web.json_response({"error": _friendly_danbooru_error(error), "registered": registered, "tag_limit": tag_limit}, status=502)
+        return web.json_response({"error": _friendly_danbooru_error(error), "registered": registered, "tag_limit": tag_limit, "searchRewrites": search_rewrites}, status=502)
     except RuntimeError as error:
-        return web.json_response({"error": str(error), "registered": registered, "tag_limit": tag_limit}, status=502)
+        return web.json_response({"error": str(error), "registered": registered, "tag_limit": tag_limit, "searchRewrites": search_rewrites}, status=502)
     except (TypeError, ValueError) as error:
-        return web.json_response({"error": str(error), "registered": registered, "tag_limit": tag_limit}, status=502)
+        return web.json_response({"error": str(error), "registered": registered, "tag_limit": tag_limit, "searchRewrites": search_rewrites}, status=502)
     if slow_window_used:
         warnings.append(
             f"「{order_value}」全库排序触发 D站 超时，本次已自动降级限定近 1 周（加标签缩小范围或换用其它排序即可看全部时间）"
         )
-    return web.json_response({"posts": posts, "query": search_request.tags, "cached": cached, "warnings": warnings, "registered": registered, "tag_limit": tag_limit})
+    return web.json_response({"posts": posts, "query": search_request.tags, "cached": cached, "warnings": warnings, "registered": registered, "tag_limit": tag_limit, "searchRewrites": search_rewrites})
 
 
 @PromptServer.instance.routes.get("/anima/danbooru/image")
@@ -1161,21 +1274,64 @@ async def anima_danbooru_diag(request: web.Request) -> web.Response:
 
 @PromptServer.instance.routes.get("/anima/danbooru/suggest")
 async def anima_danbooru_suggest(request: web.Request) -> web.Response:
-    query = normalize_search_tags(request.query.get("q", "")).split(" ")[-1:]
+    raw_query = request.query.get("q", "")
+    raw_tokens = str(raw_query or "").strip().split()
+    raw_term = raw_tokens[-1] if raw_tokens else ""
+    query = normalize_search_tags(raw_query).split()
     if not query:
-        return web.json_response({"suggestions": [], "didYouMean": [], "rewrites": []})
-    term = query[0]
+        return web.json_response({"suggestions": [], "suggestionDetails": [], "didYouMean": [], "rewrites": []})
+    term = query[-1]
+
     def fetch():
+        # 中文片段先查本地双语词典，再逐个向 D 站取帖数，效果与 D 站搜索框的
+        # 「中文 → 英文」候选一致；有缓存时不会重复请求同一标签。
+        chinese_term = raw_term.lstrip("-~")
+        if any("\u4e00" <= char <= "\u9fff" for char in chinese_term):
+            local_details: list[dict[str, Any]] = []
+            local_candidates = _local_zh_tag_search(chinese_term, limit=20)
+
+            def verify(candidate: tuple[str, str]) -> dict[str, Any] | None:
+                tag, translation = candidate
+                verified = _remote_exact_tag(tag, limit=1, throttle=False)
+                if not verified:
+                    return None
+                meta = verified[0]
+                post_count = int(meta.get("postCount") or 0)
+                if post_count <= 0:
+                    return None
+                return {
+                    "tag": tag,
+                    "translation": translation,
+                    "postCount": post_count,
+                    "category": meta.get("category", "general"),
+                }
+
+            # 中文联想需要显示帖数；并发验证候选，避免逐个串行请求让输入框等待十几秒。
+            with ThreadPoolExecutor(max_workers=min(20, len(local_candidates) or 1)) as executor:
+                for detail in executor.map(verify, local_candidates):
+                    if detail:
+                        local_details.append(detail)
+            local_details.sort(key=lambda item: (-int(item["postCount"]), str(item["tag"])))
+            if local_details:
+                return [str(item["tag"]) for item in local_details], local_details
+
         _rate_limiter.wait()
-        params = {"search[name_matches]": f"{term}*", "search[order]": "count", "limit": 8}
+        params = {"search[name_matches]": f"{term}*", "search[order]": "count", "limit": 20}
         params.update(_account_params())
-        return _danbooru_json("https://danbooru.donmai.us/tags.json", params, timeout=20)
+        tags = _danbooru_json("https://danbooru.donmai.us/tags.json", params, timeout=20)
+        records = _positive_count_tag_records(tags)
+        return [str(record["tag"]) for record in records], _suggestion_details(records)
+
     try:
-        tags = await asyncio.get_running_loop().run_in_executor(None, fetch)
-        names = _positive_count_tag_names(tags)
+        names, details = await asyncio.get_running_loop().run_in_executor(None, fetch)
     except Exception:
-        names = []
-    return web.json_response({"suggestions": names, "didYouMean": names[:3], "rewrites": names[:3]})
+        names, details = [], []
+    return web.json_response({
+        "suggestions": names,
+        "suggestionDetails": details,
+        "didYouMean": names[:3],
+        "rewrites": names[:3],
+    })
 
 
 @PromptServer.instance.routes.post("/anima/danbooru/translate")
@@ -1362,33 +1518,40 @@ class DanbooruGallery:
     def get_selected_data(self, selection_data="{}"):
         try:
             payload = json.loads(selection_data or "{}")
-            selection_list = payload.get("selections", []) if isinstance(payload, dict) else []
+            prompt_selection_list = payload.get("selections", []) if isinstance(payload, dict) else []
+            image_selection_list = payload.get("image_selections", prompt_selection_list) if isinstance(payload, dict) else []
             prompt_settings = self._prompt_settings(payload.get("prompt_settings")) if isinstance(payload, dict) else None
             prompt_output_enabled = payload.get("prompt_output_enabled", True) is not False if isinstance(payload, dict) else True
         except (TypeError, ValueError, json.JSONDecodeError):
-            selection_list = []
+            prompt_selection_list = []
+            image_selection_list = []
             prompt_settings = None
             prompt_output_enabled = True
-        if not isinstance(selection_list, list) or not selection_list:
+        if not isinstance(prompt_selection_list, list):
+            prompt_selection_list = []
+        if not isinstance(image_selection_list, list) or not image_selection_list:
             return ([self._empty_image()], [""], "{}")
 
         images: list[torch.Tensor] = []
         prompts: list[str] = []
         metadata: list[dict] = []
         failures: list[str] = []
-        for selection in selection_list:
-            if not isinstance(selection, dict):
+        for index, image_selection in enumerate(image_selection_list):
+            if not isinstance(image_selection, dict):
                 continue
-            prompt = str(selection.get("prompt", "")) if prompt_output_enabled else ""
-            image_url = str(selection.get("image_url", ""))
+            prompt_selection = prompt_selection_list[index] if index < len(prompt_selection_list) else image_selection
+            if not isinstance(prompt_selection, dict):
+                prompt_selection = image_selection
+            prompt = str(prompt_selection.get("prompt", "")) if prompt_output_enabled else ""
+            image_url = str(image_selection.get("image_url", ""))
             try:
                 images.append(self._download_image(image_url))
                 prompts.append(prompt)
-                output_selection = {**selection, "prompt": prompt, "prompt_output_enabled": prompt_output_enabled}
+                output_selection = {**prompt_selection, "image_url": image_url, "prompt": prompt, "prompt_output_enabled": prompt_output_enabled}
                 metadata.append(self._selection_meta(output_selection, ok=True))
             except Exception as error:
                 failures.append(f"[{prompt[:24] or image_url[:48]}] {error}")
-                output_selection = {**selection, "prompt": prompt, "prompt_output_enabled": prompt_output_enabled}
+                output_selection = {**prompt_selection, "image_url": image_url, "prompt": prompt, "prompt_output_enabled": prompt_output_enabled}
                 metadata.append(self._selection_meta(output_selection, ok=False, error=str(error)))
         if not images:
             # 不再静默输出黑图：全部下载失败 → 抛错，ComfyUI 队列停止，杜绝"图生图出黑屏"

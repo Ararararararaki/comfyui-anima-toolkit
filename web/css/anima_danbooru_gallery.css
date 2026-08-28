@@ -409,3 +409,181 @@
 }
 .adg-query::placeholder { color: #7b7b8d; }
 .adg-query:focus { border-color: #a895ff; box-shadow: 0 0 0 2px rgba(168, 149, 255, .18); }
+
+/* ── TK 新风格：弹出菜单与设置弹窗统一为灰黑 / 米白色调 ── */
+.adg-portal-menu,
+.adg-dialog-overlay {
+  --adg-bg: #111315;
+  --adg-surface: #17191b;
+  --adg-surface-2: #1d2023;
+  --adg-border: #34383c;
+  --adg-border-soft: #272b2e;
+  --adg-text: #e7e4de;
+  --adg-muted: #9b9a95;
+  --adg-accent: #d0c9bb;
+  --adg-accent-strong: #f0ece4;
+  --adg-info: #9bb2b6;
+  --adg-danger: #cb8585;
+}
+.adg-portal-menu {
+  border-color: var(--adg-border);
+  color: var(--adg-text);
+  background: linear-gradient(180deg, var(--adg-surface-2), var(--adg-bg));
+  box-shadow: 0 0 0 1px rgba(255,255,255,.035), 0 18px 42px rgba(0,0,0,.62), inset 0 1px rgba(255,255,255,.05);
+}
+.adg-menu-title { color: var(--adg-accent-strong); }
+.adg-menu-choice,
+.adg-menu-row-button { color: var(--adg-text); }
+.adg-menu-choice:hover,
+.adg-menu-choice:focus-visible,
+.adg-menu-row-button:hover,
+.adg-menu-row-button:focus-visible,
+.adg-cascade-row.is-open > .adg-menu-row-button { color: var(--adg-accent-strong); background: #2a2d30; }
+.adg-menu-choice input { accent-color: var(--adg-accent); }
+.adg-menu-choice.is-selected .adg-menu-choice-text { color: var(--adg-accent-strong); }
+.adg-menu-current { color: var(--adg-muted); }
+.adg-menu-arrow { color: var(--adg-info); }
+.adg-submenu { border-color: var(--adg-border); background: var(--adg-surface); box-shadow: 0 16px 36px rgba(0,0,0,.62); }
+.adg-menu-divider { background: var(--adg-border-soft); }
+.adg-menu-actions { border-color: var(--adg-border-soft); background: linear-gradient(180deg, rgba(23,25,27,.82), var(--adg-surface) 35%); }
+.adg-menu-actions button { border-color: var(--adg-border); color: var(--adg-text); background: #202326; }
+.adg-menu-actions button:hover { border-color: var(--adg-accent); color: var(--adg-accent-strong); background: #2a2d30; }
+.adg-menu-actions .primary { border-color: var(--adg-accent); color: #17191b; background: var(--adg-accent); }
+.adg-menu-actions .primary:hover { border-color: var(--adg-accent-strong); background: var(--adg-accent-strong); }
+.adg-quick-presets { border-color: var(--adg-border-soft); }
+.adg-quick-preset { border-color: var(--adg-border); color: var(--adg-text); background: rgba(255,255,255,.045); }
+.adg-quick-preset:hover { border-color: var(--adg-accent); color: var(--adg-accent-strong); background: #2a2d30; }
+.adg-category-item,
+.adg-category-tag,
+.adg-prompt-category-choice,
+.adg-prompt-format-choice,
+.adg-preset-pick { border-color: var(--adg-border); color: var(--adg-text); background: rgba(255,255,255,.035); }
+.adg-category-item:hover,
+.adg-category-tag:hover,
+.adg-prompt-category-choice:hover,
+.adg-prompt-format-choice:hover,
+.adg-preset-pick:hover { border-color: var(--adg-accent); background: #2a2d30; }
+.adg-category-item.is-current { border-color: var(--adg-accent); background: #34383b; }
+.adg-category-item-meta,
+.adg-settings-help,
+.adg-prompt-settings-tip,
+.adg-dialog-intro,
+.adg-prompt-bilingual-header,
+.adg-save-bilingual-header,
+.adg-save-preview-status,
+.adg-preset-row-meta { color: var(--adg-muted); }
+.adg-category-item-name,
+.adg-prompt-category-choice span,
+.adg-prompt-format-choice span { color: var(--adg-text); }
+.adg-category-newrow input,
+.adg-pagination input,
+.adg-save-category-select,
+.adg-save-exclude-input,
+.adg-field select,
+.adg-field input,
+.adg-settings-input,
+.adg-preset-name-input,
+.adg-prompt-editor textarea,
+.adg-prompt-bilingual-card input,
+.adg-save-bilingual-card input { border-color: var(--adg-border); color: var(--adg-text); background: var(--adg-bg); }
+.adg-category-newrow input:focus,
+.adg-save-category-select:focus,
+.adg-save-exclude-input:focus,
+.adg-field select:focus,
+.adg-field input:focus,
+.adg-settings-input:focus,
+.adg-preset-name-input:focus,
+.adg-prompt-editor textarea:focus,
+.adg-prompt-bilingual-card input:focus,
+.adg-save-bilingual-card input:focus { border-color: var(--adg-accent); box-shadow: 0 0 0 2px rgba(208,201,187,.14); }
+.adg-category-newrow button,
+.adg-settings-inline-button,
+.adg-settings-save-button,
+.adg-preset-save-row button { border-color: var(--adg-accent); color: #17191b; background: var(--adg-accent); }
+.adg-category-newrow button:hover,
+.adg-settings-inline-button:hover,
+.adg-settings-save-button:hover,
+.adg-preset-save-row button:hover { border-color: var(--adg-accent-strong); background: var(--adg-accent-strong); }
+.adg-dialog-overlay { background: rgba(2,3,4,.72); backdrop-filter: blur(4px); }
+.adg-dialog { border-color: var(--adg-border); color: var(--adg-text); background: linear-gradient(180deg, var(--adg-surface-2), var(--adg-surface)); box-shadow: 0 0 0 1px rgba(255,255,255,.035), 0 22px 58px rgba(0,0,0,.68), inset 0 1px rgba(255,255,255,.05); }
+.adg-dialog h3 { color: var(--adg-accent-strong); }
+.adg-settings-section { border-color: var(--adg-border-soft); background: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.018)); }
+.adg-settings-title { color: var(--adg-accent-strong); }
+.adg-dialog-actions { border-color: var(--adg-border-soft); }
+.adg-dialog-actions button,
+.adg-prompt-editor button { border-color: var(--adg-border); color: var(--adg-text); background: #202326; }
+.adg-dialog-actions button:hover,
+.adg-prompt-editor button:hover { border-color: var(--adg-accent); color: var(--adg-accent-strong); background: #2a2d30; }
+.adg-dialog-actions .primary { border-color: var(--adg-accent); color: #17191b; background: var(--adg-accent); }
+.adg-dialog-actions .primary:hover { border-color: var(--adg-accent-strong); background: var(--adg-accent-strong); }
+.adg-prompt-groups span { border-color: var(--adg-border); color: var(--adg-accent-strong); background: rgba(255,255,255,.045); }
+.adg-prompt-bilingual-editor,
+.adg-save-bilingual-grid { border-color: var(--adg-border); background: rgba(0,0,0,.16); }
+.adg-prompt-bilingual-card,
+.adg-save-bilingual-card { border-color: var(--adg-border-soft); background: rgba(255,255,255,.035); }
+.adg-prompt-bilingual-zh,
+.adg-save-bilingual-zh { color: var(--adg-info) !important; }
+.adg-prompt-bilingual-empty,
+.adg-save-bilingual-empty { color: var(--adg-muted); }
+.adg-account-status { border-color: rgba(155,178,182,.35); color: #c2d7d9; background: rgba(155,178,182,.08); }
+.adg-settings-dialog { min-width: min(560px, 78vw); }
+.adg-dialog-actions { padding-top: 10px; }
+.adg-dialog-actions button,
+.adg-settings-inline-button,
+.adg-settings-save-button { min-height: 30px; font-weight: 650; }
+
+/* 搜索联想：显示 D 站式「词条 → 对应词 / 帖数」，中文输入时自动反转展示顺序。 */
+.adg-queryrow { position: relative; z-index: 20; }
+.adg-suggestions {
+  position: fixed;
+  top: 0;
+  right: auto;
+  left: 0;
+  z-index: 100;
+  display: none;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 3px 0;
+  border: 1px solid var(--adg-border, #34383c);
+  border-radius: 4px;
+  background: var(--adg-surface-2, #1d2023);
+  box-shadow: 0 12px 28px rgba(0,0,0,.6);
+}
+.adg-suggestions-label { flex: 0 0 auto; color: var(--adg-muted, #9b9a95); font-size: 10px; line-height: 1.4; }
+.adg-suggestions-extension { flex: 0 0 auto; color: var(--adg-muted, #9b9a95); font-size: 10px; }
+.adg-suggestions.is-localized {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.adg-suggestions.is-localized .adg-suggestions-label,
+.adg-suggestions.is-localized .adg-suggestions-extension { padding: 2px 7px; }
+.adg-suggestions.is-localized .adg-localized-suggestion {
+  display: grid;
+  width: 100%;
+  box-sizing: border-box;
+  grid-template-columns: minmax(0, auto) auto minmax(0, 1fr) auto;
+  gap: 4px;
+  align-items: center;
+  padding: 3px 7px;
+  border: 0;
+  border-radius: 0;
+  color: var(--adg-text, #e7e4de);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.adg-suggestions.is-localized .adg-localized-suggestion:hover,
+.adg-suggestions.is-localized .adg-localized-suggestion:focus-visible { background: #2a2d30; }
+.adg-localized-suggestion .adg-suggestion-tag,
+.adg-localized-suggestion .adg-suggestion-translation {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.adg-localized-suggestion .adg-suggestion-tag { color: #79c6d4; }
+.adg-localized-suggestion .adg-suggestion-translation { color: var(--adg-accent-strong, #f0ece4); }
+.adg-localized-suggestion .adg-suggestion-arrow { color: var(--adg-muted, #9b9a95); }
+.adg-localized-suggestion .adg-suggestion-count { min-width: 42px; color: var(--adg-muted, #9b9a95); text-align: right; }

@@ -258,12 +258,12 @@ def main() -> None:
                   button?.click();
                   const disabled = JSON.parse(ui.selectionWidget.value || '{}');
                   button?.click();
-                  return { hasButton, enabledPrompt: enabled.selections?.[0]?.prompt || '', disabledPrompt: disabled.selections?.[0]?.prompt || '', disabledFlag: disabled.prompt_output_enabled };
+                  return { hasButton, enabledPrompt: enabled.selections?.[0]?.prompt || '', disabledPrompt: disabled.selections?.[0]?.prompt || '', disabledFlag: disabled.prompt_output_enabled, enabledImage: enabled.image_selections?.[0]?.image_url || enabled.selections?.[0]?.image_url || '', disabledImage: disabled.image_selections?.[0]?.image_url || disabled.selections?.[0]?.image_url || '' };
                 }
                 """
             )
             check("Prompt 输出开关存在", prompt_toggle["hasButton"], prompt_toggle)
-            check("关闭 Prompt 输出后节点收到空字符串", prompt_toggle["disabledPrompt"] == "" and prompt_toggle["disabledFlag"] is False and prompt_toggle["enabledPrompt"], prompt_toggle)
+            check("关闭 Prompt 输出后只关闭 Prompt、不关闭图片", prompt_toggle["disabledPrompt"] == "" and prompt_toggle["disabledFlag"] is False and prompt_toggle["enabledPrompt"] and prompt_toggle["disabledImage"] == prompt_toggle["enabledImage"] and prompt_toggle["disabledImage"], prompt_toggle)
 
             cards_created = page.evaluate(
                 """

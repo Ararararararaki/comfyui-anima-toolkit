@@ -243,6 +243,7 @@ export class GalleryFilterControls {
     const draft = { ...settings.filters };
     const root = document.createElement("div");
     root.className = "adg-menu-section adg-filter-menu-content";
+    root.dataset.cascadeMode = "click";
     const title = document.createElement("div");
     title.className = "adg-menu-title";
     title.textContent = "高级筛选";

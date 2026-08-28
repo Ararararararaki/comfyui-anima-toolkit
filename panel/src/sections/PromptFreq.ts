@@ -15,6 +15,7 @@ const TRANS_SOURCES = [
   { id: 'auto', label: '自动' },
   { id: 'local', label: '本地词典' },
   { id: 'deeplx', label: 'DeepLX' },
+  { id: 'baidu', label: '百度翻译' },
   { id: 'mymemory', label: 'MyMemory' },
   { id: 'google', label: 'Google' },
   { id: 'dashscope', label: '通义' },
@@ -306,7 +307,7 @@ function buildSrcMenu(anchor: HTMLElement): void {
   const menu = document.createElement('div')
   menu.className = 'trans-src-menu'
   menu.innerHTML = TRANS_SOURCES.map(s =>
-    `<button type="button" class="trans-src-item ${s.id === _transSource ? 'active' : ''}" data-src="${s.id}" title="${s.id === 'auto' ? '按 本地词典 → DeepLX → MyMemory → Google → 通义 顺序自动回退' : ''}">${s.id === _transSource ? icon('check', 12) : ''}<span>${esc(s.label)}</span></button>`
+    `<button type="button" class="trans-src-item ${s.id === _transSource ? 'active' : ''}" data-src="${s.id}" title="${s.id === 'auto' ? '按 本地词典 → DeepLX → 百度翻译 → MyMemory → Google → 通义 顺序自动回退' : ''}">${s.id === _transSource ? icon('check', 12) : ''}<span>${esc(s.label)}</span></button>`
   ).join('')
   const rect = anchor.getBoundingClientRect()
   menu.style.cssText = `position:fixed;z-index:99999;top:${rect.bottom + 4}px;left:${Math.max(4, Math.min(rect.left, window.innerWidth - 168))}px;`

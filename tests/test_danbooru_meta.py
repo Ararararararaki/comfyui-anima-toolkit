@@ -115,6 +115,17 @@ tag_names = adg._positive_count_tag_names([
 ])
 check("联想只保留 post_count>0", tag_names == ["real_tag"], str(tag_names))
 
+print("== 中文搜索标签反查与联想 ==")
+query, rewrites = adg.normalize_search_tags_with_rewrites("1girl 白发 白发")
+check("中文词条映射为英文", query == "1girl white_hair", str(query))
+check("返回中文映射提示", rewrites == ["白发 → white_hair"], str(rewrites))
+check("英文搜索保持不变", adg.normalize_search_tags("long_hair") == "long_hair")
+check("排除标签保留前缀", adg.normalize_search_tags("-白发") == "-white_hair")
+check("未知中文不误映射", adg.normalize_search_tags("不存在的词") == "不存在的词")
+zh_suggestions = adg._local_zh_tag_search("想", limit=20)
+check("中文片段能找到双语候选", any(tag == "imagining" and "想象" in zh for tag, zh in zh_suggestions), str(zh_suggestions[:3]))
+check("英文候选可取中文显示名", adg._tag_translation("white_hair") == "白发", adg._tag_translation("white_hair"))
+
 print("== Prompt 输出开关 ==")
 g = adg.DanbooruGallery()
 download_image = adg.DanbooruGallery._download_image
@@ -123,9 +134,11 @@ try:
     disabled_output = {
         "prompt_output_enabled": False,
         "selections": [{**sel, "prompt": "should not be emitted"}],
+        "image_selections": [{"image_url": sel["image_url"]}],
     }
-    _, prompts, raw_meta = g.get_selected_data(json.dumps(disabled_output))
+    images, prompts, raw_meta = g.get_selected_data(json.dumps(disabled_output))
     disabled_meta = json.loads(raw_meta)
+    check("关闭 Prompt 输出仍保留图片输出", images == ["image"], str(images))
     check("关闭 Prompt 输出返回空字符串", prompts == [""], str(prompts))
     check("关闭 Prompt 输出元数据同步为空", disabled_meta["items"][0]["prompt"] is None and disabled_meta["prompt_output_enabled"] is False, str(disabled_meta))
 finally:
