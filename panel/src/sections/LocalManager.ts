@@ -819,6 +819,11 @@ function bindLocalEvents() {
     renderLocalView()
   })
 
+  $$('localFolderCategoryBtn')?.addEventListener('click', () => {
+    const result = useLocalModelStore.getState().categorizeBySubfolders()
+    if (result.folders.length) renderLocalView()
+  })
+
   // 从 C 站链接批量下载模型（提交到 ComfyUI 后台，支持 LoRA/Checkpoint/VAE 等）
   $$('localUrlBtn')?.addEventListener('click', () => {
     const overlay = document.createElement('div')

@@ -32,6 +32,26 @@ export function isLoraFileName(name: string): boolean {
   return /\.(safetensors|pt|ckpt|pth|bin)$/i.test(name)
 }
 
+/** Return the first directory below the selected root, or null for root files. */
+export function getTopLevelLoraFolder(relativePath: string): string | null {
+  const normalized = normalizeRelativeLoraPath(relativePath)
+  const slash = normalized.indexOf('/')
+  return slash > 0 ? normalized.slice(0, slash) : null
+}
+
+/** Group scanned relative paths by their first directory segment. */
+export function groupLoraNamesByTopLevelFolder(names: readonly string[]): Map<string, string[]> {
+  const grouped = new Map<string, string[]>()
+  for (const name of names) {
+    const folder = getTopLevelLoraFolder(name)
+    if (!folder) continue
+    const files = grouped.get(folder) || []
+    files.push(normalizeRelativeLoraPath(name))
+    grouped.set(folder, files)
+  }
+  return new Map([...grouped.entries()].sort(([a], [b]) => a.localeCompare(b, 'zh-CN', { numeric: true })))
+}
+
 /**
  * webkitdirectory includes the selected root folder in webkitRelativePath.
  * Remove that first segment so fallback scans produce the same keys as FSA.

@@ -3,7 +3,7 @@ import type { LocalLoraFile, LocalLoraMatch, PngMeta, TagFreq, LocalScanStatus }
 import { Cache } from './cache'
 import { fetchModelVersionByHash, fetchModelById } from '../api/civitai'
 import { showToast, stripExt } from '../utils'
-import { collectLoraFiles, isLoraFileName, normalizeRelativeLoraPath, pickerRelativeLoraPath, removeLoraFile } from '../services/localLoraScanner'
+import { collectLoraFiles, groupLoraNamesByTopLevelFolder, isLoraFileName, normalizeRelativeLoraPath, pickerRelativeLoraPath, removeLoraFile } from '../services/localLoraScanner'
 
 let _lastBackendSync = 0
 
@@ -103,6 +103,7 @@ interface LocalModelState {
   renameCategory: (oldName: string, newName: string) => void
   setModelCategories: (fileName: string, cats: string[]) => void
   setBatchModelCategories: (fileNames: string[], cat: string) => void
+  categorizeBySubfolders: () => { folders: string[]; createdCategories: number; assignedFiles: number }
   clearModelCategories: (fileName: string) => void
   setFilterCategory: (cat: string | null) => void
   setBatchMode: (b: boolean) => void
@@ -238,6 +239,44 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       return { modelCategories: mc }
     })
     get().syncCategoriesToBackend()
+  },
+  categorizeBySubfolders: () => {
+    const grouped = groupLoraNamesByTopLevelFolder(get().files.map(file => file.name))
+    const folders = [...grouped.keys()]
+    if (!folders.length) {
+      showToast('未发现子目录 LoRA，请先扫描包含子目录的文件夹')
+      return { folders: [], createdCategories: 0, assignedFiles: 0 }
+    }
+
+    let createdCategories = 0
+    let assignedFiles = 0
+    set(state => {
+      const categories = [...state.categories]
+      const expandedCategories = [...state.expandedCategories]
+      const modelCategories = { ...state.modelCategories }
+      for (const [folder, names] of grouped) {
+        if (!categories.includes(folder)) {
+          categories.push(folder)
+          if (!expandedCategories.includes(folder)) expandedCategories.push(folder)
+          createdCategories++
+        }
+        for (const name of names) {
+          const key = stripExt(name)
+          const existing = modelCategories[key] || []
+          if (!existing.includes(folder)) {
+            modelCategories[key] = [...existing, folder]
+            assignedFiles++
+          }
+        }
+      }
+      Cache.save(CAT_CACHE_KEY, categories)
+      Cache.save(CAT_CACHE_KEY + '_mc', modelCategories)
+      Cache.save(CAT_CACHE_KEY + '_exp', expandedCategories)
+      return { categories, modelCategories, expandedCategories }
+    })
+    get().syncCategoriesToBackend()
+    showToast(`✅ 已按 ${folders.length} 个子目录创建/更新分类，归类 ${assignedFiles} 个 LoRA`)
+    return { folders, createdCategories, assignedFiles }
   },
   clearModelCategories: (fileName) => {
     set(s => {
