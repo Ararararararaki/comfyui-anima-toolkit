@@ -831,11 +831,21 @@
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay tk-cards-edit-overlay";
       const categoryOptions = this.cats.map((cat) => `<option value="${escAttr(cat.id)}" ${cat.id === entry.categoryId ? "selected" : ""}>${esc(CAT_NAME(cat))}</option>`).join("");
+      const currentImage = isLib ? String(entry.primaryImage || (Array.isArray(entry.images) && entry.images[0]) || "").trim() : "";
       overlay.innerHTML = isLib
         ? `<div class="tk-cards-overlay-box tk-cards-edit-modal" role="dialog" aria-modal="true" aria-label="编辑 Prompt 库条目">
           <div class="tk-cards-overlay-head"><b>编辑 Prompt 库条目</b><button type="button" class="tk-cards-btn" data-a="close" aria-label="关闭">✕</button></div>
           <div class="tk-cards-edit-form">
             <label class="tk-cards-field"><span>标题</span><input value="${escAttr(entry.displayText || "")}" data-f="title" placeholder="可选"></label>
+            <div class="tk-cards-edit-image-field">
+              <span class="tk-cards-edit-image-label">预览图</span>
+              <div class="tk-cards-edit-image-drop" data-a="image-drop" tabindex="0" role="button" aria-label="点击选择或拖拽替换预览图">
+                <img data-a="image-preview" alt="当前预览图" hidden>
+                <span class="tk-cards-edit-image-placeholder" data-a="image-placeholder">暂无预览图<small>点击选择或拖拽图片到此处替换</small></span>
+              </div>
+              <div class="tk-cards-edit-image-meta"><span data-a="image-name">未设置预览图</span><button type="button" class="tk-cards-btn" data-a="image-clear" disabled>移除预览图</button></div>
+              <input type="file" accept="image/*" data-a="image-input" hidden>
+            </div>
             <label class="tk-cards-field tk-cards-field-wide"><span>提示词</span><textarea data-f="prompt" rows="12" placeholder="提示词内容">${esc(entry.prompt || "")}</textarea></label>
             <label class="tk-cards-field tk-cards-field-wide"><span>注释</span><textarea data-f="notes" rows="4" placeholder="可选">${esc(entry.notes || "")}</textarea></label>
             <label class="tk-cards-field"><span>分类</span><select data-f="cat">${categoryOptions}</select></label>
@@ -858,6 +868,60 @@
       this.editOverlay = overlay;
       const read = (field) => overlay.querySelector(`[data-f="${field}"]`)?.value.trim() || "";
       const close = () => this._closeEditModal();
+      let editedImage = currentImage;
+      let imageChanged = false;
+      const imageDrop = isLib ? overlay.querySelector('[data-a="image-drop"]') : null;
+      const imagePreview = isLib ? overlay.querySelector('[data-a="image-preview"]') : null;
+      const imageInput = isLib ? overlay.querySelector('[data-a="image-input"]') : null;
+      const imageName = isLib ? overlay.querySelector('[data-a="image-name"]') : null;
+      const imageClear = isLib ? overlay.querySelector('[data-a="image-clear"]') : null;
+      const setImage = (dataUrl, name, changed = true) => {
+        if (!isLib || !imagePreview || !imageDrop) return;
+        editedImage = String(dataUrl || "");
+        imageChanged = imageChanged || changed;
+        imagePreview.hidden = !editedImage;
+        imagePreview.src = editedImage;
+        imageDrop.classList.toggle("has-image", Boolean(editedImage));
+        if (imageName) imageName.textContent = editedImage ? (name || "当前预览图") : "未设置预览图";
+        if (imageClear) imageClear.disabled = !editedImage;
+      };
+      setImage(currentImage, currentImage ? "当前预览图" : "未设置预览图", false);
+      const readImageFile = (file) => {
+        if (!file) return;
+        if (!String(file.type || "").startsWith("image/")) {
+          this._flash("预览图必须是图片文件");
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result === "string") setImage(reader.result, file.name, true);
+          else this._flash("预览图读取结果无效");
+        };
+        reader.onerror = () => this._flash("读取预览图失败");
+        reader.readAsDataURL(file);
+      };
+      imageInput?.addEventListener("change", () => {
+        readImageFile(imageInput.files?.[0]);
+        imageInput.value = "";
+      });
+      imageDrop?.addEventListener("click", () => imageInput?.click());
+      imageDrop?.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); imageInput?.click(); }
+      });
+      imageDrop?.addEventListener("dragenter", (event) => { event.preventDefault(); event.stopPropagation(); imageDrop.classList.add("is-dragging"); });
+      imageDrop?.addEventListener("dragover", (event) => { event.preventDefault(); event.stopPropagation(); imageDrop.classList.add("is-dragging"); });
+      imageDrop?.addEventListener("dragleave", (event) => { event.preventDefault(); event.stopPropagation(); imageDrop.classList.remove("is-dragging"); });
+      imageDrop?.addEventListener("drop", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        imageDrop.classList.remove("is-dragging");
+        readImageFile(event.dataTransfer?.files?.[0]);
+      });
+      imageClear?.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setImage("", "未设置预览图", true);
+      });
       const saveButton = overlay.querySelector('[data-a="save"]');
       const save = async () => {
         if (saveButton.disabled) return;
@@ -872,7 +936,8 @@
         saveButton.disabled = true;
         try {
           if (isLib) {
-            const next = { ...entry, ...values, displayText: values.displayText || entry.displayText, prompt: values.prompt, updatedAt: Date.now() };
+            const imagePatch = imageChanged ? { images: editedImage ? [editedImage] : [], primaryImage: editedImage } : {};
+            const next = { ...entry, ...values, ...imagePatch, displayText: values.displayText || entry.displayText, prompt: values.prompt, updatedAt: Date.now() };
             const db = await openDB();
             await storePut(db, PROMPT_STORE, next);
             Object.assign(entry, next);
@@ -4034,17 +4099,29 @@
  .tk-cards-w { color:var(--tk-accent); }
  .tk-cards-lora { color:var(--tk-info); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100px; }
 .tk-cards-multi { color:#ffb86c; border:1px solid rgba(255,184,108,.4); border-radius:3px; padding:0 3px; }
- .tk-cards-edit-form { display:flex; min-height:0; flex-direction:column; gap:9px; overflow:auto; padding:1px 4px 2px 1px; }
+ .tk-cards-edit-form { display:flex; min-height:0; flex:1 1 auto; flex-direction:column; gap:9px; overflow:auto; padding:1px 4px 2px 1px; }
  .tk-cards-field { display:flex; flex-direction:column; gap:3px; color:var(--tk-muted); font-size:10px; }
  .tk-cards-edit-form input, .tk-cards-edit-form textarea, .tk-cards-edit-form select { min-height:30px; width:100%; box-sizing:border-box; border:1px solid var(--tk-border); border-radius:5px; background:#141618; color:var(--tk-text); font-size:11px; padding:6px 8px; }
  .tk-cards-edit-form textarea { min-height:72px; resize:vertical; line-height:1.45; }
  .tk-cards-edit-form input:focus, .tk-cards-edit-form textarea:focus, .tk-cards-edit-form select:focus { outline:none; border-color:var(--tk-accent); box-shadow:0 0 0 2px rgba(208,201,187,.12); }
  .tk-cards-edit-two-col { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
- .tk-cards-edit-btns { position:sticky; bottom:0; display:flex; gap:6px; justify-content:flex-end; padding-top:9px; border-top:1px solid var(--tk-border-soft); background:#181a1c; }
+ .tk-cards-edit-image-field { display:flex; flex:0 0 auto; min-width:0; flex-direction:column; gap:4px; color:var(--tk-muted); font-size:10px; }
+ .tk-cards-edit-image-label { color:var(--tk-muted); }
+ .tk-cards-edit-image-drop { position:relative; display:flex; min-height:150px; max-height:220px; align-items:center; justify-content:center; overflow:hidden; border:1px dashed var(--tk-border); border-radius:6px; background:#141618; color:var(--tk-muted); cursor:pointer; transition:border-color .15s ease,background .15s ease; }
+ .tk-cards-edit-image-drop:hover, .tk-cards-edit-image-drop:focus-visible, .tk-cards-edit-image-drop.is-dragging { outline:none; border-color:var(--tk-accent); background:#1d2022; }
+ .tk-cards-edit-image-drop img { display:block; width:100%; height:180px; object-fit:contain; }
+ .tk-cards-edit-image-drop img[hidden] { display:none; }
+ .tk-cards-edit-image-drop.has-image .tk-cards-edit-image-placeholder { display:none; }
+ .tk-cards-edit-image-placeholder { display:flex; flex-direction:column; align-items:center; gap:5px; color:var(--tk-muted); }
+ .tk-cards-edit-image-placeholder small { color:#777d80; font-size:10px; }
+ .tk-cards-edit-image-meta { display:flex; min-width:0; align-items:center; justify-content:space-between; gap:8px; }
+ .tk-cards-edit-image-meta > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .tk-cards-edit-image-meta .tk-cards-btn { flex:0 0 auto; }
+ .tk-cards-edit-btns { display:flex; flex:0 0 auto; gap:6px; justify-content:flex-end; padding-top:9px; border-top:1px solid var(--tk-border-soft); background:#181a1c; }
  .tk-cards-empty { padding:8px 3px; color:var(--tk-muted); font-size:11px; }
- .tk-cards-overlay { position:fixed; inset:0; z-index:9999; display:flex; align-items:center; justify-content:center; padding:16px; background:rgba(0,0,0,.66); backdrop-filter:blur(3px); }
- .tk-cards-overlay-box { width:min(600px,92vw); max-height:82vh; padding:14px; display:flex; flex-direction:column; gap:10px; border:1px solid var(--tk-border); border-radius:8px; background:linear-gradient(180deg,#1d2023,#181a1c); box-shadow:0 0 0 1px rgba(255,255,255,.035),0 16px 42px rgba(0,0,0,.54),0 0 32px rgba(208,201,187,.05); }
- .tk-cards-edit-modal { width:min(680px,92vw); max-height:86vh; }
+ .tk-cards-overlay { --tk-bg:#111315; --tk-surface:#17191b; --tk-surface-2:#1d2023; --tk-border:#34383c; --tk-border-soft:#272b2e; --tk-text:#e7e4de; --tk-muted:#9b9a95; --tk-accent:#d0c9bb; --tk-accent-strong:#f0ece4; --tk-warn:#c6a76a; --tk-info:#9bb2b6; --tk-danger:#cb8585; position:fixed; inset:0; z-index:9999; display:flex; align-items:center; justify-content:center; padding:16px; background:rgba(0,0,0,.66); backdrop-filter:blur(3px); }
+ .tk-cards-overlay-box { width:min(600px,92vw); max-height:82vh; min-height:0; box-sizing:border-box; padding:14px; display:flex; flex-direction:column; gap:10px; border:1px solid var(--tk-border); border-radius:8px; background:linear-gradient(180deg,#1d2023,#181a1c); box-shadow:0 0 0 1px rgba(255,255,255,.035),0 16px 42px rgba(0,0,0,.54),0 0 32px rgba(208,201,187,.05); }
+ .tk-cards-edit-modal { width:min(680px,92vw); max-height:86vh; overflow:hidden; }
  .tk-cards-overlay-head { display:flex; justify-content:space-between; align-items:center; gap:10px; color:var(--tk-accent-strong); font-size:12px; }
 .tk-cards-lora-list { overflow:auto; display:flex; flex-direction:column; gap:3px; max-height:55vh; }
 .tk-cards-lora-row { display:flex; align-items:center; gap:6px; padding:3px 4px; border-radius:4px; }

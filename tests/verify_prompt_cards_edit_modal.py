@@ -50,7 +50,7 @@ with tempfile.TemporaryDirectory(prefix="tk-prompt-cards-edit-") as profile:
               const ui = window.__cardsNode._cardsUI;
               ui.w.positive.value = 'seed prompt';
               ui.cats = [{ id: 'cat-test', name: '测试分类', sortOrder: 0 }];
-              ui.prompts = [{ id: 'lib-test', prompt: 'old long prompt', displayText: '旧标题', notes: '旧注释', categoryId: 'cat-test', createdAt: 1 }];
+              ui.prompts = [{ id: 'lib-test', prompt: 'old long prompt', displayText: '旧标题', notes: '旧注释', categoryId: 'cat-test', images: ['data:image/png;base64,old-preview'], primaryImage: 'data:image/png;base64,old-preview', createdAt: 1 }];
               ui.cards = [{ id: 'card-test', prompt: 'card prompt', notes: 'card note', weight: '', lora: '', categories: ['card_all'], categoryId: 'card_all', createdAt: 1 }];
               ui._renderLibCatSel();
               ui._renderLibList();
@@ -68,11 +68,35 @@ with tempfile.TemporaryDirectory(prefix="tk-prompt-cards-edit-") as profile:
             () => {
               const ui = window.__cardsNode._cardsUI;
               const modal = document.querySelector('.tk-cards-edit-modal');
+              const toRgb = (value) => {
+                const parts = String(value || '').match(/\\d+(?:\\.\\d+)?/g);
+                return parts && parts.length >= 3 ? parts.slice(0, 3).map(Number) : null;
+              };
+              const luminance = (value) => {
+                const rgb = toRgb(value);
+                if (!rgb) return null;
+                return rgb.reduce((sum, channel) => {
+                  const normalized = channel / 255;
+                  return sum + (normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4);
+                }, 0);
+              };
+              const contrast = (foreground, background) => {
+                const fg = luminance(foreground);
+                const bg = luminance(background);
+                if (fg === null || bg === null) return null;
+                const [light, dark] = fg > bg ? [fg, bg] : [bg, fg];
+                return (light + 0.05) / (dark + 0.05);
+              };
+              const saveButton = modal?.querySelector('[data-a="save"]');
+              const saveComputed = saveButton ? getComputedStyle(saveButton) : null;
                 return {
                 positive: ui.w.positive.value,
                 modal: Boolean(modal),
                 formOverflow: modal ? getComputedStyle(modal.querySelector('.tk-cards-edit-form')).overflowY : '',
                 saveButtons: modal ? modal.querySelectorAll('[data-a="save"]').length : 0,
+                saveContrast: saveComputed ? contrast(saveComputed.color, saveComputed.backgroundColor) : null,
+                saveColors: saveComputed ? { color: saveComputed.color, background: saveComputed.backgroundColor } : null,
+                imagePreview: modal ? (() => { const preview = modal.querySelector('[data-a="image-preview"]'); const placeholder = modal.querySelector('[data-a="image-placeholder"]'); return preview ? { hidden: preview.hidden, src: preview.src, placeholderDisplay: placeholder ? getComputedStyle(placeholder).display : '' } : null; })() : null,
                 footerButtons: modal ? [...modal.querySelectorAll('.tk-cards-edit-btns button')].map(button => ({ text: button.textContent, rect: button.getBoundingClientRect().toJSON(), display: getComputedStyle(button).display, opacity: getComputedStyle(button).opacity })) : [],
               };
             }
@@ -83,14 +107,33 @@ with tempfile.TemporaryDirectory(prefix="tk-prompt-cards-edit-") as profile:
         check("双击打开独立编辑弹窗", state["modal"] and state["saveButtons"] == 1, state)
         check("编辑表单自身可滚动", state["formOverflow"] in {"auto", "scroll"}, state)
         check("编辑弹窗底部保存/取消均可见", len(state["footerButtons"]) == 2 and all(item["rect"]["width"] > 0 and item["rect"]["height"] > 0 and item["display"] != "none" for item in state["footerButtons"]), state)
+        check("保存按钮具有足够的文字对比度", state["saveContrast"] is not None and state["saveContrast"] >= 3, state)
+        check("编辑弹窗显示已有预览图", state["imagePreview"] and not state["imagePreview"]["hidden"] and state["imagePreview"]["src"].startswith("data:image/png") and state["imagePreview"]["placeholderDisplay"] == "none", state)
+        page.evaluate(
+            """
+            async () => {
+              const drop = document.querySelector('.tk-cards-edit-image-drop');
+              const bytes = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='), (char) => char.charCodeAt(0));
+              const file = new File([bytes], 'replacement.png', { type: 'image/png' });
+              const transfer = new DataTransfer();
+              transfer.items.add(file);
+              for (const type of ['dragenter', 'dragover']) drop.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: transfer }));
+              drop.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+              await new Promise((resolve) => setTimeout(resolve, 80));
+            }
+            """
+        )
+        replaced = page.evaluate("() => ({ hidden: document.querySelector('[data-a=\\\"image-preview\\\"]')?.hidden, src: document.querySelector('[data-a=\\\"image-preview\\\"]')?.src || '', name: document.querySelector('[data-a=\\\"image-name\\\"]')?.textContent || '', placeholderDisplay: getComputedStyle(document.querySelector('[data-a=\\\"image-placeholder\\\"]')).display })")
+        check("拖拽图片后预览图替换", not replaced["hidden"] and replaced["src"].startswith("data:image/png") and "replacement.png" in replaced["name"] and replaced["placeholderDisplay"] == "none", replaced)
         page.screenshot(path=str(ROOT / ".scratch" / "tk-prompt-cards-edit-modal-open.png"), full_page=True)
 
         page.locator('.tk-cards-edit-modal [data-f="prompt"]').fill("new long prompt, with enough content to edit safely")
         page.locator('.tk-cards-edit-modal [data-a="save"]').click()
         page.wait_for_timeout(500)
-        saved = page.evaluate("() => ({ modal: Boolean(document.querySelector('.tk-cards-edit-modal')), prompt: window.__cardsNode._cardsUI.prompts.find(p => p.id === 'lib-test')?.prompt || '' })")
+        saved = page.evaluate("() => { const item = window.__cardsNode._cardsUI.prompts.find(p => p.id === 'lib-test'); return { modal: Boolean(document.querySelector('.tk-cards-edit-modal')), prompt: item?.prompt || '', primaryImage: item?.primaryImage || '', images: item?.images || [] }; }")
         check("弹窗保存后关闭", not saved["modal"], saved)
         check("弹窗保存回写 Prompt 库", saved["prompt"] == "new long prompt, with enough content to edit safely", saved)
+        check("替换后的预览图保存到 Prompt 库", saved["primaryImage"].startswith("data:image/png") and len(saved["images"]) == 1 and saved["images"][0] == saved["primaryImage"], saved)
 
         resize = page.evaluate(
             """
