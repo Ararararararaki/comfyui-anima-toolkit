@@ -19,6 +19,24 @@ BRIDGE_DATA: dict = {}
 BRIDGE_LOCK = threading.Lock()
 
 BRIDGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "anima_bridge.json")
+_LORA_MODEL_EXTENSIONS = (".safetensors", ".pt", ".pth", ".ckpt", ".bin")
+
+
+def _normalize_lora_name(value: str) -> str:
+    """Normalize a relative LoRA reference without losing its subdirectory."""
+    normalized = str(value or "").strip().replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.casefold()
+
+
+def _lora_stem(value: str) -> str:
+    """Remove only a supported model extension from a normalized LoRA name."""
+    normalized = _normalize_lora_name(value)
+    for extension in _LORA_MODEL_EXTENSIONS:
+        if normalized.endswith(extension):
+            return normalized[:-len(extension)]
+    return normalized
 
 
 def _best_match(candidates: list[str]) -> str | None:
@@ -46,37 +64,31 @@ def _find_lora_path(lora_name: str) -> str | None:
     if not all_loras:
         return None
 
-    lora_lower = lora_name.lower().replace("\\", "/")
+    lora_key = _normalize_lora_name(lora_name)
+    lora_stem = _lora_stem(lora_key)
+    indexed = [(str(filename), _normalize_lora_name(filename)) for filename in all_loras]
 
-    # Utility: get normalized base name (keep subdirectory prefix)
-    def base(f):
-        base = os.path.splitext(f)[0]
-        return base.replace("\\", "/").lower()
+    # 0: Full relative path match. Use the original indexed filename when resolving
+    # so case and slash differences in the tag cannot break folder_paths lookup.
+    for filename, normalized in indexed:
+        if normalized == lora_key:
+            return folder_paths.get_full_path("loras", filename)
 
-    # 0: Full path match (supports "subdir/name.safetensors", "subdir/name")
-    for _suff in (".safetensors", ".pt", ".pth", ".ckpt", ".bin"):
-        candidate = lora_lower if lora_lower.endswith(_suff) else lora_lower + _suff
-        if candidate in all_loras:
-            return folder_paths.get_full_path("loras", candidate)
-
-    # 1: Exact base match (basename without extension)
-    matches = [f for f in all_loras if base(f) == lora_lower]
+    # 1: Exact base match (basename without extension, keeping subdirectory prefix)
+    matches = [filename for filename, normalized in indexed if _lora_stem(normalized) == lora_stem]
     if matches:
         return _best_match(matches)
 
     # 2: Alphanumeric-only comparison
-    clean = re.sub(r"[^a-z0-9/]", "", lora_lower)
-    matches = [f for f in all_loras if re.sub(r"[^a-z0-9/]", "", base(f)) == clean]
+    clean = re.sub(r"[^a-z0-9/]", "", lora_stem)
+    matches = [filename for filename, normalized in indexed if re.sub(r"[^a-z0-9/]", "", _lora_stem(normalized)) == clean]
     if matches:
         return _best_match(matches)
 
     # 3: Token match — every meaningful token must appear (safe substring)
-    tokens = [t for t in re.split(r"[\s_\-./\\]+", lora_lower) if len(t) > 2]
+    tokens = [t for t in re.split(r"[\s_\-./]+", lora_stem) if len(t) > 2]
     if tokens:
-        matches = [
-            f for f in all_loras
-            if all(t in base(f) for t in tokens)
-        ]
+        matches = [filename for filename, normalized in indexed if all(t in _lora_stem(normalized) for t in tokens)]
         # Prefer shorter match (fewer extra chars = closer match)
         if matches:
             matches.sort(key=lambda f: len(base(f)))
@@ -150,7 +162,7 @@ class AnimaBatchLoRALoader:
         # Build trigger word lookup from bridge data
         with BRIDGE_LOCK:
             tw_lookup = {
-                l.get("name", ""): l.get("trigger_words", [])
+                _normalize_lora_name(l.get("name", "")): l.get("trigger_words", [])
                 for l in BRIDGE_DATA.get("lora_list", [])
             } if BRIDGE_DATA else {}
 
@@ -169,7 +181,7 @@ class AnimaBatchLoRALoader:
                     entry["clip_strength"],
                 )
                 # Use real trigger words from bridge data when available
-                tws = tw_lookup.get(entry["name"], [])
+                tws = tw_lookup.get(_normalize_lora_name(entry["name"]), [])
                 if tws:
                     trigger_words.extend(tws)
                 else:
@@ -270,7 +282,7 @@ async def verify_bridge(request):
 
         tw_map = {}
         for l in lora_list:
-            tw_map[l.get("name", "")] = l.get("trigger_words", [])
+            tw_map[_normalize_lora_name(l.get("name", ""))] = l.get("trigger_words", [])
 
         entries = _parse_lora_syntax(text)
         for entry in entries:
@@ -282,7 +294,7 @@ async def verify_bridge(request):
                 "clip_strength": entry["clip_strength"],
                 "status": status,
                 "path": str(lora_path) if lora_path else None,
-                "trigger_words": tw_map.get(entry["name"], []),
+                    "trigger_words": tw_map.get(_normalize_lora_name(entry["name"]), []),
             })
     except Exception as e:
         result["error"] = str(e)

@@ -1,6 +1,7 @@
 // Anima Batch LoRA Widget — 中文界面 + 桥接自动加载 + 触发词复制
 (function () {
   const NODE_NAME = "TK Batch LoRA Loader";
+  const normalizeLoraName = (value) => String(value || "").trim().replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
   // bridge 一次性投递：已应用版本记录（localStorage），重启/刷新不重放历史残留
   const BRIDGE_APPLIED_KEY = "anima_bridge_applied_ts";
   // 面板 URL / 图标：动态解析当前插件目录名（兼容任意 clone 目录名）
@@ -388,7 +389,7 @@
         try { disabledMap = JSON.parse(localStorage.getItem("anima_lora_disabled") || "{}"); } catch { disabledMap = {}; }
       }
       for (const [name] of Object.entries(disabledMap)) {
-        const existing = items.find((e) => e.name.toLowerCase() === name.toLowerCase());
+        const existing = items.find((e) => normalizeLoraName(e.name) === normalizeLoraName(name));
         if (existing) {
           existing.disabled = true; // 同名项在 lora_syntax 里 → 标记禁用（恢复工作流保存的关闭状态）
           const preservedWeight = parseFloat(disabledMap[name]);
@@ -432,8 +433,11 @@
     // 从后端持久化的 loraMeta 读取"该 LoRA 通常被隐藏"的偏好（跨工作流/粘贴也能恢复）
     _prefDisabled(name) {
       try {
-        const m = this.meta && this.meta.loraMeta && this.meta.loraMeta[name];
-        return !!(m && m.disabled);
+        const meta = this.meta && this.meta.loraMeta;
+        if (!meta) return false;
+        const key = normalizeLoraName(name);
+        const entry = Object.entries(meta).find(([storedName]) => normalizeLoraName(storedName) === key)?.[1];
+        return !!(entry && entry.disabled);
       } catch { return false; }
     }
 
@@ -476,8 +480,8 @@
         document.head.appendChild(styleEl);
       }
       styleEl.textContent = `
-          .anima-lora-widget { display:flex; flex-direction:column; padding:6px; max-height:420px; background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01)); border-radius:8px; font-family:"Inter","Geist Sans",system-ui,sans-serif; border:1px solid rgba(255,255,255,0.05); box-shadow:inset 0 1px 0 0 rgba(255,255,255,0.04); }
-          .anima-lora-widget .list { flex:1; overflow-y:auto; min-height:0; }
+          .anima-lora-widget { display:flex; flex-direction:column; height:100%; min-height:0; box-sizing:border-box; padding:6px; background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01)); border-radius:8px; font-family:"Inter","Geist Sans",system-ui,sans-serif; border:1px solid rgba(255,255,255,0.05); box-shadow:inset 0 1px 0 0 rgba(255,255,255,0.04); }
+          .anima-lora-widget .list { flex:1 1 auto; overflow-y:auto; min-height:0; }
           .anima-lora-widget .toolbar { display:flex; gap:5px; margin-bottom:6px; flex-wrap:wrap; }
           .anima-lora-widget .toolbar button { display:inline-flex; align-items:center; gap:4px; padding:4px 10px; border:none; border-radius:6px; cursor:pointer; font-size:9px; font-weight:600; color:#EDEDEF; white-space:nowrap; letter-spacing:0.02em; transition:all 0.2s ease-out; box-shadow:0 0 0 1px rgba(255,255,255,0.06),0 2px 8px rgba(0,0,0,0.3); }
           .anima-lora-widget .toolbar .btn-verify { background:linear-gradient(135deg,#5E6AD2,#6872D9); box-shadow:0 0 0 1px rgba(94,106,210,0.3),0 2px 12px rgba(94,106,210,0.2),inset 0 1px 0 0 rgba(255,255,255,0.15); }
@@ -636,6 +640,20 @@
 
       const dw = this.node.addDOMWidget("anima_batch_ui", "custom", container, { serialize: false });
       dw.computeSize = (width) => [width || 280, Math.min(420, 72 + Math.max(1, this.loras.length) * 30)];
+
+      // ComfyUI 新节点布局默认把两个 widget 网格行都设为 auto，节点被手动
+      // 拉高后，多余空间会被分配到第一行，导致 LoRA 面板被推到节点底部。
+      // 让 lora_syntax 占自然高度，第二行占剩余高度，内部列表才能随节点边框伸缩。
+      const applyWidgetLayout = (attempt = 0) => {
+        const widgetGrid = container.closest(".lg-node-widgets");
+        if (!widgetGrid) {
+          if (attempt < 12) requestAnimationFrame(() => applyWidgetLayout(attempt + 1));
+          return;
+        }
+        widgetGrid.style.gridTemplateRows = "auto minmax(0, 1fr)";
+        widgetGrid.style.alignContent = "stretch";
+      };
+      applyWidgetLayout();
 
       // 让 lora_syntax 输入框多行/自适应高度
       this._enhanceLoraInput();
@@ -1115,7 +1133,7 @@
         let added = 0;
         data.loras.forEach((l) => {
           if (!l || !l.name) return;
-          if (!this.loras.some((e) => e.name.toLowerCase() === l.name.toLowerCase())) {
+          if (!this.loras.some((e) => normalizeLoraName(e.name) === normalizeLoraName(l.name))) {
             this.loras.push({ name: l.name, weight: typeof l.model_strength === "number" ? l.model_strength : 1.0, disabled: this._prefDisabled(l.name) });
             added++;
           }
