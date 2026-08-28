@@ -92,7 +92,8 @@ Steam 风格界面,管理全部本地 LoRA:
 - **TK D站画廊**:按标签搜索 Danbooru(Novelu&Danbooru 图库)图片,多选输出 IMAGE + Prompt + **metadata_json(结构化元数据:Danbooru ID / 原始标签数组 / Prompt 分组 / 输出设置 / rating / score / 收藏数 / 尺寸 / 文件类型 / 视频标记 / 原图 URL / 失败原因)**,下游可直接筛选与复现;内置分级/时间/评分/收藏筛选、Prompt 类别/格式控制、双语 tag 预览、下载、入 Prompt 库
   - **D站风控自救**:当 Danbooru 的 Cloudflare 把出口节点 IP 拦成「Just a moment」人机校验页时(表现为搜索失败/一直转圈/请求超时),节点会自动隐形式拉起本机 **Edge/Chrome 作为内置浏览器网关**继续搜索与下载,无需手动换节点;偶发仍被拦请到 Clash Verge 换一个节点/地区。
   - **依赖**:云风控自救需 ComfyUI 的 Python 环境装有 `playwright`(`pip install playwright`);未装时自动降级为直接请求并给出提示。
-  - **模糊搜索 + 回车直搜**:搜索不必完全匹配标签——输入近似词/拼写错误(如 `standin`)精确搜不到时会自动纠错成真实标签(如 `standing`)并重搜出图,搜索框同步更新为正确标签;搜索框直接按 **回车** 即可搜索,无需点「搜索」按钮。
+  - **中英文联想搜索 + 回车直搜**:输入英文或中文片段时,搜索框下方会浮出双语候选、英文标签和 D 站帖数,候选支持模糊匹配且不占节点布局空间;点击候选即可替换当前词。输入近似词/拼写错误(如 `standin`)精确搜不到时会自动纠错成真实标签(如 `standing`)并重搜出图,搜索框直接按 **回车** 即可搜索,无需点「搜索」按钮。
+  - **Prompt 输出独立开关**:关闭 Prompt 输出只让 Prompt 端口返回空字符串,图片和 metadata 仍按已选图片正常输出;旧工作流继续兼容。
 - **TK 批量 LoRA 加载器**:见第 1 节——批量挂 LoRA、触发词/全部触发词一键复制、本地 LoRA 可视化浏览、权重滑块、分组保存
 - **TK 图像选择**:多路图像路由(image1~image8,**用几路接几路 2~8 任意**;未接的自动跳过、至少一路有效)。**五种路由模式**:优先顺序(默认,首选为空自动按 image1→image8 兜底)/ 指定索引 / 随机 / Seed 稳定(同 seed 可复现) / 轮询(循环换源);另输出 **source_index(来源编号 1~8)+ source_name(imageN)**,下游可精确知道图源。典型场景:D站画廊图源接 image1、自定义图源接 image2/3…,生图来源一键切换,不必改连线;输出恒为列表,兼容 D站画廊列表输出与下游单输入节点
 - **TK Prompt Cards**(提示词卡片库编辑器):英中对照 tag 卡片拼/存提示词、②区中文片段选择翻译源并校准为 Danbooru 规范标签（支持单条翻译/自然语言语义解析；自动回退含本地 Argos，DeepLX 按需启动；支持百度翻译 APPID + API Key，设置位于翻译状态中的“百度设置”，接口参考[百度官方文档](https://fanyi-api.baidu.com/doc/21)）、批文件一键切换、工具箱 Prompt 库条目双击弹窗编辑保存、①区库面板高度可拖拽调整、可选 CLIP 直接编码输出 CONDITIONING、`lora_syntax` 直连批量 LoRA 节点、LLM 自动分类、PNG 解析、导出批词文件
@@ -141,6 +142,12 @@ git clone https://github.com/Ararararararaki/comfyui-anima-toolkit.git
 ```
 
 然后通过绘世启动器重启 ComfyUI。app 目录已经预先构建好,不用装依赖也不用重新构建,克隆完就能用。
+
+### 翻译源配置
+
+Prompt Cards 的「翻译状态」中可以选择翻译源,当前统一支持本地词典、DeepLX、百度翻译、MyMemory、Google 和通义。需要联网翻译的入口(包括 Outputs 的 PNG Prompt 翻译)复用同一套 `/api/translate` 路由。
+
+百度翻译在 Prompt Cards 的「翻译状态 → 百度设置」中配置,需要百度开发者信息中的 **APPID + API Key**,并可选择机器翻译(`nmt`)或大模型翻译(`llm`),以及术语库干预。百度配置仅保存到本机 `data/translation_providers.json`,该文件已加入 Git 忽略,不会随仓库提交;官方接口细节见[百度大模型文本翻译 API 文档](https://fanyi-api.baidu.com/doc/21)。
 
 ### 插件更新
 
