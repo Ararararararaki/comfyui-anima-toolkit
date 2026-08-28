@@ -546,9 +546,11 @@ async def lora_info(request):
     return web.json_response(result)
 
 
-# 下载进度：progressId -> {done, total, status, filename}（供前端进度条轮询）
+# 下载进度：progressId -> {done, total, status, filename, ...}（供前端进度条轮询）
 _DOWNLOAD_PROGRESS: dict = {}
 _DOWNLOAD_PROGRESS_LOCK = threading.Lock()
+_DOWNLOAD_TASKS: dict[str, asyncio.Task] = {}
+_DOWNLOAD_QUEUE_LOCK = asyncio.Lock()
 
 # 下载目标只允许落到 ComfyUI 已注册的模型目录，避免 URL 下载变成任意路径写入。
 _DOWNLOAD_TARGET_TYPES = (
@@ -634,34 +636,39 @@ def _resolve_download_target(target_key: str, model_type: str) -> tuple[str, str
 
 
 def _cleanup_progress(max_age: float = 600):
-    """清理超过 max_age 秒未更新的下载进度记录，防止长期运行内存增长。"""
+    """清理已结束且超过 max_age 秒未更新的下载进度记录。"""
     now = time.time()
     with _DOWNLOAD_PROGRESS_LOCK:
-        expired = [k for k, v in _DOWNLOAD_PROGRESS.items() if now - v.get("ts", now) > max_age]
+        expired = [
+            k for k, v in _DOWNLOAD_PROGRESS.items()
+            if v.get("status") not in {"queued", "downloading"} and now - v.get("ts", now) > max_age
+        ]
         for k in expired:
             _DOWNLOAD_PROGRESS.pop(k, None)
 
-@PromptServer.instance.routes.get("/anima/lora/download")
-async def lora_download(request):
-    """Download a Civitai model by version/model id into a registered model folder.
+def _download_progress_update(progress_id: str, **fields):
+    if not progress_id:
+        return
+    with _DOWNLOAD_PROGRESS_LOCK:
+        item = _DOWNLOAD_PROGRESS.get(progress_id)
+        if item is None:
+            return
+        item.update(fields)
+        item["ts"] = time.time()
 
-    Civitai download endpoint (/api/download/models/{id}) returns a 307 redirect;
-    aiohttp 默认不跟随重定向，需显式 allow_redirects=True（session 走系统代理）。
-    """
-    version_id = request.query.get("versionId", "").strip()
-    model_id = request.query.get("modelId", "").strip()
-    fallback_name = request.query.get("name", "").strip()
-    progress_id = request.query.get("progressId", "").strip()
-    cookie = request.query.get("cookie", "").strip()
-    token = request.query.get("token", "").strip()  # C 站 API Key（设置页生成），比 cookie 持久省事
-    target_key = request.query.get("target", "auto").strip() or "auto"
+
+def _download_progress_cancelled(progress_id: str) -> bool:
+    if not progress_id:
+        return False
+    with _DOWNLOAD_PROGRESS_LOCK:
+        return bool(_DOWNLOAD_PROGRESS.get(progress_id, {}).get("cancel"))
+
+
+async def _perform_lora_download(*, version_id: str, model_id: str, fallback_name: str,
+                                 progress_id: str, cookie: str, token: str, target_key: str) -> dict:
+    """执行单个下载；既供旧同步接口，也供后台任务使用。"""
     model_type = ""
-
-    _cleanup_progress()
-
-    if progress_id:
-        with _DOWNLOAD_PROGRESS_LOCK:
-            _DOWNLOAD_PROGRESS[progress_id] = {"done": 0, "total": 0, "status": "downloading", "filename": "", "ts": time.time()}
+    target = None
 
     # 只有 modelId 时：查 C 站模型详情，取默认（第一个）版本的 id
     if not version_id and model_id:
@@ -679,10 +686,11 @@ async def lora_download(request):
             version_id = ""
 
     if not version_id:
-        return web.json_response({"ok": False, "error": "versionId or modelId required"}, status=400)
+        result = {"ok": False, "error": "versionId or modelId required", "_http_status": 400}
+        _download_progress_update(progress_id, status="error", error=result["error"])
+        return result
 
     # 查 model-version 详情拿正确文件名（files[0].name，如 qingxiao_v1.safetensors）
-    # 重定向响应的 Content-Disposition 常缺失/格式不同，导致下载名变成 lora.safetensors
     api_filename = ""
     try:
         session = await _get_session()
@@ -702,7 +710,9 @@ async def lora_download(request):
     try:
         download_dir, resolved_folder_type = _resolve_download_target(target_key, model_type)
     except ValueError as error:
-        return web.json_response({"ok": False, "error": str(error)}, status=400)
+        result = {"ok": False, "error": str(error), "_http_status": 400}
+        _download_progress_update(progress_id, status="error", error=result["error"])
+        return result
     os.makedirs(download_dir, exist_ok=True)
 
     try:
@@ -724,11 +734,16 @@ async def lora_download(request):
         async with session.get(url, allow_redirects=True, headers=hdrs, params=params, timeout=download_timeout) as resp:
             # 检测重定向到 C 站登录页（需登录的模型，未带有效 Cookie 时）
             if "auth.civitai.com/login" in str(resp.url):
-                return web.json_response({"ok": False, "error": "该模型需登录 C 站才能下载：请在下载弹窗的 Cookie 栏填写浏览器里 civitai.com 的 Cookie 后重试，或在浏览器手动下载", "needLogin": True}, status=502)
+                result = {"ok": False, "error": "该模型需登录 C 站才能下载：请填写有效的 C 站 Cookie 或 API Key 后重试", "needLogin": True, "_http_status": 502}
+                _download_progress_update(progress_id, status="error", error=result["error"])
+                return result
             if resp.status != 200:
                 if resp.status in (401, 403):
-                    return web.json_response({"ok": False, "error": "该模型需登录 C 站才能下载（HTTP 401/403）：请在下载弹窗填 Cookie 或浏览器手动下载", "needLogin": True}, status=502)
-                return web.json_response({"ok": False, "error": f"download http_{resp.status}"}, status=502)
+                    result = {"ok": False, "error": "该模型需登录 C 站才能下载（HTTP 401/403）：请填写 Cookie 或 API Key 后重试", "needLogin": True, "_http_status": 502}
+                else:
+                    result = {"ok": False, "error": f"download http_{resp.status}", "_http_status": 502}
+                _download_progress_update(progress_id, status="error", error=result["error"])
+                return result
 
             # 文件名：C 站 API 的 files[0].name 优先，其次 Content-Disposition，最后 fallback
             filename = api_filename or fallback_name
@@ -744,45 +759,121 @@ async def lora_download(request):
 
             total = int(resp.headers.get("Content-Length", 0) or 0)
             done = 0
-            cancelled = False
             with open(target, "wb") as f:
                 async for chunk in resp.content.iter_chunked(64 * 1024):
-                    # 支持取消：下载中前端调 cancel 端点，置 cancel 标记
-                    if progress_id and _DOWNLOAD_PROGRESS.get(progress_id, {}).get("cancel"):
-                        cancelled = True
-                        break
+                    if _download_progress_cancelled(progress_id):
+                        try:
+                            os.remove(target)
+                        except Exception:
+                            pass
+                        _download_progress_update(progress_id, status="cancelled", error="已取消")
+                        return {"ok": False, "error": "已取消", "cancelled": True}
                     f.write(chunk)
                     done += len(chunk)
-                    if progress_id and total:
-                        with _DOWNLOAD_PROGRESS_LOCK:
-                            _DOWNLOAD_PROGRESS[progress_id]["done"] = done
-                            _DOWNLOAD_PROGRESS[progress_id]["total"] = total
+                    if total:
+                        _download_progress_update(progress_id, done=done, total=total)
 
-            if cancelled:
-                # 取消：删除部分下载的文件
-                try:
-                    os.remove(target)
-                except Exception:
-                    pass
-                return web.json_response({"ok": False, "error": "已取消", "cancelled": True})
-
-            if progress_id:
-                with _DOWNLOAD_PROGRESS_LOCK:
-                    _DOWNLOAD_PROGRESS[progress_id]["status"] = "done"
-                    _DOWNLOAD_PROGRESS[progress_id]["filename"] = filename
-
-            return web.json_response({"ok": True, "filename": filename, "path": target, "folderType": resolved_folder_type, "modelType": model_type or None})
-    except Exception as e:
+            _download_progress_update(progress_id, status="done", done=done, total=total, filename=filename, error="")
+            return {"ok": True, "filename": filename, "path": target, "folderType": resolved_folder_type, "modelType": model_type or None}
+    except Exception as error:
         # 异常中断：删除残留的半截文件，避免出现在 /anima/loras 列表中被误用
         if target and os.path.exists(target):
             try:
                 os.remove(target)
             except Exception:
                 pass
-        if progress_id:
-            with _DOWNLOAD_PROGRESS_LOCK:
-                _DOWNLOAD_PROGRESS[progress_id]["status"] = "error"
-        return web.json_response({"ok": False, "error": str(e)}, status=500)
+        _download_progress_update(progress_id, status="error", error=str(error))
+        return {"ok": False, "error": str(error), "_http_status": 500}
+
+
+async def _run_background_lora_download(progress_id: str, item: dict):
+    # 串行消费，避免多个前端同时打开时把带宽/磁盘 I/O 打满；任务仍独立于浏览器请求。
+    async with _DOWNLOAD_QUEUE_LOCK:
+        if _download_progress_cancelled(progress_id):
+            _download_progress_update(progress_id, status="cancelled", error="已取消")
+            return
+        _download_progress_update(progress_id, status="downloading")
+        await _perform_lora_download(
+            version_id=item.get("versionId", ""),
+            model_id=item.get("modelId", ""),
+            fallback_name=item.get("name", ""),
+            progress_id=progress_id,
+            cookie=item.get("cookie", ""),
+            token=item.get("token", ""),
+            target_key=item.get("target", "auto"),
+        )
+
+
+@PromptServer.instance.routes.get("/anima/lora/download")
+async def lora_download(request):
+    """兼容旧调用的同步下载接口；新前端使用 /download/queue。"""
+    progress_id = request.query.get("progressId", "").strip()
+    _cleanup_progress()
+    if progress_id:
+        with _DOWNLOAD_PROGRESS_LOCK:
+            _DOWNLOAD_PROGRESS[progress_id] = {
+                "progressId": progress_id, "done": 0, "total": 0, "status": "downloading",
+                "filename": "", "label": request.query.get("name", "").strip(), "error": "", "ts": time.time(),
+            }
+    async with _DOWNLOAD_QUEUE_LOCK:
+        result = await _perform_lora_download(
+            version_id=request.query.get("versionId", "").strip(),
+            model_id=request.query.get("modelId", "").strip(),
+            fallback_name=request.query.get("name", "").strip(),
+            progress_id=progress_id,
+            cookie=request.query.get("cookie", "").strip(),
+            token=request.query.get("token", "").strip(),
+            target_key=request.query.get("target", "auto").strip() or "auto",
+        )
+    status = int(result.pop("_http_status", 200 if result.get("ok") else 500))
+    return web.json_response(result, status=status)
+
+
+@PromptServer.instance.routes.post("/anima/lora/download/queue")
+async def lora_download_queue(request):
+    """提交一个或多个后台下载任务，浏览器关闭后任务仍由 ComfyUI 执行。"""
+    try:
+        payload = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "请求体必须是 JSON"}, status=400)
+    raw_items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(raw_items, list):
+        raw_items = [payload]
+    if not raw_items or len(raw_items) > 100:
+        return web.json_response({"ok": False, "error": "后台任务数量必须为 1 到 100"}, status=400)
+
+    _cleanup_progress()
+    jobs = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        version_id = str(raw.get("versionId") or "").strip()
+        model_id = str(raw.get("modelId") or "").strip()
+        if not version_id and not model_id:
+            continue
+        progress_id = str(raw.get("progressId") or "").strip() or f"dl_{int(time.time() * 1000)}_{os.urandom(3).hex()}"
+        label = str(raw.get("label") or raw.get("url") or raw.get("name") or version_id or model_id).strip()[:240]
+        item = {
+            "versionId": version_id,
+            "modelId": model_id,
+            "name": str(raw.get("name") or "").strip()[:255],
+            "target": str(raw.get("target") or "auto").strip() or "auto",
+            "cookie": str(raw.get("cookie") or "").strip(),
+            "token": str(raw.get("token") or "").strip(),
+        }
+        with _DOWNLOAD_PROGRESS_LOCK:
+            _DOWNLOAD_PROGRESS[progress_id] = {
+                "progressId": progress_id, "done": 0, "total": 0, "status": "queued", "filename": "",
+                "label": label, "url": str(raw.get("url") or "").strip()[:500], "error": "",
+                "createdAt": time.time(), "ts": time.time(),
+            }
+        task = asyncio.create_task(_run_background_lora_download(progress_id, item))
+        _DOWNLOAD_TASKS[progress_id] = task
+        task.add_done_callback(lambda _task, pid=progress_id: _DOWNLOAD_TASKS.pop(pid, None))
+        jobs.append({"progressId": progress_id, "label": label, "status": "queued"})
+    if not jobs:
+        return web.json_response({"ok": False, "error": "没有可提交的 versionId 或 modelId"}, status=400)
+    return web.json_response({"ok": True, "jobs": jobs})
 
 
 @PromptServer.instance.routes.get("/anima/lora/download/targets")
@@ -801,13 +892,25 @@ async def download_status(request):
     return web.json_response(p)
 
 
+@PromptServer.instance.routes.get("/anima/lora/download/list")
+async def download_list(request):
+    """返回近期后台任务，供关闭弹窗后重新打开时恢复进度。"""
+    _cleanup_progress()
+    with _DOWNLOAD_PROGRESS_LOCK:
+        jobs = [dict(item) for item in _DOWNLOAD_PROGRESS.values()]
+    jobs.sort(key=lambda item: item.get("createdAt", item.get("ts", 0)), reverse=True)
+    return web.json_response({"ok": True, "jobs": jobs[:100]})
+
+
 @PromptServer.instance.routes.get("/anima/lora/download/cancel")
 async def download_cancel(request):
     pid = request.query.get("progressId", "").strip()
     with _DOWNLOAD_PROGRESS_LOCK:
         if pid in _DOWNLOAD_PROGRESS:
             _DOWNLOAD_PROGRESS[pid]["cancel"] = True
-            _DOWNLOAD_PROGRESS[pid]["status"] = "cancelled"
+            if _DOWNLOAD_PROGRESS[pid].get("status") == "queued":
+                _DOWNLOAD_PROGRESS[pid]["status"] = "cancelled"
+            _DOWNLOAD_PROGRESS[pid]["ts"] = time.time()
     return web.json_response({"ok": True})
 
 

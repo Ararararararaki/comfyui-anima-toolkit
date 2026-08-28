@@ -154,14 +154,14 @@
     return null;
   }
 
-  // ── 批量下载弹窗（每行一个 C 站链接） ──
+  // ── 批量下载弹窗（每行一个 C 站链接；提交后由 ComfyUI 后台执行） ──
   function showBatchDownloadDialog(onDone) {
     const overlay = document.createElement("div");
     overlay.style.cssText = "position:fixed;inset:0;background:rgba(2,2,3,0.72);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);";
     const modal = document.createElement("div");
     modal.style.cssText = "background:#14141c;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:16px;width:94vw;max-width:520px;max-height:80vh;display:flex;flex-direction:column;color:#EDEDEF;box-shadow:0 0 0 1px rgba(255,255,255,0.05),0 20px 60px rgba(0,0,0,0.6);";
     modal.innerHTML = `<h3 style="margin:0 0 8px;font-size:13px;">🔗 从 C 站链接批量下载模型</h3>
-      <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">支持 LoRA、Checkpoint、VAE 等模型；每行一个链接，可带可不带 modelVersionId</div>
+      <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">支持 LoRA、Checkpoint、VAE 等模型；提交后由 ComfyUI 后台下载，关闭窗口或页面不影响任务</div>
       <textarea class="bd-urls" rows="6" placeholder="https://civitai.com/models/2658471/denia-wuthering-wavesanima&#10;https://civitai.com/models/2529695/xxx?modelVersionId=3094753" style="flex:1;padding:8px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;font-family:monospace;resize:vertical;outline:none;"></textarea>
       <div style="display:flex;gap:6px;margin-top:8px;">
         <input class="bd-token" type="password" value="${(function(){ try { return localStorage.getItem('anima_civitai_token') || ''; } catch(e){ return ''; } })()}" placeholder="C 站 API Key（只读权限即可，下载需登录的模型用）" style="flex:1;padding:7px 9px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:10px;outline:none;min-width:0;">
@@ -178,12 +178,20 @@
       <div class="bd-list" style="margin-top:8px;max-height:130px;overflow-y:auto;"></div>
       <div class="bd-log" style="margin-top:8px;max-height:60px;overflow-y:auto;font-size:10px;color:#8A8F98;white-space:pre-wrap;"></div>
       <div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end;">
-        <button class="bd-cancel" style="padding:5px 12px;background:rgba(255,255,255,0.08);color:#8A8F98;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;font-size:11px;">取消</button>
-        <button class="bd-start" style="padding:5px 14px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:6px;cursor:pointer;font-size:11px;">⬇️ 开始下载</button>
+        <button class="bd-cancel" style="padding:5px 12px;background:rgba(255,255,255,0.08);color:#8A8F98;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;font-size:11px;">关闭窗口</button>
+        <button class="bd-start" style="padding:5px 14px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:6px;cursor:pointer;font-size:11px;">⬇️ 加入后台下载</button>
       </div>`;
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
-    const close = () => overlay.remove();
+    let pollTimer = null;
+    let pollBusy = false;
+    let completionNotified = false;
+    const rows = new Map();
+    const close = () => {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = null;
+      overlay.remove();
+    };
     // 修复：拖拽选中文本时鼠标在弹窗外松开也会误关——只有按下和松开都在遮罩上才关闭
     let _downOnOverlay = false;
     overlay.addEventListener("mousedown", (e) => { _downOnOverlay = (e.target === overlay); });
@@ -202,89 +210,133 @@
         targetSelect.value = targets.some((target) => target.key === savedTarget) ? savedTarget : "auto";
       })
       .catch(() => { if (targetTip) targetTip.textContent = "目录列表加载失败，将使用自动目录；请确认 ComfyUI 后端在线。"; });
+
+    const renderJob = (job) => {
+      const progressId = String(job.progressId || "");
+      if (!progressId || rows.has(progressId)) return;
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:10px;color:#EDEDEF;";
+      const nameEl = document.createElement("span");
+      nameEl.style.cssText = "width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;";
+      nameEl.textContent = String(job.label || job.url || progressId).slice(0, 34);
+      nameEl.title = String(job.label || job.url || progressId);
+      const barWrap = document.createElement("div");
+      barWrap.style.cssText = "flex:1;height:8px;background:rgba(255,255,255,0.08);border-radius:4px;overflow:hidden;";
+      const bar = document.createElement("div");
+      bar.style.cssText = "height:100%;width:0%;background:linear-gradient(135deg,#5E6AD2,#6872D9);transition:width 0.2s;";
+      barWrap.appendChild(bar);
+      const pctEl = document.createElement("span");
+      pctEl.className = "bd-pct";
+      pctEl.style.cssText = "width:48px;text-align:right;color:#8A8F98;flex-shrink:0;";
+      pctEl.textContent = "排队中";
+      const cancelBtn = document.createElement("button");
+      cancelBtn.textContent = "✕";
+      cancelBtn.title = "取消后台任务";
+      cancelBtn.style.cssText = "padding:2px 6px;background:rgba(255,80,80,0.15);color:#ff6b6b;border:1px solid rgba(255,80,80,0.3);border-radius:4px;cursor:pointer;font-size:10px;flex-shrink:0;line-height:1;";
+      cancelBtn.onclick = async () => {
+        cancelBtn.disabled = true;
+        try { await fetch(`/anima/lora/download/cancel?progressId=${encodeURIComponent(progressId)}`); } catch {}
+        pctEl.textContent = "已取消";
+      };
+      row.append(nameEl, barWrap, pctEl, cancelBtn);
+      modal.querySelector(".bd-list").appendChild(row);
+      rows.set(progressId, { job, bar, pctEl, cancelBtn, reported: false });
+    };
+
+    const updateJob = (progressId, status) => {
+      const row = rows.get(progressId);
+      if (!row) return;
+      const s = status || {};
+      const total = Number(s.total || 0);
+      const done = Number(s.done || 0);
+      if (total > 0) {
+        const pc = Math.max(0, Math.min(100, Math.round(done / total * 100)));
+        row.bar.style.width = pc + "%";
+        row.pctEl.textContent = s.status === "done" ? "✓" : `${pc}%`;
+      } else if (s.status === "queued") row.pctEl.textContent = "排队中";
+      else if (s.status === "downloading") row.pctEl.textContent = "下载中";
+      if (s.status === "done") {
+        row.bar.style.width = "100%";
+        row.pctEl.textContent = "✓";
+        row.cancelBtn.disabled = true;
+        if (!row.reported) {
+          row.reported = true;
+          modal.querySelector(".bd-log").textContent += `✓ ${s.filename || row.job.label || progressId}\n`;
+          if (!completionNotified && typeof onDone === "function") { completionNotified = true; onDone(); }
+        }
+      } else if (s.status === "error") {
+        row.pctEl.textContent = "✗";
+        row.cancelBtn.disabled = true;
+        if (!row.reported) { row.reported = true; modal.querySelector(".bd-log").textContent += `✗ ${s.error || "下载失败"}\n`; }
+      } else if (s.status === "cancelled") {
+        row.pctEl.textContent = "已取消";
+        row.cancelBtn.disabled = true;
+        if (!row.reported) { row.reported = true; modal.querySelector(".bd-log").textContent += `✗ ${row.job.label || progressId} 已取消\n`; }
+      }
+    };
+
+    const poll = async () => {
+      if (pollBusy || !rows.size) return;
+      pollBusy = true;
+      try {
+        await Promise.all([...rows.keys()].map(async (progressId) => {
+          try {
+            const sr = await fetch(`/anima/lora/download/status?progressId=${encodeURIComponent(progressId)}`);
+            updateJob(progressId, await sr.json());
+          } catch {}
+        }));
+      } finally {
+        pollBusy = false;
+      }
+    };
+    const startPolling = () => {
+      if (!pollTimer) pollTimer = setInterval(poll, 500);
+      poll();
+    };
+    fetch("/anima/lora/download/list")
+      .then((r) => r.json())
+      .then((data) => {
+        for (const job of (Array.isArray(data?.jobs) ? data.jobs : [])) renderJob(job);
+        startPolling();
+      })
+      .catch(() => {});
+
     modal.querySelector(".bd-start").onclick = async () => {
       const urls = modal.querySelector(".bd-urls").value.split("\n").map((s) => s.trim()).filter(Boolean);
       if (!urls.length) { showToast("请输入链接"); return; }
       const targetKey = targetSelect?.value || "auto";
       try { localStorage.setItem("anima_civitai_download_target", targetKey); } catch {}
       const logEl = modal.querySelector(".bd-log");
-      const listEl = modal.querySelector(".bd-list");
       const startBtn = modal.querySelector(".bd-start");
-      startBtn.disabled = true;
-      let ok = 0, fail = 0;
+      const tokenVal = (modal.querySelector(".bd-token")?.value || "").trim();
+      if (tokenVal) { try { localStorage.setItem("anima_civitai_token", tokenVal); } catch {} }
+      const items = [];
       for (const url of urls) {
-        const p = parseCivitaiUrl(url);
-        if (!p) { fail++; logEl.textContent += `✗ 无法解析: ${url.slice(0,50)}\n`; continue; }
-        const qs = (p.versionId ? `versionId=${p.versionId}` : `modelId=${p.modelId}`) + `&target=${encodeURIComponent(targetKey)}`;
-        const progressId = "dl_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
-
-        // 进度条行
-        const row = document.createElement("div");
-        row.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:10px;color:#EDEDEF;";
-        const nameEl = document.createElement("span");
-        nameEl.style.cssText = "width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;";
-        nameEl.textContent = url.slice(0, 34);
-        const barWrap = document.createElement("div");
-        barWrap.style.cssText = "flex:1;height:8px;background:rgba(255,255,255,0.08);border-radius:4px;overflow:hidden;";
-        const bar = document.createElement("div");
-        bar.style.cssText = "height:100%;width:0%;background:linear-gradient(135deg,#5E6AD2,#6872D9);transition:width 0.2s;";
-        barWrap.appendChild(bar);
-        const pctEl = document.createElement("span");
-        pctEl.style.cssText = "width:36px;text-align:right;color:#8A8F98;flex-shrink:0;";
-        pctEl.textContent = "0%";
-        const cancelBtn = document.createElement("button");
-        cancelBtn.textContent = "✕";
-        cancelBtn.title = "取消下载";
-        cancelBtn.style.cssText = "padding:2px 6px;background:rgba(255,80,80,0.15);color:#ff6b6b;border:1px solid rgba(255,80,80,0.3);border-radius:4px;cursor:pointer;font-size:10px;flex-shrink:0;line-height:1;";
-        row.append(nameEl, barWrap, pctEl, cancelBtn);
-        listEl.appendChild(row);
-        listEl.scrollTop = listEl.scrollHeight;
-
-        // 串行下载：发起请求（后台）+ 轮询进度，可取消
-        await new Promise((resolve) => {
-          let cleared = false;
-          const stop = () => { if (!cleared) { cleared = true; clearInterval(timer); } };
-          cancelBtn.onclick = async () => {
-            cancelBtn.disabled = true;
-            try { await fetch(`/anima/lora/download/cancel?progressId=${progressId}`); } catch {}
-            stop();
-            fail++;
-            logEl.textContent += `✗ ${url.slice(0, 40)} 已取消\n`;
-            pctEl.textContent = "已取消";
-            resolve();
-          };
-          const timer = setInterval(async () => {
-            try {
-              const sr = await fetch(`/anima/lora/download/status?progressId=${progressId}`);
-              const s = await sr.json();
-              if (s.total) {
-                const pc = Math.round(s.done / s.total * 100);
-                bar.style.width = pc + "%";
-                pctEl.textContent = pc + "%";
-              }
-              if (s.status === "done") { stop(); bar.style.width = "100%"; pctEl.textContent = "✓"; }
-              else if (s.status === "error" || s.status === "cancelled") { stop(); pctEl.textContent = "✗"; }
-            } catch {}
-          }, 400);
-
-          const tokenVal = (modal.querySelector(".bd-token")?.value || "").trim();
-          if (tokenVal) { try { localStorage.setItem("anima_civitai_token", tokenVal); } catch {} }
-          const tokenQ = tokenVal ? `&token=${encodeURIComponent(tokenVal)}` : "";
-          fetch(`/anima/lora/download?${qs}&progressId=${progressId}${tokenQ}`)
-            .then((r) => r.json())
-            .then((j) => {
-              stop();
-              if (j.ok) { ok++; logEl.textContent += `✓ ${j.filename}\n`; bar.style.width = "100%"; pctEl.textContent = "✓"; }
-              else { fail++; logEl.textContent += `✗ ${j.error || "失败"}\n`; pctEl.textContent = "✗"; }
-              resolve();
-            })
-            .catch((e) => { stop(); fail++; logEl.textContent += `✗ ${e.message}\n`; pctEl.textContent = "✗"; resolve(); });
-        });
-        logEl.scrollTop = logEl.scrollHeight;
+        const parsed = parseCivitaiUrl(url);
+        if (!parsed) {
+          logEl.textContent += `✗ 无法解析: ${url.slice(0, 50)}\n`;
+          continue;
+        }
+        items.push({ ...parsed, target: targetKey, token: tokenVal, url, label: url.slice(0, 240) });
       }
-      startBtn.disabled = false;
-      logEl.textContent += `\n✅ 完成: ${ok} 成功 / ${fail} 失败\n`;
-      if (typeof onDone === "function") onDone();
+      if (!items.length) { showToast("没有可提交的有效 C 站链接"); return; }
+      startBtn.disabled = true;
+      try {
+        const response = await fetch("/anima/lora/download/queue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items }),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        for (const job of result.jobs || []) renderJob(job);
+        logEl.textContent += `已加入后台下载：${(result.jobs || []).length} 个任务；关闭窗口不影响下载\n`;
+        startPolling();
+      } catch (error) {
+        logEl.textContent += `✗ 提交后台任务失败：${error.message || error}\n`;
+      } finally {
+        startBtn.disabled = false;
+      }
     };
   }
 
