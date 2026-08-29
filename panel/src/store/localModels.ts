@@ -4,18 +4,24 @@ import { Cache } from './cache'
 import { fetchModelVersionByHash, fetchModelById } from '../api/civitai'
 import { showToast, stripExt } from '../utils'
 import { collectLoraFiles, groupLoraNamesByTopLevelFolder, isLoraFileName, normalizeRelativeLoraPath, pickerRelativeLoraPath, removeLoraFile } from '../services/localLoraScanner'
+import { hashFileSha256 } from '../services/fileHashWorker'
 
 let _lastBackendSync = 0
+let activeScanController: AbortController | null = null
+let activeMatchController: AbortController | null = null
+let pendingScanFiles = new Map<string, File>()
 
-function progressShow(done: number, total: number, label: string) {
+function progressShow(done: number, total: number, label: string, partial = 0) {
   const wrap = document.getElementById('localProgress')
   const bar = document.getElementById('localProgressBar')
   const text = document.getElementById('localProgressText')
   if (!wrap || !bar || !text) return
-  const pct = total > 0 ? Math.round((done / total) * 100) : 0
+  const pct = total > 0 ? Math.round(((done + Math.min(1, Math.max(0, partial))) / total) * 100) : 0
   bar.style.width = `${pct}%`
   text.textContent = `${label} ${done}/${total} (${pct}%)`
   wrap.style.display = 'flex'
+  const scanBtn = document.getElementById('localScanBtn') as HTMLButtonElement | null
+  if (scanBtn) scanBtn.disabled = true
 }
 
 function progressHide() {
@@ -24,6 +30,18 @@ function progressHide() {
   if (!wrap || !bar) return
   wrap.style.display = 'none'
   bar.style.width = '0%'
+  const scanBtn = document.getElementById('localScanBtn') as HTMLButtonElement | null
+  if (scanBtn) scanBtn.disabled = false
+}
+
+function shortFileName(name: string): string {
+  const last = name.split('/').pop() || name
+  return last.length > 42 ? `${last.slice(0, 18)}…${last.slice(-21)}` : last
+}
+
+function progressShowFile(done: number, total: number, name: string, bytesRead: number, totalBytes: number) {
+  const filePct = totalBytes > 0 ? Math.round((bytesRead / totalBytes) * 100) : 0
+  progressShow(done, total, `扫描中 ${shortFileName(name)} ${filePct}%`, filePct / 100)
 }
 
 /** 兜底：showDirectoryPicker 不可用时（Firefox/Safari、夸克旧版、或通过局域网 IP 访问），
@@ -62,6 +80,7 @@ const PNG_CACHE_KEY = 'local_pngs_v1'
 const TAG_CACHE_KEY = 'local_tag_freq_v1'
 const CAT_CACHE_KEY = 'local_categories_v1'
 const MANIFEST_CACHE_KEY = 'local_manifest_v1'
+const LARGE_HASH_DEFER_BYTES = 512 * 1024 * 1024
 
 type ManifestEntry = { name: string; size: number; lastModified: number; sha256: string }
 
@@ -131,6 +150,7 @@ interface LocalModelState {
   updateFile: (name: string, upd: Partial<LocalLoraFile>) => void
   setScanStatus: (s: LocalScanStatus) => void
   setScanProgress: (p: { done: number; total: number }) => void
+  cancelScan: () => void
   setPngs: (pngs: PngMeta[]) => void
   addPng: (png: PngMeta) => void
   setTagFreq: (f: TagFreq[]) => void
@@ -358,6 +378,7 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
   })),
   setScanStatus: (scanStatus) => set({ scanStatus }),
   setScanProgress: (scanProgress) => set({ scanProgress }),
+  cancelScan: () => { activeScanController?.abort(); activeMatchController?.abort() },
   setPngs: (pngs) => set({ pngs }),
   addPng: (png) => set(s => ({ pngs: [...s.pngs.filter(p => p.fileName !== png.fileName), png] })),
   setTagFreq: (tagFreq) => set({ tagFreq }),
@@ -394,6 +415,10 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
   },
 
   scanDir: async () => {
+    if (activeScanController) return
+    const controller = new AbortController()
+    activeScanController = controller
+    const signal = controller.signal
     try {
       let dirName = ''
       let entries: { name: string; file: File }[] = []
@@ -405,7 +430,7 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
           set({ dirHandle, scanStatus: 'scanning', scanProgress: { done: 0, total: 0 } })
           get().saveDirHandle()
           dirName = dirHandle.name
-          entries = await collectLoraFiles(dirHandle)
+          entries = await collectLoraFiles(dirHandle, signal)
         } catch (e) {
           if ((e as Error).name === 'AbortError' || (e as Error).message?.includes('abort')) {
             set({ scanStatus: 'idle' })
@@ -430,16 +455,31 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       const oldManifest = Cache.load<Record<string, ManifestEntry>>(MANIFEST_CACHE_KEY, 365 * 24 * 60 * 60 * 1000) || {}
       const oldFiles = get().files
       const oldFileMap = new Map(oldFiles.map(f => [f.name, f]))
-      const oldMatchedCache = new Map(oldFiles.filter(f => f.matched).map(f => [f.name, f.matchData]))
+      pendingScanFiles = new Map(entries.map(entry => [normalizeRelativeLoraPath(entry.name), entry.file]))
 
       const newManifest: Record<string, ManifestEntry> = {}
-      const results: LocalLoraFile[] = []
+      // 先登记全部文件，让列表和统计立即可见；新文件的哈希在后台逐个补齐。
+      const results: LocalLoraFile[] = entries.map(({ name, file }) => {
+        const relativeName = normalizeRelativeLoraPath(name)
+        const cached = oldManifest[relativeName]
+        const previous = oldFileMap.get(relativeName)
+        const unchanged = !!cached && cached.size === file.size && cached.lastModified === file.lastModified
+        return {
+          name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
+          sha256: unchanged ? cached.sha256 : '',
+          matched: unchanged ? previous?.matched || false : false,
+          matchData: unchanged ? previous?.matchData || null : null,
+          matchError: unchanged ? previous?.matchError || '' : '',
+          scanning: !unchanged,
+        }
+      })
       let unchanged = 0, changed = 0, added = 0, total = entries.length
 
       progressShow(0, total, '扫描')
-      set({ scanProgress: { done: 0, total }, scanningDir: dirName })
+      set({ files: results, scanProgress: { done: 0, total }, scanningDir: dirName, scanStatus: 'scanning' })
 
       for (let i = 0; i < entries.length; i++) {
+        if (signal.aborted) throw new DOMException('扫描已取消', 'AbortError')
         const { name, file } = entries[i]
         const relativeName = normalizeRelativeLoraPath(name)
 
@@ -448,30 +488,40 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
           // 未变更: 保留上次的 sha256 和匹配状态
           unchanged++
           const prev = oldFileMap.get(relativeName)
-          results.push({
+          results[i] = {
             name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
             sha256: cached.sha256,
             matched: prev?.matched || false,
             matchData: prev?.matchData || null,
             matchError: prev?.matchError || '',
             scanning: false,
-          })
+          }
           newManifest[relativeName] = { ...cached, name: relativeName }
         } else {
-          // 新文件或变更文件: 算 SHA-256
-          const buf = await file.arrayBuffer()
-          const hashBuf = await crypto.subtle.digest('SHA-256', buf)
-          const hashArr = Array.from(new Uint8Array(hashBuf))
-          const sha256 = hashArr.map(b => b.toString(16).padStart(2, '0')).join('')
-          results.push({
-            name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
-            sha256, matched: false, matchData: null, matchError: '', scanning: false,
-          })
-          newManifest[relativeName] = { name: relativeName, size: file.size, lastModified: file.lastModified, sha256 }
+          // 超大文件先完成登记，精确哈希放到后台匹配阶段，避免扫描界面长时间等待。
+          if (file.size > LARGE_HASH_DEFER_BYTES) {
+            results[i] = {
+              name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
+              sha256: '', matched: false, matchData: null, matchError: '', scanning: false,
+            }
+            newManifest[relativeName] = { name: relativeName, size: file.size, lastModified: file.lastModified, sha256: '' }
+          } else {
+            const sha256 = await hashFileSha256(file, {
+              signal,
+              onProgress: ({ bytesRead, totalBytes }) => {
+                progressShowFile(i, total, relativeName, bytesRead, totalBytes)
+              },
+            })
+            results[i] = {
+              name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
+              sha256, matched: false, matchData: null, matchError: '', scanning: false,
+            }
+            newManifest[relativeName] = { name: relativeName, size: file.size, lastModified: file.lastModified, sha256 }
+          }
           if (cached) changed++; else added++
         }
         progressShow(i + 1, total, `扫描  (新${added} 变${changed} 同${unchanged})`)
-        set({ scanProgress: { done: i + 1, total } })
+        set({ files: [...results], scanProgress: { done: i + 1, total } })
       }
 
       // 清理 manifest 中已删除的文件，并统计"减少的 LoRA"
@@ -502,20 +552,28 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     } catch (err) {
       progressHide()
       if ((err as Error).name === 'AbortError' || (err as Error).message?.includes('abort')) {
-        set({ scanStatus: 'idle' })
+        set({ scanStatus: 'idle', scanProgress: { done: 0, total: 0 } })
+        showToast('⏹ 扫描已取消')
       } else {
         set({ scanStatus: 'error' })
+        showToast(`❌ 扫描失败：${(err as Error).message || '未知错误'}`)
       }
+    } finally {
+      if (activeScanController === controller) activeScanController = null
     }
   },
 
   matchAll: async () => {
+    if (activeMatchController) return
     const { files } = get()
     const unmatched = files.filter(f => !f.matched)
     if (unmatched.length === 0) {
       showToast('✅ 所有文件已匹配')
       return
     }
+    const controller = new AbortController()
+    activeMatchController = controller
+    const signal = controller.signal
     set({ scanStatus: 'matching', scanProgress: { done: 0, total: unmatched.length } })
     progressShow(0, unmatched.length, '匹配')
 
@@ -524,35 +582,58 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     let nextIdx = 0
     const errors: string[] = []
 
-    await Promise.all(Array.from({ length: CONCURRENCY }, async () => {
-      while (nextIdx < unmatched.length) {
-        const idx = nextIdx++
-        const f = unmatched[idx]
-        get().updateFile(f.name, { scanning: true })
-        try {
-          const data = await fetchModelVersionByHash(f.sha256)
-          if (data) {
-            get().updateFile(f.name, {
-              matched: true, matchData: data, scanning: false, matchError: '',
-            })
-          } else {
-            get().updateFile(f.name, { matched: false, scanning: false, matchError: 'C站未匹配到此文件' })
+    try {
+      await Promise.all(Array.from({ length: CONCURRENCY }, async () => {
+        while (nextIdx < unmatched.length && !signal.aborted) {
+          const idx = nextIdx++
+          const f = unmatched[idx]
+          get().updateFile(f.name, { scanning: true })
+          try {
+            let sha256 = f.sha256
+            if (!sha256) {
+              const source = pendingScanFiles.get(f.name)
+              if (!source) throw new Error('请重新扫描此文件后再匹配')
+              sha256 = await hashFileSha256(source, {
+                signal,
+                onProgress: ({ bytesRead, totalBytes }) => {
+                  progressShowFile(done, unmatched.length, f.name, bytesRead, totalBytes)
+                },
+              })
+              const manifest = { ...get().manifest }
+              if (manifest[f.name]) manifest[f.name] = { ...manifest[f.name], sha256 }
+              set({ manifest })
+              get().updateFile(f.name, { sha256 })
+            }
+            const data = await fetchModelVersionByHash(sha256)
+            if (data) {
+              get().updateFile(f.name, {
+                matched: true, matchData: data, scanning: false, matchError: '',
+              })
+            } else {
+              get().updateFile(f.name, { matched: false, scanning: false, matchError: 'C站未匹配到此文件' })
+            }
+          } catch (error) {
+            if ((error as Error).name !== 'AbortError') {
+              get().updateFile(f.name, { scanning: false, matchError: (error as Error).message || '匹配异常' })
+              errors.push(f.name)
+            } else {
+              get().updateFile(f.name, { scanning: false })
+            }
           }
-        } catch {
-          get().updateFile(f.name, { scanning: false, matchError: '匹配异常' })
-          errors.push(f.name)
+          done++
+          progressShow(done, unmatched.length, `匹配  (${done}/${unmatched.length})`)
+          set({ scanProgress: { done, total: unmatched.length } })
         }
-        done++
-        progressShow(done, unmatched.length, `匹配  (${done}/${unmatched.length})`)
-        set({ scanProgress: { done, total: unmatched.length } })
-      }
-    }))
-
-    progressHide()
-    get().saveToCache()
-    get().rebuildTagFreq()
-    set({ scanStatus: 'done' })
-    if (errors.length) showToast(`⚠️ ${errors.length} 个匹配异常`)
+      }))
+    } finally {
+      activeMatchController = null
+      progressHide()
+      get().saveToCache()
+      get().rebuildTagFreq()
+      set({ scanStatus: 'done' })
+    }
+    if (signal.aborted) showToast('⏹ 匹配已取消')
+    else if (errors.length) showToast(`⚠️ ${errors.length} 个匹配异常`)
     else showToast(`✅ 匹配完成 (${done} 个)`)
   },
 
@@ -560,7 +641,25 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     const f = get().files.find(x => x.name === name)
     if (!f) return
     get().updateFile(name, { scanning: true })
-    const data = await fetchModelVersionByHash(f.sha256)
+    let sha256 = f.sha256
+    if (!sha256) {
+      const source = pendingScanFiles.get(name)
+      if (!source) {
+        get().updateFile(name, { scanning: false, matchError: '请重新扫描此文件后再匹配' })
+        return
+      }
+      try {
+        sha256 = await hashFileSha256(source)
+        const manifest = { ...get().manifest }
+        if (manifest[name]) manifest[name] = { ...manifest[name], sha256 }
+        set({ manifest })
+        get().updateFile(name, { sha256 })
+      } catch {
+        get().updateFile(name, { scanning: false, matchError: '哈希计算失败' })
+        return
+      }
+    }
+    const data = await fetchModelVersionByHash(sha256)
     if (data) {
       get().updateFile(name, { matched: true, matchData: data, scanning: false, matchError: '' })
     } else {
@@ -655,6 +754,7 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       if (perm !== 'granted') return 0
       const oldManifest = get().manifest || {}
       const entries = await collectLoraFiles(dh)
+      pendingScanFiles = new Map(entries.map(entry => [normalizeRelativeLoraPath(entry.name), entry.file]))
       let count = 0
       for (const entry of entries) {
         const name = normalizeRelativeLoraPath(entry.name)

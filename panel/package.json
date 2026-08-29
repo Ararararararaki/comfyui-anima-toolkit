@@ -10,6 +10,7 @@
     "dev:host": "vite --host --port 5173",
     "build": "tsc && vite build",
     "smoke": "node scripts/smoke.mjs",
+    "verify:local-lora-scan": "node scripts/verify-local-lora-scan.mjs",
     "setup:comfyui": "node scripts/setup-comfyui.mjs",
     "build:comfyui": "tsc && vite build --base=/extensions/ComfyUI-Anima-Batch-LoRA/app/ --outDir dist-comfyui --emptyOutDir && node scripts/deploy-comfyui.mjs --src dist-comfyui",
     "build:comfyui:ci": "tsc && vite build --base=/extensions/ComfyUI-Anima-Batch-LoRA/app/ --outDir ../app --emptyOutDir",

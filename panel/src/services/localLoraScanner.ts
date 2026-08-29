@@ -68,13 +68,14 @@ function joinRelativePath(prefix: string, name: string): string {
 }
 
 /** Recursively enumerate model files below a File System Access API handle. */
-export async function collectLoraFiles(root: FileSystemDirectoryHandle): Promise<LocalLoraScanEntry[]> {
+export async function collectLoraFiles(root: FileSystemDirectoryHandle, signal?: AbortSignal): Promise<LocalLoraScanEntry[]> {
   const result: LocalLoraScanEntry[] = []
 
   const visit = async (directory: DirectoryHandleLike, prefix: string): Promise<void> => {
     const iterator = directory.entries?.()
     if (!iterator) return
     for (;;) {
+      if (signal?.aborted) throw new DOMException('扫描已取消', 'AbortError')
       const next = await iterator.next()
       if (next.done) break
       const [name, handle] = next.value

@@ -20,6 +20,7 @@ function highlightText(text: string, query: string): string {
 }
 
 let _initDone = false
+let _localStoreUnsubscribe: (() => void) | null = null
 
 // ── 拖拽框选选中的 LoRA（右键可批量添加分类） ──
 let _dragSelected = new Set<string>()
@@ -213,6 +214,13 @@ export async function initLocalManager() {
   store.rebuildTagFreq()
   renderLocalView()
   bindLocalEvents()
+  if (!_localStoreUnsubscribe) {
+    _localStoreUnsubscribe = useLocalModelStore.subscribe((state, previous) => {
+      if (state.files !== previous.files || state.scanStatus !== previous.scanStatus || state.scanningDir !== previous.scanningDir) {
+        renderLocalView()
+      }
+    })
+  }
   _initDone = true
   // 与节点 /anima/meta 双向分类同步：启动时拉取后端分类合并到本地
   useLocalModelStore.getState().loadBackendMeta().then(() => {
@@ -814,9 +822,14 @@ function bindLocalEvents() {
   initDragSelect()
 
   $$('localScanBtn')?.addEventListener('click', async () => {
+    if (useLocalModelStore.getState().scanStatus === 'scanning') return
     await useLocalModelStore.getState().scanDir()
     refreshLocalNames()
     renderLocalView()
+  })
+
+  $$('localProgressCancel')?.addEventListener('click', () => {
+    useLocalModelStore.getState().cancelScan()
   })
 
   $$('localFolderCategoryBtn')?.addEventListener('click', () => {
