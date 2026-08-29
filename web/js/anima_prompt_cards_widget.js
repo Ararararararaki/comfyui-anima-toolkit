@@ -378,12 +378,13 @@
   }
 
   function normalizeCardSearchText(text) {
-    return String(text || "").toLowerCase().replace(/[\s_]+/g, "").replace(/[^\p{L}\p{N}]/gu, "");
+    return String(text || "").normalize("NFKC").toLowerCase().replace(/[\s_]+/g, "").replace(/[^\p{L}\p{N}]/gu, "");
   }
 
-  function fuzzyCardMatch(card, query) {
+  function fuzzyCardMatch(card, query, dictionaryKeys = null) {
     const needle = normalizeCardSearchText(query);
     if (!needle) return true;
+    if (dictionaryKeys?.has(normalizeCardSearchText(card.prompt))) return true;
     const haystack = normalizeCardSearchText([card.prompt, card.notes, card.lora].filter(Boolean).join(" "));
     if (!haystack) return false;
     if (haystack.includes(needle)) return true;
@@ -393,6 +394,21 @@
       if (cursor === needle.length) return true;
     }
     return false;
+  }
+
+  function suggestionMatchScore(value, query) {
+    const candidate = normalizeCardSearchText(value);
+    const needle = normalizeCardSearchText(query);
+    if (!candidate || !needle) return Number.POSITIVE_INFINITY;
+    if (candidate === needle) return 0;
+    if (candidate.startsWith(needle)) return 1;
+    if (candidate.includes(needle)) return 2;
+    let cursor = 0;
+    for (const char of candidate) {
+      if (char === needle[cursor]) cursor++;
+      if (cursor === needle.length) return 3;
+    }
+    return Number.POSITIVE_INFINITY;
   }
 
   function isNaturalChinese(text) {
@@ -694,6 +710,16 @@
       this.actualTranslationProvider = "";
       this._suggestIdx = -1;
       this._suggestList = [];
+      this._suggestRequestId = 0;
+      this._suggestAbortController = null;
+      this._dictionarySuggestCache = new Map();
+      this._translateSuggestRequestId = 0;
+      this._translateSuggestAbortController = null;
+      this._translateSuggestList = [];
+      this._translateSuggestIdx = -1;
+      this._cardSearchRequestId = 0;
+      this._cardSearchAbortController = null;
+      this._cardSearchDictionaryKeys = new Set();
       this.uiState = loadUiState();
       this.sectionBodies = {};
       this.libResizeEl = null;
@@ -1461,45 +1487,142 @@
       return [ws, we];
     }
 
-    _updateSuggest() {
-      if (!this.curTextEl || !this.suggestEl) return;
-      const t = this.curTextEl.value;
-      const caret = this.curTextEl.selectionStart ?? t.length;
-      const [ws] = this._wordBounds(t, caret);
-      const prefix = t.slice(ws, caret).trim().toLowerCase();
-      if (!prefix || !this.cards.length) { this._hideSuggest(); return; }
-      const star = (c) => (c.isFavorite ? 0 : 1);
-      const order = (c) => (c.order != null ? c.order : Number.MAX_SAFE_INTEGER);
-      const list = this.cards
-        .filter((c) => {
-          const p = String(c.prompt || "").toLowerCase();
-          return p.startsWith(prefix) || p.includes(prefix);
-        })
-        .sort((a, b) => {
-          const ap = String(a.prompt || "").toLowerCase().startsWith(prefix) ? 0 : 1;
-          const bp = String(b.prompt || "").toLowerCase().startsWith(prefix) ? 0 : 1;
-          return ap - bp || star(a) - star(b) || order(a) - order(b) || (b.createdAt || 0) - (a.createdAt || 0);
-        })
-        .slice(0, 8);
-      if (!list.length) { this._hideSuggest(); return; }
+    _cancelSuggestRequest() {
+      this._suggestRequestId += 1;
+      this._suggestAbortController?.abort();
+      this._suggestAbortController = null;
+    }
+
+    async _fetchDictionarySuggestions(query, limit = 16, controller = null) {
+      const key = `${normalizeCardSearchText(query)}:${limit}`;
+      const cached = this._dictionarySuggestCache.get(key);
+      if (cached) return cached;
+      const url = `/anima/cards/autocomplete?q=${encodeURIComponent(query)}&limit=${limit}`;
+      const response = await apiFetch(url, controller ? { signal: controller.signal } : undefined);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      const results = Array.isArray(payload?.results) ? payload.results : [];
+      this._dictionarySuggestCache.set(key, results);
+      while (this._dictionarySuggestCache.size > 128) {
+        this._dictionarySuggestCache.delete(this._dictionarySuggestCache.keys().next().value);
+      }
+      return results;
+    }
+
+    _renderSuggestList(list) {
+      if (!this.suggestEl) return;
+      if (!list.length) {
+        this._hideSuggest(false);
+        return;
+      }
       this._suggestList = list;
       this._suggestIdx = 0;
+      this.suggestEl.style.maxHeight = "min(320px, 42vh)";
+      this.suggestEl.style.overflowX = "hidden";
+      this.suggestEl.style.overflowY = "auto";
+      this.suggestEl.style.overscrollBehavior = "contain";
+      if (!this.suggestEl.__tkWheelBound) {
+        // ComfyUI 画布也监听滚轮；在弹层自身拦截冒泡，滚轮只滚动候选列表。
+        this.suggestEl.addEventListener("wheel", (event) => event.stopPropagation(), { capture: true, passive: true });
+        this.suggestEl.__tkWheelBound = true;
+      }
       const catName = (c) => {
         const id = (catIdsOf(c)[0]) || "";
-        return CAT_NAME(this.cardCats.find((x) => x.id === id));
+        return String(c.category || (id ? CAT_NAME(this.cardCats.find((x) => x.id === id)) : "通用"));
+      };
+      const countText = (c) => {
+        const count = Number(c.count) || 0;
+        return count > 0 ? ` · ${count.toLocaleString()}` : "";
+      };
+      const detailText = (c) => {
+        const notes = String(c.notes || c.zh || "").trim();
+        const description = String(c.description || "").trim();
+        if (!notes) return description;
+        if (!description || description.includes(notes)) return notes;
+        return c.source === "card" ? `${notes} · ${description}` : description;
       };
       this.suggestEl.style.display = "";
       this.suggestEl.innerHTML = list.map((c, i) =>
         `<div class="tk-cards-suggest-item ${i === 0 ? "sel" : ""}" data-i="${i}">
-          <span class="s-en">${esc(c.prompt)}</span>
-          ${c.notes ? `<span class="s-zh">${esc(c.notes)}</span>` : ""}
-          <span class="s-cat">${esc(catName(c))}</span></div>`).join("");
+          <div class="tk-cards-suggest-top"><span class="s-en">${esc(c.prompt || c.tag || "")}</span><span class="s-cat">${esc(catName(c) + countText(c))}</span></div>
+          ${detailText(c) ? `<div class="s-desc">${esc(detailText(c))}</div>` : ""}</div>`).join("");
       this.suggestEl.querySelectorAll(".tk-cards-suggest-item").forEach((it) => {
         it.addEventListener("mousedown", (ev) => {
           ev.preventDefault();
           this._applySuggest(list[parseInt(it.getAttribute("data-i"), 10)]);
         });
       });
+    }
+
+    async _updateSuggest() {
+      if (!this.curTextEl || !this.suggestEl) return;
+      const t = this.curTextEl.value;
+      const caret = this.curTextEl.selectionStart ?? t.length;
+      const [ws] = this._wordBounds(t, caret);
+      const prefix = t.slice(ws, caret).trim();
+      const requestId = ++this._suggestRequestId;
+      this._suggestAbortController?.abort();
+      this._suggestAbortController = null;
+      if (!prefix) { this._hideSuggest(false); return; }
+
+      const local = this.cards.map((card) => {
+        const score = Math.min(
+          suggestionMatchScore(card.prompt, prefix),
+          suggestionMatchScore(card.notes, prefix),
+          suggestionMatchScore(card.lora, prefix),
+        );
+        return Number.isFinite(score) ? { ...card, _suggestScore: score, source: "card" } : null;
+      }).filter(Boolean).sort((a, b) =>
+        a._suggestScore - b._suggestScore
+        || (b.isFavorite ? 1 : 0) - (a.isFavorite ? 1 : 0)
+        || (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER)
+        || (b.createdAt || 0) - (a.createdAt || 0)
+      );
+      this._renderSuggestList(local.slice(0, 8));
+
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      this._suggestAbortController = controller;
+      let dictionary = [];
+      try {
+        dictionary = await this._fetchDictionarySuggestions(prefix, 16, controller);
+      } catch (error) {
+        if (error?.name !== "AbortError") console.debug("[TK Prompt Cards] 词典联想不可用：", error);
+      }
+      if (requestId !== this._suggestRequestId) return;
+      if (this._suggestAbortController === controller) this._suggestAbortController = null;
+
+      const merged = new Map();
+      const add = (item) => {
+        const prompt = String(item.prompt || item.tag || "").trim();
+        const key = normalizeCardSearchText(prompt);
+        if (!key) return;
+        const current = merged.get(key);
+        if (!current) {
+          merged.set(key, { ...item, prompt, notes: String(item.notes || item.zh || ""), _suggestScore: item._suggestScore ?? 6 });
+          return;
+        }
+        const itemNotes = String(item.notes || item.zh || "");
+        const currentNotes = String(current.notes || current.zh || "");
+        merged.set(key, {
+          ...current,
+          ...item,
+          prompt: current.prompt || prompt,
+          notes: item.source === "card" && itemNotes ? itemNotes : (currentNotes || itemNotes),
+          count: Math.max(Number(current.count) || 0, Number(item.count) || 0),
+          isFavorite: !!current.isFavorite || !!item.isFavorite,
+          _suggestScore: Math.min(current._suggestScore ?? 6, item._suggestScore ?? 6),
+          source: current.source === "card" || item.source === "card" ? "card" : item.source,
+        });
+      };
+      dictionary.forEach((item) => add({ ...item, _suggestScore: item._suggestScore ?? 6 }));
+      local.forEach(add);
+      const list = [...merged.values()].sort((a, b) =>
+        (a._suggestScore ?? 6) - (b._suggestScore ?? 6)
+        || (b.isFavorite ? 1 : 0) - (a.isFavorite ? 1 : 0)
+        || (Number(b.count) || 0) - (Number(a.count) || 0)
+        || (b.createdAt || 0) - (a.createdAt || 0)
+      ).slice(0, 16);
+      this._renderSuggestList(list);
     }
 
     _translateWordBounds(t, caret) {
@@ -1511,40 +1634,34 @@
       return [ws, we];
     }
 
-    _updateTranslateSuggest() {
-      if (!this.translateInputEl || !this.translateSuggestEl) return;
-      const text = this.translateInputEl.value;
-      const caret = this.translateInputEl.selectionStart ?? text.length;
-      const [ws] = this._translateWordBounds(text, caret);
-      const prefix = text.slice(ws, caret).trim().toLowerCase();
-      if (!prefix || !containsCJK(prefix) || !this.cards.length) {
-        this._hideTranslateSuggest();
-        return;
-      }
-      const list = this.cards
-        .filter((card) => {
-          const zh = String(card.notes || "").trim().toLowerCase();
-          return zh && (zh.startsWith(prefix) || zh.includes(prefix));
-        })
-        .sort((a, b) => {
-          const az = String(a.notes || "").trim().toLowerCase();
-          const bz = String(b.notes || "").trim().toLowerCase();
-          return (az.startsWith(prefix) ? 0 : 1) - (bz.startsWith(prefix) ? 0 : 1)
-            || (a.isFavorite ? -1 : 1) - (b.isFavorite ? -1 : 1)
-            || (b.createdAt || 0) - (a.createdAt || 0);
-        })
-        .slice(0, 8);
+    _renderTranslateSuggestList(list) {
+      if (!this.translateSuggestEl) return;
       if (!list.length) {
-        this._hideTranslateSuggest();
+        this._hideTranslateSuggest(false);
         return;
       }
       this._translateSuggestList = list;
       this._translateSuggestIdx = 0;
+      this.translateSuggestEl.style.maxHeight = "min(320px, 42vh)";
+      this.translateSuggestEl.style.overflowX = "hidden";
+      this.translateSuggestEl.style.overflowY = "auto";
+      this.translateSuggestEl.style.overscrollBehavior = "contain";
+      if (!this.translateSuggestEl.__tkWheelBound) {
+        this.translateSuggestEl.addEventListener("wheel", (event) => event.stopPropagation(), { capture: true, passive: true });
+        this.translateSuggestEl.__tkWheelBound = true;
+      }
+      const detailText = (card) => {
+        const notes = String(card.notes || card.zh || "").trim();
+        const description = String(card.description || "").trim();
+        if (!notes) return description;
+        if (!description || description.includes(notes)) return notes;
+        return card.source === "card" ? `${notes} · ${description}` : description;
+      };
       this.translateSuggestEl.style.display = "";
       this.translateSuggestEl.innerHTML = list.map((card, i) =>
         `<div class="tk-cards-suggest-item ${i === 0 ? "sel" : ""}" data-i="${i}">
-          <span class="s-zh">${esc(card.notes || "")}</span>
-          <span class="s-en">${esc(card.prompt || "")}</span></div>`).join("");
+          <div class="tk-cards-suggest-top"><span class="s-zh">${esc(card.notes || card.zh || "")}</span><span class="s-en">${esc(card.prompt || card.tag || "")}</span>${Number(card.count) > 0 ? `<span class="s-cat">${esc(Number(card.count).toLocaleString())}</span>` : ""}</div>
+          ${detailText(card) ? `<div class="s-desc">${esc(detailText(card))}</div>` : ""}</div>`).join("");
       this.translateSuggestEl.querySelectorAll(".tk-cards-suggest-item").forEach((item) => {
         item.addEventListener("mousedown", (event) => {
           event.preventDefault();
@@ -1553,7 +1670,70 @@
       });
     }
 
-    _hideTranslateSuggest() {
+    async _updateTranslateSuggest() {
+      if (!this.translateInputEl || !this.translateSuggestEl) return;
+      const text = this.translateInputEl.value;
+      const caret = this.translateInputEl.selectionStart ?? text.length;
+      const [ws] = this._translateWordBounds(text, caret);
+      const prefix = text.slice(ws, caret).trim();
+      const requestId = ++this._translateSuggestRequestId;
+      this._translateSuggestAbortController?.abort();
+      this._translateSuggestAbortController = null;
+      if (!prefix || !containsCJK(prefix)) {
+        this._hideTranslateSuggest(false);
+        return;
+      }
+      const local = this.cards.map((card) => {
+        const score = suggestionMatchScore(card.notes, prefix);
+        return Number.isFinite(score) ? { ...card, _suggestScore: score, source: "card" } : null;
+      }).filter(Boolean).sort((a, b) =>
+        a._suggestScore - b._suggestScore
+        || (b.isFavorite ? 1 : 0) - (a.isFavorite ? 1 : 0)
+        || (b.createdAt || 0) - (a.createdAt || 0)
+      );
+      this._renderTranslateSuggestList(local.slice(0, 8));
+
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      this._translateSuggestAbortController = controller;
+      let dictionary = [];
+      try {
+        dictionary = await this._fetchDictionarySuggestions(prefix, 16, controller);
+      } catch (error) {
+        if (error?.name !== "AbortError") console.debug("[TK Prompt Cards] 中文词典联想不可用：", error);
+      }
+      if (requestId !== this._translateSuggestRequestId) return;
+      if (this._translateSuggestAbortController === controller) this._translateSuggestAbortController = null;
+      const merged = new Map();
+      [...dictionary.map((item) => ({ ...item, _suggestScore: item._suggestScore ?? 3 })), ...local].forEach((item) => {
+        const key = normalizeCardSearchText(item.prompt || item.tag);
+        if (!key) return;
+        const previous = merged.get(key);
+        if (!previous) {
+          merged.set(key, { ...item, notes: String(item.notes || item.zh || "") });
+          return;
+        }
+        merged.set(key, {
+          ...previous,
+          ...item,
+          prompt: previous.prompt || item.prompt || item.tag,
+          notes: item.source === "card" && item.notes ? String(item.notes) : (previous.notes || String(item.notes || item.zh || "")),
+          count: Math.max(Number(previous.count) || 0, Number(item.count) || 0),
+          _suggestScore: Math.min(previous._suggestScore ?? 3, item._suggestScore ?? 3),
+        });
+      });
+      const list = [...merged.values()].sort((a, b) =>
+        (a._suggestScore ?? 3) - (b._suggestScore ?? 3)
+        || (Number(b.count) || 0) - (Number(a.count) || 0)
+      ).slice(0, 16);
+      this._renderTranslateSuggestList(list);
+    }
+
+    _hideTranslateSuggest(invalidate = true) {
+      if (invalidate) {
+        this._translateSuggestRequestId += 1;
+        this._translateSuggestAbortController?.abort();
+        this._translateSuggestAbortController = null;
+      }
       if (this.translateSuggestEl) {
         this.translateSuggestEl.style.display = "none";
         this.translateSuggestEl.innerHTML = "";
@@ -1597,7 +1777,8 @@
       });
     }
 
-    _hideSuggest() {
+    _hideSuggest(invalidate = true) {
+      if (invalidate) this._cancelSuggestRequest();
       if (this.suggestEl) { this.suggestEl.style.display = "none"; this.suggestEl.innerHTML = ""; }
       this._suggestList = [];
       this._suggestIdx = -1;
@@ -2984,11 +3165,33 @@
       return list;
     }
 
+    async _updateCardSearch() {
+      const query = this.cardSearch;
+      const requestId = ++this._cardSearchRequestId;
+      this._cardSearchAbortController?.abort();
+      this._cardSearchAbortController = null;
+      this._cardSearchDictionaryKeys = new Set();
+      this._renderCards();
+      if (!query) return;
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      this._cardSearchAbortController = controller;
+      try {
+        const results = await this._fetchDictionarySuggestions(query, 40, controller);
+        if (requestId !== this._cardSearchRequestId) return;
+        this._cardSearchDictionaryKeys = new Set(results.map((item) => normalizeCardSearchText(item.prompt || item.tag)));
+      } catch (error) {
+        if (error?.name !== "AbortError") console.debug("[TK Prompt Cards] 卡片词典搜索不可用：", error);
+      }
+      if (requestId !== this._cardSearchRequestId) return;
+      if (this._cardSearchAbortController === controller) this._cardSearchAbortController = null;
+      this._renderCards();
+    }
+
     _renderCards() {
       if (!this.cardGridEl) return;
       let list = this.cards.slice();
       if (this.curCat) list = list.filter((p) => cardInCat(p, this.curCat));
-      if (this.cardSearch) list = list.filter((card) => fuzzyCardMatch(card, this.cardSearch));
+      if (this.cardSearch) list = list.filter((card) => fuzzyCardMatch(card, this.cardSearch, this._cardSearchDictionaryKeys));
       this._sortCardList(list);
       this.cardGridEl.innerHTML = "";
       if (!list.length) {
@@ -4133,7 +4336,7 @@
       this.cardSearchEl.setAttribute("aria-label", "搜索双语卡片");
       this.cardSearchEl.addEventListener("input", () => {
         this.cardSearch = this.cardSearchEl.value.trim();
-        this._renderCards();
+        this._updateCardSearch();
       });
       cardBody.appendChild(this.cardSearchEl);
       cardBody.appendChild(this.catTabsEl);
@@ -4264,12 +4467,15 @@
  .tk-cards-png-drop.is-dragging { border-color:var(--tk-accent); background:#292d30; color:var(--tk-accent-strong); }
  .tk-cards-translate-suggest { top:calc(100% + 2px); max-height:180px; }
 /* ②区卡片库联想下拉 */
- .tk-cards-suggest { position:absolute; top:calc(100% + 2px); left:0; right:0; z-index:80; max-height:180px; display:flex; flex-direction:column; overflow:auto; border:1px solid var(--tk-border); border-radius:5px; background:#1b1e20; box-shadow:0 8px 18px rgba(0,0,0,.45); }
- .tk-cards-suggest-item { display:flex; align-items:center; gap:7px; padding:7px 9px; font-size:11px; cursor:pointer; color:var(--tk-text); }
- .tk-cards-suggest-item .s-en { font-weight:650; color:var(--tk-accent-strong); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
- .tk-cards-suggest-item .s-zh { color:var(--tk-muted); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
- .tk-cards-suggest-item .s-cat { color:var(--tk-info); flex-shrink:0; }
- .tk-cards-suggest-item:hover, .tk-cards-suggest-item.sel { background:rgba(255,255,255,.08); }
+ .tk-cards-suggest { position:absolute; top:calc(100% + 2px); left:0; right:0; z-index:80; max-height:min(320px,42vh); display:flex; flex-direction:column; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; scrollbar-color:#626a70 #141618; border:1px solid var(--tk-border); border-radius:5px; background:#1b1e20; box-shadow:0 8px 18px rgba(0,0,0,.45); }
+ .tk-cards-suggest-item { display:block; padding:7px 9px; border-bottom:1px solid rgba(255,255,255,.07); font-size:11px; cursor:pointer; color:var(--tk-text); }
+ .tk-cards-suggest-item:last-child { border-bottom:0; }
+ .tk-cards-suggest-top { display:flex; align-items:baseline; gap:7px; min-width:0; }
+ .tk-cards-suggest-item .s-en { min-width:0; flex:1 1 auto; overflow:hidden; color:var(--tk-accent-strong); font-weight:650; text-overflow:ellipsis; white-space:nowrap; }
+ .tk-cards-suggest-item .s-zh { min-width:0; max-width:48%; overflow:hidden; color:var(--tk-muted); text-overflow:ellipsis; white-space:nowrap; }
+ .tk-cards-suggest-item .s-cat { flex:0 0 auto; overflow:hidden; max-width:38%; color:var(--tk-info); text-overflow:ellipsis; white-space:nowrap; }
+ .tk-cards-suggest-item .s-desc { display:-webkit-box; max-height:44px; margin-top:3px; overflow:hidden; color:var(--tk-muted); font-size:10px; line-height:1.38; -webkit-box-orient:vertical; -webkit-line-clamp:3; white-space:normal; word-break:break-word; }
+ .tk-cards-suggest-item:hover, .tk-cards-suggest-item.sel { background:rgba(94,106,210,.28); }
 /* ②区中文翻译 + Danbooru 规范校准 */
  .tk-cards-resolve { display:flex; flex-direction:column; gap:6px; padding:7px; border:1px solid rgba(155,178,182,.55); border-radius:5px; background:#171b1d; }
  .tk-cards-resolve-head { display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--tk-info); font-size:11px; }

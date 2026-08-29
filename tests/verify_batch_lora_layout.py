@@ -83,6 +83,28 @@ with tempfile.TemporaryDirectory(prefix="tk-batch-lora-layout-") as profile:
         check("节点高度不产生大块上方空白", state["uiRect"] and state["uiRect"]["top"] - 100 < 200, state)
         check("LoRA 列表随节点尺寸提供可用高度", state["listRect"] and state["listRect"]["height"] >= 300, state)
         check("LoRA 列表可滚动", state["listStyle"] and state["listStyle"]["overflowY"] in {"auto", "scroll"}, state)
+        negative_weight = page.evaluate(
+            """
+            () => {
+              const ui = window.__batchNode?._animaUI;
+              if (!ui) return null;
+              const input = ui.listEl.querySelector('.weight-val');
+              input.value = '-0.75';
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+              const manual = { weight: ui.loras[0].weight, syntax: ui.loraWidget.value };
+              ui.loras[0].weight = 0.1;
+              ui._render(ui.listEl);
+              const dec = ui.listEl.querySelector('.weight-step');
+              dec.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 100 }));
+              window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 40 }));
+              window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: 40 }));
+              return { manual, dragged: { weight: ui.loras[0].weight, syntax: ui.loraWidget.value } };
+            }
+            """
+        )
+        print(json.dumps(negative_weight, ensure_ascii=False))
+        check("手动输入支持负权重", negative_weight and negative_weight["manual"]["weight"] == -0.75 and "-0.75" in negative_weight["manual"]["syntax"], negative_weight)
+        check("拖动步进支持负权重", negative_weight and negative_weight["dragged"]["weight"] < 0 and "-" in negative_weight["dragged"]["syntax"], negative_weight)
         resized = page.evaluate(
             """
             () => {

@@ -43,6 +43,9 @@ spec.loader.exec_module(module)
 assert module._parse_lora_syntax(r"<lora:Illustrious\NiffiV1.3-000018:1.00>") == [
     {"name": r"Illustrious\NiffiV1.3-000018", "model_strength": 1.0, "clip_strength": 1.0}
 ]
+assert module._parse_lora_syntax(r"<lora:styles/detail:-0.75:-0.25>") == [
+    {"name": "styles/detail", "model_strength": -0.75, "clip_strength": -0.25}
+]
 
 without_extension = module._find_lora_path(r"Illustrious\NiffiV1.3-000018")
 with_extension = module._find_lora_path(r"illustrious/NiffiV1.3-000018.safetensors")

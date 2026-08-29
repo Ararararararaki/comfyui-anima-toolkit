@@ -676,6 +676,126 @@ def _download_progress_cancelled(progress_id: str) -> bool:
         return bool(_DOWNLOAD_PROGRESS.get(progress_id, {}).get("cancel"))
 
 
+class _LoraDownloadError(RuntimeError):
+    """下载响应或断点校验失败；保留 HTTP 状态供上层生成可操作提示。"""
+
+    def __init__(self, message: str, status: int | None = None, retryable: bool = False):
+        super().__init__(message)
+        self.status = status
+        self.retryable = retryable
+
+
+def _download_part_path(download_dir: str, version_id: str, fallback_name: str) -> str:
+    key = version_id.strip() or hashlib.sha256(fallback_name.encode("utf-8", "ignore")).hexdigest()[:20]
+    key = re.sub(r"[^A-Za-z0-9._-]+", "_", key)[:80] or "unknown"
+    return os.path.join(download_dir, f".anima-download-{key}.part")
+
+
+def _content_disposition_filename(value: str) -> str:
+    match = re.search(r'filename="?([^";]+)"?', str(value or "")) if value else None
+    return str(match.group(1)).strip() if match and match.group(1) else ""
+
+
+def _content_range(value: str) -> tuple[int, int | None, int | None] | None:
+    match = re.match(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$", str(value or "").strip(), re.IGNORECASE)
+    if not match:
+        return None
+    total = None if match.group(3) == "*" else int(match.group(3))
+    return int(match.group(1)), int(match.group(2)), total
+
+
+def _unsatisfied_content_range_total(value: str) -> int | None:
+    match = re.match(r"^bytes\s+\*/(\d+)$", str(value or "").strip(), re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+async def _download_lora_part(session, url: str, headers: dict[str, str], params: dict[str, str],
+                              part_path: str, progress_id: str, max_attempts: int = 4) -> dict[str, object]:
+    """把 C 站响应追加到 .part；断线时从当前文件长度继续，返回完成状态和文件名提示。"""
+    last_error: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        existing = os.path.getsize(part_path) if os.path.exists(part_path) else 0
+        request_headers = dict(headers)
+        if existing:
+            request_headers["Range"] = f"bytes={existing}-"
+        try:
+            timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_connect=30, sock_read=120)
+            async with session.get(url, allow_redirects=True, headers=request_headers, params=params, timeout=timeout) as resp:
+                if "auth.civitai.com/login" in str(resp.url):
+                    raise _LoraDownloadError("该模型需登录 C 站才能下载：请填写有效的 C 站 Cookie 或 API Key 后重试", resp.status, False)
+                if resp.status == 416 and existing:
+                    total = _unsatisfied_content_range_total(resp.headers.get("Content-Range", ""))
+                    if total is not None and total == existing:
+                        return {"done": existing, "total": total, "filename": "", "resumed": True, "complete": True}
+                    try:
+                        os.remove(part_path)
+                    except OSError:
+                        pass
+                    continue
+                if resp.status != 200 and resp.status != 206:
+                    retryable = resp.status == 429 or resp.status >= 500
+                    raise _LoraDownloadError(f"download http_{resp.status}", resp.status, retryable)
+
+                range_info = _content_range(resp.headers.get("Content-Range", ""))
+                if existing and resp.status == 206:
+                    if not range_info or range_info[0] != existing:
+                        raise _LoraDownloadError("服务器返回的断点位置不一致，未追加文件", resp.status, False)
+                    mode = "ab"
+                    done = existing
+                    total = range_info[2]
+                elif existing and resp.status == 200:
+                    # 服务端忽略 Range：不能把完整响应追加到半截文件，安全地从头重下。
+                    mode = "wb"
+                    done = 0
+                    total = int(resp.headers.get("Content-Length", 0) or 0) or None
+                else:
+                    if resp.status == 206 and range_info and range_info[0] != 0:
+                        raise _LoraDownloadError("服务器返回了无效的起始字节", resp.status, False)
+                    mode = "wb"
+                    done = 0
+                    total = range_info[2] if range_info else None
+                    if total is None:
+                        total = int(resp.headers.get("Content-Length", 0) or 0) or None
+
+                if total is None and resp.headers.get("Content-Length"):
+                    remaining = int(resp.headers.get("Content-Length", 0) or 0)
+                    total = done + remaining if mode == "ab" else remaining
+                _download_progress_update(progress_id, done=done, total=total or 0, resumable=True,
+                                          partial_path=part_path, status="downloading", error="")
+                with open(part_path, mode) as handle:
+                    async for chunk in resp.content.iter_chunked(64 * 1024):
+                        if _download_progress_cancelled(progress_id):
+                            _download_progress_update(progress_id, status="cancelled", done=done,
+                                                      total=total or 0, resumable=True, partial_path=part_path, error="已取消")
+                            return {"done": done, "total": total or 0, "filename": "", "resumed": existing > 0, "cancelled": True}
+                        handle.write(chunk)
+                        done += len(chunk)
+                        if total:
+                            _download_progress_update(progress_id, done=done, total=total, resumable=True,
+                                                      partial_path=part_path)
+                if total and done != total:
+                    raise _LoraDownloadError(f"连接提前结束：已接收 {done}/{total} 字节", None, True)
+                return {
+                    "done": done,
+                    "total": total or done,
+                    "filename": _content_disposition_filename(resp.headers.get("Content-Disposition", "")),
+                    "resumed": existing > 0 and mode == "ab",
+                    "complete": True,
+                }
+        except asyncio.CancelledError:
+            raise
+        except (_LoraDownloadError, aiohttp.ClientError, asyncio.TimeoutError, OSError) as error:
+            last_error = error
+            retryable = isinstance(error, _LoraDownloadError) and error.retryable
+            retryable = retryable or isinstance(error, (aiohttp.ClientError, asyncio.TimeoutError, OSError))
+            if not retryable or attempt >= max_attempts:
+                raise
+            _download_progress_update(progress_id, status="retrying", resumable=True, partial_path=part_path,
+                                      error=f"连接中断，正在从断点重试（{attempt}/{max_attempts - 1}）")
+            await asyncio.sleep(min(2 ** (attempt - 1), 8))
+    raise last_error or RuntimeError("下载失败")
+
+
 async def _perform_lora_download(*, version_id: str, model_id: str, fallback_name: str,
                                  progress_id: str, cookie: str, token: str, target_key: str) -> dict:
     """执行单个下载；既供旧同步接口，也供后台任务使用。"""
@@ -727,6 +847,7 @@ async def _perform_lora_download(*, version_id: str, model_id: str, fallback_nam
         return result
     os.makedirs(download_dir, exist_ok=True)
 
+    part_path = None
     try:
         session = await _get_session()
         url = f"https://civitai.com/api/download/models/{version_id}"
@@ -740,62 +861,50 @@ async def _perform_lora_download(*, version_id: str, model_id: str, fallback_nam
         params = {}
         if token:
             params["token"] = token  # C 站下载接口认 ?token=<api-key>
-        # 大型 Checkpoint 常常超过数十分钟；共享会话的 total=30 秒只适合 API 查询，
-        # 若沿用会在约 6% 处因总超时中断。这里限制连接和单次读空闲时间，不限制总下载时长。
-        download_timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_connect=30, sock_read=120)
-        async with session.get(url, allow_redirects=True, headers=hdrs, params=params, timeout=download_timeout) as resp:
-            # 检测重定向到 C 站登录页（需登录的模型，未带有效 Cookie 时）
-            if "auth.civitai.com/login" in str(resp.url):
-                result = {"ok": False, "error": "该模型需登录 C 站才能下载：请填写有效的 C 站 Cookie 或 API Key 后重试", "needLogin": True, "_http_status": 502}
-                _download_progress_update(progress_id, status="error", error=result["error"])
-                return result
-            if resp.status != 200:
-                if resp.status in (401, 403):
-                    result = {"ok": False, "error": "该模型需登录 C 站才能下载（HTTP 401/403）：请填写 Cookie 或 API Key 后重试", "needLogin": True, "_http_status": 502}
-                else:
-                    result = {"ok": False, "error": f"download http_{resp.status}", "_http_status": 502}
-                _download_progress_update(progress_id, status="error", error=result["error"])
-                return result
 
-            # 文件名：C 站 API 的 files[0].name 优先，其次 Content-Disposition，最后 fallback
-            filename = api_filename or fallback_name
-            if not api_filename:
-                cd = resp.headers.get("Content-Disposition", "")
-                m = __import__("re").search(r'filename="?([^";]+)"?', cd) if "filename=" in cd else None
-                if m and m.group(1):
-                    filename = m.group(1)
-            filename = os.path.basename(filename or "lora.safetensors")
+        # API 详情通常已给出文件名；part 路径按版本号生成，避免依赖 CDN 的响应头才能续传。
+        filename = api_filename or os.path.basename(fallback_name.split("?", 1)[0].replace("\\", "/").rstrip("/"))
+        filename = os.path.basename(filename or "lora.safetensors")
+        if not os.path.splitext(filename)[1]:
+            filename += ".safetensors"
+        target = os.path.join(download_dir, filename)
+        part_path = _download_part_path(download_dir, version_id, fallback_name or url)
+
+        transfer = await _download_lora_part(session, url, hdrs, params, part_path, progress_id)
+        if transfer.get("cancelled"):
+            return {"ok": False, "error": "已取消，已保留部分文件，下次提交同一 URL 可继续", "cancelled": True, "resumable": True}
+
+        # 没有 API 文件名时，成功响应的 Content-Disposition 仍优先于 URL fallback。
+        if not api_filename and transfer.get("filename"):
+            filename = os.path.basename(str(transfer["filename"]))
             if not os.path.splitext(filename)[1]:
                 filename += ".safetensors"
             target = os.path.join(download_dir, filename)
-
-            total = int(resp.headers.get("Content-Length", 0) or 0)
-            done = 0
-            with open(target, "wb") as f:
-                async for chunk in resp.content.iter_chunked(64 * 1024):
-                    if _download_progress_cancelled(progress_id):
-                        try:
-                            os.remove(target)
-                        except Exception:
-                            pass
-                        _download_progress_update(progress_id, status="cancelled", error="已取消")
-                        return {"ok": False, "error": "已取消", "cancelled": True}
-                    f.write(chunk)
-                    done += len(chunk)
-                    if total:
-                        _download_progress_update(progress_id, done=done, total=total)
-
-            _download_progress_update(progress_id, status="done", done=done, total=total, filename=filename, error="")
-            return {"ok": True, "filename": filename, "path": target, "folderType": resolved_folder_type, "modelType": model_type or None}
+        os.replace(part_path, target)
+        done = int(transfer.get("done") or 0)
+        total = int(transfer.get("total") or done)
+        _download_progress_update(progress_id, status="done", done=done, total=total, filename=filename,
+                                  resumable=False, partial_path="", error="")
+        return {"ok": True, "filename": filename, "path": target, "folderType": resolved_folder_type, "modelType": model_type or None}
+    except _LoraDownloadError as error:
+        part_size = os.path.getsize(part_path) if part_path and os.path.exists(part_path) else 0
+        if error.status in (401, 403):
+            message = "该模型需登录 C 站才能下载（HTTP 401/403）：请填写 Cookie 或 API Key 后重试"
+            _download_progress_update(progress_id, status="error", done=part_size, resumable=bool(part_size),
+                                      partial_path=part_path or "", error=message)
+            return {"ok": False, "error": message, "needLogin": True, "resumable": bool(part_size), "_http_status": 502}
+        message = str(error)
+        _download_progress_update(progress_id, status="error", done=part_size, resumable=bool(part_size),
+                                  partial_path=part_path or "", error=message)
+        return {"ok": False, "error": message, "resumable": bool(part_size), "_http_status": 502}
+    except asyncio.CancelledError:
+        raise
     except Exception as error:
-        # 异常中断：删除残留的半截文件，避免出现在 /anima/loras 列表中被误用
-        if target and os.path.exists(target):
-            try:
-                os.remove(target)
-            except Exception:
-                pass
-        _download_progress_update(progress_id, status="error", error=str(error))
-        return {"ok": False, "error": str(error), "_http_status": 500}
+        # 异常时保留 .part；它不会被 ComfyUI 当成模型，重新提交同一 URL 会从断点继续。
+        part_size = os.path.getsize(part_path) if part_path and os.path.exists(part_path) else 0
+        _download_progress_update(progress_id, status="error", done=part_size, resumable=bool(part_size),
+                                  partial_path=part_path or "", error=str(error))
+        return {"ok": False, "error": str(error), "resumable": bool(part_size), "_http_status": 500}
 
 
 async def _run_background_lora_download(progress_id: str, item: dict):

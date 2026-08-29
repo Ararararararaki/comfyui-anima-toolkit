@@ -781,6 +781,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       const list = document.createElement("div");
       list.className = `${prefix}-list`;
       const rows = [];
+      let updateSelectionTools = () => {};
       const editor = {
         rows,
         read: () => {
@@ -793,10 +794,82 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
             translations: Object.fromEntries(entries.map(({ en, zh }) => [en, zh])),
           };
         },
+        readSelected: () => {
+          const entries = rows
+            .filter(({ select }) => select.checked)
+            .map(({ en, zh }) => ({ en: en.value.trim(), zh: zh.value.trim() }))
+            .filter(({ en }) => en);
+          return {
+            parts: entries.map(({ en }) => en),
+            prompt: entries.map(({ en }) => en).join(", "),
+            translations: Object.fromEntries(entries.map(({ en, zh }) => [en, zh])),
+          };
+        },
       };
+      const selectionTools = document.createElement("div");
+      selectionTools.className = `${prefix}-selection-tools`;
+      const selectAllLabel = document.createElement("label");
+      selectAllLabel.className = `${prefix}-select-all`;
+      const selectAll = document.createElement("input");
+      selectAll.type = "checkbox";
+      selectAll.className = `${prefix}-select-all-input`;
+      const selectAllText = document.createElement("span");
+      selectAllText.textContent = "全选";
+      selectAllLabel.append(selectAll, selectAllText);
+      const clearSelection = document.createElement("button");
+      clearSelection.type = "button";
+      clearSelection.textContent = "清除选择";
+      const selectionCount = document.createElement("span");
+      selectionCount.className = `${prefix}-selection-count`;
+      selectionCount.textContent = "未选择";
+      const copySelected = document.createElement("button");
+      copySelected.type = "button";
+      copySelected.textContent = "复制选中";
+      copySelected.title = "复制选中的 Prompt";
+      copySelected.setAttribute("aria-label", "复制选中的 Prompt");
+      copySelected.disabled = true;
+      selectionTools.append(selectAllLabel, clearSelection, selectionCount, copySelected);
+      updateSelectionTools = () => {
+        const selectedCount = rows.filter(({ select }) => select.checked).length;
+        selectionCount.textContent = selectedCount ? `已选 ${selectedCount} 个` : "未选择";
+        copySelected.disabled = selectedCount === 0;
+        selectAll.checked = rows.length > 0 && selectedCount === rows.length;
+        selectAll.indeterminate = selectedCount > 0 && selectedCount < rows.length;
+        rows.forEach(({ card, select }) => card.classList.toggle("is-selected", select.checked));
+      };
+      selectAll.addEventListener("change", () => {
+        rows.forEach(({ select }) => { select.checked = selectAll.checked; });
+        updateSelectionTools();
+      });
+      clearSelection.addEventListener("click", () => {
+        rows.forEach(({ select }) => { select.checked = false; });
+        updateSelectionTools();
+      });
+      copySelected.addEventListener("click", async () => {
+        const value = editor.readSelected().prompt;
+        if (!value) {
+          this.setStatus("请先选择要复制的 Prompt", "error");
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(value);
+        } catch {
+          const fallback = document.createElement("textarea");
+          fallback.value = value;
+          document.body.append(fallback);
+          fallback.select();
+          document.execCommand("copy");
+          fallback.remove();
+        }
+        this.setStatus(`已复制 ${editor.readSelected().parts.length} 个 Prompt`);
+      });
       for (const part of unique) {
         const row = document.createElement("div");
         row.className = `${prefix}-card`;
+        const select = document.createElement("input");
+        select.type = "checkbox";
+        select.className = `${prefix}-select`;
+        select.setAttribute("aria-label", `选择 Prompt：${part}`);
         const en = document.createElement("input");
         en.type = "text";
         en.className = `${prefix}-en`;
@@ -808,14 +881,19 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         zh.value = translationMap.get(promptCardKey(part)) || "";
         zh.placeholder = "待翻译，可手动修改";
         zh.setAttribute("aria-label", `中文翻译：${part}`);
-        const rowState = { en, zh };
+        const fields = document.createElement("div");
+        fields.className = `${prefix}-fields`;
+        fields.append(en, zh);
+        const rowState = { card: row, select, en, zh };
         rows.push(rowState);
+        select.addEventListener("change", updateSelectionTools);
         en.addEventListener("input", () => onInput?.(editor, "en", rowState));
         zh.addEventListener("input", () => onInput?.(editor, "zh", rowState));
-        row.append(en, zh);
+        row.append(select, fields);
         list.append(row);
       }
-      container.append(header, list);
+      container.append(header, list, selectionTools);
+      updateSelectionTools();
       if (!unique.length) {
         const empty = document.createElement("div");
         empty.className = `${prefix}-empty`;
