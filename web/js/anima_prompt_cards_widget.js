@@ -348,7 +348,7 @@
       if (!line) continue;
       const parts = line.split(/[、，,;；]/).map((s) => s.trim()).filter(Boolean);
       for (let p of parts) {
-        const m = p.match(/^\((.+):([0-9.]+)\)$/);
+        const m = p.match(/^\((.+):([+-]?(?:\d+(?:\.\d*)?|\.\d+))\)$/);
         if (m) { out.push({ text: m[1].trim(), weight: m[2] }); continue; }
         out.push({ text: p, weight: "" });
       }
@@ -541,11 +541,36 @@
     return PROVIDER_ERROR_LABELS[state.error_code] || "待使用";
   }
 
+  function formatWeightedPromptText(text, weight) {
+    const value = String(text || "").trim();
+    if (!value) return "";
+    const rawWeight = String(weight ?? "").trim();
+    if (!rawWeight) return value;
+    const numericWeight = Number(rawWeight);
+    // 1.0 是默认权重，不写成冗余的 (tag:1.0)。
+    if (Number.isFinite(numericWeight) && Math.abs(numericWeight - 1) < 1e-9) return value;
+    return `(${value}:${rawWeight})`;
+  }
+
+  function serializePromptPieces(parts) {
+    return (parts || []).map((p) => formatWeightedPromptText(p.text, p.weight)).filter(Boolean).join(", ");
+  }
+
+  function normalizePromptCardWeight(value) {
+    const parsed = Number.parseFloat(String(value ?? "").trim());
+    const safe = Number.isFinite(parsed) ? parsed : 1;
+    const clamped = Math.max(-2, Math.min(2, safe));
+    return Math.round(clamped * 10) / 10;
+  }
+
+  function promptCardWeightText(value) {
+    return normalizePromptCardWeight(value).toFixed(1);
+  }
+
   function cardToText(c) {
     const en = String(c.prompt || c.en || "").trim();
     if (!en) return "";
-    const w = String(c.weight || "").trim();
-    return w ? `(${en}:${w})` : en;
+    return formatWeightedPromptText(en, c.weight);
   }
 
   // 追加（智能去重）
@@ -569,7 +594,7 @@
       keep.push(p);
     }
     if (!removed) return cur;
-    return keep.map((p) => p.weight ? `(${p.text}:${p.weight})` : p.text).join(", ");
+    return serializePromptPieces(keep);
   }
 
   // Danbooru 内部标签用下划线；Anima 提示词使用空格和英文逗号。
@@ -587,6 +612,9 @@
   const CUR_TEXT_HEIGHT_MIN = 82;
   const CUR_TEXT_HEIGHT_MAX = 560;
   const CUR_TEXT_HEIGHT_DEFAULT = 120;
+  const CHIPS_HEIGHT_MIN = 90;
+  const CHIPS_HEIGHT_MAX = 680;
+  const CHIPS_HEIGHT_DEFAULT = 180;
   const CARD_GRID_HEIGHT_MIN = 150;
   const CARD_GRID_HEIGHT_MAX = 680;
   const CARD_GRID_HEIGHT_DEFAULT = 300;
@@ -604,16 +632,18 @@
       const raw = JSON.parse(localStorage.getItem(UI_STATE_KEY) || "{}");
       const height = Number(raw.libHeight);
       const curTextHeight = Number(raw.curTextHeight);
+      const chipsHeight = Number(raw.chipsHeight);
       const cardGridHeight = Number(raw.cardGridHeight);
       return {
         collapsed: { ...(raw.collapsed || {}) },
         pane: raw.pane === "batch" ? "batch" : "lib",
         libHeight: Number.isFinite(height) ? Math.max(LIB_HEIGHT_MIN, Math.min(LIB_HEIGHT_MAX, Math.round(height))) : LIB_HEIGHT_DEFAULT,
         curTextHeight: Number.isFinite(curTextHeight) ? Math.max(CUR_TEXT_HEIGHT_MIN, Math.min(CUR_TEXT_HEIGHT_MAX, Math.round(curTextHeight))) : CUR_TEXT_HEIGHT_DEFAULT,
+        chipsHeight: Number.isFinite(chipsHeight) ? Math.max(CHIPS_HEIGHT_MIN, Math.min(CHIPS_HEIGHT_MAX, Math.round(chipsHeight))) : CHIPS_HEIGHT_DEFAULT,
         cardGridHeight: Number.isFinite(cardGridHeight) ? Math.max(CARD_GRID_HEIGHT_MIN, Math.min(CARD_GRID_HEIGHT_MAX, Math.round(cardGridHeight))) : CARD_GRID_HEIGHT_DEFAULT,
       };
     } catch (e) {
-      return { collapsed: {}, pane: "lib", libHeight: LIB_HEIGHT_DEFAULT, curTextHeight: CUR_TEXT_HEIGHT_DEFAULT, cardGridHeight: CARD_GRID_HEIGHT_DEFAULT };
+      return { collapsed: {}, pane: "lib", libHeight: LIB_HEIGHT_DEFAULT, curTextHeight: CUR_TEXT_HEIGHT_DEFAULT, chipsHeight: CHIPS_HEIGHT_DEFAULT, cardGridHeight: CARD_GRID_HEIGHT_DEFAULT };
     }
   }
   function saveUiState(state) {
@@ -668,6 +698,7 @@
       this.sectionBodies = {};
       this.libResizeEl = null;
       this.curTextResizeEl = null;
+      this.chipsResizeEl = null;
       this._localLlmActionBusy = false;
       this._localLlmSessionPromise = null;
       this._localLlmSessionRefs = 0;
@@ -803,6 +834,22 @@
 
     _bindCurrentTextResize(handle) {
       this._bindResizeHandle(handle, () => this.uiState.curTextHeight || CUR_TEXT_HEIGHT_DEFAULT, (height, persist) => this._applyCurrentTextHeight(height, persist));
+    }
+
+    _applyChipsHeight(height, persist = true) {
+      const value = Math.max(CHIPS_HEIGHT_MIN, Math.min(CHIPS_HEIGHT_MAX, Math.round(Number(height) || CHIPS_HEIGHT_DEFAULT)));
+      this.uiState.chipsHeight = value;
+      if (this.chipsEl) {
+        this.chipsEl.style.height = `${value}px`;
+        this.chipsEl.style.maxHeight = `${value}px`;
+      }
+      if (this.chipsResizeEl) this.chipsResizeEl.setAttribute("aria-valuenow", String(value));
+      if (persist) saveUiState(this.uiState);
+      this._scheduleNodeResize();
+    }
+
+    _bindChipsResize(handle) {
+      this._bindResizeHandle(handle, () => this.uiState.chipsHeight || CHIPS_HEIGHT_DEFAULT, (height, persist) => this._applyChipsHeight(height, persist));
     }
 
     _applyCardGridHeight(height, persist = true) {
@@ -1131,7 +1178,7 @@
             const item = document.createElement("span");
             item.className = "tk-cards-lib-bilingual-card";
             const en = document.createElement("b");
-            en.textContent = part.weight ? `(${part.text}:${part.weight})` : part.text;
+            en.textContent = formatWeightedPromptText(part.text, part.weight);
             const zh = document.createElement("small");
             zh.textContent = translationMap.get(promptTranslationKey(part.text)) || "待翻译";
             item.append(en, zh);
@@ -1599,6 +1646,74 @@
       });
     }
 
+    _setPieceWeight(index, value, commit = true) {
+      const parts = splitTags(this.curText());
+      const piece = parts[index];
+      if (!piece) return null;
+      const weight = normalizePromptCardWeight(value);
+      piece.weight = weight.toFixed(1);
+      const next = serializePromptPieces(parts);
+      // 拖动过程中只更新可见值，不触发 ComfyUI 图重建；松手或单击时再提交一次。
+      if (commit) this._setW(this.w.positive, next);
+      else if (this.w.positive) this.w.positive.value = next;
+      if (this.curTextEl) this.curTextEl.value = next;
+
+      const chip = this.chipsEl?.querySelector(`[data-piece-index="${index}"]`);
+      if (chip) {
+        const en = chip.querySelector(".tk-cards-chip-en, .tk-cards-chip-plain");
+        if (en) en.textContent = formatWeightedPromptText(piece.text, piece.weight);
+        const valueEl = chip.querySelector(".tk-cards-chip-weight-val");
+        if (valueEl) valueEl.value = piece.weight;
+      }
+      if (commit) this._renderChips();
+      return { next, piece, weight };
+    }
+
+    _bindPieceWeightScrub(button, index) {
+      let startX = 0;
+      let lastX = 0;
+      let lastDelta = 0;
+      let startWeight = 1;
+      let dragging = false;
+      let moved = false;
+
+      const onMove = (event) => {
+        if (!dragging) return;
+        lastX = event.clientX;
+        const delta = Math.round((lastX - startX) / 4) * 0.1;
+        lastDelta = delta;
+        if (Math.abs(event.clientX - startX) >= 2) moved = true;
+        this._setPieceWeight(index, startWeight + delta, false);
+      };
+      const onUp = (event) => {
+        if (!dragging) return;
+        dragging = false;
+        button.__scrubbed = moved;
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        document.body.style.cursor = "";
+        if (moved) {
+          if (Number.isFinite(event?.clientX)) lastDelta = Math.round((event.clientX - startX) / 4) * 0.1;
+          else lastDelta = Math.round((lastX - startX) / 4) * 0.1;
+          this._setPieceWeight(index, startWeight + lastDelta, true);
+        }
+        if (moved) setTimeout(() => { if (button.__scrubbed) button.__scrubbed = false; }, 2000);
+      };
+      button.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        dragging = true;
+        moved = false;
+        startX = event.clientX;
+        lastX = startX;
+        lastDelta = 0;
+        startWeight = normalizePromptCardWeight(splitTags(this.curText())[index]?.weight);
+        document.body.style.cursor = "ew-resize";
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+      });
+    }
+
     _renderChips() {
       if (!this.chipsEl) return;
       const parts = splitTags(this.curText());
@@ -1607,36 +1722,87 @@
         this.chipsEl.innerHTML = `<div class="tk-cards-empty">输入提示词后自动按逗号分组（点击片段=存为卡片；hover ✕=移除）</div>`;
         return;
       }
-      for (const p of parts) {
+      for (let index = 0; index < parts.length; index++) {
+        const p = parts[index];
         const chip = document.createElement("span");
         chip.className = "tk-cards-chip";
+        chip.dataset.pieceIndex = String(index);
         chip.title = "点击存为卡片；hover ✕ 移除该片段";
         const zh = this._translationForPiece(p.text);
+        const chipBody = document.createElement("span");
+        chipBody.className = "tk-cards-chip-body";
+        const chipTop = document.createElement("span");
+        chipTop.className = "tk-cards-chip-top";
+        const enS = document.createElement("span");
+        enS.className = "tk-cards-chip-en";
+        enS.textContent = formatWeightedPromptText(p.text, p.weight);
+
+        const weightGroup = document.createElement("span");
+        weightGroup.className = "tk-cards-chip-weight";
+        weightGroup.title = "降低或提高此片段权重；按住按钮横向拖动可连续调整，每格 0.1";
+        const dec = document.createElement("button");
+        dec.type = "button";
+        dec.className = "tk-cards-chip-weight-step";
+        dec.textContent = "<";
+        dec.title = "降低权重（按住左右拖动可连续调）";
+        dec.setAttribute("aria-label", "降低片段权重");
+        const weightVal = document.createElement("input");
+        weightVal.type = "text";
+        weightVal.inputMode = "decimal";
+        weightVal.className = "tk-cards-chip-weight-val";
+        weightVal.value = promptCardWeightText(p.weight);
+        weightVal.title = "手动输入权重（范围 -2.0 到 2.0）";
+        const inc = document.createElement("button");
+        inc.type = "button";
+        inc.className = "tk-cards-chip-weight-step";
+        inc.textContent = ">";
+        inc.title = "提高权重（按住左右拖动可连续调）";
+        inc.setAttribute("aria-label", "提高片段权重");
+        weightGroup.append(dec, weightVal, inc);
+        chipTop.append(enS, weightGroup);
+        chipBody.appendChild(chipTop);
         if (zh) {
-          const enS = document.createElement("span");
-          enS.className = "tk-cards-chip-en";
-          enS.textContent = p.weight ? `(${p.text}:${p.weight})` : p.text;
           const zhS = document.createElement("span");
           zhS.className = "tk-cards-chip-zh";
           zhS.textContent = zh;
-          chip.appendChild(enS);
-          chip.appendChild(zhS);
-        } else {
-          chip.textContent = p.weight ? `(${p.text}:${p.weight})` : p.text;
+          chipBody.appendChild(zhS);
         }
         const quickTranslation = this.piecesTranslation.get(p.text);
         if (quickTranslation?.error) {
           const errS = document.createElement("span");
           errS.className = "tk-cards-chip-translation is-error";
           errS.textContent = `译：${quickTranslation.error}`;
-          chip.appendChild(errS);
+          chipBody.appendChild(errS);
         } else if (quickTranslation?.text) {
           const quickS = document.createElement("span");
           quickS.className = "tk-cards-chip-translation";
           quickS.textContent = `译：${quickTranslation.text}`;
           quickS.title = `${providerLabel(quickTranslation.provider)} · ${quickTranslation.quality ? qualityLabel(quickTranslation.quality) : "已翻译"}`;
-          chip.appendChild(quickS);
+          chipBody.appendChild(quickS);
         }
+        chip.appendChild(chipBody);
+        const step = (button, delta) => {
+          button.addEventListener("click", (event) => {
+            event.stopPropagation();
+            if (button.__scrubbed) { button.__scrubbed = false; return; }
+            const current = normalizePromptCardWeight(splitTags(this.curText())[index]?.weight);
+            this._setPieceWeight(index, current + delta, true);
+          });
+        };
+        step(dec, -0.1);
+        step(inc, 0.1);
+        weightVal.addEventListener("click", (event) => event.stopPropagation());
+        weightVal.addEventListener("mousedown", (event) => event.stopPropagation());
+        weightVal.addEventListener("change", () => {
+          const current = normalizePromptCardWeight(splitTags(this.curText())[index]?.weight);
+          const parsed = Number.parseFloat(weightVal.value);
+          this._setPieceWeight(index, Number.isFinite(parsed) ? parsed : current, true);
+        });
+        weightVal.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") { event.preventDefault(); weightVal.blur(); }
+        });
+        this._bindPieceWeightScrub(dec, index);
+        this._bindPieceWeightScrub(inc, index);
         chip.addEventListener("click", (ev) => {
           ev.stopPropagation();
           this.addCard(this.curCat, { en: p.text, zh: zh || "", weight: p.weight });
@@ -1648,7 +1814,6 @@
         translate.title = "快捷翻译此片段（不进入 Danbooru/BGE-M3 校准）";
         translate.addEventListener("click", (ev) => {
           ev.stopPropagation();
-          const index = parts.indexOf(p);
           this.translatePieceQuick(index, translate, chip);
         });
         chip.appendChild(translate);
@@ -2091,7 +2256,7 @@
       if (!source || !text) return false;
       // 重建时统一使用 Anima 的英文逗号；Danbooru 下划线已在进入这里前转换为空格。
       parts[index] = { text, weight: source.weight && !text.includes(",") ? source.weight : "" };
-      const next = parts.map((p) => p.weight ? `(${p.text}:${p.weight})` : p.text).join(", ");
+      const next = serializePromptPieces(parts);
       this._setW(this.w.positive, next);
       if (this.curTextEl) this.curTextEl.value = next;
       this._renderChips();
@@ -2153,7 +2318,7 @@
           seen.add(key);
         }
       }
-      const next = current.map((p) => p.weight ? `(${p.text}:${p.weight})` : p.text).join(", ");
+      const next = serializePromptPieces(current);
       this._setW(this.w.positive, next);
       if (this.curTextEl) this.curTextEl.value = next;
       this._renderChips();
@@ -2459,7 +2624,7 @@
         const opts = this.cardCats.map((c) =>
           `<option value="${escAttr(c.id)}" ${c.id === catId ? "selected" : ""}>${esc(CAT_NAME(c))}</option>`).join("");
         return `<div class="tk-cards-ai-row" data-i="${i}">
-          <div class="tk-cards-ai-text">${esc(p.weight ? `(${p.text}:${p.weight})` : p.text)}${zh ? `<span class="tk-cards-ai-zh">${esc(zh)}</span>` : ""}</div>
+          <div class="tk-cards-ai-text">${esc(formatWeightedPromptText(p.text, p.weight))}${zh ? `<span class="tk-cards-ai-zh">${esc(zh)}</span>` : ""}</div>
           <select class="tk-cards-ai-cat">${opts}</select>
           <button type="button" class="tk-cards-ai-rm" data-rm="${i}" title="移除该词（不入库）">✕</button></div>`;
       }).join("");
@@ -3884,12 +4049,25 @@
       chipsTools.appendChild(translateAllBtn);
       this.chipsEl = document.createElement("div");
       this.chipsEl.className = "tk-cards-chips";
+      this.chipsResizeEl = document.createElement("div");
+      this.chipsResizeEl.className = "tk-cards-resize-handle tk-cards-chips-resize-handle";
+      this.chipsResizeEl.setAttribute("role", "separator");
+      this.chipsResizeEl.setAttribute("aria-orientation", "horizontal");
+      this.chipsResizeEl.setAttribute("aria-valuemin", String(CHIPS_HEIGHT_MIN));
+      this.chipsResizeEl.setAttribute("aria-valuemax", String(CHIPS_HEIGHT_MAX));
+      this.chipsResizeEl.setAttribute("aria-valuenow", String(this.uiState.chipsHeight));
+      this.chipsResizeEl.tabIndex = 0;
+      this.chipsResizeEl.title = "拖动调整 2 区双语卡片显示高度；高度会自动保存";
+      this.chipsResizeEl.innerHTML = "<span>⋮⋮</span><small>拖动调整双语卡片显示高度</small>";
+      this._bindChipsResize(this.chipsResizeEl);
+      this._applyChipsHeight(this.uiState.chipsHeight, false);
       curBody.appendChild(curEditor);
       curBody.appendChild(this.curTextResizeEl);
       curBody.appendChild(translateBox);
       curBody.appendChild(this.resolveEl);
       curBody.appendChild(chipsTools);
       curBody.appendChild(this.chipsEl);
+      curBody.appendChild(this.chipsResizeEl);
       container.appendChild(curSec);
 
       // ═══ ③ 卡片视图区 ═══
@@ -4119,18 +4297,27 @@
  .tk-cards-resolve-empty { color:var(--tk-muted); font-size:10px; }
  .tk-cards-resolve-semantic-hint { display:flex; align-items:center; gap:6px; flex-wrap:wrap; color:var(--tk-warn); font-size:10px; line-height:1.4; }
  .tk-cards-resolve-semantic-hint .tk-cards-btn { min-height:25px; padding:3px 7px; font-size:10px; }
-.tk-cards-chips { display:flex; flex-wrap:wrap; gap:4px; max-height:90px; overflow:auto; }
- .tk-cards-chip { position:relative; max-width:220px; padding:4px 42px 4px 8px; border:1px solid #555a5e; border-radius:4px; background:#24282b; color:var(--tk-text); cursor:pointer; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tk-cards-chips { display:flex; flex-wrap:wrap; align-content:flex-start; gap:4px; height:180px; min-height:0; max-height:180px; overflow:auto; }
+ .tk-cards-chip { position:relative; display:block; max-width:260px; min-width:150px; padding:4px 42px 4px 8px; border:1px solid #555a5e; border-radius:4px; background:#24282b; color:var(--tk-text); cursor:pointer; font-size:11px; overflow:hidden; }
  .tk-cards-chip:hover { border-color:var(--tk-accent); background:#303437; }
-.tk-cards-chip-en { }
+.tk-cards-chip-body { display:block; min-width:0; overflow:hidden; }
+.tk-cards-chip-top { display:flex; align-items:center; gap:4px; min-width:0; }
+.tk-cards-chip-en { min-width:0; flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tk-cards-chip-zh { display:block; font-size:9px; color:var(--tk-muted); }
 .tk-cards-chip-translation { display:block; color:var(--tk-info); font-size:9px; line-height:1.25; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tk-cards-chip-weight { display:inline-flex; align-items:center; gap:2px; flex:0 0 auto; padding:1px 2px; border:1px solid rgba(255,255,255,.08); border-radius:4px; background:rgba(0,0,0,.12); }
+.tk-cards-chip-weight-step { display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; padding:0; border:0; border-radius:3px; background:rgba(255,255,255,.06); color:var(--tk-muted); cursor:pointer; font-family:"Geist Mono","JetBrains Mono",monospace; font-size:11px; line-height:1; font-weight:600; user-select:none; -webkit-user-select:none; }
+.tk-cards-chip-weight-step:hover { background:rgba(94,106,210,.24); color:var(--tk-text); }
+.tk-cards-chip-weight-step:active { transform:scale(.92); background:rgba(94,106,210,.34); }
+.tk-cards-chip-weight-val { box-sizing:border-box; width:30px; height:16px; padding:0; border:0; outline:0; background:transparent; color:var(--tk-text); text-align:center; font:9px "Geist Mono","JetBrains Mono",monospace; }
+.tk-cards-chip-weight-val:focus { border-radius:2px; box-shadow:0 0 0 1px var(--tk-accent); }
 .tk-cards-chip-translate { position:absolute; top:0; right:19px; bottom:0; display:none; padding:0 3px; border:0; background:transparent; color:var(--tk-info); font-size:10px; cursor:pointer; }
 .tk-cards-chip:hover .tk-cards-chip-translate { display:block; }
 .tk-cards-chip-translate:hover { color:var(--tk-accent-strong); }
 .tk-cards-chip-x { position:absolute; top:0; right:0; bottom:0; display:none; background:transparent; border:none; color:#ff8a8a; font-size:9px; cursor:pointer; padding:0 3px; }
 .tk-cards-chip:hover .tk-cards-chip-x { display:block; }
-.tk-cards-chip-x:hover { color:#ff5555; }
+ .tk-cards-chip-x:hover { color:#ff5555; }
+.tk-cards-chips-resize-handle { margin-top:2px; }
 .tk-cards-cur-tools { display:flex; gap:4px; }
  .tk-cards-cats { display:flex; flex-wrap:wrap; gap:4px; padding-bottom:2px; }
  .tk-cards-cat { min-height:28px; padding:4px 9px; border:1px solid var(--tk-border); border-radius:4px; background:#202326; color:var(--tk-muted); cursor:pointer; font-size:11px; }
