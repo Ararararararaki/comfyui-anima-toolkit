@@ -55,7 +55,7 @@ git clone https://github.com/Ararararararaki/comfyui-anima-toolkit.git
 - `TK/image`: **TK 图像选择**。在多路图像输入之间按策略选择并输出来源信息。
 - `TK/latent`: **TK 空Latent 图像**。生成 Anima/Cosmos 5D 常用尺寸的空 latent。
 - `TK/Danbooru`: **TK D站画廊**。按标签搜索、筛选、下载和输出 Danbooru 图片及元数据。
-- `TK/text`: **TK 文本合并**。合并多路文本并清理连续逗号。
+- `TK/text`: **TK 文本合并**、**TK String Router**、**TK Danbooru Tag Getter**。合并文本、切换字符串输入、选择和筛选 Danbooru 分类。
 
 ## 功能总览
 
@@ -137,11 +137,11 @@ Steam 风格界面,管理全部本地 LoRA:
 - 分类 tab:全部 / 画师风格 / 人物角色 / 美学优化 / 背景环境 / 其他 / 收藏 / 已隐藏
 - 检测本地是否已有,卡片上直接下载
 
-### 8. TK 节点系列(九个配合作画节点)
+### 8. TK 节点系列(十一个配合作画节点)
 
 ![TK 相机控制(3D 画布)](screenshots/tk-camera-control.png) · ![TK 批量提示词注入](screenshots/tk-prompt-batch.png) · ![TK D站画廊](screenshots/tk-danbooru-gallery.png)
 
-九个配合作画的新节点(批量 LoRA 加载器见上面第 1 节):
+十一个配合作画的新节点(批量 LoRA 加载器见上面第 1 节):
 
 - TK 相机控制:3D 画布上直接拖拽机位(相对滑动,可连续绕到背面/俯仰),景别(距离)、翻滚、最大/最小权重;支持 19 个预设,一键出相机词并联动批量提示词节点
 - TK 批量提示词注入:读取 `input/prompts/` 提示词文件按组批量出图(一组 = 一张图);支持每页一组独立机位(`相机:` 行)、子目录分组、整批统一机位
@@ -156,7 +156,15 @@ Steam 风格界面,管理全部本地 LoRA:
 - TK Prompt Cards(提示词卡片库编辑器):英中对照 tag 卡片拼/存提示词、②区中文片段选择翻译源并校准为 Danbooru 规范标签（支持单条翻译/自然语言语义解析；自动回退含本地 Argos，DeepLX 按需启动；支持百度翻译 APPID + API Key，设置位于翻译状态中的“百度设置”，接口参考[百度官方文档](https://fanyi-api.baidu.com/doc/21)）、批文件一键切换、工具箱 Prompt 库条目双击弹窗编辑保存、①区库面板高度可拖拽调整、可选 CLIP 直接编码输出 CONDITIONING、`lora_syntax` 直连批量 LoRA 节点、LLM 自动分类、PNG 解析、导出批词文件；②区输入联想使用 `data/danbooru_tags_with_description_v3_modified.csv`，支持英文、中文说明和模糊匹配，结果按标签匹配级别与 D 站帖数排序
 - TK Trigger Words(触发词):从 `<lora:name:weight>` 提取触发词(bridge 触发词优先,无记录时文件名兜底),支持手动追加、卡片编辑、一键复制
 - TK Text Join(文本合并):按逗号/空格/换行合并 4 路文本,自动清理连续逗号
+- TK String Router(字符串路由):6 路 STRING 输入,支持单选/多选放行、接口别名和工作流保存
+- TK Danbooru Tag Getter(Danbooru 分类提取):接收 `TAG_BUNDLE`,多选固定分类,支持正则排除和精准 Tag 排除,输出清理去重后的 `Tag String`
 - TK 空Latent(预设空 Latent):Anima/Cosmos 5D 单帧空 latent,常用尺寸预设
+
+#### TK Danbooru Tag Getter
+
+将 `ComfyUI-Danbooru-Tag-Sorter-Node` 的 `Danbooru Tag Sorter (Packer)` 的 `分类数据包` (`TAG_BUNDLE`) 连接到本节点,在节点内勾选需要的分类。分类按固定顺序合并,不需要填写 `category_name`。
+
+节点底部的「正则排除」使用不区分大小写的正则匹配;「精准排除」支持逗号或换行分隔,按不区分大小写的完整 Tag 匹配。筛选只作用于本节点输出,不会修改上游 `TAG_BUNDLE`。
 
 ### 9. 服装库(面板)
 
