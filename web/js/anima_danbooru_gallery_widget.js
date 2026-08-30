@@ -221,6 +221,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.promptEdits = new Map();
       this.registered = false; // 是否已登录 Danbooru
       this.tagLimitValue = 2;  // 计数标签上限（后端按账号等级动态：Member=2 / Gold+=6，随 /account 刷新）
+      this.initialSearchTimer = null;
     }
 
     async refreshAccount() {
@@ -362,7 +363,23 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       return typeof this.tagLimitValue === "number" && this.tagLimitValue > 0 ? this.tagLimitValue : DANBOORU_TAG_LIMIT;
     }
 
-    async search({ resetPage = false, force = false, skipFuzzy = false } = {}) {
+    async readSearchResponse(response) {
+      // response.json() 遇到 BOM、代理残片或拼接响应时只给出模糊的 JSON.parse
+      // 错误，且无法区分“接口返回异常”和“搜索没有结果”。先完整读取文本，
+      // 清理 UTF-8 BOM，并把可重试的协议错误标记给 search()。
+      const body = (await response.text()).replace(/^\uFEFF/, "").trim();
+      try {
+        return JSON.parse(body);
+      } catch {
+        const error = new Error("D站接口返回了无效的 JSON 响应");
+        error.name = "InvalidJSONResponseError";
+        error.httpStatus = response.status;
+        error.contentType = response.headers.get("content-type") || "";
+        throw error;
+      }
+    }
+
+    async search({ resetPage = false, force = false, skipFuzzy = false, retryCount = 0 } = {}) {
       // 分类浏览模式下发起新搜索 = 回到普通搜索视图（分类只作用于本地浏览，搜索条件与分类无关）
       if (this.settings.activeCategory) {
         this.settings.activeCategory = "";
@@ -408,6 +425,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
 
       this.controller?.abort();
       this.controller = new AbortController();
+      const requestController = this.controller;
       const currentRequest = ++this.requestId;
       // 45s 兜底超时标记（声明在 try 外：catch 需要读它；若声明在 try 内，
       // 快速切换筛选触发 abort 竞态时 catch 会抛 ReferenceError 导致状态栏卡死）
@@ -421,17 +439,22 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           limit: String(this.settings.limit),
           force: force ? "1" : "0",
         });
-        const timer = setTimeout(() => { timedOut = true; this.controller?.abort(); }, 45000);
+        const timer = setTimeout(() => { timedOut = true; requestController.abort(); }, 45000);
         let response, data;
         try {
-          response = await fetch(`/anima/danbooru/posts?${parameters}`, { signal: this.controller.signal });
-          data = await response.json();
+          response = await fetch(`/anima/danbooru/posts?${parameters}`, { signal: requestController.signal });
+          data = await this.readSearchResponse(response);
         } finally {
           clearTimeout(timer);
         }
         if (typeof data?.tag_limit === "number") this.tagLimitValue = data.tag_limit;
         if (currentRequest !== this.requestId) return;
-        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        if (!response.ok) {
+          const error = new Error(data?.error || `HTTP ${response.status}`);
+          error.name = "DanbooruSearchHTTPError";
+          error.httpStatus = response.status;
+          throw error;
+        }
         const rawPosts = Array.isArray(data.posts) ? data.posts : [];
         // 本地排除过滤：排除标签不占 D站 计数槽（查询不含 -tag），拿到结果后按 tag_string 过滤
         const excludeTags = this.settings.excludeTags || [];
@@ -472,6 +495,16 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         }
         if (error?.name === "AbortError") return;
         if (currentRequest !== this.requestId) return;
+        const retryable = error?.name === "InvalidJSONResponseError"
+          || error?.name === "TypeError"
+          || [502, 503, 504].includes(Number(error?.httpStatus));
+        if (retryable && retryCount < 2) {
+          const attempt = retryCount + 1;
+          this.setStatus(`首次搜索响应异常，正在自动重试（${attempt}/2）…`);
+          await new Promise((resolve) => setTimeout(resolve, 250 + retryCount * 500));
+          if (currentRequest !== this.requestId) return;
+          return this.search({ resetPage: false, force, skipFuzzy, retryCount: attempt });
+        }
         this.posts = [];
         this.renderPosts();
         this.setStatus(`搜索失败：${error?.message || "未知错误"}`, "error");
@@ -2245,13 +2278,22 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.renderPosts();
       this.renderPagination();
       this.refreshAccount(); // 异步刷新登录状态（标签上限 2/6），不阻塞初始搜索
-      setTimeout(() => this.search({ resetPage: true }), 0);
+      this.initialSearchTimer = setTimeout(() => {
+        this.initialSearchTimer = null;
+        // addDOMWidget 的挂载可能晚于 build()，但 root 已经是当前节点的权威界面；
+        // 不以 isConnected 为条件，避免 Chrome 首次绘制较慢时直接漏掉自动搜索。
+        if (this.root) this.search({ resetPage: true });
+      }, 120);
       return root;
     }
 
     dispose() {
       _danQueryFocusTargets.delete(this);
       this.controller?.abort();
+      if (this.initialSearchTimer) {
+        clearTimeout(this.initialSearchTimer);
+        this.initialSearchTimer = null;
+      }
       this.filterControls?.destroy();
       this.hidePromptTooltip();
       window.removeEventListener("resize", this.positionSuggestionsHandler);
