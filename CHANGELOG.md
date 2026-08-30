@@ -19,6 +19,7 @@
 - **跨平台路径**：节点浏览接口增加 `relativePath`,统一用 `/` 表示子目录,并继续兼容 Windows 反斜杠路径。
 - `TK String Router`：新增 6 路字符串单选/多选路由,支持接口名称保存和 ComfyUI 风格紧凑面板。
 - `TK Danbooru Tag Getter`：兼容 `TAG_BUNDLE` 多选分类,增加正则排除和精准 Tag 排除。
+- `TK Prompt Saver`：新增 6 路提示词自动保存,支持对应 `image_1` 到 `image_6` 预览图,写入共享 `anima-lora` Prompt 库。
 
 ### 使用说明
 

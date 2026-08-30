@@ -51,7 +51,7 @@ git clone https://github.com/Ararararararaki/comfyui-anima-toolkit.git
 - `TK/loaders`: **TK 批量 LoRA 加载器**、**TK 触发词**。前者批量加载 `<lora:name:weight>` 标签,后者提取和整理触发词。
 - `TK/camera`: **TK 相机控制**。用 3D 画布、预设或自然语言生成机位词。
 - `TK/batch`: **TK 批量提示词注入**。按提示词文件分组批量出图,支持独立机位和批次控制。
-- `TK/prompt`: **TK Prompt Cards**。管理提示词卡片、翻译、标签和可选 CLIP 输出。
+- `TK/prompt`: **TK Prompt Cards**、**TK Prompt Saver**。管理提示词卡片、翻译、标签、可选 CLIP 输出，并在节点执行时自动保存多路提示词。
 - `TK/image`: **TK 图像选择**。在多路图像输入之间按策略选择并输出来源信息。
 - `TK/latent`: **TK 空Latent 图像**。生成 Anima/Cosmos 5D 常用尺寸的空 latent。
 - `TK/Danbooru`: **TK D站画廊**。按标签搜索、筛选、下载和输出 Danbooru 图片及元数据。
@@ -137,11 +137,11 @@ Steam 风格界面,管理全部本地 LoRA:
 - 分类 tab:全部 / 画师风格 / 人物角色 / 美学优化 / 背景环境 / 其他 / 收藏 / 已隐藏
 - 检测本地是否已有,卡片上直接下载
 
-### 8. TK 节点系列(十一个配合作画节点)
+### 8. TK 节点系列(十二个配合作画节点)
 
 ![TK 相机控制(3D 画布)](screenshots/tk-camera-control.png) · ![TK 批量提示词注入](screenshots/tk-prompt-batch.png) · ![TK D站画廊](screenshots/tk-danbooru-gallery.png)
 
-十一个配合作画的新节点(批量 LoRA 加载器见上面第 1 节):
+十二个配合作画的新节点(批量 LoRA 加载器见上面第 1 节):
 
 - TK 相机控制:3D 画布上直接拖拽机位(相对滑动,可连续绕到背面/俯仰),景别(距离)、翻滚、最大/最小权重;支持 19 个预设,一键出相机词并联动批量提示词节点
 - TK 批量提示词注入:读取 `input/prompts/` 提示词文件按组批量出图(一组 = 一张图);支持每页一组独立机位(`相机:` 行)、子目录分组、整批统一机位
@@ -154,6 +154,7 @@ Steam 风格界面,管理全部本地 LoRA:
 - TK 批量 LoRA 加载器:见第 1 节——批量挂 LoRA、触发词/全部触发词一键复制、本地 LoRA 可视化浏览、权重滑块、分组保存
 - TK 图像选择:多路图像路由(image1~image8,用几路接几路 2~8 任意;未接的自动跳过、至少一路有效)。五种路由模式:优先顺序(默认,首选为空自动按 image1→image8 兜底)/ 指定索引 / 随机 / Seed 稳定(同 seed 可复现) / 轮询(循环换源);另输出 source_index(来源编号 1~8)+ source_name(imageN),下游可精确知道图源。典型场景:D站画廊图源接 image1、自定义图源接 image2/3…,生图来源一键切换,不必改连线;输出恒为列表,兼容 D站画廊列表输出与下游单输入节点
 - TK Prompt Cards(提示词卡片库编辑器):英中对照 tag 卡片拼/存提示词、②区中文片段选择翻译源并校准为 Danbooru 规范标签（支持单条翻译/自然语言语义解析；自动回退含本地 Argos，DeepLX 按需启动；支持百度翻译 APPID + API Key，设置位于翻译状态中的“百度设置”，接口参考[百度官方文档](https://fanyi-api.baidu.com/doc/21)）、批文件一键切换、工具箱 Prompt 库条目双击弹窗编辑保存、①区库面板高度可拖拽调整、可选 CLIP 直接编码输出 CONDITIONING、`lora_syntax` 直连批量 LoRA 节点、LLM 自动分类、PNG 解析、导出批词文件；②区输入联想使用 `data/danbooru_tags_with_description_v3_modified.csv`，支持英文、中文说明和模糊匹配，结果按标签匹配级别与 D 站帖数排序
+- TK Prompt Saver(提示词保存):6 路 STRING 输入,支持单选/多选和每路名称;节点执行时自动将开启且非空的提示词写入 TK Toolkit 与 TK Prompt Cards 共用的 Prompt 库,对应 `image_1` 到 `image_6` 可作为预览图保存
 - TK Trigger Words(触发词):从 `<lora:name:weight>` 提取触发词(bridge 触发词优先,无记录时文件名兜底),支持手动追加、卡片编辑、一键复制
 - TK Text Join(文本合并):按逗号/空格/换行合并 4 路文本,自动清理连续逗号
 - TK String Router(字符串路由):6 路 STRING 输入,支持单选/多选放行、接口别名和工作流保存
@@ -165,6 +166,10 @@ Steam 风格界面,管理全部本地 LoRA:
 将 `ComfyUI-Danbooru-Tag-Sorter-Node` 的 `Danbooru Tag Sorter (Packer)` 的 `分类数据包` (`TAG_BUNDLE`) 连接到本节点,在节点内勾选需要的分类。分类按固定顺序合并,不需要填写 `category_name`。
 
 节点底部的「正则排除」使用不区分大小写的正则匹配;「精准排除」支持逗号或换行分隔,按不区分大小写的完整 Tag 匹配。筛选只作用于本节点输出,不会修改上游 `TAG_BUNDLE`。
+
+#### TK Prompt Saver
+
+将其他 STRING 节点连接到 `prompt_1` 到 `prompt_6`,将对应预览图连接到 `image_1` 到 `image_6`,在节点内选择单选或多选、设置每路显示名称和 Prompt 库分类。节点执行时会自动保存已开启且非空的输入;多选时每路保存为一条独立 Prompt,对应图像会作为该条 Prompt 的预览图,不需要额外保存按钮。保存内容使用 TK Toolkit 与 TK Prompt Cards 共用的 `anima-lora` Prompt 库,可在工具箱查看,也可在 TK Prompt Cards 的①区读取并调用。
 
 ### 9. 服装库(面板)
 
