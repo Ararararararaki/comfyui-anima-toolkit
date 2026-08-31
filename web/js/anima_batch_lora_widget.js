@@ -17,16 +17,35 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       ICON_URL = "/extensions/" + _m[1] + "/img/anima-btn.jpg";
     }
   } catch (e) {}
+  function configuredIconUrl() {
+    try {
+      const raw = localStorage.getItem("anima_settings");
+      if (!raw) return "";
+      const value = JSON.parse(raw)?.toolboxIcon;
+      if (typeof value === "string" && value.startsWith("data:image/")) return value;
+      if (typeof value === "string" && /^https?:\/\//i.test(value.trim())) return value.trim();
+    } catch (e) {}
+    return "";
+  }
+
   // 图标 URL 适配：ComfyUI 0.30+ 的 /extensions/{name}/ 已映射到插件 web/ 目录（无需 web/ 前缀），
-  // 旧版映射到插件根（需 web/ 前缀）。用 onerror 自动回退，保证新旧版本都能显示菲比图标。
+  // 旧版映射到插件根（需 web/ 前缀）。自定义图标失败时仍回退到仓库内的菲比图标。
   function setAnimaIcon(img) {
+    const custom = configuredIconUrl();
+    const sources = [...new Set([
+      custom,
+      ICON_URL,
+      ICON_URL.replace("/img/anima-btn.jpg", "/web/img/anima-btn.jpg"),
+    ].filter(Boolean))];
+    let sourceIndex = 0;
     img.onerror = () => {
-      if (!img.dataset.animaFallback) {
-        img.dataset.animaFallback = "1";
-        img.src = ICON_URL.replace("/img/anima-btn.jpg", "/web/img/anima-btn.jpg");
-      }
+      if (sourceIndex + 1 < sources.length) img.src = sources[++sourceIndex];
     };
-    img.src = ICON_URL;
+    img.src = sources[0] || ICON_URL;
+  }
+
+  function refreshAnimaIcons() {
+    document.querySelectorAll(".anima-menu-icon").forEach((img) => setAnimaIcon(img));
   }
 
   function init() {
@@ -87,6 +106,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             return;
           }
           const img = document.createElement("img");
+          img.className = "anima-menu-icon";
           setAnimaIcon(img);
           img.alt = "工具箱";
           img.style.cssText = "display:block;width:100%;height:100%;object-fit:cover;";
@@ -116,6 +136,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
               if (!menu) return;
               const fb = document.createElement("button");
               const fbImg = document.createElement("img");
+              fbImg.className = "anima-menu-icon";
               fbImg.alt = "工具箱";
               fbImg.style.cssText = "width:18px;height:18px;border-radius:4px;vertical-align:middle;";
               setAnimaIcon(fbImg);
@@ -129,6 +150,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         };
         attach();
       },
+    });
+
+    // 工具箱在新标签页设置图标后，ComfyUI 顶栏即时同步，无需重启页面。
+    window.addEventListener("storage", (event) => {
+      if (event.key === "anima_settings") refreshAnimaIcons();
     });
   }
 

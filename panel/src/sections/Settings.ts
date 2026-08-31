@@ -26,6 +26,45 @@ const FONT_OPTIONS = [
   { label: 'Source Han Sans', value: "'Source Han Sans SC', sans-serif" },
 ]
 
+const DEFAULT_TOOLBOX_ICON = '../img/anima-btn.jpg'
+
+function defaultToolboxIconUrl(): string {
+  try {
+    return new URL(DEFAULT_TOOLBOX_ICON, window.location.href).href
+  } catch {
+    return DEFAULT_TOOLBOX_ICON
+  }
+}
+
+function normalizeToolboxIcon(value: unknown): string {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  if (raw.startsWith('data:image/')) return raw
+  try {
+    const url = new URL(raw, window.location.href)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : ''
+  } catch {
+    return ''
+  }
+}
+
+function setToolboxIconPreview(value: unknown) {
+  const preview = document.getElementById('toolboxIconPreview') as HTMLImageElement | null
+  if (!preview) return
+  const custom = normalizeToolboxIcon(value)
+  const fallback = defaultToolboxIconUrl()
+  preview.dataset.fallback = '0'
+  preview.onerror = () => {
+    if (preview.dataset.fallback === '0') {
+      preview.dataset.fallback = '1'
+      preview.src = fallback
+    }
+  }
+  preview.src = custom || fallback
+  const status = document.getElementById('toolboxIconStatus')
+  if (status) status.textContent = custom ? '当前使用自定义图标' : '当前使用默认菲比图标'
+}
+
 function renderSettingsHTML(s: AppSettings): string {
   return `
     <div class="modal-box settings-modal-box">
@@ -75,6 +114,26 @@ function renderSettingsHTML(s: AppSettings): string {
             <label class="settings-label">透明度 ${Math.round(s.bgOpacity * 100)}%</label>
             <input type="range" class="settings-range" id="bgOpacity" min="30" max="100" step="5" value="${Math.round(s.bgOpacity * 100)}">
           </div>
+        </div>
+
+        <!-- 🧩 Toolbox entry icon -->
+        <div class="settings-section">
+          <h4 class="settings-section-title">${icon('image', 14)} 工具箱入口图标</h4>
+          <div class="settings-toolbox-icon-row">
+            <div class="settings-toolbox-icon-preview">
+              <img id="toolboxIconPreview" src="${DEFAULT_TOOLBOX_ICON}" alt="工具箱入口图标预览">
+            </div>
+            <div class="settings-toolbox-icon-content">
+              <div class="settings-actions-inline">
+                <button class="btn btn-sm" id="toolboxIconUploadBtn">${icon('upload', 12)} 上传图片</button>
+                <button class="btn btn-sm" id="toolboxIconUrlBtn">${icon('external', 12)} 图片 URL</button>
+                <button class="btn btn-sm btn-ghost" id="toolboxIconResetBtn">${icon('refresh', 12)} 恢复菲比</button>
+              </div>
+              <span id="toolboxIconStatus" class="settings-hint">当前使用默认菲比图标</span>
+              <span class="settings-hint">用于 ComfyUI 顶部打开工具箱的按钮；上传图片会压缩为 128px 图标并保存到当前浏览器。</span>
+            </div>
+          </div>
+          <input type="file" id="toolboxIconFileInput" accept="image/*" style="display:none">
         </div>
 
         <!-- 📐 Layout -->
@@ -393,6 +452,8 @@ function openSettings() {
 
   // Bind all events
   bindBackgroundEvents()
+  setToolboxIconPreview(s.toolboxIcon)
+  bindToolboxIconEvents()
   bindLayoutEvents()
   bindMotionEvents()
   bindTypographyEvents()
@@ -406,6 +467,73 @@ function openSettings() {
     if (v) localStorage.setItem('anima_civitai_token', v)
     else localStorage.removeItem('anima_civitai_token')
     showToast(v ? '✅ C 站 API Key 已保存' : '已清除 C 站 API Key')
+  })
+}
+
+function readToolboxIconFile(file: File): Promise<string> {
+  if (!file.type.startsWith('image/')) return Promise.reject(new Error('请选择图片文件'))
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('图片读取失败'))
+    reader.onload = () => {
+      const image = new Image()
+      image.onerror = () => reject(new Error('图片解析失败'))
+      image.onload = () => {
+        const max = 128
+        const scale = Math.min(1, max / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height))
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale))
+        canvas.height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale))
+        const context = canvas.getContext('2d')
+        if (!context) {
+          reject(new Error('浏览器不支持图标处理'))
+          return
+        }
+        context.drawImage(image, 0, 0, canvas.width, canvas.height)
+        const webp = canvas.toDataURL('image/webp', 0.86)
+        resolve(webp.startsWith('data:image/') ? webp : canvas.toDataURL('image/png'))
+      }
+      image.src = String(reader.result || '')
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
+function bindToolboxIconEvents() {
+  const fileInput = document.getElementById('toolboxIconFileInput') as HTMLInputElement | null
+  document.getElementById('toolboxIconUploadBtn')?.addEventListener('click', () => fileInput?.click())
+  fileInput?.addEventListener('change', async () => {
+    const file = fileInput.files?.[0]
+    fileInput.value = ''
+    if (!file) return
+    try {
+      const iconData = await readToolboxIconFile(file)
+      saveSettings({ toolboxIcon: iconData })
+      setToolboxIconPreview(iconData)
+      showToast('✅ 工具箱入口图标已保存')
+    } catch (error) {
+      showToast('⚠️ 图标设置失败：' + String((error as Error)?.message || error))
+    }
+  })
+
+  document.getElementById('toolboxIconUrlBtn')?.addEventListener('click', async () => {
+    const current = normalizeToolboxIcon(getSettings().toolboxIcon)
+    const value = await promptModal('输入工具箱入口图标 URL', current.startsWith('data:') ? '' : current, '支持 http(s) 图片地址；也可以直接上传图片')
+    if (value == null) return
+    const normalized = normalizeToolboxIcon(value)
+    if (!normalized) {
+      showToast('⚠️ URL 无效，请填写 http(s) 图片地址')
+      return
+    }
+    saveSettings({ toolboxIcon: normalized })
+    setToolboxIconPreview(normalized)
+    showToast('✅ 工具箱入口图标已保存')
+  })
+
+  document.getElementById('toolboxIconResetBtn')?.addEventListener('click', () => {
+    saveSettings({ toolboxIcon: '' })
+    setToolboxIconPreview('')
+    showToast('已恢复默认菲比图标')
   })
 }
 

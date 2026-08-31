@@ -32,6 +32,7 @@ git clone https://github.com/Ararararararaki/comfyui-anima-toolkit.git
 
 - ComfyUI 节点菜单中搜索 `TK`,所有本插件节点都放在 **TK** 根目录下,按用途分在 `TK/loaders`、`TK/camera`、`TK/batch`、`TK/prompt`、`TK/image`、`TK/latent`、`TK/Danbooru` 和 `TK/text`。
 - 顶部的 **TK Toolkit / 本地工具箱** 按钮可以打开管理面板;也可以在 **TK 批量 LoRA 加载器** 节点中点击「面板」。
+- 工具箱设置页可以上传图片或填写 URL,自定义 ComfyUI 顶部的入口图标;恢复默认即可使用仓库内的菲比图标。图标配置保存在当前浏览器,与设置导入/导出一起保存。
 - 直接访问面板: `http://localhost:8188/extensions/ComfyUI-Anima-Batch-LoRA/app/`
 
 ### LoRA 管理推荐流程
@@ -98,7 +99,8 @@ Steam 风格界面,管理全部本地 LoRA:
 
 - 扫描 + 自动匹配 C 站信息:递归扫描选定目录及其子目录,保留相对路径,文件大小、SHA256、基础模型、版本、下载数、点赞数自动对上
 - 「子目录建分类」:按一级子目录名称自动创建/复用分类,并把对应 LoRA 归入分类
-- 网格 / 列表视图 + 搜索 + 排序(按名称、大小、时间)
+- 网格 / 列表视图 + 搜索 + 排序(按名称、大小、时间);网格卡片参考 LoRA Manager,显示大预览、版本、下载/点赞数和分类标签
+- 自定义预览图:卡片或详情页可上传图片、设置图片 URL、恢复 C 站图片;上传图压缩后保存在浏览器 IndexedDB,不会塞进扫描缓存
 - 分类管理:人物 / 风格 / 背景 / 姿势 / 光影…支持拖拽归类、批量分类、自定义分类
 - 详情面板:文件信息、「我的备注」(写使用心得、推荐搭配)、触发词编辑、LoRA 强度滑块、分类标签
 - 一键操作:CIVITAI(打开 C 站原页)、COMFYUI(直接加入工作流)、复制标签、删除文件

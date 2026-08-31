@@ -30,6 +30,9 @@ export interface AppSettings {
 
   // ComfyUI
   comfyUIPath: string
+
+  // ComfyUI 顶部工具箱入口
+  toolboxIcon: string
 }
 
 const STORAGE_KEY = 'anima_settings'
@@ -56,6 +59,7 @@ const DEFAULTS: AppSettings = {
     toggleSettings: 'Ctrl+,',
   },
   comfyUIPath: '',
+  toolboxIcon: '',
 }
 
 let _settings: AppSettings = { ...DEFAULTS }

@@ -306,6 +306,7 @@
 
     <div class="local-split">
       <aside class="local-sidebar">
+        <div class="local-sidebar-tools">
         <div class="local-sidebar-search">
           <span class="icon" data-icon="search" aria-hidden="true"></span>
           <input type="text" id="localSearch" placeholder="搜索文件名、模型名…" autocomplete="off">
@@ -322,6 +323,21 @@
             <option value="matched">已匹配</option>
             <option value="unmatched">未匹配</option>
           </select>
+          <div class="local-display-toggle" role="group" aria-label="文件视图">
+            <button class="local-display-btn" id="localListViewBtn" type="button" data-display-mode="list" aria-label="列表视图" title="列表视图" aria-pressed="true" data-icon="list"></button>
+            <button class="local-display-btn" id="localGridViewBtn" type="button" data-display-mode="grid" aria-label="网格视图" title="网格视图" aria-pressed="false" data-icon="grid"></button>
+          </div>
+        </div>
+        <div class="local-grid-stats" id="localGridStats"></div>
+        <div class="local-grid-sidebar-actions" aria-label="本地 LoRA 操作">
+          <button class="btn btn-ghost btn-sm" data-local-action="localScanBtn" data-icon="folder"><span>扫描文件夹</span></button>
+          <button class="btn btn-ghost btn-sm" data-local-action="localFolderCategoryBtn" data-icon="layers"><span>子目录建分类</span></button>
+          <button class="btn btn-ghost btn-sm" data-local-action="localUrlBtn" data-icon="download"><span>URL 下载</span></button>
+          <button class="btn btn-ghost btn-sm" data-local-action="localMatchAllBtn" data-icon="refresh"><span>全部匹配</span></button>
+          <button class="btn btn-ghost btn-sm btn-border-red" data-local-action="localClearBtn" data-icon="trash"><span>清空</span></button>
+          <button class="btn btn-ghost btn-sm btn-border-green" data-local-action="localBatchToggleBtn" data-icon="checkSquare"><span>批量分类</span></button>
+        </div>
+        <div id="localGridCategoryList" class="local-grid-category-list"></div>
         </div>
         <div class="local-file-list" id="localFileList">
           <div class="empty-state"><div class="big" data-icon="folder"></div><p>点击「扫描文件夹」<br>选择 LoRA 目录</p></div>

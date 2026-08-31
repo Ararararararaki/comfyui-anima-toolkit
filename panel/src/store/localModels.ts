@@ -56,12 +56,90 @@ function showCompatScanHint() {
 export type LocalSortKey = 'name' | 'size' | 'date' | 'match'
 export type LocalFilterKey = 'all' | 'matched' | 'unmatched'
 export type LocalViewKey = 'home' | 'detail' | 'gallery' | 'prompt' | 'models'
+export type LocalDisplayMode = 'list' | 'grid'
 
 const SCAN_CACHE_KEY = 'local_loras_v2'
 const PNG_CACHE_KEY = 'local_pngs_v1'
 const TAG_CACHE_KEY = 'local_tag_freq_v1'
 const CAT_CACHE_KEY = 'local_categories_v1'
 const MANIFEST_CACHE_KEY = 'local_manifest_v1'
+const DISPLAY_MODE_CACHE_KEY = 'local_display_mode_v1'
+
+const PREVIEW_DB_NAME = 'anima-local-lora-previews-v1'
+const PREVIEW_STORE_NAME = 'images'
+type LocalPreviewRecord = { name: string; image: string }
+
+function openLocalPreviewDb(): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null)
+  return new Promise(resolve => {
+    try {
+      const request = indexedDB.open(PREVIEW_DB_NAME, 1)
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains(PREVIEW_STORE_NAME)) {
+          request.result.createObjectStore(PREVIEW_STORE_NAME, { keyPath: 'name' })
+        }
+      }
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => resolve(null)
+    } catch {
+      resolve(null)
+    }
+  })
+}
+
+/** 自定义预览图放 IndexedDB，避免把图片 data URL 塞进 localStorage 扫描缓存导致超额。 */
+export async function loadLocalLoraPreviews(): Promise<Record<string, string>> {
+  const db = await openLocalPreviewDb()
+  if (!db) return {}
+  return new Promise(resolve => {
+    try {
+      const request = db.transaction(PREVIEW_STORE_NAME, 'readonly').objectStore(PREVIEW_STORE_NAME).getAll()
+      request.onsuccess = () => {
+        const result: Record<string, string> = {}
+        for (const row of (request.result as LocalPreviewRecord[] || [])) {
+          if (row?.name && row.image) result[row.name] = row.image
+        }
+        db.close()
+        resolve(result)
+      }
+      request.onerror = () => { db.close(); resolve({}) }
+    } catch {
+      db.close()
+      resolve({})
+    }
+  })
+}
+
+export async function saveLocalLoraPreview(name: string, image: string): Promise<boolean> {
+  const db = await openLocalPreviewDb()
+  if (!db) return false
+  return new Promise(resolve => {
+    try {
+      const tx = db.transaction(PREVIEW_STORE_NAME, 'readwrite')
+      tx.objectStore(PREVIEW_STORE_NAME).put({ name, image } satisfies LocalPreviewRecord)
+      tx.oncomplete = () => { db.close(); resolve(true) }
+      tx.onerror = () => { db.close(); resolve(false) }
+      tx.onabort = () => { db.close(); resolve(false) }
+    } catch {
+      db.close()
+      resolve(false)
+    }
+  })
+}
+
+export async function deleteLocalLoraPreview(name: string): Promise<void> {
+  const db = await openLocalPreviewDb()
+  if (!db) return
+  try {
+    const tx = db.transaction(PREVIEW_STORE_NAME, 'readwrite')
+    tx.objectStore(PREVIEW_STORE_NAME).delete(name)
+    tx.oncomplete = () => db.close()
+    tx.onerror = () => db.close()
+    tx.onabort = () => db.close()
+  } catch {
+    db.close()
+  }
+}
 
 type ManifestEntry = { name: string; size: number; lastModified: number; sha256: string }
 
@@ -79,6 +157,8 @@ interface LocalModelState {
   filterKey: LocalFilterKey
   selectedModel: string | null
   currentView: LocalViewKey
+  displayMode: LocalDisplayMode
+  previewImages: Record<string, string>
 
   dirHandle: FileSystemDirectoryHandle | null
 
@@ -125,6 +205,9 @@ interface LocalModelState {
   setFilterKey: (k: LocalFilterKey) => void
   selectModel: (name: string | null) => void
   setCurrentView: (v: LocalViewKey) => void
+  setDisplayMode: (mode: LocalDisplayMode) => void
+  setPreviewImage: (fileName: string, image: string) => void
+  clearPreviewImage: (fileName: string) => void
 
   setScanPath: (p: string) => void
   setFiles: (files: LocalLoraFile[]) => void
@@ -163,6 +246,8 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
   filterKey: 'all',
   selectedModel: null,
   currentView: 'home',
+  displayMode: Cache.load<LocalDisplayMode>(DISPLAY_MODE_CACHE_KEY, 365 * 24 * 60 * 60 * 1000) || 'list',
+  previewImages: {},
 
   dirHandle: null,
 
@@ -350,6 +435,16 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
   setFilterKey: (filterKey) => set({ filterKey }),
   selectModel: (selectedModel) => set({ selectedModel, currentView: selectedModel ? 'detail' : 'home' }),
   setCurrentView: (currentView) => set({ currentView }),
+  setDisplayMode: (displayMode) => {
+    set({ displayMode })
+    Cache.save(DISPLAY_MODE_CACHE_KEY, displayMode)
+  },
+  setPreviewImage: (fileName, image) => set(s => ({ previewImages: { ...s.previewImages, [fileName]: image } })),
+  clearPreviewImage: (fileName) => set(s => {
+    const previewImages = { ...s.previewImages }
+    delete previewImages[fileName]
+    return { previewImages }
+  }),
 
   setScanPath: (p) => set({ scanPath: p }),
   setFiles: (files) => set({ files }),
@@ -485,6 +580,7 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       let removedDesc = 0
       for (const n of removedNames) {
         if (n in descriptions) { delete descriptions[n]; removedDesc++ }
+        void deleteLocalLoraPreview(n)
       }
 
       progressHide()
@@ -581,6 +677,8 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     try {
       await removeLoraFile(dh, name)
       set(s => ({ files: s.files.filter(x => x.name !== name) }))
+      get().clearPreviewImage(name)
+      void deleteLocalLoraPreview(name)
       // 同步清理 manifest
       const m = { ...get().manifest }
       delete m[name]

@@ -1,5 +1,5 @@
-import { useLocalModelStore } from '../store/localModels'
-import type { LocalSortKey, LocalFilterKey, LocalViewKey } from '../store/localModels'
+import { deleteLocalLoraPreview, loadLocalLoraPreviews, saveLocalLoraPreview, useLocalModelStore } from '../store/localModels'
+import type { LocalDisplayMode, LocalSortKey, LocalFilterKey, LocalViewKey } from '../store/localModels'
 import { esc, escAttr, copyText, showToast, fmtNum, thumbUrl, debounce, stripExt, setBtnIcon, icon, attachSearchClear } from '../utils'
 import { openLightbox } from '../components/Lightbox'
 import type { PngMeta, LocalLoraFile, TagFreq } from '../types'
@@ -214,6 +214,12 @@ export async function initLocalManager() {
   renderLocalView()
   bindLocalEvents()
   _initDone = true
+  // 自定义预览图独立于扫描缓存保存，启动时异步恢复，避免大图阻塞首次打开。
+  loadLocalLoraPreviews().then(previewImages => {
+    useLocalModelStore.setState({ previewImages })
+    renderSidebarList(useLocalModelStore.getState())
+    renderDetail(useLocalModelStore.getState())
+  })
   // 与节点 /anima/meta 双向分类同步：启动时拉取后端分类合并到本地
   useLocalModelStore.getState().loadBackendMeta().then(() => {
     renderSidebarList(useLocalModelStore.getState())
@@ -249,29 +255,34 @@ function $$(s: string): HTMLElement | null {
   return document.getElementById(s)
 }
 
-export function renderLocalView() {
-  const state = useLocalModelStore.getState()
-  renderSidebarList(state)
-  renderHome(state)
-  renderDetail(state)
-  updateStats(state)
-  // PNG 解析视图：gallery 页始终渲染（空态/数据态），标签统计同步（review blocking 修复）
-  renderGallery(state)
-  renderTagFreq(state.tagFreq)
+function localPreviewSources(f: LocalLoraFile, state: ReturnType<typeof useLocalModelStore.getState>): string[] {
+  const custom = state.previewImages[f.name]
+  const remote = (f.matchData?.images || []).filter(Boolean)
+  return custom ? [custom, ...remote] : remote
 }
 
-function renderFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalModelStore.getState>): string {
-  const isSel = f.name === state.selectedModel
-  const thumb = f.matchData?.images?.[0]
-    ? `<img src="${esc(thumbUrl(f.matchData.images[0], 120))}" class="local-list-thumb" loading="lazy" onerror="this.style.display='none'" onload="this.style.display=''">`
-    : '<div class="local-list-thumb local-list-thumb-placeholder"></div>'
-  const badge = f.scanning
-    ? '<span class="local-list-badge scanning">⏳</span>'
-    : f.matched
-    ? '<span class="local-list-badge matched">✓</span>'
-    : f.matchError
-    ? '<span class="local-list-badge error">✗</span>'
+function localPreviewSrc(f: LocalLoraFile, state: ReturnType<typeof useLocalModelStore.getState>, width: number): string {
+  const custom = state.previewImages[f.name]
+  return custom || (f.matchData?.images?.[0] ? thumbUrl(f.matchData.images[0], width) : '')
+}
+
+function localPreviewImg(f: LocalLoraFile, state: ReturnType<typeof useLocalModelStore.getState>, className: string, width: number): string {
+  const src = localPreviewSrc(f, state, width)
+  return src
+    ? `<img src="${escAttr(src)}" class="${className}" loading="lazy" alt="${escAttr(f.matchData?.modelName || f.name)}" onerror="this.style.display='none'" onload="this.style.display='block'">`
     : ''
+}
+
+function localStatusBadge(f: LocalLoraFile, full = false): string {
+  if (f.scanning) return `<span class="local-list-badge scanning">${full ? '匹配中…' : '⏳'}</span>`
+  if (f.matched) return `<span class="local-list-badge matched">${full ? '已匹配' : '✓'}</span>`
+  if (f.matchError) return `<span class="local-list-badge error">${full ? '未匹配' : '✗'}</span>`
+  return ''
+}
+
+function renderListFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalModelStore.getState>): string {
+  const isSel = f.name === state.selectedModel
+  const thumb = localPreviewImg(f, state, 'local-list-thumb', 120) || '<div class="local-list-thumb local-list-thumb-placeholder"></div>'
   const label = f.matchData?.modelName || f.name
   const localSuffix = f.matchData?.modelName ? `<span class="local-list-localname">${esc(f.name.replace(/\.\w+$/, ''))}</span>` : ''
   const creator = f.matchData?.creator || fmtSize(f.size)
@@ -288,15 +299,275 @@ function renderFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalModel
       <div class="local-list-meta">${f.matchData ? highlightText(creator, query) : creator}${versionSuffix}</div>
     </div>
     <div class="local-list-actions">
-      ${badge}
+      ${localStatusBadge(f)}
       <button class="local-list-del" data-name="${escAttr(f.name)}" title="从磁盘删除">${icon('trash', 12)}</button>
     </div>
   </div>`
 }
 
+function localGridStatusDot(f: LocalLoraFile): string {
+  const status = f.scanning ? 'scanning' : f.matched ? 'matched' : 'unmatched'
+  const label = f.scanning ? '匹配中' : f.matched ? '已匹配' : '未匹配'
+  return `<span class="local-grid-status-dot ${status}" title="${label}" aria-label="${label}"></span>`
+}
+
+function localModelUrl(f: LocalLoraFile): string | null {
+  const d = f.matchData
+  if (!d?.modelId) return null
+  const version = d.versionId ? `?modelVersionId=${encodeURIComponent(String(d.versionId))}` : ''
+  return `https://civitai.com/models/${encodeURIComponent(String(d.modelId))}${version}`
+}
+
+function renderGridFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalModelStore.getState>): string {
+  const isSel = f.name === state.selectedModel
+  const custom = !!state.previewImages[f.name]
+  const query = state.searchQuery || ''
+  const label = f.matchData?.modelName || f.name.replace(/\.\w+$/, '')
+  const localName = f.matchData?.modelName ? f.name.replace(/\.\w+$/, '') : ''
+  const tags = (state.modelCategories[stripExt(f.name)] || []).slice(0, 2)
+  const image = localPreviewImg(f, state, 'local-grid-preview-img', 480)
+  const preview = image
+    ? `<div class="local-grid-preview">${image}${custom ? '<span class="local-grid-custom">自定义</span>' : ''}</div>`
+    : `<div class="local-grid-preview local-grid-preview-empty"><span>${icon('package', 30)}</span><small>暂无预览图</small></div>`
+  const chk = state.batchMode
+    ? `<input type="checkbox" class="local-list-chk local-grid-check" data-name="${escAttr(f.name)}" ${state.batchSelection.includes(f.name) ? 'checked' : ''}>`
+    : ''
+  const creator = f.matchData?.creator || fmtSize(f.size)
+  const stats = f.matchData
+    ? `${fmtNum(f.matchData.downloadCount)} 下载 · ${fmtNum(f.matchData.thumbsUpCount)} 赞`
+    : creator
+  const modelUrl = localModelUrl(f)
+  return `<div class="local-list-item local-grid-card ${isSel ? 'active' : ''}" data-name="${escAttr(f.name)}" draggable="true">
+    ${preview}
+    ${chk}
+    <div class="local-grid-overlay">
+      ${localGridStatusDot(f)}
+      <div class="local-grid-actions">
+        <button class="local-preview-upload" data-name="${escAttr(f.name)}" title="上传/替换预览图">${icon('image', 13)}</button>
+        ${modelUrl ? `<button class="local-open-model" data-url="${escAttr(modelUrl)}" title="打开对应 LoRA 页面">${icon('globe', 13)}</button>` : ''}
+        ${custom ? `<button class="local-preview-reset" data-name="${escAttr(f.name)}" title="恢复 C 站预览图">${icon('x', 13)}</button>` : ''}
+        <button class="local-list-del" data-name="${escAttr(f.name)}" title="从磁盘删除">${icon('trash', 13)}</button>
+      </div>
+    </div>
+    <div class="local-grid-body">
+      <div class="local-grid-name" title="${escAttr(label)}">${highlightText(label, query)}</div>
+      ${localName ? `<div class="local-grid-localname" title="${escAttr(localName)}">${esc(localName)}</div>` : ''}
+      <div class="local-grid-meta"><span>${esc(stats)}</span><span class="local-grid-extra">${f.matchData?.versionName ? `<span>v${esc(f.matchData.versionName)}</span>` : ''}${tags.length ? `<span class="local-grid-tags">${tags.map(c => `<span>${esc(c)}</span>`).join('')}</span>` : ''}</span></div>
+    </div>
+  </div>`
+}
+
+export function renderLocalView() {
+  const state = useLocalModelStore.getState()
+  renderSidebarList(state)
+  renderHome(state)
+  renderDetail(state)
+  updateStats(state)
+  // PNG 解析视图：gallery 页始终渲染（空态/数据态），标签统计同步（review blocking 修复）
+  renderGallery(state)
+  renderTagFreq(state.tagFreq)
+}
+
+function renderFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalModelStore.getState>): string {
+  return state.displayMode === 'grid' ? renderGridFileItem(f, state) : renderListFileItem(f, state)
+}
+
+function applyLocalDisplayMode(state: ReturnType<typeof useLocalModelStore.getState>) {
+  const split = document.querySelector('.local-split')
+  const container = document.querySelector('.local-container')
+  split?.classList.toggle('local-display-grid', state.displayMode === 'grid')
+  container?.classList.toggle('local-container-grid', state.displayMode === 'grid')
+  const listBtn = $$('localListViewBtn')
+  const gridBtn = $$('localGridViewBtn')
+  for (const [button, active] of [[listBtn, state.displayMode === 'list'], [gridBtn, state.displayMode === 'grid']] as const) {
+    if (!button) continue
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-pressed', String(active))
+  }
+}
+
+function renderGridCategoryRail(state: ReturnType<typeof useLocalModelStore.getState>, files: LocalLoraFile[]): string {
+  const mc = state.modelCategories || {}
+  const countFor = (cat: string | null) => files.filter(f => {
+    const assigned = mc[stripExt(f.name)] || []
+    return cat === null ? true : cat === '__uncategorized__' ? assigned.length === 0 : assigned.includes(cat)
+  }).length
+  const row = (cat: string | null, label: string, editable = false) => `<div class="local-grid-category-row">
+    <button class="local-grid-cat-btn ${state.filterCategory === cat ? 'active' : ''}" data-cat="${escAttr(cat || '')}" type="button">
+      <span class="local-grid-cat-label">${icon(cat === null ? 'grid' : 'folder', 12)}${esc(label)}</span><span class="local-grid-cat-count">${countFor(cat)}</span>
+    </button>
+    ${editable ? `<button class="local-cat-rename-btn local-grid-cat-action" data-cat="${escAttr(label)}" title="重命名">${icon('edit3', 11)}</button><button class="local-cat-del-btn local-grid-cat-action" data-cat="${escAttr(label)}" title="删除分类">${icon('x', 11)}</button>` : ''}
+  </div>`
+  const categoryRows = state.categories.map(cat => row(cat, cat, true)).join('')
+  return `<div class="local-grid-category-heading"><span>分类</span><span class="local-grid-category-total">${files.length}</span></div>
+    ${row(null, '全部')}
+    ${categoryRows}
+    ${row('__uncategorized__', '未分类')}
+    <button class="btn btn-ghost btn-sm local-new-cat-btn local-grid-new-category" type="button">${icon('plus', 12)} 新建分类</button>`
+}
+
+function readPreviewFile(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!/^image\/(png|jpeg|webp|gif)$/i.test(file.type)) {
+      reject(new Error('只支持 PNG、JPG、WebP 或 GIF 图片'))
+      return
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      reject(new Error('预览图不能超过 20 MB'))
+      return
+    }
+    const objectUrl = URL.createObjectURL(file)
+    const image = new Image()
+    image.onload = () => {
+      try {
+        const maxSide = 720
+        const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight))
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale))
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale))
+        const ctx = canvas.getContext('2d')
+        if (!ctx) throw new Error('浏览器不支持图片压缩')
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
+        const result = canvas.toDataURL('image/webp', 0.82)
+        URL.revokeObjectURL(objectUrl)
+        resolve(result)
+      } catch (error) {
+        URL.revokeObjectURL(objectUrl)
+        reject(error)
+      }
+    }
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl)
+      reject(new Error('预览图读取失败'))
+    }
+    image.src = objectUrl
+  })
+}
+
+async function setLocalPreview(name: string, image: string): Promise<boolean> {
+  const s = useLocalModelStore.getState()
+  s.setPreviewImage(name, image)
+  if (!await saveLocalLoraPreview(name, image)) {
+    s.clearPreviewImage(name)
+    showToast('⚠️ 预览图保存失败，可能是浏览器存储空间不足')
+    return false
+  }
+  renderSidebarList(useLocalModelStore.getState())
+  renderDetail(useLocalModelStore.getState())
+  showToast('✅ 已更新本地预览图')
+  return true
+}
+
+function openLocalPreviewPicker(name: string) {
+  document.getElementById('localPreviewModal')?.remove()
+
+  const overlay = document.createElement('div')
+  overlay.id = 'localPreviewModal'
+  overlay.className = 'modal-overlay open local-preview-modal-overlay'
+  overlay.innerHTML = `<section class="modal-box local-preview-modal-box" role="dialog" aria-modal="true" aria-labelledby="localPreviewModalTitle">
+    <div class="local-preview-modal-head">
+      <h3 id="localPreviewModalTitle">设置自定义预览图</h3>
+      <button type="button" class="local-preview-modal-close" data-local-preview-close aria-label="关闭">${icon('x', 15)}</button>
+    </div>
+    <p class="sub">为「${esc(name)}」设置本地预览图。图片会压缩后保存在当前浏览器中。</p>
+    <div class="local-preview-dropzone" id="localPreviewDropzone" tabindex="0" role="button" aria-label="拖拽图片或选择文件">
+      <div class="local-preview-dropzone-icon">${icon('image', 28)}</div>
+      <strong>拖拽图片到这里</strong>
+      <span>支持 PNG、JPG、WebP、GIF，最大 20 MB</span>
+      <button type="button" class="btn btn-primary btn-sm" id="localPreviewFileBtn">选择文件</button>
+      <input type="file" id="localPreviewFileInput" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+    </div>
+    <div class="modal-actions local-preview-modal-actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-local-preview-close>取消</button>
+    </div>
+  </section>`
+  document.body.appendChild(overlay)
+
+  const dropzone = overlay.querySelector('#localPreviewDropzone') as HTMLElement
+  const input = overlay.querySelector('#localPreviewFileInput') as HTMLInputElement
+  const fileBtn = overlay.querySelector('#localPreviewFileBtn') as HTMLButtonElement
+  let busy = false
+
+  const close = () => {
+    document.removeEventListener('keydown', onKeydown)
+    overlay.remove()
+  }
+  const onKeydown = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') close()
+  }
+  const processFile = async (file?: File) => {
+    if (!file || busy) return
+    busy = true
+    dropzone.classList.add('is-processing')
+    try {
+      const saved = await setLocalPreview(name, await readPreviewFile(file))
+      if (saved) close()
+    } catch (error) {
+      showToast(`⚠️ ${error instanceof Error ? error.message : '预览图读取失败'}`)
+    } finally {
+      busy = false
+      dropzone.classList.remove('is-processing')
+    }
+  }
+
+  overlay.addEventListener('click', event => {
+    if (event.target === overlay || (event.target as HTMLElement).closest('[data-local-preview-close]')) close()
+  })
+  fileBtn.addEventListener('click', event => {
+    event.stopPropagation()
+    input.click()
+  })
+  input.addEventListener('change', () => processFile(input.files?.[0]))
+  dropzone.addEventListener('click', event => {
+    if (event.target === dropzone) input.click()
+  })
+  dropzone.addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      input.click()
+    }
+  })
+  dropzone.addEventListener('dragover', event => {
+    event.preventDefault()
+    if (!busy) dropzone.classList.add('drag-over')
+  })
+  dropzone.addEventListener('dragleave', event => {
+    if (event.target === dropzone) dropzone.classList.remove('drag-over')
+  })
+  dropzone.addEventListener('drop', event => {
+    event.preventDefault()
+    dropzone.classList.remove('drag-over')
+    processFile(event.dataTransfer?.files?.[0])
+  })
+  document.addEventListener('keydown', onKeydown)
+  dropzone.focus()
+}
+
+async function setLocalPreviewFromUrl(name: string) {
+  const current = useLocalModelStore.getState().previewImages[name]
+  const url = await promptModal('设置预览图 URL', current?.startsWith('http') ? current : '', '支持 http(s) 图片地址；保存后会优先显示这张图')
+  if (url === null) return
+  const normalized = url.trim()
+  if (!/^https?:\/\//i.test(normalized)) {
+    showToast('⚠️ 预览图 URL 必须以 http:// 或 https:// 开头')
+    return
+  }
+  await setLocalPreview(name, normalized)
+}
+
+async function resetLocalPreview(name: string) {
+  const s = useLocalModelStore.getState()
+  s.clearPreviewImage(name)
+  await deleteLocalLoraPreview(name)
+  renderSidebarList(useLocalModelStore.getState())
+  renderDetail(useLocalModelStore.getState())
+  showToast('已恢复 C 站预览图')
+}
+
 function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>) {
   const el = $$('localFileList')
   if (!el) return
+  applyLocalDisplayMode(state)
 
   let files = [...state.files]
 
@@ -311,6 +582,26 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
   if (state.filterKey === 'matched') files = files.filter(f => f.matched)
   if (state.filterKey === 'unmatched') files = files.filter(f => !f.matched && !f.scanning)
 
+  const categorySourceFiles = [...files]
+  const categoryList = $$('localGridCategoryList')
+  if (state.displayMode === 'grid') {
+    if (categoryList) categoryList.innerHTML = renderGridCategoryRail(state, categorySourceFiles)
+    if (state.filterCategory) {
+      files = files.filter(f => {
+        const assigned = state.modelCategories[stripExt(f.name)] || []
+        return state.filterCategory === '__uncategorized__' ? assigned.length === 0 : assigned.includes(state.filterCategory as string)
+      })
+    }
+  } else {
+    if (categoryList) categoryList.innerHTML = ''
+    if (state.filterCategory) {
+      files = files.filter(f => {
+        const assigned = state.modelCategories[stripExt(f.name)] || []
+        return state.filterCategory === '__uncategorized__' ? assigned.length === 0 : assigned.includes(state.filterCategory as string)
+      })
+    }
+  }
+
   switch (state.sortKey) {
     case 'name': files.sort((a, b) => a.name.localeCompare(b.name)); break
     case 'size': files.sort((a, b) => b.size - a.size); break
@@ -320,6 +611,13 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
 
   if (files.length === 0) {
     el.innerHTML = '<div class="empty-state empty-state-wide"><div class="big">' + icon('mailOpen', 28) + '</div><p class="empty-state-text">没有匹配的文件</p></div>'
+    updateBatchBar(state)
+    return
+  }
+
+  if (state.displayMode === 'grid') {
+    el.innerHTML = `<div class="local-grid-card-list">${files.map(f => renderGridFileItem(f, state)).join('')}</div>`
+    updateBatchBar(state)
     return
   }
 
@@ -544,9 +842,16 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
   content.style.display = 'block'
 
   const d = f.matchData
-  const imgHtml = d?.images?.[0]
-    ? `<img src="${esc(thumbUrl(d.images[0], 400))}" class="detail-hero-img" loading="lazy" onerror="this.style.display='none'">`
+  const previewSources = localPreviewSources(f, state)
+  const customPreview = !!state.previewImages[f.name]
+  const imgHtml = previewSources[0]
+    ? `<img src="${escAttr(customPreview ? previewSources[0] : thumbUrl(previewSources[0], 400))}" class="detail-hero-img" loading="lazy" alt="${escAttr(d?.modelName || f.name)}" onerror="this.style.display='none'">`
     : '<div class="detail-no-img">📦</div>'
+  const previewTools = `<div class="detail-preview-tools">
+    <button class="btn btn-ghost btn-sm local-preview-upload" data-name="${escAttr(f.name)}">${icon('image', 12)} ${customPreview ? '替换预览图' : '自定义预览图'}</button>
+    <button class="btn btn-ghost btn-sm local-preview-url" data-name="${escAttr(f.name)}">${icon('globe', 12)} 图片 URL</button>
+    ${customPreview ? `<button class="btn btn-ghost btn-sm local-preview-reset" data-name="${escAttr(f.name)}">${icon('x', 12)} 恢复 C 站图片</button>` : ''}
+  </div>`
 
   const statusBadge = f.scanning
     ? '<span class="local-badge scanning">⏳ 匹配中…</span>'
@@ -608,7 +913,7 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
     <textarea class="detail-desc-edit" data-name="${escAttr(f.name)}" placeholder="写下你对此 LoRA 的使用心得、推荐搭配、注意事项…" rows="4">${esc(descText)}</textarea>
     <div class="detail-desc-save" id="descSave_${escAttr(f.name)}">已保存</div></div>`
 
-  const html = `<div class="detail-hero">${imgHtml}</div>
+  const html = `<div class="detail-hero">${imgHtml}${previewTools}</div>
     <div class="detail-actions">
       ${statusBadge}
       <span class="detail-name">${esc(d?.modelName || f.name)}</span>
@@ -623,7 +928,7 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
     </div>
     <div class="detail-body">
       <div class="detail-body-left">
-        ${d?.images?.length ? `<div class="detail-section"><h4>图片预览</h4><div class="detail-gallery">${d.images.slice(1, 6).map(im => `<img src="${esc(thumbUrl(im, 200))}" class="detail-gallery-thumb" loading="lazy" onerror="this.style.display='none'">`).join('')}</div></div>` : ''}
+        ${previewSources.length > 1 ? `<div class="detail-section"><h4>图片预览</h4><div class="detail-gallery">${previewSources.slice(1, 6).map((im, i) => `<img src="${escAttr(customPreview && i === 0 ? im : thumbUrl(im, 200))}" class="detail-gallery-thumb" loading="lazy" onerror="this.style.display='none'">`).join('')}</div></div>` : ''}
         ${trainedWords}
         ${tags}
         ${catHtml}
@@ -786,6 +1091,11 @@ function updateStats(state: ReturnType<typeof useLocalModelStore.getState>) {
   if (el) {
     const matched = state.files.filter(f => f.matched).length
     el.innerHTML = `📦 ${state.files.length} 个文件 · ✅ ${matched} 已匹配`
+  }
+  const gridStats = $$('localGridStats')
+  if (gridStats) {
+    const matched = state.files.filter(f => f.matched).length
+    gridStats.textContent = `${state.files.length} 个文件 · ${matched} 已匹配`
   }
   const fc = $$('statFileCount')
   const mc = $$('statMatchedCount')
@@ -1098,6 +1408,15 @@ function bindLocalEvents() {
     renderSidebarList(useLocalModelStore.getState())
   })
 
+  for (const id of ['localListViewBtn', 'localGridViewBtn']) {
+    $$(id)?.addEventListener('click', () => {
+      const mode = ($$(id) as HTMLElement).dataset.displayMode as LocalDisplayMode
+      if (mode !== 'list' && mode !== 'grid') return
+      useLocalModelStore.getState().setDisplayMode(mode)
+      renderSidebarList(useLocalModelStore.getState())
+    })
+  }
+
   document.querySelectorAll('.local-view-tab').forEach(tab => {
     tab.addEventListener('click', () => {
       const view = (tab as HTMLElement).dataset.view as LocalViewKey
@@ -1132,24 +1451,51 @@ function bindLocalEvents() {
   })
 
   fileList?.addEventListener('dragover', (e) => {
-    const header = (e.target as HTMLElement).closest('.local-tree-cat-header') as HTMLElement
+    const header = (e.target as HTMLElement).closest('.local-tree-cat-header, .local-grid-cat-btn') as HTMLElement
     if (!header) return
     e.preventDefault()
     header.classList.add('drag-over')
   })
 
   fileList?.addEventListener('dragleave', (e) => {
-    const header = (e.target as HTMLElement).closest('.local-tree-cat-header') as HTMLElement
+    const header = (e.target as HTMLElement).closest('.local-tree-cat-header, .local-grid-cat-btn') as HTMLElement
     if (header) header.classList.remove('drag-over')
   })
 
   fileList?.addEventListener('drop', (e) => {
-    const header = (e.target as HTMLElement).closest('.local-tree-cat-header') as HTMLElement
+    const header = (e.target as HTMLElement).closest('.local-tree-cat-header, .local-grid-cat-btn') as HTMLElement
     if (!header) return
     header.classList.remove('drag-over')
     const cat = header.dataset.cat
     const fileName = e.dataTransfer?.getData('text/plain')
     if (!cat || !fileName || cat === '__uncategorized__') return
+    const s = useLocalModelStore.getState()
+    const existing = s.modelCategories[stripExt(fileName)] || []
+    if (!existing.includes(cat)) {
+      s.setModelCategories(fileName, [...existing, cat])
+      s.saveToCache()
+      renderSidebarList(s)
+    }
+  })
+
+  const gridCategoryList = $$('localGridCategoryList')
+  gridCategoryList?.addEventListener('dragover', (e) => {
+    const button = (e.target as HTMLElement).closest('.local-grid-cat-btn') as HTMLElement
+    if (!button || !button.dataset.cat) return
+    e.preventDefault()
+    button.classList.add('drag-over')
+  })
+  gridCategoryList?.addEventListener('dragleave', (e) => {
+    const button = (e.target as HTMLElement).closest('.local-grid-cat-btn') as HTMLElement
+    if (button) button.classList.remove('drag-over')
+  })
+  gridCategoryList?.addEventListener('drop', (e) => {
+    const button = (e.target as HTMLElement).closest('.local-grid-cat-btn') as HTMLElement
+    if (!button) return
+    button.classList.remove('drag-over')
+    const cat = button.dataset.cat
+    const fileName = e.dataTransfer?.getData('text/plain')
+    if (!cat || cat === '__uncategorized__' || !fileName) return
     const s = useLocalModelStore.getState()
     const existing = s.modelCategories[stripExt(fileName)] || []
     if (!existing.includes(cat)) {
@@ -1373,6 +1719,13 @@ function bindLocalEvents() {
   $$('sectionLocal')?.addEventListener('click', async (e) => {
     const target = e.target as HTMLElement
 
+    const proxyAction = target.closest('[data-local-action]') as HTMLElement
+    if (proxyAction) {
+      const targetId = proxyAction.dataset.localAction
+      if (targetId) document.getElementById(targetId)?.click()
+      return
+    }
+
     const chk = target.closest('.local-list-chk') as HTMLInputElement
     if (chk) {
       const name = chk.dataset.name
@@ -1428,6 +1781,42 @@ function bindLocalEvents() {
       return
     }
 
+    const gridCatBtn = target.closest('.local-grid-cat-btn') as HTMLElement
+    if (gridCatBtn) {
+      const cat = gridCatBtn.dataset.cat || null
+      useLocalModelStore.getState().setFilterCategory(cat)
+      renderSidebarList(useLocalModelStore.getState())
+      return
+    }
+
+    const previewUploadBtn = target.closest('.local-preview-upload') as HTMLElement
+    if (previewUploadBtn) {
+      const name = previewUploadBtn.dataset.name
+      if (name) openLocalPreviewPicker(name)
+      return
+    }
+
+    const openModelBtn = target.closest('.local-open-model') as HTMLElement
+    if (openModelBtn) {
+      const url = openModelBtn.dataset.url
+      if (url) window.open(url, '_blank', 'noopener,noreferrer')
+      return
+    }
+
+    const previewUrlBtn = target.closest('.local-preview-url') as HTMLElement
+    if (previewUrlBtn) {
+      const name = previewUrlBtn.dataset.name
+      if (name) await setLocalPreviewFromUrl(name)
+      return
+    }
+
+    const previewResetBtn = target.closest('.local-preview-reset') as HTMLElement
+    if (previewResetBtn) {
+      const name = previewResetBtn.dataset.name
+      if (name) await resetLocalPreview(name)
+      return
+    }
+
     const delBtn = target.closest('.local-list-del, .detail-del-btn') as HTMLElement
     if (delBtn) {
       const name = delBtn.dataset.name
@@ -1441,13 +1830,14 @@ function bindLocalEvents() {
     }
 
     // C 站预览图点击放大：列表缩略图（先于选中详情处理，避免点图同时跳详情）
-    const listThumb = target.closest('.local-list-thumb') as HTMLElement
+    const listThumb = target.closest('.local-list-thumb, .local-grid-preview') as HTMLElement
     if (listThumb) {
       const item = listThumb.closest('.local-list-item') as HTMLElement
       const name = item?.dataset.name
       const f = name ? useLocalModelStore.getState().files.find(ff => ff.name === name) : undefined
-      const imgs = f?.matchData?.images || []
-      if (imgs.length) openLightbox(imgs.map(u => thumbUrl(u, 800)), 0)
+      const state = useLocalModelStore.getState()
+      const imgs = f ? localPreviewSources(f, state) : []
+      if (imgs.length) openLightbox(imgs.map((u, i) => i === 0 && state.previewImages[f!.name] ? u : thumbUrl(u, 800)), 0)
       return
     }
     // C 站预览图点击放大：详情页大图 / 画廊缩略图
@@ -1455,20 +1845,20 @@ function bindLocalEvents() {
     if (heroImg) {
       const st = useLocalModelStore.getState()
       const f = st.files.find(x => x.name === st.selectedModel)
-      const imgs = f?.matchData?.images || []
-      if (imgs.length) openLightbox(imgs.map(u => thumbUrl(u, 800)), 0)
+      const imgs = f ? localPreviewSources(f, st) : []
+      if (imgs.length) openLightbox(imgs.map((u, i) => i === 0 && st.previewImages[f!.name] ? u : thumbUrl(u, 800)), 0)
       return
     }
     const galleryImg = target.closest('.detail-gallery-thumb') as HTMLElement
     if (galleryImg) {
       const st = useLocalModelStore.getState()
       const f = st.files.find(x => x.name === st.selectedModel)
-      const imgs = f?.matchData?.images || []
+      const imgs = f ? localPreviewSources(f, st) : []
       if (imgs.length) {
         // gallery 渲染 images.slice(1,6)：容器内第 i 个子元素对应 images[i+1]
         const gal = galleryImg.parentElement
         const idx = gal ? Array.from(gal.children).indexOf(galleryImg) + 1 : 1
-        openLightbox(imgs.map(u => thumbUrl(u, 800)), Math.min(idx, imgs.length - 1))
+        openLightbox(imgs.map((u, i) => i === 0 && st.previewImages[f!.name] ? u : thumbUrl(u, 800)), Math.min(idx, imgs.length - 1))
       }
       return
     }
@@ -1477,6 +1867,8 @@ function bindLocalEvents() {
     if (listItem) {
       const name = listItem.dataset.name
       if (name) {
+        const state = useLocalModelStore.getState()
+        if (state.displayMode === 'grid') state.setDisplayMode('list')
         useLocalModelStore.getState().selectModel(name)
         renderSidebarList(useLocalModelStore.getState())
         renderDetail(useLocalModelStore.getState())
