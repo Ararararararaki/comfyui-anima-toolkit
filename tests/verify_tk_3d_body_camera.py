@@ -66,6 +66,8 @@ def run_browser(browser_type, executable: str, base_url: str, screenshot: Path) 
                     weightControls: root.querySelectorAll('[data-prompt-weight]').length,
                     weightInputs: root.querySelectorAll('[data-prompt-weight-number]').length,
                     promptPreview: root.querySelector('[data-prompt-preview]')?.textContent,
+                    promptWeightTitle: root.querySelector('[data-prompt-active]')?.textContent,
+                    promptWeightGroup: root.querySelector('.tk-3d-body-camera-prompt-group strong')?.textContent,
                     distanceCategories: [...root.querySelectorAll('[data-distance-category]')].map((item) => item.textContent),
                     distanceOutput: root.querySelector('[data-camera-output="pz"]')?.textContent,
                     state: { px: ui.state.px, py: ui.state.py, pz: ui.state.pz, fov: ui.state.fov, arm: ui.state.pose.left_shoulder.z },
@@ -77,8 +79,8 @@ def run_browser(browser_type, executable: str, base_url: str, screenshot: Path) 
             raise AssertionError(f"素体 UI 未完整挂载: {initial}")
         if not all(initial["live"].get(key) for key in ("yaw", "pitch", "roll", "distance", "fov")):
             raise AssertionError(f"实时相机参数没有显示: {initial['live']}")
-        if initial["weightControls"] != 4 or initial["weightInputs"] != 4 or "from front" not in (initial["promptPreview"] or ""):
-            raise AssertionError(f"BSK 提示词权重面板没有完整显示: {initial['weightControls']}, {initial['weightInputs']}, {initial['promptPreview']}")
+        if initial["weightControls"] != 4 or initial["weightInputs"] != 4 or "BSK" in (initial["promptWeightTitle"] or "") or initial["promptWeightGroup"] != "方位权重" or "左右方位" not in (initial["promptWeightTitle"] or "") or "from front" not in (initial["promptPreview"] or ""):
+            raise AssertionError(f"方位权重面板没有完整显示: {initial['weightControls']}, {initial['weightInputs']}, {initial['promptWeightTitle']}, {initial['promptWeightGroup']}, {initial['promptPreview']}")
         if initial["distanceCategories"] != ["远景", "全身", "中景", "近景", "特写"] or "中景" not in (initial["distanceOutput"] or "") or "权重 1.00" not in (initial["distanceOutput"] or ""):
             raise AssertionError(f"距离五档/当前权重显示异常: {initial['distanceCategories']}, {initial['distanceOutput']}")
 
