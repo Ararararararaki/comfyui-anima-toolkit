@@ -54,7 +54,7 @@ git clone https://github.com/Ararararararaki/comfyui-anima-toolkit.git
 - `TK/batch`: **TK 批量提示词注入**。按提示词文件分组批量出图,支持独立机位和批次控制。
 - `TK/prompt`: **TK Prompt Cards**、**TK Prompt Saver**。管理提示词卡片、翻译、标签、可选 CLIP 输出，并在节点执行时自动保存多路提示词。
 - `TK/image`: **TK 图像选择**。在多路图像输入之间按策略选择并输出来源信息。
-- `TK/latent`: **TK 空Latent 图像**。生成 Anima/Cosmos 5D 常用尺寸的空 latent。
+- `TK/latent`: **TK 空Latent 图像**。生成 Anima/Cosmos 5D 空 latent，支持宽高整体缩放、常用宽高比悬浮选择，以及以 1536px 标准长边生成具体尺寸。
 - `TK/Danbooru`: **TK D站画廊**。按标签搜索、筛选、下载和输出 Danbooru 图片及元数据。
 - `TK/text`: **TK 文本合并**、**TK String Router**、**TK Danbooru Tag Getter**。合并文本、切换字符串输入、选择和筛选 Danbooru 分类。
 
@@ -88,7 +88,7 @@ git clone https://github.com/Ararararararaki/comfyui-anima-toolkit.git
 - 点击关节后拖拽可修改 X/Y 旋转,也可直接编辑 XYZ;支持 A-Pose、T-Pose、重置、姿势保存和恢复
 - 鼠标拖拽画布环绕观察,滚轮调整距离;支持正面 / 侧面 / 背面 / 俯视 / 仰视快捷机位,并可调整倾斜角与 FOV
 - 输出继续复用 `TK 相机控制` 的 `CameraControlCore` 提示词算法;`camera_meta` 额外带 yaw、pitch、distance、roll、FOV 和完整姿势 JSON
-- 提示词参数面板按 BSK 提供左右方位、上下方位、距离方位、倾斜角四项权重;支持滑块与数字输入,步进 0.1,当前 BSK Prompt 会实时预览
+- 提示词参数面板按 BSK 提供左右方位、上下方位、距离方位、倾斜角四项权重;距离按远景/全身/中景/近景/特写五档识别,档内权重随距离滑块连续变化;支持滑块与数字输入,步进 0.1,当前 BSK Prompt 会实时预览
 - 空闲时只在状态变化或尺寸变化后渲染一帧,节点删除时清理 Three.js 几何体、材质、监听器和渲染资源
 
 ### 2. 本地 LoRA 管理(面板)
@@ -173,7 +173,7 @@ Steam 风格界面,管理全部本地 LoRA:
 - TK Text Join(文本合并):按逗号/空格/换行合并 4 路文本,自动清理连续逗号
 - TK String Router(字符串路由):6 路 STRING 输入,支持单选/多选放行、接口别名和工作流保存
 - TK Danbooru Tag Getter(Danbooru 分类提取):接收 `TAG_BUNDLE`,多选固定分类,支持正则排除和精准 Tag 排除,输出清理去重后的 `Tag String`
-- TK 空Latent(预设空 Latent):Anima/Cosmos 5D 单帧空 latent,常用尺寸预设
+- TK 空Latent(预设空 Latent):Anima/Cosmos 5D 单帧空 latent;节点内支持宽高整体乘以 0.5 到 0.9 及 1.1 到 1.5,缩小/放大倍率分左右两列竖排显示;比例菜单按 1536px 标准长边列出竖向具体分辨率和倍率,尺寸自动取整为 16 的倍数
 
 #### TK Danbooru Tag Getter
 

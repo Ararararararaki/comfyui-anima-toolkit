@@ -4,6 +4,53 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 (function () {
   const NODE_NAME = "TK Batch LoRA Loader";
   const normalizeLoraName = (value) => String(value || "").trim().replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
+  // 浏览器内搜索：统一全角字符、大小写、路径/文件名分隔符，允许中文、英文和混合关键词进行包含匹配。
+  const normalizeLoraSearchText = (value) => String(value ?? "")
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[\\/_\-.|,，、;；]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const loraSearchTokens = (value) => normalizeLoraSearchText(value).split(" ").filter(Boolean);
+  const loraSearchIndex = (lora, meta, info) => {
+    const categories = Array.isArray(meta?.categories) ? meta.categories : [];
+    const name = [lora?.name, lora?.filename, lora?.relativePath].filter(Boolean).join(" ");
+    const model = [info?.modelName, info?.versionName].filter(Boolean).join(" ");
+    const creator = info?.creator || "";
+    const triggers = Array.isArray(info?.trainedWords) ? info.trainedWords.join(" ") : "";
+    const tags = Array.isArray(info?.tags) ? info.tags.join(" ") : "";
+    const fields = {
+      name: normalizeLoraSearchText(name),
+      model: normalizeLoraSearchText(model),
+      creator: normalizeLoraSearchText(creator),
+      trigger: normalizeLoraSearchText(triggers),
+      tag: normalizeLoraSearchText(tags),
+      category: normalizeLoraSearchText(categories.join(" ")),
+    };
+    const all = Object.values(fields).join(" ");
+    return { ...fields, all, compact: all.replace(/\s/g, "") };
+  };
+  const matchesLoraSearch = (index, query) => {
+    const normalized = normalizeLoraSearchText(query);
+    if (!normalized) return true;
+    const phrase = normalized.replace(/\s/g, "");
+    // 空格分隔的词采用 AND 语义；无空格中文短语仍按连续片段匹配。
+    return loraSearchTokens(normalized).every((token) => index.all.includes(token)) || index.compact.includes(phrase);
+  };
+  const loraSearchScore = (index, query) => {
+    const normalized = normalizeLoraSearchText(query);
+    if (!normalized) return 0;
+    const phrase = normalized.replace(/\s/g, "");
+    let score = index.name.replace(/\s/g, "") === phrase ? 1000 : 0;
+    if (index.name.replace(/\s/g, "").startsWith(phrase)) score += 150;
+    if (index.model.replace(/\s/g, "").startsWith(phrase)) score += 120;
+    if (index.name.includes(normalized)) score += 80;
+    if (index.model.includes(normalized)) score += 70;
+    if (index.creator.includes(normalized)) score += 40;
+    if (index.trigger.includes(normalized)) score += 30;
+    if (index.tag.includes(normalized) || index.category.includes(normalized)) score += 20;
+    return score;
+  };
   // bridge 一次性投递：已应用版本记录（localStorage），重启/刷新不重放历史残留
   const BRIDGE_APPLIED_KEY = "anima_bridge_applied_ts";
   // 面板 URL / 图标：动态解析当前插件目录名（兼容任意 clone 目录名）
@@ -942,6 +989,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             previewUrl: data.previewUrl || null,
             modelName: data.modelName || "",
             creator: data.creator || "",
+            versionName: data.versionName || "",
+            trainedWords: Array.isArray(data.trainedWords) ? data.trainedWords : [],
+            tags: Array.isArray(data.tags) ? data.tags : [],
           };
           if (tw.length) found++;
         } catch (e) {
@@ -997,6 +1047,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             previewUrl: data.previewUrl || null,
             modelName: data.modelName || "",
             creator: data.creator || "",
+            versionName: data.versionName || "",
+            trainedWords: Array.isArray(data.trainedWords) ? data.trainedWords : [],
+            tags: Array.isArray(data.tags) ? data.tags : [],
           };
           onDone && onDone(tw);
         })
@@ -1602,7 +1655,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           <button class="bm-close" style="padding:3px 10px;background:rgba(255,80,80,0.12);color:#ff6b6b;border:1px solid rgba(255,80,80,0.2);border-radius:5px;cursor:pointer;font-size:9px;">✕ 关闭</button>
         </div>
         <div style="display:flex;gap:8px;margin-bottom:8px;">
-          <input class="bm-search" type="text" placeholder="搜索 LoRA..." style="flex:1;padding:5px 9px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;outline:none;">
+          <input class="bm-search" type="text" placeholder="搜索名称、路径、中文名、作者、标签、触发词..." aria-label="搜索 LoRA 名称、路径、中文名、作者、标签或触发词" style="flex:1;padding:5px 9px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;outline:none;">
           <select class="bm-sort" style="padding:5px 8px;background:#0a0a0c;color:#8A8F98;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:10px;outline:none;">
             <option value="name">按名称</option>
             <option value="size">按大小</option>
@@ -1723,28 +1776,36 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // （白名单代理逻辑为类级方法 this._imgProxy，_browseModal 与 _showTwTooltip 共用）
 
       const getMatched = () => {
-        const q = (searchInput.value || "").toLowerCase();
+        const q = searchInput.value || "";
         return allLoras
-          .filter((l) => {
+          .map((l) => {
             const m = loraMeta(l.name);
-            if (meta.categories.includes(curFilter) && !m.categories.includes(curFilter)) return false;
-            if (q && !l.name.toLowerCase().includes(q)) return false;
-            return true;
+            if (curFilter !== "all" && meta.categories.includes(curFilter) && !m.categories.includes(curFilter)) return null;
+            const info = this._imgCache[l.name] || this.loraInfoMap[l.name] || null;
+            const searchIndex = loraSearchIndex(l, m, info);
+            if (!matchesLoraSearch(searchIndex, q)) return null;
+            return { l, m, searchScore: loraSearchScore(searchIndex, q) };
           })
+          .filter(Boolean)
           .sort((a, b) => {
+            const left = a.l;
+            const right = b.l;
+            // 有搜索词时先显示更精确的名称/中文名命中结果。
+            if (a.searchScore !== b.searchScore) return b.searchScore - a.searchScore;
             // 已添加到节点的 LoRA 置顶
-            const addedA = this.loras.some((e) => e.name.toLowerCase() === a.name.toLowerCase()) ? 1 : 0;
-            const addedB = this.loras.some((e) => e.name.toLowerCase() === b.name.toLowerCase()) ? 1 : 0;
+            const addedA = this.loras.some((e) => e.name.toLowerCase() === left.name.toLowerCase()) ? 1 : 0;
+            const addedB = this.loras.some((e) => e.name.toLowerCase() === right.name.toLowerCase()) ? 1 : 0;
             if (addedA !== addedB) return addedB - addedA;
             // 常用次数优先
-            const ca = loraMeta(a.name).count || 0;
-            const cb = loraMeta(b.name).count || 0;
+            const ca = a.m.count || 0;
+            const cb = b.m.count || 0;
             if (ca !== cb) return cb - ca;
             const k = sortEl.value;
-            if (k === "size") return (b.size || 0) - (a.size || 0);
-            if (k === "date") return (b.lastModified || 0) - (a.lastModified || 0);
-            return a.name.localeCompare(b.name, "zh");
-          });
+            if (k === "size") return (right.size || 0) - (left.size || 0);
+            if (k === "date") return (right.lastModified || 0) - (left.lastModified || 0);
+            return left.name.localeCompare(right.name, "zh");
+          })
+          .map((entry) => entry.l);
       };
 
       // ── 侧边栏分类 ──
@@ -1977,6 +2038,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       let cols = 1;
       const paintGrid = () => {
         const matched = getMatched();
+        if (!matched.length) {
+          contentEl.innerHTML = '<div style="padding:30px;text-align:center;color:#666;font-size:11px;">没有匹配的 LoRA</div>';
+          contentEl.style.height = "100%";
+          return;
+        }
         cols = Math.max(1, Math.floor((listEl.clientWidth + GAP) / (ITEM_W + GAP)));
         const rows = Math.max(1, Math.ceil(matched.length / cols));
         contentEl.style.height = rows * ROW_H + "px";

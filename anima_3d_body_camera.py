@@ -41,6 +41,7 @@ POSE_JOINTS = (
 POSE_LIMITS = {"root": 45.0, "waist": 65.0, "chest": 70.0, "neck": 80.0, "head": 90.0}
 CAMERA_DISTANCE_BASE = 5.0
 CAMERA_DISTANCE_RANGE = 3.4
+DISTANCE_LABELS = {"wide": "远景", "medium": "中景", "cu": "近景", "full": "全身", "ecu": "特写"}
 
 
 def _body_camera_config() -> dict[str, Any]:
@@ -55,6 +56,7 @@ def _body_camera_config() -> dict[str, Any]:
     for name in ("ecu", "cu", "medium", "full", "wide"):
         config["distance"]["categories"][name].pop("weight", None)
     config["distance"].setdefault("weight", 1.0)
+    config["distance"]["follow_slider"] = True
     # 旧算法默认是 abs(y) * (1 + extra)，默认 extra=10，因此轴权重为 11。
     config["elevation"].setdefault("weight", 11.0)
     config["tilt"].setdefault("weight", 1.0)
@@ -79,6 +81,7 @@ def _body_prompt_config(raw: Any) -> dict[str, Any]:
     config["azimuth"].setdefault("weight", 10.0)
     config["elevation"].setdefault("weight", 11.0)
     config["distance"].setdefault("weight", 1.0)
+    config["distance"]["follow_slider"] = True
     config["tilt"].setdefault("weight", 1.0)
     return config
 
@@ -215,6 +218,7 @@ class Anima3DBodyCamera:
         prompt_config = _body_prompt_config(config)
         prompt = CameraControlCore.compute(px, py, pz, rl, json.dumps(prompt_config, ensure_ascii=False, separators=(",", ":")))
         prompt = _append_extra_tags(prompt, preset_extra, extra_tags)
+        distance_details = CameraControlCore.distance_weight_details(prompt_config, pz)
         pose_state = pose_for_preset(str(pose_preset or "A-Pose"), pose)
         fov_value = round(max(20.0, min(100.0, _finite(fov, 50.0))), 2)
         parsed_config = prompt_config
@@ -228,6 +232,12 @@ class Anima3DBodyCamera:
                     prompt_weights[group][key] = round(float(item.get("weight", fallback)), 3) if isinstance(item, dict) else fallback
                 except (TypeError, ValueError):
                     prompt_weights[group][key] = fallback
+        prompt_weights["distance"].update({
+            "category": distance_details["key"],
+            "label": DISTANCE_LABELS[distance_details["key"]],
+            "fraction": round(distance_details["fraction"], 4),
+            "effective_weight": round(distance_details["weight"], 3),
+        })
         meta = {
             "schema": "tk-pose-camera/v1",
             "representation": "procedural-low-poly-fk-shell",

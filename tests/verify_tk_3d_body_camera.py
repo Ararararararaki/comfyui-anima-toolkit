@@ -66,6 +66,8 @@ def run_browser(browser_type, executable: str, base_url: str, screenshot: Path) 
                     weightControls: root.querySelectorAll('[data-prompt-weight]').length,
                     weightInputs: root.querySelectorAll('[data-prompt-weight-number]').length,
                     promptPreview: root.querySelector('[data-prompt-preview]')?.textContent,
+                    distanceCategories: [...root.querySelectorAll('[data-distance-category]')].map((item) => item.textContent),
+                    distanceOutput: root.querySelector('[data-camera-output="pz"]')?.textContent,
                     state: { px: ui.state.px, py: ui.state.py, pz: ui.state.pz, fov: ui.state.fov, arm: ui.state.pose.left_shoulder.z },
                 };
             }""",
@@ -77,6 +79,8 @@ def run_browser(browser_type, executable: str, base_url: str, screenshot: Path) 
             raise AssertionError(f"实时相机参数没有显示: {initial['live']}")
         if initial["weightControls"] != 4 or initial["weightInputs"] != 4 or "from front" not in (initial["promptPreview"] or ""):
             raise AssertionError(f"BSK 提示词权重面板没有完整显示: {initial['weightControls']}, {initial['weightInputs']}, {initial['promptPreview']}")
+        if initial["distanceCategories"] != ["远景", "全身", "中景", "近景", "特写"] or "中景" not in (initial["distanceOutput"] or "") or "权重 1.00" not in (initial["distanceOutput"] or ""):
+            raise AssertionError(f"距离五档/当前权重显示异常: {initial['distanceCategories']}, {initial['distanceOutput']}")
 
         canvas = page.locator(".tk-3d-body-camera-canvas")
         box = canvas.bounding_box()
@@ -105,6 +109,9 @@ def run_browser(browser_type, executable: str, base_url: str, screenshot: Path) 
         # 即 pos_z 变小（实际距离 = 5 - pos_z * 3.4 变大）。
         if after_wheel >= after_camera_drag["pz"]:
             raise AssertionError(f"滚轮距离方向反了：向下滚应远离模型: {after_camera_drag['pz']} -> {after_wheel}")
+        after_wheel_output = page.locator('[data-camera-output="pz"]').inner_text()
+        if "全身" not in after_wheel_output or after_wheel_output == initial["distanceOutput"]:
+            raise AssertionError(f"距离滑块没有切换五档或权重没有随滑块变化: {after_wheel_output}")
 
         # 最远机位必须能在画布内完整容纳低模素体，并同步显示实时距离。
         page.locator('[data-camera-preset]').select_option("远景")
@@ -139,16 +146,19 @@ def run_browser(browser_type, executable: str, base_url: str, screenshot: Path) 
         prompt_weight_state = page.evaluate(
             """(name) => {
                 const node = (window.comfyAPI?.app?.app || window.app).graph._nodes.find((item) => item.type === name);
+                const ui = node._tk3dBodyCamera;
                 const config = JSON.parse(node.widgets.find((widget) => widget.name === 'config').value);
                 return {
                     azimuth: config.azimuth.weight,
                     distance: config.distance.weight,
                     preview: document.querySelector('[data-prompt-preview]')?.textContent,
+                    distanceOutput: document.querySelector('[data-camera-output="pz"]')?.textContent,
+                    distanceMeta: ui._readPromptConfig().distance,
                 };
             }""",
             NODE_NAME,
         )
-        if prompt_weight_state["azimuth"] != 1.3 or prompt_weight_state["distance"] != 0.7 or "1.30" not in (prompt_weight_state["preview"] or ""):
+        if prompt_weight_state["azimuth"] != 1.3 or prompt_weight_state["distance"] != 0.7 or "1.30" not in (prompt_weight_state["preview"] or "") or "中景" not in (prompt_weight_state["distanceOutput"] or "") or "0.70" not in (prompt_weight_state["distanceOutput"] or "") or not prompt_weight_state["distanceMeta"].get("follow_slider"):
             raise AssertionError(f"独立权重没有同步到 config/BSK 预览: {prompt_weight_state}")
 
         # 关节选择 + XYZ 控件验证 FK 状态链路。

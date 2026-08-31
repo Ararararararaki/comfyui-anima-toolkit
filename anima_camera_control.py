@@ -354,31 +354,52 @@ class CameraControlCore:
         return "wide"
 
     @classmethod
+    def distance_weight_details(cls, cfg, z):
+        """返回当前距离档位和实际权重；follow_slider 是新节点的可选增强。"""
+        z = float(z)
+        key = cls._distance_key(z)
+        start, end = DIST_RANGES[key]
+        if key in DIST_FAR_STRONGER:
+            frac = max(0.0, min(1.0, (end - z) / (end - start)))
+        else:
+            frac = max(0.0, min(1.0, (z - start) / (end - start)))
+
+        distance_cfg = cfg.get("distance") or {}
+        category_cfg = (distance_cfg.get("categories") or {}).get(key) or {}
+        extra_master = float(cfg.get("extra_master", 1.0))
+        extra = float(distance_cfg.get("extra", 0.0))
+        if "weight" in distance_cfg:
+            base_weight = float(distance_cfg.get("weight", 1.0))
+        elif "weight" in category_cfg:
+            base_weight = float(category_cfg.get("weight", 1.0))
+        else:
+            base_weight = 1.0
+        if distance_cfg.get("follow_slider", False):
+            # BSK 的 frac 保留“近档/远档的方向性”。以 0.5 为中心，
+            # 让距离滑块在当前档位内连续改变权重，同时保留手动权重作为中心值。
+            variation = abs(extra_master * extra)
+            if variation <= 0:
+                variation = max(0.5, abs(base_weight) * 0.5)
+            weight = base_weight + (frac - 0.5) * variation
+        else:
+            weight = base_weight + frac * extra_master * extra
+
+        wmin = float(cfg.get("weight_min", 0.1))
+        wmax = float(cfg.get("weight_max", 10.0))
+        weight = min(wmax, max(wmin, weight))
+        return {"key": key, "fraction": frac, "weight": weight}
+
+    @classmethod
     def _distance_parts(cls, cfg, z):
-        key = cls._distance_key(float(z))
+        details = cls.distance_weight_details(cfg, z)
+        key = details["key"]
         cat = (cfg["distance"].get("categories") or {}).get(key)
         if not cat or not cat.get("tag") or not cat.get("enabled", True):
             return []
-        extra_master = float(cfg.get("extra_master", 1.0))
-        extra = float(cfg["distance"].get("extra", 0.0))
-        wmin = float(cfg.get("weight_min", 0.1))
-        wmax = float(cfg.get("weight_max", 10.0))
-        start, end = DIST_RANGES[key]
-        if key in DIST_FAR_STRONGER:
-            frac = max(0.0, min(1.0, (end - float(z)) / (end - start)))
-        else:
-            frac = max(0.0, min(1.0, (float(z) - start) / (end - start)))
         # 新节点使用 distance.weight 作为统一的「距离权重」，当前档位只
         # 决定输出哪个距离 tag，不再让特写/近景/中景/全身/远景各自持有
         # 一套互相独立的权重。保留 category.weight 仅为兼容此前测试版配置。
-        if "weight" in cfg["distance"]:
-            w = float(cfg["distance"].get("weight", 1.0)) + frac * extra_master * extra
-        elif "weight" in cat:
-            w = float(cat.get("weight", 1.0)) + frac * extra_master * extra
-        else:
-            w = 1.0 + frac * extra_master * extra
-        w = min(wmax, max(wmin, w))
-        return cls._emit_weighted(cat["tag"], w)
+        return cls._emit_weighted(cat["tag"], details["weight"])
 
     @classmethod
     def _weighted_tilt(cls, cfg):

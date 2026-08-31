@@ -563,8 +563,10 @@ async def lora_info(request):
                 result = {
                     "name": name,
                     "trainedWords": data.get("trainedWords", []) or [],
+                    "tags": (data.get("model", {}) or {}).get("tags", []) or [],
                     "modelName": data.get("model", {}).get("name") or data.get("modelName") or "",
                     "versionName": data.get("name") or "",
+                    "versionId": data.get("id"),
                     "creator": _creator_name(data.get("model", {})),
                     "modelId": (data.get("model", {}) or {}).get("id") or data.get("modelId"),
                     "previewUrl": (data.get("images") or [{}])[0].get("url") if data.get("images") else None,
