@@ -17,6 +17,9 @@
 - **递归 LoRA 扫描**（`f83d00e`）：TK 批量 LoRA 加载器和 TK Toolkit 本地管理面板都会读取 LoRA 根目录下的子目录,并保留相对路径。
 - **子目录建分类**（`ad3b2b8`）：本地工具箱新增按钮,按一级子目录名称自动创建/复用分类,将对应 LoRA 批量归类;重复点击不会重复添加。
 - **跨平台路径**：节点浏览接口增加 `relativePath`,统一用 `/` 表示子目录,并继续兼容 Windows 反斜杠路径。
+- `TK String Router`：新增 6 路字符串单选/多选路由,支持接口名称保存和 ComfyUI 风格紧凑面板。
+- `TK Danbooru Tag Getter`：兼容 `TAG_BUNDLE` 多选分类,增加正则排除和精准 Tag 排除。
+- `TK Prompt Saver`：新增 6 路提示词自动保存,支持对应 `image_1` 到 `image_6` 预览图,写入共享 `anima-lora` Prompt 库。
 
 ### 使用说明
 

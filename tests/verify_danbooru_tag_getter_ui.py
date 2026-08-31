@@ -124,4 +124,3 @@ with sync_playwright() as playwright:
         raise AssertionError(f"new node interaction errors: {errors[:5]}")
     context.close()
     profile.cleanup()
-

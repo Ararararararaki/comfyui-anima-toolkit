@@ -105,4 +105,3 @@ if __name__ == "__main__":
     for test in tests:
         test()
     print(f"PASS: {len(tests)} Prompt Saver tests")
-

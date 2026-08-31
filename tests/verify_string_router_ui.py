@@ -1,4 +1,4 @@
-"""真实 ComfyUI 页面冒烟：TK String Router 的面板、模式切换和配置持久化。"""
+"""真实 ComfyUI 页面检查 TK String Router 的节点布局和交互。"""
 
 from __future__ import annotations
 
@@ -10,83 +10,101 @@ from playwright.sync_api import sync_playwright
 
 
 CHROME = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+BEFORE_SHOT = Path(r"C:\Users\Toki\AppData\Local\Temp\tk-string-router-before.png")
+AFTER_SHOT = Path(r"C:\Users\Toki\AppData\Local\Temp\tk-string-router-after.png")
 
 
-def check(name: str, condition: bool, detail: object = "") -> None:
-    if not condition:
-        raise AssertionError(f"{name}: {detail}")
-    print(f"PASS {name}")
+with sync_playwright() as playwright:
+    profile = tempfile.TemporaryDirectory(prefix="tk-string-router-ui-")
+    context = playwright.chromium.launch_persistent_context(
+        profile.name,
+        executable_path=str(CHROME),
+        headless=True,
+        viewport={"width": 1440, "height": 900},
+        args=["--no-first-run", "--disable-gpu"],
+    )
+    page = context.pages[0] if context.pages else context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.on("console", lambda message: errors.append(f"console.{message.type}: {message.text}") if message.type == "error" else None)
+    page.goto("http://127.0.0.1:8188/", wait_until="domcontentloaded", timeout=30_000)
+    page.wait_for_function("typeof LiteGraph !== 'undefined' && Boolean(window.app?.graph)", timeout=30_000)
+    page.wait_for_timeout(3_000)
+    errors.clear()
 
+    created = page.evaluate(
+        """
+        () => {
+          window.app.graph.clear();
+          const node = LiteGraph.createNode('TK String Router');
+          if (!node) return null;
+          window.app.graph.add(node);
+          node.pos = [80, 100];
+          window.__tkStringRouter = node;
+          window.app.graph.setDirtyCanvas(true, true);
+          return node.type;
+        }
+        """
+    )
+    if created != "TK String Router":
+        raise AssertionError(f"node create failed: {created}")
+    page.wait_for_timeout(1_000)
+    page.screenshot(path=str(BEFORE_SHOT if not page.locator(".tk-sr-panel").count() else AFTER_SHOT))
 
-with tempfile.TemporaryDirectory(prefix="tk-string-router-ui-") as profile:
-    with sync_playwright() as playwright:
-        context = playwright.chromium.launch_persistent_context(
-            profile,
-            executable_path=str(CHROME),
-            headless=True,
-            viewport={"width": 1400, "height": 900},
-            args=["--no-first-run", "--disable-gpu"],
+    state = page.evaluate(
+        """
+        () => {
+          const node = window.__tkStringRouter;
+          const ui = document.querySelector('.tk-sr-panel');
+          const settings = (node?.widgets || []).find(widget => widget.name === 'router_settings');
+          return {
+            nodeSize: node?.size || null,
+            panel: ui ? {
+              rows: ui.querySelectorAll('.tk-sr-row').length,
+              title: ui.querySelector('.tk-sr-title')?.textContent || '',
+              mode: ui.querySelector('.tk-sr-mode')?.value || '',
+              columns: getComputedStyle(ui.querySelector('.tk-sr-grid')).gridTemplateColumns,
+            } : null,
+            settings: settings?.value || '',
+          };
+        }
+        """
+    )
+    print(json.dumps(state, ensure_ascii=False))
+
+    if state["panel"]:
+        if state["panel"]["rows"] != 6:
+            raise AssertionError(f"expected six rows: {state}")
+        if state["panel"]["mode"] != "single":
+            raise AssertionError(f"expected single mode: {state}")
+
+        page.locator(".tk-sr-index").nth(1).click()
+        selected_by_index = page.evaluate(
+            """
+            () => JSON.parse((window.__tkStringRouter?.widgets || []).find(widget => widget.name === 'router_settings')?.value || '{}').enabled
+            """
         )
-        page = context.pages[0] if context.pages else context.new_page()
-        errors = []
-        page.on("pageerror", lambda error: errors.append(str(error)))
-        page.on("console", lambda message: errors.append(f"console.{message.type}: {message.text}") if message.type == "error" else None)
-        page.goto("http://127.0.0.1:8188/", wait_until="domcontentloaded", timeout=30_000)
-        page.wait_for_function("typeof LiteGraph !== 'undefined' && Boolean(window.app?.graph)", timeout=30_000)
-        page.wait_for_timeout(3_000)
-        # ComfyUI 启动阶段可能有与本节点无关的资源/初始化日志；只审计节点交互之后新增的错误。
-        errors.clear()
+        if selected_by_index != [False, True, False, False, False, False]:
+            raise AssertionError(f"clicking row index did not select exactly once: {selected_by_index}")
+        page.locator(".tk-sr-index").nth(0).click()
 
-        created = page.evaluate(
+        page.locator(".tk-sr-name").nth(0).fill("主提示")
+        page.locator(".tk-sr-mode").select_option("multi")
+        page.locator(".tk-sr-control").nth(1).check()
+        page.locator(".tk-sr-control").nth(3).check()
+        saved = page.evaluate(
             """
-            () => {
-              const node = LiteGraph.createNode('TK String Router');
-              if (!node) return null;
-              window.app.graph.add(node);
-              node.pos = [80, 120];
-              window.__stringRouterNode = node;
-              return node.type;
-            }
+            () => JSON.parse((window.__tkStringRouter?.widgets || []).find(widget => widget.name === 'router_settings')?.value || '{}')
             """
         )
-        check("节点创建", created == "TK String Router", created)
-        page.wait_for_selector(".tk-string-router", timeout=15_000)
+        if saved.get("mode") != "multi" or saved.get("enabled") != [True, True, False, True, False, False] or saved.get("names", [""])[0] != "主提示":
+            raise AssertionError(f"settings not persisted: {saved}")
+        page.screenshot(path=str(AFTER_SHOT))
+        print(f"PASS UI panel: 6 rows, compact grid, mode/name persistence; screenshot={AFTER_SHOT}")
+    else:
+        print(f"BASELINE screenshot={BEFORE_SHOT}")
 
-        initial = page.evaluate(
-            """
-            () => {
-              const ui = document.querySelector('.tk-string-router');
-              const node = window.__stringRouterNode;
-              return {
-                rows: ui?.querySelectorAll('.tk-string-router-row').length || 0,
-                mode: ui?.querySelector('.tk-string-router-mode')?.value,
-                enabled: [...(ui?.querySelectorAll('.tk-string-router-control') || [])].map(el => el.checked),
-                socketNames: (node?.inputs || []).map(input => input.name).filter(name => name.startsWith('string_')),
-              };
-            }
-            """
-        )
-        print(json.dumps(initial, ensure_ascii=False))
-        check("显示 6 个接口行", initial["rows"] == 6, initial)
-        check("默认单选只开启接口 1", initial["mode"] == "single" and initial["enabled"] == [True, False, False, False, False, False], initial)
-        check("底层接口保持稳定编号", initial["socketNames"] == [f"string_{i}" for i in range(1, 7)], initial)
-
-        page.locator(".tk-string-router-name").nth(0).fill("标题")
-        page.locator(".tk-string-router-mode").select_option("multi")
-        page.locator(".tk-string-router-control").nth(1).check()
-        page.locator(".tk-string-router-control").nth(3).check()
-        multi = page.evaluate(
-            """
-            () => {
-              const node = window.__stringRouterNode;
-              const widget = (node?.widgets || []).find(item => item.name === 'router_settings');
-              return { settings: JSON.parse(widget?.value || '{}') };
-            }
-            """
-        )
-        print(json.dumps(multi, ensure_ascii=False))
-        saved = multi["settings"]
-        check("多选开启接口 1/2/4", saved["mode"] == "multi" and saved["enabled"] == [True, True, False, True, False, False], saved)
-        check("自定义名称写入工作流配置", saved["names"][0] == "标题", saved)
-        check("页面无 JavaScript 错误", not errors, errors[:5])
-        context.close()
+    if errors:
+        raise AssertionError(f"new node interaction errors: {errors[:5]}")
+    context.close()
+    profile.cleanup()

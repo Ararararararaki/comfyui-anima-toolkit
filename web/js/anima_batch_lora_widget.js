@@ -569,6 +569,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       styleEl.textContent = `
           .anima-lora-widget { display:flex; flex-direction:column; width:100%; height:100%; min-width:0; min-height:0; box-sizing:border-box; padding:6px; overflow:hidden; background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01)); border-radius:8px; font-family:"Inter","Geist Sans",system-ui,sans-serif; border:1px solid rgba(255,255,255,0.05); box-shadow:inset 0 1px 0 0 rgba(255,255,255,0.04); }
           .anima-lora-widget .list { flex:1 1 auto; min-width:0; overflow-x:hidden; overflow-y:auto; min-height:0; }
+          .anima-lora-widget .list-resize-handle { display:flex; flex:0 0 17px; height:17px; align-items:center; justify-content:center; gap:6px; border-top:1px solid rgba(255,255,255,0.08); color:#8A8F98; cursor:ns-resize; user-select:none; -webkit-user-select:none; touch-action:none; }
+          .anima-lora-widget .list-resize-handle span { font-size:12px; letter-spacing:2px; line-height:1; transform:rotate(90deg); }
+          .anima-lora-widget .list-resize-handle small { opacity:0; font-size:9px; transition:opacity .15s ease; }
+          .anima-lora-widget .list-resize-handle:hover, .anima-lora-widget .list-resize-handle.is-dragging { color:#EDEDEF; border-color:#5E6AD2; }
+          .anima-lora-widget .list-resize-handle:hover small, .anima-lora-widget .list-resize-handle.is-dragging small { opacity:1; }
+          .anima-lora-widget .list-resize-handle:focus-visible { outline:2px solid #5E6AD2; outline-offset:-2px; }
           .anima-lora-widget .toolbar { display:flex; gap:5px; margin-bottom:6px; flex-wrap:wrap; }
           .anima-lora-widget .toolbar button { display:inline-flex; align-items:center; gap:4px; padding:4px 10px; border:none; border-radius:6px; cursor:pointer; font-size:9px; font-weight:600; color:#EDEDEF; white-space:nowrap; letter-spacing:0.02em; transition:all 0.2s ease-out; box-shadow:0 0 0 1px rgba(255,255,255,0.06),0 2px 8px rgba(0,0,0,0.3); }
           .anima-lora-widget .toolbar .btn-verify { background:linear-gradient(135deg,#5E6AD2,#6872D9); box-shadow:0 0 0 1px rgba(94,106,210,0.3),0 2px 12px rgba(94,106,210,0.2),inset 0 1px 0 0 rgba(255,255,255,0.15); }
@@ -746,10 +752,68 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const listEl = document.createElement("div");
       listEl.className = "list";
 
+      // 独立的卡片区高度调整柄：Chrome 右下角原生三角形属于 lora_syntax
+      // 文本框，不能调整下面的 LoRA 列表；这里用 Pointer Events 调整整个节点高度。
+      const listResizeEl = document.createElement("div");
+      listResizeEl.className = "list-resize-handle";
+      listResizeEl.setAttribute("role", "separator");
+      listResizeEl.setAttribute("aria-orientation", "horizontal");
+      listResizeEl.setAttribute("aria-valuemin", "180");
+      listResizeEl.setAttribute("aria-valuemax", "1600");
+      listResizeEl.tabIndex = 0;
+      listResizeEl.title = "拖动调整 LoRA 卡片区域高度；也可用键盘上下调整";
+      listResizeEl.innerHTML = "<span>⋮⋮</span><small>拖动调整 LoRA 卡片区域高度</small>";
+      let resizingList = false;
+      let resizeStartY = 0;
+      let resizeStartHeight = 0;
+      const applyListResize = (height) => {
+        const value = Math.max(180, Math.min(1600, Math.round(Number(height) || 180)));
+        const width = Math.max(280, Number(this.node.size?.[0]) || 420);
+        this.node.setSize?.([width, value]);
+        listResizeEl.setAttribute("aria-valuenow", String(value));
+      };
+      const endListResize = (event) => {
+        if (!resizingList) return;
+        resizingList = false;
+        try { listResizeEl.releasePointerCapture(event.pointerId); } catch {}
+        listResizeEl.classList.remove("is-dragging");
+        this.node.graph?.setDirtyCanvas?.(true, true);
+      };
+      listResizeEl.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        resizingList = true;
+        resizeStartY = event.clientY;
+        resizeStartHeight = Math.max(180, Number(this.node.size?.[1]) || 420);
+        listResizeEl.classList.add("is-dragging");
+        try { listResizeEl.setPointerCapture(event.pointerId); } catch {}
+      });
+      listResizeEl.addEventListener("pointermove", (event) => {
+        if (!resizingList) return;
+        event.preventDefault();
+        event.stopPropagation();
+        applyListResize(resizeStartHeight + event.clientY - resizeStartY);
+      });
+      listResizeEl.addEventListener("pointerup", endListResize);
+      listResizeEl.addEventListener("pointercancel", endListResize);
+      listResizeEl.addEventListener("lostpointercapture", () => {
+        if (!resizingList) return;
+        resizingList = false;
+        listResizeEl.classList.remove("is-dragging");
+      });
+      listResizeEl.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+        event.preventDefault();
+        event.stopPropagation();
+        const delta = event.key === "ArrowUp" ? -30 : 30;
+        applyListResize((Number(this.node.size?.[1]) || 420) + delta);
+      });
+      listResizeEl.setAttribute("aria-valuenow", String(Math.max(180, Number(this.node.size?.[1]) || 420)));
+
       const triggerEl = document.createElement("div");
       triggerEl.className = "trigger-box";
 
-      container.append(toolbar, statusEl, listEl, triggerEl);
+      container.append(toolbar, statusEl, listEl, listResizeEl, triggerEl);
 
       verifyBtn.onclick = () => this._verify(statusEl, listEl, triggerEl);
       extractBtn.onclick = () => this._extractAllTriggerWords(listEl);
