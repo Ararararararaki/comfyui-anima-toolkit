@@ -141,6 +141,15 @@ try:
     check("关闭 Prompt 输出仍保留图片输出", images == ["image"], str(images))
     check("关闭 Prompt 输出返回空字符串", prompts == [""], str(prompts))
     check("关闭 Prompt 输出元数据同步为空", disabled_meta["items"][0]["prompt"] is None and disabled_meta["prompt_output_enabled"] is False, str(disabled_meta))
+    enabled_output = {
+        "prompt_output_enabled": True,
+        "selections": [{**sel, "prompt": "restored prompt"}],
+        "image_selections": [{"image_url": sel["image_url"]}],
+    }
+    images, prompts, raw_meta = g.get_selected_data(json.dumps(enabled_output))
+    enabled_meta = json.loads(raw_meta)
+    check("重新开启 Prompt 输出恢复字符串", images == ["image"] and prompts == ["restored prompt"], str(prompts))
+    check("重新开启 Prompt 输出元数据同步为 true", enabled_meta["items"][0]["prompt"] == "restored prompt" and enabled_meta["prompt_output_enabled"] is True, str(enabled_meta))
 finally:
     adg.DanbooruGallery._download_image = download_image
 

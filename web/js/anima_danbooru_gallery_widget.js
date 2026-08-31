@@ -1,5 +1,6 @@
 import { app } from "/scripts/app.js";
 import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRatings } from "./anima_danbooru_filter_controls.js";
+import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
 (() => {
   const NODE_NAME = "DanbooruGallery";
@@ -88,6 +89,24 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       .split(/[、，,;；\n]/)
       .map((part) => part.trim())
       .filter(Boolean))];
+  }
+
+  // 排除标签内部允许空格（如 long hair），保存时转换为 Danbooru 的下划线格式。
+  // 只有逗号、顿号、分号和换行才表示多个排除标签。
+  function normalizeExcludeTag(value) {
+    const tag = String(value || "").trim().toLowerCase().replace(/[\s_]+/g, "_").replace(/^[-~]+/, "");
+    return /^[a-z0-9_]+$/.test(tag) ? tag : "";
+  }
+
+  function splitExcludeTags(value) {
+    return [...new Set(String(value || "")
+      .split(/[,，、;；\r\n]+/)
+      .map(normalizeExcludeTag)
+      .filter(Boolean))];
+  }
+
+  function displayExcludeTag(value) {
+    return String(value || "").replace(/_/g, " ");
   }
 
   function openPromptLibraryDB() {
@@ -182,7 +201,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         presets: Array.isArray(saved.presets) ? saved.presets : [],
         activeCategory: typeof saved.activeCategory === "string" ? saved.activeCategory : "",
         filters: normalizeFilters(saved.filters),
-        excludeTags: Array.isArray(saved.excludeTags) ? saved.excludeTags.map(String).filter((t) => /^[a-z0-9_]+$/.test(t)).slice(0, 8) : [],
+        excludeTags: Array.isArray(saved.excludeTags) ? [...new Set(saved.excludeTags.map(normalizeExcludeTag).filter(Boolean))].slice(0, 8) : [],
         promptOutput: normalizePromptOutputSettings(saved.promptOutput),
         promptOutputEnabled: saved.promptOutputEnabled !== false,
         promptExcludePattern: typeof saved.promptExcludePattern === "string" ? saved.promptExcludePattern.slice(0, 500) : "",
@@ -212,15 +231,29 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       this.selectionWidget = null;
       this.queryWidget = null;
       this.queryInput = null;
+      // 记录多选卡片的实际点击顺序；不能用 DOM 顺序代替，因为翻页/筛选后的显示顺序可能不同。
+      this.selectionOrder = [];
       this.dialogId = `anima-danbooru-dialog-${node.id}`;
       this.favorites = this.loadFavorites();
       this.translationCache = new Map();
       this.tooltip = null;
       this.domWidget = null;
+      this.domSizeSync = null;
+      this.pointerRecoveryHandler = null;
       this.filterControls = null;
       this.promptEdits = new Map();
       this.registered = false; // 是否已登录 Danbooru
       this.tagLimitValue = 2;  // 计数标签上限（后端按账号等级动态：Member=2 / Gold+=6，随 /account 刷新）
+      this.initialSearchTimer = null;
+      this.galleryBatchId = null;
+      this.galleryBatchState = null;
+      this.galleryBatchJobs = [];
+      this.galleryBatchTimer = null;
+      this.galleryBatchPollBusy = false;
+      this.galleryBatchPollFailures = 0;
+      this.galleryBatchBusy = false;
+      this.galleryBatchBtn = null;
+      this.galleryBatchPanel = null;
     }
 
     async refreshAccount() {
@@ -247,13 +280,18 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
     }
 
     applyGridHeight() {
-      const height = this.settings.gridHeight;
+      const height = Math.max(360, Math.min(1200, Number(this.settings.gridHeight) || 620));
+      this.settings.gridHeight = height;
+      if (this.domSizeSync) {
+        this.domSizeSync.setContentHeight(height);
+        return;
+      }
       if (this.root) {
         this.root.style.height = `${height}px`;
-        this.root.style.minHeight = `${height}px`;
-        this.root.style.maxHeight = `${height}px`;
+        this.root.style.minHeight = "0px";
+        this.root.style.maxHeight = "none";
       }
-      this.node.setSize?.([this.node.size?.[0] || 780, height + 95]);
+      this.node.setSize?.([Math.max(360, this.node.size?.[0] || 780), height + 95]);
       this.node.graph?.setDirtyCanvas?.(true, true);
     }
 
@@ -362,7 +400,23 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       return typeof this.tagLimitValue === "number" && this.tagLimitValue > 0 ? this.tagLimitValue : DANBOORU_TAG_LIMIT;
     }
 
-    async search({ resetPage = false, force = false, skipFuzzy = false } = {}) {
+    async readSearchResponse(response) {
+      // response.json() 遇到 BOM、代理残片或拼接响应时只给出模糊的 JSON.parse
+      // 错误，且无法区分“接口返回异常”和“搜索没有结果”。先完整读取文本，
+      // 清理 UTF-8 BOM，并把可重试的协议错误标记给 search()。
+      const body = (await response.text()).replace(/^\uFEFF/, "").trim();
+      try {
+        return JSON.parse(body);
+      } catch {
+        const error = new Error("D站接口返回了无效的 JSON 响应");
+        error.name = "InvalidJSONResponseError";
+        error.httpStatus = response.status;
+        error.contentType = response.headers.get("content-type") || "";
+        throw error;
+      }
+    }
+
+    async search({ resetPage = false, force = false, skipFuzzy = false, retryCount = 0 } = {}) {
       // 分类浏览模式下发起新搜索 = 回到普通搜索视图（分类只作用于本地浏览，搜索条件与分类无关）
       if (this.settings.activeCategory) {
         this.settings.activeCategory = "";
@@ -408,6 +462,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
 
       this.controller?.abort();
       this.controller = new AbortController();
+      const requestController = this.controller;
       const currentRequest = ++this.requestId;
       // 45s 兜底超时标记（声明在 try 外：catch 需要读它；若声明在 try 内，
       // 快速切换筛选触发 abort 竞态时 catch 会抛 ReferenceError 导致状态栏卡死）
@@ -421,17 +476,22 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           limit: String(this.settings.limit),
           force: force ? "1" : "0",
         });
-        const timer = setTimeout(() => { timedOut = true; this.controller?.abort(); }, 45000);
+        const timer = setTimeout(() => { timedOut = true; requestController.abort(); }, 45000);
         let response, data;
         try {
-          response = await fetch(`/anima/danbooru/posts?${parameters}`, { signal: this.controller.signal });
-          data = await response.json();
+          response = await fetch(`/anima/danbooru/posts?${parameters}`, { signal: requestController.signal });
+          data = await this.readSearchResponse(response);
         } finally {
           clearTimeout(timer);
         }
         if (typeof data?.tag_limit === "number") this.tagLimitValue = data.tag_limit;
         if (currentRequest !== this.requestId) return;
-        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        if (!response.ok) {
+          const error = new Error(data?.error || `HTTP ${response.status}`);
+          error.name = "DanbooruSearchHTTPError";
+          error.httpStatus = response.status;
+          throw error;
+        }
         const rawPosts = Array.isArray(data.posts) ? data.posts : [];
         // 本地排除过滤：排除标签不占 D站 计数槽（查询不含 -tag），拿到结果后按 tag_string 过滤
         const excludeTags = this.settings.excludeTags || [];
@@ -461,7 +521,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         const notices = [];
         if (Array.isArray(data.warnings) && data.warnings.length) notices.push(...data.warnings.map(String));
         if (this._droppedOrder) notices.push(`已自动移除「${ORDER_LABELS[this._droppedOrder] || this._droppedOrder}」排序，按最新显示（匿名最多 2 个计数标签）`);
-        const exclNotice = excludeTags.length ? `已排除 ${excludeTags.join("、")} ${excludedCount} 张` : "";
+          const exclNotice = excludeTags.length ? `已排除 ${excludeTags.map(displayExcludeTag).join("、")} ${excludedCount} 张` : "";
         this.setStatus(`${source}：${this.posts.length} 张 · 第 ${this.page} 页` + (exclNotice ? `（${exclNotice}）` : "") + (notices.length ? `（${notices.join("；")}）` : ""));
       } catch (error) {
         if (timedOut) {
@@ -472,6 +532,16 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         }
         if (error?.name === "AbortError") return;
         if (currentRequest !== this.requestId) return;
+        const retryable = error?.name === "InvalidJSONResponseError"
+          || error?.name === "TypeError"
+          || [502, 503, 504].includes(Number(error?.httpStatus));
+        if (retryable && retryCount < 2) {
+          const attempt = retryCount + 1;
+          this.setStatus(`首次搜索响应异常，正在自动重试（${attempt}/2）…`);
+          await new Promise((resolve) => setTimeout(resolve, 250 + retryCount * 500));
+          if (currentRequest !== this.requestId) return;
+          return this.search({ resetPage: false, force, skipFuzzy, retryCount: attempt });
+        }
         this.posts = [];
         this.renderPosts();
         this.setStatus(`搜索失败：${error?.message || "未知错误"}`, "error");
@@ -629,42 +699,353 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       } catch { /* 模糊接口失败则不打扰，保留原有“你是不是想搜”提示 */ }
     }
 
-    updateSelection() {
+    selectionFromCard(card) {
+      const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+      let promptGroups = {};
+      let tags = [];
+      try { promptGroups = JSON.parse(card.dataset.promptGroups || "{}"); } catch { promptGroups = {}; }
+      try { tags = card.dataset.tags ? JSON.parse(card.dataset.tags) : []; } catch { tags = []; }
       const promptOutputEnabled = this.settings.promptOutputEnabled !== false;
-      const imageSelections = [];
-      const selected = [...this.grid.querySelectorAll(".adg-card.is-selected")].map((card) => {
-        const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
-        let promptGroups = {};
-        try { promptGroups = JSON.parse(card.dataset.promptGroups || "{}"); } catch { promptGroups = {}; }
-        const selection = {
-          image_url: card.dataset.imageUrl || "",
-          prompt: promptOutputEnabled ? (card.dataset.prompt || "") : "",
-          post_id: card.dataset.postId || "",
-          tags: card.dataset.tags ? JSON.parse(card.dataset.tags) : [],
-          prompt_groups: promptGroups,
-          rating: card.dataset.rating || "",
-          score: num(card.dataset.score),
-          favcount: num(card.dataset.favcount),
-          width: num(card.dataset.width),
-          height: num(card.dataset.height),
-          file_ext: card.dataset.fileExt || "",
-          video: card.dataset.video === "1",
-          source_url: card.dataset.sourceUrl || "",
-        };
-        // 图片输出拥有独立的数据通道；Prompt 关闭时仍保留同一批图片 URL。
-        imageSelections.push({ image_url: selection.image_url });
-        return selection;
+      return {
+        image_url: card.dataset.imageUrl || "",
+        prompt: promptOutputEnabled ? (card.dataset.prompt || "") : "",
+        post_id: card.dataset.postId || "",
+        tags: Array.isArray(tags) ? tags : [],
+        prompt_groups: promptGroups,
+        rating: card.dataset.rating || "",
+        score: num(card.dataset.score),
+        favcount: num(card.dataset.favcount),
+        width: num(card.dataset.width),
+        height: num(card.dataset.height),
+        file_ext: card.dataset.fileExt || "",
+        video: card.dataset.video === "1",
+        source_url: card.dataset.sourceUrl || "",
+      };
+    }
+
+    selectionKey(card) {
+      return String(card?.dataset?.postId || card?.dataset?.imageUrl || "").trim();
+    }
+
+    rememberCardSelection(card, selected) {
+      const key = this.selectionKey(card);
+      if (!key) return;
+      this.selectionOrder = this.selectionOrder.filter((item) => item !== key);
+      if (selected) this.selectionOrder.push(key);
+    }
+
+    selectedGallerySelections() {
+      if (!this.grid) return [];
+      const selectedCards = [...this.grid.querySelectorAll(".adg-card.is-selected")];
+      const cardsByKey = new Map();
+      selectedCards.forEach((card) => {
+        const key = this.selectionKey(card);
+        if (key && !cardsByKey.has(key)) cardsByKey.set(key, card);
       });
+      // 老节点/恢复工作流时可能没有点击记录：保留 DOM 顺序作为一次性兜底，
+      // 之后这些卡片也会进入明确的顺序记录。
+      const orderedKeys = [];
+      for (const key of this.selectionOrder) {
+        if (cardsByKey.has(key) && !orderedKeys.includes(key)) orderedKeys.push(key);
+      }
+      for (const card of selectedCards) {
+        const key = this.selectionKey(card);
+        if (key && !orderedKeys.includes(key)) orderedKeys.push(key);
+      }
+      this.selectionOrder = orderedKeys;
+      return orderedKeys
+        .map((key) => this.selectionFromCard(cardsByKey.get(key)))
+        .filter((selection) => selection.image_url);
+    }
+
+    singleGallerySelectionData(selection) {
+      return JSON.stringify({
+        prompt_output_enabled: this.settings.promptOutputEnabled !== false,
+        prompt_settings: this.promptOutputSettings(),
+        selections: [selection],
+        image_selections: [{ image_url: selection.image_url }],
+      });
+    }
+
+    updateSelection() {
+      const selected = this.selectedGallerySelections();
+      const imageSelections = selected.map((selection) => ({ image_url: selection.image_url }));
+      const promptOutputEnabled = this.settings.promptOutputEnabled !== false;
       const value = JSON.stringify({ prompt_output_enabled: promptOutputEnabled, prompt_settings: this.promptOutputSettings(), selections: selected, image_selections: imageSelections });
       this.selectionWidget.value = value;
       this.selectionWidget.callback?.(value);
       this.node.graph?.change?.();
       this.setStatus(selected.length ? `已选择 ${selected.length} 张图片` : "已清除选择");
+      this.updateGalleryBatchControls(selected.length);
       // 批量归类按钮联动（选中 ≥2 张可用）
       if (this.batchCatBtn) {
         this.batchCatBtn.disabled = selected.length < 2;
         this.batchCatBtn.textContent = selected.length >= 2 ? `归类选中 ${selected.length} 张` : "归类选中";
       }
+    }
+
+    updateGalleryBatchControls(selectedCount = null) {
+      if (!this.galleryBatchBtn) return;
+      const count = selectedCount == null ? this.selectedGallerySelections().length : selectedCount;
+      const state = this.galleryBatchState?.state || "";
+      const active = state === "running" || state === "paused";
+      this.galleryBatchBtn.textContent = count >= 2 ? `批量入队 ${count}` : "批量入队";
+      this.galleryBatchBtn.disabled = this.galleryBatchBusy || count < 2 || active;
+      this.galleryBatchBtn.title = active
+        ? "当前已有画廊批次运行中，请先完成、暂停或取消"
+        : "将选中的画廊卡片按点击顺序拆成独立任务，逐张执行";
+    }
+
+    async readGalleryBatchResponse(response) {
+      const body = (await response.text()).replace(/^\uFEFF/, "").trim();
+      let data = null;
+      try {
+        data = JSON.parse(body);
+      } catch {
+        throw new Error("批量入队接口返回了无效响应");
+      }
+      if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+      return data;
+    }
+
+    async currentWorkflowTemplate() {
+      const comfyApp = window.comfyAPI?.app?.app || app;
+      if (comfyApp && typeof comfyApp.graphToPrompt === "function") {
+        try {
+          const result = await comfyApp.graphToPrompt();
+          const template = result?.output ?? result?.prompt ?? result;
+          if (template && typeof template === "object" && !Array.isArray(template)) return template;
+        } catch {}
+      }
+      const api = window.comfyAPI?.api?.api || window.api;
+      if (api && typeof api.getPrompt === "function") {
+        try {
+          const result = await api.getPrompt();
+          const template = result?.output ?? result?.prompt ?? result;
+          if (template && typeof template === "object" && !Array.isArray(template)) return template;
+        } catch {}
+      }
+      return null;
+    }
+
+    currentComfyClientId() {
+      const api = window.comfyAPI?.api?.api || window.api;
+      return String(api?.clientId || api?.client_id || window.name || "").trim();
+    }
+
+    async startGalleryBatch() {
+      if (this.galleryBatchBusy) return;
+      const selections = this.selectedGallerySelections();
+      if (selections.length < 2) {
+        this.setStatus("请先使用 Ctrl/⌘ + 点击选择至少两张画廊图片", "error");
+        return;
+      }
+      const state = this.galleryBatchState?.state || "";
+      if (state === "running" || state === "paused") {
+        this.setStatus("当前已有画廊批次正在运行，请先完成或取消", "error");
+        return;
+      }
+      this.galleryBatchBusy = true;
+      this.updateGalleryBatchControls(selections.length);
+      this.setGalleryBatchPanelMessage("正在读取当前工作流…");
+      try {
+        const template = await this.currentWorkflowTemplate();
+        if (!template) throw new Error("无法获取当前工作流模板，请先保存或打开一个工作流");
+        const nodeId = String(this.node.id || "");
+        const galleryNode = template[nodeId];
+        if (!galleryNode || typeof galleryNode !== "object") {
+          throw new Error("当前工作流模板中没有启用的 TK D站画廊节点");
+        }
+        if (!galleryNode.inputs || typeof galleryNode.inputs !== "object") galleryNode.inputs = {};
+        // 某些 ComfyUI 版本的 graphToPrompt 会省略 hidden 输入；补回当前字段，
+        // 让服务端能够安全校验并替换每个批次任务的 selection_data。
+        if (!("selection_data" in galleryNode.inputs)) galleryNode.inputs.selection_data = this.selectionWidget?.value || "{}";
+        if (!("selection_data" in galleryNode.inputs)) throw new Error("当前画廊节点缺少 selection_data 输入");
+        const jobs = selections.map((selection, index) => ({
+          group: `D站图片 #${selection.post_id || index + 1}`,
+          patches: [{
+            nodeId,
+            input: "selection_data",
+            value: this.singleGallerySelectionData(selection),
+          }],
+        }));
+        const response = await fetch("/anima/batch/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            template,
+            node_ref: nodeId,
+            jobs,
+        // 与 ComfyUI api.queuePrompt 使用同一客户端 ID，保证执行状态、
+            // PreviewImage 和其他 websocket 事件回到当前画布。
+            client_id: this.currentComfyClientId(),
+          }),
+        });
+        const data = await this.readGalleryBatchResponse(response);
+        if (!data?.ok || !data.batchId) throw new Error(data?.error || "批次创建失败");
+        this.galleryBatchId = String(data.batchId);
+        this.galleryBatchState = data.summary || { id: this.galleryBatchId, state: "running", total: jobs.length, counts: {} };
+        this.galleryBatchJobs = [];
+        this.galleryBatchPollFailures = 0;
+        this.renderGalleryBatchPanel();
+        this.setStatus(`已创建画廊批次：${jobs.length} 张图片将依次执行`, "success");
+        this.scheduleGalleryBatchPoll(0);
+      } catch (error) {
+        this.setGalleryBatchPanelMessage(`批量入队失败：${error?.message || "未知错误"}`, true);
+        this.setStatus(`批量入队失败：${error?.message || "未知错误"}`, "error");
+      } finally {
+        this.galleryBatchBusy = false;
+        this.updateGalleryBatchControls(selections.length);
+      }
+    }
+
+    setGalleryBatchPanelMessage(message, isError = false) {
+      if (!this.galleryBatchPanel) return;
+      this.galleryBatchPanel.hidden = false;
+      this.galleryBatchPanel.replaceChildren();
+      const line = document.createElement("div");
+      line.className = `adg-batch-message${isError ? " is-error" : ""}`;
+      line.textContent = message;
+      this.galleryBatchPanel.append(line);
+    }
+
+    stopGalleryBatchPolling() {
+      if (this.galleryBatchTimer) {
+        clearTimeout(this.galleryBatchTimer);
+        this.galleryBatchTimer = null;
+      }
+    }
+
+    scheduleGalleryBatchPoll(delay = 1200) {
+      this.stopGalleryBatchPolling();
+      if (!this.galleryBatchId) return;
+      this.galleryBatchTimer = setTimeout(() => {
+        this.galleryBatchTimer = null;
+        this.pollGalleryBatch();
+      }, delay);
+    }
+
+    async pollGalleryBatch() {
+      if (!this.galleryBatchId || this.galleryBatchPollBusy) return;
+      const batchId = this.galleryBatchId;
+      this.galleryBatchPollBusy = true;
+      try {
+        const response = await fetch(`/anima/batch/${encodeURIComponent(batchId)}/status`);
+        const data = await this.readGalleryBatchResponse(response);
+        if (batchId !== this.galleryBatchId) return;
+        this.galleryBatchPollFailures = 0;
+        this.galleryBatchState = data.summary || this.galleryBatchState;
+        this.galleryBatchJobs = Array.isArray(data.jobs) ? data.jobs : [];
+        this.renderGalleryBatchPanel();
+        const state = this.galleryBatchState?.state || data.batch?.state || "";
+        if (state === "running" || state === "paused") this.scheduleGalleryBatchPoll();
+        else this.stopGalleryBatchPolling();
+      } catch (error) {
+        if (batchId === this.galleryBatchId) {
+          this.galleryBatchPollFailures += 1;
+          const retrySeconds = Math.min(15, Math.max(1, 2 ** Math.min(this.galleryBatchPollFailures - 1, 4)));
+          // 保留最近一次成功状态，让用户仍能看到已完成/执行中的任务；
+          // 只把当前连接状态标记为重连中，不把网络断开当成批次失败。
+          if (this.galleryBatchState) {
+            this.renderGalleryBatchPanel();
+          } else {
+            this.setGalleryBatchPanelMessage(`正在连接批次状态接口…${error?.message || ""}`.trim());
+          }
+          this.setStatus(`批次状态暂时断开，${retrySeconds} 秒后自动重连；后端任务仍会继续`, "warning");
+          this.scheduleGalleryBatchPoll(retrySeconds * 1000);
+        }
+      } finally {
+        this.galleryBatchPollBusy = false;
+      }
+    }
+
+    async galleryBatchAction(action, index = null) {
+      if (!this.galleryBatchId) return;
+      const batchId = this.galleryBatchId;
+      try {
+        const response = await fetch(`/anima/batch/${encodeURIComponent(batchId)}/${action}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: index == null ? "{}" : JSON.stringify({ idx: index }),
+        });
+        await this.readGalleryBatchResponse(response);
+        await this.pollGalleryBatch();
+      } catch (error) {
+        this.setGalleryBatchPanelMessage(`批次操作失败：${error?.message || "未知错误"}`, true);
+      }
+    }
+
+    renderGalleryBatchPanel() {
+      if (!this.galleryBatchPanel) return;
+      const state = this.galleryBatchState;
+      if (!this.galleryBatchId || !state) {
+        this.galleryBatchPanel.hidden = true;
+        return;
+      }
+      this.galleryBatchPanel.hidden = false;
+      this.galleryBatchPanel.replaceChildren();
+      const counts = state.counts || {};
+      const total = Number(state.total) || this.galleryBatchJobs.length;
+      const done = Number(counts.done) || 0;
+      const running = Number(counts.running) || 0;
+      const waiting = (Number(counts.pending) || 0) + (Number(counts.queued) || 0) + (Number(counts.retry) || 0);
+      const failed = (Number(counts.failed) || 0) + (Number(counts.interrupted) || 0);
+      const statusLine = document.createElement("div");
+      statusLine.className = "adg-batch-statusline";
+      const reconnecting = this.galleryBatchPollFailures > 0;
+      statusLine.textContent = `批次 ${this.galleryBatchId.slice(-8)} · 完成 ${done}/${total} · 执行 ${running} · 等待 ${waiting}${failed ? ` · 失败 ${failed}` : ""}${reconnecting ? ` · 状态重连中（第 ${this.galleryBatchPollFailures} 次）` : ""}`;
+      statusLine.classList.toggle("is-reconnecting", reconnecting);
+      this.galleryBatchPanel.append(statusLine);
+      const controls = document.createElement("div");
+      controls.className = "adg-batch-controls";
+      const stateName = state.state || "";
+      const addControl = (label, action, title) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = label;
+        button.title = title;
+        button.onclick = () => this.galleryBatchAction(action);
+        controls.append(button);
+      };
+      if (stateName === "running") addControl("暂停", "pause", "暂停提交后续任务，当前任务自然完成");
+      if (stateName === "paused") addControl("继续", "resume", "继续执行未完成任务");
+      if (stateName !== "finished" && stateName !== "cancelled") addControl("取消", "cancel", "取消未执行任务");
+      if (controls.childElementCount) this.galleryBatchPanel.append(controls);
+      const labels = { pending: "等待", queued: "已入队", running: "执行中", done: "完成", failed: "失败", skipped: "跳过", retry: "重试中", interrupted: "中断" };
+      const jobs = [...this.galleryBatchJobs].sort((a, b) => Number(a.idx || 0) - Number(b.idx || 0));
+      if (jobs.length) {
+        const list = document.createElement("div");
+        list.className = "adg-batch-jobs";
+        for (const job of jobs) {
+          const row = document.createElement("div");
+          row.className = `adg-batch-job adg-batch-job-${job.status || "pending"}`;
+          const text = document.createElement("span");
+          text.textContent = `#${Number(job.idx || 0) + 1} ${job.group || "D站图片"} · ${labels[job.status] || job.status || "等待"}${job.error ? ` · ${String(job.error).slice(0, 100)}` : ""}`;
+          row.append(text);
+          if (["failed", "interrupted", "skipped"].includes(job.status)) {
+            const retry = document.createElement("button");
+            retry.type = "button";
+            retry.textContent = "重试";
+            retry.title = "重新执行该图片任务";
+            retry.onclick = () => this.galleryBatchAction("retry", Number(job.idx));
+            row.append(retry);
+          }
+          list.append(row);
+        }
+        this.galleryBatchPanel.append(list);
+      }
+      this.updateGalleryBatchControls();
+    }
+
+    setPromptOutputEnabled(enabled) {
+      const next = enabled !== false;
+      this.settings.promptOutputEnabled = next;
+      this.saveSettings();
+      this.updatePromptOutputButton();
+      // 重新写入 selection_data，确保 ComfyUI 后端不会继续使用关闭时的空 Prompt。
+      this.updateSelection();
+      this.node.graph?.setDirtyCanvas?.(true, true);
+      return next;
     }
 
     promptOutputSettings() {
@@ -767,10 +1148,11 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       return Object.fromEntries(unique.map((part) => [part, byKey.get(promptCardKey(part)) || ""]));
     }
 
-    renderBilingualPromptEditor(container, parts, translations, { prefix = "adg-save-bilingual", onInput } = {}) {
+    renderBilingualPromptEditor(container, parts, translations, { prefix = "adg-save-bilingual", onInput, excluded = [] } = {}) {
       container.replaceChildren();
       const unique = splitPromptParts(parts.join(", "));
       const translationMap = new Map(Object.entries(translations || {}).map(([key, value]) => [promptCardKey(key), String(value || "").trim()]));
+      const excludedKeys = new Set((excluded || []).map(promptCardKey));
       const header = document.createElement("div");
       header.className = `${prefix}-header`;
       const englishHeader = document.createElement("span");
@@ -781,12 +1163,27 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       const list = document.createElement("div");
       list.className = `${prefix}-list`;
       const rows = [];
+      let updateSelectionTools = () => {};
+      const readEntries = (filter = () => true) => rows
+        .filter(filter)
+        .map(({ en, zh }) => ({ en: en.value.trim(), zh: zh.value.trim() }))
+        .filter(({ en }) => en);
       const editor = {
         rows,
         read: () => {
-          const entries = rows
-            .map(({ en, zh }) => ({ en: en.value.trim(), zh: zh.value.trim() }))
-            .filter(({ en }) => en);
+          const entries = readEntries(({ excluded: isExcluded }) => !isExcluded);
+          const allEntries = readEntries();
+          return {
+            parts: entries.map(({ en }) => en),
+            prompt: entries.map(({ en }) => en).join(", "),
+            translations: Object.fromEntries(entries.map(({ en, zh }) => [en, zh])),
+            allParts: allEntries.map(({ en }) => en),
+            allTranslations: Object.fromEntries(allEntries.map(({ en, zh }) => [en, zh])),
+            excludedParts: rows.filter(({ excluded: isExcluded }) => isExcluded).map(({ en }) => en.value.trim()).filter(Boolean),
+          };
+        },
+        readSelected: () => {
+          const entries = readEntries(({ select, excluded: isExcluded }) => select.checked && !isExcluded);
           return {
             parts: entries.map(({ en }) => en),
             prompt: entries.map(({ en }) => en).join(", "),
@@ -794,9 +1191,75 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           };
         },
       };
+      const selectionTools = document.createElement("div");
+      selectionTools.className = `${prefix}-selection-tools`;
+      const selectAllLabel = document.createElement("label");
+      selectAllLabel.className = `${prefix}-select-all`;
+      const selectAll = document.createElement("input");
+      selectAll.type = "checkbox";
+      selectAll.className = `${prefix}-select-all-input`;
+      const selectAllText = document.createElement("span");
+      selectAllText.textContent = "全选";
+      selectAllLabel.append(selectAll, selectAllText);
+      const clearSelection = document.createElement("button");
+      clearSelection.type = "button";
+      clearSelection.textContent = "清除选择";
+      const selectionCount = document.createElement("span");
+      selectionCount.className = `${prefix}-selection-count`;
+      selectionCount.textContent = "未选择";
+      const copySelected = document.createElement("button");
+      copySelected.type = "button";
+      copySelected.textContent = "复制选中";
+      copySelected.title = "复制选中的 Prompt";
+      copySelected.setAttribute("aria-label", "复制选中的 Prompt");
+      copySelected.disabled = true;
+      selectionTools.append(selectAllLabel, clearSelection, selectionCount, copySelected);
+      updateSelectionTools = () => {
+        const activeRows = rows.filter(({ excluded: isExcluded }) => !isExcluded);
+        const selectedCount = activeRows.filter(({ select }) => select.checked).length;
+        const clearedCount = rows.length - activeRows.length;
+        selectionCount.textContent = `${selectedCount ? `已选 ${selectedCount} 个` : "未选择"}${clearedCount ? ` · 已清除 ${clearedCount} 个（不输出）` : ""}`;
+        copySelected.disabled = selectedCount === 0;
+        selectAll.checked = activeRows.length > 0 && selectedCount === activeRows.length;
+        selectAll.indeterminate = selectedCount > 0 && selectedCount < activeRows.length;
+        rows.forEach(({ card, select, excluded: isExcluded }) => {
+          card.classList.toggle("is-selected", !isExcluded && select.checked);
+          card.classList.toggle("is-cleared", isExcluded);
+        });
+      };
+      selectAll.addEventListener("change", () => {
+        rows.forEach(({ select, excluded: isExcluded }) => { select.checked = !isExcluded && selectAll.checked; });
+        updateSelectionTools();
+      });
+      clearSelection.addEventListener("click", () => {
+        rows.forEach(({ select }) => { select.checked = false; });
+        updateSelectionTools();
+      });
+      copySelected.addEventListener("click", async () => {
+        const value = editor.readSelected().prompt;
+        if (!value) {
+          this.setStatus("请先选择要复制的 Prompt", "error");
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(value);
+        } catch {
+          const fallback = document.createElement("textarea");
+          fallback.value = value;
+          document.body.append(fallback);
+          fallback.select();
+          document.execCommand("copy");
+          fallback.remove();
+        }
+        this.setStatus(`已复制 ${editor.readSelected().parts.length} 个 Prompt`);
+      });
       for (const part of unique) {
         const row = document.createElement("div");
         row.className = `${prefix}-card`;
+        const select = document.createElement("input");
+        select.type = "checkbox";
+        select.className = `${prefix}-select`;
+        select.setAttribute("aria-label", `选择 Prompt：${part}`);
         const en = document.createElement("input");
         en.type = "text";
         en.className = `${prefix}-en`;
@@ -808,14 +1271,48 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         zh.value = translationMap.get(promptCardKey(part)) || "";
         zh.placeholder = "待翻译，可手动修改";
         zh.setAttribute("aria-label", `中文翻译：${part}`);
-        const rowState = { en, zh };
+        const fields = document.createElement("div");
+        fields.className = `${prefix}-fields`;
+        fields.append(en, zh);
+        const clearState = document.createElement("span");
+        clearState.className = `${prefix}-clear-state`;
+        clearState.textContent = "已清除 · 不输出";
+        fields.append(clearState);
+        const clearButton = document.createElement("button");
+        clearButton.type = "button";
+        clearButton.className = `${prefix}-clear`;
+        clearButton.setAttribute("aria-label", `清除提示词：${part}`);
+        const rowState = { card: row, select, en, zh, clearButton, clearState, excluded: excludedKeys.has(promptCardKey(part)) };
+        const syncClearState = (notify = false) => {
+          const isExcluded = rowState.excluded;
+          row.classList.toggle("is-cleared", isExcluded);
+          clearState.hidden = !isExcluded;
+          clearButton.textContent = isExcluded ? "恢复" : "清除";
+          clearButton.title = isExcluded ? "恢复该提示词并允许输出" : "清除该提示词；应用后不会输出";
+          clearButton.setAttribute("aria-label", isExcluded ? `恢复提示词：${en.value}` : `清除提示词：${en.value}`);
+          select.disabled = isExcluded;
+          en.disabled = isExcluded;
+          zh.disabled = isExcluded;
+          if (isExcluded) select.checked = false;
+          updateSelectionTools();
+          if (notify) onInput?.(editor, "clear", rowState);
+        };
+        clearButton.onclick = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          rowState.excluded = !rowState.excluded;
+          syncClearState(true);
+        };
         rows.push(rowState);
+        select.addEventListener("change", updateSelectionTools);
         en.addEventListener("input", () => onInput?.(editor, "en", rowState));
         zh.addEventListener("input", () => onInput?.(editor, "zh", rowState));
-        row.append(en, zh);
+        row.append(select, fields, clearButton);
         list.append(row);
+        syncClearState();
       }
-      container.append(header, list);
+      container.append(header, list, selectionTools);
+      updateSelectionTools();
       if (!unique.length) {
         const empty = document.createElement("div");
         empty.className = `${prefix}-empty`;
@@ -844,10 +1341,12 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         card.dataset.imageUrl = imageUrl;
         const promptResult = this.buildPromptForPost(post);
         const promptEdit = this.promptEdits.get(String(post.id || ""));
-        const promptText = promptEdit?.prompt || promptResult.prompt;
-        const promptTags = Array.isArray(promptEdit?.tags) ? promptEdit.tags : promptResult.tags;
+        const promptText = promptEdit ? String(promptEdit.prompt || "") : promptResult.prompt;
+        const promptTags = promptEdit && Array.isArray(promptEdit.tags) ? promptEdit.tags : promptResult.tags;
         card.dataset.prompt = promptText;
         card.dataset.tags = JSON.stringify(promptTags);
+        card.dataset.promptParts = JSON.stringify(promptEdit?.allParts || splitPromptParts(promptText));
+        card.dataset.promptExcluded = JSON.stringify(promptEdit?.excluded || []);
         card.dataset.promptTranslations = JSON.stringify(promptEdit?.translations || {});
         card.dataset.promptGroups = JSON.stringify(promptResult.groups);
         card.dataset.postId = String(post.id || "");
@@ -891,13 +1390,16 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
             // Ctrl/Shift + 点击：切换该卡选中状态（不清其他）→ 多选用于批量归类/批量选择
             card.classList.toggle("is-selected", !wasSelected);
             selectButton.setAttribute("aria-pressed", !wasSelected ? "true" : "false");
+            this.rememberCardSelection(card, !wasSelected);
           } else {
             this.grid.querySelectorAll(".adg-card.is-selected").forEach((other) => {
               other.classList.remove("is-selected");
               other.querySelector(".adg-card-select")?.setAttribute("aria-pressed", "false");
             });
+            this.selectionOrder = [];
             card.classList.toggle("is-selected", !wasSelected);
             selectButton.setAttribute("aria-pressed", !wasSelected ? "true" : "false");
+            this.rememberCardSelection(card, !wasSelected);
           }
           this.updateSelection();
         });
@@ -1069,7 +1571,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         escapeBrackets: current.escapeBrackets,
       });
       const savedEdit = this.promptEdits.get(String(post.id || ""));
-      promptInput.value = savedEdit?.prompt || this.buildPromptForPost(post, selectedSettings(), excludeInput.value).prompt;
+      promptInput.value = savedEdit ? String(savedEdit.prompt || "") : this.buildPromptForPost(post, selectedSettings(), excludeInput.value).prompt;
       content.append(promptContentTitle, promptInput);
 
       const previewTitle = document.createElement("div");
@@ -1107,7 +1609,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           onInput: (editor, field) => {
             captureManualTranslations();
             promptDirty = true;
-            if (field === "en") promptInput.value = editor.read().prompt;
+            if (field === "en" || field === "clear") promptInput.value = editor.read().prompt;
           },
         });
       };
@@ -1153,8 +1655,9 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
               replaceUnderscores: current.replaceUnderscores,
               escapeBrackets: current.escapeBrackets,
             }, excludePattern);
+            const previewResult = previewEditor?.read();
             const promptText = (promptDirty ? promptInput.value : generated.prompt).trim();
-            if (!promptText) {
+            if (!promptText && !previewResult?.allParts?.length) {
               this.setStatus("排除规则过滤后没有可保存的 Prompt", "error");
               promptInput.focus();
               return false;
@@ -1165,7 +1668,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
               excludePattern,
               title: titleInput.value.trim() || defaultSaveTitle,
               promptText,
-              tagTranslations: previewEditor?.read().translations || {},
+              tagTranslations: previewResult?.translations || {},
               promptOutput: {
                 categories: selectedCategories,
                 replaceUnderscores: current.replaceUnderscores,
@@ -1409,17 +1912,28 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
     }
 
     async openPromptEditor(card, post) {
-      const prompt = card.dataset.prompt || this.postPrompt(post);
-      const parts = splitPromptParts(prompt);
+      const prompt = card.dataset.prompt ?? this.postPrompt(post);
+      const savedEdit = this.promptEdits.get(String(post.id || ""));
+      let storedParts = Array.isArray(savedEdit?.allParts) ? savedEdit.allParts : [];
+      let storedExcluded = Array.isArray(savedEdit?.excluded) ? savedEdit.excluded : [];
+      let storedTranslations = savedEdit?.translations;
+      try {
+        if (!storedParts.length) storedParts = JSON.parse(card.dataset.promptParts || "[]");
+        if (!storedExcluded.length) storedExcluded = JSON.parse(card.dataset.promptExcluded || "[]");
+        if (!storedTranslations) storedTranslations = JSON.parse(card.dataset.promptTranslations || "{}");
+      } catch {
+        // 兼容旧卡片数据：下方使用当前 Prompt 作为完整可编辑内容。
+      }
+      const parts = storedParts.length ? storedParts : splitPromptParts(prompt);
       let savedTranslations = {};
-      try { savedTranslations = JSON.parse(card.dataset.promptTranslations || "{}"); } catch { savedTranslations = {}; }
+      savedTranslations = storedTranslations && typeof storedTranslations === "object" ? storedTranslations : {};
       const fetchedTranslations = await this.ensurePromptTranslations(parts);
       const translations = { ...fetchedTranslations, ...savedTranslations };
       const content = document.createElement("div");
       content.className = "adg-prompt-editor";
       const intro = document.createElement("div");
       intro.className = "adg-dialog-intro";
-      intro.textContent = "每行对应一个提示词；修改英文会更新 Prompt，修改中文会更新对应翻译。";
+      intro.textContent = "每行对应一个提示词；修改英文会更新 Prompt，修改中文会更新翻译。点击卡片右侧「清除」可保留记录但不输出，应用后生效。";
       const groupSummary = document.createElement("div");
       groupSummary.className = "adg-prompt-groups";
       let promptGroups = {};
@@ -1453,6 +1967,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       bilingualEditor.className = "adg-prompt-bilingual-editor";
       const editor = this.renderBilingualPromptEditor(bilingualEditor, parts, translations, {
         prefix: "adg-prompt-bilingual",
+        excluded: storedExcluded,
       });
       content.append(intro, groupSummary, bilingualEditor, copy);
       this.openDialog({
@@ -1460,17 +1975,31 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         content,
         onApply: () => {
           const result = editor.read();
-          if (!result.prompt) {
+          if (!result.prompt && !result.allParts.length) {
             this.setStatus("Prompt 不能为空", "error");
             return false;
           }
-          const edit = { prompt: result.prompt, tags: result.parts, translations: result.translations };
+          const edit = {
+            prompt: result.prompt,
+            tags: result.parts,
+            translations: result.allTranslations,
+            allParts: result.allParts,
+            excluded: result.excludedParts,
+          };
           this.promptEdits.set(String(post.id || ""), edit);
           card.dataset.prompt = edit.prompt;
           card.dataset.tags = JSON.stringify(edit.tags);
+          card.dataset.promptParts = JSON.stringify(edit.allParts);
+          card.dataset.promptExcluded = JSON.stringify(edit.excluded);
           card.dataset.promptTranslations = JSON.stringify(edit.translations);
-          if (card.classList.contains("is-selected")) this.updateSelection();
-          this.setStatus("Prompt 已更新");
+          let groups = {};
+          try { groups = JSON.parse(card.dataset.promptGroups || "{}"); } catch { groups = {}; }
+          const excludedKeys = new Set(edit.excluded.map(promptCardKey));
+          card.dataset.promptGroups = JSON.stringify(Object.fromEntries(
+            PROMPT_CATEGORY_ORDER.map((category) => [category, (groups[category] || []).filter((tag) => !excludedKeys.has(promptCardKey(tag)))])
+          ));
+          this.updateSelection();
+          this.setStatus(edit.excluded.length ? `Prompt 已更新，已清除 ${edit.excluded.length} 个词条（不输出）` : "Prompt 已更新");
         },
       });
     }
@@ -1884,10 +2413,12 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       exclTitle.textContent = "排除标签（搜索不含这些）";
       const exclTip = document.createElement("div");
       exclTip.className = "adg-settings-help";
-      exclTip.textContent = "不占计数标签名额，可任意添加；搜索后在本地过滤（每页可能略少于设定张数）。例：填 furry → 结果不含 furry";
-      const exclInput = document.createElement("input");
+      exclTip.textContent = "不占计数标签名额，可任意添加；标签内部空格会转为下划线，逗号/换行才会分隔多个标签。例：long hair → long_hair";
+      const exclInput = document.createElement("textarea");
       exclInput.className = "adg-settings-input";
-      exclInput.placeholder = "输入标签，空格/逗号分隔，如：furry scat";
+      exclInput.rows = 2;
+      exclInput.wrap = "off";
+      exclInput.placeholder = "输入标签，逗号/换行分隔，如：long hair, censor";
       const exclList = document.createElement("div");
       exclList.className = "adg-exclude-list";
       const renderExcl = () => {
@@ -1903,7 +2434,7 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
           const chip = document.createElement("button");
           chip.type = "button";
           chip.className = "adg-exclude-chip";
-          chip.textContent = `− ${tag} ✕`;
+          chip.textContent = `− ${displayExcludeTag(tag)} ✕`;
           chip.title = "点击移除";
           chip.onclick = () => {
             this.settings.excludeTags = this.settings.excludeTags.filter((t) => t !== tag);
@@ -1916,17 +2447,14 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         }
       };
       const addExcl = () => {
-        const tags = exclInput.value.trim().toLowerCase()
-          .split(/[\s,，、]+/)
-          .map((t) => t.replace(/^[-~]+/, ""))
-          .filter((t) => /^[a-z0-9_]+$/.test(t));
+        const tags = splitExcludeTags(exclInput.value);
         if (!tags.length) return;
         const merged = [...new Set([...this.settings.excludeTags, ...tags])].slice(0, 8);
         this.settings.excludeTags = merged;
         this.saveSettings();
         exclInput.value = "";
         renderExcl();
-        this.setStatus(`已添加排除标签：${tags.join("、")}（搜索自动加 - 前缀）`, "success");
+        this.setStatus(`已添加排除标签：${tags.map(displayExcludeTag).join("、")}（本地过滤）`, "success");
         this.search({ resetPage: true });
       };
       const exclAdd = document.createElement("button");
@@ -2085,13 +2613,13 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       addAction("设置", "设置画廊显示、排除标签和 Danbooru 登录", () => this.openSettings(), mainGroup);
       addAction("Prompt设置", "控制 Prompt 输出类别与格式", () => this.openPromptSettings(), mainGroup);
       this.promptOutputBtn = addAction("", "", () => {
-        this.settings.promptOutputEnabled = this.settings.promptOutputEnabled === false;
-        this.saveSettings();
-        this.updatePromptOutputButton();
-        this.updateSelection();
-        this.setStatus(this.settings.promptOutputEnabled ? "Prompt 输出已开启" : "Prompt 输出已关闭：下游将收到空 Prompt", "success");
+        const enabled = this.setPromptOutputEnabled(this.settings.promptOutputEnabled === false);
+        this.setStatus(enabled ? "Prompt 输出已开启" : "Prompt 输出已关闭：下游将收到空 Prompt", "success");
       }, mainGroup);
       this.updatePromptOutputButton();
+      this.galleryBatchBtn = addAction("批量入队", "将选中的画廊卡片按显示顺序拆成独立任务，逐张执行", () => this.startGalleryBatch(), mainGroup);
+      this.galleryBatchBtn.className = "adg-batch-queue";
+      this.galleryBatchBtn.disabled = true;
       this.filterControls = new GalleryFilterControls({
         readSettings: () => this.settings,
         commit: (patch, { search = false, render = false } = {}) => {
@@ -2144,40 +2672,86 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
       };
       presetGroup.append(preset);
       addAction("预设管理", "保存、应用或删除搜索预设", () => this.openPresetManager(), presetGroup);
-      const pagination = document.createElement("div"); pagination.className = "adg-pagination"; toolbar.append(pagination); this.pagination = pagination;
+      const paginationRow = document.createElement("div");
+      paginationRow.className = "adg-pagination-row";
+      const pagination = document.createElement("div");
+      pagination.className = "adg-pagination";
+      paginationRow.append(pagination);
+      this.pagination = pagination;
       const info = document.createElement("div");
       info.className = "adg-info";
       info.textContent = "图片操作在卡片悬浮工具条。";
       const status = document.createElement("div");
       status.className = "adg-status";
+      const galleryBatchPanel = document.createElement("div");
+      galleryBatchPanel.className = "adg-batch-panel";
+      galleryBatchPanel.hidden = true;
+      this.galleryBatchPanel = galleryBatchPanel;
       const grid = document.createElement("div");
       grid.className = "adg-grid";
       const suggestions = document.createElement('div'); suggestions.className = 'adg-suggestions'; suggestions.style.display = 'none'; this.suggestions = suggestions;
       document.body.append(suggestions);
       window.addEventListener("resize", this.positionSuggestionsHandler);
       document.addEventListener("scroll", this.positionSuggestionsHandler, true);
-      root.append(queryRow, toolbar, info, status, grid);
+      root.append(queryRow, toolbar, paginationRow, info, status, galleryBatchPanel, grid);
       this.root = root;
       this.status = status;
       this.grid = grid;
       this.applyGridHeight();
+      // Chrome 下新 ComfyUI 节点激活层可能先命中 node-body，导致 DOM
+      // 控件“看得见但鼠标点不到”。只从同一节点的命中栈中恢复控件点击，
+      // 不穿透到被其他节点遮住的画廊，避免误触别的节点。
+      const recoverPointer = (event) => {
+        if (!this.root?.isConnected) return;
+        const stack = document.elementsFromPoint(event.clientX, event.clientY);
+        const candidate = stack
+          .map((element) => element.closest?.("button, input, select, textarea, [role='button']"))
+          .find((element) => element && this.root.contains(element));
+        if (!candidate || event.target === candidate || candidate.contains(event.target)) return;
+        const topNode = stack.find((element) => element.matches?.("[data-node-id]"))?.dataset.nodeId;
+        const candidateNode = candidate.closest?.("[data-node-id]")?.dataset.nodeId;
+        if (topNode && candidateNode && topNode !== candidateNode) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        requestAnimationFrame(() => {
+          if (candidate.isConnected) candidate.click();
+        });
+      };
+      this.pointerRecoveryHandler = recoverPointer;
+      window.addEventListener("mouseup", recoverPointer, true);
       const initialQuery = this.settings.lastQuery || "1girl";
       this.setQuery(initialQuery);
       this.setStatus("正在自动加载图片…");
       this.renderPosts();
       this.renderPagination();
       this.refreshAccount(); // 异步刷新登录状态（标签上限 2/6），不阻塞初始搜索
-      setTimeout(() => this.search({ resetPage: true }), 0);
+      this.initialSearchTimer = setTimeout(() => {
+        this.initialSearchTimer = null;
+        // addDOMWidget 的挂载可能晚于 build()，但 root 已经是当前节点的权威界面；
+        // 不以 isConnected 为条件，避免 Chrome 首次绘制较慢时直接漏掉自动搜索。
+        if (this.root) this.search({ resetPage: true });
+      }, 120);
       return root;
     }
 
     dispose() {
       _danQueryFocusTargets.delete(this);
       this.controller?.abort();
+      if (this.initialSearchTimer) {
+        clearTimeout(this.initialSearchTimer);
+        this.initialSearchTimer = null;
+      }
+      this.stopGalleryBatchPolling();
+      this.domSizeSync?.dispose();
+      this.domSizeSync = null;
       this.filterControls?.destroy();
       this.hidePromptTooltip();
       window.removeEventListener("resize", this.positionSuggestionsHandler);
       document.removeEventListener("scroll", this.positionSuggestionsHandler, true);
+      if (this.pointerRecoveryHandler) {
+        window.removeEventListener("mouseup", this.pointerRecoveryHandler, true);
+        this.pointerRecoveryHandler = null;
+      }
       this.suggestions?.remove();
       this.removeDialog();
     }
@@ -2215,8 +2789,20 @@ import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRati
         ui.queryWidget = { value: ui.settings.lastQuery };
         const element = ui.build();
         const domWidget = this.addDOMWidget?.("anima_danbooru_gallery", "custom", element, { serialize: false, hideOnZoom: false });
-        if (domWidget) domWidget.computeSize = (width) => [Math.max(360, width || 760), 620];
-        this.setSize?.([780, 700]);
+        ui.domWidget = domWidget;
+        ui.domSizeSync = installDOMWidgetSizeSync({
+          node: this,
+          domWidget,
+          element,
+          minHeight: 360,
+          maxHeight: 1200,
+          initialContentHeight: ui.settings.gridHeight,
+          nodeChromeHeight: 95,
+          onContentHeight: (height, { commit }) => {
+            ui.settings.gridHeight = height;
+            if (commit) ui.saveSettings();
+          },
+        });
         const originalRemoved = this.onRemoved;
         this.onRemoved = function () {
           this._animaDanbooruGallery?.dispose();

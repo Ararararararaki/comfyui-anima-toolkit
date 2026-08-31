@@ -1,5 +1,5 @@
 // Anima Camera Control 节点前端 Widget
-// 便捷机位控制：一键预设 + 2D 罗盘（方位）+ 俯仰/景别滑杆 + 实时预览
+// 便捷机位控制：一键预设 + 3D 球面轨道（方位/俯仰）+ 景别滑杆 + 实时预览
 // 算法与后端 anima_camera_control.py（忠实复刻 BSK）保持一致。
 (function () {
   const NODE_NAME = "TK Camera Control";
@@ -320,15 +320,19 @@
   }
 
   // ── 3D 空间画布数学：目标在原点，被控相机在球坐标 (r, az, el) ──
-  // 较低、更远的观察者 + 更宽视场：上、下半球都留在画布内，拖拽范围可见。
+  // 这里的 3D 只负责“看起来像空间”；输入仍然使用 BSK 的二维坐标模型。
+  // 这样画面有空间方位，鼠标映射却不会受到遮挡、背面交点或浏览器缩放影响。
   const CAM_EYE = [3.4, 1.5, 4.8];   // 观察者（画布视角）位置
   const CAM_UP = [0, 1, 0];
   const CAM_FOV = 52 * Math.PI / 180;
-  const CAMERA_POINT_HIT_RADIUS = 24;
-  const FINE_DRAG_AZIMUTH_GAIN = 0.55;   // 按住相机点：低灵敏度微调
-  const FINE_DRAG_ELEVATION_GAIN = 0.45;
-  const NORMAL_AZIMUTH_GAIN = 1.6;       // 普通拖拽：横向拖满画布宽≈288°（提高灵敏度）
-  const NORMAL_ELEVATION_GAIN = 1.1;     // 纵向拖满画布高≈99°
+  const CAMERA_POINT_HIT_RADIUS = 18;
+  const CAMERA_VIEW_RADIUS = 2.4;
+  const CAMERA_DRAG_MODES = {
+    relative: { label: "相对", hint: "相对拖拽：沿用 BSK 的鼠标增量，连续旋转机位。" },
+    absolute: { label: "绝对", hint: "绝对拖拽：画布位置直接对应方位和俯仰，左右边缘可到后方。" },
+    hybrid: { label: "融合", hint: "融合拖拽：按下先定位，移动后按增量连续调整。" },
+  };
+  const CAMERA_DRAG_MODE_KEY = "anima-camera-drag-mode";
   function v3sub(a, b) { return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]; }
   function v3cross(a, b) { return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]; }
   function v3norm(v) { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0]/l, v[1]/l, v[2]/l]; }
@@ -349,23 +353,9 @@
     const f = cam3DFocal(H);
     return [W/2 - (pc[0] / -pc[2]) * f, H/2 - (pc[1] / -pc[2]) * f];
   }
-  // 屏幕 → 世界射线与球面（半径 r）求交，返回交点或 null
-  function cam3DRay(sx, sy, W, H, r) {
-    const zc = v3norm(v3sub(CAM_EYE, [0, 0, 0]));
-    const xc = v3norm(v3cross(CAM_UP, zc));
-    const yc = v3cross(zc, xc);
-    const f = cam3DFocal(H);
-    const ndcX = (sx - W/2) / f, ndcY = (H/2 - sy) / f;
-    const d = v3norm([xc[0]*ndcX + yc[0]*ndcY - zc[0], xc[1]*ndcX + yc[1]*ndcY - zc[1], xc[2]*ndcX + yc[2]*ndcY - zc[2]]);
-    const b = v3dot(CAM_EYE, d);
-    const c = v3dot(CAM_EYE, CAM_EYE) - r * r;
-    const disc = b * b - c;
-    if (disc < 0) return null;
-    const t = -b - Math.sqrt(disc);
-    if (t <= 0) return null;
-    return [CAM_EYE[0]+t*d[0], CAM_EYE[1]+t*d[1], CAM_EYE[2]+t*d[2]];
+  function wrapAzimuth(value) {
+    return ((parseFloat(value) + 1) % 2 + 2) % 2 - 1;
   }
-  function cam3DDist(pz) { return 2.4 - parseFloat(pz) * 1.2; } // pz=1→1.2 特写近, pz=-1→3.6 远景
 
   // 机位中文词（画布标签/状态栏共用）。
   // ⚠️ 方位词与输出 tag 语义一致（忠实 BSK：px>0 输出 "from left" 即相机在被摄体左侧，
@@ -407,6 +397,30 @@
       this.node = node;
       this.w = w; // {preset, nl, px, py, pz, roll, config, extra_tags}; nl 仅为旧工作流兼容
       this.rootEl = null;
+      this.dragMode = this._readDragMode();
+    }
+
+    _readDragMode() {
+      try {
+        const mode = window.localStorage.getItem(CAMERA_DRAG_MODE_KEY);
+        return Object.prototype.hasOwnProperty.call(CAMERA_DRAG_MODES, mode) ? mode : "hybrid";
+      } catch (e) { return "hybrid"; }
+    }
+
+    _setDragMode(mode) {
+      if (!Object.prototype.hasOwnProperty.call(CAMERA_DRAG_MODES, mode)) return;
+      this.dragMode = mode;
+      try { window.localStorage.setItem(CAMERA_DRAG_MODE_KEY, mode); } catch (e) {}
+      for (const button of this.dragModeButtons || []) {
+        const active = button.dataset.mode === mode;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", active ? "true" : "false");
+      }
+      const meta = CAMERA_DRAG_MODES[mode];
+      if (this.spaceHint) this.spaceHint.textContent = meta.hint + " 滚轮调距离；握把法线面仅作空间参照。";
+      if (this.canvas) {
+        this.canvas.title = meta.hint + " 滚轮调节远近。";
+      }
     }
 
     _setW(widget, value) {
@@ -472,32 +486,66 @@
       this._syncControls(); // 刷新预览（computeCamera 走 loadConfig 合并默认值）
     }
 
-    // 3D 画布统一相对拖拽（跟随式增量）：
-    // - 按下记录机位起点；移动时用「本次事件相对上一次事件的位移」累加（而非相对起点的总位移），
-    //   方向中途改向立即跟手，不会"拖到一半往回要拖回原点才转向"。
-    // - 方位用连续角度累加（内部不 clamp），只有写 widget/显示时才归一到 [-1,1)：
-    //   跨过背面是平滑穿过，不会因为 ±1 边界导致"突然像反向跳变"。
-    // - 按住相机点起拖 = 低灵敏度微调（fine）；其余位置 = 标准高灵敏度。
-    // 性能：拖动热路径只做 画布重绘 + 状态行 + widget 写入（实测 0ms 无 DOM 变更）；
-    // 预览文本 100ms 节流、scrub/预设/布局读取全部留到 _finishDrag 一次性刷新，
-    // 保证任何机器上逐帧成本恒定（丝滑不随画布外负载劣化）。
+    // 画布坐标转换与 BSK 保持同一原则：先把 CSS 坐标还原到画布逻辑坐标，
+    // 再用画布中心和半宽/半高映射参数。绝对模式不依赖 3D 投影，前后端点都可达。
+    _canvasPoint(e, rect) {
+      const dpr = this._dpr || 1;
+      const W = this.canvas.width / dpr;
+      const H = this.canvas.height / dpr;
+      return {
+        x: (e.clientX - rect.left) * W / Math.max(1, rect.width),
+        y: (e.clientY - rect.top) * H / Math.max(1, rect.height),
+        W,
+        H,
+      };
+    }
+
+    _canvasAbsolute(point) {
+      return {
+        px: clamp((point.x - point.W / 2) / (point.W / 2), -1, 1),
+        py: clamp((point.H / 2 - point.y) / (point.H / 2), -1, 1),
+      };
+    }
+
+    _commitCanvasPosition(px, py, preview = true) {
+      const pz = parseFloat(this.w.pz?.value ?? 0);
+      const rl = parseFloat(this.w.roll?.value ?? 0);
+      px = wrapAzimuth(px);
+      py = clamp(py, -1, 1);
+      this._curPx = px;
+      this._curPy = py;
+      this._setW(this.w.px, Math.round(px * 100) / 100);
+      this._setW(this.w.py, Math.round(py * 100) / 100);
+      this._draw3D(px, py, pz, rl, true);
+      if (this.stateEl) this.stateEl.textContent = this._describe(px, py, pz, rl);
+      if (preview) {
+        const now = performance.now();
+        if (now - (this._lastPreviewAt || 0) > 100) {
+          this._lastPreviewAt = now;
+          this._updatePreview(px, py, pz, rl);
+        }
+      }
+    }
+
+    // 交互模型直接复用 BSK：相对=增量，绝对=画布坐标，融合=绝对起点+相对连续拖动。
+    // 三维投影只负责视觉反馈，不参与输入反解，避免“看到后方但点不到后方”。
     _canvasDrag(e) {
       if (!this.canvas) return;
       if (e.type === "pointerdown") {
         const rect = this.canvas.getBoundingClientRect();
         if (rect.width < 1 || rect.height < 1) return;
-        const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
-        const cp = this._cameraPoint;
-        const isFine = cp && Math.hypot(sx - cp[0], sy - cp[1]) <= CAMERA_POINT_HIT_RADIUS;
-        this._dragMode = isFine ? "fine" : "normal";
-        this._dragRect = rect; // 缓存：拖动过程画布尺寸不变
+        const point = this._canvasPoint(e, rect);
+        const mode = this.dragMode;
+        this._dragMode = mode;
+        this._dragRect = rect;
         this._dragStart = {
-          x: e.clientX, y: e.clientY,
+          x: point.x, y: point.y,
+          W: point.W, H: point.H,
           px: parseFloat(this.w.px?.value ?? 0), py: parseFloat(this.w.py?.value ?? 0),
         };
-        this._lastX = e.clientX;
-        this._lastY = e.clientY;
-        this._curPx = this._dragStart.px; // 连续角度（不 clamp），syn_cam 用 sin/cos 天然周期
+        this._lastX = point.x;
+        this._lastY = point.y;
+        this._curPx = this._dragStart.px;
         this._curPy = this._dragStart.py;
         this._dragging = true;
         this._lastPreviewAt = 0;
@@ -505,38 +553,33 @@
         // 一次性清理（拖动中不再重复写）：手动操作必须清 NL，否则后端 NL 优先会覆盖手动机位
         this._setW(this.w.preset, "自定义");
         this._clearNl();
+        if (mode === "absolute" || mode === "hybrid") {
+          const next = this._canvasAbsolute(point);
+          this._commitCanvasPosition(next.px, next.py, false);
+        }
         return;
       }
       const st = this._dragStart;
       if (!st) return;
       const rect = this._dragRect;
       if (!rect || rect.width < 1) return;
-      if (this._lastX === undefined) this._lastX = st.x;
-      if (this._lastY === undefined) this._lastY = st.y;
-      const azGain = this._dragMode === "fine" ? FINE_DRAG_AZIMUTH_GAIN : NORMAL_AZIMUTH_GAIN;
-      const elGain = this._dragMode === "fine" ? FINE_DRAG_ELEVATION_GAIN : NORMAL_ELEVATION_GAIN;
-      // 相对上一次事件的增量（跟手、方向恒定）
-      const dx = (e.clientX - this._lastX) / rect.width;
-      const dy = (e.clientY - this._lastY) / rect.height;
-      this._lastX = e.clientX;
-      this._lastY = e.clientY;
-      this._curPx = ((this._curPx + dx * azGain + 1) % 2 + 2) % 2 - 1;
-      this._curPy = clamp(this._curPy - dy * elGain, -1, 1);
-      const px = this._curPx;
-      const py = this._curPy;
-      const pz = parseFloat(this.w.pz?.value ?? 0);
-      const rl = parseFloat(this.w.roll?.value ?? 0);
-      this._setW(this.w.px, Math.round(px * 100) / 100);
-      this._setW(this.w.py, Math.round(py * 100) / 100);
-      // ── 轻量绘制路径（逐帧热路径）──
-      this._draw3D(px, py, pz, rl, true);
-      if (this.stateEl) this.stateEl.textContent = this._describe(px, py, pz, rl);
-      // 预览文本 100ms 节流：视觉即时感不受影响，但避免逐帧改 DOM 文本触发布局
-      const now = performance.now();
-      if (now - (this._lastPreviewAt || 0) > 100) {
-        this._lastPreviewAt = now;
-        this._updatePreview(px, py, pz, rl);
+
+      const point = this._canvasPoint(e, rect);
+      let px;
+      let py;
+      if (this._dragMode === "absolute") {
+        const next = this._canvasAbsolute(point);
+        px = next.px;
+        py = next.py;
+      } else {
+        const dx = (point.x - this._lastX) / (st.W / 2);
+        const dy = (point.y - this._lastY) / (st.H / 2);
+        this._lastX = point.x;
+        this._lastY = point.y;
+        px = wrapAzimuth(this._curPx + dx);
+        py = clamp(this._curPy - dy, -1, 1);
       }
+      this._commitCanvasPosition(px, py);
     }
 
     // 拖拽结束：清空拖拽状态并做一次全量刷新（预览/scrub/预设下拉等回到一致状态）
@@ -563,8 +606,8 @@
       if (this._ro) { try { this._ro.disconnect(); } catch {} this._ro = null; }
     }
 
-    // 3D 场景渲染：地面网格 + 相机轨道 + 方位弧 + 目标人形 + 相机点/视线锥/取景框 + 罗盘标签 + 状态
-    // dragging=true 时额外绘制相机点光晕与实时方位读数（拖拽反馈）
+    // 3D 场景渲染：半透明球面 + 稀疏轨道 + 目标 + 握把法线延伸面。
+    // 3D 只负责视觉反馈，输入映射在 _canvasDrag 中单独完成。
     _draw3D(px, py, pz, rl, dragging) {
       const cv = this.canvas;
       const ctx = cv.getContext("2d");
@@ -575,52 +618,67 @@
       ctx.scale(dpr, dpr);
       ctx.clearRect(0, 0, W, H);
       const az = parseFloat(px) * Math.PI, el = parseFloat(py) * Math.PI / 2;
-      // 显示半径固定：轨道环/相机点/拖拽球面三者一致（所见=可控范围）。
-      // 距离（pz）只通过取景框大小表达远近，3D 场景不缩放，拖拽永远可控。
-      const r = 2.4;
+      // 显示半径固定：球面/轨道/相机点三者一致（所见=可控范围）。
+      // 距离（pz）不改变交互坐标，避免滚轮改变画布可操作范围。
+      const r = CAMERA_VIEW_RADIUS;
       const cam = cam3DPos(r, az, el);
       const cx0 = W / 2, cy0 = H / 2;
 
-      // 地面网格（y=0 平面，营造空间感）
-      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      // 球面只作为空间参照，不作为输入命中面。颜色和线条保持半透明，避免盖住节点内容。
+      const sphereCx = cx0, sphereCy = cy0;
+      const sphereRx = Math.min(W * 0.42, H * 0.48);
+      const sphereRy = Math.min(H * 0.43, sphereRx * 0.82);
+      ctx.fillStyle = "rgba(148,163,184,0.045)";
+      ctx.beginPath(); ctx.ellipse(sphereCx, sphereCy, sphereRx, sphereRy, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "rgba(226,232,240,0.34)";
       ctx.lineWidth = 1;
-      for (let gx = -3; gx <= 3; gx++) {
-        const a = cam3DProject([gx, 0, -3], W, H), b = cam3DProject([gx, 0, 3], W, H);
-        if (a && b) { ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); }
+      ctx.beginPath(); ctx.ellipse(sphereCx, sphereCy, sphereRx, sphereRy, 0, 0, Math.PI * 2); ctx.stroke();
+
+      const drawSphereCurve = (points, front, back, width = 1, backDash = true) => {
+        for (let i = 0; i < points.length - 1; i++) {
+          const a = points[i], b = points[i + 1];
+          if (!a || !b) continue;
+          const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+          const near = v3dot(mid, CAM_EYE) >= 0;
+          const p0 = cam3DProject(a, W, H), p1 = cam3DProject(b, W, H);
+          if (!p0 || !p1) continue;
+          ctx.strokeStyle = near ? front : back;
+          ctx.lineWidth = near ? width : Math.max(0.7, width * 0.78);
+          ctx.setLineDash(near || !backDash ? [] : [3, 3]);
+          ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      };
+
+      // 稀疏经纬线：保留前后层次，但不把画布变成密集网格。
+      for (let latIndex = -2; latIndex <= 2; latIndex++) {
+        const lat = latIndex * Math.PI / 8;
+        const points = [];
+        for (let i = 0; i <= 48; i++) points.push(cam3DPos(r, i / 48 * Math.PI * 2, lat));
+        drawSphereCurve(points, "rgba(226,232,240,0.30)", "rgba(148,163,184,0.12)", latIndex === 0 ? 1.3 : 0.8);
       }
-      for (let gz = -3; gz <= 3; gz++) {
-        const a = cam3DProject([-3, 0, gz], W, H), b = cam3DProject([3, 0, gz], W, H);
-        if (a && b) { ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); }
+      for (let lonIndex = 0; lonIndex < 8; lonIndex++) {
+        const lon = lonIndex / 8 * Math.PI * 2;
+        const points = [];
+        for (let i = 0; i <= 24; i++) points.push(cam3DPos(r, lon, (i / 24 - 0.5) * Math.PI));
+        drawSphereCurve(points, "rgba(203,213,225,0.24)", "rgba(100,116,139,0.10)", 0.8);
       }
 
-      // 相机轨道：赤道环 + 当前方位垂直半环
-      ctx.strokeStyle = "rgba(139,92,246,0.25)";
-      ctx.lineWidth = 1.2;
+      // 相机轨道：保留赤道和当前方位的垂直法线，作为握把的空间参照。
+      ctx.strokeStyle = "rgba(255,255,255,0.38)";
+      ctx.lineWidth = 1;
       for (let i = 0; i <= 60; i++) {
         const a0 = (i / 60) * Math.PI * 2, a1 = ((i + 1) / 60) * Math.PI * 2;
         const p0 = cam3DProject([r * Math.cos(a0), 0, r * Math.sin(a0)], W, H);
         const p1 = cam3DProject([r * Math.cos(a1), 0, r * Math.sin(a1)], W, H);
         if (p0 && p1) { ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke(); }
       }
-      ctx.strokeStyle = "rgba(139,92,246,0.18)";
-      for (let i = -30; i <= 30; i++) {
-        const e0 = (i / 30) * Math.PI / 2, e1 = ((i + 1) / 30) * Math.PI / 2;
+      ctx.strokeStyle = "rgba(255,255,255,0.22)";
+      for (let i = -18; i <= 18; i++) {
+        const e0 = (i / 18) * Math.PI / 2, e1 = ((i + 1) / 18) * Math.PI / 2;
         const p0 = cam3DProject(cam3DPos(r, az, e0), W, H);
         const p1 = cam3DProject(cam3DPos(r, az, e1), W, H);
         if (p0 && p1) { ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke(); }
-      }
-
-      // 方位弧：赤道环上从「前」(az=0) 到当前机位方位的高亮弧 → 方位角度一眼可读
-      if (Math.abs(az) > 0.02) {
-        ctx.strokeStyle = "rgba(255,165,0,0.4)";
-        ctx.lineWidth = 2;
-        const nSeg = 48;
-        for (let i = 0; i < nSeg; i++) {
-          const t0 = i / nSeg, t1 = (i + 1) / nSeg;
-          const p0 = cam3DProject([r * Math.cos(az * t0), 0, r * Math.sin(az * t0)], W, H);
-          const p1 = cam3DProject([r * Math.cos(az * t1), 0, r * Math.sin(az * t1)], W, H);
-          if (p0 && p1) { ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke(); }
-        }
       }
 
       // 目标：简笔人形（面向 +z，即「前」）+ 地面阴影 + 朝向箭头
@@ -652,106 +710,70 @@
         }
       }
 
-      // 相机点 + 视线锥（指向被摄体）+ 地面投影（俯仰可视化）
+      // 相机握把 + 法线延伸面：只保留一个半透明的空间参照面。
+      // 这个面包含“握把 → 目标”的视线方向，宽度表示相机朝向的横向范围，
+      // 高度表示垂直参照；它是显示层，不参与坐标计算。
       const cp = cam3DProject(cam, W, H);
       this._cameraPoint = cp;
       if (cp) {
-        // 视线锥：相机点 → 头部/脚底两条边 + 指向头部的虚线（"相机正在拍谁"一目了然）
-        ctx.strokeStyle = "rgba(255,165,0,0.3)";
+        const target = cam3DProject([0, 0.75, 0], W, H);
+        // 用握把到目标的屏幕法线构造一个稳定的薄面。厚度固定在屏幕像素中，
+        // 因此节点缩放或观察角度变化时仍然看得见，不会退化成一条黑线。
+        const lineX = target ? target[0] - cp[0] : 0;
+        const lineY = target ? target[1] - cp[1] : 0;
+        const lineLength = Math.hypot(lineX, lineY) || 1;
+        const normalX = -lineY / lineLength, normalY = lineX / lineLength;
+        const nearHalf = 14, farHalf = 5;
+        const planePoints = target ? [
+          [cp[0] + normalX * nearHalf, cp[1] + normalY * nearHalf],
+          [cp[0] - normalX * nearHalf, cp[1] - normalY * nearHalf],
+          [target[0] - normalX * farHalf, target[1] - normalY * farHalf],
+          [target[0] + normalX * farHalf, target[1] + normalY * farHalf],
+        ] : [];
+        if (target) {
+          ctx.fillStyle = "rgba(226,232,240,0.14)";
+          ctx.strokeStyle = "rgba(226,232,240,0.34)";
+          ctx.lineWidth = 0.9;
+          ctx.beginPath(); ctx.moveTo(planePoints[0][0], planePoints[0][1]);
+          for (let i = 1; i < planePoints.length; i++) ctx.lineTo(planePoints[i][0], planePoints[i][1]);
+          ctx.closePath(); ctx.fill(); ctx.stroke();
+        }
+        if (target) {
+          ctx.strokeStyle = "rgba(255,190,90,0.38)";
+          ctx.lineWidth = 1;
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath(); ctx.moveTo(cp[0], cp[1]); ctx.lineTo(target[0], target[1]); ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        const ground = cam3DProject([cam[0], 0, cam[2]], W, H);
+        if (ground && Math.abs(cam[1]) > 0.08) {
+          ctx.strokeStyle = "rgba(226,232,240,0.24)";
+          ctx.setLineDash([2, 3]);
+          ctx.beginPath(); ctx.moveTo(cp[0], cp[1]); ctx.lineTo(ground[0], ground[1]); ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = "rgba(226,232,240,0.48)";
+          ctx.beginPath(); ctx.arc(ground[0], ground[1], 2, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.strokeStyle = "rgba(255,190,90,0.42)";
         ctx.lineWidth = 1;
-        if (head && bodyB) {
-          ctx.beginPath(); ctx.moveTo(cp[0], cp[1]); ctx.lineTo(head[0], head[1]); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(cp[0], cp[1]); ctx.lineTo(bodyB[0], bodyB[1]); ctx.stroke();
-        }
-        ctx.strokeStyle = "rgba(255,165,0,0.55)";
-        ctx.lineWidth = 1.2;
-        ctx.setLineDash([4, 3]);
-        if (head) { ctx.beginPath(); ctx.moveTo(cp[0], cp[1]); ctx.lineTo(head[0], head[1]); ctx.stroke(); }
-        ctx.setLineDash([]);
-        // 地面投影：相机竖直垂线 + 地面落点（俯仰角直接可见：越高落点越靠中心）
-        if (Math.abs(cam[1]) > 0.1) {
-          const g0 = cam3DProject([cam[0], 0, cam[2]], W, H);
-          if (g0 && Math.hypot(g0[0] - cp[0], g0[1] - cp[1]) > 3) {
-            ctx.strokeStyle = "rgba(255,165,0,0.3)";
-            ctx.setLineDash([2, 3]);
-            ctx.beginPath(); ctx.moveTo(cp[0], cp[1]); ctx.lineTo(g0[0], g0[1]); ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.fillStyle = "rgba(255,165,0,0.7)";
-            ctx.beginPath(); ctx.arc(g0[0], g0[1], 2.4, 0, Math.PI * 2); ctx.fill();
-            // 方位度数直接标在地面落点旁（离中心太近（正上/正下）时省略）
-            if (Math.hypot(g0[0] - cx0, g0[1] - cy0) > 26) {
-              ctx.fillStyle = "rgba(255,190,90,0.85)";
-              ctx.font = "10px system-ui";
-              ctx.fillText(azDeg(px) + "°", g0[0] + 5, g0[1] - 5);
-            }
-          }
-        }
-        // 拖拽中：相机点光晕 + 实时方位读数
+        ctx.beginPath(); ctx.arc(cp[0], cp[1], CAMERA_POINT_HIT_RADIUS * 0.42, 0, Math.PI * 2); ctx.stroke();
         if (dragging) {
-          ctx.fillStyle = "rgba(255,165,0,0.22)";
-          ctx.beginPath(); ctx.arc(cp[0], cp[1], 9, 0, Math.PI * 2); ctx.fill();
-          ctx.fillStyle = "rgba(255,255,255,0.85)";
-          ctx.font = "10px system-ui";
-          ctx.fillText("方位 " + azWord(px) + " " + azDeg(px) + "°", cp[0] + 13, cp[1] - 3);
-          ctx.fillText("俯仰 " + elWord(py) + " " + elDeg(py) + "°", cp[0] + 13, cp[1] + 9);
+          ctx.fillStyle = "rgba(255,165,0,0.16)";
+          ctx.beginPath(); ctx.arc(cp[0], cp[1], 10, 0, Math.PI * 2); ctx.fill();
         }
-        // 相机点本体 + 朝向三角（指向被摄体头部，与视线虚线一致）
         ctx.beginPath(); ctx.arc(cp[0], cp[1], 6, 0, Math.PI * 2);
-        ctx.fillStyle = "#ff9f43"; ctx.fill();
-        ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.4; ctx.stroke();
-        const ang = head ? Math.atan2(head[1] - cp[1], head[0] - cp[0]) : Math.atan2(cy0 - cp[1], cx0 - cp[0]);
-        ctx.fillStyle = "#ff9f43";
-        ctx.beginPath();
-        ctx.moveTo(cp[0] + 9 * Math.cos(ang), cp[1] + 9 * Math.sin(ang));
-        ctx.lineTo(cp[0] + 3 * Math.cos(ang + 2.4), cp[1] + 3 * Math.sin(ang + 2.4));
-        ctx.lineTo(cp[0] + 3 * Math.cos(ang - 2.4), cp[1] + 3 * Math.sin(ang - 2.4));
-        ctx.closePath(); ctx.fill();
+        ctx.fillStyle = "#ffb35c"; ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.85)"; ctx.lineWidth = 1.2; ctx.stroke();
       }
 
-      // 取景框：相机"画面"矩形。Roll 只作为输出参数和文字读数，
-      // 不参与 3D 几何旋转，避免角度设置干扰左右方位判断。
-      {
-        const rot = 0;
-        const look = v3norm(v3sub([0, 0, 0], cam));       // 视线方向（指向目标）
-        let right = v3cross(look, CAM_UP);                 // 相机右方向
-        if (Math.hypot(right[0], right[1], right[2]) < 1e-6) right = [1, 0, 0]; // 正上/正下时退化兜底
-        right = v3norm(right);
-        const up2 = v3cross(right, look);                  // 相机上方向（垂直视线）
-        const cr = Math.cos(rot), sr = Math.sin(rot);      // 绕视线旋转 roll
-        const r2 = [right[0] * cr + up2[0] * sr, right[1] * cr + up2[1] * sr, right[2] * cr + up2[2] * sr];
-        const u2 = [right[0] * -sr + up2[0] * cr, right[1] * -sr + up2[1] * cr, right[2] * -sr + up2[2] * cr];
-        // 取景框大小表达距离：特写(近)小、远景(大)，与距离滑块一一对应
-        const distScale = 1.6 - clamp(parseFloat(pz) || 0, -1, 1) * 0.6;
-        const hw = r * 0.16 * distScale, hh = r * 0.11 * distScale;
-        const cs = [
-          [cam[0] + r2[0] * hw + u2[0] * hh, cam[1] + r2[1] * hw + u2[1] * hh, cam[2] + r2[2] * hw + u2[2] * hh],
-          [cam[0] - r2[0] * hw + u2[0] * hh, cam[1] - r2[1] * hw + u2[1] * hh, cam[2] - r2[2] * hw + u2[2] * hh],
-          [cam[0] - r2[0] * hw - u2[0] * hh, cam[1] - r2[1] * hw - u2[1] * hh, cam[2] - r2[2] * hw - u2[2] * hh],
-          [cam[0] + r2[0] * hw - u2[0] * hh, cam[1] + r2[1] * hw - u2[1] * hh, cam[2] + r2[2] * hw - u2[2] * hh],
-        ].map((p) => cam3DProject(p, W, H));
-        if (cs.every(Boolean)) {
-          ctx.fillStyle = "rgba(255,165,0,0.14)";
-          ctx.strokeStyle = "rgba(255,190,90,0.85)";
-          ctx.lineWidth = 1.2;
-          ctx.beginPath();
-          ctx.moveTo(cs[0][0], cs[0][1]);
-          for (let i = 1; i < 4; i++) ctx.lineTo(cs[i][0], cs[i][1]);
-          ctx.closePath();
-          ctx.fill(); ctx.stroke();
-          // 底边加粗：画面"地面"边，倾斜方向一眼可辨
-          ctx.strokeStyle = "rgba(255,165,0,0.95)";
-          ctx.lineWidth = 2.4;
-          ctx.beginPath(); ctx.moveTo(cs[2][0], cs[2][1]); ctx.lineTo(cs[3][0], cs[3][1]); ctx.stroke();
-        }
-      }
-
-      // 罗盘标签（赤道环边缘）：前/后/左/右，颜色区分；位置即输出语义（所见=所出）
-      ctx.font = "11px system-ui";
+      // 罗盘标签只保留水平四向，避免画面信息过载。
+      ctx.font = "10px system-ui";
+      const labelR = r * 1.06;
       const compass = [
-        { p: [0, 0, 2.75], t: "前", c: "rgba(74,222,128,0.95)" },
-        { p: [0, 0, -2.75], t: "后", c: "rgba(248,113,113,0.75)" },
-        { p: [2.75, 0, 0], t: "左", c: "rgba(255,255,255,0.75)" },
-        { p: [-2.75, 0, 0], t: "右", c: "rgba(255,255,255,0.75)" },
+        { p: [0, 0, labelR], t: "前", c: "rgba(74,222,128,0.95)" },
+        { p: [0, 0, -labelR], t: "后", c: "rgba(248,113,113,0.75)" },
+        { p: [labelR, 0, 0], t: "左", c: "rgba(255,255,255,0.75)" },
+        { p: [-labelR, 0, 0], t: "右", c: "rgba(255,255,255,0.75)" },
       ];
       for (const { p, t, c } of compass) {
         const sp = cam3DProject(p, W, H);
@@ -760,14 +782,6 @@
           ctx.fillText(t, sp[0] + 4, sp[1] + 4);
         }
       }
-
-      // 状态标签（左上角）：方位/俯仰/距离/角度（含度数）
-      ctx.fillStyle = "rgba(255,255,255,0.75)";
-      ctx.font = "10px system-ui";
-      ctx.fillText("方位 " + azWord(px) + " " + azDeg(px) + "°", 6, 13);
-      ctx.fillText("俯仰 " + elWord(py) + " " + elDeg(py) + "°", 6, 25);
-      ctx.fillText("距离 " + distWord(pz), 6, 37);
-      ctx.fillText("角度 " + fmtDeg(rl), 6, 49);
       ctx.restore();
     }
 
@@ -965,12 +979,13 @@
 
       loadCustomPresets().then(renderCustom);
 
-      // ── 3D 空间画布（拖相机点微调，其余位置直接定位；滚轮=远近）──
+      // ── 3D 球面空间画布（BSK 坐标交互；握把法线参照；滚轮=远近）──
       const canvas = document.createElement("canvas");
       canvas.className = "anima-cam-canvas";
-      canvas.width = 250;
-      canvas.height = 170;
-      canvas.title = "任意位置拖动旋转机位；按住橙色相机点可微调；滚轮调节远近；悬停相机点显示十字光标";
+      canvas.width = 300;
+      canvas.height = 210;
+      canvas.setAttribute("aria-label", "3D 球面相机轨道：拖动画布定位相机，橙色握把显示当前机位，滚轮调节距离");
+      canvas.title = "拖动画布调整空间方位；橙色握把显示当前机位；滚轮调节远近";
       this.canvas = canvas;
       bindDrag(canvas, (e) => this._canvasDrag(e));
       // 松手/取消/捕获丢失：结束拖拽状态并全量刷新（预览/scrub/预设下拉回一致）
@@ -988,6 +1003,35 @@
         const want = near ? "crosshair" : "grab";
         if (canvas.style.cursor !== want) canvas.style.cursor = want;
       });
+      const spaceHint = document.createElement("div");
+      spaceHint.className = "anima-cam-space-hint";
+      this.spaceHint = spaceHint;
+
+      // ── 拖拽方式：相对/绝对/融合（浏览器本地记忆，不写入工作流）──
+      const dragModeRow = document.createElement("div");
+      dragModeRow.className = "anima-cam-drag-mode";
+      const dragModeLabel = document.createElement("span");
+      dragModeLabel.className = "anima-cam-drag-mode-label";
+      dragModeLabel.textContent = "拖拽方式";
+      const dragModeButtonsWrap = document.createElement("div");
+      dragModeButtonsWrap.className = "anima-cam-drag-mode-buttons";
+      dragModeButtonsWrap.setAttribute("role", "group");
+      dragModeButtonsWrap.setAttribute("aria-label", "相机拖拽方式");
+      this.dragModeButtons = [];
+      for (const [mode, meta] of Object.entries(CAMERA_DRAG_MODES)) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "anima-cam-mode-btn";
+        button.dataset.mode = mode;
+        button.textContent = meta.label;
+        button.title = meta.hint;
+        button.setAttribute("aria-pressed", "false");
+        button.addEventListener("click", () => this._setDragMode(mode));
+        this.dragModeButtons.push(button);
+        dragModeButtonsWrap.appendChild(button);
+      }
+      dragModeRow.append(dragModeLabel, dragModeButtonsWrap);
+      container.appendChild(dragModeRow);
       // ── 滚轮缩放（远近）──
       // ⚠️ 新前端（npm ESM）在 graph-canvas-container 内的 ph-no-capture overlay 上
       // 注册了捕获阶段 wheel 监听，对所有 wheel 事件 preventDefault + stopPropagation，
@@ -1007,6 +1051,8 @@
       };
       document.addEventListener("wheel", this._wheelHandler, true);
       container.appendChild(canvas);
+      container.appendChild(spaceHint);
+      this._setDragMode(this.dragMode);
 
       // ── 距离（档位）：< 中景 >（单击=一档，按住左右拖动连续调，可直输档位词/数值）──
       const distRow = document.createElement("div");
@@ -1137,7 +1183,7 @@
         if (rect.width < 10) return; // 节点折叠/未布局时跳过
         const dpr = window.devicePixelRatio || 1;
         const w = Math.max(200, Math.round(rect.width));
-        const h = Math.max(136, Math.round(w * 170 / 250));
+        const h = Math.max(166, Math.round(w * 210 / 300));
         const pw = Math.round(w * dpr), ph = Math.round(h * dpr);
         if (this.canvas.width !== pw || this.canvas.height !== ph) {
           this.canvas.width = pw;
@@ -1202,8 +1248,17 @@
 .anima-cam-presets-mgr button:hover { border-color:#8b5cf6; color:#c9b8ff; }
 .anima-cam-presets-hint { font-size:10px; color:#4aba8b; flex:1 1 100%; min-height:1.2em; }
 .anima-cam-preset-select:focus { outline:none; border-color:#8b5cf6; }
-.anima-cam-canvas { width:100%; height:auto; background:linear-gradient(180deg,#171a22 0%,#0e1014 100%); border:1px solid var(--border-color, #2f3440); border-radius:10px; cursor:grab; touch-action:none; display:block; box-shadow:inset 0 1px 6px rgba(0,0,0,.35); }
+.anima-cam-canvas { width:100%; height:auto; background:linear-gradient(180deg,#1b1e23 0%,#121417 100%); border:1px solid rgba(226,232,240,.28); border-radius:6px; cursor:grab; touch-action:none; display:block; box-shadow:inset 0 1px 7px rgba(0,0,0,.42); transition:border-color .14s ease; }
+.anima-cam-canvas:hover { border-color:rgba(226,232,240,.52); }
 .anima-cam-canvas:active { cursor:grabbing; }
+.anima-cam-drag-mode { display:flex; align-items:center; gap:7px; min-height:24px; }
+.anima-cam-drag-mode-label { color:var(--fg-color,#aeb4c0); font-size:10px; flex:0 0 auto; }
+.anima-cam-drag-mode-buttons { display:flex; gap:4px; min-width:0; }
+.anima-cam-mode-btn { min-width:42px; padding:3px 8px; border:1px solid #4a515d; border-radius:4px; background:#20242a; color:#cbd1da; font:inherit; font-size:10px; line-height:1.3; cursor:pointer; }
+.anima-cam-mode-btn:hover { border-color:#9aa4b2; color:#f1f3f5; }
+.anima-cam-mode-btn.active { background:#d7dce4; border-color:#d7dce4; color:#17191c; }
+.anima-cam-mode-btn:focus-visible { outline:2px solid #f0a04b; outline-offset:1px; }
+.anima-cam-space-hint { color:rgba(208,214,224,.72); font-size:10px; line-height:1.35; letter-spacing:.1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; user-select:none; }
 .anima-cam-row { display:flex; align-items:center; gap:6px; }
 .anima-cam-roll-label { font-size:11px; color:var(--fg-color, #999); flex:0 0 auto; min-width:40px; }
 .anima-cam-track { position:relative; background:#1b1e26; border:1px solid #383d4a; border-radius:8px; touch-action:none; box-shadow:inset 0 1px 3px rgba(0,0,0,.3); }

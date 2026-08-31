@@ -17,11 +17,14 @@
 
 import os
 import re
+import csv
 import json
 import time
+import heapq
 import threading
 import asyncio
 import tempfile
+import unicodedata
 
 import aiohttp
 import folder_paths
@@ -55,6 +58,25 @@ CARDS_DIR = os.path.join(folder_paths.get_input_directory(), "prompt_cards")
 CARDS_PATH = os.path.join(CARDS_DIR, "cards.json")
 CARDS_LOCK = threading.Lock()
 
+# Prompt Cards 输入联想词典：英文标签、D 站帖数、中文说明。
+# 文件由发布包随插件提供；现有的 danbooru_tags_zh.json 仅作为缺失译文的兼容补充。
+AUTOCOMPLETE_PATH = os.path.join(os.path.dirname(__file__), "data", "danbooru_tags_with_description_v3_modified.csv")
+AUTOCOMPLETE_ZH_PATH = os.path.join(os.path.dirname(__file__), "data", "danbooru_tags_zh.json")
+AUTOCOMPLETE_LOCK = threading.Lock()
+_AUTOCOMPLETE_CACHE_LOCK = threading.Lock()
+_AUTOCOMPLETE_ENTRIES = None
+_AUTOCOMPLETE_ZH_ENRICHED = False
+_AUTOCOMPLETE_DESCRIPTIONS_INDEXED = False
+_AUTOCOMPLETE_CACHE = {}
+_AUTOCOMPLETE_CACHE_MAX = 128
+_AUTOCOMPLETE_CATEGORY_NAMES = {
+    "0": "通用",
+    "1": "画师",
+    "3": "作品",
+    "4": "角色",
+    "5": "元数据",
+}
+
 # 旧版预置分类（字符串格式）在 _migrate_legacy 中由 DEFAULT_CARD_CATS 对应迁移
 
 # 卡片分类默认集（与前端 CARD_DEFAULT_CATS 保持一致）
@@ -67,6 +89,198 @@ DEFAULT_CARD_CATS = [
     {"id": "card_quality", "name": "质量词", "icon": "", "sortOrder": 5},
     {"id": "card_lora", "name": "LoRA 触发词", "icon": "", "sortOrder": 6},
 ]
+
+
+def _autocomplete_has_cjk(value):
+    return any("\u4e00" <= char <= "\u9fff" for char in str(value or ""))
+
+
+def _autocomplete_key(value):
+    """统一英文空格/下划线和中文空白，供前缀、包含和模糊匹配使用。"""
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold().replace("\\", "")
+    return "".join(char for char in text if char.isalnum())
+
+
+def _autocomplete_prompt_text(tag):
+    return re.sub(r"\s+", " ", str(tag or "").replace("_", " ")).strip()
+
+
+def _autocomplete_short_zh(description):
+    """从长说明提取紧凑中文联想副标题，避免下拉列表被整段百科说明撑开。"""
+    text = re.sub(r"\s+", " ", str(description or "").strip())
+    match = re.search(r"关键词\s*[:：]\s*(.+)$", text)
+    source = match.group(1) if match else text
+    parts = re.split(r"[、，,；;|]+", source)
+    result = []
+    for part in parts:
+        item = re.sub(r"[<>]", "", part).strip()
+        if not item or not _autocomplete_has_cjk(item) or item in result:
+            continue
+        result.append(item)
+        if len(result) >= 4:
+            break
+    return "、".join(result) or (text[:100] if text else "")
+
+
+def _load_autocomplete_zh_index():
+    result = {}
+    try:
+        with open(AUTOCOMPLETE_ZH_PATH, "r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                key_text = str(key or "").strip()
+                value_text = str(value or "").strip()
+                if key_text and value_text and not _autocomplete_has_cjk(key_text) and _autocomplete_has_cjk(value_text):
+                    result[_autocomplete_key(key_text)] = value_text
+    except (OSError, ValueError, TypeError):
+        pass
+    return result
+
+
+def _load_autocomplete_entries():
+    global _AUTOCOMPLETE_ENTRIES
+    with AUTOCOMPLETE_LOCK:
+        if _AUTOCOMPLETE_ENTRIES is not None:
+            return _AUTOCOMPLETE_ENTRIES
+
+        entries = []
+        seen = set()
+        try:
+            with open(AUTOCOMPLETE_PATH, "r", encoding="utf-8-sig", newline="") as handle:
+                for row in csv.reader(handle):
+                    if len(row) < 4:
+                        continue
+                    tag = str(row[0] or "").strip()
+                    if not tag:
+                        continue
+                    prompt = _autocomplete_prompt_text(tag)
+                    tag_key = _autocomplete_key(tag)
+                    if not tag_key or tag_key in seen:
+                        continue
+                    seen.add(tag_key)
+                    try:
+                        count = max(0, int(str(row[2] or "0").strip()))
+                    except (TypeError, ValueError):
+                        count = 0
+                    description = str(row[3] or "").strip()
+                    entries.append({
+                        "tag": tag,
+                        "prompt": prompt,
+                        "tag_key": tag_key,
+                        "zh": "",
+                        "zh_key": "",
+                        "description_key": "",
+                        "description": description,
+                        "count": count,
+                        "category": _AUTOCOMPLETE_CATEGORY_NAMES.get(str(row[1] or "0").strip(), "通用"),
+                    })
+        except (OSError, UnicodeError):
+            entries = []
+
+        _AUTOCOMPLETE_ENTRIES = tuple(entries)
+        return _AUTOCOMPLETE_ENTRIES
+
+
+def _ensure_autocomplete_description_index():
+    global _AUTOCOMPLETE_DESCRIPTIONS_INDEXED
+    with AUTOCOMPLETE_LOCK:
+        if _AUTOCOMPLETE_DESCRIPTIONS_INDEXED:
+            return
+        for entry in _AUTOCOMPLETE_ENTRIES or ():
+            description = entry["description"]
+            entry["description_key"] = _autocomplete_key(description) if _autocomplete_has_cjk(description) else ""
+        _AUTOCOMPLETE_DESCRIPTIONS_INDEXED = True
+
+
+def _enrich_autocomplete_zh_index():
+    """CSV 无中文命中时，再用旧双向 JSON 补齐缺少短译文的标签。"""
+    global _AUTOCOMPLETE_ZH_ENRICHED
+    with AUTOCOMPLETE_LOCK:
+        if _AUTOCOMPLETE_ZH_ENRICHED:
+            return
+        zh_index = _load_autocomplete_zh_index()
+        entries = _AUTOCOMPLETE_ENTRIES or ()
+        for entry in entries:
+            if _autocomplete_has_cjk(entry["zh"]):
+                continue
+            zh = zh_index.get(entry["tag_key"], "")
+            if not _autocomplete_has_cjk(zh):
+                continue
+            entry["zh"] = zh
+            entry["zh_key"] = _autocomplete_key(zh)
+        _AUTOCOMPLETE_ZH_ENRICHED = True
+
+
+def _autocomplete_is_subsequence(query, value):
+    cursor = 0
+    for char in value:
+        if cursor < len(query) and query[cursor] == char:
+            cursor += 1
+    return cursor == len(query)
+
+
+def _search_autocomplete(query, limit=16):
+    normalized = _autocomplete_key(query)
+    if not normalized:
+        return []
+    try:
+        limit = max(1, min(40, int(limit)))
+    except (TypeError, ValueError):
+        limit = 16
+    cache_key = (normalized, limit)
+    with _AUTOCOMPLETE_CACHE_LOCK:
+        cached = _AUTOCOMPLETE_CACHE.get(cache_key)
+        if cached is not None:
+            return list(cached)
+
+    if _autocomplete_has_cjk(query):
+        _ensure_autocomplete_description_index()
+    ranked = []
+    for entry in _load_autocomplete_entries():
+        tag_key = entry["tag_key"]
+        zh_key = entry["zh_key"]
+        description_key = entry["description_key"]
+        if tag_key == normalized:
+            score = 0
+        elif tag_key.startswith(normalized):
+            score = 1
+        elif normalized in tag_key:
+            score = 2
+        elif zh_key == normalized:
+            score = 3
+        elif zh_key.startswith(normalized):
+            score = 4
+        elif normalized in zh_key:
+            score = 5
+        elif normalized in description_key:
+            score = 6
+        elif len(normalized) >= 2 and _autocomplete_is_subsequence(normalized, tag_key):
+            score = 7
+        else:
+            continue
+        ranked.append((score, -entry["count"], entry["tag"], entry))
+
+    result = []
+    for _score, _count, _tag, entry in heapq.nsmallest(limit, ranked, key=lambda item: item[:3]):
+        result.append({
+            "tag": entry["tag"],
+            "prompt": entry["prompt"],
+            "notes": entry["zh"] or (_autocomplete_short_zh(entry["description"]) if _autocomplete_has_cjk(entry["description"]) else ""),
+            "zh": entry["zh"] or (_autocomplete_short_zh(entry["description"]) if _autocomplete_has_cjk(entry["description"]) else ""),
+            "description": re.sub(r"\s+", " ", entry["description"]).strip()[:160],
+            "count": entry["count"],
+            "category": entry["category"],
+            "source": "dictionary",
+        })
+    if not result and _autocomplete_has_cjk(query) and not _AUTOCOMPLETE_ZH_ENRICHED:
+        _enrich_autocomplete_zh_index()
+        return _search_autocomplete(query, limit)
+    with _AUTOCOMPLETE_CACHE_LOCK:
+        _AUTOCOMPLETE_CACHE[cache_key] = result
+        while len(_AUTOCOMPLETE_CACHE) > _AUTOCOMPLETE_CACHE_MAX:
+            _AUTOCOMPLETE_CACHE.pop(next(iter(_AUTOCOMPLETE_CACHE)))
+    return list(result)
 
 
 def _blank_cards():
@@ -326,6 +540,26 @@ async def _lora_trigger_words_civitai(name: str) -> list[str]:
 async def cards_get(request):
     """全库读取（v2 信封：{version, categories:[{id,name,icon,sortOrder}], cards:[...]}）。"""
     return web.json_response(_load_cards())
+
+
+@PromptServer.instance.routes.get("/anima/cards/autocomplete")
+async def cards_autocomplete(request):
+    """只返回当前输入相关的双语标签候选，不把整套词典发送到节点。"""
+    query = str(request.query.get("q", "") or "").strip()
+    try:
+        limit = max(1, min(40, int(request.query.get("limit", 16))))
+    except (TypeError, ValueError):
+        limit = 16
+    if not query:
+        return web.json_response({"results": [], "source": "dictionary"})
+    try:
+        results = await asyncio.get_running_loop().run_in_executor(
+            None, _search_autocomplete, query, limit
+        )
+    except Exception as error:
+        print(f"[TK Prompt Cards] 标签联想失败：{error}")
+        results = []
+    return web.json_response({"results": results, "source": "dictionary"})
 
 
 @PromptServer.instance.routes.post("/anima/cards")

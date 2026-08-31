@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import base64
@@ -11,6 +12,7 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 CHROME = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+BROWSER = Path(os.environ.get("TK_BROWSER_EXECUTABLE", str(CHROME)))
 sys.stdout.reconfigure(encoding="utf-8")
 
 
@@ -27,7 +29,7 @@ def main() -> None:
         with sync_playwright() as playwright:
             context = playwright.chromium.launch_persistent_context(
                 profile,
-                executable_path=str(CHROME),
+                executable_path=str(BROWSER),
                 headless=True,
                 viewport={"width": 1600, "height": 1000},
                 args=["--no-first-run", "--disable-gpu"],
@@ -119,6 +121,8 @@ def main() -> None:
                   if (!gallery || !camera) return null;
                   window.app.graph.add(gallery);
                   window.app.graph.add(camera);
+                  gallery.pos = [40, 40];
+                  camera.pos = [2000, 40];
                   window.__adgNode = gallery;
                   window.__camNode = camera;
                   return { gallery: gallery.type, camera: camera.type };
@@ -135,11 +139,146 @@ def main() -> None:
                   nlRows: document.querySelectorAll('.anima-cam-nl').length,
                   nlLabels: [...document.querySelectorAll('.anima-cam-row')].filter(x => (x.textContent || '').includes('自然语言')).length,
                   canvas: document.querySelectorAll('.anima-cam-canvas').length,
+                  canvasLabel: document.querySelector('.anima-cam-canvas')?.getAttribute('aria-label') || '',
+                  spaceHint: document.querySelector('.anima-cam-space-hint')?.textContent || '',
+                  dragModes: [...document.querySelectorAll('.anima-cam-drag-mode button')].map(x => x.textContent.trim()),
                 })
                 """
             )
             check("相机自然语言输入已移除", camera_state["nlRows"] == 0 and camera_state["nlLabels"] == 0, camera_state)
             check("相机 3D 画布仍存在", camera_state["canvas"] == 1, camera_state)
+            check("相机画布明确为球面参照", "球面" in camera_state["canvasLabel"] and "法线" in camera_state["spaceHint"], camera_state)
+            check("相机拖拽模式按钮齐全", camera_state["dragModes"] == ["相对", "绝对", "融合"], camera_state)
+
+            drag_mode_state = page.evaluate(
+                """
+                () => {
+                  const ui = window.__camNode?._animaCam;
+                  const buttons = [...document.querySelectorAll('.anima-cam-drag-mode button')];
+                  if (!ui || buttons.length !== 3) return null;
+                  const result = buttons.map((button) => {
+                    button.click();
+                    return {
+                      label: button.textContent.trim(),
+                      mode: ui.dragMode,
+                      pressed: button.getAttribute('aria-pressed'),
+                    };
+                  });
+                  const rect = ui.canvas.getBoundingClientRect();
+                  const center = { x: rect.left + rect.width * 0.50, y: rect.top + rect.height * 0.50 };
+                  const outside = { x: rect.left + rect.width * 0.02, y: rect.top + rect.height * 0.50 };
+                  const original = { x: ui.w.px?.value, y: ui.w.py?.value };
+                  const dragBranches = {};
+                  for (const mode of ['relative', 'absolute', 'hybrid']) {
+                    buttons.find(button => button.dataset.mode === mode)?.click();
+                    ui._canvasDrag({ type: 'pointerdown', clientX: center.x, clientY: center.y });
+                    dragBranches[mode] = ui._dragMode;
+                    ui._finishDrag();
+                    ui._setW(ui.w.px, original.x);
+                    ui._setW(ui.w.py, original.y);
+                    ui._syncControls();
+                  }
+                  buttons.find(button => button.dataset.mode === 'absolute')?.click();
+                  ui._canvasDrag({ type: 'pointerdown', clientX: outside.x, clientY: outside.y });
+                  const absoluteOutsideDown = ui._dragMode;
+                  const beforeOutside = { x: Number(ui.w.px?.value), y: Number(ui.w.py?.value) };
+                  ui._canvasDrag({ type: 'pointermove', clientX: outside.x + rect.width * 0.03, clientY: outside.y });
+                  const afterOutside = { x: Number(ui.w.px?.value), y: Number(ui.w.py?.value) };
+                  ui._finishDrag();
+                  ui._setW(ui.w.px, original.x);
+                  ui._setW(ui.w.py, original.y);
+                  ui._syncControls();
+                  [...document.querySelectorAll('.anima-cam-drag-mode button')].find(button => button.dataset.mode === 'hybrid')?.click();
+                  return { result, final: ui.dragMode, dragBranches, absoluteOutsideDown, outsideHeld: beforeOutside.x === afterOutside.x && beforeOutside.y === afterOutside.y };
+                }
+                """
+            )
+            check(
+                "相机拖拽模式可切换",
+                drag_mode_state
+                and [item["mode"] for item in drag_mode_state["result"]] == ["relative", "absolute", "hybrid"]
+                and all(item["pressed"] == "true" for item in drag_mode_state["result"])
+                and drag_mode_state["final"] == "hybrid",
+                drag_mode_state,
+            )
+            check(
+                "相机三种拖拽方式使用稳定坐标模型",
+                drag_mode_state
+                and drag_mode_state["dragBranches"] == {"relative": "relative", "absolute": "absolute", "hybrid": "hybrid"}
+                and drag_mode_state["absoluteOutsideDown"] == "absolute"
+                and not drag_mode_state["outsideHeld"],
+                drag_mode_state,
+            )
+
+            absolute_geometry_state = page.evaluate(
+                """
+                () => {
+                  const ui = window.__camNode?._animaCam;
+                  const button = [...document.querySelectorAll('.anima-cam-drag-mode button')].find(x => x.dataset.mode === 'absolute');
+                  if (!ui?.canvas || !button) return null;
+                  const rect = ui.canvas.getBoundingClientRect();
+                  const original = { x: ui.w.px?.value, y: ui.w.py?.value };
+                  button.click();
+                  const x = rect.left + rect.width * 0.50;
+                  const y = rect.top + rect.height * 0.50;
+                  ui._canvasDrag({ type: 'pointerdown', clientX: x, clientY: y });
+                  const center = { x: Number(ui.w.px?.value), y: Number(ui.w.py?.value) };
+                  ui._finishDrag();
+
+                  const start = { x: rect.left + rect.width * 0.50, y: rect.top + rect.height * 0.50 };
+                  const back = { x: rect.left + rect.width * 0.98, y: rect.top + rect.height * 0.50 };
+                  ui._canvasDrag({ type: 'pointerdown', clientX: start.x, clientY: start.y });
+                  const startBranch = ui._dragMode;
+                  ui._canvasDrag({ type: 'pointermove', clientX: back.x, clientY: back.y });
+                  const rear = { x: Number(ui.w.px?.value), y: Number(ui.w.py?.value) };
+                  ui._finishDrag();
+                  ui._setW(ui.w.px, original.x);
+                  ui._setW(ui.w.py, original.y);
+                  ui._syncControls();
+                  [...document.querySelectorAll('.anima-cam-drag-mode button')].find(button => button.dataset.mode === 'hybrid')?.click();
+                  return { center, startBranch, rear };
+                }
+                """
+            )
+            check(
+                "绝对映射的屏幕坐标方向正确",
+                absolute_geometry_state
+                and abs(absolute_geometry_state["center"]["x"]) <= 0.05
+                and abs(absolute_geometry_state["center"]["y"]) <= 0.05,
+                absolute_geometry_state,
+            )
+            check(
+                "绝对拖拽可从前方连续到后方",
+                absolute_geometry_state
+                and abs(absolute_geometry_state["center"]["x"]) <= 0.05
+                and abs(absolute_geometry_state["center"]["y"]) <= 0.05
+                and absolute_geometry_state["startBranch"] == "absolute"
+                and absolute_geometry_state["rear"]["x"] >= 0.90,
+                absolute_geometry_state,
+            )
+
+            hybrid_state = page.evaluate(
+                """
+                () => {
+                  const ui = window.__camNode?._animaCam;
+                  if (!ui?.canvas) return null;
+                  const rect = ui.canvas.getBoundingClientRect();
+                  const original = { x: ui.w.px?.value, y: ui.w.py?.value };
+                  const x = rect.left + rect.width * 0.50;
+                  const y = rect.top + rect.height * 0.50;
+                  ui._canvasDrag({ type: 'pointerdown', clientX: x, clientY: y });
+                  const mode = ui._dragMode;
+                  ui._canvasDrag({ type: 'pointermove', clientX: x + rect.width * 0.12, clientY: y - rect.height * 0.10 });
+                  const changed = { x: Number(ui.w.px?.value), y: Number(ui.w.py?.value) };
+                  ui._finishDrag();
+                  ui._setW(ui.w.px, original.x);
+                  ui._setW(ui.w.py, original.y);
+                  ui._syncControls();
+                  return { mode, changed, moved: changed.x !== Number(original.x) || changed.y !== Number(original.y) };
+                }
+                """
+            )
+            check("融合拖拽按绝对起点后连续跟手", hybrid_state and hybrid_state["mode"] == "hybrid" and hybrid_state["moved"], hybrid_state)
 
             camera_weights = page.evaluate(
                 """
@@ -244,6 +383,49 @@ def main() -> None:
             check("默认 Prompt 保持旧三类输出", gallery_state["defaultPrompt"] == "sample character, sample series, long hair, (smile)", gallery_state)
             default_groups = json.loads(gallery_state["defaultGroups"])
             check("默认分组包含角色/版权/通用", default_groups["character"] == ["sample_character"] and default_groups["copyright"] == ["sample_series"] and default_groups["general"] == ["long_hair", "(smile)"], default_groups)
+            gallery_layout = page.evaluate(
+                """
+                () => {
+                  const ui = window.__adgNode._animaDanbooruGallery;
+                  const root = ui.root;
+                  const grid = ui.grid;
+                  const hasResizeHandle = Boolean(root?.querySelector('.adg-gallery-resize-handle'));
+                  const pagination = ui.pagination;
+                  const widget = root?.closest('.lg-node-widget');
+                  const widgetGrid = root?.closest('.lg-node-widgets');
+                  const rect = (el) => {
+                    if (!el) return null;
+                    const r = el.getBoundingClientRect();
+                    const s = getComputedStyle(el);
+                    return { x: r.x, y: r.y, width: r.width, height: r.height, clientWidth: el.clientWidth, clientHeight: el.clientHeight, scrollWidth: el.scrollWidth, scrollHeight: el.scrollHeight, overflowX: s.overflowX, overflowY: s.overflowY, flex: s.flex, minHeight: s.minHeight, maxHeight: s.maxHeight };
+                  };
+                  ui.settings.gridHeight = 620;
+                  ui.applyGridHeight();
+                  const beforeHeight = ui.settings.gridHeight;
+                  const nodeWidth = ui.node.size[0];
+                  ui.node.setSize([nodeWidth, 760]);
+                  const outerSmallHeight = root.offsetHeight;
+                  ui.node.setSize([nodeWidth, 960]);
+                  const outerLargeHeight = root.offsetHeight;
+                  const outerResizeDelta = outerLargeHeight - outerSmallHeight;
+                  ui.settings.gridHeight = beforeHeight;
+                  ui.applyGridHeight();
+                  const originalPosts = ui.posts;
+                  ui.posts = Array.from({ length: 8 }, (_, index) => ({ ...originalPosts[0], id: 9000 + index }));
+                  ui.renderPosts();
+                  const manyCards = ui.grid.querySelectorAll('.adg-card').length;
+                  const manyGrid = rect(ui.grid);
+                  ui.posts = originalPosts;
+                  ui.renderPosts();
+                  return { nodeSize: ui.node.size, beforeHeight, root: rect(root), grid: rect(grid), hasResizeHandle, pagination: rect(pagination), paginationRow: rect(pagination?.parentElement), paginationButtonCount: pagination?.querySelectorAll('button').length || 0, restoredHeight: ui.settings.gridHeight, outerResizeDelta, manyCards, manyGrid, widget: rect(widget), widgetGrid: rect(widgetGrid) };
+                }
+                """
+            )
+            check("Chrome 画廊卡片区关闭横向溢出", gallery_layout["grid"]["overflowX"] == "hidden", gallery_layout)
+            check("多张卡片在 Chrome 中保持网格布局", gallery_layout["manyCards"] == 8 and gallery_layout["manyGrid"]["scrollWidth"] <= gallery_layout["manyGrid"]["clientWidth"] + 1, gallery_layout)
+            check("画廊不再添加内部高度调整条", gallery_layout["hasResizeHandle"] is False, gallery_layout)
+            check("节点外框变化同步画廊高度", gallery_layout["outerResizeDelta"] >= 150, gallery_layout)
+            check("分页按钮独立显示", gallery_layout["paginationButtonCount"] >= 5 and gallery_layout["paginationRow"]["height"] > 0, gallery_layout)
             prompt_toggle = page.evaluate(
                 """
                 () => {
@@ -258,12 +440,45 @@ def main() -> None:
                   button?.click();
                   const disabled = JSON.parse(ui.selectionWidget.value || '{}');
                   button?.click();
-                  return { hasButton, enabledPrompt: enabled.selections?.[0]?.prompt || '', disabledPrompt: disabled.selections?.[0]?.prompt || '', disabledFlag: disabled.prompt_output_enabled, enabledImage: enabled.image_selections?.[0]?.image_url || enabled.selections?.[0]?.image_url || '', disabledImage: disabled.image_selections?.[0]?.image_url || disabled.selections?.[0]?.image_url || '' };
+                  const enabledAgain = JSON.parse(ui.selectionWidget.value || '{}');
+                  return { hasButton, enabledPrompt: enabled.selections?.[0]?.prompt || '', disabledPrompt: disabled.selections?.[0]?.prompt || '', disabledFlag: disabled.prompt_output_enabled, enabledImage: enabled.image_selections?.[0]?.image_url || enabled.selections?.[0]?.image_url || '', disabledImage: disabled.image_selections?.[0]?.image_url || disabled.selections?.[0]?.image_url || '', enabledAgainPrompt: enabledAgain.selections?.[0]?.prompt || '', enabledAgainFlag: enabledAgain.prompt_output_enabled, enabledAgainImage: enabledAgain.image_selections?.[0]?.image_url || enabledAgain.selections?.[0]?.image_url || '' };
                 }
                 """
             )
             check("Prompt 输出开关存在", prompt_toggle["hasButton"], prompt_toggle)
             check("关闭 Prompt 输出后只关闭 Prompt、不关闭图片", prompt_toggle["disabledPrompt"] == "" and prompt_toggle["disabledFlag"] is False and prompt_toggle["enabledPrompt"] and prompt_toggle["disabledImage"] == prompt_toggle["enabledImage"] and prompt_toggle["disabledImage"], prompt_toggle)
+            check("重新开启 Prompt 输出后恢复 Prompt", prompt_toggle["enabledAgainFlag"] is True and prompt_toggle["enabledAgainPrompt"] == prompt_toggle["enabledPrompt"] and prompt_toggle["enabledAgainImage"] == prompt_toggle["enabledImage"], prompt_toggle)
+            page.evaluate("() => { const keep = window.__adgNode; for (const item of [...(window.app.graph._nodes || [])]) if (item !== keep) window.app.graph.remove(item); window.app.graph.setDirtyCanvas?.(true, true); }")
+            page.wait_for_timeout(250)
+            page.evaluate(
+                """
+                () => {
+                  const ui = window.__adgNode._animaDanbooruGallery;
+                  const card = ui.grid.querySelector('.adg-card');
+                  card?.classList.add('is-selected');
+                  card?.querySelector('.adg-card-select')?.setAttribute('aria-pressed', 'true');
+                  ui.updateSelection();
+                }
+                """
+            )
+            hit_test = page.evaluate(
+                """
+                () => {
+                  const button = document.querySelector('.anima-danbooru-gallery .adg-toolbar-main button[aria-pressed]');
+                  if (!button) return null;
+                  const r = button.getBoundingClientRect();
+                  return { button: r.toJSON() };
+                }
+                """
+            )
+            page.mouse.click(hit_test["button"]["x"] + hit_test["button"]["width"] / 2, hit_test["button"]["y"] + hit_test["button"]["height"] / 2)
+            page.wait_for_timeout(100)
+            pointer_disabled = page.evaluate("() => JSON.parse(window.__adgNode._animaDanbooruGallery.selectionWidget.value || '{}')")
+            page.mouse.click(hit_test["button"]["x"] + hit_test["button"]["width"] / 2, hit_test["button"]["y"] + hit_test["button"]["height"] / 2)
+            page.wait_for_timeout(100)
+            pointer_enabled = page.evaluate("() => JSON.parse(window.__adgNode._animaDanbooruGallery.selectionWidget.value || '{}')")
+            check("真实鼠标点击关闭后清空 Prompt", pointer_disabled.get("prompt_output_enabled") is False and pointer_disabled.get("selections", [{}])[0].get("prompt", "") == "", pointer_disabled)
+            check("真实鼠标点击重新开启后恢复 Prompt", pointer_enabled.get("prompt_output_enabled") is True and pointer_enabled.get("selections", [{}])[0].get("prompt", "") == prompt_toggle["enabledPrompt"], pointer_enabled)
 
             cards_created = page.evaluate(
                 """
@@ -314,7 +529,7 @@ def main() -> None:
                 () => {
                   const panel = document.querySelector('.adg-save-options');
                   const selected = [...panel.querySelectorAll('input[type=checkbox]:checked')].map(x => x.name);
-                  const counts = [...panel.querySelectorAll('input[type=checkbox]')].map(x => ({ name: x.name, disabled: x.disabled }));
+                  const counts = [...panel.querySelectorAll('.adg-prompt-category-choice input')].map(x => ({ name: x.name, disabled: x.disabled }));
                   const row = [...panel.querySelectorAll('.adg-save-bilingual-card')]
                     .find(item => item.querySelector('.adg-save-bilingual-en')?.value === 'long hair');
                   const en = row?.querySelector('.adg-save-bilingual-en');
@@ -472,7 +687,7 @@ def main() -> None:
             page.wait_for_selector(".adg-prompt-bilingual-editor", timeout=5_000)
             prompt_editor_state = page.evaluate(
                 """
-                () => {
+                async () => {
                   const dialog = document.querySelector('.adg-dialog');
                   const rows = [...(dialog?.querySelectorAll('.adg-prompt-bilingual-card') || [])];
                   const row = rows.find(item => item.querySelector('.adg-prompt-bilingual-en')?.value === 'sample artist');
@@ -480,17 +695,38 @@ def main() -> None:
                   const zh = row?.querySelector('.adg-prompt-bilingual-zh');
                   if (!en || !zh) throw new Error('查看 Prompt 双语编辑行缺失');
                   const groupText = dialog?.querySelector('.adg-prompt-groups')?.textContent || '';
+                  const clearRow = rows.find(item => item.querySelector('.adg-prompt-bilingual-en')?.value === 'long hair');
+                  const clearButton = clearRow?.querySelector('.adg-prompt-bilingual-clear');
+                  if (!clearButton) throw new Error('双语卡片缺少清除按钮');
+                  clearButton.click();
+                  const clearedVisual = {
+                    className: clearRow.className,
+                    state: clearRow.querySelector('.adg-prompt-bilingual-clear-state')?.textContent || '',
+                    button: clearButton.textContent || '',
+                    disabled: Boolean(clearRow.querySelector('.adg-prompt-bilingual-en')?.disabled && clearRow.querySelector('.adg-prompt-bilingual-zh')?.disabled),
+                  };
                   en.value = 'sample artist edited';
                   en.dispatchEvent(new Event('input', { bubbles: true }));
                   zh.value = '修改后的画师';
                   zh.dispatchEvent(new Event('input', { bubbles: true }));
                   dialog.querySelector('.adg-dialog-actions .primary')?.click();
-                  return { rowCount: rows.length, groupText, en: en.value, zh: zh.value };
+                  const card = window.__adgNode._animaDanbooruGallery.grid.querySelector('.adg-card');
+                  const clearedOutput = { prompt: card?.dataset.prompt || '', tags: JSON.parse(card?.dataset.tags || '[]') };
+                  await window.__adgNode._animaDanbooruGallery.openPromptEditor(card, window.__adgNode._animaDanbooruGallery.posts[0]);
+                  const restoredRow = [...document.querySelectorAll('.adg-prompt-bilingual-card')]
+                    .find(item => item.querySelector('.adg-prompt-bilingual-en')?.value === 'long hair');
+                  restoredRow?.querySelector('.adg-prompt-bilingual-clear')?.click();
+                  document.querySelector('.adg-dialog-actions .primary')?.click();
+                  const restoredOutput = { prompt: card?.dataset.prompt || '', tags: JSON.parse(card?.dataset.tags || '[]') };
+                  return { rowCount: rows.length, groupText, en: en.value, zh: zh.value, clearedVisual, clearedOutput, restoredOutput };
                 }
                 """
             )
             check("Prompt 编辑器显示分组摘要", "画师 1" in prompt_editor_state["groupText"] and "通用 2" in prompt_editor_state["groupText"], prompt_editor_state)
             check("查看 Prompt 支持双语逐行修改", prompt_editor_state["rowCount"] >= 2 and prompt_editor_state["en"] == "sample artist edited" and prompt_editor_state["zh"] == "修改后的画师", prompt_editor_state)
+            check("单卡清除状态在界面可见", "is-cleared" in prompt_editor_state["clearedVisual"]["className"] and "已清除" in prompt_editor_state["clearedVisual"]["state"] and prompt_editor_state["clearedVisual"]["button"] == "恢复" and prompt_editor_state["clearedVisual"]["disabled"], prompt_editor_state)
+            check("清除的提示词不会进入输出", "long hair" not in prompt_editor_state["clearedOutput"]["prompt"] and "long hair" not in prompt_editor_state["clearedOutput"]["tags"], prompt_editor_state)
+            check("恢复后提示词重新进入输出", "long hair" in prompt_editor_state["restoredOutput"]["prompt"] and "long hair" in prompt_editor_state["restoredOutput"]["tags"], prompt_editor_state)
             edited_card = page.evaluate(
                 """
                 () => {

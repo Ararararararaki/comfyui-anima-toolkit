@@ -24,6 +24,7 @@ import json
 import copy
 import time
 import uuid
+import asyncio
 import threading
 import folder_paths
 from aiohttp import web
@@ -376,6 +377,10 @@ _BATCH_NUMBER_LOCK = threading.Lock()
 _BATCH_FILE_LOCKS: dict[str, threading.Lock] = {}
 _BATCH_FILES_LOCK = threading.Lock()
 _BATCH_NUMBER = int(time.time() * 1000) % 100000
+_BATCH_WORKERS: dict[str, asyncio.Task] = {}
+_BATCH_WORKER_INTERVAL = 0.8
+_BATCH_MISSING_GRACE_SECONDS = 6.0
+_BATCH_SETTLE_SECONDS = 3.0
 
 # 任务状态
 ST_PENDING = "pending"      # 未入队（含重启中断后待重跑）
@@ -465,18 +470,49 @@ def _batch_summary(batch: dict) -> dict:
 
 
 def _inject_into_template(template: dict, job: dict) -> tuple[dict, str | None]:
-    """深拷贝模板并注入本任务的文本/负向/相机/输出子目录。返回 (prompt, error)。"""
+    """深拷贝模板并注入文本、输入补丁、负向/相机/输出子目录。返回 (prompt, error)。"""
     prompt = copy.deepcopy(template)
 
     pos_id = str(job.get("posId") or "")
     pos_key = job.get("posKey") or ""
     text = str(job.get("text") or "")
-    node = prompt.get(pos_id)
-    if node is None:
-        return None, f"注入目标节点 {pos_id} 不在当前工作流中（画布已改动？请重新选择目标）"
-    if not isinstance(node.get("inputs"), dict) or pos_key not in node.get("inputs", {}):
-        return None, f"注入目标 {pos_id}.{pos_key} 不存在（可用输入：{', '.join(list((node.get('inputs') or {}).keys())[:8])}）"
-    node["inputs"][pos_key] = text
+    patches = job.get("patches") or []
+    if not isinstance(patches, list):
+        return None, "批次输入补丁必须是数组"
+
+    # 旧文本批次路径保持原语义；补丁任务可以不提供 text/posId/posKey。
+    if text.strip() or pos_id or pos_key:
+        node = prompt.get(pos_id)
+        if node is None:
+            return None, f"注入目标节点 {pos_id} 不在当前工作流中（画布已改动？请重新选择目标）"
+        if not isinstance(node.get("inputs"), dict) or pos_key not in node.get("inputs", {}):
+            return None, f"注入目标 {pos_id}.{pos_key} 不存在（可用输入：{', '.join(list((node.get('inputs') or {}).keys())[:8])}）"
+        node["inputs"][pos_key] = text
+
+    for patch_index, patch in enumerate(patches):
+        if not isinstance(patch, dict):
+            return None, f"输入补丁 patches[{patch_index}] 必须是对象"
+        patch_node_id = str(patch.get("nodeId") or patch.get("node_id") or "")
+        patch_key = str(patch.get("input") or patch.get("key") or patch.get("nodeKey") or "")
+        if not patch_node_id or not patch_key:
+            return None, f"输入补丁 patches[{patch_index}] 缺少 nodeId 或 input"
+        if "value" not in patch:
+            return None, f"输入补丁 patches[{patch_index}] 缺少 value"
+        patch_node = prompt.get(patch_node_id)
+        if patch_node is None:
+            return None, f"补丁目标节点 {patch_node_id} 不在当前工作流中（画布已改动？）"
+        patch_inputs = patch_node.get("inputs") if isinstance(patch_node, dict) else None
+        if not isinstance(patch_inputs, dict) or patch_key not in patch_inputs:
+            available = ", ".join(list(patch_inputs or {})[:8]) if isinstance(patch_inputs, dict) else "无"
+            return None, f"补丁目标 {patch_node_id}.{patch_key} 不存在（可用输入：{available}）"
+        try:
+            json.dumps(patch["value"], ensure_ascii=False)
+        except (TypeError, ValueError):
+            return None, f"输入补丁 patches[{patch_index}].value 不是可序列化 JSON"
+        patch_inputs[patch_key] = copy.deepcopy(patch["value"])
+
+    if not text.strip() and not patches:
+        return None, "批次任务缺少文本注入或输入补丁"
 
     # 负向：仅当本任务有负向文本且指定了目标节点
     neg_id = str(job.get("negId") or "")
@@ -513,8 +549,15 @@ def _inject_into_template(template: dict, job: dict) -> tuple[dict, str | None]:
     return prompt, None
 
 
-async def _queue_prompt_inner(prompt: dict, extra_data: dict, batch_id: str, idx: int, number: float) -> tuple[str | None, str | None]:
-    """validate + PromptQueue.put。返回 (prompt_id, error)。"""
+async def _queue_prompt_inner(
+    prompt: dict,
+    extra_data: dict,
+    batch_id: str,
+    idx: int,
+    number: float,
+    client_id: str = "",
+) -> tuple[str | None, str | None]:
+    """按 ComfyUI 标准队列语义入队，并保留发起浏览器的客户端关联。"""
     import execution
     from server import PromptServer
     prompt_id = str(uuid.uuid4())
@@ -527,6 +570,11 @@ async def _queue_prompt_inner(prompt: dict, extra_data: dict, batch_id: str, idx
     outputs_to_execute = valid[2]
     ed = dict(extra_data or {})
     ed["anima_batch"] = {"batch": batch_id, "idx": idx}
+    client_id = str(client_id or "").strip()
+    if client_id:
+        # ComfyUI execution.py 从这里读取客户端 ID，并将 executing/executed/
+        # execution_* 与 PreviewImage 结果发送回对应 websocket。
+        ed["client_id"] = client_id
     ed["create_time"] = int(time.time() * 1000)
     sensitive = {}
     try:
@@ -547,7 +595,14 @@ async def _enqueue_job(batch: dict, job: dict) -> None:
         job["status"] = ST_FAILED
         job["error"] = err
         return
-    pid, perr = await _queue_prompt_inner(prompt, {}, batch["id"], job.get("idx", 0), _next_batch_number())
+    pid, perr = await _queue_prompt_inner(
+        prompt,
+        {},
+        batch["id"],
+        job.get("idx", 0),
+        _next_batch_number(),
+        client_id=batch.get("client_id") or "",
+    )
     if perr:
         job["status"] = ST_FAILED
         job["error"] = perr
@@ -564,7 +619,9 @@ def _sync_job_status(batch: dict) -> bool:
     try:
         running, pending = q.get_current_queue_volatile()
     except Exception:
-        running, pending = [], []
+        # 队列状态暂时不可读时不能把所有在途任务误判为中断。
+        # 这类短暂失败正是浏览器看到 Failed to fetch 时最容易同时发生的窗口。
+        return False
     running_ids = {item[1] for item in running}
     pending_ids = {item[1] for item in pending}
 
@@ -576,30 +633,55 @@ def _sync_job_status(batch: dict) -> bool:
             continue
         if st in (ST_QUEUED, ST_RUNNING):
             if pid in running_ids:
+                if job.pop("_missing_since", None) is not None:
+                    changed = True
                 if st != ST_RUNNING:
                     job["status"] = ST_RUNNING
                     changed = True
                 continue
             if pid in pending_ids:
+                if job.pop("_missing_since", None) is not None:
+                    changed = True
                 if st != ST_QUEUED:
                     job["status"] = ST_QUEUED
                     changed = True
                 continue
-            h = q.get_history(prompt_id=pid)
+            try:
+                h = q.get_history(prompt_id=pid)
+            except Exception:
+                # 历史查询失败也不能制造“中断”状态，下一轮再对账。
+                continue
             if pid in h:
                 entry = h[pid]
                 status = entry.get("status") or {}
                 ok = status.get("status_str") == "success" or status.get("completed") is True
                 job["status"] = ST_DONE if ok else ST_FAILED
                 job["error"] = None if ok else _history_error(entry)
+                if ok:
+                    job["_next_enqueue_after"] = time.time() + _BATCH_SETTLE_SECONDS
+                job.pop("_missing_since", None)
                 outputs = _history_outputs(entry)
                 if json.dumps(outputs, ensure_ascii=False) != json.dumps(job.get("outputs") or [], ensure_ascii=False):
                     job["outputs"] = outputs
                 changed = True
             else:
-                # 曾入队但队列/历史都没有 → 队列被清空 / ComfyUI 重启
+                # 队列和历史的读取存在短暂竞态；连续缺失一段时间后才认定
+                # 队列被清空 / ComfyUI 重启，避免过早标记 interrupted。
+                now = time.time()
+                missing_since = job.get("_missing_since")
+                if not missing_since:
+                    job["_missing_since"] = now
+                    changed = True
+                    continue
+                try:
+                    missing_age = now - float(missing_since)
+                except (TypeError, ValueError):
+                    missing_age = _BATCH_MISSING_GRACE_SECONDS
+                if missing_age < _BATCH_MISSING_GRACE_SECONDS:
+                    continue
                 job["status"] = ST_INTERRUPTED
                 job["error"] = "任务已入队但未产生结果（队列清空或 ComfyUI 重启），可重试"
+                job.pop("_missing_since", None)
                 changed = True
     return changed
 
@@ -650,13 +732,25 @@ async def _advance_batch(batch: dict) -> bool:
     inflight = any(j.get("status") in (ST_QUEUED, ST_RUNNING) for j in batch.get("jobs", []))
     if inflight:
         return False
+    if all(j.get("status") in ST_TERMINAL for j in batch.get("jobs", [])):
+        batch["state"] = BS_FINISHED
+        return True
+    now = time.time()
+    for completed in batch.get("jobs", []):
+        settle_until = completed.get("_next_enqueue_after")
+        if settle_until:
+            try:
+                if now < float(settle_until):
+                    return False
+            except (TypeError, ValueError):
+                pass
+            completed.pop("_next_enqueue_after", None)
+    if any(j.get("status") == ST_DONE for j in batch.get("jobs", [])):
+        _trim_batch_runtime_cache()
     for job in batch.get("jobs", []):
         if job.get("status") in (ST_PENDING, ST_RETRY):
             await _enqueue_job(batch, job)
             return True
-    if all(j.get("status") in ST_TERMINAL for j in batch.get("jobs", [])):
-        batch["state"] = BS_FINISHED
-        return True
     return False
 
 
@@ -671,13 +765,71 @@ async def _refresh_batch(batch: dict, save: bool = True) -> dict:
     return _batch_summary(batch)
 
 
+def _trim_batch_runtime_cache() -> None:
+    """在链式任务之间释放 Python/GPU 的闲置缓存，降低连续换图时的显存峰值。"""
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+async def _batch_worker_tick(batch_id: str) -> bool:
+    """执行一次服务端批次心跳；不依赖浏览器是否正在请求 status。"""
+    batch = _load_batch(batch_id)
+    if batch is None:
+        return False
+    with _batch_lock(batch_id):
+        try:
+            await _refresh_batch(batch)
+        except Exception as exc:
+            # 心跳异常不能杀掉 ComfyUI 主进程，也不能把任务伪装成失败。
+            print(f"[TK Batch] 批次 {batch_id} 心跳暂时失败：{exc}")
+            return True
+        return batch.get("state") == BS_RUNNING
+
+
+async def _batch_worker(batch_id: str) -> None:
+    """批次后台推进器：页面关闭、刷新或一次请求断线后仍继续执行。"""
+    try:
+        while await _batch_worker_tick(batch_id):
+            await asyncio.sleep(_BATCH_WORKER_INTERVAL)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        print(f"[TK Batch] 批次 {batch_id} 后台推进器退出：{exc}")
+    finally:
+        current = _BATCH_WORKERS.get(batch_id)
+        if current is asyncio.current_task():
+            _BATCH_WORKERS.pop(batch_id, None)
+
+
+def _ensure_batch_worker(batch_id: str) -> None:
+    """为运行中的批次建立唯一后台推进器。"""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    current = _BATCH_WORKERS.get(batch_id)
+    if current is not None and not current.done():
+        return
+    _BATCH_WORKERS[batch_id] = loop.create_task(_batch_worker(batch_id))
+
+
 @PromptServer.instance.routes.post("/anima/batch/run")
 async def batch_run(request):
     """创建并启动批次（服务端展开执行）。
 
     body: {
       template: {nodeId: {class_type, inputs}}   // 当前工作流 API prompt（前端 graphToPrompt().output）
-      jobs: [{group, text, posId, posKey, neg?, negId?, negKey?, camera?, subfolder?}]
+      jobs: [{group, text?, posId?, posKey?, patches?, neg?, negId?, negKey?, camera?, subfolder?}]
+        patches: [{nodeId, input, value}]  // 逐项替换工作流节点输入；可用于画廊单卡任务
       node_ref?: string                          // 发起节点画布 id（刷新后恢复匹配）
     }
     → {ok, batchId, summary}
@@ -688,6 +840,7 @@ async def batch_run(request):
         return web.json_response({"ok": False, "error": "bad json"}, status=400)
     template = body.get("template")
     jobs = body.get("jobs")
+    client_id = str(body.get("client_id") or "").strip()
     if not isinstance(template, dict) or not template:
         return web.json_response({"ok": False, "error": "缺少 template（当前工作流 API prompt）"}, status=400)
     if not isinstance(jobs, list) or not jobs:
@@ -697,8 +850,22 @@ async def batch_run(request):
         if not isinstance(j, dict):
             return web.json_response({"ok": False, "error": f"jobs[{i}] 必须是对象"}, status=400)
         text = str(j.get("text") or "")
-        if not text.strip():
-            return web.json_response({"ok": False, "error": f"jobs[{i}]（{j.get('group') or '?'}）提示词为空"}, status=400)
+        patches = j.get("patches") or []
+        if not isinstance(patches, list):
+            return web.json_response({"ok": False, "error": f"jobs[{i}]（{j.get('group') or '?'}）的 patches 必须是数组"}, status=400)
+        if not text.strip() and not patches:
+            return web.json_response({"ok": False, "error": f"jobs[{i}]（{j.get('group') or '?'}）缺少提示词或输入补丁"}, status=400)
+        for patch_index, patch in enumerate(patches):
+            if not isinstance(patch, dict):
+                return web.json_response({"ok": False, "error": f"jobs[{i}].patches[{patch_index}] 必须是对象"}, status=400)
+            if not (patch.get("nodeId") or patch.get("node_id")) or not (patch.get("input") or patch.get("key") or patch.get("nodeKey")):
+                return web.json_response({"ok": False, "error": f"jobs[{i}].patches[{patch_index}] 缺少 nodeId 或 input"}, status=400)
+            if "value" not in patch:
+                return web.json_response({"ok": False, "error": f"jobs[{i}].patches[{patch_index}] 缺少 value"}, status=400)
+            try:
+                json.dumps(patch["value"], ensure_ascii=False)
+            except (TypeError, ValueError):
+                return web.json_response({"ok": False, "error": f"jobs[{i}].patches[{patch_index}].value 不是可序列化 JSON"}, status=400)
         payload.append({
             "idx": i,
             "group": str(j.get("group") or f"组{i+1}"),
@@ -710,6 +877,7 @@ async def batch_run(request):
             "neg": str(j.get("neg") or "") if j.get("neg") else None,
             "camera": str(j.get("camera") or "") if j.get("camera") else None,
             "subfolder": bool(j.get("subfolder")),
+            "patches": copy.deepcopy(patches),
             "status": ST_PENDING,
             "prompt_id": None,
             "error": None,
@@ -722,12 +890,14 @@ async def batch_run(request):
         "updated": time.time(),
         "state": BS_RUNNING,
         "node_ref": str(body.get("node_ref") or ""),
+        "client_id": client_id,
         "template": template,
         "jobs": payload,
     }
     with _batch_lock(batch_id):
         _save_batch(batch)
         summary = await _refresh_batch(batch)
+    _ensure_batch_worker(batch_id)
     return web.json_response({"ok": True, "batchId": batch_id, "summary": summary})
 
 
@@ -764,6 +934,8 @@ async def batch_resume(request):
             batch["state"] = BS_RUNNING
         await _refresh_batch(batch)
         summary = _batch_summary(batch)
+    if batch.get("state") == BS_RUNNING:
+        _ensure_batch_worker(bid)
     return web.json_response({"ok": True, "summary": summary})
 
 
@@ -821,6 +993,8 @@ async def batch_skip(request):
         job["error"] = "已跳过"
         await _refresh_batch(batch)
         summary = _batch_summary(batch)
+    if batch.get("state") == BS_RUNNING:
+        _ensure_batch_worker(bid)
     return web.json_response({"ok": True, "summary": summary})
 
 
@@ -851,6 +1025,8 @@ async def batch_retry(request):
             batch["state"] = BS_RUNNING
         await _refresh_batch(batch)
         summary = _batch_summary(batch)
+    if batch.get("state") == BS_RUNNING:
+        _ensure_batch_worker(bid)
     return web.json_response({"ok": True, "summary": summary})
 
 
@@ -864,6 +1040,8 @@ async def batch_status(request):
         await _refresh_batch(batch)
         summary = _batch_summary(batch)
         jobs = [_job_summary(j) for j in batch.get("jobs", [])]
+    if batch.get("state") == BS_RUNNING:
+        _ensure_batch_worker(bid)
     return web.json_response({
         "ok": True,
         "batch": {k: summary[k] for k in ("id", "created", "updated", "state", "node_ref", "total")},

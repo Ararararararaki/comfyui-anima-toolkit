@@ -1,6 +1,8 @@
 .anima-danbooru-gallery {
   box-sizing: border-box;
   display: flex;
+  width: 100%;
+  min-width: 0;
   min-height: 620px;
   max-height: 620px;
   height: 620px;
@@ -15,10 +17,12 @@
   font: 12px/1.35 system-ui, sans-serif;
 }
 
-.adg-toolbar { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; padding: 2px 0; }
+.adg-toolbar { display: flex; min-width: 0; max-width: 100%; flex-wrap: wrap; gap: 5px; align-items: center; padding: 2px 0; }
 .adg-toolbar-group {
   display: inline-flex;
   flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
   flex-wrap: wrap;
   gap: 4px;
   align-items: center;
@@ -266,7 +270,8 @@
 .adg-batch-cat:hover:not(:disabled) { border-color: #9988ff; background: rgba(139, 92, 246, .28); }
 .adg-batch-cat:disabled { opacity: .4; cursor: not-allowed; }
 
-.adg-pagination { display: flex; gap: 3px; align-items: center; margin-left: auto; }
+.adg-pagination-row { display: flex; min-width: 0; justify-content: flex-end; }
+.adg-pagination { display: flex; min-width: 0; max-width: 100%; gap: 3px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .adg-pagination button { width: 24px; padding: 4px 0; }
 .adg-pagination input { width: 42px; padding: 4px; border: 1px solid #55566a; border-radius: 5px; color: #eee; background: #1b1b22; font-size: 11px; }
 .adg-pagination button:disabled { opacity: .35; cursor: not-allowed; }
@@ -274,10 +279,28 @@
 .adg-info { color: #aeb1bd; }
 .adg-status { min-height: 17px; color: #8e94a7; }
 .adg-status[data-tone="error"] { color: #ff8b8b; }
+.adg-batch-panel { display: flex; min-width: 0; flex: 0 0 auto; flex-direction: column; gap: 4px; max-height: 132px; overflow: auto; padding: 5px 6px; border: 1px solid rgba(168, 149, 255, .3); border-radius: 7px; color: #cfc9e8; background: rgba(91, 71, 170, .12); }
+.adg-batch-panel[hidden] { display: none; }
+.adg-batch-message,
+.adg-batch-statusline { color: #cfc9e8; font-size: 11px; }
+.adg-batch-statusline.is-reconnecting { color: #f2c879; }
+.adg-batch-message.is-error { color: #ff9d9d; }
+.adg-batch-controls { display: flex; flex-wrap: wrap; gap: 4px; }
+.adg-batch-controls button,
+.adg-batch-job button { padding: 2px 7px; border: 1px solid rgba(168, 149, 255, .45); border-radius: 5px; color: #e5dfff; background: rgba(139, 92, 246, .16); font-size: 10px; cursor: pointer; }
+.adg-batch-controls button:hover,
+.adg-batch-job button:hover { border-color: #a895ff; background: rgba(139, 92, 246, .3); }
+.adg-batch-jobs { display: flex; flex-direction: column; gap: 2px; }
+.adg-batch-job { display: flex; min-width: 0; align-items: center; gap: 5px; color: #aaa8b7; font-size: 10px; }
+.adg-batch-job span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adg-batch-job-running span { color: #d8cfff; }
+.adg-batch-job-done span { color: #9ee0bb; }
+.adg-batch-job-failed span,
+.adg-batch-job-interrupted span { color: #ffadad; }
 .adg-suggestions { display: flex; flex-wrap: wrap; gap: 4px; color: #9ea1ae; }
 .adg-suggestions button { padding: 2px 6px; border: 1px solid #4e4e60; border-radius: 4px; color: #c7bfff; background: #2a2934; cursor: pointer; }
-.adg-grid { flex: 1 1 auto; min-height: 0; overflow-y: auto; columns: 150px; column-gap: 7px; padding-right: 3px; }
-.adg-card { position: relative; break-inside: avoid; margin: 0 0 7px; overflow: hidden; padding: 3px; border: 2px solid rgba(255,255,255,.1); border-radius: 7px; background: #16161d; transition: border-color .15s, box-shadow .15s, transform .15s; }
+.adg-grid { display: grid; flex: 1 1 auto; min-width: 0; min-height: 0; grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr)); grid-auto-rows: max-content; align-content: start; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; column-gap: 7px; row-gap: 7px; padding-right: 3px; }
+.adg-card { position: relative; min-width: 0; margin: 0; overflow: hidden; padding: 3px; border: 2px solid rgba(255,255,255,.1); border-radius: 7px; background: #16161d; transition: border-color .15s, box-shadow .15s, transform .15s; }
 .adg-card:hover { border-color: #7668d8; transform: translateY(-1px); }
 .adg-card.is-selected { border-color: #b49cff; background: rgba(109,86,210,.24); box-shadow: 0 0 0 2px rgba(180,156,255,.45), 0 0 22px rgba(125,92,255,.72); }
 .adg-card.is-selected::after { content: "已选"; position: absolute; top: 8px; left: 8px; z-index: 2; padding: 3px 7px; border-radius: 999px; color: #fff; background: #765ee8; box-shadow: 0 2px 8px rgba(0,0,0,.45); font-size: 10px; font-weight: 700; }
@@ -349,15 +372,52 @@
 .adg-prompt-groups { display: flex; flex-wrap: wrap; gap: 4px; }
 .adg-prompt-groups span { padding: 3px 6px; border: 1px solid rgba(168,149,255,.35); border-radius: 999px; color: #c8beff; background: rgba(139,92,246,.12); font-size: 10px; }
 .adg-prompt-bilingual-editor,
-.adg-save-bilingual-grid { display: flex; min-width: min(520px, 76vw); flex-direction: column; gap: 5px; max-height: min(420px, 46vh); overflow-y: auto; padding: 6px; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; background: rgba(0,0,0,.14); }
+.adg-save-bilingual-grid { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: min(520px, 76vw); gap: 5px; max-height: min(420px, 46vh); overflow: hidden; padding: 6px; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; background: rgba(0,0,0,.14); }
 .adg-prompt-bilingual-header,
 .adg-save-bilingual-header { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; padding: 0 6px 2px; color: #aaa6bc; font-size: 10px; font-weight: 700; }
 .adg-prompt-bilingual-list,
-.adg-save-bilingual-list { display: flex; flex-direction: column; gap: 4px; }
+.adg-save-bilingual-list { display: grid; min-height: 0; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px; overflow-y: auto; padding: 2px 3px 5px 0; }
 .adg-prompt-bilingual-card,
-.adg-save-bilingual-card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; padding: 4px; border: 1px solid rgba(255,255,255,.08); border-radius: 6px; background: rgba(255,255,255,.035); }
+.adg-save-bilingual-card { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 6px; align-items: start; padding: 5px; border: 1px solid rgba(255,255,255,.08); border-radius: 6px; background: rgba(255,255,255,.035); }
+.adg-prompt-bilingual-card.is-selected,
+.adg-save-bilingual-card.is-selected { border-color: rgba(168,149,255,.75); background: rgba(139,92,246,.12); }
+.adg-prompt-bilingual-card.is-cleared,
+.adg-save-bilingual-card.is-cleared { border-color: rgba(239,116,116,.7); background: rgba(158,48,48,.12); }
+.adg-prompt-bilingual-select,
+.adg-save-bilingual-select { width: 14px; height: 14px; margin: 5px 0 0; accent-color: #9d8cff; cursor: pointer; }
+.adg-prompt-bilingual-select:disabled,
+.adg-save-bilingual-select:disabled { cursor: not-allowed; opacity: .45; }
+.adg-prompt-bilingual-fields,
+.adg-save-bilingual-fields { display: grid; min-width: 0; gap: 4px; }
 .adg-prompt-bilingual-card input,
 .adg-save-bilingual-card input { box-sizing: border-box; min-width: 0; width: 100%; padding: 5px 6px; border: 1px solid rgba(255,255,255,.12); border-radius: 5px; color: #eee; background: #17171d; font: 11px/1.35 ui-monospace, monospace; }
+.adg-prompt-bilingual-card.is-cleared input,
+.adg-save-bilingual-card.is-cleared input { color: #9f969b; text-decoration: line-through; opacity: .7; }
+.adg-prompt-bilingual-clear-state,
+.adg-save-bilingual-clear-state { grid-column: 1 / -1; padding: 2px 5px; border-radius: 4px; color: #ffb0b0; background: rgba(239,116,116,.12); font-size: 10px; font-weight: 700; }
+.adg-prompt-bilingual-clear,
+.adg-save-bilingual-clear { align-self: start; min-width: 38px; padding: 4px 6px !important; border-color: rgba(239,116,116,.5) !important; color: #ffb0b0 !important; background: rgba(239,116,116,.08) !important; font-size: 10px; white-space: nowrap; }
+.adg-prompt-bilingual-clear:hover,
+.adg-save-bilingual-clear:hover { border-color: #ff8d8d !important; color: #fff !important; background: rgba(239,116,116,.2) !important; }
+.adg-prompt-bilingual-card:not(.is-cleared) .adg-prompt-bilingual-clear,
+.adg-save-bilingual-card:not(.is-cleared) .adg-save-bilingual-clear { border-color: rgba(255,255,255,.12) !important; color: #d5d2e4 !important; background: rgba(255,255,255,.05) !important; }
+.adg-prompt-bilingual-card:not(.is-cleared) .adg-prompt-bilingual-clear:hover,
+.adg-save-bilingual-card:not(.is-cleared) .adg-save-bilingual-clear:hover { border-color: rgba(239,116,116,.7) !important; color: #ffb0b0 !important; background: rgba(239,116,116,.12) !important; }
+.adg-prompt-bilingual-selection-tools,
+.adg-save-bilingual-selection-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; min-height: 30px; padding: 6px 2px 0; border-top: 1px solid rgba(255,255,255,.1); background: rgba(19,18,28,.96); }
+.adg-prompt-bilingual-select-all,
+.adg-save-bilingual-select-all { display: inline-flex; align-items: center; gap: 4px; color: #aaa6bc; font-size: 10px; cursor: pointer; }
+.adg-prompt-bilingual-select-all-input,
+.adg-save-bilingual-select-all-input { margin: 0; accent-color: #9d8cff; cursor: pointer; }
+.adg-prompt-bilingual-selection-tools button,
+.adg-save-bilingual-selection-tools button { padding: 4px 7px; border: 1px solid rgba(255,255,255,.12); border-radius: 5px; color: #d5d2e4; background: rgba(255,255,255,.05); cursor: pointer; font-size: 10px; }
+.adg-prompt-bilingual-selection-tools button:hover,
+.adg-save-bilingual-selection-tools button:hover { border-color: rgba(168,149,255,.7); background: rgba(139,92,246,.12); }
+.adg-prompt-bilingual-selection-tools button:disabled,
+.adg-save-bilingual-selection-tools button:disabled { cursor: not-allowed; opacity: .45; }
+.adg-prompt-bilingual-selection-count,
+.adg-save-bilingual-selection-count { color: #8f899e; font-size: 10px; }
+.adg-prompt-editor > button { align-self: flex-start; width: max-content; max-width: 100%; }
 .adg-prompt-bilingual-card input:focus,
 .adg-save-bilingual-card input:focus { outline: none; border-color: #8f86ed; box-shadow: 0 0 0 2px rgba(139,92,246,.18); }
 .adg-prompt-bilingual-zh,

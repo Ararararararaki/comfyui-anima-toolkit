@@ -1,4 +1,6 @@
 // Anima Batch LoRA Widget — 中文界面 + 桥接自动加载 + 触发词复制
+import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
+
 (function () {
   const NODE_NAME = "TK Batch LoRA Loader";
   const normalizeLoraName = (value) => String(value || "").trim().replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
@@ -255,6 +257,7 @@
         row.pctEl.textContent = s.status === "done" ? "✓" : `${pc}%`;
       } else if (s.status === "queued") row.pctEl.textContent = "排队中";
       else if (s.status === "downloading") row.pctEl.textContent = "下载中";
+      if (s.status === "retrying") row.pctEl.textContent = total > 0 ? `${Math.round(done / total * 100)}% 续传` : "重试中";
       if (s.status === "done") {
         row.bar.style.width = "100%";
         row.pctEl.textContent = "✓";
@@ -265,7 +268,7 @@
           if (!completionNotified && typeof onDone === "function") { completionNotified = true; onDone(); }
         }
       } else if (s.status === "error") {
-        row.pctEl.textContent = "✗";
+        row.pctEl.textContent = s.resumable ? "✗ 可续传" : "✗";
         row.cancelBtn.disabled = true;
         if (!row.reported) { row.reported = true; modal.querySelector(".bd-log").textContent += `✗ ${s.error || "下载失败"}\n`; }
       } else if (s.status === "cancelled") {
@@ -451,6 +454,7 @@
       this.loraInfoMap = {}; // name -> {previewUrl, modelName, creator}（悬停预览用）
       this._lastBridgeTs = 0;   // 上次已应用的 bridge updated_at（避免重复同步）
       this._bridgeTimer = null;
+      this.domSizeSync = null;
     }
 
     // ── 解析 <lora:name:weight>（并合并 node.properties 里保留的禁用项） ──
@@ -476,7 +480,7 @@
         if (existing) {
           existing.disabled = true; // 同名项在 lora_syntax 里 → 标记禁用（恢复工作流保存的关闭状态）
           const preservedWeight = parseFloat(disabledMap[name]);
-          if (Number.isFinite(preservedWeight) && preservedWeight >= 0 && preservedWeight <= 2) {
+          if (Number.isFinite(preservedWeight) && preservedWeight >= -2 && preservedWeight <= 2) {
             existing.weight = preservedWeight; // 禁用编码可能是 0.00，卡片仍显示用户原来的权重
           }
         }
@@ -563,8 +567,8 @@
         document.head.appendChild(styleEl);
       }
       styleEl.textContent = `
-          .anima-lora-widget { display:flex; flex-direction:column; height:100%; min-height:0; box-sizing:border-box; padding:6px; background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01)); border-radius:8px; font-family:"Inter","Geist Sans",system-ui,sans-serif; border:1px solid rgba(255,255,255,0.05); box-shadow:inset 0 1px 0 0 rgba(255,255,255,0.04); }
-          .anima-lora-widget .list { flex:1 1 auto; overflow-y:auto; min-height:0; }
+          .anima-lora-widget { display:flex; flex-direction:column; width:100%; height:100%; min-width:0; min-height:0; box-sizing:border-box; padding:6px; overflow:hidden; background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01)); border-radius:8px; font-family:"Inter","Geist Sans",system-ui,sans-serif; border:1px solid rgba(255,255,255,0.05); box-shadow:inset 0 1px 0 0 rgba(255,255,255,0.04); }
+          .anima-lora-widget .list { flex:1 1 auto; min-width:0; overflow-x:hidden; overflow-y:auto; min-height:0; }
           .anima-lora-widget .toolbar { display:flex; gap:5px; margin-bottom:6px; flex-wrap:wrap; }
           .anima-lora-widget .toolbar button { display:inline-flex; align-items:center; gap:4px; padding:4px 10px; border:none; border-radius:6px; cursor:pointer; font-size:9px; font-weight:600; color:#EDEDEF; white-space:nowrap; letter-spacing:0.02em; transition:all 0.2s ease-out; box-shadow:0 0 0 1px rgba(255,255,255,0.06),0 2px 8px rgba(0,0,0,0.3); }
           .anima-lora-widget .toolbar .btn-verify { background:linear-gradient(135deg,#5E6AD2,#6872D9); box-shadow:0 0 0 1px rgba(94,106,210,0.3),0 2px 12px rgba(94,106,210,0.2),inset 0 1px 0 0 rgba(255,255,255,0.15); }
@@ -771,7 +775,14 @@
       })(this.loraWidget.callback);
 
       const dw = this.node.addDOMWidget("anima_batch_ui", "custom", container, { serialize: false });
-      dw.computeSize = (width) => [width || 280, Math.min(420, 72 + Math.max(1, this.loras.length) * 30)];
+      this.domSizeSync = installDOMWidgetSizeSync({
+        node: this.node,
+        domWidget: dw,
+        element: container,
+        minHeight: 180,
+        maxHeight: 1600,
+        initialContentHeight: Math.min(420, 72 + Math.max(1, this.loras.length) * 30),
+      });
 
       // ComfyUI 新节点布局默认把两个 widget 网格行都设为 auto，节点被手动
       // 拉高后，多余空间会被分配到第一行，导致 LoRA 面板被推到节点底部。
@@ -799,6 +810,8 @@
       this.node.onRemoved = function () {
         if (ui._bridgeTimer) { clearInterval(ui._bridgeTimer); ui._bridgeTimer = null; }
         if (ui._updateTimer) { clearInterval(ui._updateTimer); ui._updateTimer = null; }
+        ui.domSizeSync?.dispose();
+        ui.domSizeSync = null;
         if (typeof origRemoved === "function") return origRemoved.apply(this, arguments);
       };
     }
@@ -1093,7 +1106,7 @@
 
         function clamp(v, min, max) { return isNaN(v) ? 0 : Math.max(min, Math.min(max, v)); }
         const applyWeight = (v) => {
-          l.weight = clamp(v, 0, 2);
+          l.weight = clamp(v, -2, 2);
           valSpan.value = l.weight.toFixed(2);
         };
         // 单击步进 0.05（仅纯单击；若刚发生 scrubbing 拖动则跳过，避免双重 commit 重建 DOM 丢卡片）
@@ -1149,7 +1162,7 @@
 
         valSpan.onchange = () => {
           const v = parseFloat(valSpan.value);
-          if (!isNaN(v) && v >= 0 && v <= 2) { applyWeight(v); this._commit(); }
+          if (!isNaN(v) && v >= -2 && v <= 2) { applyWeight(v); this._commit(); }
           else { valSpan.value = l.weight.toFixed(2); }
         };
         valSpan.onkeydown = (e) => { if (e.key === "Enter") valSpan.blur(); };
@@ -1489,7 +1502,7 @@
       modal.style.cssText = "background:linear-gradient(180deg,rgba(20,20,28,0.9),rgba(10,10,14,0.95)),radial-gradient(ellipse at top,rgba(94,106,210,0.06),transparent 60%);border-radius:14px;padding:16px;width:94vw;max-width:980px;max-height:88vh;display:flex;flex-direction:column;border:1px solid rgba(255,255,255,0.10);box-shadow:0 0 0 1px rgba(255,255,255,0.05),0 24px 70px rgba(0,0,0,0.7),0 0 100px rgba(94,106,210,0.08),inset 0 1px 0 0 rgba(255,255,255,0.06);";
       modal.innerHTML = `
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
-          <h3 style="margin:0;font-size:13px;color:#EDEDEF;font-weight:600;">📂 本地 LoRA</h3>
+          <h3 style="margin:0;font-size:13px;color:#EDEDEF;font-weight:600;">📂 本地 LoRA（含子目录）</h3>
           <span style="font-size:10px;color:rgba(255,255,255,0.35);" class="bm-total"></span>
           <span style="flex:1"></span>
           <button class="bm-mode" style="padding:3px 8px;background:rgba(94,106,210,0.2);color:#9aa5ff;border:1px solid rgba(94,106,210,0.3);border-radius:5px;cursor:pointer;font-size:9px;">☰ 列表</button>

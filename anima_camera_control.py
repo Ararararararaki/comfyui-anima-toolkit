@@ -368,7 +368,15 @@ class CameraControlCore:
             frac = max(0.0, min(1.0, (end - float(z)) / (end - start)))
         else:
             frac = max(0.0, min(1.0, (float(z) - start) / (end - start)))
-        w = 1.0 + frac * extra_master * extra
+        # 新节点使用 distance.weight 作为统一的「距离权重」，当前档位只
+        # 决定输出哪个距离 tag，不再让特写/近景/中景/全身/远景各自持有
+        # 一套互相独立的权重。保留 category.weight 仅为兼容此前测试版配置。
+        if "weight" in cfg["distance"]:
+            w = float(cfg["distance"].get("weight", 1.0)) + frac * extra_master * extra
+        elif "weight" in cat:
+            w = float(cat.get("weight", 1.0)) + frac * extra_master * extra
+        else:
+            w = 1.0 + frac * extra_master * extra
         w = min(wmax, max(wmin, w))
         return cls._emit_weighted(cat["tag"], w)
 
@@ -380,7 +388,7 @@ class CameraControlCore:
         extra_master = float(cfg.get("extra_master", 1.0))
         extra = float(tilt.get("extra", 0.0))
         wmax = float(cfg.get("weight_max", 10.0))
-        w = 1.0 + extra_master * extra
+        w = float(tilt.get("weight", 1.0)) + extra_master * extra if "weight" in tilt else 1.0 + extra_master * extra
         w = min(wmax, max(0.1, w))
         return cls._emit_weighted(tilt.get("dutch_tag", ""), w)
 
@@ -421,7 +429,13 @@ class CameraControlCore:
                 dir_cfg = cfg["azimuth"]["directions"].get(name, {})
                 if not dir_cfg.get("enabled", True):
                     continue
-                w = ratio * az_budget
+                if "weight" in dir_cfg:
+                    # 有独立权重时，权重表示该方向在正对机位时的目标值，
+                    # 再按连续方位比例和俯仰门控衰减；斜向机位仍会自然混合。
+                    direction_budget = min(max(0.0, float(dir_cfg.get("weight", 0.0))), wmax)
+                    w = ratio * direction_budget * az_gate
+                else:
+                    w = ratio * az_budget
                 if ratio <= 0 or w < dz:
                     continue
                 w = min(wmax, max(wmin, w))
@@ -434,7 +448,12 @@ class CameraControlCore:
             if elev_cat and elev_cat.get("tag") and elev_cat.get("enabled", True):
                 extra_master = float(cfg.get("extra_master", 1.0))
                 elev_extra = float(cfg["elevation"].get("extra", 0.0))
-                ew = abs(float(pos_y)) * (1.0 + extra_master * elev_extra)
+                if "weight" in cfg["elevation"]:
+                    ew = abs(float(pos_y)) * float(cfg["elevation"].get("weight", 1.0))
+                elif "weight" in elev_cat:
+                    ew = abs(float(pos_y)) * float(elev_cat.get("weight", 1.0))
+                else:
+                    ew = abs(float(pos_y)) * (1.0 + extra_master * elev_extra)
                 if ew >= dz:
                     ew = min(wmax, max(wmin, ew))
                     parts.extend(cls._emit_weighted(elev_cat["tag"], ew))
@@ -562,7 +581,7 @@ class AnimaCameraControl:
                 }),
                 "roll": ("FLOAT", {
                     "default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01,
-                    "label": "翻滚倾斜 (Roll)",
+                    "label": "倾斜角 (Roll)",
                 }),
                 "extra_tags": ("STRING", {
                     "default": "",
