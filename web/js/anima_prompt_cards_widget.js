@@ -338,22 +338,50 @@
 
   const CJK_RE = /[\u4e00-\u9fff\u3400-\u4dbf]/;
 
+  function parsePromptToken(raw) {
+    const value = String(raw || "").trim();
+    if (!value) return null;
+    const m = value.match(/^\((.+):([+-]?(?:\d+(?:\.\d*)?|\.\d+))\)$/);
+    if (m) return { text: m[1].trim(), weight: m[2] };
+    return { text: value, weight: "" };
+  }
+
+  // 拆分提示词并保留每个片段前的原始分隔符。
+  // 这是刻意的格式信息：用户用空行/换行分组时，后续联想替换、翻译、
+  // 隐藏/恢复和权重调整都必须沿用这些分隔符，不能重新统一成逗号。
+  function splitPromptPieces(text) {
+    const source = String(text || "");
+    const out = [];
+    let tokenStart = 0;
+    let separatorBefore = "";
+    let i = 0;
+    const push = (raw) => {
+      const parsed = parsePromptToken(raw);
+      if (!parsed) return;
+      out.push({ ...parsed, separatorBefore, hidden: false });
+      separatorBefore = "";
+    };
+    while (i < source.length) {
+      if (!/[、，,;；\r\n]/.test(source[i])) {
+        i += 1;
+        continue;
+      }
+      push(source.slice(tokenStart, i));
+      const separatorStart = i;
+      i += 1;
+      while (i < source.length && /[ \t\r\n]/.test(source[i])) i += 1;
+      separatorBefore += source.slice(separatorStart, i);
+      tokenStart = i;
+    }
+    push(source.slice(tokenStart));
+    return out;
+  }
+
   // 拆分提示词 → 片段列表（[{text, weight}]）：
   // 按换行分段，段内按所有逗号（中文顿号/逗号/分号/英文逗号）全部分割。
   // 2026-08-18 用户要求：所有逗号都应分割（不做长句保留；组合卡展开=内部 tag 可拆）。
   function splitTags(text) {
-    const out = [];
-    for (let rawLine of String(text || "").split(/\r?\n/)) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      const parts = line.split(/[、，,;；]/).map((s) => s.trim()).filter(Boolean);
-      for (let p of parts) {
-        const m = p.match(/^\((.+):([+-]?(?:\d+(?:\.\d*)?|\.\d+))\)$/);
-        if (m) { out.push({ text: m[1].trim(), weight: m[2] }); continue; }
-        out.push({ text: p, weight: "" });
-      }
-    }
-    return out;
+    return splitPromptPieces(text).map(({ text: value, weight }) => ({ text: value, weight }));
   }
 
   function langOf(text) {
@@ -569,7 +597,13 @@
   }
 
   function serializePromptPieces(parts) {
-    return (parts || []).map((p) => formatWeightedPromptText(p.text, p.weight)).filter(Boolean).join(", ");
+    const visible = (parts || []).filter((piece) => piece && !piece.hidden && formatWeightedPromptText(piece.text, piece.weight));
+    return visible.map((piece, index) => {
+      const separator = index === 0
+        ? ""
+        : (typeof piece.separatorBefore === "string" && piece.separatorBefore ? piece.separatorBefore : ", ");
+      return separator + formatWeightedPromptText(piece.text, piece.weight);
+    }).join("");
   }
 
   // 隐藏片段不能只存在 CardsUI 内存：ComfyUI 刷新/重建节点时会重新读取
@@ -577,7 +611,7 @@
   // 放进节点的可序列化 hidden widget，才能让工作流恢复后继续显示这些卡片。
   const PROMPT_PIECES_STATE_VERSION = 1;
 
-  function normalizePromptPiece(piece) {
+  function normalizePromptPiece(piece, index = 0) {
     if (!piece || typeof piece !== "object") return null;
     const text = String(piece.text || "").trim();
     if (!text) return null;
@@ -585,6 +619,12 @@
       text,
       weight: String(piece.weight ?? "").trim(),
       hidden: Boolean(piece.hidden),
+      // Older workflow state had no separator metadata.  Use the historic
+      // comma fallback; _ensurePromptPiecesInSync will reparse the live text
+      // once and recover its exact separators.
+      separatorBefore: typeof piece.separatorBefore === "string"
+        ? piece.separatorBefore
+        : (index ? ", " : ""),
     };
   }
 
@@ -633,8 +673,14 @@
     const analyst = splitTags(cur).map((p) => p.text.toLowerCase().trim());
     const base = String(c.prompt || c.en || "").toLowerCase().trim();
     if (analyst.includes(base)) return cur;
-    const curT = String(cur || "").replace(/[,\s]+$/, "");
-    return curT ? curT + sep + piece : piece;
+    const raw = String(cur || "");
+    const curT = raw.replace(/[ \t]+$/, "");
+    // A deliberate trailing newline means the user started a new visual
+    // group.  Append into that group without converting the whole prompt to
+    // comma-separated text.
+    if (/\r?\n\s*$/.test(curT)) return curT + piece;
+    const compact = curT.replace(/,\s*$/, "");
+    return compact ? compact + sep + piece : piece;
   }
 
   // 追加工具箱的整段提示词：保留已有内容，并用空两行分隔，便于在②区阅读和继续编辑。
@@ -650,7 +696,7 @@
 
   function removePiece(cur, piece) {
     const target = (piece.text || "").trim();
-    const parts = splitTags(cur);
+    const parts = splitPromptPieces(cur);
     const keep = [];
     let removed = false;
     for (const p of parts) {
@@ -1167,7 +1213,7 @@
     curText() { return this.w.positive?.value || ""; }
 
     _piecesFromText(text) {
-      return splitTags(text).map((piece) => ({ ...piece, hidden: false }));
+      return splitPromptPieces(text);
     }
 
     _syncPromptPiecesFromVisibleText(text) {
@@ -1210,6 +1256,9 @@
 
     _commitPromptPieces(render = true) {
       const pieces = this._promptPieces();
+      // serializePromptPieces uses each piece's separatorBefore.  Do not
+      // replace this with a plain `join(', ')`: line breaks are intentional
+      // visual/category boundaries in the user's prompt.
       const next = serializePromptPieces(pieces.filter((piece) => !piece.hidden));
       this._setW(this.w.positive, next);
       this._persistPromptPieces();
@@ -2119,7 +2168,7 @@
       const parts = this._ensurePromptPiecesInSync();
       this.chipsEl.innerHTML = "";
       if (!parts.length) {
-        this.chipsEl.innerHTML = `<div class="tk-cards-empty">输入提示词后自动按逗号分组（点击片段=存为卡片；hover ✕=移除）</div>`;
+        this.chipsEl.innerHTML = `<div class="tk-cards-empty">输入提示词后按逗号/换行分组（保留原分组；点击片段=存为卡片；hover ✕=移除）</div>`;
         return;
       }
       for (let index = 0; index < parts.length; index++) {
@@ -2712,17 +2761,27 @@
     }
 
     _appendResolvedText(text) {
-      const additions = splitTags(text);
+      const additions = splitPromptPieces(text);
       if (!additions.length) return false;
       const current = this._promptPieces();
       const seen = new Set(current.map((p) => p.text.toLowerCase().trim()));
-      for (const addition of additions) {
+      const currentText = this.curText();
+      const firstSeparator = current.length
+        ? (/\r?\n\s*$/.test(currentText) ? "" : ", ")
+        : "";
+      let appendedCount = 0;
+      additions.forEach((addition) => {
         const key = addition.text.toLowerCase().trim();
         if (key && !seen.has(key)) {
-          current.push({ ...addition, hidden: false });
+          current.push({
+            ...addition,
+            hidden: false,
+            separatorBefore: appendedCount === 0 ? firstSeparator : addition.separatorBefore,
+          });
           seen.add(key);
+          appendedCount += 1;
         }
-      }
+      });
       this._commitPromptPieces();
       this._hideResolve();
       return true;
@@ -4932,6 +4991,8 @@
       async setup() {
         window.__tkCardsDebug = window.__tkCardsDebug || {};
         window.__tkCardsDebug.splitTags = splitTags;
+        window.__tkCardsDebug.splitPromptPieces = splitPromptPieces;
+        window.__tkCardsDebug.serializePromptPieces = serializePromptPieces;
         window.__tkCardsDebug.appendCardToPrompt = appendCardToPrompt;
         window.__tkCardsDebug.appendPromptBlock = appendPromptBlock;
       },

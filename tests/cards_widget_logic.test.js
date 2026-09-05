@@ -24,7 +24,7 @@ vm.runInContext('window.comfyAPI = comfyAPI;', sandbox);
 vm.runInContext(src, sandbox);
 
 const dbg = sandbox.window.__tkCardsDebug;
-if (!dbg || !dbg.splitTags || !dbg.appendPromptBlock) { console.error('FAIL: debug exports missing'); process.exit(1); }
+if (!dbg || !dbg.splitTags || !dbg.splitPromptPieces || !dbg.serializePromptPieces || !dbg.appendPromptBlock) { console.error('FAIL: debug exports missing'); process.exit(1); }
 
 let pass = 0, fail = 0;
 function eq(name, actual, expected) {
@@ -44,6 +44,13 @@ eq('长句也全拆（用户要求所有逗号都分割）', (() => {
 eq('权重括号', dbg.splitTags('(long hair:1.2), solo'), [{text:'long hair',weight:'1.2'},{text:'solo',weight:''}]);
 eq('换行拆分', dbg.splitTags('1girl\nsolo focus'), [{text:'1girl',weight:''},{text:'solo focus',weight:''}]);
 eq('空输入', dbg.splitTags(''), []);
+
+// 用户刻意用空行分组时，任何片段操作都必须保留原始分隔符。
+const grouped = dbg.splitPromptPieces('1girl, solo\n\nwhite hair, blue eyes');
+eq('保留提示词分组分隔符', dbg.serializePromptPieces(grouped), '1girl, solo\n\nwhite hair, blue eyes');
+grouped[1].hidden = true;
+eq('隐藏片段后仍保留后续分组', dbg.serializePromptPieces(grouped), '1girl\n\nwhite hair, blue eyes');
+eq('追加卡片不抹掉已有换行', dbg.appendCardToPrompt('1girl\n\nwhite hair\n', {prompt:'blue eyes'}), '1girl\n\nwhite hair\nblue eyes');
 
 // appendCardToPrompt（智能去重）—— 卡片对象用 PromptEntry 结构 {prompt, weight}
 eq('追加到空', dbg.appendCardToPrompt('', {prompt:'long hair', weight:''}), 'long hair');
