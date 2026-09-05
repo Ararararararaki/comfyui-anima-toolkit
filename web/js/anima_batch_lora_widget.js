@@ -53,6 +53,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   };
   // bridge 一次性投递：已应用版本记录（localStorage），重启/刷新不重放历史残留
   const BRIDGE_APPLIED_KEY = "anima_bridge_applied_ts";
+  const LORA_INPUT_HEIGHT_KEY = "anima_batch_lora_input_height_v1";
   // 面板 URL / 图标：动态解析当前插件目录名（兼容任意 clone 目录名）
   let PANEL_BASE = "/extensions/ComfyUI-Anima-Batch-LoRA/app/";
   let ICON_URL = "/extensions/ComfyUI-Anima-Batch-LoRA/img/anima-btn.jpg";
@@ -947,6 +948,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.node.onRemoved = function () {
         if (ui._bridgeTimer) { clearInterval(ui._bridgeTimer); ui._bridgeTimer = null; }
         if (ui._updateTimer) { clearInterval(ui._updateTimer); ui._updateTimer = null; }
+        ui._loraInputResizeObserver?.disconnect();
+        ui._loraInputResizeObserver = null;
         ui.domSizeSync?.dispose();
         ui.domSizeSync = null;
         if (typeof origRemoved === "function") return origRemoved.apply(this, arguments);
@@ -1445,29 +1448,71 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       }
     }
 
-    // ── 让 lora_syntax 多行输入框高度随内容自适应（容纳更多 LoRA 标签） ──
+    // ── 让 lora_syntax 输入框默认紧凑，并保留可拖动高度 ──
     _enhanceLoraInput() {
       let done = false;
+      const minHeight = 64;
+      const defaultHeight = 96;
+      const maxHeight = 220;
+      const storageKey = () => `${LORA_INPUT_HEIGHT_KEY}:${this.node?.id ?? "unassigned"}`;
+      const readStoredHeight = () => {
+        try {
+          const value = Number(localStorage.getItem(storageKey()));
+          return Number.isFinite(value) ? Math.max(minHeight, Math.min(maxHeight, Math.round(value))) : 0;
+        } catch {
+          return 0;
+        }
+      };
+      const saveHeight = (height) => {
+        try { localStorage.setItem(storageKey(), String(height)); } catch {}
+      };
+      const findVisibleInput = (widget) => {
+        const nodeId = String(this.node?.id ?? "");
+        const visibleInNode = [...document.querySelectorAll("textarea, input")].find((candidate) => {
+          const owner = candidate.closest?.("[node-id]");
+          return owner?.getAttribute("node-id") === nodeId && candidate.getClientRects().length > 0;
+        });
+        const candidates = [
+          visibleInNode,
+          widget?.inputEl,
+          widget?.element,
+          ...(widget?.element?.querySelectorAll?.("textarea, input") || []),
+        ].filter(Boolean);
+        return candidates.find((candidate) => /^(TEXTAREA|INPUT)$/.test(candidate.tagName) && candidate.isConnected && candidate.getClientRects().length > 0) || null;
+      };
       const attempt = () => {
         if (done) return;
         const w = this.loraWidget;
         if (!w) return;
-        const el = (w.inputEl) || (w.element && w.element.querySelector("textarea")) || (w.element && w.element.querySelector("input"));
+        const el = findVisibleInput(w);
         if (!el) return;
         done = true;
-        el.style.minHeight = "64px";
+        el.style.minHeight = `${minHeight}px`;
+        el.style.maxHeight = `${maxHeight}px`;
         el.style.lineHeight = "1.45";
         el.style.fontFamily = "monospace";
         el.style.fontSize = "11px";
         el.style.resize = "vertical";
         el.style.overflowY = "auto";
         el.style.whiteSpace = "pre-wrap";
-        const autosize = () => {
-          el.style.height = "auto";
-          el.style.height = Math.min(Math.max(el.scrollHeight + 4, 64), 220) + "px";
+        el.title = "可拖动右下角调整输入框高度";
+        let applyingHeight = false;
+        const applyHeight = (height, persist = true) => {
+          const value = Math.max(minHeight, Math.min(maxHeight, Math.round(Number(height) || defaultHeight)));
+          applyingHeight = true;
+          el.style.height = `${value}px`;
+          if (persist) saveHeight(value);
+          requestAnimationFrame(() => { applyingHeight = false; });
         };
-        el.addEventListener("input", autosize);
-        autosize();
+        applyHeight(readStoredHeight() || defaultHeight, false);
+        const resizeObserver = typeof ResizeObserver === "function" ? new ResizeObserver(() => {
+          if (applyingHeight) return;
+          const value = Math.round(el.getBoundingClientRect().height);
+          if (value >= minHeight && value <= maxHeight) saveHeight(value);
+        }) : null;
+        resizeObserver?.observe(el);
+        this._loraInputResizeObserver = resizeObserver;
+        this._loraInputElement = el;
         if (this.node.graph) this.node.graph.setDirtyCanvas(true, true);
       };
       attempt();
