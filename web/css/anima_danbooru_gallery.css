@@ -126,10 +126,12 @@
 .adg-menu-arrow { margin-left: 4px; color: #8f899e; }
 
 .adg-cascade-row { position: relative; }
+.adg-cascade-row.is-open { z-index: 2; }
 .adg-submenu {
-  position: absolute;
-  top: -6px;
-  left: calc(100% + 7px);
+  position: fixed;
+  z-index: 100011;
+  top: 0;
+  left: 0;
   display: none;
   min-width: 178px;
   max-height: min(400px, calc(100vh - 20px));

@@ -130,6 +130,24 @@ export class PortalDropdown {
   wireCascades(menu) {
     const rows = [...menu.querySelectorAll(".adg-cascade-row")];
     const hoverOpen = menu.dataset.cascadeMode !== "click";
+    const placeSubmenu = (row, trigger, submenu) => {
+      const triggerRect = trigger.getBoundingClientRect();
+      const submenuRect = submenu.getBoundingClientRect();
+      const margin = 8;
+      const gap = 7;
+      let left = triggerRect.right + gap;
+      let opensLeft = false;
+      if (left + submenuRect.width > window.innerWidth - margin) {
+        left = triggerRect.left - submenuRect.width - gap;
+        opensLeft = true;
+      }
+      left = Math.max(margin, Math.min(left, window.innerWidth - submenuRect.width - margin));
+      let top = triggerRect.top - 6;
+      top = Math.max(margin, Math.min(top, window.innerHeight - submenuRect.height - margin));
+      submenu.style.left = `${Math.round(left)}px`;
+      submenu.style.top = `${Math.round(top)}px`;
+      row.classList.toggle("opens-left", opensLeft);
+    };
     const closeOtherRows = (current) => rows.forEach((row) => {
       if (row !== current && !row.classList.contains("is-pinned")) row.classList.remove("is-open");
     });
@@ -145,8 +163,7 @@ export class PortalDropdown {
         row.classList.add("is-open");
         row.classList.toggle("is-pinned", pin || row.classList.contains("is-pinned"));
         requestAnimationFrame(() => {
-          const rect = submenu.getBoundingClientRect();
-          row.classList.toggle("opens-left", rect.right > window.innerWidth - 8);
+          if (row.classList.contains("is-open")) placeSubmenu(row, trigger, submenu);
         });
       };
       const close = () => {
