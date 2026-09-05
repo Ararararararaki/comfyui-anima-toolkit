@@ -191,13 +191,21 @@ import {
     bindNativeWidgets() {
       if (this.modeWidget) {
         this.modeWidget.callback = (value) => {
-          this._originalModeCallback?.call(this.node, value);
+          // ComfyUI's native combo callback is a widget method.  Preserve
+          // that receiver: recent ComfyUI reads `this.options.step2` from
+          // the widget's numeric/combo control while applying queued values.
+          // Calling it with the node as `this` makes `queuePrompt()` reject
+          // with "Cannot read properties of undefined (reading 'step2')".
+          this._originalModeCallback?.call(this.modeWidget, value);
           this.onModeChanged(value);
         };
       }
       if (this.seedWidget) {
         this.seedWidget.callback = (value) => {
-          this._originalSeedCallback?.call(this.node, value);
+          // Keep the native widget callback's receiver intact; see the mode
+          // callback above.  This is important when ComfyUI executes widget
+          // callbacks from `afterQueued` during workflow submission.
+          this._originalSeedCallback?.call(this.seedWidget, value);
           this.onSeedChanged(value);
         };
       }
