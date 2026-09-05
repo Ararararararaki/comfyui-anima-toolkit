@@ -311,13 +311,15 @@
 .adg-image-error,
 .adg-empty { display: grid; min-height: 90px; place-items: center; color: #ff9f9f; background: #292934; }
 .adg-empty { column-span: all; color: #9296a5; }
-.adg-card-actions { position: absolute; top: 7px; right: 7px; display: flex; gap: 3px; opacity: 0; transform: translateY(-3px); transition: opacity .15s, transform .15s; }
+.adg-card-actions { position: absolute; top: 7px; left: 7px; right: 7px; z-index: 4; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 3px; max-width: calc(100% - 14px); opacity: 0; transform: translateY(-3px); transition: opacity .15s, transform .15s; }
 .adg-card:hover .adg-card-actions,
 .adg-card:focus-within .adg-card-actions { opacity: 1; transform: translateY(0); }
-.adg-card-actions button { min-width: 24px; padding: 3px 5px; border: 1px solid rgba(255,255,255,.2); border-radius: 4px; color: #fff; background: rgba(0,0,0,.76); font-size: 9px; cursor: pointer; }
+.adg-card-actions button { flex: 0 0 auto; min-width: 24px; padding: 3px 5px; border: 1px solid rgba(255,255,255,.2); border-radius: 4px; color: #fff; background: rgba(0,0,0,.76); font-size: 9px; cursor: pointer; }
 .adg-card-actions button:hover,
 .adg-card-actions button.is-favorite { border-color: #9988ff; background: #6758c9; }
-.adg-prompt-tooltip { position: fixed; z-index: 100001; display: flex; max-width: min(620px,70vw); max-height: 55vh; flex-wrap: wrap; align-content: flex-start; gap: 5px; overflow: auto; padding: 9px; border: 1px solid rgba(180,156,255,.7); border-radius: 7px; color: #ecebff; background: rgba(19,18,28,.96); box-shadow: 0 10px 28px rgba(0,0,0,.55); font: 11px/1.35 system-ui,sans-serif; pointer-events: none; }
+.adg-prompt-tooltip { position: fixed; z-index: 100001; display: flex; flex-direction: column; max-width: min(620px,70vw); max-height: 55vh; gap: 8px; overflow: auto; padding: 9px; border: 1px solid rgba(180,156,255,.7); border-radius: 7px; color: #ecebff; background: rgba(19,18,28,.96); box-shadow: 0 10px 28px rgba(0,0,0,.55); font: 11px/1.35 system-ui,sans-serif; pointer-events: none; }
+.adg-prompt-tooltip-section { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 5px; }
+.adg-prompt-tooltip-category { flex: 0 0 100%; padding: 2px 4px; border-bottom: 1px solid rgba(180,156,255,.35); color: #c7bfff; font-weight: 700; }
 .adg-prompt-tooltip-line { display: inline-flex; max-width: 100%; flex: 0 0 auto; gap: 5px; align-items: baseline; padding: 3px 6px; border: 1px solid rgba(255,255,255,.1); border-radius: 4px; background: rgba(255,255,255,.045); }
 .adg-prompt-tooltip-line span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .adg-prompt-tooltip-line small { color: #bcaeff; white-space: nowrap; }

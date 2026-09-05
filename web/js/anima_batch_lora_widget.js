@@ -1660,6 +1660,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             <option value="name">按名称</option>
             <option value="size">按大小</option>
             <option value="date">按日期</option>
+            <option value="usage">按使用次数</option>
           </select>
         </div>
         <div class="bm-body" style="flex:1;display:flex;gap:10px;min-height:0;">
@@ -1796,11 +1797,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             const addedA = this.loras.some((e) => e.name.toLowerCase() === left.name.toLowerCase()) ? 1 : 0;
             const addedB = this.loras.some((e) => e.name.toLowerCase() === right.name.toLowerCase()) ? 1 : 0;
             if (addedA !== addedB) return addedB - addedA;
-            // 常用次数优先
-            const ca = a.m.count || 0;
-            const cb = b.m.count || 0;
-            if (ca !== cb) return cb - ca;
             const k = sortEl.value;
+            if (k === "usage") return (right.m.count || 0) - (left.m.count || 0);
             if (k === "size") return (right.size || 0) - (left.size || 0);
             if (k === "date") return (right.lastModified || 0) - (left.lastModified || 0);
             return left.name.localeCompare(right.name, "zh");

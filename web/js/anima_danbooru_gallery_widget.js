@@ -4,8 +4,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
 (() => {
   const NODE_NAME = "DanbooruGallery";
-  const STORAGE_KEY = "anima_danbooru_gallery_settings_v1";
+  const STORAGE_KEY_PREFIX = "anima_danbooru_gallery_settings_v2:";
+  const LEGACY_STORAGE_KEY = "anima_danbooru_gallery_settings_v1";
+  const LEGACY_MIGRATED_KEY = `${STORAGE_KEY_PREFIX}legacy_migrated`;
   const FAVORITES_STORAGE_KEY = "anima_danbooru_gallery_favorites_v1";
+
+  function getNodeStorageKey(nodeId) {
+    const id = String(nodeId ?? "").trim() || "unassigned";
+    return `${STORAGE_KEY_PREFIX}${id}`;
+  }
 
   // 新 ComfyUI 前端会在节点内容上叠一层“激活面罩”：节点未激活时，第一次点击 DOM 控件会被面罩吃掉。
   // 这里用文档级捕获监听：只要指针落在某个画廊搜索框矩形内，就在下一帧（等节点完成激活）把焦点给输入框。
@@ -189,9 +196,19 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }).length;
   }
 
-  function loadSettings() {
+  function loadSettings(nodeId) {
     try {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+      const storageKey = getNodeStorageKey(nodeId);
+      let raw = localStorage.getItem(storageKey);
+      // 只把旧版全局设置迁移给第一个尚未初始化的节点，避免两个节点再次共享同一份配置。
+      if (!raw && !localStorage.getItem(LEGACY_MIGRATED_KEY)) {
+        raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+        if (raw) {
+          localStorage.setItem(storageKey, raw);
+          localStorage.setItem(LEGACY_MIGRATED_KEY, "1");
+        }
+      }
+      const saved = JSON.parse(raw || "{}");
       return {
         limit: [12, 24, 48].includes(saved.limit) ? saved.limit : 24,
         rating: normalizeRatings(saved.rating),
@@ -215,7 +232,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   class DanbooruGalleryUI {
     constructor(node) {
       this.node = node;
-      this.settings = loadSettings();
+      this.settings = loadSettings(node.id);
       this.page = 1;
       this.posts = [];
       this.requestId = 0;
@@ -267,8 +284,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       return this.registered;
     }
 
+    settingsKey() {
+      return getNodeStorageKey(this.node?.id);
+    }
+
     saveSettings() {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.settings));
+      localStorage.setItem(this.settingsKey(), JSON.stringify(this.settings));
     }
 
     // 重建工具栏「搜索预设」下拉选项（保存/删除预设后调用）
@@ -1414,7 +1435,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           actions.append(button);
           return button;
         };
-        addAction("看图", "查看原图", () => this.openImagePreview(post));
+        addAction("预览", "预览图片", () => this.openImagePreview(post));
         addAction("Prompt", "查看、编辑和复制 Prompt", () => this.openPromptEditor(card, post));
         addAction("入库", "保存图片和 Prompt 到本地工具箱 Prompt 库", () => this.saveToPromptLibrary(post));
         addAction("下载", "下载原图", () => this.downloadPost(post));
@@ -1822,6 +1843,27 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       let tags = [];
       try { tags = JSON.parse(card.dataset.tags || "[]"); } catch { tags = []; }
       if (!tags.length) return;
+      let promptGroups = {};
+      try { promptGroups = JSON.parse(card.dataset.promptGroups || "{}"); } catch { promptGroups = {}; }
+      const tagKeys = new Set(tags.map(promptCardKey));
+      const seen = new Set();
+      const grouped = [];
+      const addGroup = (category, values) => {
+        const groupTags = [];
+        for (const rawTag of Array.isArray(values) ? values : []) {
+          const tag = String(rawTag || "").trim();
+          const key = promptCardKey(tag);
+          if (!tag || !tagKeys.has(key) || seen.has(key)) continue;
+          seen.add(key);
+          groupTags.push(tag);
+        }
+        if (groupTags.length) grouped.push({ category, tags: groupTags });
+      };
+      for (const category of PROMPT_CATEGORY_ORDER) addGroup(category, promptGroups[category]);
+      const ungrouped = tags.filter((tag) => !seen.has(promptCardKey(tag)));
+      if (ungrouped.length) addGroup("general", ungrouped);
+      if (!grouped.length) grouped.push({ category: "general", tags });
+      const groupedTags = grouped.flatMap(({ tags: values }) => values);
       this.hidePromptTooltip();
       const tooltip = document.createElement("div");
       tooltip.className = "adg-prompt-tooltip";
@@ -1829,17 +1871,25 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       document.body.append(tooltip);
       this.tooltip = tooltip;
       this.positionTooltip(event);
-      await this.ensureTagTranslations(tags);
+      await this.ensureTagTranslations(groupedTags);
       if (this.tooltip !== tooltip) return;
-      tooltip.replaceChildren(...tags.map((tag) => {
-        const line = document.createElement("div");
-        line.className = "adg-prompt-tooltip-line";
-        const english = document.createElement("span");
-        english.textContent = tag.replace(/_/g, " ");
-        const chinese = this.translationCache.get(tag);
-        line.append(english);
-        if (chinese) line.append(Object.assign(document.createElement("small"), { textContent: chinese }));
-        return line;
+      tooltip.replaceChildren(...grouped.map(({ category, tags: values }) => {
+        const section = document.createElement("section");
+        section.className = "adg-prompt-tooltip-section";
+        const heading = document.createElement("div");
+        heading.className = "adg-prompt-tooltip-category";
+        heading.textContent = PROMPT_CATEGORY_LABELS[category] || category;
+        section.append(heading, ...values.map((tag) => {
+          const line = document.createElement("div");
+          line.className = "adg-prompt-tooltip-line";
+          const english = document.createElement("span");
+          english.textContent = tag.replace(/_/g, " ");
+          const chinese = this.translationCache.get(tag);
+          line.append(english);
+          if (chinese) line.append(Object.assign(document.createElement("small"), { textContent: chinese }));
+          return line;
+        }));
+        return section;
       }));
     }
 
