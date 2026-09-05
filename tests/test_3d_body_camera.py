@@ -63,6 +63,11 @@ check(meta["camera"]["yaw"] == 90.0 and meta["camera"]["pitch"] == -22.5, "相�
 check(meta["camera"]["distance"] == 3.64, "相机实际距离映射不正确")
 check(len(meta["pose"]) == len(body_camera.POSE_JOINTS), "camera_meta 必须带完整姿势")
 
+left_prompt, _ = node().execute("A-Pose", "{}", "自定义", -0.5, 0, 0, 0, 50, "", body_camera.DEFAULT_CONFIG_JSON)
+right_prompt, _ = node().execute("A-Pose", "{}", "自定义", 0.5, 0, 0, 0, 50, "", body_camera.DEFAULT_CONFIG_JSON)
+check("(from left:" in left_prompt and "(from right:" not in left_prompt, "素体左侧必须输出 from left")
+check("(from right:" in right_prompt and "(from left:" not in right_prompt, "素体右侧必须输出 from right")
+
 custom_config = json.loads(body_camera.BODY_CAMERA_DEFAULT_CONFIG_JSON)
 custom_config["azimuth"]["weight"] = 1.3
 custom_config["distance"]["weight"] = 0.7
@@ -71,10 +76,10 @@ custom_prompt, custom_meta_text = node().execute(
 )
 custom_meta = json.loads(custom_meta_text)
 check("(from front:1.30)" in custom_prompt, "独立方位权重没有进入 BSK 提示词计算")
-check("(medium shot:0.70)" in custom_prompt, "统一距离权重没有进入 BSK 提示词计算")
+check("(close-up:0.70)" in custom_prompt, "统一距离权重没有进入 BSK 提示词计算")
 check("weight_min" not in custom_prompt and "camera_meta" not in custom_prompt and "{" not in custom_prompt, "相机提示词不应混入配置或 camera_meta JSON")
 check(custom_meta["prompt_weights"]["azimuth"]["weight"] == 1.3, "camera_meta 没有返回左右方位权重")
-check(custom_meta["prompt_weights"]["distance"]["label"] == "中景", "距离档位标签不正确")
+check(custom_meta["prompt_weights"]["distance"]["label"] == "近景", "距离档位标签不正确")
 check(custom_meta["prompt_weights"]["distance"]["effective_weight"] == 0.7, "距离档内中心点应保持手动权重")
 
 distance_config = json.loads(body_camera.BODY_CAMERA_DEFAULT_CONFIG_JSON)
@@ -84,12 +89,14 @@ for pz in (-1.0, -0.5, 0.0, 0.5, 1.0):
     details = body_camera.CameraControlCore.distance_weight_details(distance_config, pz)
     distance_categories.append(details["key"])
     distance_weights.append(details["weight"])
-check(distance_categories == ["wide", "full", "medium", "cu", "ecu"], "距离必须分为远景/全身/中景/近景/特写五档")
-near_full = body_camera.CameraControlCore.distance_weight_details(distance_config, -0.21)["weight"]
-far_full = body_camera.CameraControlCore.distance_weight_details(distance_config, -0.69)["weight"]
-far_close = body_camera.CameraControlCore.distance_weight_details(distance_config, 0.21)["weight"]
-near_close = body_camera.CameraControlCore.distance_weight_details(distance_config, 0.69)["weight"]
-check(distance_weights[2] == 1.0 and near_full < far_full and far_close < near_close, "距离滑块没有在档位内连续改变权重")
+check(distance_categories == ["wide", "medium", "cu", "full", "ecu"], "距离必须按远景/中景/近景/全身/特写顺序分档")
+near_medium = body_camera.CameraControlCore.distance_weight_details(distance_config, -0.21)["weight"]
+far_medium = body_camera.CameraControlCore.distance_weight_details(distance_config, -0.59)["weight"]
+far_close = body_camera.CameraControlCore.distance_weight_details(distance_config, -0.19)["weight"]
+near_close = body_camera.CameraControlCore.distance_weight_details(distance_config, 0.19)["weight"]
+far_full = body_camera.CameraControlCore.distance_weight_details(distance_config, 0.21)["weight"]
+near_full = body_camera.CameraControlCore.distance_weight_details(distance_config, 0.69)["weight"]
+check(distance_weights[2] == 1.0 and near_medium < far_medium and far_close < near_close and near_full < far_full, "距离滑块没有在档位内连续改变权重")
 
 _, t_pose_meta = node().execute(
     "T-Pose", "{}", "自定义", 0, 0, 0, 0, 50, "", body_camera.DEFAULT_CONFIG_JSON

@@ -1046,6 +1046,12 @@ class TKPromptCards:
                     "tooltip": "当前 LoRA 语法文本（前端点击触发词卡片时自动维护），输出端口直连 TK Batch LoRA Loader。",
                 }),
             },
+            "hidden": {
+                "prompt_pieces": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                }),
+            },
         }
 
     RETURN_TYPES = ("STRING", "CONDITIONING", "STRING")
@@ -1054,7 +1060,7 @@ class TKPromptCards:
     DESCRIPTION = ("提示词卡片库编辑器：本地批文件一键切换、卡片库（英中对照 tag）拼接当前提示词；"
                    "可选 clip 输入直接编码出 CONDITIONING；lora_syntax 输出直连 TK Batch LoRA Loader 加载触发词对应 LoRA")
 
-    def execute(self, positive="", clip=None, opt_text="", lora_syntax=""):
+    def execute(self, positive="", clip=None, opt_text="", lora_syntax="", prompt_pieces=""):
         text = str(positive or "").strip()
         extra = str(opt_text or "").strip()
         if extra:

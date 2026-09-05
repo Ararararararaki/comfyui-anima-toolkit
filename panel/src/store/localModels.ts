@@ -6,6 +6,8 @@ import { showToast, stripExt } from '../utils'
 import { collectLoraFiles, groupLoraNamesByTopLevelFolder, isLoraFileName, normalizeRelativeLoraPath, pickerRelativeLoraPath, removeLoraFile } from '../services/localLoraScanner'
 
 let _lastBackendSync = 0
+// 分类操作可能在短时间内连续触发；串行化 POST，避免后发请求先完成后又被旧快照覆盖。
+let _categorySyncQueue: Promise<void> = Promise.resolve()
 
 function progressShow(done: number, total: number, label: string) {
   const wrap = document.getElementById('localProgress')
@@ -783,11 +785,13 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     _lastBackendSync = now
     const backend = await get().fetchBackendMeta()
     if (!backend) return
-    const cats: string[] = backend.categories || []
+    const cats: string[] = Array.isArray(backend.categories) ? backend.categories.map(String) : []
     const lm: Record<string, { categories?: string[] }> = backend.loraMeta || {}
     set(s => {
-      const categories = [...s.categories]
-      for (const c of cats) if (!categories.includes(c)) categories.push(c)
+      // 后端列表是双向同步的权威快照。使用并集会让已删除分类在下一次拉取时复活。
+      // 全新安装且后端还没有任何元数据时保留本地默认分类，避免空响应清空初始界面。
+      const hasBackendMeta = cats.length > 0 || Object.keys(lm).length > 0
+      const categories = hasBackendMeta ? [...new Set(cats.filter(Boolean))] : [...s.categories]
       // 本地旧 key(可能带扩展名)归一到无扩展名,避免与节点 key 并存/冲突
       const modelCategories: Record<string, string[]> = {}
       for (const [k, v] of Object.entries(s.modelCategories)) {
@@ -800,8 +804,9 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
         if (!(base in lmBase) || name === base) lmBase[base] = entry
       }
       for (const [base, entry] of Object.entries(lmBase)) {
-        if (entry && Array.isArray(entry.categories) && entry.categories.length) {
-          modelCategories[base] = entry.categories
+        // 空数组也是有意义的状态：它表示节点侧已清空该 LoRA 的分类。
+        if (entry && Array.isArray(entry.categories)) {
+          modelCategories[base] = [...new Set(entry.categories.map(String).filter(Boolean))]
         }
       }
       Cache.save(CAT_CACHE_KEY, categories)
@@ -810,19 +815,27 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     })
   },
   // 推送本地分类到后端(合并式,只带分类相关字段;不携带 loraGroups,避免清空节点组)
-  syncCategoriesToBackend: async () => {
-    const s = get()
-    const loraMeta: Record<string, { categories: string[] }> = {}
-    for (const [name, cats] of Object.entries(s.modelCategories)) {
-      loraMeta[name] = { categories: cats || [] }
-    }
-    try {
-      await fetch('/anima/meta', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ categories: s.categories, loraMeta }),
+  syncCategoriesToBackend: () => {
+    _categorySyncQueue = _categorySyncQueue
+      .catch(() => undefined)
+      .then(async () => {
+        const s = get()
+        const loraMeta: Record<string, { categories: string[] }> = {}
+        for (const [name, cats] of Object.entries(s.modelCategories)) {
+          loraMeta[name] = { categories: cats || [] }
+        }
+        const response = await fetch('/anima/meta', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ categories: s.categories, loraMeta }),
+        })
+        if (!response.ok) throw new Error(`分类同步失败（HTTP ${response.status}）`)
       })
-    } catch { /* 后端不可用时忽略,面板仍可离线使用 */ }
+      .catch(error => {
+        // 后端不可用时保持离线编辑；下一次操作会继续尝试，不吞掉队列链。
+        console.warn('[LocalManager] 分类同步失败:', error)
+      })
+    return _categorySyncQueue
   },
 }))
 

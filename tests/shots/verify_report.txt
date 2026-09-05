@@ -1,0 +1,26 @@
+节点添加成功
+.tk-cards-ui 渲染数: 1
+区[① 工具箱 prompt 库] 存在: True
+区[② 当前提示词] 存在: True
+区[③ 卡片视图] 存在: True
+PNG 拖拽区存在: True
+PNG 选择按钮存在: True
+紧凑布局检查: {'pngInline': True, 'statusCollapsed': True, 'translationModuleCollapsible': True, 'translationInputSharesRow': True, 'hasCardGridResize': True, 'hasSavePrompt': True, 'hasLegacyComboSave': False, 'hasUndoDelete': False}
+卡片英文文本高度可见: True (13.5px)
+中文翻译模块收起: {'open': False, 'saved': True}
+分类页签: ['全部', '通用 (427) ≡删除', 'nsfw (0) ≡删除', '管理分类']
+chips: ['1girl1个女孩译✕', 'long hair长发译✕', '白色过膝袜译✕', '绝对领域译✕']
+整段入 prompt 库: True，③区卡片数量: 427
+双语卡片显示范围: {'height': '380px', 'aria': '380', 'saved': {'collapsed': {'translate': False}, 'pane': 'lib', 'libHeight': 240, 'curTextHeight': 120, 'cardGridHeight': 380}}
+追加去重: before='1girl, long hair, 白色过膝袜、绝对领域' after='1girl, long hair, 白色过膝袜、绝对领域, nijisanji' same=False
+!!! 页面错误:
+  console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+  console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+  console.error: ComfyApp graph accessed before initialization
+  console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+  console.error: Failed to load resource: the server responded with a status of 404 (Not Found)
+  console.error: [bsk_prompt_hint] CodeMirror 未加载
+  console.error: [bsk_prompt_mode] CodeMirror 未加载
+  console.error: [vite:preloadError] {url: null, fileType: unknown, chunkName: null, message: CodeMirror is not defined}
+  console.error: [VS Assets] vs_state.js 未加载
+  console.error: [VS Audio] vs_state.js 未加载

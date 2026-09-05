@@ -1,7 +1,7 @@
 import {
   getAllCards, getCardsByCategory,
   getCard, addCard, updateCard, deleteCard, bulkAddCards, bulkUpdateCards, bulkDeleteCards,
-  queryCardsPage, countCards, countCardsByCategory, countFavCards,
+  queryCardsPage, countCards, countCardsByCategory, countFavCards, clearCards,
   generateCardId, getAllCategories, addCategory, updateCategory, deleteCategory as dbDeleteCategory,
   generateCategoryId, initClothingDB, drawCards, joinCardPrompts,
 } from '../store/clothingDb'
@@ -41,6 +41,20 @@ function revokeObjUrlsExcept(keepIds: Set<string>) {
       objUrlCache.delete(id)
     }
   }
+}
+
+function removeCardsFromTransientState(ids: Iterable<string>) {
+  const removed = new Set([...ids].map(String))
+  if (!removed.size) return
+  gachaResult = gachaResult.filter(c => !removed.has(c.id))
+  removed.forEach(id => {
+    gachaLocked.delete(id)
+    const url = objUrlCache.get(id)
+    if (url) {
+      URL.revokeObjectURL(url)
+      objUrlCache.delete(id)
+    }
+  })
 }
 
 // ── 渲染 ──
@@ -168,9 +182,33 @@ async function deleteSelected() {
   if (!selectedIds.size) return
   const ok = await confirmModal('批量删除', `确认删除选中的 ${selectedIds.size} 张卡片？\n删除后不可恢复！`)
   if (!ok) return
-  await bulkDeleteCards([...selectedIds])
+  const ids = [...selectedIds]
+  await bulkDeleteCards(ids)
   showToast(`🗑️ 已删除 ${selectedIds.size} 张卡片`)
   selectedIds.clear()
+  removeCardsFromTransientState(ids)
+  await renderClothingLibrary()
+}
+
+async function clearAllCards() {
+  const total = await countCards()
+  if (!total) {
+    showToast('服装卡片库已经是空的')
+    return
+  }
+  const ok = await confirmModal(
+    '清空全部服装卡片？',
+    `将永久删除全部 ${total} 张服装卡片及其本地预览图；分类会保留。\n此操作不可恢复，建议先导出备份。`,
+  )
+  if (!ok) return
+  const deleted = await clearCards()
+  selectedIds.clear()
+  gachaResult = []
+  gachaLocked.clear()
+  revokeObjUrlsExcept(new Set())
+  currentCategory = ''
+  page = 1
+  showToast(`🗑️ 已清空 ${deleted} 张服装卡片，分类已保留`)
   await renderClothingLibrary()
 }
 
@@ -200,6 +238,7 @@ function bindToolbar() {
   document.getElementById('clothingAddBtn')?.addEventListener('click', () => openClothingEditor())
   document.getElementById('clothingGachaBtn')?.addEventListener('click', () => openGachaModal())
   document.getElementById('clothingNewCatBtn')?.addEventListener('click', () => (window as any).__clothingAddCategory())
+  document.getElementById('clothingClearBtn')?.addEventListener('click', clearAllCards)
   document.getElementById('clothingDelSelBtn')?.addEventListener('click', deleteSelected)
   document.getElementById('clothingMoveBtn')?.addEventListener('click', moveSelectedToCategory)
   document.getElementById('clothingSelCancelBtn')?.addEventListener('click', clearSelection)
@@ -922,6 +961,7 @@ export function setupClothingHandlers() {
     if (!ok) return
     await deleteCard(id)
     showToast('🗑️ 已删除')
+    removeCardsFromTransientState([id])
     await renderClothingLibrary()
   }
   w.__clothingSetCat = async (catId: string) => {
@@ -951,9 +991,14 @@ export function setupClothingHandlers() {
     await renderClothingLibrary()
   }
   w.__clothingDeleteCategory = async (id: string) => {
+    const cats = await getAllCategories()
+    const cat = cats.find(c => c.id === id)
+    if (!cat) return
     const ok = await confirmModal('删除这个分类？', '该分类下的卡片会移到「未分类」')
     if (!ok) return
     await dbDeleteCategory(id)
+    selectedIds.clear()
+    if (currentCategory === id) currentCategory = ''
     await renderClothingLibrary()
   }
   bindToolbar()

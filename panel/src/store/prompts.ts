@@ -112,6 +112,7 @@ const DEFAULT_CATEGORIES: PromptCategory[] = [
   { id: 'cat_light', name: '光影氛围', icon: '', sortOrder: 4 },
   { id: 'cat_detail', name: '细节增强', icon: '', sortOrder: 5 },
   { id: 'cat_fav', name: '常用', icon: '', sortOrder: 6 },
+  { id: 'cat_emotion', name: '情绪 / 表情', icon: '', sortOrder: 7 },
 ]
 
 // 旧默认值，用于定向迁移判断（仅当仍是旧默认时才更新，避免覆盖用户改名）
@@ -125,12 +126,92 @@ const OLD_DEFAULT_CATEGORIES: Record<string, { name: string; icon: string }> = {
   cat_fav: { name: '⭐ 常用', icon: '⭐' },
 }
 
+const EMOTION_CATEGORY_ID = 'cat_emotion'
+const EMOTION_CATEGORY_NAME = '情绪 / 表情'
+const EMOTION_SEED_KEY = 'anima_prompt_emotion_seed_v3'
+const EMOTION_SEED_LEGACY_KEYS = ['anima_prompt_emotion_seed_v1', 'anima_prompt_emotion_seed_v2']
+const EMOTION_PROMPT_SEEDS = [
+  ['01_tsundere', '傲娇 / 嘴硬心软', 'crossed arms, looking away, pout, puffy cheeks, blush, furrowed brows', 'She crosses her arms and turns her eyes away, puffing her cheeks with a small pout while a faint blush gives away her embarrassment.'],
+  ['02_confused_tilt', '疑惑 / 小脑袋问号', 'head tilt, raised eyebrow, parted lips, confused, finger to cheek', 'She tilts her head slightly, raises one eyebrow, and touches her cheek with a finger as she looks genuinely puzzled.'],
+  ['03_thinking', '认真思考 / 灵机一动前', 'thinking, finger to mouth, looking up, closed mouth, furrowed brows', 'She brings a finger to her lips and raises her eyes thoughtfully, her brows slightly drawn together as she tries to figure something out.'],
+  ['04_happy_fist_pump', '开心 / 活力满满', 'fist pump, clenched hand, grin, open mouth, happy, sparkling eyes', 'She pumps one fist excitedly, breaking into a bright open-mouthed grin as her eyes light up with happiness.'],
+  ['05_gentle_care', '温柔关怀 / 担心你', 'hand on own chest, leaning forward, gentle smile, concerned, soft expression', 'She leans forward slightly with one hand resting against her chest, giving a gentle and caring smile as she watches with quiet concern.'],
+  ['06_pleading', '渴望关照 / 撒娇请求', 'reaching out, outstretched hand, pleading, blush, parted lips, teary eyes', 'She reaches her hand out toward someone with a pleading look, her lips slightly parted and her eyes soft as if quietly asking for attention.'],
+  ['07_playful_tease', '调皮捉弄 / 小恶魔感', 'tongue out, one eye closed, v, grin, playful', 'She sticks out her tongue, closes one eye, and flashes a playful V-sign with a mischievous grin.'],
+  ['08_shy_approach', '害羞期待 / 偷偷靠近', 'hands behind back, leaning forward, blush, shy, smile, looking at viewer', 'She hides her hands behind her back and leans forward a little, smiling shyly with a warm blush as she waits for a response.'],
+  ['09_innocent_shrug', '无辜困惑 / 我什么都不知道', 'shrugging, palms up, head tilt, confused, open mouth, raised eyebrows', 'She gives a small shrug with both palms turned upward, tilting her head with raised eyebrows as if she has absolutely no idea what happened.'],
+  ['10_smug_idea', '得意 / 发现好主意', 'index finger raised, smug, smirk, closed mouth, raised eyebrow', 'She raises one index finger as if she has just thought of a clever idea, wearing a confident little smirk with one eyebrow slightly raised.'],
+] as const
+
+async function seedEmotionPrompts() {
+  if (localStorage.getItem(EMOTION_SEED_KEY)) return
+
+  const existingRecords = await Promise.all(
+    EMOTION_PROMPT_SEEDS.map(([suffix]) => db.prompts.get(`prompt_emotion_${suffix}`)),
+  )
+  const isTagList = (value: unknown, tags: string[]) =>
+    Array.isArray(value) && value.length === tags.length && value.every((tag, index) => tag === tags[index])
+  const hasLegacySeedRecord = EMOTION_PROMPT_SEEDS.some(([,, tagsText, promptText], index) => {
+    const existing = existingRecords[index]
+    const tags = tagsText.split(',').map(tag => tag.trim()).filter(Boolean)
+    return Boolean(existing && (
+      (existing.prompt === tagsText && existing.notes === promptText) ||
+      (existing.prompt === promptText && existing.notes === '' && isTagList(existing.tags, tags))
+    ))
+  })
+  const repairLegacyRecords = EMOTION_SEED_LEGACY_KEYS.some(key => localStorage.getItem(key)) || hasLegacySeedRecord
+
+  let category = await db.promptCategories.get(EMOTION_CATEGORY_ID)
+  if (!category) {
+    category = (await db.promptCategories.toArray()).find(c => c.name === EMOTION_CATEGORY_NAME)
+  }
+  if (!category) {
+    category = { id: EMOTION_CATEGORY_ID, name: EMOTION_CATEGORY_NAME, icon: '', sortOrder: 7 }
+    await db.promptCategories.add(category)
+  }
+
+  const createdAt = Date.now()
+  for (const [index, [suffix, displayText, tagsText, promptText]] of EMOTION_PROMPT_SEEDS.entries()) {
+    const id = `prompt_emotion_${suffix}`
+    const existing = existingRecords[index]
+    const tags = tagsText.split(',').map(tag => tag.trim()).filter(Boolean)
+    const combinedPrompt = `${tagsText}\n\n${promptText}`
+    if (existing) {
+      // v1/v2 曾把两列内容拆到 prompt、tags、notes；仅对仍保持旧种子原值的记录合并修复，避免覆盖用户编辑。
+      const isLegacyV1 = existing.prompt === tagsText && existing.notes === promptText
+      const isLegacyV2 = existing.prompt === promptText && existing.notes === '' && isTagList(existing.tags, tags)
+      if (repairLegacyRecords && (isLegacyV1 || isLegacyV2)) {
+        await db.prompts.update(id, { prompt: combinedPrompt, tags: [], notes: '' })
+      }
+      continue
+    }
+    // v1 已初始化过的用户可能主动删除过某条种子，升级时不要把它重新塞回库。
+    if (repairLegacyRecords) continue
+    await db.prompts.add({
+      id,
+      prompt: combinedPrompt,
+      displayText,
+      images: [],
+      primaryImage: '',
+      tags: [],
+      loras: [],
+      categoryId: category.id,
+      notes: '',
+      isFavorite: false,
+      createdAt: createdAt + Number(suffix.slice(0, 2)),
+      updatedAt: createdAt + Number(suffix.slice(0, 2)),
+    })
+  }
+  localStorage.setItem(EMOTION_SEED_KEY, '1')
+}
+
 export async function initPromptDB() {
   const count = await db.promptCategories.count()
   if (count === 0) {
     await db.promptCategories.bulkAdd(DEFAULT_CATEGORIES)
   }
   await migrateDefaultCategories()
+  await seedEmotionPrompts()
 }
 
 // 对已有用户一次性迁移默认分类（icon 清空、人物面部→人物、常用去 ⭐）

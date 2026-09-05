@@ -36,6 +36,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   const FREE_METATAGS = new Set(["rating", "status", "is", "age", "date", "id", "limit", "score", "downvotes", "favcount", "width", "height", "ratio", "mpixels", "filesize", "filetype", "duration", "md5", "pixiv_id", "pixiv", "parent", "child", "upvote", "embedded", "tagcount"]);
   const DANBOORU_TAG_LIMIT = 2;
   const ORDER_LABELS = { score: "评分", favcount: "收藏", random: "随机", rank: "综合" };
+  // 这些控件为了脱离 LiteGraph 的裁剪层而挂在 body 上；命中它们时，不能再把同一坐标
+  // 下的节点按钮当成“丢失的点击”补发，否则联想项/筛选菜单/弹窗会同时点到下面的按钮。
+  const PORTAL_INTERACTION_SELECTOR = ".adg-suggestions, .adg-portal-menu, .adg-dialog-overlay";
   const PROMPT_CATEGORY_ORDER = Object.freeze(["artist", "copyright", "character", "general", "meta"]);
   const PROMPT_CATEGORY_LABELS = Object.freeze({
     artist: "画师",
@@ -261,6 +264,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.promptEdits = new Map();
       this.registered = false; // 是否已登录 Danbooru
       this.tagLimitValue = 2;  // 计数标签上限（后端按账号等级动态：Member=2 / Gold+=6，随 /account 刷新）
+      this.accountReady = null; // 首次搜索必须等待登录状态/标签上限同步完成
+      this.disposed = false;
       this.initialSearchTimer = null;
       this.galleryBatchId = null;
       this.galleryBatchState = null;
@@ -438,6 +443,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     async search({ resetPage = false, force = false, skipFuzzy = false, retryCount = 0 } = {}) {
+      // build() 中的初次搜索与 refreshAccount 并发时，不能先按默认匿名上限移除排序。
+      // 等待一次账号状态后，后续搜索只会 await 一个已完成的 Promise，不增加网络请求。
+      if (this.accountReady) {
+        try { await this.accountReady; } catch {}
+      }
       // 分类浏览模式下发起新搜索 = 回到普通搜索视图（分类只作用于本地浏览，搜索条件与分类无关）
       if (this.settings.activeCategory) {
         this.settings.activeCategory = "";
@@ -471,8 +481,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       }
       if (counted > this.tagLimit()) {
         const hint = this.registered
-          ? `D站 登录账号最多 ${this.tagLimit()} 个计数标签。请减少普通标签，或改用评级/时间/评分/收藏筛选。`
-          : `D站 匿名搜索最多 ${this.tagLimit()} 个计数标签（普通标签与排序各占 1 个）。请减少普通标签或改用评级/时间/评分/收藏筛选；或在「设置」里登录 Danbooru 账号可解除限制。`;
+          ? `D站 登录账号当前最多 ${this.tagLimit()} 个计数标签（按等级：Member=2，Gold=6）。请减少普通标签，或改用评级/时间/评分/收藏筛选。`
+          : `D站 匿名搜索最多 ${this.tagLimit()} 个计数标签（普通标签与排序各占 1 个）。登录后上限按账号等级提升：Member 仍为 2，Gold 为 6。`;
         this.setStatus(hint, "error");
         return;
       }
@@ -505,6 +515,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         } finally {
           clearTimeout(timer);
         }
+        if (typeof data?.registered === "boolean") this.registered = data.registered;
         if (typeof data?.tag_limit === "number") this.tagLimitValue = data.tag_limit;
         if (currentRequest !== this.requestId) return;
         if (!response.ok) {
@@ -541,8 +552,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const source = data.cached ? "缓存" : "D站";
         const notices = [];
         if (Array.isArray(data.warnings) && data.warnings.length) notices.push(...data.warnings.map(String));
-        if (this._droppedOrder) notices.push(`已自动移除「${ORDER_LABELS[this._droppedOrder] || this._droppedOrder}」排序，按最新显示（匿名最多 2 个计数标签）`);
-          const exclNotice = excludeTags.length ? `已排除 ${excludeTags.map(displayExcludeTag).join("、")} ${excludedCount} 张` : "";
+        if (this._droppedOrder) {
+          const limitHint = this.registered
+            ? `登录账号当前最多 ${this.tagLimit()} 个计数标签`
+            : `匿名最多 ${this.tagLimit()} 个计数标签`;
+          notices.push(`已自动移除「${ORDER_LABELS[this._droppedOrder] || this._droppedOrder}」排序，按最新显示（${limitHint}）`);
+        }
+        const exclNotice = excludeTags.length ? `已排除 ${excludeTags.map(displayExcludeTag).join("、")} ${excludedCount} 张` : "";
         this.setStatus(`${source}：${this.posts.length} 张 · 第 ${this.page} 页` + (exclNotice ? `（${exclNotice}）` : "") + (notices.length ? `（${notices.join("；")}）` : ""));
       } catch (error) {
         if (timedOut) {
@@ -1359,6 +1375,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         if (!imageUrl) continue;
         const card = document.createElement("article");
         card.className = "adg-card";
+        const postId = String(post.id || "");
+        const isFavorite = this.favorites.has(postId);
+        card.classList.toggle("is-favorite", isFavorite);
         card.dataset.imageUrl = imageUrl;
         const promptResult = this.buildPromptForPost(post);
         const promptEdit = this.promptEdits.get(String(post.id || ""));
@@ -1440,6 +1459,18 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         addAction("入库", "保存图片和 Prompt 到本地工具箱 Prompt 库", () => this.saveToPromptLibrary(post));
         addAction("下载", "下载原图", () => this.downloadPost(post));
         addAction("分类", "设置本地分类（点选，支持标签一键建分类）", () => this.openCategoryPicker([post.id]));
+        const favoriteButton = addAction(isFavorite ? "★" : "☆", isFavorite ? "取消收藏" : "收藏", () => {
+          const next = this.toggleFavorite(post.id);
+          card.classList.toggle("is-favorite", next);
+          favoriteButton.classList.toggle("is-favorite", next);
+          favoriteButton.textContent = next ? "★" : "☆";
+          favoriteButton.title = next ? "取消收藏" : "收藏";
+          favoriteButton.setAttribute("aria-label", next ? "取消收藏" : "收藏");
+          favoriteButton.setAttribute("aria-pressed", next ? "true" : "false");
+        });
+        favoriteButton.classList.toggle("is-favorite", isFavorite);
+        favoriteButton.setAttribute("aria-label", isFavorite ? "取消收藏" : "收藏");
+        favoriteButton.setAttribute("aria-pressed", isFavorite ? "true" : "false");
         // 分类徽章：已归类的卡片左上角显示分类名
         const catId = this.settings.postCategories[String(post.id)];
         if (catId) {
@@ -2520,7 +2551,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       excludeSection.append(exclTitle, exclTip, exclRow, exclList);
       content.append(excludeSection);
 
-      // ── D站 账号（登录后解除匿名 2 标签限制，更少限流）──
+      // ── D站 账号（上限按等级：Member=2、Gold=6、Platinum+=不限；登录后限流更宽）──
       const accountSection = document.createElement("section");
       accountSection.className = "adg-settings-section adg-account-section";
       const accTitle = document.createElement("div");
@@ -2530,7 +2561,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         content.querySelector(".adg-account-status")?.remove();
         const status = document.createElement("div");
         status.className = "adg-account-status";
-        status.textContent = reg ? "✓ 已登录 Danbooru（标签上限 6 个，多筛选更自由）" : "ℹ 未登录：匿名最多 2 个计数标签。登录后可同时组合更多标签+排序。";
+        status.textContent = reg
+          ? `✓ 已登录 Danbooru（账号等级上限 ${this.tagLimit()} 个计数标签；Gold 及以上为 6）`
+          : "ℹ 未登录：最多 2 个计数标签。登录后上限按账号等级计算（Member 仍为 2，Gold 为 6，Platinum 及以上不限）。";
         accountSection.prepend(status);
       });
       const userLabel = document.createElement("label");
@@ -2566,12 +2599,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             body: JSON.stringify({ username: ud, api_key: kd }),
           });
           const j = await r.json();
+          if (!r.ok) throw new Error(j?.error || "保存登录失败");
           this.registered = Boolean(j?.logged_in);
           if (typeof j?.tag_limit === "number") this.tagLimitValue = j.tag_limit;
+          // POST 返回的上限是权威值；刷新 accountReady，避免 search() 等待仍指向旧登录状态。
+          this.accountReady = Promise.resolve(this.registered);
           const st = content.querySelector(".adg-account-status");
           if (st) st.textContent = this.registered ? `✓ 已登录 · ${j?.username || ""}` : "ℹ 已退出（匿名 2 标签限制）";
-          this.setStatus(this.registered ? `D站 登录成功，当前计数标签上限 ${this.tagLimitValue} 个` : "D站 已退出登录", "success");
-          this.search({ resetPage: true });
+          this.setStatus(this.registered ? `D站 登录成功，账号当前计数标签上限 ${this.tagLimitValue} 个` : "D站 已退出登录", "success");
+          await this.search({ resetPage: true });
         } catch {
           this.setStatus("保存登录失败，请重试", "error");
         }
@@ -2607,14 +2643,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       queryInput.placeholder = "标签（多个用空格分隔，回车直接搜）如：1girl long hair…";
       queryInput.value = this.settings.lastQuery || "";
       // 让搜索框能被正常点击聚焦：ComfyUI 在捕获阶段会把点击/焦点抢给节点容器，
-      // stopPropagation 挡不住；这里 mousedown preventDefault + 下一帧强制 focus，确保输入落在框内
+      // 通过阻止事件继续冒泡 + 下一帧补焦点来激活输入框，但不能 preventDefault，
+      // 否则浏览器无法根据鼠标落点更新原生 input 的 caret。
       const focusLock = () => {
         requestAnimationFrame(() => {
           try { if (document.activeElement !== queryInput) queryInput.focus({ preventScroll: true }); } catch {}
         });
       };
       queryInput.addEventListener("pointerdown", (e) => { e.stopPropagation(); focusLock(); });
-      queryInput.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); focusLock(); });
+      queryInput.addEventListener("mousedown", (e) => { e.stopPropagation(); focusLock(); });
       queryInput.addEventListener("click", (e) => { e.stopPropagation(); focusLock(); });
       queryInput.oninput = () => {
         if (this.queryWidget) this.queryWidget.value = queryInput.value;
@@ -2754,6 +2791,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const recoverPointer = (event) => {
         if (!this.root?.isConnected) return;
         const stack = document.elementsFromPoint(event.clientX, event.clientY);
+        // Portal/Modal 自己拥有该坐标的交互权。recoverPointer 只负责修复
+        // LiteGraph 面罩遮住的“节点内控件”，不能穿过任何外部浮层。
+        if (stack.some((element) => element.closest?.(PORTAL_INTERACTION_SELECTOR))) return;
         const candidate = stack
           .map((element) => element.closest?.("button, input, select, textarea, [role='button']"))
           .find((element) => element && this.root.contains(element));
@@ -2774,17 +2814,19 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.setStatus("正在自动加载图片…");
       this.renderPosts();
       this.renderPagination();
-      this.refreshAccount(); // 异步刷新登录状态（标签上限 2/6），不阻塞初始搜索
-      this.initialSearchTimer = setTimeout(() => {
+      this.accountReady = this.refreshAccount();
+      this.initialSearchTimer = setTimeout(async () => {
         this.initialSearchTimer = null;
+        try { await this.accountReady; } catch {}
         // addDOMWidget 的挂载可能晚于 build()，但 root 已经是当前节点的权威界面；
         // 不以 isConnected 为条件，避免 Chrome 首次绘制较慢时直接漏掉自动搜索。
-        if (this.root) this.search({ resetPage: true });
+        if (!this.disposed && this.root) this.search({ resetPage: true });
       }, 120);
       return root;
     }
 
     dispose() {
+      this.disposed = true;
       _danQueryFocusTargets.delete(this);
       this.controller?.abort();
       if (this.initialSearchTimer) {

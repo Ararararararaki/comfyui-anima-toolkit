@@ -1,0 +1,522 @@
+/* TK 服装抽卡：ComfyUI 原生深色节点内的紧凑卡片 UI。 */
+
+.tk-clothing-draw {
+  --tk-cd-bg: #0b0c0f;
+  --tk-cd-surface: rgba(255, 255, 255, 0.045);
+  --tk-cd-surface-hover: rgba(255, 255, 255, 0.085);
+  --tk-cd-border: rgba(255, 255, 255, 0.12);
+  --tk-cd-text: #e5e7eb;
+  --tk-cd-muted: #9298a3;
+  --tk-cd-accent: #6872d9;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  padding: 8px;
+  overflow: hidden;
+  color: var(--tk-cd-text);
+  background: var(--tk-cd-bg);
+  font: 12px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.tk-clothing-draw *,
+.tk-clothing-picker-overlay * {
+  box-sizing: border-box;
+}
+
+.tk-clothing-draw-head,
+.tk-clothing-draw-controls,
+.tk-clothing-draw-cardline,
+.tk-clothing-draw-actions,
+.tk-clothing-picker-head,
+.tk-clothing-picker-search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tk-clothing-draw-head {
+  flex: 0 0 auto;
+  min-height: 20px;
+}
+
+.tk-clothing-draw-title {
+  font-weight: 650;
+  color: var(--tk-cd-text);
+}
+
+.tk-clothing-draw-state {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--tk-cd-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tk-clothing-draw-state[data-state="error"] {
+  color: #e78b8b;
+}
+
+.tk-clothing-draw-state[data-state="loading"] {
+  color: #b1b5c8;
+}
+
+.tk-clothing-draw-controls {
+  flex: 0 0 auto;
+}
+
+.tk-clothing-draw-field {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 6px;
+  color: var(--tk-cd-muted);
+  font-size: 10px;
+}
+
+.tk-clothing-draw-field select,
+.tk-clothing-picker-search-row input {
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 26px;
+  padding: 3px 7px;
+  border: 1px solid var(--tk-cd-border);
+  border-radius: 4px;
+  outline: none;
+  color: var(--tk-cd-text);
+  background: #111318;
+  font: inherit;
+}
+
+.tk-clothing-draw-field select:focus,
+.tk-clothing-picker-search-row input:focus {
+  border-color: rgba(104, 114, 217, 0.8);
+  box-shadow: 0 0 0 2px rgba(104, 114, 217, 0.18);
+}
+
+.tk-clothing-draw-button,
+.tk-clothing-picker-refresh,
+.tk-clothing-picker-close {
+  border: 1px solid var(--tk-cd-border);
+  border-radius: 4px;
+  outline: none;
+  color: var(--tk-cd-text);
+  background: var(--tk-cd-surface);
+  cursor: pointer;
+  font: inherit;
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.tk-clothing-draw-button {
+  flex: 0 0 auto;
+  min-height: 26px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.tk-clothing-draw-button:hover,
+.tk-clothing-picker-refresh:hover,
+.tk-clothing-picker-close:hover {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: var(--tk-cd-surface-hover);
+}
+
+.tk-clothing-draw-button:active,
+.tk-clothing-picker-refresh:active,
+.tk-clothing-picker-close:active {
+  transform: scale(0.98);
+}
+
+.tk-clothing-draw-button.primary {
+  border-color: rgba(104, 114, 217, 0.65);
+  background: rgba(104, 114, 217, 0.27);
+}
+
+.tk-clothing-draw-button:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.tk-clothing-draw-preview {
+  position: relative;
+  flex: 1 1 170px;
+  min-height: 100px;
+  overflow: hidden;
+  border: 1px solid var(--tk-cd-border);
+  border-radius: 5px;
+  background: #08090c;
+}
+
+.tk-clothing-draw-preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.tk-clothing-draw-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.34);
+  font-size: 11px;
+}
+
+.tk-clothing-draw-badge {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  color: #cbd0ff;
+  background: rgba(20, 23, 55, 0.8);
+  font-size: 9px;
+}
+
+.tk-clothing-draw-cardline {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.tk-clothing-draw-name {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tk-clothing-draw-category {
+  flex: 0 0 auto;
+  max-width: 38%;
+  overflow: hidden;
+  color: var(--tk-cd-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tk-clothing-draw-prompt {
+  flex: 0 1 86px;
+  min-height: 48px;
+  width: 100%;
+  resize: vertical;
+  padding: 6px 7px;
+  border: 1px solid var(--tk-cd-border);
+  border-radius: 4px;
+  outline: none;
+  color: #c7cad2;
+  background: #101216;
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.tk-clothing-draw-prompt:focus {
+  border-color: rgba(104, 114, 217, 0.55);
+}
+
+.tk-clothing-draw-actions {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+
+.tk-clothing-draw-hint {
+  flex: 0 0 auto;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.38);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── LoRA 浏览器风格的独立选择弹窗 ── */
+
+.tk-clothing-picker-overlay {
+  --tk-cd-text: #e5e7eb;
+  --tk-cd-muted: #9298a3;
+  --tk-cd-accent: #6872d9;
+  position: fixed;
+  z-index: 10000;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(2, 3, 5, 0.82);
+  backdrop-filter: blur(5px);
+  isolation: isolate;
+  font: 12px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.tk-clothing-picker-modal {
+  all: initial;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: min(1060px, 96vw);
+  height: min(720px, 90vh);
+  max-width: calc(100vw - 36px);
+  max-height: calc(100vh - 36px);
+  min-height: 360px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  color: var(--tk-cd-text);
+  background: linear-gradient(180deg, #181a20, #0b0c0f);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04), 0 20px 70px rgba(0, 0, 0, 0.7);
+  font: 12px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.tk-clothing-picker-head {
+  flex: 0 0 auto;
+  min-height: 42px;
+  padding: 8px 11px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.tk-clothing-picker-head strong {
+  font-size: 13px;
+}
+
+.tk-clothing-picker-head span {
+  color: var(--tk-cd-muted);
+  font-size: 10px;
+}
+
+.tk-clothing-picker-close {
+  width: 25px;
+  height: 25px;
+  margin-left: auto;
+  padding: 0;
+  color: #cdd0d8;
+  font-size: 18px;
+  line-height: 20px;
+}
+
+.tk-clothing-picker-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 10px;
+  padding: 10px;
+}
+
+.tk-clothing-picker-sidebar {
+  flex: 0 0 150px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 7px;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.tk-clothing-picker-scope {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 29px;
+  margin-bottom: 2px;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 4px;
+  color: var(--tk-cd-muted);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.tk-clothing-picker-scope span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tk-clothing-picker-scope em {
+  margin-left: auto;
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.tk-clothing-picker-scope:hover,
+.tk-clothing-picker-scope.active {
+  color: var(--tk-cd-text);
+  background: rgba(104, 114, 217, 0.22);
+}
+
+.tk-clothing-picker-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tk-clothing-picker-search-row {
+  flex: 0 0 auto;
+  margin-bottom: 8px;
+}
+
+.tk-clothing-picker-refresh {
+  height: 26px;
+  padding: 3px 8px;
+  color: var(--tk-cd-muted);
+  font-size: 10px;
+}
+
+.tk-clothing-picker-grid {
+  display: grid;
+  flex: 1 1 0;
+  min-height: 0;
+  grid-template-columns: repeat(auto-fill, minmax(172px, 1fr));
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: 8px;
+  overflow-y: auto;
+  padding: 1px 3px 4px 1px;
+  overscroll-behavior: contain;
+}
+
+.tk-clothing-picker-card {
+  position: relative;
+  display: flex !important;
+  flex-direction: column;
+  align-self: start;
+  min-width: 0;
+  height: auto !important;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.035);
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.tk-clothing-picker-card:hover {
+  border-color: rgba(104, 114, 217, 0.66);
+  background: var(--tk-cd-surface-hover);
+  transform: translateY(-2px);
+}
+
+.tk-clothing-picker-card.selected {
+  border-color: rgba(126, 138, 255, 0.95);
+  box-shadow: 0 0 0 1px rgba(104, 114, 217, 0.32);
+}
+
+.tk-clothing-picker-card-image {
+  display: grid;
+  flex: 0 0 170px;
+  min-height: 170px;
+  height: 170px !important;
+  place-items: center;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.22);
+  background: #090a0d;
+}
+
+.tk-clothing-picker-card-image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.tk-clothing-picker-card-info {
+  min-width: 0;
+  padding: 6px 7px 8px;
+}
+
+.tk-clothing-picker-card-title,
+.tk-clothing-picker-card-prompt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tk-clothing-picker-card-title {
+  padding-right: 20px;
+  color: var(--tk-cd-text);
+  font-weight: 650;
+}
+
+.tk-clothing-picker-card-meta {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--tk-cd-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tk-clothing-picker-card-prompt {
+  margin-top: 5px;
+  color: rgba(255, 255, 255, 0.58);
+  font: 10px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.tk-clothing-picker-card-rename {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 21px;
+  height: 21px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  color: #d9dcff;
+  background: rgba(5, 6, 10, 0.72);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.tk-clothing-picker-card-rename:hover {
+  border-color: rgba(126, 138, 255, 0.85);
+  background: rgba(104, 114, 217, 0.35);
+}
+
+.tk-clothing-picker-empty {
+  grid-column: 1 / -1;
+  padding: 50px 12px;
+  color: var(--tk-cd-muted);
+  text-align: center;
+}
+
+.tk-clothing-picker-foot {
+  flex: 0 0 auto;
+  min-height: 22px;
+  padding-top: 5px;
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 10px;
+}
+
+@media (max-width: 620px) {
+  .tk-clothing-picker-sidebar {
+    flex-basis: 105px;
+  }
+
+  .tk-clothing-picker-grid {
+    grid-template-columns: repeat(auto-fill, minmax(135px, 1fr));
+  }
+
+  .tk-clothing-picker-card-image {
+    height: 135px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tk-clothing-draw-button,
+  .tk-clothing-picker-refresh,
+  .tk-clothing-picker-close,
+  .tk-clothing-picker-card {
+    transition: none;
+  }
+}

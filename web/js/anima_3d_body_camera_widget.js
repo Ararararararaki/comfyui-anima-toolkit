@@ -16,9 +16,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   const CAMERA_DISTANCE_BASE = 5.0;
   const CAMERA_DISTANCE_RANGE = 3.4;
   const CAMERA_PRESETS = {
-    "正面": [0, 0, 0, 0], "背面": [1, 0, 0, 0], "左侧": [0.5, 0, 0, 0], "右侧": [-0.5, 0, 0, 0],
+    "正面": [0, 0, 0, 0], "背面": [1, 0, 0, 0], "左侧": [-0.5, 0, 0, 0], "右侧": [0.5, 0, 0, 0],
     "正上方俯视": [0, 1, 0, 0], "俯视": [0, 0.5, 0, 0], "仰视": [0, -0.5, 0, 0], "正下方仰视": [0, -1, 0, 0],
-    "特写": [0, 0, 1, 0], "近景": [0, 0, 0.5, 0], "中景": [0, 0, 0, 0], "全身": [0, 0, -0.5, 0], "远景": [0, 0, -1, 0],
+    "远景": [0, 0, -1, 0], "中景": [0, 0, -0.4, 0], "近景": [0, 0, 0, 0], "全身": [0, 0, 0.4, 0], "特写": [0, 0, 1, 0],
     "荷兰角": [0, 0, 0, 0.6],
   };
   const THREE_SOURCES = [
@@ -56,6 +56,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     if (!Number.isFinite(Number(config.azimuth.weight))) config.azimuth.weight = 10;
     if (!Number.isFinite(Number(config.elevation.weight))) config.elevation.weight = 11;
     if (!Number.isFinite(Number(config.distance.weight))) config.distance.weight = 1;
+    config.distance.category_order = ["wide", "medium", "cu", "full", "ecu"];
     // 新素体节点沿用 BSK 的五档区间，并让距离滑块在档内连续影响权重。
     config.distance.follow_slider = true;
     if (!Number.isFinite(Number(config.tilt.weight))) config.tilt.weight = 1;
@@ -81,8 +82,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   const promptFmtWeight = (value) => (Math.round(Number(value) * 100) / 100).toFixed(2);
   const promptSplitTags = (value) => String(value || "").split(",").map((tag) => tag.trim()).filter(Boolean);
   const promptElevationKey = (value) => value > 0.7 ? "bird" : value > 0.2 ? "high" : value >= -0.2 ? "eye" : value >= -0.7 ? "low" : "worm";
-  const promptDistanceKey = (value) => value > 0.7 ? "ecu" : value > 0.2 ? "cu" : value >= -0.2 ? "medium" : value >= -0.7 ? "full" : "wide";
-  const DISTANCE_RANGES = { ecu: [0.7, 1], cu: [0.2, 0.7], medium: [-0.2, 0.2], full: [-0.7, -0.2], wide: [-1, -0.7] };
+  const promptDistanceKey = (value) => value > 0.6 ? "ecu" : value > 0.2 ? "full" : value >= -0.2 ? "cu" : value >= -0.6 ? "medium" : "wide";
+  const DISTANCE_RANGES = { ecu: [0.6, 1], full: [0.2, 0.6], cu: [-0.2, 0.2], medium: [-0.6, -0.2], wide: [-1, -0.6] };
   const DISTANCE_FAR_STRONGER = new Set(["medium", "full", "wide"]);
   const DISTANCE_LABELS = { wide: "远景", medium: "中景", cu: "近景", full: "全身", ecu: "特写" };
 
@@ -123,13 +124,16 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   // 真正执行时仍由 Python 后端再次计算，不以浏览器预览作为最终输出来源。
   function buildPromptPreview(px, py, pz, roll, config) {
     const parts = [];
+    // 素体正面朝 +Z：世界 X<0 是素体左侧；旧 BSK 核心的左右键名相反，
+    // 这里只转换传给提示词算法的方位坐标，不改变相机实际位置或 camera_meta。
+    const promptPx = -px;
     const wmin = finite(config.weight_min, 0.1);
     const wmax = finite(config.weight_max, 5);
     const deadzone = finite(config.azimuth?.deadzone_ratio, 0.2);
     const clampWeight = (weight) => clamp(weight, wmin, wmax);
     const emitPlain = (tag) => promptSplitTags(tag);
     if (config.no_weight) {
-      const angle = px * Math.PI;
+      const angle = promptPx * Math.PI;
       const ratios = { front: Math.max(0, Math.cos(angle)), back: Math.max(0, -Math.cos(angle)), right: Math.max(0, Math.sin(angle)), left: Math.max(0, -Math.sin(angle)) };
       const sum = Object.values(ratios).reduce((a, b) => a + b, 0);
       if (sum) Object.keys(ratios).forEach((key) => { ratios[key] /= sum; });
@@ -145,7 +149,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       return parts.length ? `${parts.join(", ")},` : "";
     }
     if (config.azimuth?.enabled !== false) {
-      const angle = px * Math.PI;
+      const angle = promptPx * Math.PI;
       const ratios = { front: Math.max(0, Math.cos(angle)), back: Math.max(0, -Math.cos(angle)), right: Math.max(0, Math.sin(angle)), left: Math.max(0, -Math.sin(angle)) };
       const sum = Object.values(ratios).reduce((a, b) => a + b, 0);
       if (sum) Object.keys(ratios).forEach((key) => { ratios[key] /= sum; });
@@ -252,7 +256,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         <header class="tk-3d-body-camera-head"><strong>可动素体相机</strong><span data-status>正在加载本地 3D 引擎…</span></header>
         <div class="tk-3d-body-camera-viewport" data-viewport><canvas class="tk-3d-body-camera-canvas" data-canvas aria-label="拖拽模型旋转相机，点击关节后拖拽可摆姿势"></canvas><div class="tk-3d-body-camera-overlay"><span data-orientation>正面 · 平视</span><span data-selection>相机模式 · 滚轮调整距离</span></div></div>
         <div class="tk-3d-body-camera-toolbar"><span>视角</span><button type="button" data-quick="front">正面</button><button type="button" data-quick="side">侧面</button><button type="button" data-quick="back">背面</button><button type="button" data-quick="up">俯视</button><button type="button" data-quick="down">仰视</button><select data-camera-preset aria-label="机位预设"><option value="自定义">自定义</option>${Object.keys(CAMERA_PRESETS).map((name) => `<option value="${esc(name)}">${esc(name === "荷兰角" ? "倾斜角" : name)}</option>`).join("")}</select></div>
-         <div class="tk-3d-body-camera-section tk-3d-body-camera-camera-section"><div class="tk-3d-body-camera-section-title"><strong>相机参数</strong><span data-camera-readout>实时更新</span></div><div class="tk-3d-body-camera-readouts" aria-live="polite"><span>Yaw <output data-camera-live="yaw">0°</output></span><span>Pitch <output data-camera-live="pitch">0°</output></span><span>Roll <output data-camera-live="roll">0°</output></span><span>距离 <output data-camera-live="distance">5.00</output></span><span>FOV <output data-camera-live="fov">50°</output></span></div><label class="tk-3d-body-camera-range"><span>距离</span><input data-camera="pz" type="range" min="-1" max="1" step="0.01"><output data-camera-output="pz"></output></label><div class="tk-3d-body-camera-distance-categories" aria-label="距离五档"><span data-distance-category="wide">远景</span><span data-distance-category="full">全身</span><span data-distance-category="medium">中景</span><span data-distance-category="cu">近景</span><span data-distance-category="ecu">特写</span></div><label class="tk-3d-body-camera-range"><span>倾斜角</span><input data-camera="roll" type="range" min="-1" max="1" step="0.01"><output data-camera-output="roll"></output></label><label class="tk-3d-body-camera-range"><span>FOV</span><input data-camera="fov" type="range" min="20" max="100" step="1"><output data-camera-output="fov"></output></label><div class="tk-3d-body-camera-normalized">坐标 X <output data-camera-live="x">0.00</output> · Y <output data-camera-live="y">0.00</output> · Z <output data-camera-live="z">0.00</output></div></div>
+        <div class="tk-3d-body-camera-section tk-3d-body-camera-camera-section"><div class="tk-3d-body-camera-section-title"><strong>相机参数</strong><span data-camera-readout>实时更新</span></div><div class="tk-3d-body-camera-readouts" aria-live="polite"><span>Yaw <output data-camera-live="yaw">0°</output></span><span>Pitch <output data-camera-live="pitch">0°</output></span><span>Roll <output data-camera-live="roll">0°</output></span><span>距离 <output data-camera-live="distance">5.00</output></span><span>FOV <output data-camera-live="fov">50°</output></span></div><label class="tk-3d-body-camera-range"><span>距离</span><input data-camera="pz" type="range" min="-1" max="1" step="0.01"><output data-camera-output="pz"></output></label><div class="tk-3d-body-camera-distance-categories" aria-label="距离五档"><span data-distance-category="wide">远景</span><span data-distance-category="medium">中景</span><span data-distance-category="cu">近景</span><span data-distance-category="full">全身</span><span data-distance-category="ecu">特写</span></div><label class="tk-3d-body-camera-range"><span>倾斜角</span><input data-camera="roll" type="range" min="-1" max="1" step="0.01"><output data-camera-output="roll"></output></label><label class="tk-3d-body-camera-range"><span>FOV</span><input data-camera="fov" type="range" min="20" max="100" step="1"><output data-camera-output="fov"></output></label><div class="tk-3d-body-camera-normalized">坐标 X <output data-camera-live="x">0.00</output> · Y <output data-camera-live="y">0.00</output> · Z <output data-camera-live="z">0.00</output></div></div>
         <div class="tk-3d-body-camera-section tk-3d-body-camera-prompt-section"><div class="tk-3d-body-camera-section-title"><strong>提示词参数</strong><span data-prompt-active>方位权重</span></div><div class="tk-3d-body-camera-prompt-weight-groups" data-prompt-weights></div><div class="tk-3d-body-camera-prompt-preview"><span>当前输出</span><code data-prompt-preview>正在计算…</code></div></div>
         <div class="tk-3d-body-camera-section tk-3d-body-camera-pose-section"><div class="tk-3d-body-camera-section-title"><strong>摆姿势</strong><span>点击关节后在模型上拖拽，或编辑 XYZ</span></div><div class="tk-3d-body-camera-pose-actions"><button type="button" data-pose="a">A-Pose</button><button type="button" data-pose="t">T-Pose</button><button type="button" data-pose="reset">重置</button><select data-joint aria-label="选择关节"></select></div><div class="tk-3d-body-camera-axis-grid"><label>X<input data-axis="x" type="range" min="-180" max="180" step="1"><output data-axis-output="x">0°</output></label><label>Y<input data-axis="y" type="range" min="-180" max="180" step="1"><output data-axis-output="y">0°</output></label><label>Z<input data-axis="z" type="range" min="-180" max="180" step="1"><output data-axis-output="z">0°</output></label></div></div>
         <div class="tk-3d-body-camera-save-row"><input data-pose-name value="姿势1" aria-label="姿势名称"><button type="button" data-pose-action="save">保存</button><select data-pose-slot aria-label="已保存姿势"><option value="">选择已保存姿势</option></select><button type="button" data-pose-action="restore">恢复</button><button type="button" data-pose-action="delete">删除</button></div>
@@ -549,7 +553,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.root.querySelector('[data-camera-output="roll"]').textContent = `${Math.round(this.state.roll * 90)}°`;
       this.root.querySelector('[data-camera-output="fov"]').textContent = `${Math.round(this.state.fov)}°`;
       this.root.querySelector("[data-camera-preset]").value = this.state.preset || "自定义";
-      const horizontal = Math.abs(this.state.px) > 0.72 ? "背面" : Math.abs(this.state.px) > 0.22 ? (this.state.px > 0 ? "左侧" : "右侧") : "正面";
+      const horizontal = Math.abs(this.state.px) > 0.72 ? "背面" : Math.abs(this.state.px) > 0.22 ? (this.state.px < 0 ? "左侧" : "右侧") : "正面";
       const vertical = this.state.py > 0.28 ? "俯视" : this.state.py < -0.28 ? "仰视" : "平视";
       this.orientation.textContent = `${horizontal} · ${vertical}`;
       this._syncPromptControls(promptConfig);

@@ -81,8 +81,27 @@ def run_browser(browser_type, executable: str, base_url: str, screenshot: Path) 
             raise AssertionError(f"实时相机参数没有显示: {initial['live']}")
         if initial["weightControls"] != 4 or initial["weightInputs"] != 4 or "BSK" in (initial["promptWeightTitle"] or "") or initial["promptWeightGroup"] != "方位权重" or "左右方位" not in (initial["promptWeightTitle"] or "") or "from front" not in (initial["promptPreview"] or ""):
             raise AssertionError(f"方位权重面板没有完整显示: {initial['weightControls']}, {initial['weightInputs']}, {initial['promptWeightTitle']}, {initial['promptWeightGroup']}, {initial['promptPreview']}")
-        if initial["distanceCategories"] != ["远景", "全身", "中景", "近景", "特写"] or "中景" not in (initial["distanceOutput"] or "") or "权重 1.00" not in (initial["distanceOutput"] or ""):
+        if initial["distanceCategories"] != ["远景", "中景", "近景", "全身", "特写"] or "近景" not in (initial["distanceOutput"] or "") or "权重 1.00" not in (initial["distanceOutput"] or ""):
             raise AssertionError(f"距离五档/当前权重显示异常: {initial['distanceCategories']}, {initial['distanceOutput']}")
+
+        side_mapping = page.evaluate(
+            """(name) => {
+                const node = (window.comfyAPI?.app?.app || window.app).graph._nodes.find((item) => item.type === name);
+                const ui = node._tk3dBodyCamera;
+                const previous = { ...ui.state };
+                ui._setCamera(-0.5, 0, 0, 0, 50);
+                const left = { orientation: ui.orientation.textContent, prompt: ui.root.querySelector('[data-prompt-preview]')?.textContent };
+                ui._setCamera(0.5, 0, 0, 0, 50);
+                const right = { orientation: ui.orientation.textContent, prompt: ui.root.querySelector('[data-prompt-preview]')?.textContent };
+                ui._setCamera(previous.px, previous.py, previous.pz, previous.roll, previous.fov, previous.preset);
+                return { left, right };
+            }""",
+            NODE_NAME,
+        )
+        if side_mapping["left"]["orientation"] != "左侧 · 平视" or "(from left:" not in side_mapping["left"]["prompt"] or "(from right:" in side_mapping["left"]["prompt"]:
+            raise AssertionError(f"素体左侧映射错误: {side_mapping}")
+        if side_mapping["right"]["orientation"] != "右侧 · 平视" or "(from right:" not in side_mapping["right"]["prompt"] or "(from left:" in side_mapping["right"]["prompt"]:
+            raise AssertionError(f"素体右侧映射错误: {side_mapping}")
 
         canvas = page.locator(".tk-3d-body-camera-canvas")
         box = canvas.bounding_box()
@@ -112,7 +131,7 @@ def run_browser(browser_type, executable: str, base_url: str, screenshot: Path) 
         if after_wheel >= after_camera_drag["pz"]:
             raise AssertionError(f"滚轮距离方向反了：向下滚应远离模型: {after_camera_drag['pz']} -> {after_wheel}")
         after_wheel_output = page.locator('[data-camera-output="pz"]').inner_text()
-        if "全身" not in after_wheel_output or after_wheel_output == initial["distanceOutput"]:
+        if "中景" not in after_wheel_output or after_wheel_output == initial["distanceOutput"]:
             raise AssertionError(f"距离滑块没有切换五档或权重没有随滑块变化: {after_wheel_output}")
 
         # 最远机位必须能在画布内完整容纳低模素体，并同步显示实时距离。

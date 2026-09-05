@@ -228,8 +228,8 @@ export async function initLocalManager() {
 
 export async function activateLocalManager() {
   if (!_initDone) return
-  // 激活栏目时拉取后端分类合并(60s 节流;完成后统一渲染本地视图,避免重复渲染侧边栏)
-  useLocalModelStore.getState().loadBackendMeta().then(() => {
+  // 激活栏目时强制拉取后端快照，保证 TK 节点刚改的分类能立即出现在工具箱。
+  useLocalModelStore.getState().loadBackendMeta(true).then(() => {
     renderLocalView()
   })
   const store = useLocalModelStore.getState()

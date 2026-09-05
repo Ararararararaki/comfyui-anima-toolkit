@@ -12,6 +12,7 @@ data/translation_providers.json
 # Panel (frontend) — build artifacts & local config
 panel/node_modules/
 panel/dist/
+panel/dist-comfyui/
 panel/.comfyui-path
 panel/vite_error.txt
 

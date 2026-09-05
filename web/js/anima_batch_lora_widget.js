@@ -1758,8 +1758,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
       const ITEM_W = 150, GAP = 10, IMG_H = 150, INFO_H = 62, ROW_H = IMG_H + INFO_H + GAP;
 
+      let metaSaveQueue = Promise.resolve();
       const saveMeta = () => {
-        fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(meta) }).catch(() => {});
+        // 分类点击可能连续发生；按顺序写入，避免旧请求后返回覆盖最新分类快照。
+        metaSaveQueue = metaSaveQueue.catch(() => {}).then(async () => {
+          const response = await fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(meta) });
+          if (!response.ok) throw new Error(`分类同步失败（HTTP ${response.status}）`);
+        }).catch((error) => console.warn("[Anima] 分类同步失败:", error));
+        return metaSaveQueue;
       };
       const loraMeta = (name) => meta.loraMeta[name] || { categories: [], favorite: false, pinned: false, count: 0 };
       const ensureMeta = (name) => meta.loraMeta[name] || (meta.loraMeta[name] = { categories: [], favorite: false, pinned: false, count: 0 });
@@ -2293,7 +2299,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       ]).then(([lData, mData]) => {
         allLoras = (lData.loras || []).map((l) => ({ ...l }));
         // 只有后端确有数据时才整体替换；失败/空结果保留当前 this.meta（含之前加载的旧值），防止空 meta 覆盖后端
-        if (mData && (mData.categories?.length || Object.keys(mData.loraMeta || {}).length || (mData.loraGroups || []).length)) {
+        const hasBackendMeta = mData && typeof mData === "object" && (
+          (Array.isArray(mData.categories) && mData.categories.length) ||
+          Object.keys(mData.loraMeta || {}).length ||
+          (Array.isArray(mData.loraGroups) && mData.loraGroups.length)
+        );
+        if (hasBackendMeta) {
           meta = this.meta = { categories: mData.categories || [], loraMeta: mData.loraMeta || {}, loraGroups: mData.loraGroups || [] };
         }
         totalEl.textContent = `共 ${allLoras.length} 个`;

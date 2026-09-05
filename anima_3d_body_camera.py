@@ -42,6 +42,9 @@ POSE_LIMITS = {"root": 45.0, "waist": 65.0, "chest": 70.0, "neck": 80.0, "head":
 CAMERA_DISTANCE_BASE = 5.0
 CAMERA_DISTANCE_RANGE = 3.4
 DISTANCE_LABELS = {"wide": "远景", "medium": "中景", "cu": "近景", "full": "全身", "ecu": "特写"}
+BODY_CAMERA_SIDE_PRESETS = {"左侧": -0.5, "右侧": 0.5}
+BODY_DISTANCE_ORDER = ("wide", "medium", "cu", "full", "ecu")
+BODY_CAMERA_DISTANCE_PRESETS = {"远景": -1.0, "中景": -0.4, "近景": 0.0, "全身": 0.4, "特写": 1.0}
 
 
 def _body_camera_config() -> dict[str, Any]:
@@ -57,6 +60,7 @@ def _body_camera_config() -> dict[str, Any]:
         config["distance"]["categories"][name].pop("weight", None)
     config["distance"].setdefault("weight", 1.0)
     config["distance"]["follow_slider"] = True
+    config["distance"]["category_order"] = list(BODY_DISTANCE_ORDER)
     # 旧算法默认是 abs(y) * (1 + extra)，默认 extra=10，因此轴权重为 11。
     config["elevation"].setdefault("weight", 11.0)
     config["tilt"].setdefault("weight", 1.0)
@@ -82,6 +86,7 @@ def _body_prompt_config(raw: Any) -> dict[str, Any]:
     config["elevation"].setdefault("weight", 11.0)
     config["distance"].setdefault("weight", 1.0)
     config["distance"]["follow_slider"] = True
+    config["distance"]["category_order"] = list(BODY_DISTANCE_ORDER)
     config["tilt"].setdefault("weight", 1.0)
     return config
 
@@ -205,9 +210,11 @@ class Anima3DBodyCamera:
         if preset_name != CUSTOM_PRESET:
             selected = _preset_entry(preset_name)
             if selected is not None:
-                px = _finite(selected.get("pos_x"), px)
+                # 新素体相机按素体自身左右定义 X；旧共享预设的左右值沿用
+                # BSK 坐标约定，因此这里只对两个固定侧面预设做一次转换。
+                px = BODY_CAMERA_SIDE_PRESETS.get(preset_name, _finite(selected.get("pos_x"), px))
                 py = _finite(selected.get("pos_y"), py)
-                pz = _finite(selected.get("pos_z"), pz)
+                pz = BODY_CAMERA_DISTANCE_PRESETS.get(preset_name, _finite(selected.get("pos_z"), pz))
                 rl = _finite(selected.get("roll"), rl)
                 preset_extra = selected.get("extra", "")
             else:
@@ -216,7 +223,9 @@ class Anima3DBodyCamera:
             preset_extra = ""
 
         prompt_config = _body_prompt_config(config)
-        prompt = CameraControlCore.compute(px, py, pz, rl, json.dumps(prompt_config, ensure_ascii=False, separators=(",", ":")))
+        # 素体正面朝 +Z，世界 X<0 是素体左侧；BSK 核心的左右方向键名
+        # 与该物理坐标相反。只转换提示词计算坐标，保留 camera_meta 的真实机位。
+        prompt = CameraControlCore.compute(-px, py, pz, rl, json.dumps(prompt_config, ensure_ascii=False, separators=(",", ":")))
         prompt = _append_extra_tags(prompt, preset_extra, extra_tags)
         distance_details = CameraControlCore.distance_weight_details(prompt_config, pz)
         pose_state = pose_for_preset(str(pose_preset or "A-Pose"), pose)

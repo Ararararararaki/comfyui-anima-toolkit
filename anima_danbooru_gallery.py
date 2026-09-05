@@ -201,7 +201,7 @@ def _apply_danbooru_proxy() -> None:
     _danbooru_session.proxies.clear()  # 全部不可达 → 直连（可能被墙，重试链会兜底）
 
 
-# ---------- Danbooru 账号（登录后解除匿名 2 标签限制、更少限流） ----------
+# ---------- Danbooru 账号（上限按账号等级：Member=2、Gold=6、Platinum+=不限；登录后限流更宽） ----------
 # 凭证只存本机插件目录 data/danbooru_account.json，绝不上传/不入 git。
 _account_lock = threading.Lock()
 _account_path = Path(__file__).with_name("data") / "danbooru_account.json"
@@ -256,6 +256,12 @@ def _account_tag_limit() -> int:
         _account_level_cache = level
         _account_level_at = now
     return 6 if _account_level_cache >= 30 else 2
+
+
+async def _account_tag_limit_async() -> int:
+    """在工作线程查询账号等级，避免同步 Playwright 触碰 aiohttp 事件循环。"""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _account_tag_limit)
 
 
 class _RateLimiter:
@@ -536,8 +542,10 @@ class _DanbooruBrowser:
         with self._lock:
             if time.time() - self._last_warm > self._WARM_INTERVAL_SECONDS:
                 self._warm()
-            # evaluate 显式 25s 超时：网关页面内 fetch 挂起时不至于让整条请求链无限等待
-            return self._page.evaluate(script, argument, timeout=25000)
+            # Playwright Python 的 Page.evaluate 不接受 timeout 参数；用页面默认超时
+            # 保留 25s 兜底，否则异常会让浏览器网关每次都直接失败。
+            self._page.set_default_timeout(25000)
+            return self._page.evaluate(script, argument)
 
     def json(self, url: str, params: dict[str, Any]) -> Any:
         full = url + "?" + urlencode(params)
@@ -1128,12 +1136,12 @@ async def anima_danbooru_posts(request: web.Request) -> web.Response:
 
     warnings: list[str] = []
     registered = _registered()
-    tag_limit = _account_tag_limit()
+    tag_limit = await _account_tag_limit_async()
     if count_restricted_search_tags(tags) > tag_limit:
         hint = (
             f"（已登录 D站，当前等级上限 {tag_limit} 个计数标签；Gold 及以上为 6 个。请减少标签或排序）"
             if registered else
-            "（普通标签与排序各占 1 个；登录 Danbooru 账号可解除限制 或 减少标签/改用默认最新排序）"
+            "（普通标签与排序各占 1 个；Gold 账号上限为 6，Platinum 及以上不限）"
         )
         return web.json_response({"error": f"D站 搜索最多 {tag_limit} 个计数标签{hint}", "registered": registered, "tag_limit": tag_limit, "searchRewrites": search_rewrites}, status=400)
 
@@ -1143,6 +1151,9 @@ async def anima_danbooru_posts(request: web.Request) -> web.Response:
         limit=_bounded_int(request.query.get("limit"), 24, MIN_PAGE_SIZE, MAX_PAGE_SIZE),
         force=request.query.get("force", "").lower() in {"1", "true", "yes"},
     )
+    # _fetch_posts 可能在慢排序超时后追加时间窗重试；warning 仍需引用原始排序值。
+    # 这里必须在 try 外先解析，避免降级成功后因 NameError 把整个请求变成 500。
+    order_value = _order_value(search_request.tags)
     try:
         posts, cached, slow_window_used = await asyncio.get_running_loop().run_in_executor(None, _fetch_posts, search_request)
     except requests.Timeout:
@@ -1187,7 +1198,7 @@ async def anima_danbooru_image(request: web.Request) -> web.Response:
 @PromptServer.instance.routes.post("/anima/danbooru/account")
 async def anima_danbooru_account_save(request: web.Request) -> web.Response:
     """保存 Danbooru 登录凭证（用户名 + API Key）到本机插件目录；清空 = 退出登录。"""
-    global _account_cache
+    global _account_cache, _account_level_cache, _account_level_at
     try:
         body = await request.json()
     except (ValueError, AttributeError):
@@ -1206,7 +1217,16 @@ async def anima_danbooru_account_save(request: web.Request) -> web.Response:
         return web.json_response({"error": f"写入凭证失败：{error}"}, status=500)
     with _account_lock:
         _account_cache = {"username": username, "api_key": api_key} if (username and api_key) else {}
-    return web.json_response({"logged_in": bool(username and api_key), "username": username, "tip": "凭证仅存于本机插件目录，不会上传。遇 429 限流请适当降低使用频率。"})
+        # 切换账号/修复失效凭证后，不能继续沿用旧账号（或失效凭证）的等级缓存。
+        _account_level_cache = None
+        _account_level_at = 0.0
+    # 返回刷新后的实际上限，避免前端保存 Gold 账号后仍沿用页面初始的匿名上限 2。
+    return web.json_response({
+        "logged_in": bool(username and api_key),
+        "username": username,
+        "tag_limit": await _account_tag_limit_async(),
+        "tip": "凭证仅存于本机插件目录，不会上传。遇 429 限流请适当降低使用频率。",
+    })
 
 
 @PromptServer.instance.routes.get("/anima/danbooru/account")
@@ -1216,7 +1236,7 @@ async def anima_danbooru_account_status(request: web.Request) -> web.Response:
     return web.json_response({
         "logged_in": bool(acc.get("username") and acc.get("api_key")),
         "username": acc.get("username", ""),
-        "tag_limit": _account_tag_limit(),
+        "tag_limit": await _account_tag_limit_async(),
     })
 
 

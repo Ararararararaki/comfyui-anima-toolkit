@@ -67,19 +67,35 @@ async function deploy() {
     process.exit(1)
   }
 
+  // 网格本地 LoRA 管理是 ComfyUI 运行包的兼容性底线。
+  // 待部署构建不含入口时，禁止覆盖一个已经具备网格功能的运行包。
+  const sourceIndexPath = join(src, 'index.html')
+  const targetIndexPath = join(target, 'index.html')
+  if (existsSync(sourceIndexPath) && existsSync(targetIndexPath)) {
+    const [sourceHtml, targetHtml] = await Promise.all([
+      readFile(sourceIndexPath, 'utf8'),
+      readFile(targetIndexPath, 'utf8'),
+    ])
+    if (/localGridViewBtn/.test(targetHtml) && !/localGridViewBtn/.test(sourceHtml)) {
+      throw new Error('❌ 拒绝部署：待部署构建缺少本地 LoRA 网格识图入口（#localGridViewBtn），会覆盖当前可用版本。请从当前 panel 源码构建。')
+    }
+  }
+
   await mkdir(target, { recursive: true })
   await cp(src, target, { recursive: true, force: true })
 
-  const indexPath = join(target, 'index.html')
-  if (existsSync(indexPath)) {
-    let html = await readFile(indexPath, 'utf-8')
+  if (existsSync(targetIndexPath)) {
+    let html = await readFile(targetIndexPath, 'utf-8')
     html = html.replace(/src="\.\//g, 'src="/extensions/ComfyUI-Anima-Batch-LoRA/app/')
     html = html.replace(/href="\.\//g, 'href="/extensions/ComfyUI-Anima-Batch-LoRA/app/')
-    await writeFile(indexPath, html, 'utf-8')
+    await writeFile(targetIndexPath, html, 'utf-8')
   }
 
   console.log(`✅ Deployed to ${target}`)
   console.log(`📦 App available at: /extensions/ComfyUI-Anima-Batch-LoRA/app/`)
 }
 
-deploy().catch(console.error)
+deploy().catch(error => {
+  console.error(error)
+  process.exitCode = 1
+})

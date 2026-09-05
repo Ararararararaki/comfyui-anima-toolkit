@@ -11,7 +11,7 @@
 //   promptCategories 表：分类（与面板共用）
 //
 // 三区布局：
-//   ① 工具箱 prompt 库：分类 + 条目列表 + 搜索；点击条目 = 仅替换当前提示词（不自动入队）；
+//   ① 工具箱 prompt 库：分类 + 条目列表 + 搜索；点击条目 = 追加到当前提示词末尾（不自动入队）；
 //      「批文件导入」页签：input/prompts 批文件浏览 → 整组导入为库条目
 //   ② 当前提示词：textarea + 逗号拆分卡片流（逐卡删除/存卡/单条快捷翻译）+ 草稿自动暂存/恢复 +
 //      剪切板导入 + PNG 解析 + 整段存入 prompt 库
@@ -572,6 +572,43 @@
     return (parts || []).map((p) => formatWeightedPromptText(p.text, p.weight)).filter(Boolean).join(", ");
   }
 
+  // 隐藏片段不能只存在 CardsUI 内存：ComfyUI 刷新/重建节点时会重新读取
+  // positive，而 positive 只保存可见文本。把完整片段（含 hidden/weight）
+  // 放进节点的可序列化 hidden widget，才能让工作流恢复后继续显示这些卡片。
+  const PROMPT_PIECES_STATE_VERSION = 1;
+
+  function normalizePromptPiece(piece) {
+    if (!piece || typeof piece !== "object") return null;
+    const text = String(piece.text || "").trim();
+    if (!text) return null;
+    return {
+      text,
+      weight: String(piece.weight ?? "").trim(),
+      hidden: Boolean(piece.hidden),
+    };
+  }
+
+  function parsePromptPiecesState(raw) {
+    if (!raw) return null;
+    try {
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      const source = Array.isArray(parsed) ? parsed : parsed?.pieces;
+      if (!Array.isArray(source)) return null;
+      const pieces = source.map(normalizePromptPiece).filter(Boolean);
+      if (!pieces.length && source.length) return null;
+      const visibleText = typeof parsed?.visibleText === "string"
+        ? parsed.visibleText
+        : serializePromptPieces(pieces.filter((piece) => !piece.hidden));
+      return {
+        version: Number(parsed?.version) || PROMPT_PIECES_STATE_VERSION,
+        pieces,
+        visibleText: String(visibleText || "").trim(),
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
   function normalizePromptCardWeight(value) {
     const parsed = Number.parseFloat(String(value ?? "").trim());
     const safe = Number.isFinite(parsed) ? parsed : 1;
@@ -598,6 +635,17 @@
     if (analyst.includes(base)) return cur;
     const curT = String(cur || "").replace(/[,\s]+$/, "");
     return curT ? curT + sep + piece : piece;
+  }
+
+  // 追加工具箱的整段提示词：保留已有内容，并用空两行分隔，便于在②区阅读和继续编辑。
+  // 仅阻止完全相同或已作为末尾段落存在的重复追加；中间已有相同文本不阻塞用户再次加入。
+  function appendPromptBlock(cur, block) {
+    const current = String(cur || "").replace(/\s+$/, "");
+    const addition = String(block || "").trim();
+    if (!addition) return current;
+    if (!current) return addition;
+    if (current === addition || current.endsWith(`\n\n${addition}`)) return current;
+    return `${current}\n\n${addition}`;
   }
 
   function removePiece(cur, piece) {
@@ -671,7 +719,7 @@
   class CardsUI {
     constructor(node, w) {
       this.node = node;
-      this.w = w; // {positive, opt_text, lora_syntax}
+      this.w = w; // {positive, opt_text, lora_syntax, prompt_pieces}
       this.prompts = [];   // ① prompt 库缓存（anima-lora，浏览/切换/导入/删除）
       this.cats = [];      // ① prompt 库分类
       this.curLibCat = ""; // ① 当前分类过滤（"" = 全部）
@@ -680,6 +728,7 @@
       this.curCat = "";    // ③ 当前卡片分类 id（"" = 全部）
       this.cardSearch = "";
       this.search = "";
+      this.promptPieces = null; // ② 当前提示词完整片段；hidden 片段保留在卡片区但不输出
       this.selectedCardIds = new Set(); // Ctrl/Cmd 点击选择，供批量分类使用
       this.rootEl = null;
       this.libListEl = null;    // ①区条目列表
@@ -727,6 +776,8 @@
       this.chipsResizeEl = null;
       this._localLlmActionBusy = false;
       this._localLlmSessionPromise = null;
+      this._promptPiecesRestored = false;
+      this._promptPiecesRestorePending = false;
       this._localLlmSessionRefs = 0;
       this._localLlmSessionAutoRelease = false;
       this.editOverlay = null;
@@ -784,6 +835,80 @@
       widget.value = value;
       if (typeof widget.callback === "function") { try { widget.callback(value) } catch {} }
       if (widget === this.w?.positive) this._stashDraft();
+    }
+
+    _ensurePromptPiecesWidget() {
+      const existing = this.node.widgets?.find((widget) => widget.name === "prompt_pieces");
+      if (existing) return existing;
+      if (typeof this.node.addWidget !== "function") return null;
+      try {
+        return this.node.addWidget("text", "prompt_pieces", "", () => {}, { serialize: true });
+      } catch (error) {
+        console.warn("[TK Prompt Cards] 无法创建隐藏状态 widget:", error);
+        return null;
+      }
+    }
+
+    _hideNativeWidget(widget) {
+      if (!widget) return;
+      widget.hidden = true;
+      widget.options = widget.options || {};
+      widget.options.hidden = true;
+      widget.computeSize = () => [0, -4];
+      widget.draw = () => {};
+      if (widget.element) widget.element.style.display = "none";
+      widget.type = "hidden";
+    }
+
+    _persistPromptPieces() {
+      const widget = this.w?.prompt_pieces;
+      const pieces = Array.isArray(this.promptPieces)
+        ? this.promptPieces.map(normalizePromptPiece).filter(Boolean)
+        : [];
+      if (!widget) return;
+      const payload = {
+        version: PROMPT_PIECES_STATE_VERSION,
+        visibleText: String(this.curText() || "").trim(),
+        pieces,
+      };
+      widget.value = JSON.stringify(payload);
+      // 动态 hidden widget 的 callback 不一定由 ComfyUI 自动触发，显式标脏
+      // 才能让「保存工作流」知道节点状态已经变化。
+      this.node.graph?.change?.();
+    }
+
+    _restorePromptPiecesFromWidget() {
+      if (this._promptPiecesRestored) return Array.isArray(this.promptPieces);
+      const state = parsePromptPiecesState(this.w?.prompt_pieces?.value);
+      if (!state) {
+        this._promptPiecesRestored = true;
+        return false;
+      }
+      const currentVisible = String(this.curText() || "").trim();
+      // positive 是执行端的权威值。若用户在工作流外改过 positive，旧的
+      // hidden 状态不能把已删除的片段偷偷带回来，直接从新文本重新建片段。
+      if (state.visibleText !== currentVisible) {
+        this.promptPieces = this._piecesFromText(this.curText());
+        this._promptPiecesRestored = true;
+        this._persistPromptPieces();
+        return false;
+      }
+      this.promptPieces = state.pieces;
+      this._promptPiecesRestored = true;
+      return true;
+    }
+
+    restorePromptPieces() {
+      this._promptPiecesRestorePending = false;
+      if (!this.w?.positive || !this.w?.prompt_pieces) {
+        this._promptPiecesRestorePending = true;
+        return;
+      }
+      this._promptPiecesRestored = false;
+      const restored = this._restorePromptPiecesFromWidget();
+      if (!restored || !this.curTextEl) return;
+      this.curTextEl.value = this.curText();
+      this._renderChips();
     }
 
     _applyLibHeight(height, persist = true) {
@@ -1041,6 +1166,96 @@
 
     curText() { return this.w.positive?.value || ""; }
 
+    _piecesFromText(text) {
+      return splitTags(text).map((piece) => ({ ...piece, hidden: false }));
+    }
+
+    _syncPromptPiecesFromVisibleText(text) {
+      const nextVisible = this._piecesFromText(text);
+      if (!Array.isArray(this.promptPieces)) {
+        this.promptPieces = nextVisible;
+        return this.promptPieces;
+      }
+      // 手动编辑上方 textarea 时保留仍未出现在新文本中的隐藏片段；
+      // 如果用户手动重新输入了隐藏 tag，则视为重新激活，移除旧隐藏副本。
+      const usedVisible = new Set();
+      const hidden = this.promptPieces.filter((piece) => piece.hidden);
+      const remainingHidden = hidden.filter((piece) => {
+        const key = promptTranslationKey(piece.text);
+        const index = nextVisible.findIndex((candidate, i) =>
+          !usedVisible.has(i) && promptTranslationKey(candidate.text) === key);
+        if (index >= 0) {
+          usedVisible.add(index);
+          return false;
+        }
+        return true;
+      });
+      this.promptPieces = nextVisible.concat(remainingHidden);
+      return this.promptPieces;
+    }
+
+    _promptPieces() {
+      if (!Array.isArray(this.promptPieces)) {
+        this.promptPieces = this._piecesFromText(this.curText());
+      }
+      return this.promptPieces;
+    }
+
+    _ensurePromptPiecesInSync() {
+      const pieces = this._promptPieces();
+      const visible = serializePromptPieces(pieces.filter((piece) => !piece.hidden));
+      if (visible !== this.curText()) this._syncPromptPiecesFromVisibleText(this.curText());
+      return this.promptPieces;
+    }
+
+    _commitPromptPieces(render = true) {
+      const pieces = this._promptPieces();
+      const next = serializePromptPieces(pieces.filter((piece) => !piece.hidden));
+      this._setW(this.w.positive, next);
+      this._persistPromptPieces();
+      if (this.curTextEl) this.curTextEl.value = next;
+      if (render) this._renderChips();
+      return next;
+    }
+
+    _setPromptText(text, { preserveHidden = false, render = true } = {}) {
+      if (preserveHidden) this._syncPromptPiecesFromVisibleText(text);
+      else this.promptPieces = this._piecesFromText(text);
+      return this._commitPromptPieces(render);
+    }
+
+    _appendPromptBlock(text) {
+      const current = this.curText();
+      const next = appendPromptBlock(current, text);
+      if (next === current) return next;
+      this._syncPromptPiecesFromVisibleText(next);
+      this._setW(this.w.positive, next);
+      this._persistPromptPieces();
+      if (this.curTextEl) this.curTextEl.value = next;
+      this._renderChips();
+      this._updateSuggest();
+      this._hideResolve();
+      return next;
+    }
+
+    _togglePieceVisibility(index) {
+      const piece = this._promptPieces()[index];
+      if (!piece) return;
+      piece.hidden = !piece.hidden;
+      this._commitPromptPieces();
+      this._flash(piece.hidden ? `已隐藏：${piece.text}` : `已恢复：${piece.text}`);
+    }
+
+    _removePromptPiece(index) {
+      const pieces = this._promptPieces();
+      const piece = pieces[index];
+      if (!piece) return;
+      pieces.splice(index, 1);
+      this.piecesZh.delete(piece.text);
+      this.piecesTranslation.delete(piece.text);
+      this._commitPromptPieces();
+    }
+
     // ── 库加载：① prompt 库（anima-lora）＋③ 卡片库（anima-tk-cards）──
     async reloadAll() {
       await Promise.all([this.reloadLib(), this.reloadCards()]);
@@ -1169,7 +1384,7 @@
         el.className = "tk-cards-lib-item" + (p.kind === "card" ? " is-card" : "");
         el.tabIndex = 0;
         el.addEventListener("focus", () => { this.focusedLibId = p.id; });
-        el.title = "单击切换为当前提示词（仅替换，不自动入队）；双击打开编辑窗口；hover 删除该词条";
+        el.title = "单击追加到当前提示词末尾（两次换行，不自动入队）；双击打开编辑窗口；hover 删除该词条";
         const imgSrc = p.primaryImage || (p.images && p.images[0]) || "";
         if (imgSrc) {
           const thumb = document.createElement("div");
@@ -1248,10 +1463,9 @@
           clearTimeout(clickTimer);
           clickTimer = setTimeout(() => {
             this._rememberPromptTranslations(p.tagTranslations);
-            this._setW(this.w.positive, p.prompt || "");
-            if (this.curTextEl) this.curTextEl.value = p.prompt || "";
-            this._renderChips();
-            this._flash(`已切换：${(p.displayText || p.prompt || "").slice(0, 30)}`);
+            const current = this.curText();
+            const next = this._appendPromptBlock(p.prompt || "");
+            this._flash(next === current ? "该提示词已在末尾（已去重）" : `已追加：${(p.displayText || p.prompt || "").slice(0, 30)}`);
           }, 240);
         });
         // 双击打开编辑窗口：不触发第一次 click 的“载入提示词”动作。
@@ -1469,7 +1683,9 @@
     // ── ② 当前提示词区 ──
     onCurInput() {
       const v = this.curTextEl.value;
+      this._syncPromptPiecesFromVisibleText(v);
       this._setW(this.w.positive, v);
+      this._persistPromptPieces();
       this._renderChips();
       this._updateSuggest();
       this._hideResolve();
@@ -1793,8 +2009,8 @@
       const [ws, we] = this._wordBounds(t, caret);
       const repl = cardToText(card);
       const next = t.slice(0, ws) + repl + t.slice(we);
-      this._setW(this.w.positive, next);
-      el.value = next;
+      this._setPromptText(next, { preserveHidden: true, render: false });
+      el.value = this.curText();
       const pos = ws + repl.length;
       el.setSelectionRange(pos, pos);
       this._hideSuggest();
@@ -1828,14 +2044,17 @@
     }
 
     _setPieceWeight(index, value, commit = true) {
-      const parts = splitTags(this.curText());
+      const parts = this._promptPieces();
       const piece = parts[index];
       if (!piece) return null;
       const weight = normalizePromptCardWeight(value);
       piece.weight = weight.toFixed(1);
-      const next = serializePromptPieces(parts);
+      const next = serializePromptPieces(parts.filter((item) => !item.hidden));
       // 拖动过程中只更新可见值，不触发 ComfyUI 图重建；松手或单击时再提交一次。
-      if (commit) this._setW(this.w.positive, next);
+      if (commit) {
+        this._setW(this.w.positive, next);
+        this._persistPromptPieces();
+      }
       else if (this.w.positive) this.w.positive.value = next;
       if (this.curTextEl) this.curTextEl.value = next;
 
@@ -1888,7 +2107,7 @@
         startX = event.clientX;
         lastX = startX;
         lastDelta = 0;
-        startWeight = normalizePromptCardWeight(splitTags(this.curText())[index]?.weight);
+        startWeight = normalizePromptCardWeight(this._promptPieces()[index]?.weight);
         document.body.style.cursor = "ew-resize";
         window.addEventListener("mousemove", onMove);
         window.addEventListener("mouseup", onUp);
@@ -1897,7 +2116,7 @@
 
     _renderChips() {
       if (!this.chipsEl) return;
-      const parts = splitTags(this.curText());
+      const parts = this._ensurePromptPiecesInSync();
       this.chipsEl.innerHTML = "";
       if (!parts.length) {
         this.chipsEl.innerHTML = `<div class="tk-cards-empty">输入提示词后自动按逗号分组（点击片段=存为卡片；hover ✕=移除）</div>`;
@@ -1906,9 +2125,9 @@
       for (let index = 0; index < parts.length; index++) {
         const p = parts[index];
         const chip = document.createElement("span");
-        chip.className = "tk-cards-chip";
+        chip.className = "tk-cards-chip" + (p.hidden ? " is-hidden" : "");
         chip.dataset.pieceIndex = String(index);
-        chip.title = "点击存为卡片；hover ✕ 移除该片段";
+        chip.title = p.hidden ? "此片段已隐藏，不会输出；点击右侧显示按钮恢复" : "点击存为卡片；点击右侧隐藏按钮可停用；hover ✕ 移除该片段";
         const zh = this._translationForPiece(p.text);
         const chipBody = document.createElement("span");
         chipBody.className = "tk-cards-chip-body";
@@ -1966,7 +2185,7 @@
           button.addEventListener("click", (event) => {
             event.stopPropagation();
             if (button.__scrubbed) { button.__scrubbed = false; return; }
-            const current = normalizePromptCardWeight(splitTags(this.curText())[index]?.weight);
+            const current = normalizePromptCardWeight(this._promptPieces()[index]?.weight);
             this._setPieceWeight(index, current + delta, true);
           });
         };
@@ -1975,7 +2194,7 @@
         weightVal.addEventListener("click", (event) => event.stopPropagation());
         weightVal.addEventListener("mousedown", (event) => event.stopPropagation());
         weightVal.addEventListener("change", () => {
-          const current = normalizePromptCardWeight(splitTags(this.curText())[index]?.weight);
+          const current = normalizePromptCardWeight(this._promptPieces()[index]?.weight);
           const parsed = Number.parseFloat(weightVal.value);
           this._setPieceWeight(index, Number.isFinite(parsed) ? parsed : current, true);
         });
@@ -1984,6 +2203,19 @@
         });
         this._bindPieceWeightScrub(dec, index);
         this._bindPieceWeightScrub(inc, index);
+        const visibility = document.createElement("button");
+        visibility.type = "button";
+        visibility.className = "tk-cards-chip-toggle";
+        visibility.dataset.pieceAction = "visibility";
+        visibility.textContent = p.hidden ? "显示" : "隐藏";
+        visibility.title = p.hidden ? "恢复此片段并输出" : "隐藏此片段（保留卡片但不输出）";
+        visibility.setAttribute("aria-label", visibility.title);
+        visibility.setAttribute("aria-pressed", String(!p.hidden));
+        visibility.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          this._togglePieceVisibility(index);
+        });
+        chip.appendChild(visibility);
         chip.addEventListener("click", (ev) => {
           ev.stopPropagation();
           this.addCard(this.curCat, { en: p.text, zh: zh || "", weight: p.weight });
@@ -2005,12 +2237,7 @@
         x.title = "从当前提示词移除该片段";
         x.addEventListener("click", (ev) => {
           ev.stopPropagation();
-          const next = removePiece(this.curText(), p);
-          this.piecesZh.delete(p.text);
-          this.piecesTranslation.delete(p.text);
-          this._setW(this.w.positive, next);
-          if (this.curTextEl) this.curTextEl.value = next;
-          this._renderChips();
+          this._removePromptPiece(index);
         });
         chip.appendChild(x);
         this.chipsEl.appendChild(chip);
@@ -2431,16 +2658,13 @@
     }
 
     _replaceResolvedPiece(index, replacement) {
-      const parts = splitTags(this.curText());
+      const parts = this._promptPieces();
       const source = parts[index];
       const text = String(replacement || "").trim();
       if (!source || !text) return false;
       // 重建时统一使用 Anima 的英文逗号；Danbooru 下划线已在进入这里前转换为空格。
-      parts[index] = { text, weight: source.weight && !text.includes(",") ? source.weight : "" };
-      const next = serializePromptPieces(parts);
-      this._setW(this.w.positive, next);
-      if (this.curTextEl) this.curTextEl.value = next;
-      this._renderChips();
+      parts[index] = { ...source, text, weight: source.weight && !text.includes(",") ? source.weight : "" };
+      this._commitPromptPieces();
       this._hideResolve();
       return true;
     }
@@ -2490,19 +2714,16 @@
     _appendResolvedText(text) {
       const additions = splitTags(text);
       if (!additions.length) return false;
-      const current = splitTags(this.curText());
+      const current = this._promptPieces();
       const seen = new Set(current.map((p) => p.text.toLowerCase().trim()));
       for (const addition of additions) {
         const key = addition.text.toLowerCase().trim();
         if (key && !seen.has(key)) {
-          current.push(addition);
+          current.push({ ...addition, hidden: false });
           seen.add(key);
         }
       }
-      const next = serializePromptPieces(current);
-      this._setW(this.w.positive, next);
-      if (this.curTextEl) this.curTextEl.value = next;
-      this._renderChips();
+      this._commitPromptPieces();
       this._hideResolve();
       return true;
     }
@@ -2556,7 +2777,7 @@
 
     // ②区单个片段翻译：只请求当前卡片，不改变其他片段的中文注释/校准结果。
     async translatePieceOnly(index) {
-      const parts = splitTags(this.curText());
+      const parts = this._promptPieces();
       const piece = parts[index];
       if (!piece) return;
       this._flash(`正在翻译第 ${index + 1} 条…`);
@@ -2592,7 +2813,7 @@
     // ②区当前提示词的单卡快捷翻译：只调用翻译源并把结果显示在卡片上。
     // 不打开校准面板、不调用 /resolve，也不触发 BGE-M3。
     async translatePieceQuick(index, button, chip) {
-      const parts = splitTags(this.curText());
+      const parts = this._promptPieces();
       const piece = parts[index];
       if (!piece || button?.disabled) return;
       const originalLabel = button?.textContent || "译";
@@ -2624,14 +2845,17 @@
       }
     }
 
-    // 一键翻译当前提示词全部片段：已译跳过，译文逐卡显示；失败的卡片标记原因。
+    // 一键翻译当前提示词未翻译片段：已有卡片中文注释或快捷译文的片段均跳过。
     async translateAllPieces() {
-      const parts = splitTags(this.curText());
+      const parts = this._promptPieces();
       if (!parts.length) { this._flash("当前提示词为空", 3000); return; }
       const source = this.translateSourceEl?.value || "auto";
-      const todo = parts.filter((p) => !this.piecesTranslation.has(p.text));
+      const todo = parts.filter((p) => {
+        const quick = this.piecesTranslation.get(p.text);
+        return !quick?.text && !this._translationForPiece(p.text);
+      });
       if (!todo.length) { this._flash("所有片段均已翻译", 3000); return; }
-      this._flash(`正在翻译全部片段（${todo.length} 条）…`);
+      this._flash(`正在翻译未翻译片段（${todo.length} 条）…`);
       let okCount = 0;
       let failCount = 0;
       let lastProvider = "";
@@ -2757,7 +2981,7 @@
 
     // ②区「AI 入卡」：当前所有片段 → LLM 自动判定分类 → 确认清单（可改判）→ 确认后入库
     async cardsAddAll() {
-      const parts = splitTags(this.curText());
+      const parts = this._promptPieces();
       if (!parts.length) { this._flash("当前提示词为空"); return; }
       if (!this.cardCats.length) { this._flash("没有可用分类"); return; }
       const catNames = this.cardCats.map((c) => c.name);
@@ -2892,9 +3116,7 @@
     restoreDraft() {
       const d = loadDraft();
       if (d) {
-        this._setW(this.w.positive, d);
-        if (this.curTextEl) this.curTextEl.value = d;
-        this._renderChips();
+        this._setPromptText(d);
         this._flash("已恢复草稿");
       }
     }
@@ -3338,9 +3560,7 @@
           clickTimer = setTimeout(() => {
             const cur = this.curText();
             const next = appendCardToPrompt(cur, c);
-            this._setW(this.w.positive, next);
-            if (this.curTextEl) this.curTextEl.value = next;
-            this._renderChips();
+            this._setPromptText(next, { preserveHidden: true });
             if (next === cur) this._flash("该卡片已在提示词中（已去重）");
           }, 240);
         });
@@ -3444,9 +3664,7 @@
       try {
         const text = await navigator.clipboard.readText();
         if (!text.trim()) { this._flash("剪切板为空"); return; }
-        this._setW(this.w.positive, text.trim());
-        if (this.curTextEl) this.curTextEl.value = text.trim();
-        this._renderChips();
+        this._setPromptText(text.trim());
         this._flash("已从剪切板导入并拆分");
       } catch (e) {
         this._flash("无法读取剪切板：" + (e.message || e));
@@ -3469,9 +3687,7 @@
         const result = await response.json();
         if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
         if (!result.positive) { this._flash("该 PNG 没有可用的提示词元数据"); return; }
-        this._setW(this.w.positive, result.positive);
-        if (this.curTextEl) this.curTextEl.value = result.positive;
-        this._renderChips();
+        this._setPromptText(result.positive);
         this._flash(`已解析 ${result.filename || file.name || "PNG"}（${result.positive.length} 字符）`);
       } catch (e) {
         this._flash("图片解析失败：" + (e.name === "AbortError" ? "请求超时" : (e.message || e)), 5000);
@@ -3549,9 +3765,7 @@
                 const can = appendCardToPrompt(text, { prompt: w });
                 if (can !== text) text = can;
               }
-              this._setW(this.w.positive, text);
-              if (this.curTextEl) this.curTextEl.value = text;
-              this._renderChips();
+              this._setPromptText(text, { preserveHidden: true });
               const lw = (this.w.lora_syntax?.value || "").trim();
               this._setW(this.w.lora_syntax, lw ? lw + " <lora:" + name + ":1.0>" : "<lora:" + name + ":1.0>");
               this._flash(`已追加触发词 + <lora:${name}:1.0> → lora_syntax`);
@@ -3950,7 +4164,10 @@
         this.w.positive = w("positive");
         this.w.opt_text = w("opt_text");
         this.w.lora_syntax = w("lora_syntax");
+        this.w.prompt_pieces = w("prompt_pieces") || this._ensurePromptPiecesWidget();
+        this._hideNativeWidget(this.w.prompt_pieces);
         this._initUI();
+        if (this._promptPiecesRestorePending) this.restorePromptPieces();
       };
       tryInit(0);
     }
@@ -4107,7 +4324,7 @@
       const clearBtn = document.createElement("button");
       clearBtn.type = "button"; clearBtn.className = "tk-cards-btn"; clearBtn.textContent = "清空";
       clearBtn.title = "清空当前提示词";
-      clearBtn.addEventListener("click", () => { this._setW(this.w.positive, ""); if (this.curTextEl) this.curTextEl.value = ""; this._renderChips(); this._hideResolve(); });
+      clearBtn.addEventListener("click", () => { this._setPromptText(""); this._hideResolve(); });
       const savePromptBtn = document.createElement("button");
       savePromptBtn.type = "button"; savePromptBtn.className = "tk-cards-btn"; savePromptBtn.textContent = "存入 prompt 库";
       savePromptBtn.title = "把当前整段提示词存入工具箱 prompt 库，不拆成③区小卡片";
@@ -4121,10 +4338,17 @@
       this.curTextEl = document.createElement("textarea");
       this.curTextEl.className = "tk-cards-textarea";
       this.curTextEl.placeholder = "当前提示词（点库条目/卡片/粘贴/拖入 PNG 填充；输入时卡片库联想补全）";
+      this._restorePromptPiecesFromWidget();
       const widgetText = String(this.w.positive?.value || "");
       const draftText = loadDraft();
-      const initialText = widgetText.trim() ? widgetText : draftText;
-      if (initialText !== widgetText) this._setW(this.w.positive, initialText);
+      const restoredText = Array.isArray(this.promptPieces)
+        ? serializePromptPieces(this.promptPieces.filter((piece) => !piece.hidden))
+        : "";
+      const initialText = widgetText.trim() ? widgetText : (restoredText || draftText);
+      if (initialText !== widgetText) {
+        if (restoredText && initialText === restoredText) this._setW(this.w.positive, initialText);
+        else this._setPromptText(initialText, { render: false });
+      }
       this.curTextEl.value = initialText;
       this.curTextEl.addEventListener("input", () => this.onCurInput());
       this.curTextEl.addEventListener("keydown", (e) => this._suggestKeyDown(e));
@@ -4246,8 +4470,8 @@
       const translateAllBtn = document.createElement("button");
       translateAllBtn.type = "button";
       translateAllBtn.className = "tk-cards-btn";
-      translateAllBtn.textContent = "翻译全部片段";
-      translateAllBtn.title = "一键翻译当前提示词全部片段卡片（已译跳过），译文直接显示在各卡片下方";
+      translateAllBtn.textContent = "翻译未翻译片段";
+      translateAllBtn.title = "只翻译当前提示词中没有中文注释或快捷译文的片段，避免污染已翻译卡片";
       translateAllBtn.addEventListener("click", () => this.translateAllPieces());
       chipsTools.appendChild(translateAllBtn);
       this.chipsEl = document.createElement("div");
@@ -4504,8 +4728,11 @@
  .tk-cards-resolve-semantic-hint { display:flex; align-items:center; gap:6px; flex-wrap:wrap; color:var(--tk-warn); font-size:10px; line-height:1.4; }
  .tk-cards-resolve-semantic-hint .tk-cards-btn { min-height:25px; padding:3px 7px; font-size:10px; }
 .tk-cards-chips { display:flex; flex-wrap:wrap; align-content:flex-start; gap:4px; height:180px; min-height:0; max-height:180px; overflow:auto; }
- .tk-cards-chip { position:relative; display:block; max-width:260px; min-width:150px; padding:4px 42px 4px 8px; border:1px solid #555a5e; border-radius:4px; background:#24282b; color:var(--tk-text); cursor:pointer; font-size:11px; overflow:hidden; }
+.tk-cards-chip { position:relative; display:block; max-width:260px; min-width:150px; padding:4px 68px 4px 8px; border:1px solid #555a5e; border-radius:4px; background:#24282b; color:var(--tk-text); cursor:pointer; font-size:11px; overflow:hidden; }
  .tk-cards-chip:hover { border-color:var(--tk-accent); background:#303437; }
+.tk-cards-chip.is-hidden { border-color:rgba(203,133,133,.7); background:rgba(203,133,133,.08); opacity:.72; }
+.tk-cards-chip.is-hidden:hover { opacity:1; background:rgba(203,133,133,.14); }
+.tk-cards-chip.is-hidden .tk-cards-chip-en { color:var(--tk-muted); text-decoration:line-through; text-decoration-color:rgba(203,133,133,.8); }
 .tk-cards-chip-body { display:block; min-width:0; overflow:hidden; }
 .tk-cards-chip-top { display:flex; align-items:center; gap:4px; min-width:0; }
 .tk-cards-chip-en { min-width:0; flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -4520,6 +4747,9 @@
 .tk-cards-chip-translate { position:absolute; top:0; right:19px; bottom:0; display:none; padding:0 3px; border:0; background:transparent; color:var(--tk-info); font-size:10px; cursor:pointer; }
 .tk-cards-chip:hover .tk-cards-chip-translate { display:block; }
 .tk-cards-chip-translate:hover { color:var(--tk-accent-strong); }
+.tk-cards-chip-toggle { position:absolute; top:0; right:36px; bottom:0; display:none; width:29px; padding:0 2px; border:0; background:transparent; color:var(--tk-danger); font-size:9px; cursor:pointer; }
+.tk-cards-chip:hover .tk-cards-chip-toggle { display:inline-flex; align-items:center; justify-content:center; }
+.tk-cards-chip-toggle:hover, .tk-cards-chip-toggle:focus-visible { color:#f1b3b3; background:rgba(203,133,133,.14); outline:none; }
 .tk-cards-chip-x { position:absolute; top:0; right:0; bottom:0; display:none; background:transparent; border:none; color:#ff8a8a; font-size:9px; cursor:pointer; padding:0 3px; }
 .tk-cards-chip:hover .tk-cards-chip-x { display:block; }
  .tk-cards-chip-x:hover { color:#ff5555; }
@@ -4659,6 +4889,12 @@
         const isOurs = names.includes(NODE_NAME) || names.includes("TKPromptCards");
         if (!isOurs) return;
         const orig = nodeType.prototype.onNodeCreated;
+        const origConfigure = nodeType.prototype.onConfigure;
+        nodeType.prototype.onConfigure = function () {
+          const r = typeof origConfigure === "function" ? origConfigure.apply(this, arguments) : undefined;
+          if (this._cardsUI) this._cardsUI.restorePromptPieces();
+          return r;
+        };
         nodeType.prototype.onNodeCreated = function () {
           const r = orig?.apply(this, arguments);
           if (this._cardsUI) return r;
@@ -4667,6 +4903,7 @@
             positive: w("positive"),
             opt_text: w("opt_text"),
             lora_syntax: w("lora_syntax"),
+            prompt_pieces: w("prompt_pieces"),
           });
           ui.w.extra_dirs = null;
           this._cardsUI = ui;
@@ -4683,6 +4920,7 @@
             positive: w("positive"),
             opt_text: w("opt_text"),
             lora_syntax: w("lora_syntax"),
+            prompt_pieces: w("prompt_pieces"),
           });
           ui.w.extra_dirs = null;
           node._cardsUI = ui;
@@ -4695,6 +4933,7 @@
         window.__tkCardsDebug = window.__tkCardsDebug || {};
         window.__tkCardsDebug.splitTags = splitTags;
         window.__tkCardsDebug.appendCardToPrompt = appendCardToPrompt;
+        window.__tkCardsDebug.appendPromptBlock = appendPromptBlock;
       },
     });
   }

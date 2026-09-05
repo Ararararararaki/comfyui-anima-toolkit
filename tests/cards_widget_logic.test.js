@@ -24,7 +24,7 @@ vm.runInContext('window.comfyAPI = comfyAPI;', sandbox);
 vm.runInContext(src, sandbox);
 
 const dbg = sandbox.window.__tkCardsDebug;
-if (!dbg || !dbg.splitTags) { console.error('FAIL: debug exports missing'); process.exit(1); }
+if (!dbg || !dbg.splitTags || !dbg.appendPromptBlock) { console.error('FAIL: debug exports missing'); process.exit(1); }
 
 let pass = 0, fail = 0;
 function eq(name, actual, expected) {
@@ -52,6 +52,12 @@ eq('去重', dbg.appendCardToPrompt('1girl, long hair', {prompt:'long hair', wei
 eq('权重不同算重复', dbg.appendCardToPrompt('(long hair:1.2)', {prompt:'long hair', weight:'0.8'}), '(long hair:1.2)');
 eq('尾部逗号规范化', dbg.appendCardToPrompt('1girl, ', {prompt:'solo'}), '1girl, solo');
 eq('多卡连续追加', dbg.appendCardToPrompt(dbg.appendCardToPrompt('', {prompt:'a'}), {prompt:'b'}), 'a, b');
+
+// appendPromptBlock（①工具箱整段提示词：末尾追加 + 两次换行）
+eq('工具箱整段追加', dbg.appendPromptBlock('portrait, white hair', 'toolbox prompt block'), 'portrait, white hair\n\ntoolbox prompt block');
+eq('工具箱追加前清理尾部空白', dbg.appendPromptBlock('portrait, white hair\n', 'toolbox prompt block'), 'portrait, white hair\n\ntoolbox prompt block');
+eq('工具箱空当前提示词', dbg.appendPromptBlock('', 'toolbox prompt block'), 'toolbox prompt block');
+eq('工具箱末尾去重', dbg.appendPromptBlock('portrait\n\ntoolbox prompt block', 'toolbox prompt block'), 'portrait\n\ntoolbox prompt block');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -89,6 +89,17 @@ DIST_RANGES = {
     "wide":   (-1.0, -0.7),
 }
 
+# 可动素体相机使用独立的 UI 顺序：远景 → 中景 → 近景 → 全身 → 特写。
+# 旧 TK Camera Control 不带 category_order，继续使用上面的旧分段。
+BODY_DISTANCE_ORDER = ("wide", "medium", "cu", "full", "ecu")
+BODY_DISTANCE_RANGES = {
+    "wide":   (-1.0, -0.6),
+    "medium": (-0.6, -0.2),
+    "cu":     (-0.2, 0.2),
+    "full":   (0.2, 0.6),
+    "ecu":    (0.6, 1.0),
+}
+
 # 中景/全身/远景：距离越远(z 越小)权重越大，故档内 frac 反向计算；
 # 特写/近景仍是越近(z 越大)权重越大。
 DIST_FAR_STRONGER = {"medium", "full", "wide"}
@@ -342,7 +353,17 @@ class CameraControlCore:
         return "worm"
 
     @staticmethod
-    def _distance_key(z):
+    def _distance_key(z, category_order=None):
+        if tuple(category_order or ()) == BODY_DISTANCE_ORDER:
+            if z > 0.6:
+                return "ecu"
+            if z > 0.2:
+                return "full"
+            if z >= -0.2:
+                return "cu"
+            if z >= -0.6:
+                return "medium"
+            return "wide"
         if z > 0.7:
             return "ecu"
         if z > 0.2:
@@ -357,14 +378,16 @@ class CameraControlCore:
     def distance_weight_details(cls, cfg, z):
         """返回当前距离档位和实际权重；follow_slider 是新节点的可选增强。"""
         z = float(z)
-        key = cls._distance_key(z)
-        start, end = DIST_RANGES[key]
+        distance_cfg = cfg.get("distance") or {}
+        category_order = distance_cfg.get("category_order")
+        ranges = BODY_DISTANCE_RANGES if tuple(category_order or ()) == BODY_DISTANCE_ORDER else DIST_RANGES
+        key = cls._distance_key(z, category_order)
+        start, end = ranges[key]
         if key in DIST_FAR_STRONGER:
             frac = max(0.0, min(1.0, (end - z) / (end - start)))
         else:
             frac = max(0.0, min(1.0, (z - start) / (end - start)))
 
-        distance_cfg = cfg.get("distance") or {}
         category_cfg = (distance_cfg.get("categories") or {}).get(key) or {}
         extra_master = float(cfg.get("extra_master", 1.0))
         extra = float(distance_cfg.get("extra", 0.0))
@@ -554,7 +577,7 @@ class CameraControlCore:
                 if ecat and ecat.get("tag") and ecat.get("enabled", True):
                     parts.extend(cls._emit_plain(ecat["tag"]))
         if cfg.get("distance", {}).get("enabled", True):
-            dk = cls._distance_key(float(pos_z))
+            dk = cls._distance_key(float(pos_z), (cfg.get("distance") or {}).get("category_order"))
             if dk != "medium":
                 dcat = (cfg["distance"].get("categories") or {}).get(dk)
                 if dcat and dcat.get("tag") and dcat.get("enabled", True):

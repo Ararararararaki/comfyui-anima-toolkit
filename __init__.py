@@ -76,6 +76,10 @@ from .anima_prompt_cards import (
     NODE_CLASS_MAPPINGS as CARDS_NODE_CLASS_MAPPINGS,
     NODE_DISPLAY_NAME_MAPPINGS as CARDS_NODE_DISPLAY_NAME_MAPPINGS,
 )
+from .anima_clothing_draw import (
+    NODE_CLASS_MAPPINGS as CLOTHING_DRAW_NODE_CLASS_MAPPINGS,
+    NODE_DISPLAY_NAME_MAPPINGS as CLOTHING_DRAW_NODE_DISPLAY_NAME_MAPPINGS,
+)
 from . import anima_local_llm  # 本地 LLM 翻译 provider（手动启用；load/unload/status 路由在模块内注册）
 
 # 合并所有节点的注册表（ComfyUI 通过 __init__.py 顶层这两个变量发现所有节点）
@@ -93,6 +97,7 @@ NODE_CLASS_MAPPINGS = {
     **DANBOORU_NODE_CLASS_MAPPINGS,
     **SELECT_NODE_CLASS_MAPPINGS,
     **CARDS_NODE_CLASS_MAPPINGS,
+    **CLOTHING_DRAW_NODE_CLASS_MAPPINGS,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     **NODE_DISPLAY_NAME_MAPPINGS,
@@ -108,6 +113,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **DANBOORU_NODE_DISPLAY_NAME_MAPPINGS,
     **SELECT_NODE_DISPLAY_NAME_MAPPINGS,
     **CARDS_NODE_DISPLAY_NAME_MAPPINGS,
+    **CLOTHING_DRAW_NODE_DISPLAY_NAME_MAPPINGS,
 }
 
 WEB_DIRECTORY = "./web"
@@ -2459,7 +2465,7 @@ async def proxy_translate(request):
 # ─── LoRA metadata persistence (categories / favorite / pinned) ───
 
 META_PATH = os.path.join(PLUGIN_DIR, "anima_meta.json")
-META_LOCK = threading.Lock()
+META_LOCK = threading.RLock()
 
 
 def _normalize_meta_keys(data: dict):
@@ -2545,31 +2551,33 @@ async def set_meta(request):
         body = await request.json()
         if not isinstance(body, dict):
             raise ValueError("body must be an object")
-        old = _load_meta()
-        # categories：以 body 为准（全量列表）
-        cats = list(body.get("categories", old.get("categories", []) or []))
-        # loraMeta：按文件字段级合并
-        old_meta = old.get("loraMeta", {}) or {}
-        new_meta = {}
-        for name, entry in (body.get("loraMeta", {}) or {}).items():
-            if not isinstance(entry, dict):
-                continue
-            merged = dict(old_meta.get(name, {}) or {})
-            merged.update(entry)
-            new_meta[name] = merged
-        # body 未涉及的后端文件记录保留原样
-        for name, entry in old_meta.items():
-            if name not in new_meta:
-                new_meta[name] = entry
-        # loraGroups：body 有键则用 body（允许清空），否则保留旧值
-        old_groups = old.get("loraGroups", []) or []
-        groups = body.get("loraGroups", old_groups) if "loraGroups" in body else old_groups
-        meta = {
-            "categories": cats,
-            "loraMeta": new_meta,
-            "loraGroups": groups,
-        }
-        _save_meta(meta)
+        # 读-改-写必须持有同一把锁；否则面板和节点的并发 POST 会互相覆盖。
+        with META_LOCK:
+            old = _load_meta()
+            # categories：以 body 为准（全量列表）
+            cats = list(body.get("categories", old.get("categories", []) or []))
+            # loraMeta：按文件字段级合并
+            old_meta = old.get("loraMeta", {}) or {}
+            new_meta = {}
+            for name, entry in (body.get("loraMeta", {}) or {}).items():
+                if not isinstance(entry, dict):
+                    continue
+                merged = dict(old_meta.get(name, {}) or {})
+                merged.update(entry)
+                new_meta[name] = merged
+            # body 未涉及的后端文件记录保留原样
+            for name, entry in old_meta.items():
+                if name not in new_meta:
+                    new_meta[name] = entry
+            # loraGroups：body 有键则用 body（允许清空），否则保留旧值
+            old_groups = old.get("loraGroups", []) or []
+            groups = body.get("loraGroups", old_groups) if "loraGroups" in body else old_groups
+            meta = {
+                "categories": cats,
+                "loraMeta": new_meta,
+                "loraGroups": groups,
+            }
+            _save_meta(meta)
         return web.json_response({"ok": True})
     except Exception as e:
         return web.json_response({"ok": False, "error": str(e)}, status=400)

@@ -1,0 +1,85 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>TK Clothing Draw UI harness</title>
+<style>
+  html, body { margin: 0; min-height: 100%; background: #202226; color: #eee; font-family: system-ui, sans-serif; }
+  #host { width: 360px; height: 400px; margin: 20px; }
+</style>
+<div id="host"></div>
+<script>
+  window.__registeredExtension = null;
+  window.__wheelBubbles = 0;
+  document.addEventListener("wheel", () => { window.__wheelBubbles += 1; });
+  window.comfyAPI = { app: { app: { registerExtension(extension) { window.__registeredExtension = extension; } } } };
+
+  function requestPromise(request) {
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async function seedLibrary() {
+    await new Promise((resolve, reject) => {
+      const request = indexedDB.deleteDatabase("clothing-db");
+      request.onsuccess = resolve;
+      request.onerror = reject;
+      request.onblocked = resolve;
+    });
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("clothing-db", 1);
+      request.onupgradeneeded = () => {
+        const cards = request.result.createObjectStore("cards", { keyPath: "id" });
+        cards.createIndex("categoryId", "categoryId");
+        cards.createIndex("favorite", "favorite");
+        cards.createIndex("createdAt", "createdAt");
+        const categories = request.result.createObjectStore("categories", { keyPath: "id" });
+        categories.createIndex("name", "name");
+        categories.createIndex("sortOrder", "sortOrder");
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = reject;
+    });
+    const svg = (color) => new Blob([`<svg xmlns="http://www.w3.org/2000/svg" width="80" height="100"><rect width="80" height="100" fill="${color}"/></svg>`], { type: "image/svg+xml" });
+    const tx = db.transaction(["cards", "categories"], "readwrite");
+    tx.objectStore("categories").put({ id: "uniform", name: "制服", sortOrder: 1 });
+    tx.objectStore("categories").put({ id: "swim", name: "泳装", sortOrder: 2 });
+    tx.objectStore("cards").put({ id: "outfit-1", name: "黑色制服", prompt: "black uniform, pleated skirt", categoryId: "uniform", tags: ["black uniform", "pleated skirt"], imageBlob: svg("#6872d9"), imageUrl: "", favorite: true, useCount: 0, source: "manual", createdAt: 2, updatedAt: 2 });
+    tx.objectStore("cards").put({ id: "outfit-2", name: "红色泳装", prompt: "red swimsuit, beach", categoryId: "swim", tags: ["red swimsuit", "beach"], imageBlob: svg("#d96872"), imageUrl: "", favorite: false, useCount: 0, source: "manual", createdAt: 1, updatedAt: 1 });
+    await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = reject; });
+    db.close();
+  }
+
+  window.__ready = (async () => {
+    await seedLibrary();
+    await import("/web/js/anima_clothing_draw_widget.js?test=1");
+    while (!window.__registeredExtension) await new Promise((resolve) => setTimeout(resolve, 10));
+    class FakeNode {
+      constructor() {
+        this.size = [360, 400];
+        this.widgets = [
+          { name: "mode", value: "随机抽取", callback: null },
+          { name: "seed", value: 0, callback: null },
+          { name: "selection_data", value: "{}", callback: null },
+        ];
+        this.graph = { setDirtyCanvas() {} };
+        this.properties = {};
+      }
+      addDOMWidget(name, type, element) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "lg-node-widgets";
+        wrapper.style.cssText = "width:360px;height:330px;display:flex;";
+        wrapper.appendChild(element);
+        document.getElementById("host").appendChild(wrapper);
+        this.domElement = element;
+        return { name, type, element, computeSize: () => [360, 330] };
+      }
+      setSize(size) { this.size = size; }
+    }
+    await window.__registeredExtension.beforeRegisterNodeDef(FakeNode, { name: "AnimaClothingDraw" });
+    const node = new FakeNode();
+    node.onNodeCreated();
+    window.__node = node;
+    await new Promise((resolve) => setTimeout(resolve, 180));
+  })();
+</script>

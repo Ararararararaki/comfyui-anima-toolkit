@@ -1,4 +1,4 @@
-"""真实 ComfyUI 回归：状态区单行缩减 + 片段「译」hover 常驻 + 一键翻译全部片段 + 候选加入不覆盖。"""
+"""真实 ComfyUI 回归：状态区单行缩减 + 片段「译」hover 常驻 + 翻译未翻译片段 + 候选加入不覆盖。"""
 from __future__ import annotations
 
 import json
@@ -96,9 +96,9 @@ with tempfile.TemporaryDirectory(prefix="tk-cards-ui-") as profile:
         check("「译」按钮存在", chip_translate.count() >= 1)
         check("未悬停时「译」不可见（hover 显示为既有设计）", not chip_translate.is_visible())
 
-        # 3) 一键翻译全部片段：两个卡片译文直接显示
-        ta_btn = ui.locator("button", has_text="翻译全部片段")
-        check("「翻译全部片段」按钮存在", ta_btn.count() == 1)
+        # 3) 翻译未翻译片段：两个片段译文直接显示
+        ta_btn = ui.locator("button", has_text="翻译未翻译片段")
+        check("「翻译未翻译片段」按钮存在", ta_btn.count() == 1)
         ta_btn.evaluate("el => el.click()")
         page.wait_for_function(
             "document.querySelectorAll('.tk-cards-chip-translation').length >= 2",
