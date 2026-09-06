@@ -33,6 +33,12 @@ export function installDOMWidgetSizeSync({
   let frame = 0;
   const originalOnResize = node.onResize;
   const originalComputeSize = domWidget?.computeSize;
+  // ComfyUI 新前端的 DOMWidget 用 computeLayoutSize() 读取元素上的 CSS
+  // 变量；旧版 LiteGraph 没有这个接口，只认 computeSize()。两套前端
+  // 不能同时把同一个最小高度写成两个 owner，否则拖动时会互相回弹。
+  const usesNativeLayoutSizing = typeof domWidget?.computeLayoutSize === "function";
+  const originalMinHeightVar = element.style.getPropertyValue("--comfy-widget-min-height");
+  const originalMaxHeightVar = element.style.getPropertyValue("--comfy-widget-max-height");
 
   const contentHeightFromNode = () => clamp(getNodeHeight(node) - chrome, min, max);
 
@@ -92,12 +98,19 @@ export function installDOMWidgetSizeSync({
   };
 
   if (domWidget) {
-    // 这里只声明内容区可接受的最小高度，不能返回当前高度；否则
-    // LiteGraph 会把上一次的大高度当成最小尺寸，拖小节点时又弹回去。
-    domWidget.computeSize = (width) => [
-      Math.max(280, finiteNumber(width, getNodeWidth(node))),
-      min,
-    ];
+    if (usesNativeLayoutSizing) {
+      // 新前端的布局器会读取这两个变量并把节点剩余空间分给 DOM 面板。
+      // 不再覆盖 computeSize，避免旧的 LiteGraph 尺寸钉子干扰 2.0 布局。
+      element.style.setProperty("--comfy-widget-min-height", `${min}px`);
+      element.style.setProperty("--comfy-widget-max-height", `${max}px`);
+    } else {
+      // 旧版 LiteGraph 这里只声明内容区可接受的最小高度，不能返回当前
+      // 高度；否则 LiteGraph 会把上一次的大高度当成最小尺寸并拖动回弹。
+      domWidget.computeSize = (width) => [
+        Math.max(280, finiteNumber(width, getNodeWidth(node))),
+        min,
+      ];
+    }
   }
 
   const initialHeight = clamp(initialContentHeight, min, max);
@@ -118,7 +131,14 @@ export function installDOMWidgetSizeSync({
       if (frame) cancelAnimationFrame(frame);
       observer?.disconnect();
       if (node.onResize === originalOnResize || !originalOnResize) node.onResize = originalOnResize;
-      if (domWidget && domWidget.computeSize !== originalComputeSize) domWidget.computeSize = originalComputeSize;
+      if (usesNativeLayoutSizing) {
+        if (originalMinHeightVar) element.style.setProperty("--comfy-widget-min-height", originalMinHeightVar);
+        else element.style.removeProperty("--comfy-widget-min-height");
+        if (originalMaxHeightVar) element.style.setProperty("--comfy-widget-max-height", originalMaxHeightVar);
+        else element.style.removeProperty("--comfy-widget-max-height");
+      } else if (domWidget && domWidget.computeSize !== originalComputeSize) {
+        domWidget.computeSize = originalComputeSize;
+      }
     },
   };
 }

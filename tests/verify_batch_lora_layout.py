@@ -68,6 +68,7 @@ with tempfile.TemporaryDirectory(prefix="tk-batch-lora-layout-") as profile:
                 beforeSize: window.__batchBeforeSize || null,
                 nodePos: node?.pos || null,
                 widgetNames: (node?.widgets || []).map(w => ({ name: w.name, type: w.type, size: w.computeSize?.(520) || null })),
+                widgetLayout: widget?.computeLayoutSize?.(node?.size) || null,
                 uiRect: rect(ui),
                 ancestors,
                 listRect: rect(list),
@@ -83,6 +84,9 @@ with tempfile.TemporaryDirectory(prefix="tk-batch-lora-layout-") as profile:
         check("节点高度不产生大块上方空白", state["uiRect"] and state["uiRect"]["top"] - 100 < 200, state)
         check("LoRA 列表随节点尺寸提供可用高度", state["listRect"] and state["listRect"]["height"] >= 300, state)
         check("LoRA 列表可滚动", state["listStyle"] and state["listStyle"]["overflowY"] in {"auto", "scroll"}, state)
+        if state["widgetLayout"]:
+            check("新前端读取 DOM 面板最小高度", state["widgetLayout"]["minHeight"] >= 180, state)
+            check("新前端读取 DOM 面板最大高度", state["widgetLayout"]["maxHeight"] == 1600, state)
         negative_weight = page.evaluate(
             """
             () => {
