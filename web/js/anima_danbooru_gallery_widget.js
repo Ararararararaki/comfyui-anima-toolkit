@@ -8,6 +8,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   const LEGACY_STORAGE_KEY = "anima_danbooru_gallery_settings_v1";
   const LEGACY_MIGRATED_KEY = `${STORAGE_KEY_PREFIX}legacy_migrated`;
   const FAVORITES_STORAGE_KEY = "anima_danbooru_gallery_favorites_v1";
+  // localStorage 只适合记住浏览器偏好；工作流本身也必须带上画廊设置，
+  // 否则 ComfyUI 重建节点时 node.id 尚未分配，按 id 读取会落到空设置。
+  const WORKFLOW_SETTINGS_PROPERTY = "tk_danbooru_gallery_settings_v1";
 
   function getNodeStorageKey(nodeId) {
     const id = String(nodeId ?? "").trim() || "unassigned";
@@ -199,6 +202,35 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }).length;
   }
 
+  function normalizeGallerySettings(saved) {
+    const source = saved && typeof saved === "object" ? saved : {};
+    return {
+      limit: [12, 24, 48].includes(source.limit) ? source.limit : 24,
+      rating: normalizeRatings(source.rating),
+      gridHeight: Number.isFinite(source.gridHeight) ? Math.max(360, Math.min(1200, source.gridHeight)) : 620,
+      categories: Array.isArray(source.categories) ? source.categories : [],
+      postCategories: source.postCategories && typeof source.postCategories === "object" ? source.postCategories : {},
+      presets: Array.isArray(source.presets) ? source.presets : [],
+      activeCategory: typeof source.activeCategory === "string" ? source.activeCategory : "",
+      filters: normalizeFilters(source.filters),
+      excludeTags: Array.isArray(source.excludeTags) ? [...new Set(source.excludeTags.map(normalizeExcludeTag).filter(Boolean))].slice(0, 8) : [],
+      promptOutput: normalizePromptOutputSettings(source.promptOutput),
+      promptOutputEnabled: source.promptOutputEnabled !== false,
+      promptExcludePattern: typeof source.promptExcludePattern === "string" ? source.promptExcludePattern.slice(0, 500) : "",
+      lastQuery: typeof source.lastQuery === "string" ? source.lastQuery : "",
+    };
+  }
+
+  function parseGallerySettings(raw) {
+    if (!raw) return null;
+    try {
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      return parsed && typeof parsed === "object" ? normalizeGallerySettings(parsed) : null;
+    } catch {
+      return null;
+    }
+  }
+
   function loadSettings(nodeId) {
     try {
       const storageKey = getNodeStorageKey(nodeId);
@@ -211,24 +243,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           localStorage.setItem(LEGACY_MIGRATED_KEY, "1");
         }
       }
-      const saved = JSON.parse(raw || "{}");
-      return {
-        limit: [12, 24, 48].includes(saved.limit) ? saved.limit : 24,
-        rating: normalizeRatings(saved.rating),
-        gridHeight: Number.isFinite(saved.gridHeight) ? Math.max(360, Math.min(1200, saved.gridHeight)) : 620,
-        categories: Array.isArray(saved.categories) ? saved.categories : [],
-        postCategories: saved.postCategories && typeof saved.postCategories === "object" ? saved.postCategories : {},
-        presets: Array.isArray(saved.presets) ? saved.presets : [],
-        activeCategory: typeof saved.activeCategory === "string" ? saved.activeCategory : "",
-        filters: normalizeFilters(saved.filters),
-        excludeTags: Array.isArray(saved.excludeTags) ? [...new Set(saved.excludeTags.map(normalizeExcludeTag).filter(Boolean))].slice(0, 8) : [],
-        promptOutput: normalizePromptOutputSettings(saved.promptOutput),
-        promptOutputEnabled: saved.promptOutputEnabled !== false,
-        promptExcludePattern: typeof saved.promptExcludePattern === "string" ? saved.promptExcludePattern.slice(0, 500) : "",
-        lastQuery: typeof saved.lastQuery === "string" ? saved.lastQuery : "",
-      };
+      return parseGallerySettings(raw) || normalizeGallerySettings({});
     } catch {
-      return { limit: 24, rating: [], gridHeight: 620, categories: [], postCategories: {}, presets: [], activeCategory: "", filters: { ...FILTER_DEFAULTS }, excludeTags: [], promptOutput: normalizePromptOutputSettings(), promptOutputEnabled: true, promptExcludePattern: "", lastQuery: "" };
+      return normalizeGallerySettings({});
     }
   }
 
@@ -236,6 +253,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     constructor(node) {
       this.node = node;
       this.settings = loadSettings(node.id);
+      this._settingsNodeId = String(node.id ?? "");
+      this.node.properties = this.node.properties || {};
+      if (this.node.properties[WORKFLOW_SETTINGS_PROPERTY] == null) {
+        this.node.properties[WORKFLOW_SETTINGS_PROPERTY] = JSON.stringify(this.settings);
+      }
       this.page = 1;
       this.posts = [];
       this.requestId = 0;
@@ -293,8 +315,42 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       return getNodeStorageKey(this.node?.id);
     }
 
+    workflowSettings() {
+      return parseGallerySettings(this.node?.properties?.[WORKFLOW_SETTINGS_PROPERTY]);
+    }
+
+    refreshSettingsUI() {
+      this.setQuery(this.settings.lastQuery || "");
+      this.filterControls?.refresh();
+      this.renderPresetOptions();
+      this.updatePromptOutputButton();
+      this.applyGridHeight();
+    }
+
+    loadWorkflowSettings() {
+      const raw = this.node?.properties?.[WORKFLOW_SETTINGS_PROPERTY];
+      const fromWorkflow = this.workflowSettings();
+      const nodeId = String(this.node?.id ?? "");
+      // 工作流设置优先于 localStorage：它代表用户保存的那个画廊实例。
+      // 没有工作流设置时，兼容旧版本并在 node.id 分配完成后重新读取节点作用域存储。
+      if (fromWorkflow) {
+        this.settings = fromWorkflow;
+        try { localStorage.setItem(this.settingsKey(), JSON.stringify(this.settings)); } catch {}
+      } else if (nodeId !== this._settingsNodeId) {
+        this.settings = loadSettings(this.node?.id);
+      }
+      this._settingsNodeId = nodeId;
+      this.refreshSettingsUI();
+    }
+
     saveSettings() {
-      localStorage.setItem(this.settingsKey(), JSON.stringify(this.settings));
+      const serialized = JSON.stringify(this.settings);
+      try { localStorage.setItem(this.settingsKey(), serialized); } catch {}
+      if (this.node) {
+        this.node.properties = this.node.properties || {};
+        this.node.properties[WORKFLOW_SETTINGS_PROPERTY] = serialized;
+        this.node.graph?.setDirtyCanvas?.(true, true);
+      }
     }
 
     // 重建工具栏「搜索预设」下拉选项（保存/删除预设后调用）
@@ -2864,6 +2920,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (nodeData.name !== NODE_NAME) return;
       injectStylesheet();
       const originalCreated = nodeType.prototype.onNodeCreated;
+      const originalConfigured = nodeType.prototype.onConfigure;
       nodeType.prototype.onNodeCreated = function () {
         const result = originalCreated?.apply(this, arguments);
         if (this._animaDanbooruGallery) return result;
@@ -2900,6 +2957,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           this._animaDanbooruGallery?.dispose();
           return originalRemoved?.apply(this, arguments);
         };
+        return result;
+      };
+      nodeType.prototype.onConfigure = function () {
+        const result = originalConfigured?.apply(this, arguments);
+        this._animaDanbooruGallery?.loadWorkflowSettings();
         return result;
       };
     },

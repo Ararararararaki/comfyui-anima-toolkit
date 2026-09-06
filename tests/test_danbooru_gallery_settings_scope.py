@@ -20,6 +20,10 @@ def test_gallery_settings_use_node_scoped_storage_key():
     assert "localStorage.getItem(STORAGE_KEY)" not in settings_code
     assert "this.settings = loadSettings(node.id)" in js
     assert "localStorage.setItem(this.settingsKey()" in save_code
+    assert "WORKFLOW_SETTINGS_PROPERTY" in js
+    assert "this.node.properties[WORKFLOW_SETTINGS_PROPERTY] = serialized" in save_code
+    assert "nodeType.prototype.onConfigure" in js
+    assert "loadWorkflowSettings()" in js
 
 
 if __name__ == "__main__":
