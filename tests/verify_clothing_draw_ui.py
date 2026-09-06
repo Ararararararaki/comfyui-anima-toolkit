@@ -43,8 +43,11 @@ def main():
         page.locator('[data-action="draw"]').click()
         page.wait_for_timeout(100)
         payload = page.evaluate("JSON.parse(window.__node.widgets.find(w => w.name === 'selection_data').value)")
+        assert payload["version"] == 2
         assert payload["mode"] == "随机抽取"
+        assert payload["selectedSeed"] == payload["seed"]
         assert payload["selected"]["id"] == "outfit-2"
+        assert payload["pool"] == []
 
         page.evaluate("window.__node.onExecuted({clothing_draw: [{id: 'outfit-1', name: '黑色制服', prompt: 'black uniform, pleated skirt', category_id: 'uniform', category: '制服'}]})")
         page.wait_for_timeout(100)

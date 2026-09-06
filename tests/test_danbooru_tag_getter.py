@@ -12,9 +12,18 @@ from anima_danbooru_tag_getter import AnimaTKDanbooruTagGetter  # noqa: E402
 
 def test_schema_exposes_bundle_and_all_twelve_native_switches():
     required = AnimaTKDanbooruTagGetter.INPUT_TYPES()["required"]
-    assert required["tag_bundle"] == ("TAG_BUNDLE",)
-    assert list(required)[1:] == list(AnimaTKDanbooruTagGetter.CATEGORY_NAMES)
+    optional = AnimaTKDanbooruTagGetter.INPUT_TYPES()["optional"]
+    assert optional["tag_bundle"] == ("TAG_BUNDLE",)
+    assert "tag_bundle" not in required
+    assert list(required)[:len(AnimaTKDanbooruTagGetter.CATEGORY_NAMES)] == list(AnimaTKDanbooruTagGetter.CATEGORY_NAMES)
     assert all(required[name][0] == "BOOLEAN" for name in AnimaTKDanbooruTagGetter.CATEGORY_NAMES)
+    assert "自然语言" not in required
+    assert optional["natural_language"][0] == "STRING"
+    assert optional["natural_language"][1]["forceInput"] is True
+    assert optional["include_natural_language"][0] == "BOOLEAN"
+    assert optional["filter_natural_language"][0] == "BOOLEAN"
+    assert optional["include_natural_language"][1]["default"] is True
+    assert optional["filter_natural_language"][1]["default"] is True
 
 
 def test_single_category():
@@ -38,6 +47,62 @@ def test_none_selected_outputs_empty():
         {"画师词": "watercolor, ", "背景词": "outdoor, "},
     )
     assert result == ("",)
+
+
+def test_optional_natural_language_is_preserved_after_filtered_tags():
+    result = AnimaTKDanbooruTagGetter().get_tags(
+        {"人物对象词": "1girl, ", "动作词": "squatting, "},
+        **{
+            "人物对象词": True,
+            "动作词": True,
+            "未归类词": True,
+            "natural_language": "A medium shot captures a fox-eared girl in a large basin.",
+        },
+    )
+    assert result == ("1girl, squatting\n\nA medium shot captures a fox-eared girl in a large basin.",)
+
+
+def test_natural_language_only_does_not_require_tag_bundle():
+    result = AnimaTKDanbooruTagGetter().get_tags(
+        natural_language="1girl, soft smile, A medium shot captures her expression.",
+        **{"未归类词": True},
+    )
+    assert result == ("1girl, soft smile, A medium shot captures her expression.",)
+
+
+def test_natural_language_filter_applies_exact_blacklist_without_dropping_other_text():
+    result = AnimaTKDanbooruTagGetter().get_tags(
+        natural_language="1girl, halo hair, soft smile, A medium shot captures her expression.",
+        tag_blacklist="halo hair",
+        filter_natural_language=True,
+        **{"未归类词": True},
+    )
+    assert result == ("1girl, soft smile, A medium shot captures her expression.",)
+
+
+def test_natural_language_can_be_excluded_explicitly():
+    result = AnimaTKDanbooruTagGetter().get_tags(
+        {"人物对象词": "1girl, "},
+        **{
+            "人物对象词": True,
+            "natural_language": "A medium shot captures her expression.",
+            "未归类词": False,
+        },
+    )
+    assert result == ("1girl",)
+
+
+def test_full_prompt_input_does_not_duplicate_prefix_tags():
+    result = AnimaTKDanbooruTagGetter().get_tags(
+        {"人物对象词": "1girl, ", "动作词": "squatting, "},
+        **{
+            "人物对象词": True,
+            "动作词": True,
+            "未归类词": True,
+            "natural_language": "1girl, squatting, red cloak\n\nA medium shot captures a fox-eared girl.",
+        },
+    )
+    assert result == ("1girl, squatting\n\nA medium shot captures a fox-eared girl.",)
 
 
 def test_all_categories_are_supported():
@@ -110,6 +175,11 @@ if __name__ == "__main__":
         test_single_category,
         test_multiple_categories_keep_fixed_order,
         test_none_selected_outputs_empty,
+        test_optional_natural_language_is_preserved_after_filtered_tags,
+        test_natural_language_only_does_not_require_tag_bundle,
+        test_natural_language_filter_applies_exact_blacklist_without_dropping_other_text,
+        test_natural_language_can_be_excluded_explicitly,
+        test_full_prompt_input_does_not_duplicate_prefix_tags,
         test_all_categories_are_supported,
         test_empty_and_missing_categories_are_skipped,
         test_duplicate_tags_are_removed_case_insensitively,

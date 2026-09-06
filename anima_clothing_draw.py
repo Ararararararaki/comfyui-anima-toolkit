@@ -2,9 +2,11 @@
 
 The clothing library itself lives in the browser's ``clothing-db`` IndexedDB
 database.  The companion web widget serializes a small, portable snapshot of
-the selected card (or the candidate pool) into ``selection_data``.  Keeping
-the execution boundary as plain JSON means the Python node does not need a
-second clothing database or a browser-specific dependency.
+the selected card (or the compact candidate pool) into ``selection_data``.
+Keeping the execution boundary as plain JSON means the Python node does not
+need a second clothing database or a browser-specific dependency.  Payload
+version 2 omits preview URLs from pool entries while remaining compatible with
+version 1 workflows.
 """
 
 from __future__ import annotations
@@ -142,20 +144,58 @@ class AnimaClothingDraw:
             if selected is None:
                 raise ValueError("TK 服装抽卡：尚未选择服装，请点击「选择服装」")
         else:
-            raw_cards = payload.get("pool", [])
-            if not isinstance(raw_cards, list):
-                raw_cards = []
-            if len(raw_cards) > MAX_SNAPSHOT_CARDS:
-                raw_cards = raw_cards[:MAX_SNAPSHOT_CARDS]
-            cards = [card for value in raw_cards if (card := _card_snapshot(value)) is not None]
-            if not cards:
-                # A resolved selection is kept as a safe fallback when a
-                # workflow was saved before the pool snapshot was refreshed.
-                selected = _card_snapshot(payload.get("selected"))
+            try:
+                payload_version = int(payload.get("version") or 1)
+            except (TypeError, ValueError):
+                payload_version = 1
+            saved_selected = _card_snapshot(payload.get("selected"))
+            selected_seed = payload.get("selectedSeed")
+            resolved_for_seed = False
+            if payload_version >= 2 and saved_selected is not None:
+                if selected_seed is None:
+                    # Be tolerant of early v2 snapshots that did not persist
+                    # selectedSeed yet.
+                    resolved_for_seed = True
+                else:
+                    try:
+                        resolved_for_seed = int(selected_seed) == int(seed)
+                    except (TypeError, ValueError):
+                        resolved_for_seed = False
+            if resolved_for_seed:
+                # v2 deliberately avoids embedding the whole browser library;
+                # the frontend has already resolved this exact seed.
+                selected = saved_selected
             else:
-                selected = self._choose_random(cards, int(seed))
+                if payload_version >= 2 and selected_seed is not None and saved_selected is not None:
+                    # A direct/API queue may change the visible seed without
+                    # letting the browser refresh selection_data.  Only use a
+                    # legacy pool if one is present; never silently emit the
+                    # stale card for a different seed.
+                    pool_mismatch = True
+                else:
+                    pool_mismatch = False
+                raw_cards = payload.get("pool", [])
+                if not isinstance(raw_cards, list):
+                    raw_cards = []
+                if len(raw_cards) > MAX_SNAPSHOT_CARDS:
+                    raw_cards = raw_cards[:MAX_SNAPSHOT_CARDS]
+                cards = [card for value in raw_cards if (card := _card_snapshot(value)) is not None]
+                if cards:
+                    selected = self._choose_random(cards, int(seed))
+                    # Legacy pools may not carry preview URLs.  Carry the URL
+                    # from selected when the seeded choice agrees with it.
+                    if saved_selected and saved_selected.get("id") == selected.get("id"):
+                        if saved_selected.get("image_url"):
+                            selected["image_url"] = saved_selected["image_url"]
+                        selected["has_image"] = bool(selected.get("has_image") or saved_selected.get("has_image"))
+                elif not pool_mismatch:
+                    # A resolved selection is kept as a safe fallback when a
+                    # v1 workflow was saved before its pool was refreshed.
+                    selected = saved_selected
             if selected is None:
                 category = _text(payload.get("categoryName")) or "当前分类"
+                if payload_version >= 2 and selected_seed is not None and saved_selected is not None:
+                    raise ValueError(f"TK 服装抽卡：抽卡种子已变化，但当前节点没有对应快照，请在节点中重新点击「随机抽取」")
                 raise ValueError(f"TK 服装抽卡：{category}中没有可用的服装卡片，请先刷新服装库")
 
         result = {

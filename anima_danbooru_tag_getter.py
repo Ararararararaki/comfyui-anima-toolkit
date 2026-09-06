@@ -37,10 +37,11 @@ class AnimaTKDanbooruTagGetter:
         }
         return {
             "required": {
-                "tag_bundle": ("TAG_BUNDLE",),
                 **category_switches,
             },
             "optional": {
+                # 没有连接 D 站分类包时，节点仍可按自然语言排除规则处理普通 Prompt。
+                "tag_bundle": ("TAG_BUNDLE",),
                 "regex_blacklist": (
                     "STRING",
                     {
@@ -57,6 +58,17 @@ class AnimaTKDanbooruTagGetter:
                         "placeholder": "精准排除，逗号或换行分隔，例如：speech_bubble",
                     },
                 ),
+                "natural_language": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "forceInput": True,
+                        "tooltip": "可选：接入普通 Prompt/自然语言；默认也会应用自然语言过滤。",
+                    },
+                ),
+                "include_natural_language": ("BOOLEAN", {"default": True, "label_on": "保留", "label_off": "过滤掉"}),
+                "filter_natural_language": ("BOOLEAN", {"default": True, "label_on": "过滤", "label_off": "不过滤"}),
             },
         }
 
@@ -64,7 +76,7 @@ class AnimaTKDanbooruTagGetter:
     RETURN_NAMES = ("Tag String",)
     FUNCTION = "get_tags"
     CATEGORY = "TK/text"
-    DESCRIPTION = "从 TAG_BUNDLE 多选分类，按正则或精准排除后合并为 Tag String"
+    DESCRIPTION = "按分类和排除规则过滤标签；普通 Prompt/自然语言默认也应用排除规则"
 
     @staticmethod
     def _compile_regex(regex_blacklist):
@@ -97,32 +109,84 @@ class AnimaTKDanbooruTagGetter:
             if tag:
                 yield tag
 
-    def get_tags(self, tag_bundle, regex_blacklist="", tag_blacklist="", **category_flags):
-        """提取、筛选选中的分类；不修改 TAG_BUNDLE，返回干净的逗号分隔字符串。"""
-        if not isinstance(tag_bundle, dict):
-            return ("",)
+    @staticmethod
+    def _natural_language_tail(value, selected_tags):
+        """兼容把整段 Prompt 接入原文口：去掉重复的前置标签，保留自然语言段落。"""
+        raw = str(value or "").strip()
+        if not raw or not selected_tags or "\n\n" not in raw:
+            return raw
+        prefix, tail = re.split(r"\n\s*\n", raw, maxsplit=1)
+        prefix_parts = [part.strip() for part in prefix.split(",") if part.strip()]
+        if len(prefix_parts) < 3:
+            return raw
+        selected = {tag.casefold() for tag in selected_tags}
+        matched = sum(1 for part in prefix_parts if part.casefold() in selected)
+        short_parts = sum(1 for part in prefix_parts if len(part.split()) <= 6)
+        # 只有当空行前明显是逗号标签串时才剥离，普通自然语言段落保持原文。
+        if matched >= 1 and short_parts / len(prefix_parts) >= 0.6 and tail.strip():
+            return tail.strip()
+        return raw
 
+    @staticmethod
+    def _filter_natural_language(value, regex_pattern, exact_blacklist):
+        """按排除规则过滤自然语言中的逗号片段，保留其余句子和段落。"""
+        raw = str(value or "").strip()
+        if not raw or (regex_pattern is None and not exact_blacklist):
+            return raw
+        paragraphs = []
+        for paragraph in re.split(r"\n\s*\n", raw):
+            kept_lines = []
+            for line in paragraph.splitlines() or [paragraph]:
+                pieces = [piece.strip() for piece in line.split(",") if piece.strip()]
+                if not pieces:
+                    continue
+                kept = [
+                    piece for piece in pieces
+                    if piece.casefold() not in exact_blacklist
+                    and (regex_pattern is None or not regex_pattern.search(piece))
+                ]
+                if kept:
+                    kept_lines.append(", ".join(kept))
+            if kept_lines:
+                paragraphs.append("\n".join(kept_lines))
+        return "\n\n".join(paragraphs)
+
+    def get_tags(self, tag_bundle=None, regex_blacklist="", tag_blacklist="", natural_language="", include_natural_language=True, filter_natural_language=True, **category_flags):
+        """按分类/排除规则提取标签，并按选项处理普通 Prompt/自然语言。"""
         regex_pattern = self._compile_regex(regex_blacklist)
         exact_blacklist = self._build_exact_blacklist(tag_blacklist)
-        result = []
-        seen = set()
-        for category in self.CATEGORY_NAMES:
-            if not category_flags.get(category, False):
-                continue
-            # 外部 Sorter 当前的真实结构是 dict[str, str]；缺失/空值直接跳过。
-            category_value = tag_bundle.get(category)
-            for tag in self._iter_category_tags(category_value) or ():
-                if tag.casefold() in exact_blacklist:
+        selected_tags = []
+        if not isinstance(tag_bundle, dict):
+            tag_text = ""
+        else:
+            result = []
+            seen = set()
+            for category in self.CATEGORY_NAMES:
+                if not category_flags.get(category, False):
                     continue
-                if regex_pattern is not None and regex_pattern.search(tag):
-                    continue
-                dedupe_key = tag.casefold()
-                if dedupe_key in seen:
-                    continue
-                seen.add(dedupe_key)
-                result.append(tag)
+                # 外部 Sorter 当前的真实结构是 dict[str, str]；缺失/空值直接跳过。
+                category_value = tag_bundle.get(category)
+                for tag in self._iter_category_tags(category_value) or ():
+                    if tag.casefold() in exact_blacklist:
+                        continue
+                    if regex_pattern is not None and regex_pattern.search(tag):
+                        continue
+                    dedupe_key = tag.casefold()
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    result.append(tag)
+            selected_tags = result
+            tag_text = ", ".join(result)
 
-        return (", ".join(result),)
+        # 自然语言沿用外部 Sorter 的语义，归入“未归类词”；不额外制造第 13 类。
+        include_natural = category_flags.get("未归类词", False) and include_natural_language
+        raw_natural_language = self._natural_language_tail(natural_language, selected_tags)
+        if filter_natural_language:
+            raw_natural_language = self._filter_natural_language(raw_natural_language, regex_pattern, exact_blacklist)
+        if include_natural and raw_natural_language:
+            tag_text = f"{tag_text}\n\n{raw_natural_language}" if tag_text else raw_natural_language
+        return (tag_text,)
 
 
 NODE_CLASS_MAPPINGS = {

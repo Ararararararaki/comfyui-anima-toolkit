@@ -342,6 +342,13 @@
 .adg-prompt-settings { display: flex; min-width: min(420px, 78vw); flex-direction: column; gap: 9px; }
 .adg-prompt-settings-tip { max-width: 460px; color: #aaa6bc; font-size: 11px; line-height: 1.45; }
 .adg-prompt-settings-title { color: #c8beff; font-size: 11px; font-weight: 700; }
+.adg-save-action-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.adg-save-action-choice { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid rgba(168,149,255,.35); border-radius: 6px; color: #e5e1f4; background: rgba(139,92,246,.08); cursor: pointer; font-size: 11px; }
+.adg-save-action-choice:hover { border-color: rgba(168,149,255,.75); background: rgba(139,92,246,.16); }
+.adg-save-action-choice input { margin: 0; accent-color: #9d8cff; }
+.adg-save-local-newrow { display: flex; gap: 6px; align-items: center; }
+.adg-save-local-newrow .adg-save-title-input { flex: 1 1 auto; min-width: 0; box-sizing: border-box; padding: 7px 8px; border: 1px solid rgba(255,255,255,.12); border-radius: 6px; color: #eee; background: #17171d; font: inherit; }
+.adg-save-local-newrow .primary { flex: 0 0 auto; padding: 6px 9px; border: 1px solid rgba(168,149,255,.45); border-radius: 6px; color: #fff; background: #6657c9; cursor: pointer; font-size: 11px; }
 .adg-save-category-select { box-sizing: border-box; width: 100%; padding: 7px 8px; border: 1px solid rgba(255,255,255,.12); border-radius: 6px; color: #eee; background: #17171d; font: inherit; }
 .adg-save-category-select:focus { outline: none; border-color: #8f86ed; box-shadow: 0 0 0 2px rgba(139,92,246,.18); }
 .adg-save-exclude-input { box-sizing: border-box; width: 100%; padding: 7px 8px; border: 1px solid rgba(255,255,255,.12); border-radius: 6px; color: #eee; background: #17171d; font: 11px ui-monospace, monospace; }

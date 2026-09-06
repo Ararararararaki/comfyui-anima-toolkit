@@ -3139,13 +3139,10 @@
       });
     }
 
-    // 整段存入工具箱 prompt 库，不拆成③区 tag 卡片。
-    async saveCurrentAsPrompt() {
-      const text = this.curText().trim();
-      if (!text) { this._flash("当前提示词为空"); return; }
+    async _writeCurrentPromptToLibrary(text, categoryId) {
+      const now = Date.now();
+      const db = await openDB();
       try {
-        const now = Date.now();
-        const db = await openDB();
         await storePut(db, PROMPT_STORE, {
           id: genId("p_"),
           prompt: text,
@@ -3154,18 +3151,77 @@
           tags: splitTags(text).map((part) => part.text),
           images: [],
           primaryImage: "",
-          categoryId: "uncategorized",
+          categoryId: categoryId || "uncategorized",
           isFavorite: false,
           kind: "prompt",
           createdAt: now,
           updatedAt: now,
         });
-        await this.reloadLib();
-        this._switchLibPane("lib");
-        this._flash("整段提示词已存入工具箱 prompt 库");
-      } catch (error) {
-        this._flash("保存到 prompt 库失败：" + (error.message || error), 5000);
+      } finally {
+        try { db.close(); } catch {}
       }
+    }
+
+    // 整段存入工具箱 prompt 库，不拆成③区 tag 卡片；优先使用①区当前选中的分类。
+    async saveCurrentAsPrompt() {
+      const text = this.curText().trim();
+      if (!text) { this._flash("当前提示词为空"); return; }
+      // 节点刚创建时分类读取可能尚未完成，点击保存时补读一次，避免弹窗只有“未分类”。
+      if (!Array.isArray(this.cats) || !this.cats.length) await this.reloadLib();
+      const categories = (Array.isArray(this.cats) && this.cats.length ? this.cats : DEFAULT_CATS)
+        .filter((category) => category && category.id)
+        .map((category) => ({ ...category }));
+      const preferredId = categories.some((category) => category.id === this.curLibCat)
+        ? this.curLibCat
+        : (categories.some((category) => category.id === "uncategorized") ? "uncategorized" : categories[0]?.id);
+
+      // ①区已经选中了具体分类时，直接写入该分类，不再打断当前编辑流程弹窗。
+      // 与③区卡片的“当前分类”语义一致；“全部分类”则继续给出选择弹窗。
+      const selectedCategory = categories.find((category) => category.id === this.curLibCat);
+      if (selectedCategory) {
+        try {
+          await this._writeCurrentPromptToLibrary(text, selectedCategory.id);
+          await this.reloadLib();
+          this._switchLibPane("lib");
+          this._flash(`整段提示词已存入工具箱 prompt 库 · ${CAT_NAME(selectedCategory)}`);
+        } catch (error) {
+          this._flash("保存到 prompt 库失败：" + (error.message || error), 5000);
+        }
+        return;
+      }
+
+      const overlay = document.createElement("div");
+      overlay.className = "tk-cards-overlay";
+      overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-save-prompt-modal" role="dialog" aria-modal="true" aria-label="保存到 Prompt 库">
+        <div class="tk-cards-overlay-head"><b>存入 Prompt 库</b><button type="button" class="tk-cards-btn" data-a="close" aria-label="关闭">✕</button></div>
+        <div class="tk-cards-category-note">整段提示词会作为一个条目保存，不会拆成③区卡片。请选择目标分类。</div>
+        <label class="tk-cards-field"><span>保存分类</span><select data-f="cat">${categories.map((category) => `<option value="${escAttr(category.id)}" ${category.id === preferredId ? "selected" : ""}>${esc(category.icon ? `${category.icon} ${CAT_NAME(category)}` : CAT_NAME(category))}</option>`).join("")}</select></label>
+        <div class="tk-cards-save-prompt-preview"><span>提示词预览</span><div>${esc(text.slice(0, 280))}${text.length > 280 ? "…" : ""}</div></div>
+        <div class="tk-cards-edit-btns"><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">保存</button></div>
+      </div>`;
+      document.body.appendChild(overlay);
+      const close = () => overlay.remove();
+      overlay.querySelectorAll('[data-a="close"], [data-a="cancel"]').forEach((button) => button.addEventListener("click", close));
+      overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
+      overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); close(); } });
+      const saveButton = overlay.querySelector('[data-a="save"]');
+      saveButton.addEventListener("click", async () => {
+        if (saveButton.disabled) return;
+        saveButton.disabled = true;
+        try {
+          const selectedCategoryId = overlay.querySelector('[data-f="cat"]')?.value || "uncategorized";
+          await this._writeCurrentPromptToLibrary(text, selectedCategoryId);
+          close();
+          await this.reloadLib();
+          this._switchLibPane("lib");
+          const category = categories.find((item) => item.id === selectedCategoryId);
+          this._flash(`整段提示词已存入工具箱 prompt 库${category ? ` · ${CAT_NAME(category)}` : ""}`);
+        } catch (error) {
+          saveButton.disabled = false;
+          this._flash("保存到 prompt 库失败：" + (error.message || error), 5000);
+        }
+      });
+      setTimeout(() => overlay.querySelector('[data-f="cat"]')?.focus(), 50);
     }
 
     _stashDraft() {
@@ -4386,7 +4442,7 @@
       clearBtn.addEventListener("click", () => { this._setPromptText(""); this._hideResolve(); });
       const savePromptBtn = document.createElement("button");
       savePromptBtn.type = "button"; savePromptBtn.className = "tk-cards-btn"; savePromptBtn.textContent = "存入 prompt 库";
-      savePromptBtn.title = "把当前整段提示词存入工具箱 prompt 库，不拆成③区小卡片";
+      savePromptBtn.title = "把当前整段提示词存入工具箱 prompt 库；①区选中具体分类时直接存入该分类，不拆成③区小卡片";
       savePromptBtn.addEventListener("click", () => this.saveCurrentAsPrompt());
       const cardsAddBtn = document.createElement("button");
       cardsAddBtn.type = "button"; cardsAddBtn.className = "tk-cards-btn tk-cards-btn-main"; cardsAddBtn.textContent = "智能入卡";
@@ -4897,6 +4953,9 @@
  .tk-cards-edit-image-meta > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
  .tk-cards-edit-image-meta .tk-cards-btn { flex:0 0 auto; }
  .tk-cards-edit-btns { display:flex; flex:0 0 auto; gap:6px; justify-content:flex-end; padding-top:9px; border-top:1px solid var(--tk-border-soft); background:#181a1c; }
+ .tk-cards-save-prompt-modal { width:min(520px,92vw); }
+ .tk-cards-save-prompt-preview { display:flex; flex-direction:column; gap:4px; padding:8px; border:1px solid var(--tk-border-soft); border-radius:5px; color:var(--tk-muted); font-size:10px; }
+ .tk-cards-save-prompt-preview > div { max-height:120px; overflow:auto; color:var(--tk-text); white-space:pre-wrap; word-break:break-word; }
  .tk-cards-empty { padding:8px 3px; color:var(--tk-muted); font-size:11px; }
  .tk-cards-overlay { --tk-bg:#111315; --tk-surface:#17191b; --tk-surface-2:#1d2023; --tk-border:#34383c; --tk-border-soft:#272b2e; --tk-text:#e7e4de; --tk-muted:#9b9a95; --tk-accent:#d0c9bb; --tk-accent-strong:#f0ece4; --tk-warn:#c6a76a; --tk-info:#9bb2b6; --tk-danger:#cb8585; position:fixed; inset:0; z-index:9999; display:flex; align-items:center; justify-content:center; padding:16px; background:rgba(0,0,0,.66); backdrop-filter:blur(3px); }
  .tk-cards-overlay-box { width:min(600px,92vw); max-height:82vh; min-height:0; box-sizing:border-box; padding:14px; display:flex; flex-direction:column; gap:10px; border:1px solid var(--tk-border); border-radius:8px; background:linear-gradient(180deg,#1d2023,#181a1c); box-shadow:0 0 0 1px rgba(255,255,255,.035),0 16px 42px rgba(0,0,0,.54),0 0 32px rgba(208,201,187,.05); }

@@ -36,7 +36,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   }, true);
 
   const MAX_TAGS = 8; // 搜索框最多保留 8 个标签（后端 MAX_SEARCH_TAGS=12；Member 上限 2、Gold 6，足够覆盖）
-  const FREE_METATAGS = new Set(["rating", "status", "is", "age", "date", "id", "limit", "score", "downvotes", "favcount", "width", "height", "ratio", "mpixels", "filesize", "filetype", "duration", "md5", "pixiv_id", "pixiv", "parent", "child", "upvote", "embedded", "tagcount"]);
+  const FREE_METATAGS = new Set(["rating", "status", "is", "age", "date", "id", "limit", "score", "downvotes", "favcount", "width", "height", "ratio", "mpixels", "filesize", "filetype", "duration", "md5", "pixiv_id", "pixiv", "parent", "child", "upvote", "embedded", "tagcount", "order"]);
   const DANBOORU_TAG_LIMIT = 2;
   const ORDER_LABELS = { score: "评分", favcount: "收藏", random: "随机", rank: "综合" };
   // 这些控件为了脱离 LiteGraph 的裁剪层而挂在 body 上；命中它们时，不能再把同一坐标
@@ -120,6 +120,31 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
   function displayExcludeTag(value) {
     return String(value || "").replace(/_/g, " ");
+  }
+
+  // 搜索预设备注只取真正的 Danbooru 标签；rating/order/score 等筛选元数据
+  // 已经会在预设本身保存，不应被翻译成备注中的“标签”。
+  function presetTagParts(query) {
+    return String(query || "").split(/\s+/).map((raw) => raw.trim()).filter(Boolean).map((raw) => {
+      const sign = /^[~-]/.test(raw) ? raw[0] : "";
+      const tag = raw.replace(/^[~-]+/, "");
+      const colon = tag.indexOf(":");
+      if (!tag || tag === "or" || tag === "(" || tag === ")" || (colon > 0 && FREE_METATAGS.has(tag.slice(0, colon).toLowerCase()))) {
+        return null;
+      }
+      return { tag, sign };
+    }).filter(Boolean);
+  }
+
+  function normalizePreset(value) {
+    const source = value && typeof value === "object" ? value : {};
+    return {
+      name: String(source.name || "").trim(),
+      query: String(source.query || "").trim(),
+      note: String(source.note || source.description || "").trim().slice(0, 240),
+      rating: normalizeRatings(source.rating),
+      filters: normalizeFilters(source.filters),
+    };
   }
 
   function openPromptLibraryDB() {
@@ -210,7 +235,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       gridHeight: Number.isFinite(source.gridHeight) ? Math.max(360, Math.min(1200, source.gridHeight)) : 620,
       categories: Array.isArray(source.categories) ? source.categories : [],
       postCategories: source.postCategories && typeof source.postCategories === "object" ? source.postCategories : {},
-      presets: Array.isArray(source.presets) ? source.presets : [],
+      presets: Array.isArray(source.presets) ? source.presets.map(normalizePreset).filter((preset) => preset.name) : [],
       activeCategory: typeof source.activeCategory === "string" ? source.activeCategory : "",
       filters: normalizeFilters(source.filters),
       excludeTags: Array.isArray(source.excludeTags) ? [...new Set(source.excludeTags.map(normalizeExcludeTag).filter(Boolean))].slice(0, 8) : [],
@@ -278,6 +303,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.dialogId = `anima-danbooru-dialog-${node.id}`;
       this.favorites = this.loadFavorites();
       this.translationCache = new Map();
+      this.presetNoteHydration = null;
       this.tooltip = null;
       this.domWidget = null;
       this.domSizeSync = null;
@@ -323,6 +349,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.setQuery(this.settings.lastQuery || "");
       this.filterControls?.refresh();
       this.renderPresetOptions();
+      void this.hydratePresetNotes();
       this.updatePromptOutputButton();
       this.applyGridHeight();
     }
@@ -357,7 +384,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     renderPresetOptions() {
       if (!this.presetSelect) return;
       const keepValue = this.presetSelect.value;
-      this.presetSelect.innerHTML = `<option value="">搜索预设</option>${this.settings.presets.map((p, i) => `<option value="${i}">${p.name}</option>`).join("")}`;
+      this.presetSelect.replaceChildren(new Option("搜索预设", ""));
+      this.settings.presets.forEach((preset, index) => {
+        const label = preset.note ? `${preset.name} · ${preset.note}` : preset.name;
+        this.presetSelect.append(new Option(label, String(index)));
+      });
       if (keepValue !== "") this.presetSelect.value = keepValue;
     }
 
@@ -1233,6 +1264,53 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         .filter(([, zh]) => zh));
     }
 
+    async buildPresetNote(query) {
+      const parts = presetTagParts(query);
+      if (!parts.length) return String(query || "").trim() ? "筛选条件" : "";
+      const translations = await this.ensureTagTranslations(parts.map(({ tag }) => tag));
+      return parts.map(({ tag, sign }) => {
+        const translated = String(translations[tag] || "").trim();
+        const fallback = tag.replace(/_/g, " ");
+        const label = translated || fallback;
+        if (sign === "-") return `排除${label}`;
+        if (sign === "~") return `近似${label}`;
+        return label;
+      }).join("、").slice(0, 240);
+    }
+
+    async hydratePresetNotes(onUpdated) {
+      if (this.presetNoteHydration) {
+        const changed = await this.presetNoteHydration;
+        if (changed) onUpdated?.();
+        return changed;
+      }
+      const missing = this.settings.presets.filter((preset) => preset.query && !preset.note);
+      if (!missing.length) return false;
+      const task = (async () => {
+        let changed = false;
+        for (const preset of missing) {
+          const note = await this.buildPresetNote(preset.query);
+          if (note) {
+            preset.note = note;
+            changed = true;
+          }
+        }
+        if (changed) {
+          this.saveSettings();
+          this.renderPresetOptions();
+        }
+        return changed;
+      })();
+      this.presetNoteHydration = task;
+      try {
+        const changed = await task;
+        onUpdated?.();
+        return changed;
+      } finally {
+        if (this.presetNoteHydration === task) this.presetNoteHydration = null;
+      }
+    }
+
     async ensurePromptTranslations(parts) {
       const unique = splitPromptParts(parts.join(", "));
       const lookupTags = [...new Set(unique.flatMap((part) => [part, part.replace(/\s+/g, "_")]))];
@@ -1512,9 +1590,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         };
         addAction("预览", "预览图片", () => this.openImagePreview(post));
         addAction("Prompt", "查看、编辑和复制 Prompt", () => this.openPromptEditor(card, post));
-        addAction("入库", "保存图片和 Prompt 到本地工具箱 Prompt 库", () => this.saveToPromptLibrary(post));
+        addAction("分类/入库", "在同一弹窗中分别选择本地分类和 Prompt 入库，可只执行其中一项", () => this.saveToPromptLibrary(post, { includeLocalCategory: true }));
         addAction("下载", "下载原图", () => this.downloadPost(post));
-        addAction("分类", "设置本地分类（点选，支持标签一键建分类）", () => this.openCategoryPicker([post.id]));
         const favoriteButton = addAction(isFavorite ? "★" : "☆", isFavorite ? "取消收藏" : "收藏", () => {
           const next = this.toggleFavorite(post.id);
           card.classList.toggle("is-favorite", next);
@@ -1580,7 +1657,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       }
     }
 
-    async choosePromptSaveOptions(post) {
+    async choosePromptSaveOptions(post, { includeLocalCategory = false } = {}) {
       let database = null;
       let categories = DEFAULT_PROMPT_LIBRARY_CATEGORIES.map((category) => ({ ...category }));
       try {
@@ -1598,8 +1675,104 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       content.className = "adg-prompt-settings adg-save-options";
       const intro = document.createElement("div");
       intro.className = "adg-prompt-settings-tip";
-      intro.textContent = "选择本次入库的 Prompt 库分类，以及要写入 Prompt 和双语卡片的 D 站标签类别。不会修改全局 Prompt 设置。";
+      intro.textContent = includeLocalCategory
+        ? "可在同一弹窗中分别勾选本地分类和 Prompt 入库；两项可同时执行，也可只执行其中一项。"
+        : "选择本次入库的 Prompt 库分类，以及要写入 Prompt 和双语卡片的 D 站标签类别。不会修改全局 Prompt 设置。";
       content.append(intro);
+
+      let saveLibraryInput = null;
+      let assignLocalCategoryInput = null;
+      let localCategorySelect = null;
+      let localCategoryNameInput = null;
+      if (includeLocalCategory) {
+        const actionTitle = document.createElement("div");
+        actionTitle.className = "adg-prompt-settings-title";
+        actionTitle.textContent = "本次执行操作";
+        const actionRow = document.createElement("div");
+        actionRow.className = "adg-save-action-row";
+        const localCategoryId = String(this.settings.postCategories[String(post.id || "")] || "");
+        const makeAction = (label, checked) => {
+          const wrapper = document.createElement("label");
+          wrapper.className = "adg-save-action-choice";
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.checked = checked;
+          const text = document.createElement("span");
+          text.textContent = label;
+          wrapper.append(input, text);
+          actionRow.append(wrapper);
+          return input;
+        };
+        // 兼容原“入库”按钮：默认仍然入 Prompt 库；若图片已有本地分类则同时保持该分类。
+        saveLibraryInput = makeAction("存入 Prompt 库", true);
+        assignLocalCategoryInput = makeAction("写入本地分类", Boolean(localCategoryId));
+        content.append(actionTitle, actionRow);
+
+        const localTitle = document.createElement("div");
+        localTitle.className = "adg-prompt-settings-title";
+        localTitle.textContent = "本地分类（勾选“写入本地分类”后生效）";
+        localCategorySelect = document.createElement("select");
+        localCategorySelect.className = "adg-save-category-select";
+        localCategorySelect.setAttribute("aria-label", "本地分类");
+        const renderLocalCategoryOptions = () => {
+          const selected = localCategorySelect.value || localCategoryId;
+          localCategorySelect.replaceChildren(new Option("无分类（移除归类）", ""));
+          for (const category of (this.settings.categories || [])) {
+            const option = new Option(String(category.name || category.id), String(category.id));
+            localCategorySelect.append(option);
+          }
+          localCategorySelect.value = [...localCategorySelect.options].some((option) => option.value === selected) ? selected : "";
+        };
+        renderLocalCategoryOptions();
+        const localNewRow = document.createElement("div");
+        localNewRow.className = "adg-save-local-newrow";
+        localCategoryNameInput = document.createElement("input");
+        localCategoryNameInput.className = "adg-save-title-input";
+        localCategoryNameInput.placeholder = "新建本地分类（可选）";
+        const localNewButton = document.createElement("button");
+        localNewButton.type = "button";
+        localNewButton.className = "primary";
+        localNewButton.textContent = "新建并选择";
+        localNewButton.onclick = () => {
+          const name = localCategoryNameInput.value.trim();
+          if (!name) { localCategoryNameInput.focus(); return; }
+          const existing = (this.settings.categories || []).find((category) => category.name === name);
+          const category = existing || { id: `c_${Date.now()}`, name };
+          if (!existing) this.settings.categories.push(category);
+          renderLocalCategoryOptions();
+          localCategorySelect.value = category.id;
+          assignLocalCategoryInput.checked = true;
+          localCategoryNameInput.value = "";
+        };
+        localNewRow.append(localCategoryNameInput, localNewButton);
+        content.append(localTitle, localCategorySelect, localNewRow);
+        // 保留原“分类”按钮的快捷能力：点当前图片标签即可新建并选中本地分类。
+        const tagChoices = this.postTags(post).slice(0, 10);
+        if (tagChoices.length) {
+          const tagTitle = document.createElement("div");
+          tagTitle.className = "adg-prompt-settings-tip";
+          tagTitle.textContent = "从本图标签快速新建分类：";
+          const tagWrap = document.createElement("div");
+          tagWrap.className = "adg-category-tags";
+          for (const tag of tagChoices) {
+            const tagButton = document.createElement("button");
+            tagButton.type = "button";
+            tagButton.className = "adg-category-tag";
+            tagButton.textContent = tag.replace(/_/g, " ");
+            tagButton.onclick = () => {
+              const name = tag.replace(/_/g, " ");
+              const existing = (this.settings.categories || []).find((category) => category.name === name);
+              const category = existing || { id: `c_${Date.now()}`, name };
+              if (!existing) this.settings.categories.push(category);
+              renderLocalCategoryOptions();
+              localCategorySelect.value = category.id;
+              assignLocalCategoryInput.checked = true;
+            };
+            tagWrap.append(tagButton);
+          }
+          content.append(tagTitle, tagWrap);
+        }
+      }
 
       const libraryTitle = document.createElement("div");
       libraryTitle.className = "adg-prompt-settings-title";
@@ -1739,10 +1912,22 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       return new Promise((resolve) => {
         refreshPreview();
         this.openDialog({
-          title: `保存 D 站 #${post.id || ""} 到 Prompt 库`,
+          title: includeLocalCategory ? `分类/入库 D 站 #${post.id || ""}` : `保存 D 站 #${post.id || ""} 到 Prompt 库`,
           content,
           onCancel: () => resolve(null),
           onApply: () => {
+            const saveToLibrary = saveLibraryInput ? saveLibraryInput.checked : true;
+            const assignLocalCategory = assignLocalCategoryInput ? assignLocalCategoryInput.checked : false;
+            if (!saveToLibrary && !assignLocalCategory) {
+              this.setStatus("至少选择“存入 Prompt 库”或“写入本地分类”其中一项", "error");
+              return false;
+            }
+            const localCategoryId = localCategorySelect?.value || "";
+            const localCategoryName = localCategorySelect?.selectedOptions?.[0]?.textContent || "无分类";
+            if (!saveToLibrary) {
+              resolve({ saveToLibrary: false, assignLocalCategory, localCategoryId, localCategoryName });
+              return;
+            }
             const selectedCategories = PROMPT_CATEGORY_ORDER.filter((category) => categoryInputs.get(category)?.checked);
             if (!selectedCategories.length) {
               this.setStatus("至少选择一个 Prompt 类别", "error");
@@ -1771,6 +1956,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
               return false;
             }
             resolve({
+              saveToLibrary: true,
+              assignLocalCategory,
+              localCategoryId,
+              localCategoryName,
               categoryId: librarySelect.value || "uncategorized",
               categoryOptions: categories,
               excludePattern,
@@ -1855,11 +2044,27 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       return { created, updated, translated: translatedCount, total: (promptResult.tags || []).length };
     }
 
-    async saveToPromptLibrary(post) {
+    async saveToPromptLibrary(post, { includeLocalCategory = false } = {}) {
       const imageUrl = post.large_file_url || post.file_url || post.preview_file_url;
-      if (!imageUrl) return;
-      const saveOptions = await this.choosePromptSaveOptions(post);
+      const saveOptions = await this.choosePromptSaveOptions(post, { includeLocalCategory });
       if (!saveOptions) return;
+      const saveToLibrary = saveOptions.saveToLibrary !== false;
+      if (saveOptions.assignLocalCategory) {
+        const postId = String(post.id || "");
+        if (saveOptions.localCategoryId) this.settings.postCategories[postId] = saveOptions.localCategoryId;
+        else delete this.settings.postCategories[postId];
+        this.saveSettings();
+        this.renderPosts();
+        this.filterControls?.refresh();
+      }
+      if (!saveToLibrary) {
+        this.setStatus(`已更新 #${post.id || ""} 本地分类：${saveOptions.localCategoryName || "无分类"}`, "success");
+        return;
+      }
+      if (!imageUrl) {
+        this.setStatus(`保存 #${post.id || ""} 失败：帖子没有可用图片地址`, "error");
+        return;
+      }
       this.setStatus(`正在保存 #${post.id || ""} 到 Prompt 库…`);
       try {
         const imageResponse = await fetch(`/anima/danbooru/image?url=${encodeURIComponent(imageUrl)}`);
@@ -1917,9 +2122,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         }
         if (cardResult) {
           const missing = Math.max(0, cardResult.total - cardResult.translated);
-          this.setStatus(`已保存 #${post.id || ""}：Prompt 库 + 卡片库 ${cardResult.created} 张${cardResult.updated ? `，补全 ${cardResult.updated} 张` : ""}${missing ? `，${missing} 张待翻译` : ""}`);
+          const categoryText = saveOptions.assignLocalCategory ? `，本地分类：${saveOptions.localCategoryName || "无分类"}` : "";
+          this.setStatus(`已保存 #${post.id || ""}：Prompt 库 + 卡片库 ${cardResult.created} 张${cardResult.updated ? `，补全 ${cardResult.updated} 张` : ""}${missing ? `，${missing} 张待翻译` : ""}${categoryText}`);
         } else {
-          this.setStatus(`已保存 #${post.id || ""} 到 Prompt 库，但卡片库同步失败：${cardError?.message || "未知错误"}`, "error");
+          const categoryText = saveOptions.assignLocalCategory ? `；本地分类已更新为${saveOptions.localCategoryName || "无分类"}` : "";
+          this.setStatus(`已保存 #${post.id || ""} 到 Prompt 库，但卡片库同步失败：${cardError?.message || "未知错误"}${categoryText}`, "error");
         }
       } catch (error) {
         this.setStatus(`保存 Prompt 库失败：${error?.message || "未知错误"}`, "error");
@@ -2386,27 +2593,39 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       saveButton.type = "button";
       saveButton.className = "primary";
       saveButton.textContent = "保存当前";
-      saveButton.onclick = () => {
+      saveButton.onclick = async () => {
         const name = nameInput.value.trim();
         if (!name) {
           nameInput.focus();
           this.setStatus("请输入预设名称", "error");
           return;
         }
-        const preset = {
-          name,
-          query: this.queryWidget?.value || this.settings.lastQuery || "",
-          rating: [...this.settings.rating],
-          filters: { ...this.settings.filters },
-        };
-        const existing = this.settings.presets.findIndex((item) => item.name === name);
-        if (existing >= 0) this.settings.presets[existing] = preset;
-        else this.settings.presets.push(preset);
-        this.saveSettings();
-        this.renderPresetOptions();
-        nameInput.value = "";
-        renderRows();
-        this.setStatus(`${existing >= 0 ? "已更新" : "已保存"}搜索预设：${name}`, "success");
+        const query = this.queryWidget?.value || this.settings.lastQuery || "";
+        const oldText = saveButton.textContent;
+        saveButton.disabled = true;
+        saveButton.textContent = "生成中文备注…";
+        try {
+          const preset = {
+            name,
+            query,
+            note: await this.buildPresetNote(query),
+            rating: [...this.settings.rating],
+            filters: { ...this.settings.filters },
+          };
+          const existing = this.settings.presets.findIndex((item) => item.name === name);
+          if (existing >= 0) this.settings.presets[existing] = preset;
+          else this.settings.presets.push(preset);
+          this.saveSettings();
+          this.renderPresetOptions();
+          nameInput.value = "";
+          renderRows();
+          this.setStatus(`${existing >= 0 ? "已更新" : "已保存"}搜索预设：${name}`, "success");
+        } catch (error) {
+          this.setStatus(`生成中文备注失败：${error?.message || "未知错误"}`, "error");
+        } finally {
+          saveButton.disabled = false;
+          saveButton.textContent = oldText;
+        }
       };
       nameInput.onkeydown = (event) => { if (event.key === "Enter") { event.preventDefault(); saveButton.click(); } };
       saveRow.append(nameInput, saveButton);
@@ -2435,7 +2654,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           name.textContent = preset.name;
           const meta = document.createElement("span");
           meta.className = "adg-preset-row-meta";
-          meta.textContent = preset.query || "（无查询词）";
+          const metaText = preset.note
+            ? `${preset.note} · ${preset.query || "（无查询词）"}`
+            : (preset.query || "（无查询词）");
+          meta.textContent = metaText;
+          meta.title = metaText;
           pick.append(name, meta);
           pick.onclick = () => {
             this.setQuery(preset.query);
@@ -2470,6 +2693,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       renderRows();
       content.append(list);
       this.openDialog({ title: "搜索预设管理", content, onApply: () => {}, showApply: false });
+      void this.hydratePresetNotes(renderRows);
       setTimeout(() => nameInput.focus(), 50);
     }
 

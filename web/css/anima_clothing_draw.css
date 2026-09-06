@@ -491,11 +491,19 @@
 }
 
 .tk-clothing-picker-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   flex: 0 0 auto;
   min-height: 22px;
   padding-top: 5px;
   color: rgba(255, 255, 255, 0.42);
   font-size: 10px;
+}
+
+.tk-clothing-picker-foot button {
+  flex: 0 0 auto;
 }
 
 @media (max-width: 620px) {

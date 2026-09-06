@@ -10,6 +10,20 @@ const CARD_STORE = "cards";
 const CATEGORY_STORE = "categories";
 
 let dbPromise = null;
+let librarySnapshotPromise = null;
+const previewSourceCache = new Map();
+const MAX_PREVIEW_SOURCE_CACHE = 12;
+
+/**
+ * The node and the picker used to scan IndexedDB for every scope/search
+ * change.  Keep one lightweight snapshot per browser session instead.  The
+ * image Blob is deliberately discarded while building the snapshot, so the
+ * cache only retains metadata and never keeps all previews alive.
+ */
+export function invalidateClothingLibraryCache() {
+  librarySnapshotPromise = null;
+  previewSourceCache.clear();
+}
 
 const asText = (value) => String(value ?? "").trim();
 
@@ -72,6 +86,7 @@ function openLibrary() {
         // A closed connection must never be returned by the cached promise.
         // The next node request will open a fresh connection after the panel migration.
         dbPromise = null;
+        invalidateClothingLibraryCache();
       };
       resolve(db);
     };
@@ -151,21 +166,81 @@ async function readAll(storeName) {
   });
 }
 
+function readCardSnapshots(categoryMap) {
+  return openLibrary().then((db) => new Promise((resolve, reject) => {
+    let transaction;
+    try {
+      transaction = db.transaction(CARD_STORE, "readonly");
+      const values = [];
+      const request = transaction.objectStore(CARD_STORE).openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (cursor) {
+          const snapshot = toCardSnapshot(cursor.value, categoryMap);
+          if (snapshot) values.push(snapshot);
+          cursor.continue();
+        } else {
+          resolve(values);
+        }
+      };
+      request.onerror = () => reject(request.error || new Error("服装卡片读取失败"));
+      transaction.onerror = () => reject(transaction.error || new Error("服装卡片事务失败"));
+    } catch (error) {
+      reject(error);
+    }
+  }));
+}
+
 export async function getClothingCategories() {
-  const categories = await readAll(CATEGORY_STORE);
-  return categories
-    .filter((category) => category && asText(category.id))
-    .map((category) => ({ id: asText(category.id), name: asText(category.name) || "未分类", sortOrder: Number(category.sortOrder) || 0 }))
-    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "zh"));
+  const { categories } = await loadLibrarySnapshot();
+  return categories.map((category) => ({ ...category }));
+}
+
+function cloneCard(card) {
+  return { ...card, tags: [...(card.tags || [])] };
+}
+
+async function loadLibrarySnapshot({ force = false } = {}) {
+  if (force) invalidateClothingLibraryCache();
+  if (librarySnapshotPromise) return librarySnapshotPromise;
+  let snapshotPromise;
+  snapshotPromise = readAll(CATEGORY_STORE)
+    .then((rawCategories) => {
+      const categories = rawCategories
+        .filter((category) => category && asText(category.id))
+        .map((category) => ({
+          id: asText(category.id),
+          name: asText(category.name) || "未分类",
+          sortOrder: Number(category.sortOrder) || 0,
+        }))
+        .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "zh"));
+      const categoryMap = new Map(categories.map((category) => [category.id, category.name]));
+      return readCardSnapshots(categoryMap).then((cards) => ({
+        cards: cards.sort((a, b) => b.createdAt - a.createdAt || a.name.localeCompare(b.name, "zh")),
+        categories,
+      }));
+    })
+    .catch((error) => {
+      if (librarySnapshotPromise === snapshotPromise) librarySnapshotPromise = null;
+      throw error;
+    });
+  librarySnapshotPromise = snapshotPromise;
+  return librarySnapshotPromise;
+}
+
+export async function getClothingLibrary(options = {}) {
+  const snapshot = await loadLibrarySnapshot(options);
+  return {
+    cards: snapshot.cards.map(cloneCard),
+    categories: snapshot.categories.map((category) => ({ ...category })),
+  };
 }
 
 export async function getClothingCards({ categoryId = "", favorite = false, keyword = "" } = {}) {
-  const [records, categories] = await Promise.all([readAll(CARD_STORE), getClothingCategories()]);
-  const categoryMap = new Map(categories.map((category) => [category.id, category.name]));
+  const { cards: allCards } = await loadLibrarySnapshot();
   const tokens = asText(keyword).toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  return records
-    .map((card) => toCardSnapshot(card, categoryMap))
-    .filter(Boolean)
+  return allCards
+    .map(cloneCard)
     .filter((card) => {
       if (favorite && !card.favorite) return false;
       if (categoryId && card.categoryId !== categoryId) return false;
@@ -182,13 +257,37 @@ export async function getClothingCard(id) {
 }
 
 export async function getClothingCardPreview(id) {
-  const record = await getClothingCard(id);
-  if (!record) return null;
-  if (record.imageBlob instanceof Blob) {
-    return { url: URL.createObjectURL(record.imageBlob), revoke: true };
+  const key = asText(id);
+  if (!key) return null;
+  let sourcePromise = previewSourceCache.get(key);
+  if (!sourcePromise) {
+    sourcePromise = getClothingCard(key)
+      .then((record) => {
+        if (!record) return null;
+        return {
+          blob: record.imageBlob instanceof Blob ? record.imageBlob : null,
+          imageUrl: asText(record.imageUrl),
+        };
+      })
+      .catch((error) => {
+        if (previewSourceCache.get(key) === sourcePromise) previewSourceCache.delete(key);
+        throw error;
+      });
+    previewSourceCache.set(key, sourcePromise);
   }
-  const imageUrl = asText(record.imageUrl);
-  return imageUrl ? { url: imageUrl, revoke: false } : null;
+  const source = await sourcePromise;
+  // Refresh LRU order after an awaited read; each caller still receives a new
+  // Object URL, so independent picker cards can revoke their own URL safely.
+  if (previewSourceCache.get(key) === sourcePromise) {
+    previewSourceCache.delete(key);
+    previewSourceCache.set(key, sourcePromise);
+    while (previewSourceCache.size > MAX_PREVIEW_SOURCE_CACHE) {
+      previewSourceCache.delete(previewSourceCache.keys().next().value);
+    }
+  }
+  if (!source) return null;
+  if (source.blob) return { url: URL.createObjectURL(source.blob), revoke: true };
+  return source.imageUrl ? { url: source.imageUrl, revoke: false } : null;
 }
 
 export async function renameClothingCard(id, name) {
@@ -199,6 +298,7 @@ export async function renameClothingCard(id, name) {
   record.name = cleanName;
   record.updatedAt = Date.now();
   await storeRequest(CARD_STORE, "readwrite", (store) => store.put(record));
+  invalidateClothingLibraryCache();
   return record;
 }
 
@@ -215,8 +315,10 @@ export function makeSelectionCard(card, categoryName) {
   };
 }
 
-export function stablePick(cards, seed) {
-  const ordered = [...(cards || [])].sort((a, b) => asText(a.id).localeCompare(asText(b.id)) || asText(a.name).localeCompare(asText(b.name), "zh"));
+export function stablePick(cards, seed, alreadyOrdered = false) {
+  const ordered = alreadyOrdered
+    ? (cards || [])
+    : [...(cards || [])].sort((a, b) => asText(a.id).localeCompare(asText(b.id)) || asText(a.name).localeCompare(asText(b.name), "zh"));
   if (!ordered.length) return null;
   // Keep the browser preview in lockstep with the Python node's seeded
   // selection without depending on Math.random or browser-specific RNG.

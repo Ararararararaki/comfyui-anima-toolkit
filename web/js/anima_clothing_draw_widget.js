@@ -1,9 +1,7 @@
 import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 import {
-  getClothingCard,
   getClothingCardPreview,
-  getClothingCards,
-  getClothingCategories,
+  getClothingLibrary,
   libraryErrorMessage,
   makeSelectionCard,
   renameClothingCard,
@@ -21,7 +19,7 @@ import {
   // Bump when the standalone picker stylesheet changes.  ComfyUI serves
   // extension assets from stable URLs, and Chrome can otherwise keep an old
   // picker layout in its document cache after a node update.
-  const CSS_VERSION = "20260903-2";
+  const CSS_VERSION = "20260903-3";
 
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -44,6 +42,21 @@ import {
     } catch {
       return Math.floor(Math.random() * 0xffffffff);
     }
+  };
+
+  const compactSelectionCard = (card) => {
+    const snapshot = makeSelectionCard(card, card?.categoryName);
+    if (!snapshot) return null;
+    // The execution pool never needs a URL: the browser can load the preview
+    // by id, while the Python node only needs prompt/name/category metadata.
+    return {
+      id: snapshot.id,
+      name: snapshot.name,
+      prompt: snapshot.prompt,
+      categoryId: snapshot.categoryId,
+      categoryName: snapshot.categoryName,
+      hasImage: snapshot.hasImage,
+    };
   };
 
   function injectStylesheet() {
@@ -110,6 +123,7 @@ import {
       this.previewUrl = null;
       this.previewUrlRevocable = false;
       this.loadSeq = 0;
+      this.poolCache = null;
       this.picker = null;
       this._originalModeCallback = modeWidget?.callback;
       this._originalSeedCallback = seedWidget?.callback;
@@ -164,7 +178,7 @@ import {
         element.addEventListener("click", stopCanvasEvent);
       });
       this.categorySelect.addEventListener("change", () => this.setScope(this.categorySelect.value));
-      root.querySelector('[data-action="refresh"]').addEventListener("click", () => this.refreshLibrary());
+      root.querySelector('[data-action="refresh"]').addEventListener("click", () => this.refreshLibrary({ force: true }));
       root.querySelector('[data-action="draw"]').addEventListener("click", () => this.drawRandom(true));
       root.querySelector('[data-action="choose"]').addEventListener("click", () => this.openPicker());
       this.renameBtn.addEventListener("click", () => this.renameSelected());
@@ -226,21 +240,23 @@ import {
       await this.refreshLibrary();
     }
 
-    async refreshLibrary() {
+    applyScopeCards() {
+      this.cards = this.allCards.filter((card) => {
+        if (this.scope === SCOPE_FAVORITE) return card.favorite;
+        return !this.scope || card.categoryId === this.scope;
+      });
+      this.poolCache = null;
+    }
+
+    async refreshLibrary({ force = false } = {}) {
       const seq = ++this.loadSeq;
       this.setStatus("正在读取服装库…", "loading");
       try {
-        const [categories, allCards] = await Promise.all([
-          getClothingCategories(),
-          getClothingCards({}),
-        ]);
+        const { categories, cards: allCards } = await getClothingLibrary({ force });
         if (this.disposed || seq !== this.loadSeq) return;
         this.categories = categories;
         this.allCards = allCards;
-        this.cards = allCards.filter((card) => {
-          if (this.scope === SCOPE_FAVORITE) return card.favorite;
-          return !this.scope || card.categoryId === this.scope;
-        });
+        this.applyScopeCards();
         this.renderScopeOptions();
         if (this.mode === "随机抽取") {
           this.resolveRandomSelection(false);
@@ -261,6 +277,7 @@ import {
         if (this.disposed || seq !== this.loadSeq) return;
         this.cards = [];
         this.allCards = [];
+        this.poolCache = null;
         this.renderScopeOptions();
         this.setStatus(libraryErrorMessage(error), "error");
         this.updateView();
@@ -276,12 +293,12 @@ import {
       if (!this.categorySelect) return;
       const allCards = this.allCards;
       const current = this.scope;
-      const favoriteCount = allCards.filter((card) => card.favorite).length;
+      const counts = this.cardCounts(allCards);
       const categories = this.categories.map((category) => {
-        const count = allCards.filter((card) => card.categoryId === category.id).length;
+        const count = counts.byCategory.get(category.id) || 0;
         return `<option value="${esc(category.id)}">${esc(category.name)} (${count})</option>`;
       }).join("");
-      this.categorySelect.innerHTML = `<option value="">全部 (${allCards.length})</option><option value="${SCOPE_FAVORITE}">收藏 (${favoriteCount})</option>${categories}`;
+      this.categorySelect.innerHTML = `<option value="">全部 (${allCards.length})</option><option value="${SCOPE_FAVORITE}">收藏 (${counts.favorite})</option>${categories}`;
       this.categorySelect.value = [...this.categorySelect.options].some((option) => option.value === current) ? current : "";
       if (this.categorySelect.value !== current) {
         this.scope = this.categorySelect.value;
@@ -289,16 +306,39 @@ import {
       }
     }
 
+    cardCounts(cards) {
+      const byCategory = new Map();
+      let favorite = 0;
+      cards.forEach((card) => {
+        if (card.favorite) favorite += 1;
+        byCategory.set(card.categoryId, (byCategory.get(card.categoryId) || 0) + 1);
+      });
+      return { favorite, byCategory };
+    }
+
     async setScope(scope) {
       this.scope = String(scope || "");
       const option = [...(this.categorySelect?.options || [])].find((item) => item.value === this.scope);
       this.scopeName = option ? option.textContent.replace(/\s*\(\d+\)$/, "") : (this.scope === SCOPE_FAVORITE ? "收藏" : "全部");
-      await this.refreshLibrary();
+      this.applyScopeCards();
+      this.renderScopeOptions();
+      this.setStatus(
+        this.cards.length ? `已读取 ${this.cards.length} 张` : `${this.scopeName}中没有可用的服装卡片`,
+        this.cards.length ? "ready" : "error",
+      );
+      if (this.mode === "随机抽取") this.resolveRandomSelection(false);
+      else {
+        this.writePayload();
+        this.updateView();
+      }
     }
 
     onModeChanged(value) {
       this.mode = MODES.has(value) ? value : "随机抽取";
-      if (this.mode === "随机抽取") this.refreshLibrary();
+      if (this.mode === "随机抽取") {
+        if (this.allCards.length) this.resolveRandomSelection(false);
+        else this.refreshLibrary();
+      }
       else {
         this.writePayload();
         this.updateView();
@@ -325,9 +365,18 @@ import {
     resolveRandomSelection(changeSeed, seedOverride) {
       if (changeSeed) this.setSeed(randomSeed());
       const seed = this.currentSeed(seedOverride);
-      const pool = this.cards.map((card) => makeSelectionCard(card, card.categoryName)).filter(Boolean);
-      this.selected = stablePick(pool, seed);
-      this.writePayload(pool, seed);
+      if (!this.poolCache) {
+        this.poolCache = this.cards
+          .map((card) => compactSelectionCard(card))
+          .filter(Boolean)
+          .sort((a, b) => String(a.id).localeCompare(String(b.id)) || String(a.name).localeCompare(String(b.name), "zh"));
+      }
+      const pool = this.poolCache;
+      const picked = stablePick(pool, seed, true);
+      this.selected = picked
+        ? (this.cards.find((card) => card.id === picked.id) || picked)
+        : null;
+      this.writePayload(seed);
       this.updateView();
       if (!this.selected) this.setStatus(`${this.scopeName}中没有可用的服装卡片`, "error");
     }
@@ -346,21 +395,26 @@ import {
       this.resolveRandomSelection(false);
     }
 
-    writePayload(pool = null, seedOverride) {
+    writePayload(seedOverride) {
       if (!this.selectionWidget) return;
       const seed = this.currentSeed(seedOverride);
       const selected = this.selected ? makeSelectionCard(this.selected, this.selected.categoryName) : null;
       const payload = {
-        version: 1,
+        version: 2,
         mode: this.mode,
         scope: this.scope,
         categoryId: this.scope && this.scope !== SCOPE_FAVORITE ? this.scope : "",
         categoryName: this.scopeName,
         seed,
+        selectedSeed: this.mode === "随机抽取" ? seed : null,
         selected,
-        pool: this.mode === "随机抽取" ? (pool || this.cards.map((card) => makeSelectionCard(card, card.categoryName)).filter(Boolean)) : [],
+        // v2 trusts the browser-resolved selection.  Keeping an empty pool
+        // makes the payload portable even when the local library is huge;
+        // v1 workflows still carry and execute their legacy pool below.
+        pool: [],
       };
       const value = JSON.stringify(payload);
+      if (this.selectionWidget.value === value) return;
       this.selectionWidget.value = value;
       this.selectionWidget.callback?.(value);
       this.node.graph?.setDirtyCanvas?.(true, true);
@@ -378,10 +432,7 @@ import {
       if (this.categorySelect && [...this.categorySelect.options].some((option) => option.value === this.scope)) {
         this.categorySelect.value = this.scope;
       }
-      this.cards = this.allCards.filter((item) => {
-        if (this.scope === SCOPE_FAVORITE) return item.favorite;
-        return !this.scope || item.categoryId === this.scope;
-      });
+      this.applyScopeCards();
       this.selected = makeSelectionCard(card, this.scopeName);
       this.writePayload();
       this.updateView();
@@ -396,6 +447,9 @@ import {
       try {
         const updated = await renameClothingCard(this.selected.id, String(next).trim());
         this.selected = makeSelectionCard(updated, this.selected.categoryName);
+        const live = this.allCards.find((card) => card.id === this.selected.id);
+        if (live) live.name = this.selected.name;
+        this.poolCache = null;
         this.writePayload();
         this.updateView();
         if (this.picker) await this.renderPicker();
@@ -513,7 +567,10 @@ import {
                 <button type="button" class="tk-clothing-picker-refresh" data-action="picker-refresh">刷新</button>
               </div>
               <div class="tk-clothing-picker-grid" data-role="picker-grid"></div>
-              <div class="tk-clothing-picker-foot" data-role="picker-status"></div>
+              <div class="tk-clothing-picker-foot">
+                <span data-role="picker-status"></span>
+                <button type="button" class="tk-clothing-picker-refresh" data-action="picker-more">加载更多</button>
+              </div>
             </main>
           </div>
         </div>`;
@@ -527,11 +584,15 @@ import {
         search: overlay.querySelector('[data-role="picker-search"]'),
         total: overlay.querySelector('[data-role="picker-total"]'),
         status: overlay.querySelector('[data-role="picker-status"]'),
+        more: overlay.querySelector('[data-action="picker-more"]'),
         scope: this.scope,
         keyword: "",
+        visibleLimit: 60,
         urls: new Map(),
         seq: 0,
         observer: null,
+        imageQueue: [],
+        activeImageLoads: 0,
       };
       this.picker = picker;
       overlay.addEventListener("keydown", (event) => {
@@ -545,9 +606,17 @@ import {
       // still isolating all pointer/mouse events from the LiteGraph canvas.
       shieldCanvasInteractions(modal, { keyboard: false });
       overlay.querySelector('[data-action="close"]').addEventListener("click", () => this.closePicker());
-      overlay.querySelector('[data-action="picker-refresh"]').addEventListener("click", () => this.renderPicker());
+      overlay.querySelector('[data-action="picker-refresh"]').addEventListener("click", async () => {
+        await this.refreshLibrary({ force: true });
+        if (this.picker) this.renderPicker();
+      });
+      picker.more.addEventListener("click", () => {
+        picker.visibleLimit += 60;
+        this.renderPicker();
+      });
       picker.search.addEventListener("input", () => {
         picker.keyword = picker.search.value;
+        picker.visibleLimit = 60;
         clearTimeout(picker.searchTimer);
         picker.searchTimer = setTimeout(() => this.renderPicker(), 120);
       });
@@ -555,6 +624,7 @@ import {
         const button = event.target.closest("[data-scope]");
         if (!button) return;
         picker.scope = button.dataset.scope || "";
+        picker.visibleLimit = 60;
         this.renderPicker();
       });
       picker.grid.addEventListener("click", (event) => {
@@ -575,6 +645,9 @@ import {
       try {
         const updated = await renameClothingCard(card.id, String(next).trim());
         card.name = updated.name;
+        const live = this.allCards.find((item) => item.id === card.id);
+        if (live) live.name = updated.name;
+        this.poolCache = null;
         if (this.selected?.id === card.id) {
           this.selected = makeSelectionCard(updated, card.categoryName);
           this.writePayload();
@@ -592,27 +665,28 @@ import {
       const seq = ++picker.seq;
       picker.status.textContent = "正在读取…";
       try {
-        const all = await getClothingCards({});
-        if (!this.picker || picker.seq !== seq) return;
-        this.categories = await getClothingCategories();
-        const categoryMap = new Map(this.categories.map((category) => [category.id, category.name]));
+        const all = this.allCards;
+        const tokens = String(picker.keyword || "").toLocaleLowerCase().split(/\s+/).filter(Boolean);
         const filtered = all.filter((card) => {
           if (picker.scope === SCOPE_FAVORITE && !card.favorite) return false;
           if (picker.scope && picker.scope !== SCOPE_FAVORITE && card.categoryId !== picker.scope) return false;
-          const tokens = String(picker.keyword || "").toLocaleLowerCase().split(/\s+/).filter(Boolean);
           if (!tokens.length) return true;
           const haystack = [card.name, card.prompt, card.categoryName, ...card.tags].join(" ").toLocaleLowerCase();
           return tokens.every((token) => haystack.includes(token));
         });
-        const visible = filtered.slice(0, 120);
+        const visible = filtered.slice(0, picker.visibleLimit);
         picker.cards = visible;
         picker.total.textContent = `${filtered.length} 张`;
-        picker.sidebar.innerHTML = this.renderPickerSidebar(all, categoryMap, picker.scope);
+        picker.sidebar.innerHTML = this.renderPickerSidebar(all, picker.scope);
         this.releasePickerUrls();
         picker.grid.innerHTML = visible.length
           ? visible.map((card) => this.renderPickerCard(card)).join("")
           : '<div class="tk-clothing-picker-empty">没有匹配的服装卡片</div>';
-        picker.status.textContent = filtered.length > 120 ? `显示前 120 张，请继续搜索缩小范围（共 ${filtered.length} 张）` : "点击卡片选择服装";
+        const hasMore = visible.length < filtered.length;
+        picker.more.hidden = !hasMore;
+        picker.status.textContent = hasMore
+          ? `已显示 ${visible.length}/${filtered.length} 张`
+          : "点击卡片选择服装";
         this.lazyLoadPickerImages(seq);
       } catch (error) {
         if (this.picker && picker.seq === seq) {
@@ -622,13 +696,14 @@ import {
       }
     }
 
-    renderPickerSidebar(all, categoryMap, scope) {
+    renderPickerSidebar(all, scope) {
       const buttons = [];
       const active = (value) => value === scope ? " active" : "";
+      const counts = this.cardCounts(all);
       buttons.push(`<button type="button" data-scope="" class="tk-clothing-picker-scope${active("")}"><span>全部</span><em>${all.length}</em></button>`);
-      buttons.push(`<button type="button" data-scope="${SCOPE_FAVORITE}" class="tk-clothing-picker-scope${active(SCOPE_FAVORITE)}"><span>收藏</span><em>${all.filter((card) => card.favorite).length}</em></button>`);
+      buttons.push(`<button type="button" data-scope="${SCOPE_FAVORITE}" class="tk-clothing-picker-scope${active(SCOPE_FAVORITE)}"><span>收藏</span><em>${counts.favorite}</em></button>`);
       this.categories.forEach((category) => {
-        const count = all.filter((card) => card.categoryId === category.id).length;
+        const count = counts.byCategory.get(category.id) || 0;
         buttons.push(`<button type="button" data-scope="${esc(category.id)}" class="tk-clothing-picker-scope${active(category.id)}"><span>${esc(category.name)}</span><em>${count}</em></button>`);
       });
       return buttons.join("");
@@ -657,11 +732,35 @@ import {
         ? new IntersectionObserver((entries) => entries.forEach((entry) => {
           if (!entry.isIntersecting) return;
           observer.unobserve(entry.target);
-          this.loadPickerImage(entry.target, entry.target.dataset.previewId, seq);
+          this.queuePickerImage(entry.target, entry.target.dataset.previewId, seq);
         }), { root: picker.grid, rootMargin: "240px" })
         : null;
       picker.observer = observer;
-      targets.forEach((target) => observer ? observer.observe(target) : this.loadPickerImage(target, target.dataset.previewId, seq));
+      targets.forEach((target) => observer
+        ? observer.observe(target)
+        : this.queuePickerImage(target, target.dataset.previewId, seq));
+    }
+
+    queuePickerImage(container, id, seq) {
+      const picker = this.picker;
+      if (!picker || picker.seq !== seq) return;
+      picker.imageQueue.push({ container, id, seq });
+      this.pumpPickerImages();
+    }
+
+    async pumpPickerImages() {
+      const picker = this.picker;
+      if (!picker) return;
+      while (picker.activeImageLoads < 6 && picker.imageQueue.length) {
+        const item = picker.imageQueue.shift();
+        picker.activeImageLoads += 1;
+        try {
+          await this.loadPickerImage(item.container, item.id, item.seq);
+        } finally {
+          picker.activeImageLoads -= 1;
+        }
+      }
+      if (this.picker === picker && picker.imageQueue.length) this.pumpPickerImages();
     }
 
     async loadPickerImage(container, id, seq) {
@@ -688,6 +787,7 @@ import {
       if (!this.picker) return;
       this.picker.observer?.disconnect();
       this.picker.observer = null;
+      this.picker.imageQueue = [];
       this.picker.urls.forEach((url) => URL.revokeObjectURL(url));
       this.picker.urls.clear();
     }

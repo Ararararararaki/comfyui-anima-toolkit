@@ -53,6 +53,20 @@ def test_random_selection_is_stable_and_ignores_browser_order():
     assert 0 <= _stable_index(123, 2) < 2
 
 
+def test_v2_uses_browser_resolved_selection_without_embedding_pool():
+    payload = {
+        "version": 2,
+        "mode": "随机抽取",
+        "selectedSeed": 123,
+        "selected": card("dress-1", "黑裙", "black dress"),
+        "pool": [],
+    }
+
+    output = AnimaClothingDraw().draw("随机抽取", 123, json.dumps(payload, ensure_ascii=False))
+
+    assert output["result"][:3] == ("black dress", "黑裙", "裙装")
+
+
 def test_empty_pool_has_actionable_error():
     with pytest.raises(ValueError, match="没有可用的服装卡片"):
         AnimaClothingDraw().draw(
@@ -63,3 +77,16 @@ def test_empty_pool_has_actionable_error():
 def test_missing_manual_card_has_actionable_error():
     with pytest.raises(ValueError, match="尚未选择服装"):
         AnimaClothingDraw().draw("手动选择", 0, json.dumps({"mode": "手动选择"}))
+
+
+def test_v2_seed_mismatch_does_not_silently_reuse_stale_selection():
+    payload = {
+        "version": 2,
+        "mode": "随机抽取",
+        "selectedSeed": 123,
+        "selected": card("dress-1", "黑裙", "black dress"),
+        "pool": [],
+    }
+
+    with pytest.raises(ValueError, match="种子已变化"):
+        AnimaClothingDraw().draw("随机抽取", 456, json.dumps(payload, ensure_ascii=False))

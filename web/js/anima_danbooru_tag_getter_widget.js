@@ -42,6 +42,9 @@
       .tk-dtb-filter-input:focus { border-color:#999; }
       .tk-dtb-filter-input::placeholder { color:#777; }
       textarea.tk-dtb-filter-input { min-height:39px; max-height:82px; }
+      .tk-dtb-natural-hint { margin-top:5px; padding-top:5px; border-top:1px solid rgba(255,255,255,.10); color:#858585; font-size:10px; }
+      .tk-dtb-natural-toggle { display:flex; align-items:center; gap:5px; margin-top:4px; color:#a5a5a5; font-size:10px; cursor:pointer; }
+      .tk-dtb-natural-toggle input { width:12px; height:12px; margin:0; accent-color:#bcbcbc; cursor:pointer; }
     `;
     document.head.appendChild(style);
   }
@@ -172,6 +175,32 @@
       };
       makeFilter("regex_blacklist", "正则排除", "censor|watermark", false);
       makeFilter("tag_blacklist", "精准排除", "每行一个 Tag，也可用逗号分隔", true);
+      const makeNaturalToggle = (name, labelText) => {
+        const widget = this.widgetFor(name);
+        if (!widget) return;
+        const label = document.createElement("label");
+        label.className = "tk-dtb-natural-toggle";
+        const toggle = document.createElement("input");
+        toggle.type = "checkbox";
+        toggle.checked = widget.value !== false;
+        toggle.setAttribute("aria-label", labelText);
+        toggle.addEventListener("change", () => this.setWidgetValue(name, toggle.checked));
+        const text = document.createElement("span");
+        text.textContent = labelText;
+        label.append(toggle, text);
+        filters.appendChild(label);
+        this.hideNativeWidget(widget);
+        this.filterControls.set(name, toggle);
+      };
+      const naturalWidget = this.widgetFor("natural_language");
+      if (naturalWidget) {
+        this.hideNativeWidget(naturalWidget);
+        const hint = document.createElement("div");
+        hint.className = "tk-dtb-natural-hint";
+        hint.textContent = "自然语言按“未归类词”处理；勾选未归类词即可与其他 Tag 一起输出，过滤开关控制排除规则。";
+        filters.appendChild(hint);
+      }
+      makeNaturalToggle("filter_natural_language", "过滤自然语言");
 
       panel.append(header, grid, filters);
       this.updateCount();
@@ -190,6 +219,11 @@
         const widget = this.widgetFor(name);
         const field = this.filterControls.get(name);
         if (widget && field && field.value !== String(widget.value || "")) field.value = String(widget.value || "");
+      }
+      for (const name of ["filter_natural_language"]) {
+        const widget = this.widgetFor(name);
+        const control = this.filterControls.get(name);
+        if (widget && control) control.checked = widget.value !== false;
       }
       this.updateCount();
     }
