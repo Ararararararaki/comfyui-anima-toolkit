@@ -310,6 +310,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.pointerRecoveryHandler = null;
       this.filterControls = null;
       this.promptEdits = new Map();
+      this.imageLoadObserver = null;
+      this.gridResizeObserver = null;
+      this.masonryLayoutFrame = null;
       this.registered = false; // 是否已登录 Danbooru
       this.tagLimitValue = 2;  // 计数标签上限（后端按账号等级动态：Member=2 / Gold+=6，随 /account 刷新）
       this.accountReady = null; // 首次搜索必须等待登录状态/标签上限同步完成
@@ -324,6 +327,72 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.galleryBatchBusy = false;
       this.galleryBatchBtn = null;
       this.galleryBatchPanel = null;
+    }
+
+    imageProxyUrl(imageUrl, version = "") {
+      let source = String(imageUrl || "");
+      if (version && !/[?&]v=/.test(source)) {
+        source += `${source.includes("?") ? "&" : "?"}v=${encodeURIComponent(String(version))}`;
+      }
+      return `/anima/danbooru/image?url=${encodeURIComponent(source)}`;
+    }
+
+    loadPreviewImage(image) {
+      if (!image || !image.isConnected) return;
+      const source = image.dataset.src;
+      if (!source || image.getAttribute("src")) return;
+      image.removeAttribute("data-src");
+      image.src = source;
+    }
+
+    observePreviewImage(image) {
+      if (!image) return;
+      if (this.imageLoadObserver) this.imageLoadObserver.observe(image);
+      else this.loadPreviewImage(image);
+    }
+
+    scheduleMasonryLayout() {
+      if (this.masonryLayoutFrame || !this.grid) return;
+      this.masonryLayoutFrame = requestAnimationFrame(() => {
+        this.masonryLayoutFrame = null;
+        this.applyMasonryLayout();
+      });
+    }
+
+    applyMasonryLayout() {
+      if (!this.grid) return;
+      const style = getComputedStyle(this.grid);
+      const rowHeight = parseFloat(style.gridAutoRows) || 10;
+      const rowGap = parseFloat(style.rowGap || style.gridRowGap) || 7;
+      for (const card of this.grid.querySelectorAll(".adg-card")) {
+        // scrollHeight is the card's content height and does not include the
+        // grid area created by the current span, so it remains safe to reuse
+        // on every resize and after an image finishes decoding.
+        const contentHeight = Math.max(1, card.scrollHeight);
+        const span = Math.max(1, Math.ceil((contentHeight + rowGap) / (rowHeight + rowGap)));
+        card.style.gridRowEnd = `span ${span}`;
+      }
+    }
+
+    setupImageLoading() {
+      if (!this.grid) return;
+      this.imageLoadObserver?.disconnect();
+      this.imageLoadObserver = null;
+      if (typeof IntersectionObserver === "function") {
+        this.imageLoadObserver = new IntersectionObserver((entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            this.imageLoadObserver?.unobserve(entry.target);
+            this.loadPreviewImage(entry.target);
+          }
+        }, { root: this.grid, rootMargin: "260px 0px", threshold: 0.01 });
+      }
+      this.gridResizeObserver?.disconnect();
+      this.gridResizeObserver = null;
+      if (typeof ResizeObserver === "function") {
+        this.gridResizeObserver = new ResizeObserver(() => this.scheduleMasonryLayout());
+        this.gridResizeObserver.observe(this.grid);
+      }
     }
 
     async refreshAccount() {
@@ -1495,6 +1564,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     renderPosts() {
       if (!this.grid) return;
+      this.imageLoadObserver?.disconnect();
       this.grid.replaceChildren();
       if (!this.posts.length) {
         const empty = document.createElement("div");
@@ -1540,11 +1610,23 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         selectButton.title = `选择 #${post.id || ""}`;
         const preview = document.createElement("img");
         preview.loading = "lazy";
+        preview.decoding = "async";
         preview.alt = `Danbooru #${post.id || ""}`;
-        preview.src = `/anima/danbooru/image?url=${encodeURIComponent(post.preview_file_url || imageUrl)}`;
+        const previewUrl = post.preview_file_url || imageUrl;
+        const imageWidth = Number(post.image_width);
+        const imageHeight = Number(post.image_height);
+        if (imageWidth > 0 && imageHeight > 0) {
+          // Reserve the real aspect ratio before the request starts. This
+          // keeps the masonry placement stable while the image is loading.
+          preview.width = imageWidth;
+          preview.height = imageHeight;
+        }
+        preview.dataset.src = this.imageProxyUrl(previewUrl, post.md5);
         preview.onerror = () => {
           preview.replaceWith(Object.assign(document.createElement("span"), { className: "adg-image-error", textContent: "预览加载失败" }));
+          this.scheduleMasonryLayout();
         };
+        preview.onload = () => this.scheduleMasonryLayout();
         const caption = document.createElement("span");
         caption.className = "adg-caption";
         const isVid = this.isVideoPost(post);
@@ -1622,7 +1704,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         card.addEventListener("mousemove", (event) => this.positionTooltip(event));
         card.addEventListener("mouseleave", () => this.hidePromptTooltip());
         this.grid.append(card);
+        this.observePreviewImage(preview);
       }
+      this.scheduleMasonryLayout();
     }
 
     pageWindow() {
@@ -3064,6 +3148,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.root = root;
       this.status = status;
       this.grid = grid;
+      this.setupImageLoading();
       this.applyGridHeight();
       // Chrome 下新 ComfyUI 节点激活层可能先命中 node-body，导致 DOM
       // 控件“看得见但鼠标点不到”。只从同一节点的命中栈中恢复控件点击，
@@ -3118,6 +3203,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.domSizeSync = null;
       this.filterControls?.destroy();
       this.hidePromptTooltip();
+      this.imageLoadObserver?.disconnect();
+      this.imageLoadObserver = null;
+      this.gridResizeObserver?.disconnect();
+      this.gridResizeObserver = null;
+      if (this.masonryLayoutFrame) {
+        cancelAnimationFrame(this.masonryLayoutFrame);
+        this.masonryLayoutFrame = null;
+      }
       window.removeEventListener("resize", this.positionSuggestionsHandler);
       document.removeEventListener("scroll", this.positionSuggestionsHandler, true);
       if (this.pointerRecoveryHandler) {
@@ -3134,7 +3227,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     const link = document.createElement("link");
     link.id = "anima-danbooru-gallery-style";
     link.rel = "stylesheet";
-    link.href = "/extensions/ComfyUI-Anima-Batch-LoRA/css/anima_danbooru_gallery.css";
+    link.href = new URL("../css/anima_danbooru_gallery.css", import.meta.url).href;
     document.head.append(link);
   }
 

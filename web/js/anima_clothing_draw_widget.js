@@ -64,7 +64,9 @@ import {
     const link = document.createElement("link");
     link.id = CSS_ID;
     link.rel = "stylesheet";
-    link.href = `/extensions/ComfyUI-Anima-Batch-LoRA/css/anima_clothing_draw.css?v=${CSS_VERSION}`;
+    const cssUrl = new URL("../css/anima_clothing_draw.css", import.meta.url);
+    cssUrl.searchParams.set("v", CSS_VERSION);
+    link.href = cssUrl.href;
     document.head.appendChild(link);
   }
 

@@ -45,6 +45,10 @@ MIN_PAGE_SIZE = 1
 CACHE_TTL_SECONDS = 30
 CACHE_MAX_ENTRIES = 64
 REQUEST_INTERVAL_SECONDS = 0.2
+# Several cards can enter the internal scroll viewport together. Bound the
+# proxy fan-out so a single gallery does not create dozens of concurrent CDN
+# requests and starve the search/API requests.
+IMAGE_PROXY_CONCURRENCY = 3
 # Danbooru 对这几种 "慢排序" 在无时间窗时会对全库排序导致数据库超时（500）。
 # 自动附带一个免费 metatag 时间窗即可稳定返回（与前端 anima_danbooru_gallery_widget.js 常量保持一致）。
 SLOW_ORDERS = frozenset({"score", "favcount", "random"})
@@ -126,6 +130,15 @@ def _fallback_proxy() -> dict[str, str] | None:
 
 _danbooru_session = requests.Session()
 _danbooru_session.headers.update(DANBOORU_HEADERS)
+
+_image_proxy_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_image_proxy_semaphore() -> asyncio.Semaphore:
+    global _image_proxy_semaphore
+    if _image_proxy_semaphore is None:
+        _image_proxy_semaphore = asyncio.Semaphore(IMAGE_PROXY_CONCURRENCY)
+    return _image_proxy_semaphore
 
 # 直连被判定为不可达（连接挂起/超时一次后）→ 进程内记住「D站必须走代理」，
 # 后续请求不再尝试直连（DNS 被劫持到黑洞 IP 时直连会白等）。
@@ -1181,7 +1194,8 @@ async def anima_danbooru_image(request: web.Request) -> web.Response:
     def _get():
         return _danbooru_get_image(image_url)
     try:
-        data, content_type = await asyncio.get_running_loop().run_in_executor(None, _get)
+        async with _get_image_proxy_semaphore():
+            data, content_type = await asyncio.get_running_loop().run_in_executor(None, _get)
     except requests.Timeout:
         return web.json_response({"error": "图片代理超时（已自动重试并尝试浏览器网关）：请确认 Clash/代理已开启"}, status=504)
     except requests.RequestException as error:
@@ -1191,7 +1205,7 @@ async def anima_danbooru_image(request: web.Request) -> web.Response:
     return web.Response(
         body=data,
         content_type=content_type.split(";", 1)[0],
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers={"Cache-Control": "public, max-age=86400"},
     )
 
 

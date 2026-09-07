@@ -301,8 +301,8 @@
 .adg-batch-job-interrupted span { color: #ffadad; }
 .adg-suggestions { display: flex; flex-wrap: wrap; gap: 4px; color: #9ea1ae; }
 .adg-suggestions button { padding: 2px 6px; border: 1px solid #4e4e60; border-radius: 4px; color: #c7bfff; background: #2a2934; cursor: pointer; }
-.adg-grid { display: grid; flex: 1 1 auto; min-width: 0; min-height: 0; grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr)); grid-auto-rows: max-content; align-content: start; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; column-gap: 7px; row-gap: 7px; padding-right: 3px; }
-.adg-card { position: relative; min-width: 0; margin: 0; overflow: hidden; padding: 3px; border: 2px solid rgba(255,255,255,.1); border-radius: 7px; background: #16161d; transition: border-color .15s, box-shadow .15s, transform .15s; }
+.adg-grid { display: grid; flex: 1 1 auto; min-width: 0; min-height: 0; grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr)); grid-auto-rows: 10px; align-content: start; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; column-gap: 7px; row-gap: 7px; padding-right: 3px; }
+.adg-card { position: relative; min-width: 0; align-self: start; grid-row-end: span 1; margin: 0; overflow: hidden; padding: 3px; border: 2px solid rgba(255,255,255,.1); border-radius: 7px; background: #16161d; transition: border-color .15s, box-shadow .15s, transform .15s; }
 .adg-card:hover { border-color: #7668d8; transform: translateY(-1px); }
 .adg-card.is-favorite { border-color: rgba(245, 190, 74, .62); }
 .adg-card.is-selected { border-color: #b49cff; background: rgba(109,86,210,.24); box-shadow: 0 0 0 2px rgba(180,156,255,.45), 0 0 22px rgba(125,92,255,.72); }
@@ -313,7 +313,7 @@
 .adg-caption { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #aeb1bd; font-size: 10px; }
 .adg-image-error,
 .adg-empty { display: grid; min-height: 90px; place-items: center; color: #ff9f9f; background: #292934; }
-.adg-empty { column-span: all; color: #9296a5; }
+.adg-empty { grid-column: 1 / -1; column-span: all; color: #9296a5; }
 .adg-card-actions { position: absolute; top: 7px; left: 7px; right: 7px; z-index: 4; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 3px; max-width: calc(100% - 14px); opacity: 0; transform: translateY(-3px); transition: opacity .15s, transform .15s; }
 .adg-card:hover .adg-card-actions,
 .adg-card:focus-within .adg-card-actions { opacity: 1; transform: translateY(0); }
