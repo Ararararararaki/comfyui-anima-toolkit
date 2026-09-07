@@ -504,6 +504,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
     globe: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
     refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+    list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+    grid: '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/>',
+    link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+    plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+    square: '<rect width="18" height="18" x="3" y="3" rx="2"/>',
+    checkSquare: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="m9 12 2 2 4-4"/>',
+    image: '<rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>',
     edit: '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
     save: '<path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/>',
     trash: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
@@ -759,6 +766,90 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           .bm-modal .bm-list::-webkit-scrollbar-track { background:transparent; }
           .bm-modal .bm-list::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.10); border-radius:3px; }
           .bm-modal .bm-list::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,0.18); }
+
+          /* ── TK Toolkit 同款表面层：中性灰阶、透明底色、精确微动效 ── */
+          .bm-overlay { position:fixed !important; inset:0 !important; z-index:9999 !important; display:flex !important; align-items:center; justify-content:center; background:radial-gradient(ellipse at 50% 0%,rgba(30,29,27,.78),rgba(5,5,5,.90) 62%,rgba(2,2,2,.96)) !important; backdrop-filter:blur(14px) saturate(78%); }
+          .bm-modal { --bm-fg:#eeeae3; --bm-fg-muted:#a9a39a; --bm-fg-subtle:rgba(238,234,227,.56); --bm-accent:#e6dfd3; --bm-accent-ink:#1d1a16; --bm-line:rgba(238,234,227,.13); --bm-line-hover:rgba(238,234,227,.27); --bm-surface:rgba(238,234,227,.055); --bm-surface-hover:rgba(238,234,227,.105); --bm-danger:#d18b82; position:relative !important; display:flex !important; flex-direction:column !important; box-sizing:border-box !important; width:min(1180px,calc(100vw - 32px)) !important; max-width:1180px !important; height:min(88vh,820px) !important; max-height:88vh !important; padding:0 !important; overflow:hidden !important; color:var(--bm-fg) !important; background:linear-gradient(180deg,rgba(22,21,19,.93),rgba(10,10,9,.97)) !important; border:1px solid var(--bm-line) !important; border-radius:18px !important; box-shadow:0 0 0 1px rgba(255,255,255,.035),0 24px 70px rgba(0,0,0,.68),0 0 80px rgba(0,0,0,.24),inset 0 1px 0 rgba(255,255,255,.08) !important; font-family:"Inter","Geist Sans",system-ui,sans-serif !important; }
+          .bm-modal::before { content:""; position:absolute; inset:0; pointer-events:none; background:radial-gradient(600px 180px at 28% 0%,rgba(255,255,255,.065),transparent 72%); opacity:.8; }
+          .bm-header { position:relative; z-index:1; display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:64px; padding:12px 16px 11px; border-bottom:1px solid rgba(238,234,227,.10); background:rgba(255,255,255,.018); }
+          .bm-heading { display:flex; align-items:flex-end; gap:9px; min-width:0; }
+          .bm-heading h3 { display:flex; align-items:center; gap:8px; min-width:0; margin:0 !important; color:var(--bm-fg) !important; font-size:14px !important; font-weight:650 !important; letter-spacing:-.01em; }
+          .bm-heading h3 svg { color:var(--bm-accent); flex:0 0 auto; }
+          .bm-kicker { align-self:center; color:var(--bm-fg-subtle); font-size:8px; letter-spacing:.16em; line-height:1; }
+          .bm-total { align-self:center; color:var(--bm-fg-subtle) !important; font-size:10px !important; white-space:nowrap; }
+          .bm-header-actions { display:flex; align-items:center; justify-content:flex-end; gap:6px; flex-wrap:wrap; }
+          .bm-header-actions button, .bm-batchbar button { display:inline-flex !important; align-items:center; justify-content:center; gap:6px; min-height:30px; padding:5px 10px !important; border:1px solid var(--bm-line) !important; border-radius:9px !important; background:rgba(238,234,227,.045) !important; color:var(--bm-fg-muted) !important; box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 3px 10px rgba(0,0,0,.16) !important; cursor:pointer; font-size:10px !important; font-weight:600; letter-spacing:.01em; white-space:nowrap; transition:transform .2s cubic-bezier(.16,1,.3,1),background .2s ease,border-color .2s ease,color .2s ease,box-shadow .2s ease !important; }
+          .bm-header-actions button:hover, .bm-batchbar button:hover { transform:translateY(-1px); border-color:var(--bm-line-hover) !important; background:rgba(238,234,227,.105) !important; color:var(--bm-fg) !important; box-shadow:inset 0 1px 0 rgba(255,255,255,.09),0 8px 20px rgba(0,0,0,.24) !important; }
+          .bm-header-actions button:active, .bm-batchbar button:active { transform:translateY(0) scale(.98); }
+          .bm-header-actions button:focus-visible, .bm-batchbar button:focus-visible, .bm-sidebar button:focus-visible, .bm-modal input:focus-visible, .bm-modal select:focus-visible { outline:2px solid var(--bm-accent) !important; outline-offset:2px; }
+          .bm-header-actions .bm-mode, .bm-header-actions .bm-url { color:var(--bm-accent) !important; border-color:rgba(230,223,211,.28) !important; background:rgba(230,223,211,.10) !important; }
+          .bm-header-actions .bm-mode:hover, .bm-header-actions .bm-url:hover { background:rgba(230,223,211,.17) !important; }
+          .bm-header-actions .bm-batch-toggle.is-active { color:var(--bm-accent-ink) !important; border-color:var(--bm-accent) !important; background:var(--bm-accent) !important; }
+          .bm-header-actions .bm-close { color:var(--bm-danger) !important; border-color:rgba(209,139,130,.28) !important; background:rgba(209,139,130,.075) !important; }
+          .bm-header-actions .bm-close:hover { color:#f2c3ba !important; border-color:rgba(209,139,130,.52) !important; background:rgba(209,139,130,.14) !important; }
+          .bm-header-actions button svg, .bm-batchbar button svg { flex:0 0 auto; }
+          .bm-search-row { position:relative; z-index:1; display:flex; align-items:center; gap:8px; padding:10px 16px; border-bottom:1px solid rgba(238,234,227,.07); background:rgba(0,0,0,.13); }
+          .bm-search-box { display:flex; align-items:center; gap:8px; min-width:0; flex:1; padding:0 10px; border:1px solid var(--bm-line) !important; border-radius:10px; background:rgba(0,0,0,.22) !important; color:var(--bm-fg-subtle); transition:border-color .2s ease,box-shadow .2s ease,background .2s ease; }
+          .bm-search-box:focus-within { border-color:var(--bm-line-hover) !important; background:rgba(0,0,0,.32) !important; box-shadow:0 0 0 3px rgba(238,234,227,.08); }
+          .bm-search { width:100% !important; min-width:0; margin:0 !important; padding:8px 0 !important; border:0 !important; outline:none !important; background:transparent !important; color:var(--bm-fg) !important; font-size:11px !important; }
+          .bm-search::placeholder { color:var(--bm-fg-subtle) !important; }
+          .bm-sort { min-width:104px; padding:8px 10px !important; border:1px solid var(--bm-line) !important; border-radius:10px !important; background:rgba(0,0,0,.22) !important; color:var(--bm-fg-muted) !important; font-size:10px !important; }
+          .bm-body { position:relative; z-index:1; display:flex; flex:1; gap:16px; min-height:0; padding:12px 16px 16px; }
+          .bm-sidebar { width:158px !important; flex:0 0 158px; padding:2px 10px 2px 0 !important; overflow-y:auto; border-right:1px solid rgba(238,234,227,.09) !important; }
+          .bm-sidebar > button { display:flex !important; align-items:center; justify-content:space-between; gap:8px; width:100% !important; min-height:32px; margin:0 0 4px !important; padding:7px 9px !important; border:1px solid transparent !important; border-radius:9px !important; background:transparent !important; color:var(--bm-fg-muted) !important; font-size:10px !important; text-align:left; transition:transform .2s cubic-bezier(.16,1,.3,1),background .2s ease,border-color .2s ease,color .2s ease !important; }
+          .bm-sidebar > button:hover { transform:translateX(2px); background:var(--bm-surface-hover) !important; border-color:var(--bm-line) !important; color:var(--bm-fg) !important; }
+          .bm-sidebar > button.is-active { background:rgba(230,223,211,.13) !important; border-color:rgba(230,223,211,.30) !important; color:var(--bm-fg) !important; box-shadow:inset 2px 0 0 var(--bm-accent),inset 0 1px 0 rgba(255,255,255,.06) !important; }
+          .bm-filter-label { display:flex; align-items:center; gap:7px; min-width:0; }
+          .bm-filter-label svg { flex:0 0 auto; color:var(--bm-fg-subtle); }
+          .bm-sidebar > button.is-active .bm-filter-label svg { color:var(--bm-accent); }
+          .bm-filter-count { flex:0 0 auto; color:var(--bm-fg-subtle) !important; font-size:9px !important; font-variant-numeric:tabular-nums; }
+          .bm-list { flex:1 !important; min-width:0; padding:2px !important; overflow:auto; position:relative; scrollbar-gutter:stable; }
+          .bm-card { overflow:hidden !important; border:1px solid rgba(238,234,227,.13) !important; border-radius:14px !important; background:linear-gradient(180deg,rgba(238,234,227,.08),rgba(238,234,227,.025)) !important; box-shadow:0 0 0 1px rgba(0,0,0,.16),0 5px 16px rgba(0,0,0,.28),0 0 25px rgba(0,0,0,.10) !important; transition:transform .22s cubic-bezier(.16,1,.3,1),border-color .22s ease,box-shadow .22s ease,filter .22s ease !important; }
+          .bm-card:hover { transform:translateY(-3px) !important; border-color:var(--bm-line-hover) !important; box-shadow:0 0 0 1px rgba(238,234,227,.12),0 12px 28px rgba(0,0,0,.42),0 0 36px rgba(238,234,227,.045) !important; }
+          .bm-card.is-added { border-color:rgba(230,223,211,.38) !important; }
+          .bm-card.is-selected { border-color:var(--bm-accent) !important; box-shadow:0 0 0 2px rgba(230,223,211,.30),0 12px 30px rgba(0,0,0,.38) !important; filter:brightness(1.07); }
+          .bm-img { position:relative; height:150px !important; overflow:hidden; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.22) !important; color:var(--bm-fg-subtle) !important; }
+          .bm-img::after { content:""; position:absolute; inset:0; pointer-events:none; background:linear-gradient(180deg,rgba(0,0,0,0) 54%,rgba(0,0,0,.16)); opacity:.7; }
+          .bm-thumb-img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; transition:transform .45s cubic-bezier(.16,1,.3,1),filter .3s ease; }
+          .bm-card:hover .bm-thumb-img { transform:scale(1.035); filter:saturate(.92) contrast(1.03); }
+          .bm-img-fallback { position:relative; z-index:1; display:inline-flex; align-items:center; justify-content:center; color:var(--bm-fg-subtle); }
+          .bm-img-fallback.is-missing { color:var(--bm-danger); }
+          .bm-badge { position:absolute !important; top:9px !important; left:9px !important; z-index:3; align-items:center; justify-content:center; width:22px !important; height:22px !important; border:1px solid rgba(29,26,22,.25); border-radius:50% !important; background:var(--bm-accent) !important; color:var(--bm-accent-ink) !important; box-shadow:0 4px 12px rgba(0,0,0,.28) !important; }
+          .bm-card-actions { position:absolute; top:8px; right:8px; z-index:3; display:flex; gap:4px; }
+          .bm-card-actions button, .bm-li-actions button { display:inline-flex !important; align-items:center; justify-content:center; width:25px !important; height:25px !important; padding:0 !important; border:1px solid rgba(238,234,227,.20) !important; border-radius:8px !important; background:rgba(17,16,14,.70) !important; color:var(--bm-fg-muted) !important; box-shadow:0 4px 12px rgba(0,0,0,.26),inset 0 1px 0 rgba(255,255,255,.08) !important; backdrop-filter:blur(8px); cursor:pointer; transition:transform .18s cubic-bezier(.16,1,.3,1),background .18s ease,border-color .18s ease,color .18s ease !important; }
+          .bm-card-actions button:hover, .bm-li-actions button:hover { transform:translateY(-1px); border-color:var(--bm-line-hover) !important; background:rgba(238,234,227,.16) !important; color:var(--bm-fg) !important; }
+          .bm-card-actions button:active, .bm-li-actions button:active { transform:scale(.94); }
+          .bm-card-actions .bm-catbtn.is-active { border-color:rgba(230,223,211,.55) !important; color:var(--bm-accent) !important; background:rgba(230,223,211,.17) !important; }
+          .bm-card-info { position:absolute; right:0; bottom:0; left:0; min-height:70px; padding:24px 9px 8px; background:linear-gradient(180deg,transparent,rgba(8,8,7,.94) 34%); }
+          .bm-mname { overflow:hidden; color:var(--bm-fg) !important; font-size:11px !important; font-weight:620; line-height:1.35; text-overflow:ellipsis; white-space:nowrap; }
+          .bm-lname, .bm-meta { display:none; overflow:hidden; color:var(--bm-fg-muted) !important; font-size:9px !important; line-height:1.35; text-overflow:ellipsis; white-space:nowrap; }
+          .bm-tw { overflow:hidden; min-height:12px; color:var(--bm-fg-subtle) !important; font-size:8px !important; line-height:1.5; text-overflow:ellipsis; white-space:nowrap; }
+          .bm-cattags { display:flex; gap:3px; flex-wrap:wrap; min-height:13px; margin-top:3px; }
+          .bm-cat-tag { display:inline-flex; align-items:center; max-width:100%; padding:2px 5px; overflow:hidden; border:1px solid rgba(230,223,211,.20); border-radius:999px; background:rgba(230,223,211,.11); color:var(--bm-accent) !important; font-size:8px; cursor:pointer; text-overflow:ellipsis; white-space:nowrap; }
+          .bm-cat-tag:hover { background:rgba(230,223,211,.19); }
+          .bm-li { display:flex !important; align-items:center; gap:10px; min-height:56px; margin:0 0 6px !important; padding:7px 9px !important; border:1px solid rgba(238,234,227,.10) !important; border-radius:11px !important; background:rgba(238,234,227,.035) !important; box-shadow:0 3px 12px rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.04) !important; transition:transform .2s cubic-bezier(.16,1,.3,1),background .2s ease,border-color .2s ease,box-shadow .2s ease !important; }
+          .bm-li:hover { transform:translateX(2px); background:var(--bm-surface-hover) !important; border-color:var(--bm-line-hover) !important; box-shadow:0 8px 20px rgba(0,0,0,.26),inset 0 1px 0 rgba(255,255,255,.07) !important; }
+          .bm-li.is-added { border-color:rgba(230,223,211,.32) !important; }
+          .bm-li.is-selected { border-color:var(--bm-accent) !important; background:rgba(230,223,211,.13) !important; box-shadow:0 0 0 2px rgba(230,223,211,.18),0 8px 20px rgba(0,0,0,.24) !important; }
+          .bm-li-thumb { position:relative; display:flex; align-items:center; justify-content:center; width:42px !important; height:42px !important; flex:0 0 42px; overflow:hidden; border:1px solid rgba(238,234,227,.11); border-radius:9px; background:rgba(0,0,0,.24) !important; color:var(--bm-fg-subtle); }
+          .bm-li-copy { min-width:0; flex:1; }
+          .bm-li-actions { display:flex; align-items:center; gap:4px; flex:0 0 auto; }
+          .bm-li-badge { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; color:var(--bm-accent) !important; }
+          .bm-empty { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; min-height:180px; color:var(--bm-fg-subtle); font-size:10px; text-align:center; }
+          .bm-empty svg { color:var(--bm-fg-muted); }
+          .bm-empty strong { color:var(--bm-fg); font-size:12px; font-weight:600; }
+          .bm-empty span { color:var(--bm-fg-subtle); }
+          .bm-batchbar { position:relative; z-index:1; display:none; margin:0 16px 14px !important; }
+          .bm-batchbar .bm-batch-add { width:100%; min-height:34px; color:var(--bm-accent-ink) !important; border-color:var(--bm-accent) !important; background:var(--bm-accent) !important; box-shadow:0 6px 18px rgba(0,0,0,.24),inset 0 1px 0 rgba(255,255,255,.38) !important; }
+          .bm-batchbar .bm-batch-add:hover { color:var(--bm-accent-ink) !important; background:#f3eee6 !important; }
+          .bm-catpicker { min-width:210px; padding:9px !important; border:1px solid var(--bm-line-hover) !important; border-radius:12px !important; background:rgba(20,19,17,.96) !important; box-shadow:0 18px 44px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.07) !important; backdrop-filter:blur(14px); }
+          .bm-cat-title { margin-bottom:6px; color:var(--bm-fg-subtle); font-size:9px; letter-spacing:.04em; }
+          .bm-cat-empty { padding:4px 0; color:var(--bm-fg-subtle); font-size:9px; }
+          .bm-catpicker button { display:flex !important; align-items:center; gap:7px; width:100% !important; min-height:30px; margin:0 0 3px !important; padding:6px 8px !important; border:1px solid transparent !important; border-radius:8px !important; background:transparent !important; color:var(--bm-fg-muted) !important; font-size:10px !important; text-align:left; transition:background .18s ease,border-color .18s ease,color .18s ease,transform .18s ease !important; }
+          .bm-catpicker button.is-active { border-color:rgba(230,223,211,.22) !important; background:rgba(230,223,211,.13) !important; color:var(--bm-accent) !important; }
+          .bm-catpicker button:hover { transform:translateX(2px); background:var(--bm-surface-hover) !important; border-color:var(--bm-line) !important; color:var(--bm-fg) !important; }
+          @media (max-width:760px) { .bm-header { align-items:flex-start; flex-direction:column; } .bm-header-actions { width:100%; justify-content:flex-start; } .bm-body { gap:10px; padding-inline:10px; } .bm-sidebar { width:116px !important; flex-basis:116px; } }
+          @media (prefers-reduced-motion:reduce) { .bm-overlay-enter,.bm-modal-enter,.bm-card,.bm-li,.bm-header-actions button,.bm-batchbar button,.bm-thumb-img { animation:none !important; transition-duration:.01ms !important; } }
         `;
 
       // ── 工具栏 ──
@@ -1683,36 +1774,34 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     _browseModal(statusEl) {
       try {
       const overlay = document.createElement("div");
-      overlay.className = "modal-overlay bm-overlay-enter";
-      overlay.style.cssText = "position:fixed;inset:0;background:radial-gradient(ellipse at top,rgba(10,10,15,0.85) 0%,rgba(2,2,3,0.92) 60%,rgba(2,2,3,0.96) 100%);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);";
+      overlay.className = "modal-overlay bm-overlay bm-overlay-enter";
       const modal = document.createElement("div");
       modal.className = "modal bm-modal-enter bm-modal";
-      modal.style.cssText = "background:linear-gradient(180deg,rgba(20,20,28,0.9),rgba(10,10,14,0.95)),radial-gradient(ellipse at top,rgba(94,106,210,0.06),transparent 60%);border-radius:14px;padding:16px;width:94vw;max-width:980px;max-height:88vh;display:flex;flex-direction:column;border:1px solid rgba(255,255,255,0.10);box-shadow:0 0 0 1px rgba(255,255,255,0.05),0 24px 70px rgba(0,0,0,0.7),0 0 100px rgba(94,106,210,0.08),inset 0 1px 0 0 rgba(255,255,255,0.06);";
       modal.innerHTML = `
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
-          <h3 style="margin:0;font-size:13px;color:#EDEDEF;font-weight:600;">📂 本地 LoRA（含子目录）</h3>
-          <span style="font-size:10px;color:rgba(255,255,255,0.35);" class="bm-total"></span>
-          <span style="flex:1"></span>
-          <button class="bm-mode" style="padding:3px 8px;background:rgba(94,106,210,0.2);color:#9aa5ff;border:1px solid rgba(94,106,210,0.3);border-radius:5px;cursor:pointer;font-size:9px;">☰ 列表</button>
-          <button class="bm-url" title="从 C 站链接下载 LoRA 到本地" style="padding:3px 8px;background:rgba(94,106,210,0.2);color:#9aa5ff;border:1px solid rgba(94,106,210,0.3);border-radius:5px;cursor:pointer;font-size:9px;">🔗 URL 下载</button>
-          <button class="bm-newcat" style="padding:3px 8px;background:rgba(255,255,255,0.06);color:#8A8F98;border:1px solid rgba(255,255,255,0.08);border-radius:5px;cursor:pointer;font-size:9px;">➕ 分类</button>
-          <button class="bm-batch-toggle" style="padding:3px 8px;background:rgba(255,255,255,0.06);color:#8A8F98;border:1px solid rgba(255,255,255,0.08);border-radius:5px;cursor:pointer;font-size:9px;">☑ 批量</button>
-          <button class="bm-close" style="padding:3px 10px;background:rgba(255,80,80,0.12);color:#ff6b6b;border:1px solid rgba(255,80,80,0.2);border-radius:5px;cursor:pointer;font-size:9px;">✕ 关闭</button>
+        <div class="bm-header">
+          <div class="bm-heading"><span class="bm-kicker">LOCAL LIBRARY</span><h3>${svgIcon("folder", 15)} <span>本地 LoRA</span></h3><span class="bm-total"></span></div>
+          <div class="bm-header-actions">
+            <button class="bm-mode" type="button"><span class="bm-mode-icon">${svgIcon("list", 12)}</span><span>列表</span></button>
+            <button class="bm-url" type="button" title="从 C 站链接下载 LoRA 到本地">${svgIcon("download", 12)}<span>URL 下载</span></button>
+            <button class="bm-newcat" type="button">${svgIcon("plus", 12)}<span>分类</span></button>
+            <button class="bm-batch-toggle" type="button">${svgIcon("checkSquare", 12)}<span>批量</span></button>
+            <button class="bm-close" type="button">${svgIcon("x", 12)}<span>关闭</span></button>
+          </div>
         </div>
-        <div style="display:flex;gap:8px;margin-bottom:8px;">
-          <input class="bm-search" type="text" placeholder="搜索名称、路径、中文名、作者、标签、触发词..." aria-label="搜索 LoRA 名称、路径、中文名、作者、标签或触发词" style="flex:1;padding:5px 9px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;outline:none;">
-          <select class="bm-sort" style="padding:5px 8px;background:#0a0a0c;color:#8A8F98;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:10px;outline:none;">
+        <div class="bm-search-row">
+          <label class="bm-search-box">${svgIcon("search", 13)}<input class="bm-search" type="text" placeholder="搜索名称、路径、中文名、作者、标签、触发词..." aria-label="搜索 LoRA 名称、路径、中文名、作者、标签或触发词"></label>
+          <select class="bm-sort" aria-label="排序方式">
             <option value="name">按名称</option>
             <option value="size">按大小</option>
             <option value="date">按日期</option>
             <option value="usage">按使用次数</option>
           </select>
         </div>
-        <div class="bm-body" style="flex:1;display:flex;gap:10px;min-height:0;">
-          <div class="bm-sidebar" style="width:130px;flex-shrink:0;overflow-y:auto;border-right:1px solid rgba(255,255,255,0.06);padding-right:6px;"></div>
-          <div class="bm-list" style="flex:1;overflow-y:auto;position:relative;padding:2px;"></div>
+        <div class="bm-body">
+          <div class="bm-sidebar"></div>
+          <div class="bm-list"></div>
         </div>
-        <div class="bm-batchbar" style="display:none;margin-top:8px;"></div>
+        <div class="bm-batchbar"></div>
       `;
       overlay.appendChild(modal);
       document.body.appendChild(overlay);
@@ -1862,14 +1951,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         sidebarEl.innerHTML = "";
         const mk = (key, label, count, icon) => {
           const item = document.createElement("button");
-          item.style.cssText = `display:flex;align-items:center;gap:6px;width:100%;padding:5px 8px;margin-bottom:2px;border-radius:6px;cursor:pointer;font-size:10px;text-align:left;border:none;background:${curFilter === key ? "rgba(94,106,210,0.25)" : "transparent"};color:${curFilter === key ? "#EDEDEF" : "#8A8F98"};`;
-          item.innerHTML = `<span>${icon || ""}${esc(label)}</span><span style="margin-left:auto;color:rgba(255,255,255,0.3);font-size:9px;">${esc(String(count))}</span>`;
+          item.className = `bm-filter-btn${curFilter === key ? " is-active" : ""}`;
+          item.innerHTML = `<span class="bm-filter-label">${svgIcon(icon || "grid", 12)}<span>${esc(label)}</span></span><span class="bm-filter-count">${esc(String(count))}</span>`;
           item.onclick = () => { curFilter = (curFilter === key) ? "all" : key; renderSidebar(); renderCurrent(); };
           sidebarEl.appendChild(item);
         };
         mk("all", "全部", allLoras.length, "");
         meta.categories.forEach((cat) => {
-          mk(cat, cat, allLoras.filter((l) => loraMeta(l.name).categories.includes(cat)).length, "🏷️");
+          mk(cat, cat, allLoras.filter((l) => loraMeta(l.name).categories.includes(cat)).length, "tag");
         });
       };
 
@@ -1885,9 +1974,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             this._imgCache[name] = info;
             if (img.isConnected === false) return;
             if (info.previewUrl) {
-              img.innerHTML = `<img src="${this._imgProxy(info.previewUrl)}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.innerHTML='<span style=font-size:22px>🖼</span>'">`;
+              img.innerHTML = `<img class="bm-thumb-img" src="${this._imgProxy(info.previewUrl)}" onerror="this.style.display='none'">`;
             } else {
-              img.innerHTML = `<span style="font-size:22px;">${info.source === "not_on_civitai" ? "❌" : "🖼"}</span>`;
+              img.innerHTML = `<span class="bm-img-fallback ${info.source === "not_on_civitai" ? "is-missing" : ""}">${info.source === "not_on_civitai" ? svgIcon("x", 24) : svgIcon("image", 24)}</span>`;
             }
             const host = img.closest(".bm-card") || img.closest(".bm-li");
             applyInfo(host, info);
@@ -1904,7 +1993,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const metaEl = host.querySelector(".bm-meta");
         const twEl = host.querySelector(".bm-tw");
         const tw = info.trainedWords || [];
-        if (twEl) twEl.textContent = tw.length ? "📝 " + tw.slice(0, 2).join(", ") + (tw.length > 2 ? "..." : "") : "";
+        if (twEl) twEl.textContent = tw.length ? "触发词 · " + tw.slice(0, 2).join(", ") + (tw.length > 2 ? "..." : "") : "";
         if (mnameEl && info.modelName && info.modelName !== host.dataset.name) {
           mnameEl.textContent = info.modelName;
           mnameEl.title = info.modelName;
@@ -1923,7 +2012,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const paintThumb = (imgEl, name) => {
         const cached = this._imgCache[name];
         if (cached && cached.previewUrl) {
-          imgEl.innerHTML = `<img src="${this._imgProxy(cached.previewUrl)}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none'">`;
+          imgEl.innerHTML = `<img class="bm-thumb-img" src="${this._imgProxy(cached.previewUrl)}" onerror="this.style.display='none'">`;
         } else {
           io.observe(imgEl);
         }
@@ -1935,23 +2024,24 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const added = this.loras.some((e) => e.name.toLowerCase() === l.name.toLowerCase());
         const card = document.createElement("div");
         card.className = "bm-card";
+        if (added) card.classList.add("is-added");
         card.dataset.name = l.name;
         const left = (idx % cols) * (ITEM_W + GAP);
         const top = Math.floor(idx / cols) * ROW_H;
         card.style.cssText = `position:absolute;left:${left}px;top:${top}px;width:${ITEM_W}px;height:${ROW_H - GAP}px;border-radius:8px;overflow:hidden;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);cursor:pointer;`;
         card.innerHTML = `
-          <div class="bm-img" data-lora-name="${esc(l.name)}" style="position:relative;height:${IMG_H}px;background:rgba(255,255,255,0.04);overflow:hidden;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.15);font-size:22px;">🖼</div>
-          <div class="bm-badge" style="position:absolute;top:4px;left:4px;display:${added ? "flex" : "none"};align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:rgba(94,106,210,0.9);color:#fff;font-size:10px;font-weight:700;">✓</div>
-          <div style="position:absolute;top:3px;right:3px;display:flex;gap:3px;">
-            <button class="bm-catbtn" title="分配分类" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:rgba(0,0,0,0.4);color:rgba(255,255,255,0.4);">🏷️</button>
-            <button class="bm-csite" title="打开 C 站页面" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:rgba(0,0,0,0.4);color:rgba(255,255,255,0.4);">🔗</button>
+          <div class="bm-img" data-lora-name="${esc(l.name)}"><span class="bm-img-fallback">${svgIcon("image", 24)}</span></div>
+          <div class="bm-badge" style="display:${added ? "flex" : "none"};">${svgIcon("check", 11)}</div>
+          <div class="bm-card-actions">
+            <button class="bm-catbtn ${m.categories.length ? "is-active" : ""}" title="分配分类" aria-label="分配分类">${svgIcon("tag", 12)}</button>
+            <button class="bm-csite" title="打开 C 站页面" aria-label="打开 C 站页面">${svgIcon("link", 12)}</button>
           </div>
-          <div style="position:absolute;bottom:0;left:0;right:0;padding:5px 6px;background:linear-gradient(180deg,transparent,rgba(0,0,0,0.85));">
-            <div class="bm-mname" style="font-size:10px;color:#EDEDEF;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(l.name)}</div>
-            <div class="bm-lname" style="font-size:8px;color:rgba(255,255,255,0.45);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none;"></div>
-            <div class="bm-meta" style="font-size:8px;color:rgba(255,255,255,0.3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none;"></div>
-            <div class="bm-tw" style="font-size:8px;color:rgba(255,255,255,0.4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
-            <div class="bm-cattags" style="display:flex;gap:2px;flex-wrap:wrap;margin-top:2px;min-height:12px;"></div>
+          <div class="bm-card-info">
+            <div class="bm-mname">${esc(l.name)}</div>
+            <div class="bm-lname"></div>
+            <div class="bm-meta"></div>
+            <div class="bm-tw"></div>
+            <div class="bm-cattags"></div>
           </div>
         `;
         const catTagsEl = card.querySelector(".bm-cattags");
@@ -1959,7 +2049,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           const t = document.createElement("span");
           t.textContent = cat;
           t.title = "点击移除分类";
-          t.style.cssText = "padding:0 4px;border-radius:3px;background:rgba(94,106,210,0.2);color:#9aa5ff;font-size:8px;cursor:pointer;";
+          t.className = "bm-cat-tag";
           t.onclick = (ev) => {
             ev.stopPropagation();
             ensureMeta(l.name).categories = ensureMeta(l.name).categories.filter((c) => c !== cat);
@@ -1982,8 +2072,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         card.onclick = (ev) => {
           if (ev.target.closest(".bm-catbtn") || ev.target.closest(".bm-csite") || ev.target.closest(".bm-cattags")) return;
           if (batchMode) {
-            if (selected.has(l.name)) { selected.delete(l.name); card.style.outline = ""; }
-            else { selected.add(l.name); card.style.outline = "2px solid #5E6AD2"; }
+            if (selected.has(l.name)) selected.delete(l.name);
+            else selected.add(l.name);
+            card.classList.toggle("is-selected", selected.has(l.name));
             updateBatchBar();
             return;
           }
@@ -1991,7 +2082,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           // 否则残留的 selected 会拦截点击，导致无法取消/添加
           if (selected.size > 0) {
             selected.clear();
-            listEl.querySelectorAll(".bm-card").forEach((c) => { c.style.outline = ""; });
+            listEl.querySelectorAll(".bm-card, .bm-li").forEach((c) => c.classList.remove("is-selected"));
             updateBatchBar();
           }
           const existing = this.loras.find((e2) => e2.name.toLowerCase() === l.name.toLowerCase());
@@ -2021,19 +2112,22 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const added = this.loras.some((e) => e.name.toLowerCase() === l.name.toLowerCase());
         const row = document.createElement("div");
         row.className = "bm-li";
+        if (added) row.classList.add("is-added");
         row.dataset.name = l.name;
-        row.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;border:1px solid rgba(255,255,255,0.05);margin-bottom:4px;background:rgba(255,255,255,0.02);";
+        row.style.cssText = "cursor:pointer;";
         row.innerHTML = `
-          <div class="bm-li-thumb" data-lora-name="${esc(l.name)}" style="position:relative;width:36px;height:36px;border-radius:5px;overflow:hidden;background:rgba(255,255,255,0.05);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;">🖼</div>
-          <div style="flex:1;min-width:0;">
-            <div class="bm-mname" style="font-size:10px;color:#EDEDEF;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(l.name)}</div>
-            <div class="bm-lname" style="font-size:8px;color:rgba(255,255,255,0.45);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none;"></div>
-            <div class="bm-meta" style="font-size:8px;color:rgba(255,255,255,0.3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none;"></div>
-            <div class="bm-tw" style="font-size:8px;color:rgba(255,255,255,0.35);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
+          <div class="bm-li-thumb" data-lora-name="${esc(l.name)}"><span class="bm-img-fallback">${svgIcon("image", 18)}</span></div>
+          <div class="bm-li-copy">
+            <div class="bm-mname">${esc(l.name)}</div>
+            <div class="bm-lname"></div>
+            <div class="bm-meta"></div>
+            <div class="bm-tw"></div>
           </div>
-          <button class="bm-catbtn" title="分配分类" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:transparent;color:rgba(255,255,255,0.35);">🏷️</button>
-          <button class="bm-csite" title="打开 C 站页面" style="width:20px;height:20px;border-radius:4px;border:none;cursor:pointer;font-size:11px;background:transparent;color:rgba(255,255,255,0.35);">🔗</button>
-          <span class="bm-li-badge" style="color:${added ? "#4caf50" : "rgba(255,255,255,0.2)"};font-size:11px;font-weight:700;">${added ? "✓" : ""}</span>
+          <div class="bm-li-actions">
+            <button class="bm-catbtn ${m.categories.length ? "is-active" : ""}" title="分配分类" aria-label="分配分类">${svgIcon("tag", 12)}</button>
+            <button class="bm-csite" title="打开 C 站页面" aria-label="打开 C 站页面">${svgIcon("link", 12)}</button>
+            <span class="bm-li-badge">${added ? svgIcon("check", 12) : ""}</span>
+          </div>
         `;
         row.querySelector(".bm-catbtn").onclick = (ev) => {
           ev.stopPropagation();
@@ -2050,15 +2144,16 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         row.onclick = (ev) => {
           if (ev.target.closest(".bm-catbtn") || ev.target.closest(".bm-csite")) return;
           if (batchMode) {
-            if (selected.has(l.name)) { selected.delete(l.name); row.style.background = ""; }
-            else { selected.add(l.name); row.style.background = "rgba(94,106,210,0.15)"; }
+            if (selected.has(l.name)) selected.delete(l.name);
+            else selected.add(l.name);
+            row.classList.toggle("is-selected", selected.has(l.name));
             updateBatchBar();
             return;
           }
           // 非批量模式：点击行始终切换 lora 添加/移除；清掉拖拽框选残留避免拦截点击
           if (selected.size > 0) {
             selected.clear();
-            listEl.querySelectorAll(".bm-li").forEach((r) => { r.style.background = ""; });
+            listEl.querySelectorAll(".bm-card, .bm-li").forEach((r) => r.classList.remove("is-selected"));
             updateBatchBar();
           }
           const existing = this.loras.find((e2) => e2.name.toLowerCase() === l.name.toLowerCase());
@@ -2066,13 +2161,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           if (existing) {
             this.loras = this.loras.filter((e2) => e2.name.toLowerCase() !== l.name.toLowerCase());
             this._commit(); this._render(this.listEl);
-            if (badge) { badge.textContent = ""; badge.style.color = "rgba(255,255,255,0.2)"; }
+            if (badge) badge.innerHTML = "";
             showToast("已移除: " + l.name);
           } else {
             this.loras.push({ name: l.name, weight: 1.0, disabled: this._prefDisabled(l.name) });
             bumpCount(l.name);
             this._commit(); this._render(this.listEl);
-            if (badge) { badge.textContent = "✓"; badge.style.color = "#4caf50"; }
+            if (badge) badge.innerHTML = svgIcon("check", 12);
             showToast("已添加: " + l.name);
           }
         };
@@ -2088,7 +2183,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const paintGrid = () => {
         const matched = getMatched();
         if (!matched.length) {
-          contentEl.innerHTML = '<div style="padding:30px;text-align:center;color:#666;font-size:11px;">没有匹配的 LoRA</div>';
+          contentEl.innerHTML = `<div class="bm-empty">${svgIcon("search", 22)}<strong>没有匹配的 LoRA</strong><span>试试名称、路径、作者或触发词</span></div>`;
           contentEl.style.height = "100%";
           return;
         }
@@ -2123,7 +2218,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         listEl.innerHTML = "";
         const matched = getMatched();
         if (!matched.length) {
-          listEl.innerHTML = '<div style="padding:30px;text-align:center;color:#666;font-size:11px;">没有匹配的 LoRA</div>';
+          listEl.innerHTML = `<div class="bm-empty">${svgIcon("search", 22)}<strong>没有匹配的 LoRA</strong><span>试试名称、路径、作者或触发词</span></div>`;
           return;
         }
         // 分片渲染：每帧最多 60 行，避免数百行一次性同步构建阻塞主线程
@@ -2146,7 +2241,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const updateBatchBar = () => {
         if (batchMode) {
           batchBar.style.display = "block";
-          batchBar.innerHTML = `<button class="bm-batch-add" style="width:100%;padding:7px 0;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;">✅ 添加选中 (${selected.size})</button>`;
+          batchBar.innerHTML = `<button class="bm-batch-add" type="button">${svgIcon("plus", 13)}<span>添加选中（${selected.size}）</span></button>`;
           batchBar.querySelector(".bm-batch-add").onclick = () => {
             const toAdd = Array.from(selected).filter((n) => !this.loras.some((e) => e.name.toLowerCase() === n.toLowerCase()));
             if (!toAdd.length) { showToast("没有新的 LoRA 可添加"); return; }
@@ -2175,7 +2270,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         document.body.style.webkitUserSelect = "none";
         e.preventDefault(); e.stopPropagation();
         dragBox.rect = document.createElement("div");
-        dragBox.rect.style.cssText = `position:fixed;left:${e.clientX}px;top:${e.clientY}px;width:0;height:0;z-index:999999;background:rgba(99,102,241,0.12);border:2px dashed rgba(99,102,241,0.6);pointer-events:none;border-radius:4px`;
+        dragBox.rect.style.cssText = `position:fixed;left:${e.clientX}px;top:${e.clientY}px;width:0;height:0;z-index:999999;background:rgba(230,223,211,0.10);border:2px dashed rgba(230,223,211,0.62);pointer-events:none;border-radius:8px`;
         document.body.appendChild(dragBox.rect);
       };
       const onBMMove = (e) => {
@@ -2183,7 +2278,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const l = Math.min(dragBox.startX, e.pageX), t = Math.min(dragBox.startY, e.pageY);
         const r = Math.max(dragBox.startX, e.pageX), b = Math.max(dragBox.startY, e.pageY);
         const sx = window.scrollX, sy = window.scrollY;
-        dragBox.rect.style.cssText = `position:fixed;left:${l - sx}px;top:${t - sy}px;width:${r - l}px;height:${b - t}px;z-index:999999;background:rgba(99,102,241,0.12);border:2px dashed rgba(99,102,241,0.6);pointer-events:none;border-radius:4px`;
+        dragBox.rect.style.cssText = `position:fixed;left:${l - sx}px;top:${t - sy}px;width:${r - l}px;height:${b - t}px;z-index:999999;background:rgba(230,223,211,0.10);border:2px dashed rgba(230,223,211,0.62);pointer-events:none;border-radius:8px`;
         if (r - l > 6 || b - t > 6) {
           dragBox.boxed = true;
           const inRect = new Set();
@@ -2198,10 +2293,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           selected.clear();
           inRect.forEach((n) => selected.add(n));
           listEl.querySelectorAll(".bm-card").forEach((el) => {
-            el.style.outline = selected.has(el.dataset.name) ? "2px solid #5E6AD2" : "";
+            el.classList.toggle("is-selected", selected.has(el.dataset.name));
           });
           listEl.querySelectorAll(".bm-li").forEach((el) => {
-            el.style.background = selected.has(el.dataset.name) ? "rgba(94,106,210,0.15)" : "";
+            el.classList.toggle("is-selected", selected.has(el.dataset.name));
           });
           updateBatchBar();
         }
@@ -2261,15 +2356,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       searchInput.onkeydown = (e) => { if (e.key === "Escape") closeModal(); };
       modeBtn.onclick = () => {
         mode = mode === "grid" ? "list" : "grid";
-        modeBtn.textContent = mode === "grid" ? "☰ 列表" : "▦ 网格";
+        modeBtn.innerHTML = `${svgIcon(mode === "grid" ? "list" : "grid", 12)}<span>${mode === "grid" ? "列表" : "网格"}</span>`;
         renderCurrent();
       };
       batchToggle.onclick = () => {
         batchMode = !batchMode;
         selected.clear();
-        batchToggle.textContent = batchMode ? "✕ 退出批量" : "☑ 批量";
-        batchToggle.style.background = batchMode ? "rgba(94,106,210,0.25)" : "rgba(255,255,255,0.06)";
-        batchToggle.style.color = batchMode ? "#EDEDEF" : "#8A8F98";
+        batchToggle.innerHTML = `${svgIcon(batchMode ? "x" : "checkSquare", 12)}<span>${batchMode ? "退出批量" : "批量"}</span>`;
+        batchToggle.classList.toggle("is-active", batchMode);
         updateBatchBar(); renderCurrent();
       };
       newCatBtn.onclick = () => {
@@ -2329,11 +2423,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const rect = card.getBoundingClientRect();
       let m = meta.loraMeta[name];
       if (!m) m = meta.loraMeta[name] = { categories: [], favorite: false, pinned: false };
-      let html = '<div style="font-size:9px;color:rgba(255,255,255,0.4);margin-bottom:5px;">分配分类</div>';
-      if (!meta.categories.length) html += '<div style="font-size:9px;color:#666;padding:4px 0;">暂无分类，点「➕ 分类」创建</div>';
+      let html = '<div class="bm-cat-title">分配分类</div>';
+      if (!meta.categories.length) html += '<div class="bm-cat-empty">暂无分类，点「分类」创建</div>';
       meta.categories.forEach((cat) => {
         const on = m.categories.includes(cat);
-        html += `<button data-cat="${escAttr(cat)}" style="display:flex;align-items:center;gap:6px;width:100%;padding:4px 6px;margin-bottom:2px;background:${on ? "rgba(94,106,210,0.25)" : "transparent"};color:#C8C9CB;border:none;border-radius:4px;cursor:pointer;font-size:10px;text-align:left;">${on ? "☑" : "☐"} ${esc(cat)}</button>`;
+        html += `<button class="bm-cat-option${on ? " is-active" : ""}" data-cat="${escAttr(cat)}" aria-pressed="${on}">${svgIcon(on ? "checkSquare" : "square", 12)}<span>${esc(cat)}</span></button>`;
       });
       picker.innerHTML = html;
       picker.querySelectorAll("[data-cat]").forEach((btn) => {
@@ -2379,11 +2473,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         if (sel && this._bmSelected) this._bmSelected.clear();
         onDone && onDone();
       };
-      let html = `<div style="font-size:9px;color:rgba(255,255,255,0.4);margin-bottom:5px;">${sel ? `批量添加分类 (${targets.length} 个)` : "分配分类"}</div>`;
-      if (!meta.categories.length) html += '<div style="font-size:9px;color:#666;padding:4px 0;">暂无分类，先点顶部「➕ 分类」创建</div>';
+      let html = `<div class="bm-cat-title">${sel ? `批量添加分类 (${targets.length} 个)` : "分配分类"}</div>`;
+      if (!meta.categories.length) html += '<div class="bm-cat-empty">暂无分类，先点顶部「分类」创建</div>';
       meta.categories.forEach((cat) => {
         const allOn = targets.every((n) => (meta.loraMeta[n] || {}).categories?.includes(cat));
-        html += `<button data-cat="${escAttr(cat)}" style="display:flex;align-items:center;gap:6px;width:100%;padding:4px 6px;margin-bottom:2px;background:${allOn ? "rgba(94,106,210,0.25)" : "transparent"};color:#C8C9CB;border:none;border-radius:4px;cursor:pointer;font-size:10px;text-align:left;">${allOn ? "☑" : "☐"} ${esc(cat)}</button>`;
+        html += `<button class="bm-cat-option${allOn ? " is-active" : ""}" data-cat="${escAttr(cat)}" aria-pressed="${allOn}">${svgIcon(allOn ? "checkSquare" : "square", 12)}<span>${esc(cat)}</span></button>`;
       });
       picker.innerHTML = html;
       picker.querySelectorAll("[data-cat]").forEach((btn) => {
