@@ -179,11 +179,16 @@ class AnimaTKDanbooruTagGetter:
             selected_tags = result
             tag_text = ", ".join(result)
 
-        # 自然语言沿用外部 Sorter 的语义，归入“未归类词”；不额外制造第 13 类。
-        include_natural = category_flags.get("未归类词", False) and include_natural_language
         raw_natural_language = self._natural_language_tail(natural_language, selected_tags)
         if filter_natural_language:
             raw_natural_language = self._filter_natural_language(raw_natural_language, regex_pattern, exact_blacklist)
+        # 自然语言沿用外部 Sorter 的语义，归入“未归类词”；不额外制造第 13 类。
+        # 当没有 TAG_BUNDLE 时，它就是节点唯一的数据源，不能因为旧工作流
+        # 没有保存分类布尔值而被静默丢弃；有分类包时仍由“未归类词”控制。
+        include_natural = include_natural_language and (
+            category_flags.get("未归类词", False)
+            or (not isinstance(tag_bundle, dict) and bool(raw_natural_language))
+        )
         if include_natural and raw_natural_language:
             tag_text = f"{tag_text}\n\n{raw_natural_language}" if tag_text else raw_natural_language
         return (tag_text,)

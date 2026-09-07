@@ -70,6 +70,16 @@ def test_natural_language_only_does_not_require_tag_bundle():
     assert result == ("1girl, soft smile, A medium shot captures her expression.",)
 
 
+def test_natural_language_only_without_bundle_is_not_dropped_when_category_state_is_missing():
+    """旧工作流可能把分类布尔值还原为空，但自然语言仍是可过滤的输入。"""
+    result = AnimaTKDanbooruTagGetter().get_tags(
+        natural_language="indoors, a girl looks toward the viewer.",
+        include_natural_language=True,
+        **{"未归类词": False},
+    )
+    assert result == ("indoors, a girl looks toward the viewer.",)
+
+
 def test_natural_language_filter_applies_exact_blacklist_without_dropping_other_text():
     result = AnimaTKDanbooruTagGetter().get_tags(
         natural_language="1girl, halo hair, soft smile, A medium shot captures her expression.",
@@ -177,6 +187,7 @@ if __name__ == "__main__":
         test_none_selected_outputs_empty,
         test_optional_natural_language_is_preserved_after_filtered_tags,
         test_natural_language_only_does_not_require_tag_bundle,
+        test_natural_language_only_without_bundle_is_not_dropped_when_category_state_is_missing,
         test_natural_language_filter_applies_exact_blacklist_without_dropping_other_text,
         test_natural_language_can_be_excluded_explicitly,
         test_full_prompt_input_does_not_duplicate_prefix_tags,
