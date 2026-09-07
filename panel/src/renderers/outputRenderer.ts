@@ -13,7 +13,7 @@ export const STATUS_DEFS: Record<string, { label: string; color: string }> = {
   review:   { label: '待审', color: '#eab308' },
   edit:     { label: '待修', color: '#f97316' },
   rejected: { label: '驳回', color: '#ef4444' },
-  select:   { label: '精选', color: '#3b82f6' },
+  select:   { label: '精选', color: '#666666' },
 }
 
 // ── 目录树渲染 ──

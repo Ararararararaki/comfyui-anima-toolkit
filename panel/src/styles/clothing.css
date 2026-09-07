@@ -28,7 +28,7 @@
 
 /* 卡片网格 */
 .clothing-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card-min-width, 180px), 1fr)); gap: var(--grid-gap, 12px);
 }
 .clothing-grid:empty::after {
   content: '暂无卡片——点「导入」把 Prompt-Manager 的 92 条服装串搬进来，或「添加卡片」手建';
@@ -49,7 +49,7 @@
 .clothing-card-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 /* 卡片（无图：文字卡） */
-.clothing-card.no-img { background: linear-gradient(180deg, rgba(94,106,210,0.12) 0%, rgba(94,106,210,0.03) 100%); }
+.clothing-card.no-img { background: linear-gradient(180deg, var(--accent-soft) 0%, transparent 100%); }
 .clothing-card-text {
   display: flex; flex-direction: column; justify-content: center; align-items: center;
   aspect-ratio: 3/4; gap: 8px; padding: 12px; text-align: center;
@@ -180,7 +180,7 @@
 .clothing-card-check.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .clothing-batch-bar {
   display: none; align-items: center; gap: 8px; padding: 10px 16px;
-  border: 1px solid var(--accent); border-radius: 12px; background: rgba(94,106,210,0.12);
+  border: 1px solid var(--accent); border-radius: 12px; background: var(--accent-soft);
   backdrop-filter: blur(8px); font-size: 12px; color: var(--text);
   /* 悬浮固定在屏幕底部：选完卡不用滚回顶部 */
   position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
@@ -205,6 +205,6 @@
 .clothing-page-dots { color: var(--text3); font-size: 12px; padding: 0 2px; }
 .clothing-page-info { margin-left: 10px; font-size: 11px; color: var(--text3); }
 .clothing-selection-rect {
-  position: fixed; z-index: 99999; background: rgba(99,102,241,0.12);
-  border: 2px dashed rgba(99,102,241,0.6); border-radius: 4px; pointer-events: none;
+  position: fixed; z-index: 99999; background: var(--accent-soft);
+  border: 2px dashed var(--accent-line); border-radius: 4px; pointer-events: none;
 }

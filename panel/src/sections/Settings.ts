@@ -20,6 +20,9 @@ const BG_PRESETS: { name: string; gradient: string }[] = [
 // ── Font options ──
 const FONT_OPTIONS = [
   { label: '系统默认', value: '' },
+  { label: '系统无衬线', value: "'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" },
+  { label: '系统衬线', value: "Georgia, 'Songti SC', 'SimSun', serif" },
+  { label: '系统等宽', value: "'Cascadia Code', Consolas, 'Courier New', monospace" },
   { label: 'Inter', value: "'Inter', sans-serif" },
   { label: 'JetBrains Mono', value: "'JetBrains Mono', monospace" },
   { label: 'Noto Sans SC', value: "'Noto Sans SC', sans-serif" },
@@ -69,10 +72,17 @@ function renderSettingsHTML(s: AppSettings): string {
   return `
     <div class="modal-box settings-modal-box">
       <div class="settings-header">
-        <h3>${icon('settings', 18)} 设置</h3>
-        <button class="icon-btn" id="settingsCloseBtn" title="关闭">${icon('x', 18)}</button>
+        <div class="settings-heading">
+          <h3>${icon('settings', 18)} 设置</h3>
+          <p>所有改动即时作用于当前页面，并自动保存在本地。</p>
+        </div>
+        <div class="settings-header-actions">
+          <span class="settings-live-status" id="settingsLiveStatus" role="status" aria-live="polite">已应用 · 已保存</span>
+          <button class="icon-btn" id="settingsCloseBtn" title="关闭">${icon('x', 18)}</button>
+        </div>
       </div>
-      <div class="settings-body">
+      <div class="settings-shell">
+        <div class="settings-body">
 
         <!-- 📷 Background -->
         <div class="settings-section">
@@ -148,8 +158,22 @@ function renderSettingsHTML(s: AppSettings): string {
             </div>
           </div>
           <div class="settings-row">
-            <label class="settings-label">卡片宽度 ${s.cardSize}px</label>
+            <label class="settings-label">最小卡片宽度 ${s.cardSize}px</label>
             <input type="range" class="settings-range" id="cardSize" min="160" max="400" step="10" value="${s.cardSize}">
+          </div>
+        </div>
+
+        <!-- ◐ Surface opacity -->
+        <div class="settings-section">
+          <h4 class="settings-section-title">界面质感</h4>
+          <p class="settings-help">调整表面底色浓度；数值越低，背景图越清晰，文字和边框仍保持可读。</p>
+          <div class="settings-row">
+            <label class="settings-label">面板底色浓度 ${Math.round(s.panelOpacity * 100)}%</label>
+            <input type="range" class="settings-range" id="panelOpacity" min="20" max="100" step="5" value="${Math.round(s.panelOpacity * 100)}">
+          </div>
+          <div class="settings-row">
+            <label class="settings-label">按钮底色浓度 ${Math.round(s.buttonOpacity * 100)}%</label>
+            <input type="range" class="settings-range" id="buttonOpacity" min="10" max="90" step="5" value="${Math.round(s.buttonOpacity * 100)}">
           </div>
         </div>
 
@@ -172,8 +196,8 @@ function renderSettingsHTML(s: AppSettings): string {
 
         <!-- 🔤 Typography -->
         <div class="settings-section">
-          <h4 class="settings-section-title">🔤 字体</h4>
-          <div class="settings-row settings-row-2col">
+          <h4 class="settings-section-title">字体</h4>
+          <div class="settings-row settings-row-3col">
             <div>
               <label class="settings-label">正文</label>
               <select class="settings-select" id="fontBody">
@@ -186,7 +210,14 @@ function renderSettingsHTML(s: AppSettings): string {
                 ${FONT_OPTIONS.map(f => `<option value="${f.value}" ${s.fontHeading === f.value ? 'selected' : ''}>${f.label}</option>`).join('')}
               </select>
             </div>
+            <div>
+              <label class="settings-label">代码</label>
+              <select class="settings-select" id="fontMono">
+                ${FONT_OPTIONS.map(f => `<option value="${f.value}" ${s.fontMono === f.value ? 'selected' : ''}>${f.label}</option>`).join('')}
+              </select>
+            </div>
           </div>
+          <p class="settings-help">系统字体无需联网即可生效；在线字体不可用时会自动回退。</p>
           <div class="settings-row">
             <label class="settings-label">字号 ${s.fontSize}px</label>
             <input type="range" class="settings-range" id="fontSize" min="12" max="18" step="1" value="${s.fontSize}">
@@ -205,7 +236,7 @@ function renderSettingsHTML(s: AppSettings): string {
 
         <!-- ⌨️ Shortcuts -->
         <div class="settings-section">
-          <h4 class="settings-section-title">⌨️ 快捷键</h4>
+          <h4 class="settings-section-title">快捷键</h4>
           <div class="settings-shortcuts" id="shortcutsList">
             ${Object.entries(s.shortcuts).map(([key, val]) => `
               <div class="settings-shortcut-row">
@@ -251,6 +282,43 @@ function renderSettingsHTML(s: AppSettings): string {
           </div>
         </div>
 
+        </div>
+
+        <aside class="settings-preview" id="settingsPreview" data-density="${s.density}" data-motion="${s.motionMode}">
+          <div class="settings-preview-header">
+            <div>
+              <span class="settings-preview-label">预览</span>
+              <h4>当前设置</h4>
+            </div>
+          </div>
+          <p class="settings-preview-intro">修改左侧参数，示例控件会立即同步。</p>
+
+          <div class="settings-preview-stage">
+            <div class="settings-preview-card">
+              <div class="settings-preview-card-meta"><span class="settings-preview-dot"></span><span>当前控件</span><span class="settings-preview-card-code">UI</span></div>
+              <span class="settings-preview-kicker">当前页面</span>
+              <h5 class="settings-preview-title">示例控件</h5>
+              <p class="settings-preview-body">字号、间距和动画速度会在这里即时反映。</p>
+              <div class="settings-preview-ruler"><span>最小卡片宽度</span><strong data-preview-value="cardSize">${s.cardSize}px</strong></div>
+              <div class="settings-preview-ruler-track"><i></i></div>
+              <div class="settings-preview-actions">
+                <span class="btn btn-primary settings-preview-button">保存偏好</span>
+                <span class="btn btn-ghost settings-preview-button">查看变化</span>
+              </div>
+              <code class="settings-preview-code">font: <span data-preview-value="fontMono">系统等宽</span> · line <span data-preview-value="lineHeight">${s.lineHeight.toFixed(1)}</span></code>
+            </div>
+          </div>
+
+          <div class="settings-preview-values">
+            <div><span>布局</span><strong data-preview-value="density">${s.density === 'compact' ? '紧凑' : s.density === 'comfortable' ? '宽松' : '默认'}</strong></div>
+            <div><span>动画</span><strong data-preview-value="motion">${s.motionMode === 'none' ? '关闭' : s.motionMode === 'reduced' ? '减弱' : `${s.transitionSpeed}ms`}</strong></div>
+            <div><span>字号</span><strong data-preview-value="fontSize">${s.fontSize}px</strong></div>
+            <div><span>正文</span><strong data-preview-value="fontBody">${settingsOptionLabel(s.fontBody)}</strong></div>
+            <div><span>面板底色</span><strong data-preview-value="panelOpacity">${Math.round(s.panelOpacity * 100)}%</strong></div>
+            <div><span>按钮底色</span><strong data-preview-value="buttonOpacity">${Math.round(s.buttonOpacity * 100)}%</strong></div>
+          </div>
+          <p class="settings-preview-note">关闭动画后，悬停位移和过渡会同步停用。</p>
+        </aside>
       </div>
     </div>
   `
@@ -264,6 +332,67 @@ function shortcutLabel(key: string): string {
     toggleSettings: '打开设置',
   }
   return labels[key] || key
+}
+
+function settingsOptionLabel(value: string): string {
+  return FONT_OPTIONS.find(option => option.value === value)?.label || '系统默认'
+}
+
+function updateSettingsPreview(st: AppSettings) {
+  const preview = document.getElementById('settingsPreview')
+  if (!preview) return
+
+  preview.dataset.density = st.density
+  preview.dataset.motion = st.motionMode
+  preview.style.setProperty('--preview-card-size', `${st.cardSize}px`)
+
+  // The real card width (160–400px) cannot be copied literally into the
+  // narrow preview pane. Map it to a contained visual range so every slider
+  // movement is visible without causing horizontal overflow.
+  const cardSize = Math.max(160, Math.min(400, st.cardSize))
+  const previewWidth = Math.round(56 + ((cardSize - 160) / 240) * 44)
+  preview.style.setProperty('--preview-card-width', `${previewWidth}%`)
+
+  const values: Record<string, string> = {
+    density: st.density === 'compact' ? '紧凑' : st.density === 'comfortable' ? '宽松' : '默认',
+    motion: st.motionMode === 'none' ? '关闭' : st.motionMode === 'reduced' ? '减弱' : `${st.transitionSpeed}ms`,
+    fontSize: `${st.fontSize}px`,
+    fontBody: settingsOptionLabel(st.fontBody),
+    fontMono: settingsOptionLabel(st.fontMono),
+    lineHeight: st.lineHeight.toFixed(1),
+    cardSize: `${st.cardSize}px`,
+    panelOpacity: `${Math.round(st.panelOpacity * 100)}%`,
+    buttonOpacity: `${Math.round(st.buttonOpacity * 100)}%`,
+  }
+  Object.entries(values).forEach(([key, value]) => {
+    preview.querySelectorAll<HTMLElement>(`[data-preview-value="${key}"]`).forEach(el => { el.textContent = value })
+  })
+
+  const ruler = preview.querySelector<HTMLElement>('.settings-preview-ruler-track i')
+  if (ruler) ruler.style.width = `${Math.round(((st.cardSize - 160) / 240) * 100)}%`
+
+  const status = document.getElementById('settingsLiveStatus')
+  if (status) {
+    status.textContent = '已应用 · 已保存'
+    status.dataset.state = 'applied'
+  }
+}
+
+function syncSettingsRanges() {
+  document.querySelectorAll<HTMLInputElement>('.settings-range').forEach(input => {
+    const min = Number(input.min || 0)
+    const max = Number(input.max || 100)
+    const value = Number(input.value || min)
+    const progress = max === min ? 0 : ((value - min) / (max - min)) * 100
+    input.style.setProperty('--range-progress', `${Math.max(0, Math.min(100, progress))}%`)
+  })
+}
+
+function markSettingsPending() {
+  const status = document.getElementById('settingsLiveStatus')
+  if (!status) return
+  status.textContent = '输入中 · 即将应用'
+  status.dataset.state = 'pending'
 }
 
 // ── Apply settings to DOM ──
@@ -320,6 +449,11 @@ export function applySettings(s?: AppSettings) {
   // Density
   root.setAttribute('data-density', st.density)
   root.style.setProperty('--card-min-width', `${st.cardSize}px`)
+  root.style.setProperty('--ui-panel-opacity', `${Math.round(st.panelOpacity * 100)}%`)
+  root.style.setProperty('--ui-button-opacity', `${Math.round(st.buttonOpacity * 100)}%`)
+  // 外层可以很透，但承载文字的内层需要一个最低对比度，避免背景图亮部吞掉文字。
+  root.style.setProperty('--ui-readable-panel-opacity', `${Math.round(Math.max(st.panelOpacity, 0.58) * 100)}%`)
+  root.style.setProperty('--ui-readable-button-opacity', `${Math.round(Math.max(st.buttonOpacity, 0.24) * 100)}%`)
   const gaps = { compact: '8px', default: '14px', comfortable: '20px' }
   root.style.setProperty('--grid-gap', gaps[st.density])
 
@@ -350,6 +484,12 @@ export function applySettings(s?: AppSettings) {
     document.head.append(styleEl)
   }
   styleEl.textContent = st.customCSS
+  updateSettingsPreview(st)
+  syncSettingsRanges()
+  // 原生 CSS 网格会立即响应变量；虚拟网格需要收到通知后重算列数。
+  window.dispatchEvent(new CustomEvent('anima:settings-applied', {
+    detail: { cardSize: st.cardSize, density: st.density },
+  }))
 }
 
 // ── Init ──
@@ -455,11 +595,13 @@ function openSettings() {
   setToolboxIconPreview(s.toolboxIcon)
   bindToolboxIconEvents()
   bindLayoutEvents()
+  bindSurfaceEvents()
   bindMotionEvents()
   bindTypographyEvents()
   bindCSSEvents()
   bindShortcutEvents()
   bindImportExportEvents()
+  syncSettingsRanges()
 
   // C 站 API Key 统一管理（下载弹窗自动用）
   document.getElementById('civitaiApiKey')?.addEventListener('change', (e) => {
@@ -628,8 +770,23 @@ function bindLayoutEvents() {
     saveSettings({ cardSize: v })
     applySettings()
     const row = (e.target as HTMLElement).closest('.settings-row')
-    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = `卡片宽度 ${v}px`)
+    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = `最小卡片宽度 ${v}px`)
   })
+}
+
+function bindSurfaceEvents() {
+  const bindOpacity = (id: 'panelOpacity' | 'buttonOpacity', key: 'panelOpacity' | 'buttonOpacity', label: string) => {
+    document.getElementById(id)?.addEventListener('input', (e) => {
+      const percent = Number((e.target as HTMLInputElement).value)
+      saveSettings({ [key]: percent / 100 })
+      applySettings()
+      const row = (e.target as HTMLElement).closest('.settings-row')
+      row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = `${label} ${percent}%`)
+    })
+  }
+
+  bindOpacity('panelOpacity', 'panelOpacity', '面板底色浓度')
+  bindOpacity('buttonOpacity', 'buttonOpacity', '按钮底色浓度')
 }
 
 function bindMotionEvents() {
@@ -660,6 +817,10 @@ function bindTypographyEvents() {
     saveSettings({ fontHeading: (e.target as HTMLSelectElement).value })
     applySettings()
   })
+  document.getElementById('fontMono')?.addEventListener('change', (e) => {
+    saveSettings({ fontMono: (e.target as HTMLSelectElement).value })
+    applySettings()
+  })
   document.getElementById('fontSize')?.addEventListener('input', (e) => {
     const v = Number((e.target as HTMLInputElement).value)
     saveSettings({ fontSize: v })
@@ -680,6 +841,7 @@ function bindCSSEvents() {
   const textarea = document.getElementById('customCSS') as HTMLTextAreaElement
   let timer: ReturnType<typeof setTimeout>
   textarea?.addEventListener('input', () => {
+    markSettingsPending()
     clearTimeout(timer)
     timer = setTimeout(() => {
       saveSettings({ customCSS: textarea.value })

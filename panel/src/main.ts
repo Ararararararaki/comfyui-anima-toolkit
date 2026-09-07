@@ -1,6 +1,7 @@
 import './styles/global.css'
 import './styles/outputs.css'
 import './styles/clothing.css'
+import './styles/polish.css'
 import { initLoraExplorer, setupBindingListeners, setupGlobalHandlers } from './sections/LoraExplorer'
 import { setupModalListeners } from './components/Modal'
 import { setupPromptHandlers } from './sections/PromptLibrary'

@@ -10,6 +10,8 @@ export interface AppSettings {
   // Layout
   density: 'compact' | 'default' | 'comfortable'
   cardSize: number
+  panelOpacity: number
+  buttonOpacity: number
 
   // Motion
   motionMode: 'full' | 'reduced' | 'none'
@@ -44,6 +46,9 @@ const DEFAULTS: AppSettings = {
   bgOpacity: 1,
   density: 'default',
   cardSize: 320,
+  // Surface strength: lower values reveal more of the background image.
+  panelOpacity: 0.72,
+  buttonOpacity: 0.30,
   motionMode: 'full',
   transitionSpeed: 250,
   customCSS: '',

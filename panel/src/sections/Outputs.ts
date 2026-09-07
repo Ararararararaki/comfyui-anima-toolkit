@@ -94,6 +94,7 @@ export async function initOutputs() {
   }
 
   bindOutputsEvents()
+  bindOutputsSettingsRefresh()
 
   // ── 自动检测新图：窗口获得焦点 / 页面重新可见 / 60s 轮询 ──
   startOutputsAutoScan()
@@ -431,12 +432,15 @@ const _outputImageNodes = new ImageNodeCache(600)
 
 type OutputsGeom = OutputGridGeometry
 
-/** 网格几何：与 CSS `repeat(auto-fill, minmax(200px,1fr))` 保持一致（≤768px 时 150px/10px）；
+/** 网格几何：与 CSS 网格保持一致（卡片最小宽度来自设置；≤768px 时默认 150px/10px）；
  *  行高 = 卡宽 + 信息区高 + 卡片上下边框 4px（box-sizing: border-box 下内容区少 4px） */
 function outputsGeom(width: number): OutputsGeom {
   const narrow = window.innerWidth <= 768
-  const min = narrow ? 150 : 200
-  const gap = narrow ? 10 : 16
+  const fallbackMin = narrow ? 150 : 200
+  const configuredMin = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--card-min-width'))
+  const min = Number.isFinite(configuredMin) && configuredMin > 0 ? configuredMin : fallbackMin
+  const configuredGap = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--grid-gap'))
+  const gap = Number.isFinite(configuredGap) && configuredGap > 0 ? configuredGap : (narrow ? 10 : 16)
   const cols = Math.max(1, Math.floor((width + gap) / (min + gap)))
   const cardW = (width - (cols - 1) * gap) / cols
   return { cols, gap, cardW, rowH: Math.round(cardW + OUTPUTS_INFO_H + 4) }
@@ -444,6 +448,21 @@ function outputsGeom(width: number): OutputsGeom {
 
 function destroyOutputsVS() {
   if (_outputsVS) { _outputsVS.destroy(); _outputsVS = null }
+}
+
+// Outputs 使用虚拟滚动，CSS 变量变化不会自动更新行列数量；合并滑块事件后重算几何。
+let outputsSettingsFrame = 0
+function bindOutputsSettingsRefresh() {
+  window.addEventListener('anima:settings-applied', () => {
+    if (outputsSettingsFrame) return
+    outputsSettingsFrame = requestAnimationFrame(() => {
+      outputsSettingsFrame = 0
+      const section = document.getElementById('sectionOutputs')
+      if (section && !section.classList.contains('section-hidden') && useOutputStore.getState().viewMode === 'grid') {
+        renderOutputsView()
+      }
+    })
+  })
 }
 
 function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {

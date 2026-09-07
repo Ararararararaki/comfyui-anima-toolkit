@@ -21,12 +21,12 @@ const CAT_ICONS: Record<string, string> = {
 }
 
 const CAT_COLORS: Record<string, string> = {
-  '二次元': '#6366f1',
-  '厚涂': '#f97316',
-  '写实': '#3b82f6',
-  '水墨': '#14b8a6',
-  '黑白': '#6b7280',
-  'R18': '#ef4444',
+  '二次元': '#555555',
+  '厚涂': '#777777',
+  '写实': '#666666',
+  '水墨': '#444444',
+  '黑白': '#222222',
+  'R18': '#555555',
 }
 
 function getCatIcon(cat: string): string {
@@ -34,17 +34,29 @@ function getCatIcon(cat: string): string {
 }
 
 function getCatColor(cat: string): string {
-  return CAT_COLORS[cat] || '#8b5cf6'
+  return CAT_COLORS[cat] || '#666666'
 }
 
 // ── 虚拟滚动（多列网格） ──
 let _artistVS: VirtualScroll | null = null
-const ARTIST_CARD_MIN_WIDTH = 200
-const ARTIST_CARD_GAP = 10
+const DEFAULT_ARTIST_CARD_MIN_WIDTH = 200
+const DEFAULT_ARTIST_CARD_GAP = 10
 const ARTIST_ROW_HEIGHT = 95
 
+function getArtistCardMinWidth(): number {
+  const configured = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--card-min-width'))
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_ARTIST_CARD_MIN_WIDTH
+}
+
 function getArtistColumns(containerWidth: number): number {
-  return Math.max(1, Math.floor((containerWidth + ARTIST_CARD_GAP) / (ARTIST_CARD_MIN_WIDTH + ARTIST_CARD_GAP)))
+  const minWidth = getArtistCardMinWidth()
+  const gap = getArtistGridGap()
+  return Math.max(1, Math.floor((containerWidth + gap) / (minWidth + gap)))
+}
+
+function getArtistGridGap(): number {
+  const configured = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--grid-gap'))
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_ARTIST_CARD_GAP
 }
 
 function destroyArtistVS() {
@@ -100,13 +112,14 @@ export function renderArtists() {
   const renderItem = (rowIndex: number, style: VirtualScrollItemStyle) => {
     const s = useArtistStore.getState()
     const startIdx = rowIndex * columns
+    const gap = getArtistGridGap()
     let html = ''
     for (let i = 0; i < columns; i++) {
       const a = filtered[startIdx + i]
       if (!a) break
       html += `<div style="flex:1;min-width:0;padding:2px">${renderArtistCard(a, s)}</div>`
     }
-    return `<div style="position:absolute;top:${style.top}px;left:0;width:100%;height:${style.height}px;display:flex;gap:${ARTIST_CARD_GAP - 4}px;padding:0 ${ARTIST_CARD_GAP / 2}px">${html}</div>`
+    return `<div style="position:absolute;top:${style.top}px;left:0;width:100%;height:${style.height}px;display:flex;gap:${Math.max(4, gap - 4)}px;padding:0 ${gap / 2}px">${html}</div>`
   }
 
   // Perf-7：数据变化时复用 VirtualScroll 实例（update 只重渲染可见行），
@@ -304,6 +317,7 @@ function renderSidebarRight() {
 // ── 事件绑定 ──
 
 export function bindArtistEvents() {
+  bindArtistSettingsRefresh()
   bindGridEvents()
   bindPanelEvents()
   bindSidebarEvents()
@@ -312,6 +326,33 @@ export function bindArtistEvents() {
   bindImportEvents()
   bindDanbooruEvents()
   bindKeyboardNav()
+}
+
+// 设置面板的卡片宽度改变时，虚拟网格必须重建行列几何；用 rAF 合并滑块连续 input。
+let artistSettingsFrame = 0
+let artistResizeFrame = 0
+let artistResizeBound = false
+function bindArtistSettingsRefresh() {
+  if (artistResizeBound) return
+  artistResizeBound = true
+  window.addEventListener('anima:settings-applied', () => {
+    if (artistSettingsFrame) return
+    artistSettingsFrame = requestAnimationFrame(() => {
+      artistSettingsFrame = 0
+      const section = document.getElementById('sectionArtist')
+      const grid = document.getElementById('artistGrid')
+      if (section && !section.classList.contains('section-hidden') && grid?.clientWidth) renderArtists()
+    })
+  })
+  window.addEventListener('resize', () => {
+    if (artistResizeFrame) return
+    artistResizeFrame = requestAnimationFrame(() => {
+      artistResizeFrame = 0
+      const section = document.getElementById('sectionArtist')
+      const grid = document.getElementById('artistGrid')
+      if (section && !section.classList.contains('section-hidden') && grid?.clientWidth) renderArtists()
+    })
+  })
 }
 
 // 网格点击事件
@@ -804,7 +845,7 @@ function renderPresets() {
     }).join(', ')
 
     return '<div class="artist-card preset-card" data-id="' + escAttr(p.id) + '">\n' +
-      '  <div class="artist-card-accent" style="background:var(--purple, #8b5cf6)"></div>\n' +
+      '  <div class="artist-card-accent" style="background:var(--purple, #666666)"></div>\n' +
       '  <div class="artist-card-body">\n' +
       '    <div class="artist-card-header">\n' +
       '      <span class="artist-card-tag">' + esc(p.name) + '</span>\n' +

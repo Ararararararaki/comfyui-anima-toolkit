@@ -133,7 +133,7 @@ function initDragSelect() {
     }
     rectEl = document.createElement('div')
     rectEl.className = 'local-selection-rect'
-    rectEl.style.cssText = `position:fixed;left:${e.clientX}px;top:${e.clientY}px;width:0;height:0;z-index:99999;background:rgba(99,102,241,0.12);border:2px dashed rgba(99,102,241,0.6);pointer-events:none;border-radius:4px`
+    rectEl.style.cssText = `position:fixed;left:${e.clientX}px;top:${e.clientY}px;width:0;height:0;z-index:99999;background:var(--accent-soft);border:2px dashed var(--accent-line);pointer-events:none;border-radius:4px`
     document.body.appendChild(rectEl)
   }, true)
 
@@ -142,7 +142,7 @@ function initDragSelect() {
     const l = Math.min(startX, e.pageX), t = Math.min(startY, e.pageY)
     const r = Math.max(startX, e.pageX), b = Math.max(startY, e.pageY)
     const sx = window.scrollX, sy = window.scrollY
-    rectEl.style.cssText = `position:fixed;left:${l - sx}px;top:${t - sy}px;width:${r - l}px;height:${b - t}px;z-index:99999;background:rgba(99,102,241,0.12);border:2px dashed rgba(99,102,241,0.6);pointer-events:none;border-radius:4px`
+    rectEl.style.cssText = `position:fixed;left:${l - sx}px;top:${t - sy}px;width:${r - l}px;height:${b - t}px;z-index:99999;background:var(--accent-soft);border:2px dashed var(--accent-line);pointer-events:none;border-radius:4px`
     if (r - l > 5 || b - t > 5) {
       const inRect = new Set<string>()
       document.querySelectorAll('#localFileList .local-list-item').forEach(el => {
@@ -282,6 +282,7 @@ function localStatusBadge(f: LocalLoraFile, full = false): string {
 
 function renderListFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalModelStore.getState>): string {
   const isSel = f.name === state.selectedModel
+  const isBatchSelected = state.batchSelection.includes(f.name)
   const thumb = localPreviewImg(f, state, 'local-list-thumb', 120) || '<div class="local-list-thumb local-list-thumb-placeholder"></div>'
   const label = f.matchData?.modelName || f.name
   const localSuffix = f.matchData?.modelName ? `<span class="local-list-localname">${esc(f.name.replace(/\.\w+$/, ''))}</span>` : ''
@@ -291,7 +292,7 @@ function renderListFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalM
   const chk = state.batchMode
     ? `<input type="checkbox" class="local-list-chk" data-name="${escAttr(f.name)}" ${state.batchSelection.includes(f.name) ? 'checked' : ''}>`
     : ''
-  return `<div class="local-list-item ${isSel ? 'active' : ''}" data-name="${escAttr(f.name)}" draggable="true">
+  return `<div class="local-list-item ${isSel ? 'active' : ''} ${isBatchSelected ? 'batch-selected' : ''}" data-name="${escAttr(f.name)}" draggable="true">
     ${chk}
     ${thumb}
     <div class="local-list-info">
@@ -320,6 +321,7 @@ function localModelUrl(f: LocalLoraFile): string | null {
 
 function renderGridFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalModelStore.getState>): string {
   const isSel = f.name === state.selectedModel
+  const isBatchSelected = state.batchSelection.includes(f.name)
   const custom = !!state.previewImages[f.name]
   const query = state.searchQuery || ''
   const label = f.matchData?.modelName || f.name.replace(/\.\w+$/, '')
@@ -337,7 +339,7 @@ function renderGridFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalM
     ? `${fmtNum(f.matchData.downloadCount)} 下载 · ${fmtNum(f.matchData.thumbsUpCount)} 赞`
     : creator
   const modelUrl = localModelUrl(f)
-  return `<div class="local-list-item local-grid-card ${isSel ? 'active' : ''}" data-name="${escAttr(f.name)}" draggable="true">
+  return `<div class="local-list-item local-grid-card ${isSel ? 'active' : ''} ${isBatchSelected ? 'batch-selected' : ''}" data-name="${escAttr(f.name)}" draggable="true">
     ${preview}
     ${chk}
     <div class="local-grid-overlay">
@@ -686,12 +688,12 @@ function updateBatchBar(state: ReturnType<typeof useLocalModelStore.getState>) {
   const bar = $$('localBatchBar')
   const count = $$('localBatchCount')
   if (!bar || !count) return
+  count.textContent = `已选 ${state.batchSelection.length} 项`
   if (!state.batchMode || state.batchSelection.length === 0) {
     bar.style.display = 'none'
     return
   }
   bar.style.display = 'flex'
-  count.textContent = `已选 ${state.batchSelection.length} 项`
 }
 
 // ── 模型管理 tab（checkpoint/VAE/embedding/controlnet 等）──
@@ -1532,15 +1534,21 @@ function bindLocalEvents() {
         if (currentIdx >= 0) {
           const name = (items[currentIdx] as HTMLElement).dataset.name
           if (name) {
-            useLocalModelStore.getState().selectModel(name)
-            renderSidebarList(useLocalModelStore.getState())
-            renderDetail(useLocalModelStore.getState())
-            document.querySelectorAll('.local-view-tab').forEach(t => t.classList.remove('active'))
-            document.querySelectorAll('.local-page').forEach(p => p.classList.remove('active'))
-            const dt = document.querySelector('.local-view-tab[data-view="detail"]')
-            if (dt) dt.classList.add('active')
-            const dp = $$('pageLocalDetail')
-            if (dp) dp.classList.add('active')
+            const state = useLocalModelStore.getState()
+            if (state.batchMode) {
+              state.toggleBatchSelection(name)
+              renderSidebarList(useLocalModelStore.getState())
+            } else {
+              state.selectModel(name)
+              renderSidebarList(useLocalModelStore.getState())
+              renderDetail(useLocalModelStore.getState())
+              document.querySelectorAll('.local-view-tab').forEach(t => t.classList.remove('active'))
+              document.querySelectorAll('.local-page').forEach(p => p.classList.remove('active'))
+              const dt = document.querySelector('.local-view-tab[data-view="detail"]')
+              if (dt) dt.classList.add('active')
+              const dp = $$('pageLocalDetail')
+              if (dp) dp.classList.add('active')
+            }
           }
         }
         return
@@ -1834,8 +1842,13 @@ function bindLocalEvents() {
     if (listThumb) {
       const item = listThumb.closest('.local-list-item') as HTMLElement
       const name = item?.dataset.name
-      const f = name ? useLocalModelStore.getState().files.find(ff => ff.name === name) : undefined
       const state = useLocalModelStore.getState()
+      if (state.batchMode && name) {
+        state.toggleBatchSelection(name)
+        renderSidebarList(useLocalModelStore.getState())
+        return
+      }
+      const f = name ? useLocalModelStore.getState().files.find(ff => ff.name === name) : undefined
       const imgs = f ? localPreviewSources(f, state) : []
       if (imgs.length) openLightbox(imgs.map((u, i) => i === 0 && state.previewImages[f!.name] ? u : thumbUrl(u, 800)), 0)
       return
@@ -1868,6 +1881,13 @@ function bindLocalEvents() {
       const name = listItem.dataset.name
       if (name) {
         const state = useLocalModelStore.getState()
+        // 批量模式下点击整张卡片就是选择动作，不能进入详情流程，更不能把网格强制切成列表。
+        // 复选框仍由上方的 .local-list-chk 分支处理；这里覆盖卡片图片、标题和空白区域。
+        if (state.batchMode) {
+          state.toggleBatchSelection(name)
+          renderSidebarList(useLocalModelStore.getState())
+          return
+        }
         if (state.displayMode === 'grid') state.setDisplayMode('list')
         useLocalModelStore.getState().selectModel(name)
         renderSidebarList(useLocalModelStore.getState())

@@ -35,8 +35,74 @@ let usedCursors = new Set<string>()
 let gridVirtual: VirtualScroll | null = null
 let virtualList: any[] = []
 let virtualCols = 1
-const CARD_W = 300, CARD_GAP = 14, CARD_H = 470
+const DEFAULT_CARD_W = 300
+const DEFAULT_CARD_GAP = 14
+const BASE_CARD_H = 520
+let gridResizeObserver: ResizeObserver | null = null
+let observedGrid: HTMLElement | null = null
+let observedGridWidth = 0
+let gridResizeFrame = 0
+let gridSettingsFrame = 0
+let gridRefreshBound = false
 const galleryPos: Record<number, number> = {}
+
+function cssPx(variable: string, fallback: number): number {
+  const value = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(variable))
+  return Number.isFinite(value) ? value : fallback
+}
+
+function getGridMetrics() {
+  const cardWidth = Math.max(160, Math.min(400, cssPx('--card-min-width', DEFAULT_CARD_W)))
+  const gap = Math.max(8, cssPx('--grid-gap', DEFAULT_CARD_GAP))
+  // 卡片正文在窄列时会自然换行；虚拟滚动必须预留足够行高，否则正文会被下一行覆盖。
+  const narrowExtra = Math.max(0, 280 - cardWidth)
+  const cardHeight = Math.round(BASE_CARD_H + narrowExtra * 0.55)
+  return { cardWidth, gap, cardHeight }
+}
+
+function scheduleGridRefresh() {
+  if (gridResizeFrame) return
+  gridResizeFrame = requestAnimationFrame(() => {
+    gridResizeFrame = 0
+    const section = document.getElementById('sectionLora')
+    const grid = document.getElementById('grid') as HTMLElement | null
+    if (section?.classList.contains('section-hidden') || !grid || grid.clientWidth === 0) return
+    observedGridWidth = grid.clientWidth
+    renderGrid()
+  })
+}
+
+function bindGridResize(grid: HTMLElement) {
+  if (observedGrid === grid) return
+  gridResizeObserver?.disconnect()
+  observedGrid = grid
+  observedGridWidth = grid.clientWidth
+  if (typeof ResizeObserver === 'undefined') return
+  gridResizeObserver = new ResizeObserver(() => {
+    const width = grid.clientWidth
+    if (width === 0 || Math.abs(width - observedGridWidth) < 1) return
+    observedGridWidth = width
+    scheduleGridRefresh()
+  })
+  gridResizeObserver.observe(grid)
+}
+
+function bindGridRefreshEvents() {
+  if (gridRefreshBound) return
+  gridRefreshBound = true
+  window.addEventListener('anima:settings-applied', () => {
+    if (gridSettingsFrame) return
+    gridSettingsFrame = requestAnimationFrame(() => {
+      gridSettingsFrame = 0
+      const section = document.getElementById('sectionLora')
+      const grid = document.getElementById('grid') as HTMLElement | null
+      if (section && !section.classList.contains('section-hidden') && grid?.clientWidth) {
+        observedGridWidth = grid.clientWidth
+        renderGrid()
+      }
+    })
+  })
+}
 
 /** 缓存 key 包含全部远程筛选参数，防止不同搜索条件互相串数据 */
 function cacheKey(store: ReturnType<typeof useModelStore.getState>): string {
@@ -67,6 +133,7 @@ function currentParams(): ModelFetchParams {
 }
 
 export async function initLoraExplorer() {
+  bindGridRefreshEvents()
   initFavorites()
   initPromptDB() // Initialize IndexedDB prompt library
 
@@ -303,6 +370,7 @@ function renderGrid(append = false) {
   refreshLocalNames()
   const grid = document.getElementById('grid')
   if (!grid) return
+  bindGridResize(grid)
   const store = useModelStore.getState()
   const list = store.getFiltered()
 
@@ -323,29 +391,32 @@ function renderGrid(append = false) {
   const wrap = document.getElementById('loadMoreWrap')
   if (wrap) wrap.style.display = store.hasMore ? 'flex' : 'none'
 
-  // 虚拟滚动：固定卡片宽/高 + 列数自适应，只渲染视口 ± overscan 的行（大列表 DOM 节点大幅下降）
+  // 虚拟滚动：读取设置后的卡片宽度/间距，并为窄卡片预留换行高度。
+  const { cardWidth, gap, cardHeight } = getGridMetrics()
   virtualList = list
-  virtualCols = Math.max(1, Math.floor((grid.clientWidth + CARD_GAP) / (CARD_W + CARD_GAP)))
+  virtualCols = Math.max(1, Math.floor((grid.clientWidth + gap) / (cardWidth + gap)))
   const rows = Math.ceil(list.length / virtualCols)
   grid.classList.add('virtualized')
+  const renderItem = (row: number) => {
+    let html = ''
+    for (let col = 0; col < virtualCols; col++) {
+      const idx = row * virtualCols + col
+      if (idx >= virtualList.length) break
+      const m = virtualList[idx]
+      html += `<div class="vs-card-wrap" data-uid="${m.uid}" style="position:absolute;top:0;left:${col * (cardWidth + gap)}px;width:${cardWidth}px;height:${cardHeight}px;border-radius:10px;overflow:hidden;">${renderCard(m, store.category)}</div>`
+    }
+    return html
+  }
   if (!gridVirtual) {
     gridVirtual = new VirtualScroll({
       container: grid,
-      itemHeight: CARD_H + CARD_GAP,
+      itemHeight: cardHeight + gap,
       totalItems: rows,
-      renderItem: (row) => {
-        let html = ''
-        for (let col = 0; col < virtualCols; col++) {
-          const idx = row * virtualCols + col
-          if (idx >= virtualList.length) break
-          const m = virtualList[idx]
-          html += `<div class="vs-card-wrap" data-uid="${m.uid}" style="position:absolute;top:0;left:${col * (CARD_W + CARD_GAP)}px;width:${CARD_W}px;height:${CARD_H}px;border-radius:10px;overflow:hidden;">${renderCard(m, store.category)}</div>`
-        }
-        return html
-      },
+      renderItem,
     })
   } else {
-    gridVirtual.update({ totalItems: rows })
+    // 复用实例时也必须替换 renderItem；否则滑块/窗口缩放后仍会用旧宽度闭包渲染。
+    gridVirtual.update({ totalItems: rows, itemHeight: cardHeight + gap, renderItem })
     gridVirtual.refresh()
   }
   // 触底自动加载（网格内部滚动，提前 400px；loadMore 自带 loading/hasMore 保护）
@@ -547,7 +618,7 @@ export function setupGlobalHandlers() {
       }
       const imgs = getMergedImages(artist.tag, autoFilled).slice(0, 6)
       banner.style.display = imgs.length > 0 ? 'block' : 'none'
-      banner.innerHTML = imgs.length > 0 ? `<div style="margin-bottom:16px;padding:16px;background:linear-gradient(135deg,rgba(94,106,210,.08),transparent);border:1px solid var(--border);border-radius:16px">
+      banner.innerHTML = imgs.length > 0 ? `<div style="margin-bottom:16px;padding:16px;background:linear-gradient(135deg,var(--accent-soft),transparent);border:1px solid var(--border);border-radius:16px">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
           <span style="font-size:20px;font-weight:700;color:var(--accent)">${esc(artist.tag)}</span>
           <span style="font-size:13px;color:var(--text2)">${esc(artist.name)}</span>
