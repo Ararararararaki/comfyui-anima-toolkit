@@ -1,5 +1,6 @@
 import { db } from './db'
 import type { PromptEntry, PromptCategory } from '../types'
+import { restorePromptLibrary, schedulePromptLibrarySync } from '../services/promptPersistence'
 
 // ── Prompt CRUD ──
 
@@ -48,16 +49,19 @@ export async function getPrompt(id: string): Promise<PromptEntry | undefined> {
 
 export async function addPrompt(entry: PromptEntry): Promise<string> {
   await db.prompts.add(entry)
+  schedulePromptLibrarySync()
   return entry.id
 }
 
 export async function updatePrompt(id: string, data: Partial<PromptEntry>): Promise<void> {
   data.updatedAt = Date.now()
   await db.prompts.update(id, data)
+  schedulePromptLibrarySync()
 }
 
 export async function deletePrompt(id: string): Promise<void> {
   await db.prompts.delete(id)
+  schedulePromptLibrarySync()
 }
 
 export async function getPromptsByModel(modelId: number): Promise<PromptEntry[]> {
@@ -80,11 +84,13 @@ export async function getAllCategories(): Promise<PromptCategory[]> {
 
 export async function addCategory(cat: PromptCategory): Promise<string> {
   await db.promptCategories.add(cat)
+  schedulePromptLibrarySync()
   return cat.id
 }
 
 export async function updateCategory(id: string, data: Partial<PromptCategory>): Promise<void> {
   await db.promptCategories.update(id, data)
+  schedulePromptLibrarySync()
 }
 
 export async function deleteCategory(id: string): Promise<void> {
@@ -93,6 +99,7 @@ export async function deleteCategory(id: string): Promise<void> {
   for (const p of prompts) {
     await db.prompts.update(p.id, { categoryId: 'uncategorized' })
   }
+  schedulePromptLibrarySync()
 }
 
 export function generateCategoryId(): string {
@@ -206,12 +213,15 @@ async function seedEmotionPrompts() {
 }
 
 export async function initPromptDB() {
-  const count = await db.promptCategories.count()
-  if (count === 0) {
-    await db.promptCategories.bulkAdd(DEFAULT_CATEGORIES)
-  }
+  // 先从插件 data/ 下的服务端镜像合并，再补齐缺少的默认分类。
+  // 这样清理浏览器站点数据或切换 localhost/127.0.0.1 后仍能恢复用户条目。
+  await restorePromptLibrary()
+  const existingIds = new Set((await db.promptCategories.toArray()).map(category => category.id))
+  const missingDefaults = DEFAULT_CATEGORIES.filter(category => !existingIds.has(category.id))
+  if (missingDefaults.length) await db.promptCategories.bulkAdd(missingDefaults)
   await migrateDefaultCategories()
   await seedEmotionPrompts()
+  schedulePromptLibrarySync()
 }
 
 // 对已有用户一次性迁移默认分类（icon 清空、人物面部→人物、常用去 ⭐）

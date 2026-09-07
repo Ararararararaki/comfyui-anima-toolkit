@@ -914,7 +914,7 @@ function bindImportExportEvents() {
     }
   })
 
-  // Backup: 导出全部数据（IndexedDB + 设置 + 背景图，不含缩略图）
+  // Backup: 导出全部数据（IndexedDB + Prompt 库 + 设置 + 背景图，不含缩略图）
   document.getElementById('exportAllBtn')?.addEventListener('click', async () => {
     try {
       const data = await exportAll()
@@ -926,7 +926,7 @@ function bindImportExportEvents() {
       a.download = `anima-backup-${new Date().toISOString().slice(0, 10)}.json`
       a.click()
       URL.revokeObjectURL(url)
-      showToast('✅ 已导出全部数据（不含缩略图）')
+      showToast('✅ 已导出全部数据（含 Prompt 库，不含缩略图）')
     } catch (e) {
       showToast('⚠️ 导出失败：' + String((e && (e as Error).message) || e))
     }

@@ -20,6 +20,8 @@
     selected: 0,
     names: ["提示词 1", "提示词 2", "提示词 3", "提示词 4", "提示词 5", "提示词 6"],
   };
+  let promptLibrarySyncTimer = null;
+  let promptLibraryHydratePromise = null;
 
   function cloneDefaults() {
     return {
@@ -77,11 +79,86 @@
     });
   }
 
-  function storePut(db, name, value) {
+  async function readPromptLibrarySnapshot(db) {
+    const [categories, prompts] = await Promise.all([
+      storeAll(db, CATEGORY_STORE),
+      storeAll(db, PROMPT_STORE),
+    ]);
+    return { schemaVersion: 1, updatedAt: Date.now(), categories: categories || [], prompts: prompts || [] };
+  }
+
+  function schedulePromptLibrarySync() {
+    if (promptLibrarySyncTimer) clearTimeout(promptLibrarySyncTimer);
+    promptLibrarySyncTimer = setTimeout(async () => {
+      promptLibrarySyncTimer = null;
+      try {
+        const snapshot = await readPromptLibrarySnapshot(await openPromptDB());
+        const response = await fetch("/anima/prompt-library", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(snapshot),
+          keepalive: true,
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      } catch (error) {
+        console.warn("[TK Prompt Saver] Prompt 库服务端镜像写入失败：", error);
+      }
+    }, 800);
+  }
+
+  async function hydratePromptLibrary(db) {
+    if (promptLibraryHydratePromise) return promptLibraryHydratePromise;
+    promptLibraryHydratePromise = (async () => {
+      try {
+        const response = await fetch("/anima/prompt-library", { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = await response.json();
+        const remote = payload?.snapshot;
+        if (!remote) return;
+        const local = await readPromptLibrarySnapshot(db);
+        const categories = new Map((remote.categories || []).filter((item) => item?.id).map((item) => [String(item.id), item]));
+        for (const item of local.categories) categories.set(String(item.id), item);
+        const prompts = new Map((remote.prompts || []).filter((item) => item?.id).map((item) => [String(item.id), item]));
+        for (const item of local.prompts) {
+          const previous = prompts.get(String(item.id));
+          const localTime = Number(item.updatedAt || item.createdAt || 0);
+          const remoteTime = Number(previous?.updatedAt || previous?.createdAt || 0);
+          if (!previous || localTime >= remoteTime) prompts.set(String(item.id), item);
+        }
+        await Promise.all([
+          storeBulkPut(db, CATEGORY_STORE, Array.from(categories.values())),
+          storeBulkPut(db, PROMPT_STORE, Array.from(prompts.values())),
+        ]);
+        schedulePromptLibrarySync();
+      } catch (error) {
+        console.warn("[TK Prompt Saver] Prompt 库服务端镜像恢复失败：", error);
+      }
+    })();
+    return promptLibraryHydratePromise;
+  }
+
+  async function storePut(db, name, value) {
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(name, "readwrite");
       transaction.objectStore(name).put(value);
-      transaction.oncomplete = () => resolve();
+      transaction.oncomplete = () => {
+        if (name === PROMPT_STORE || name === CATEGORY_STORE) schedulePromptLibrarySync();
+        resolve();
+      };
+      transaction.onerror = () => reject(transaction.error || new Error(`无法写入 ${name}`));
+    });
+  }
+
+  async function storeBulkPut(db, name, values) {
+    if (!Array.isArray(values) || !values.length) return;
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(name, "readwrite");
+      const store = transaction.objectStore(name);
+      for (const value of values) store.put(value);
+      transaction.oncomplete = () => {
+        if (name === PROMPT_STORE || name === CATEGORY_STORE) schedulePromptLibrarySync();
+        resolve();
+      };
       transaction.onerror = () => reject(transaction.error || new Error(`无法写入 ${name}`));
     });
   }
@@ -274,6 +351,7 @@
       let categories = DEFAULT_CATEGORIES;
       try {
         const db = await openPromptDB();
+        await hydratePromptLibrary(db);
         const saved = await storeAll(db, CATEGORY_STORE);
         if (saved.length) categories = saved.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
       } catch (_) {

@@ -79,6 +79,12 @@
   const CARD_STORE = "cards";
   const CARD_CAT_STORE = "cardCategories";
 
+  // Prompt 库的 IndexedDB 仍是节点的快速缓存；服务端镜像负责跨浏览器/跨
+  // localhost 来源保留数据。这里保留一份轻量同步入口，确保只使用 TK
+  // Prompt Cards 节点而没有打开面板时也能完成恢复和持久化。
+  let _promptLibrarySyncTimer = null;
+  let _promptLibraryHydratePromise = null;
+
   let _dbPromise = null;
   let _activeDB = null;
 
@@ -236,11 +242,83 @@
   function storeAll(db, name) {
     return runStoreOperation(db, name, "readonly", (store) => store.getAll(), true, []);
   }
-  function storePut(db, name, value) {
-    return runStoreOperation(db, name, "readwrite", (store) => store.put(value), false, undefined);
+  async function readPromptLibrarySnapshot(db) {
+    const [categories, prompts] = await Promise.all([
+      storeAll(db, CAT_STORE),
+      storeAll(db, PROMPT_STORE),
+    ]);
+    return { schemaVersion: 1, updatedAt: Date.now(), categories: categories || [], prompts: prompts || [] };
   }
-  function storeDel(db, name, id) {
-    return runStoreOperation(db, name, "readwrite", (store) => store.delete(id), false, undefined);
+
+  function schedulePromptLibrarySync() {
+    if (_promptLibrarySyncTimer) clearTimeout(_promptLibrarySyncTimer);
+    _promptLibrarySyncTimer = setTimeout(async () => {
+      _promptLibrarySyncTimer = null;
+      try {
+        const snapshot = await readPromptLibrarySnapshot(await openDB());
+        const response = await fetch("/anima/prompt-library", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(snapshot),
+          keepalive: true,
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      } catch (error) {
+        console.warn("[TK Prompt Cards] Prompt 库服务端镜像写入失败：", error);
+      }
+    }, 800);
+  }
+
+  async function hydratePromptLibrary(db) {
+    if (_promptLibraryHydratePromise) return _promptLibraryHydratePromise;
+    _promptLibraryHydratePromise = (async () => {
+      try {
+        const response = await fetch("/anima/prompt-library", { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = await response.json();
+        const remote = payload?.snapshot;
+        if (!remote) return;
+        const local = await readPromptLibrarySnapshot(db);
+        const byId = (items) => new Map((items || []).filter((item) => item && item.id).map((item) => [String(item.id), item]));
+        const categories = byId(remote.categories);
+        for (const item of local.categories) categories.set(String(item.id), item);
+        const prompts = byId(remote.prompts);
+        for (const item of local.prompts) {
+          const key = String(item.id);
+          const previous = prompts.get(key);
+          const localTime = Number(item.updatedAt || item.createdAt || 0);
+          const remoteTime = Number(previous?.updatedAt || previous?.createdAt || 0);
+          if (!previous || localTime >= remoteTime) prompts.set(key, item);
+        }
+        await Promise.all([
+          storeBulkPut(db, CAT_STORE, Array.from(categories.values())),
+          storeBulkPut(db, PROMPT_STORE, Array.from(prompts.values())),
+        ]);
+        // Merge-only: records missing from one browser are never erased remotely.
+        schedulePromptLibrarySync();
+      } catch (error) {
+        console.warn("[TK Prompt Cards] Prompt 库服务端镜像恢复失败：", error);
+      }
+    })();
+    return _promptLibraryHydratePromise;
+  }
+
+  async function storePut(db, name, value) {
+    const result = await runStoreOperation(db, name, "readwrite", (store) => store.put(value), false, undefined);
+    if (name === PROMPT_STORE || name === CAT_STORE) schedulePromptLibrarySync();
+    return result;
+  }
+  async function storeBulkPut(db, name, values) {
+    if (!Array.isArray(values) || !values.length) return;
+    await runStoreOperation(db, name, "readwrite", (store) => {
+      for (const value of values) store.put(value);
+    }, false, undefined);
+    if (name === PROMPT_STORE || name === CAT_STORE) schedulePromptLibrarySync();
+  }
+  async function storeDel(db, name, id) {
+    const result = await runStoreOperation(db, name, "readwrite", (store) => store.delete(id), false, undefined);
+    if (name === PROMPT_STORE || name === CAT_STORE) schedulePromptLibrarySync();
+    return result;
   }
   function storeGet(db, name, id) {
     return runStoreOperation(db, name, "readonly", (store) => store.get(id), true, undefined);
@@ -1379,6 +1457,7 @@
     async reloadLib() {
       try {
         const db = await openDB();
+        await hydratePromptLibrary(db);
         const [prompts, cats] = await Promise.all([
           storeAll(db, PROMPT_STORE),
           storeAll(db, CAT_STORE),

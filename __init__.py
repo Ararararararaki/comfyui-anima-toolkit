@@ -81,6 +81,7 @@ from .anima_clothing_draw import (
     NODE_DISPLAY_NAME_MAPPINGS as CLOTHING_DRAW_NODE_DISPLAY_NAME_MAPPINGS,
 )
 from . import anima_local_llm  # 本地 LLM 翻译 provider（手动启用；load/unload/status 路由在模块内注册）
+from . import anima_prompt_library  # Prompt 库服务端镜像（浏览器 IndexedDB 的持久化兜底）
 
 # 合并所有节点的注册表（ComfyUI 通过 __init__.py 顶层这两个变量发现所有节点）
 NODE_CLASS_MAPPINGS = {
@@ -118,7 +119,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 
 WEB_DIRECTORY = "./web"
 
-__version__ = "2.3.0"  # 与仓库根 VERSION 文件保持一致，发布更新时同步递增
+__version__ = "2.3.1"  # 与仓库根 VERSION 文件保持一致，发布更新时同步递增
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
