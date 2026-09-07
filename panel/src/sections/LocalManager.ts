@@ -20,6 +20,7 @@ function highlightText(text: string, query: string): string {
 }
 
 let _initDone = false
+let _localStoreUnsubscribe: (() => void) | null = null
 
 // ── 拖拽框选选中的 LoRA（右键可批量添加分类） ──
 let _dragSelected = new Set<string>()
@@ -213,6 +214,13 @@ export async function initLocalManager() {
   store.rebuildTagFreq()
   renderLocalView()
   bindLocalEvents()
+  if (!_localStoreUnsubscribe) {
+    _localStoreUnsubscribe = useLocalModelStore.subscribe((state, previous) => {
+      if (state.files !== previous.files || state.scanStatus !== previous.scanStatus || state.scanningDir !== previous.scanningDir) {
+        renderLocalView()
+      }
+    })
+  }
   _initDone = true
   // 自定义预览图独立于扫描缓存保存，启动时异步恢复，避免大图阻塞首次打开。
   loadLocalLoraPreviews().then(previewImages => {
@@ -1126,9 +1134,14 @@ function bindLocalEvents() {
   initDragSelect()
 
   $$('localScanBtn')?.addEventListener('click', async () => {
+    if (useLocalModelStore.getState().scanStatus === 'scanning') return
     await useLocalModelStore.getState().scanDir()
     refreshLocalNames()
     renderLocalView()
+  })
+
+  $$('localProgressCancel')?.addEventListener('click', () => {
+    useLocalModelStore.getState().cancelScan()
   })
 
   $$('localFolderCategoryBtn')?.addEventListener('click', () => {
