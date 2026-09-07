@@ -27,6 +27,9 @@ with sync_playwright() as playwright:
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.on("console", lambda message: errors.append(f"console.{message.type}: {message.text}") if message.type == "error" else None)
+    # 直接替换运行目录中的同名脚本，验证当前源码而不是尚未更新的旧副本。
+    source_widget = (Path(__file__).resolve().parents[1] / "web" / "js" / "anima_danbooru_tag_getter_widget.js").read_text(encoding="utf-8")
+    page.route("**/anima_danbooru_tag_getter_widget.js", lambda route: route.fulfill(status=200, content_type="application/javascript", body=source_widget))
     page.goto("http://127.0.0.1:8188/", wait_until="domcontentloaded", timeout=30_000)
     page.wait_for_function("typeof LiteGraph !== 'undefined' && Boolean(window.app?.graph)", timeout=30_000)
     page.wait_for_timeout(3_000)
@@ -92,6 +95,23 @@ with sync_playwright() as playwright:
             raise AssertionError(f"unified prompt input label missing: {state}")
         if not state["panel"]["title"]:
             raise AssertionError(f"missing panel title: {state}")
+        restored_zero = page.evaluate(
+            """
+            () => {
+              const node = window.__tkDanbooruGetter;
+              const widget = (node?.widgets || []).find(item => item.name === '画师词_weight');
+              if (!widget) return null;
+              widget.value = 0;
+              node._tkDanbooruTagGetterUI?.load();
+              return {
+                widget: widget.value,
+                visible: node._tkDanbooruTagGetterUI?.weightControls.get('画师词')?.value || '',
+              };
+            }
+            """
+        )
+        if not restored_zero or restored_zero["widget"] != 1 or restored_zero["visible"] not in {"1", "1.0"}:
+            raise AssertionError(f"legacy zero weight was not normalized to neutral 1.0: {restored_zero}")
         page.locator(".tk-dtb-label").nth(1).click()
         after_label_click = page.evaluate(
             """

@@ -32,7 +32,9 @@ class AnimaTKDanbooruTagGetter:
     )
     FILTER_INPUTS = ("regex_blacklist", "tag_blacklist")
     WEIGHT_INPUTS = {category: f"{category}_weight" for category in CATEGORY_NAMES}
-    CATEGORY_WEIGHT_MIN = 0.0
+    # 0 没有分类控制意义（是否输出由 BOOLEAN 开关决定），并会生成
+    # 下游容易拒绝的 ``(tag:0)``；最小可调权重从 0.05 开始。
+    CATEGORY_WEIGHT_MIN = 0.05
     CATEGORY_WEIGHT_MAX = 2.0
     _TAG_CATEGORY_INDEX = None
 
@@ -87,7 +89,7 @@ class AnimaTKDanbooruTagGetter:
                             "max": cls.CATEGORY_WEIGHT_MAX,
                             "step": 0.05,
                             "round": 0.05,
-                            "tooltip": f"{category} Tag 权重；1.0 保持原样，范围 0.0–2.0",
+                            "tooltip": f"{category} Tag 权重；1.0 保持原样，范围 0.05–2.0",
                         },
                     )
                     for category, input_name in cls.WEIGHT_INPUTS.items()
@@ -119,14 +121,22 @@ class AnimaTKDanbooruTagGetter:
 
     @classmethod
     def _category_weight(cls, category_flags, category):
-        """读取并限制分类权重；缺失/非法值按 1.0 处理，兼容旧工作流。"""
+        """读取并限制分类权重；缺失/非法/旧工作流的 0 按 1.0 处理。
+
+        分类是否参与由对应 BOOLEAN 开关决定，0 作为分类权重没有实际用途，
+        且旧工作流在新增 FLOAT 控件后可能把未保存值还原为 0；让它回到中性
+        权重可避免生成 ``(tag:0)`` 这类下游无法接受的提示词。
+        """
         raw = category_flags.get(cls.WEIGHT_INPUTS[category], 1.0)
         try:
             value = float(raw)
         except (TypeError, ValueError):
             value = 1.0
+        if value <= 0:
+            value = 1.0
         value = max(cls.CATEGORY_WEIGHT_MIN, min(cls.CATEGORY_WEIGHT_MAX, value))
-        return round(value / 0.05) * 0.05
+        value = round(value / 0.05) * 0.05
+        return 1.0 if value <= 0 else value
 
     @staticmethod
     def _format_weight(value):

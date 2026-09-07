@@ -29,7 +29,7 @@ def test_schema_exposes_bundle_and_all_twelve_native_switches():
         weight = optional[AnimaTKDanbooruTagGetter.WEIGHT_INPUTS[category]]
         assert weight[0] == "FLOAT"
         assert weight[1]["default"] == 1.0
-        assert weight[1]["min"] == 0.0
+        assert weight[1]["min"] == 0.05
         assert weight[1]["max"] == 2.0
 
 
@@ -153,6 +153,20 @@ def test_category_weight_multiplies_existing_tag_weight_and_preserves_default():
         AnimaTKDanbooruTagGetter._TAG_CATEGORY_INDEX = original_index
     assert weighted == ("1girl, (smile:0.6)",)
     assert plain == ("1girl, (smile:1.2)",)
+
+
+def test_zero_weight_from_legacy_workflow_is_neutral_not_invalid():
+    """新增权重控件在旧工作流恢复时可能还原为 0，不应输出 (tag:0)。"""
+    original_index = AnimaTKDanbooruTagGetter._TAG_CATEGORY_INDEX
+    AnimaTKDanbooruTagGetter._TAG_CATEGORY_INDEX = {"smile": "角色表情词"}
+    try:
+        result = AnimaTKDanbooruTagGetter().get_tags(
+            natural_language="smile",
+            **{"角色表情词": True, "角色表情词_weight": 0.0},
+        )
+    finally:
+        AnimaTKDanbooruTagGetter._TAG_CATEGORY_INDEX = original_index
+    assert result == ("smile",)
 
 
 def test_legacy_bundle_weight_keeps_all_tags_deduplication():
@@ -298,6 +312,7 @@ if __name__ == "__main__":
         test_single_prompt_input_can_drop_natural_language_without_dropping_tags,
         test_category_weights_wrap_only_selected_categories,
         test_category_weight_multiplies_existing_tag_weight_and_preserves_default,
+        test_zero_weight_from_legacy_workflow_is_neutral_not_invalid,
         test_legacy_bundle_weight_keeps_all_tags_deduplication,
         test_natural_language_filter_applies_exact_blacklist_without_dropping_other_text,
         test_natural_language_can_be_excluded_explicitly,

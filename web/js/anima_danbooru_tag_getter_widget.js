@@ -73,7 +73,7 @@
 
     formatWeight(value) {
       const numeric = Number(value);
-      if (!Number.isFinite(numeric)) return "1.0";
+      if (!Number.isFinite(numeric) || numeric <= 0) return "1.0";
       return numeric.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") || "0";
     }
 
@@ -109,7 +109,7 @@
       const widget = this.weightWidgetFor(category);
       if (!widget) return;
       const numeric = Number(value);
-      const next = Number.isFinite(numeric) ? Math.max(0, Math.min(2, Math.round(numeric / 0.05) * 0.05)) : 1;
+      const next = Number.isFinite(numeric) ? Math.max(0.05, Math.min(2, Math.round(numeric / 0.05) * 0.05)) : 1;
       widget.value = Number(next.toFixed(2));
       if (typeof widget.callback === "function") widget.callback(widget.value);
       this.node.graph?.change();
@@ -163,14 +163,14 @@
         if (weightWidget) {
           const weightControl = document.createElement("span");
           weightControl.className = "tk-dtb-weight-control";
-          weightControl.title = `${category} Tag 权重（0.0–2.0；1.0 保持原样）`;
+          weightControl.title = `${category} Tag 权重（0.05–2.0；1.0 保持原样）`;
           const prefix = document.createElement("span");
           prefix.className = "tk-dtb-weight-prefix";
           prefix.textContent = "×";
           weightInput = document.createElement("input");
           weightInput.className = "tk-dtb-weight-input";
           weightInput.type = "number";
-          weightInput.min = "0";
+          weightInput.min = "0.05";
           weightInput.max = "2";
           weightInput.step = "0.05";
           weightInput.inputMode = "decimal";
@@ -274,7 +274,17 @@
         control.row.classList.toggle("is-selected", Boolean(widget.value));
         const weightWidget = this.weightWidgetFor(category);
         const weightControl = this.weightControls.get(category);
-        if (weightWidget && weightControl) weightControl.value = this.formatWeight(weightWidget.value);
+        if (weightWidget && weightControl) {
+          const numeric = Number(weightWidget.value);
+          // 旧工作流没有这些新增权重字段时，ComfyUI 可能恢复成 0；
+          // 写回 1.0 并标记工作流变更，避免节点执行得到 (tag:0)。
+          if (!Number.isFinite(numeric) || numeric <= 0) {
+            weightWidget.value = 1.0;
+            if (typeof weightWidget.callback === "function") weightWidget.callback(1.0);
+            this.node.graph?.change();
+          }
+          weightControl.value = this.formatWeight(weightWidget.value);
+        }
       }
       for (const name of ["regex_blacklist", "tag_blacklist"]) {
         const widget = this.widgetFor(name);
