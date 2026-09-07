@@ -15,6 +15,8 @@ class AnimaStringRouter:
         "enabled": [True, False, False, False, False, False],
         "selected": 0,
         "names": ["1", "2", "3", "4", "5", "6"],
+        "order": [0, 1, 2, 3, 4, 5],
+        "labelSource": "custom",
     }
     SEPARATORS = {"逗号 ,": ", ", "空格": " ", "换行": "\n", "无": ""}
 
@@ -50,7 +52,7 @@ class AnimaStringRouter:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("text",)
     FUNCTION = "route"
-    DESCRIPTION = "6 路字符串单选/多选路由器：关闭的接口不会进入输出，可自定义接口名称"
+    DESCRIPTION = "6 路字符串单选/多选路由器：可在节点内调整输出顺序，关闭的接口不会进入输出，可自定义接口名称"
 
     @classmethod
     def _defaults(cls):
@@ -59,6 +61,8 @@ class AnimaStringRouter:
             "enabled": list(cls.DEFAULT_SETTINGS["enabled"]),
             "selected": cls.DEFAULT_SETTINGS["selected"],
             "names": list(cls.DEFAULT_SETTINGS["names"]),
+            "order": list(cls.DEFAULT_SETTINGS["order"]),
+            "labelSource": cls.DEFAULT_SETTINGS["labelSource"],
         }
 
     @classmethod
@@ -79,11 +83,28 @@ class AnimaStringRouter:
         names = parsed.get("names")
         if isinstance(names, list):
             settings["names"] = [str(names[i]).strip() or str(i + 1) if i < len(names) else str(i + 1) for i in range(cls.INPUT_COUNT)]
+        if parsed.get("labelSource") in {"custom", "original"}:
+            settings["labelSource"] = parsed["labelSource"]
         try:
             selected = int(parsed.get("selected", settings["selected"]))
         except (TypeError, ValueError):
             selected = settings["selected"]
         settings["selected"] = selected if 0 <= selected < cls.INPUT_COUNT else 0
+        order = parsed.get("order", parsed.get("output_order"))
+        if isinstance(order, list):
+            normalized = []
+            seen = set()
+            for value in order:
+                try:
+                    index = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= index < cls.INPUT_COUNT and index not in seen:
+                    normalized.append(index)
+                    seen.add(index)
+            settings["order"] = normalized + [
+                index for index in range(cls.INPUT_COUNT) if index not in seen
+            ]
         return settings
 
     @staticmethod
@@ -111,7 +132,11 @@ class AnimaStringRouter:
             selected = settings["selected"]
             parts = [values[selected]] if settings["enabled"][selected] else []
         else:
-            parts = [value for value, enabled in zip(values, settings["enabled"]) if enabled]
+            parts = [
+                values[index]
+                for index in settings["order"]
+                if settings["enabled"][index]
+            ]
 
         parts = [str(value).strip() for value in parts if str(value or "").strip()]
         result = self.SEPARATORS.get(separator, ", ").join(parts)

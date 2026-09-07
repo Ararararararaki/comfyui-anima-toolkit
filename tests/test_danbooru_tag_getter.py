@@ -20,10 +20,17 @@ def test_schema_exposes_bundle_and_all_twelve_native_switches():
     assert "自然语言" not in required
     assert optional["natural_language"][0] == "STRING"
     assert optional["natural_language"][1]["forceInput"] is True
+    assert "统一输入" in optional["natural_language"][1]["tooltip"]
     assert optional["include_natural_language"][0] == "BOOLEAN"
     assert optional["filter_natural_language"][0] == "BOOLEAN"
     assert optional["include_natural_language"][1]["default"] is True
     assert optional["filter_natural_language"][1]["default"] is True
+    for category in AnimaTKDanbooruTagGetter.CATEGORY_NAMES:
+        weight = optional[AnimaTKDanbooruTagGetter.WEIGHT_INPUTS[category]]
+        assert weight[0] == "FLOAT"
+        assert weight[1]["default"] == 1.0
+        assert weight[1]["min"] == 0.0
+        assert weight[1]["max"] == 2.0
 
 
 def test_single_category():
@@ -78,6 +85,90 @@ def test_natural_language_only_without_bundle_is_not_dropped_when_category_state
         **{"未归类词": False},
     )
     assert result == ("indoors, a girl looks toward the viewer.",)
+
+
+def test_single_prompt_input_classifies_known_tags_and_keeps_natural_language():
+    """统一 Prompt 输入应把已知 Danbooru Tag 分类，并可保留未知自然语言。"""
+    result = AnimaTKDanbooruTagGetter().get_tags(
+        natural_language="1girl, smile, A girl looks toward the viewer.",
+        **{"人物对象词": True, "角色表情词": True, "未归类词": True},
+    )
+    assert result == ("1girl, smile\n\nA girl looks toward the viewer.",)
+
+
+def test_single_prompt_input_handles_weighted_tags_and_packer_headers():
+    result = AnimaTKDanbooruTagGetter().get_tags(
+        natural_language="1girl, (smile:1.2), 角色表情词:\nA girl looks toward the viewer.",
+        **{"人物对象词": True, "角色表情词": True, "未归类词": True},
+    )
+    assert result == ("1girl, (smile:1.2)\n\nA girl looks toward the viewer.",)
+
+
+def test_single_prompt_input_can_drop_natural_language_without_dropping_tags():
+    result = AnimaTKDanbooruTagGetter().get_tags(
+        natural_language="1girl, A girl looks toward the viewer.",
+        include_natural_language=False,
+        **{"人物对象词": True, "未归类词": True},
+    )
+    assert result == ("1girl",)
+
+
+def test_category_weights_wrap_only_selected_categories():
+    original_index = AnimaTKDanbooruTagGetter._TAG_CATEGORY_INDEX
+    AnimaTKDanbooruTagGetter._TAG_CATEGORY_INDEX = {
+        "1girl": "人物对象词",
+        "smile": "角色表情词",
+        "classroom": "背景词",
+    }
+    try:
+        result = AnimaTKDanbooruTagGetter().get_tags(
+            natural_language="1girl, smile, classroom",
+            **{
+                "人物对象词": True,
+                "角色表情词": True,
+                "背景词": True,
+                "人物对象词_weight": 1.2,
+                "角色表情词_weight": 0.8,
+                "背景词_weight": 1.0,
+            },
+        )
+    finally:
+        AnimaTKDanbooruTagGetter._TAG_CATEGORY_INDEX = original_index
+    assert result == ("classroom, (1girl:1.2), (smile:0.8)",)
+
+
+def test_category_weight_multiplies_existing_tag_weight_and_preserves_default():
+    original_index = AnimaTKDanbooruTagGetter._TAG_CATEGORY_INDEX
+    AnimaTKDanbooruTagGetter._TAG_CATEGORY_INDEX = {"smile": "角色表情词", "1girl": "人物对象词"}
+    try:
+        weighted = AnimaTKDanbooruTagGetter().get_tags(
+            natural_language="(smile:1.2), 1girl",
+            **{"角色表情词": True, "人物对象词": True, "角色表情词_weight": 0.5},
+        )
+        plain = AnimaTKDanbooruTagGetter().get_tags(
+            natural_language="(smile:1.2), 1girl",
+            **{"角色表情词": True, "人物对象词": True},
+        )
+    finally:
+        AnimaTKDanbooruTagGetter._TAG_CATEGORY_INDEX = original_index
+    assert weighted == ("1girl, (smile:0.6)",)
+    assert plain == ("1girl, (smile:1.2)",)
+
+
+def test_legacy_bundle_weight_keeps_all_tags_deduplication():
+    result = AnimaTKDanbooruTagGetter().get_tags(
+        {"人物对象词": "1girl, ", "角色表情词": "smile, ", "背景词": "classroom, "},
+        natural_language="1girl, smile, classroom\n\nA girl looks toward viewer.",
+        **{
+            "人物对象词": True,
+            "角色表情词": True,
+            "背景词": True,
+            "未归类词": True,
+            "人物对象词_weight": 1.2,
+            "角色表情词_weight": 0.8,
+        },
+    )
+    assert result == ("classroom, (1girl:1.2), (smile:0.8)\n\nA girl looks toward viewer.",)
 
 
 def test_natural_language_filter_applies_exact_blacklist_without_dropping_other_text():
@@ -202,6 +293,12 @@ if __name__ == "__main__":
         test_optional_natural_language_is_preserved_after_filtered_tags,
         test_natural_language_only_does_not_require_tag_bundle,
         test_natural_language_only_without_bundle_is_not_dropped_when_category_state_is_missing,
+        test_single_prompt_input_classifies_known_tags_and_keeps_natural_language,
+        test_single_prompt_input_handles_weighted_tags_and_packer_headers,
+        test_single_prompt_input_can_drop_natural_language_without_dropping_tags,
+        test_category_weights_wrap_only_selected_categories,
+        test_category_weight_multiplies_existing_tag_weight_and_preserves_default,
+        test_legacy_bundle_weight_keeps_all_tags_deduplication,
         test_natural_language_filter_applies_exact_blacklist_without_dropping_other_text,
         test_natural_language_can_be_excluded_explicitly,
         test_full_prompt_input_does_not_duplicate_prefix_tags,

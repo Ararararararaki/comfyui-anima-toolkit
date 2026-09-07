@@ -2526,8 +2526,29 @@ def _load_meta() -> dict:
 
 def _save_meta(data: dict):
     with META_LOCK:
-        with open(META_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        # 先写同目录临时文件并原子替换，避免 ComfyUI 意外退出时留下半截 JSON。
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=os.path.dirname(META_PATH),
+                prefix=".anima_meta_",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                temp_path = f.name
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, META_PATH)
+            temp_path = None
+        finally:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
 
 
 @PromptServer.instance.routes.get("/anima/meta")
@@ -2555,7 +2576,8 @@ async def set_meta(request):
         with META_LOCK:
             old = _load_meta()
             # categories：以 body 为准（全量列表）
-            cats = list(body.get("categories", old.get("categories", []) or []))
+            raw_cats = body.get("categories", old.get("categories", []) or [])
+            cats = [str(cat).strip() for cat in raw_cats if str(cat).strip()] if isinstance(raw_cats, list) else list(old.get("categories", []) or [])
             # loraMeta：按文件字段级合并
             old_meta = old.get("loraMeta", {}) or {}
             new_meta = {}

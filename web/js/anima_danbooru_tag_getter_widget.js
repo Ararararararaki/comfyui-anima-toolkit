@@ -1,4 +1,4 @@
-// TK Danbooru Tag Getter：用 ComfyUI 原生风格整理 12 个 BOOLEAN 分类开关。
+// TK Danbooru Tag Getter：用 ComfyUI 原生风格整理 12 个分类开关与独立权重。
 (function () {
   const NODE_NAME = "AnimaTKDanbooruTagGetter";
   const CATEGORY_NAMES = [
@@ -34,6 +34,10 @@
       .tk-dtb-toggle { width:12px; height:12px; margin:0 5px 0 0; flex:0 0 auto; accent-color:#bcbcbc; cursor:pointer; }
       .tk-dtb-label { min-width:0; overflow:hidden; color:#9f9f9f; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
       .tk-dtb-row.is-selected .tk-dtb-label { color:#dedede; }
+      .tk-dtb-weight-control { display:flex; align-items:center; gap:2px; flex:0 0 auto; margin-left:3px; color:#777; cursor:default; }
+      .tk-dtb-weight-prefix { font-size:10px; line-height:16px; }
+      .tk-dtb-weight-input { box-sizing:border-box; width:36px; height:17px; padding:1px 2px; color:#d7d7d7; background:#292929; border:1px solid #4a4a4a; border-radius:2px; outline:none; font:10px/1 Arial,sans-serif; text-align:right; }
+      .tk-dtb-weight-input:focus { border-color:#999; }
       .tk-dtb-filters { margin-top:5px; padding-top:5px; border-top:1px solid rgba(255,255,255,.10); }
       .tk-dtb-filter-title { color:#bdbdbd; font-size:11px; }
       .tk-dtb-filter-row { display:flex; align-items:flex-start; gap:5px; margin-top:4px; }
@@ -56,10 +60,21 @@
       this.count = null;
       this.controls = new Map();
       this.filterControls = new Map();
+      this.weightControls = new Map();
     }
 
     widgetFor(category) {
       return this.node.widgets?.find((widget) => widget.name === category) || null;
+    }
+
+    weightWidgetFor(category) {
+      return this.node.widgets?.find((widget) => widget.name === `${category}_weight`) || null;
+    }
+
+    formatWeight(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return "1.0";
+      return numeric.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") || "0";
     }
 
     updateCount() {
@@ -88,6 +103,18 @@
       widget.value = String(value ?? "");
       if (typeof widget.callback === "function") widget.callback(widget.value);
       this.node.graph?.change();
+    }
+
+    setWeightValue(category, value) {
+      const widget = this.weightWidgetFor(category);
+      if (!widget) return;
+      const numeric = Number(value);
+      const next = Number.isFinite(numeric) ? Math.max(0, Math.min(2, Math.round(numeric / 0.05) * 0.05)) : 1;
+      widget.value = Number(next.toFixed(2));
+      if (typeof widget.callback === "function") widget.callback(widget.value);
+      this.node.graph?.change();
+      const control = this.weightControls.get(category);
+      if (control && control.value !== this.formatWeight(widget.value)) control.value = this.formatWeight(widget.value);
     }
 
     hideNativeWidget(widget) {
@@ -131,9 +158,39 @@
         const label = document.createElement("span");
         label.className = "tk-dtb-label";
         label.textContent = category;
-        row.append(toggle, label);
+        const weightWidget = this.weightWidgetFor(category);
+        let weightInput = null;
+        if (weightWidget) {
+          const weightControl = document.createElement("span");
+          weightControl.className = "tk-dtb-weight-control";
+          weightControl.title = `${category} Tag 权重（0.0–2.0；1.0 保持原样）`;
+          const prefix = document.createElement("span");
+          prefix.className = "tk-dtb-weight-prefix";
+          prefix.textContent = "×";
+          weightInput = document.createElement("input");
+          weightInput.className = "tk-dtb-weight-input";
+          weightInput.type = "number";
+          weightInput.min = "0";
+          weightInput.max = "2";
+          weightInput.step = "0.05";
+          weightInput.inputMode = "decimal";
+          weightInput.value = this.formatWeight(weightWidget.value);
+          weightInput.setAttribute("aria-label", `${category} Tag 权重`);
+          weightInput.addEventListener("click", (event) => event.stopPropagation());
+          weightInput.addEventListener("mousedown", (event) => event.stopPropagation());
+          weightInput.addEventListener("change", () => this.setWeightValue(category, weightInput.value));
+          weightInput.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") { event.preventDefault(); weightInput.blur(); }
+          });
+          weightControl.append(prefix, weightInput);
+          row.append(toggle, label, weightControl);
+          this.weightControls.set(category, weightInput);
+          this.hideNativeWidget(weightWidget);
+        } else {
+          row.append(toggle, label);
+        }
         row.addEventListener("click", (event) => {
-          if (event.target === toggle) return;
+          if (event.target === toggle || event.target.closest?.(".tk-dtb-weight-control")) return;
           toggle.checked = !toggle.checked;
           this.setWidgetValue(category, toggle.checked);
         });
@@ -197,9 +254,10 @@
         this.hideNativeWidget(naturalWidget);
         const hint = document.createElement("div");
         hint.className = "tk-dtb-natural-hint";
-        hint.textContent = "推荐同时连接 Packer：分类数据包→tag_bundle、ALL_TAGS→natural_language；已分类 Tag 会去重，剩余内容按“未归类词”处理。没有分类包时非空自然语言自动保留。";
+        hint.textContent = "统一输入：普通 Prompt / Packer ALL_TAGS → natural_language；勾选具体分类后自动识别已知 Tag，未知句子由“保留自然语言”控制。tag_bundle 仅用于兼容已分类包。";
         filters.appendChild(hint);
       }
+      makeNaturalToggle("include_natural_language", "保留自然语言");
       makeNaturalToggle("filter_natural_language", "过滤自然语言");
 
       panel.append(header, grid, filters);
@@ -214,13 +272,16 @@
         if (!control || !widget) continue;
         control.toggle.checked = Boolean(widget.value);
         control.row.classList.toggle("is-selected", Boolean(widget.value));
+        const weightWidget = this.weightWidgetFor(category);
+        const weightControl = this.weightControls.get(category);
+        if (weightWidget && weightControl) weightControl.value = this.formatWeight(weightWidget.value);
       }
       for (const name of ["regex_blacklist", "tag_blacklist"]) {
         const widget = this.widgetFor(name);
         const field = this.filterControls.get(name);
         if (widget && field && field.value !== String(widget.value || "")) field.value = String(widget.value || "");
       }
-      for (const name of ["filter_natural_language"]) {
+      for (const name of ["include_natural_language", "filter_natural_language"]) {
         const widget = this.widgetFor(name);
         const control = this.filterControls.get(name);
         if (widget && control) control.checked = widget.value !== false;
@@ -243,6 +304,13 @@
           if (this._tkDanbooruTagGetterUI) return result;
           const ui = new DanbooruTagGetterUI(this);
           this._tkDanbooruTagGetterUI = ui;
+          const unifiedInput = this.inputs?.find((input) => input.name === "natural_language");
+          if (unifiedInput) {
+            unifiedInput.label = "统一 Prompt";
+            unifiedInput.tooltip = "普通 Prompt 或 Packer ALL_TAGS；已知 Danbooru Tag 自动分类，未知段落可选择保留";
+          }
+          const legacyInput = this.inputs?.find((input) => input.name === "tag_bundle");
+          if (legacyInput) legacyInput.label = "兼容·分类包";
           const element = ui.build();
           const domWidget = this.addDOMWidget?.("tk_danbooru_tag_getter", "custom", element, { serialize: false, hideOnZoom: false });
           if (domWidget) {

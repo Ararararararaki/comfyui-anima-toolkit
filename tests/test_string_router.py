@@ -53,6 +53,35 @@ def test_multi_routes_enabled_inputs_in_socket_order():
     assert result == ("first, third, sixth",)
 
 
+def test_multi_routes_enabled_inputs_in_saved_output_order():
+    node = AnimaStringRouter()
+    result = node.route(
+        separator="逗号 ,",
+        router_settings=settings(mode="multi", enabled=[True, False, True, False, False, True], order=[5, 2, 0, 1, 3, 4]),
+        string_1="first",
+        string_3="third",
+        string_6="sixth",
+    )
+    assert result == ("sixth, third, first",)
+
+
+def test_invalid_output_order_is_repaired_to_a_permutation():
+    parsed = AnimaStringRouter._parse_settings(
+        settings(order=[5, 5, "bad", 2, 99])
+    )
+    assert parsed["order"] == [5, 2, 0, 1, 3, 4]
+
+
+def test_single_mode_selection_remains_socket_based_after_reorder():
+    node = AnimaStringRouter()
+    result = node.route(
+        router_settings=settings(selected=2, enabled=[False, False, True, False, False, False], order=[2, 1, 0, 3, 4, 5]),
+        string_1="first",
+        string_3="third",
+    )
+    assert result == ("third",)
+
+
 def test_custom_names_do_not_change_routing_contract():
     node = AnimaStringRouter()
     result = node.route(
@@ -73,6 +102,9 @@ if __name__ == "__main__":
         test_single_only_routes_selected_enabled_input,
         test_single_disabled_selected_input_outputs_nothing,
         test_multi_routes_enabled_inputs_in_socket_order,
+        test_multi_routes_enabled_inputs_in_saved_output_order,
+        test_invalid_output_order_is_repaired_to_a_permutation,
+        test_single_mode_selection_remains_socket_based_after_reorder,
         test_custom_names_do_not_change_routing_contract,
         test_malformed_settings_fall_back_safely,
     ]

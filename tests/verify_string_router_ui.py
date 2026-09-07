@@ -89,7 +89,7 @@ with sync_playwright() as playwright:
         page.locator(".tk-sr-index").nth(0).click()
 
         page.locator(".tk-sr-name").nth(0).fill("主提示")
-        page.locator(".tk-sr-mode").select_option("multi")
+        page.locator(".tk-sr-mode").nth(0).select_option("multi")
         page.locator(".tk-sr-control").nth(1).check()
         page.locator(".tk-sr-control").nth(3).check()
         saved = page.evaluate(
@@ -99,8 +99,57 @@ with sync_playwright() as playwright:
         )
         if saved.get("mode") != "multi" or saved.get("enabled") != [True, True, False, True, False, False] or saved.get("names", [""])[0] != "主提示":
             raise AssertionError(f"settings not persisted: {saved}")
+
+        if page.locator(".tk-sr-mode").count() != 2:
+            raise AssertionError("expected mode and label-source selectors")
+        page.locator(".tk-sr-mode").nth(1).select_option("original")
+        label_mode = page.evaluate(
+            """
+            () => JSON.parse((window.__tkStringRouter?.widgets || []).find(widget => widget.name === 'router_settings')?.value || '{}').labelSource
+            """
+        )
+        if label_mode != "original":
+            raise AssertionError(f"label source mode not persisted: {label_mode}")
+        page.locator(".tk-sr-mode").nth(1).select_option("custom")
+
+        rows = page.locator(".tk-sr-row")
+        rows.nth(0).drag_to(rows.nth(2))
+        reordered = page.evaluate(
+            """
+            () => JSON.parse((window.__tkStringRouter?.widgets || []).find(widget => widget.name === 'router_settings')?.value || '{}').order
+            """
+        )
+        if reordered != [2, 1, 0, 3, 4, 5]:
+            raise AssertionError(f"dragging rows did not swap output order: {reordered}")
+
+        connection_label = page.evaluate(
+            """
+            () => {
+              const ui = window.__tkStringRouter?._tkStringRouterUI;
+              if (!ui) return null;
+              const fakeNode = {
+                inputs: [{ link: 314 }],
+                graph: {
+                  links: new Map([[314, { origin_id: 99, origin_slot: 0 }]]),
+                  nodes: [{
+                    id: 99,
+                    title: '测试源节点',
+                    properties: { 'Node name for S&R': 'PrimitiveStringMultiline' },
+                    outputs: [{ name: 'text', type: 'STRING' }],
+                  }],
+                },
+              };
+              return {
+                custom: ui.getConnectionLabel.call({ node: fakeNode, settings: { labelSource: 'custom' } }, 0),
+                original: ui.getConnectionLabel.call({ node: fakeNode, settings: { labelSource: 'original' } }, 0),
+              };
+            }
+            """
+        )
+        if connection_label != {"custom": "测试源节点 · text", "original": "PrimitiveStringMultiline · text"}:
+            raise AssertionError(f"connection label not resolved: {connection_label}")
         page.screenshot(path=str(AFTER_SHOT))
-        print(f"PASS UI panel: 6 rows, compact grid, mode/name persistence; screenshot={AFTER_SHOT}")
+        print(f"PASS UI panel: 6 rows, drag reorder, connection label, mode/name persistence; screenshot={AFTER_SHOT}")
     else:
         print(f"BASELINE screenshot={BEFORE_SHOT}")
 

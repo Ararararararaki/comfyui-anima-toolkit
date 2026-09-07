@@ -62,10 +62,13 @@ with sync_playwright() as playwright:
           return {
             nodeSize: node?.size || null,
             inputNames: (node?.inputs || []).map(input => input.name),
+            inputLabels: (node?.inputs || []).map(input => input.label || input.name),
             widgetNames: widgets.map(widget => widget.name),
             panel: panel ? {
               rows: panel.querySelectorAll('.tk-dtb-row').length,
+              weights: panel.querySelectorAll('.tk-dtb-weight-input').length,
               filters: panel.querySelectorAll('.tk-dtb-filter-input').length,
+              naturalToggles: panel.querySelectorAll('.tk-dtb-natural-toggle').length,
               columns: getComputedStyle(panel.querySelector('.tk-dtb-grid')).gridTemplateColumns,
               title: panel.querySelector('.tk-dtb-title')?.textContent || '',
             } : null,
@@ -79,8 +82,14 @@ with sync_playwright() as playwright:
     if state["panel"]:
         if state["panel"]["rows"] != 12:
             raise AssertionError(f"expected 12 category rows: {state}")
+        if state["panel"]["weights"] != 12:
+            raise AssertionError(f"expected one weight control per category: {state}")
         if state["panel"]["filters"] != 2:
             raise AssertionError(f"expected regex and exact filter fields: {state}")
+        if state["panel"]["naturalToggles"] != 2:
+            raise AssertionError(f"expected include/filter natural-language toggles: {state}")
+        if "统一 Prompt" not in state["inputLabels"]:
+            raise AssertionError(f"unified prompt input label missing: {state}")
         if not state["panel"]["title"]:
             raise AssertionError(f"missing panel title: {state}")
         page.locator(".tk-dtb-label").nth(1).click()
@@ -103,6 +112,21 @@ with sync_playwright() as playwright:
         page.locator(".tk-dtb-toggle").nth(3).click()
         page.locator(".tk-dtb-filter-input").nth(0).fill("logo|watermark")
         page.locator(".tk-dtb-filter-input").nth(1).fill("speech_bubble\nthought_bubble")
+        natural_toggles = page.locator(".tk-dtb-natural-toggle input")
+        if natural_toggles.count() != 2:
+            raise AssertionError(f"natural-language toggles missing: {natural_toggles.count()}")
+        natural_toggles.nth(0).uncheck()
+        include_after_uncheck = page.evaluate(
+            """
+            () => (window.__tkDanbooruGetter?.widgets || []).find(widget => widget.name === 'include_natural_language')?.value
+            """
+        )
+        if include_after_uncheck is not False:
+            raise AssertionError(f"include natural-language toggle did not persist false: {include_after_uncheck}")
+        natural_toggles.nth(0).check()
+        weight_input = page.locator(".tk-dtb-weight-input").nth(0)
+        weight_input.fill("1.25")
+        weight_input.press("Tab")
         values = page.evaluate(
             """
             () => {
@@ -115,6 +139,8 @@ with sync_playwright() as playwright:
             raise AssertionError(f"checkbox values were not persisted: {values}")
         if values.get("regex_blacklist") != "logo|watermark" or values.get("tag_blacklist") != "speech_bubble\nthought_bubble":
             raise AssertionError(f"filter values were not persisted: {values}")
+        if values.get("画师词_weight") != 1.25:
+            raise AssertionError(f"category weight was not persisted: {values}")
         page.screenshot(path=str(AFTER_SHOT))
         print(f"PASS UI panel: 12 rows, compact grid, native boolean values persisted; screenshot={AFTER_SHOT}")
     else:

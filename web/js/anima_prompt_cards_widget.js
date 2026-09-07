@@ -80,9 +80,39 @@
   const CARD_CAT_STORE = "cardCategories";
 
   let _dbPromise = null;
+  let _activeDB = null;
+
+  function rememberDB(db) {
+    _activeDB = db;
+    const clearIfCurrent = () => {
+      if (_activeDB === db) {
+        _activeDB = null;
+        _dbPromise = null;
+      }
+    };
+    // versionchange 发生时旧连接必须立刻失效，否则下一次读取会复用 closing 连接。
+    try {
+      db.onversionchange = () => {
+        clearIfCurrent();
+        try { db.close(); } catch {}
+      };
+      db.onclose = clearIfCurrent;
+    } catch {}
+    return db;
+  }
+
+  function invalidateDB(db) {
+    if (_activeDB === db) {
+      _activeDB = null;
+      _dbPromise = null;
+    }
+    try { db?.close(); } catch {}
+  }
+
   function openDB() {
     if (_dbPromise) return _dbPromise;
-    _dbPromise = new Promise((resolve, reject) => {
+    let pending;
+    pending = new Promise((resolve, reject) => {
       // 先尝试 v1 打开（库不存在时走 onupgradeneeded 建表）
       const req = indexedDB.open(DB_NAME, 1);
       req.onupgradeneeded = () => {
@@ -94,20 +124,24 @@
           db.createObjectStore(CAT_STORE, { keyPath: "id" });
         }
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => resolve(rememberDB(req.result));
       req.onerror = () => {
         // 关键：面板升级过库版本（如 v10），请求 v1 会抛 VersionError——
         // 此时无版本重开（打开现有库、不触发升级、绝不降级）。
         if (req.error && req.error.name === "VersionError") {
           const req2 = indexedDB.open(DB_NAME);
-          req2.onsuccess = () => resolve(req2.result);
+          req2.onsuccess = () => resolve(rememberDB(req2.result));
           req2.onerror = () => reject(req2.error);
         } else {
           reject(req.error);
         }
       };
     });
-    return _dbPromise;
+    _dbPromise = pending;
+    pending.catch(() => {
+      if (_dbPromise === pending) _dbPromise = null;
+    });
+    return pending;
   }
 
   // 卡片专用库（本节点独占，版本自持）
@@ -147,37 +181,69 @@
     return _cardDbPromise;
   }
 
-  function storeAll(db, name) {
+  function isClosingDBError(error) {
+    const message = String(error?.message || error || "");
+    return error?.name === "InvalidStateError" || /database connection is closing|connection is closing|database is closed/i.test(message);
+  }
+
+  function runStoreOperation(db, name, mode, operation, resolvesRequest, requestFallback, retried = false) {
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(name, "readonly");
-      const req = tx.objectStore(name).getAll();
-      req.onsuccess = () => resolve(req.result || []);
-      req.onerror = () => reject(req.error);
+      let settled = false;
+      const retryOrReject = (error) => {
+        if (settled) return;
+        const actual = error || new Error("IndexedDB transaction failed");
+        if (!retried && isClosingDBError(actual)) {
+          settled = true;
+          invalidateDB(db);
+          openDB()
+            .then((freshDB) => runStoreOperation(freshDB, name, mode, operation, resolvesRequest, requestFallback, true))
+            .then(resolve, reject);
+          return;
+        }
+        settled = true;
+        reject(actual);
+      };
+      let tx;
+      let request;
+      try {
+        tx = db.transaction(name, mode);
+        request = operation(tx.objectStore(name));
+      } catch (error) {
+        retryOrReject(error);
+        return;
+      }
+      if (resolvesRequest) {
+        request.onsuccess = () => {
+          if (settled) return;
+          settled = true;
+          resolve(request.result ?? requestFallback);
+        };
+        request.onerror = () => retryOrReject(request.error || tx.error);
+        tx.onerror = () => retryOrReject(request.error || tx.error);
+        tx.onabort = () => retryOrReject(request.error || tx.error);
+      } else {
+        tx.oncomplete = () => {
+          if (settled) return;
+          settled = true;
+          resolve();
+        };
+        tx.onerror = () => retryOrReject(tx.error);
+        tx.onabort = () => retryOrReject(tx.error);
+      }
     });
+  }
+
+  function storeAll(db, name) {
+    return runStoreOperation(db, name, "readonly", (store) => store.getAll(), true, []);
   }
   function storePut(db, name, value) {
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(name, "readwrite");
-      tx.objectStore(name).put(value);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
+    return runStoreOperation(db, name, "readwrite", (store) => store.put(value), false, undefined);
   }
   function storeDel(db, name, id) {
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(name, "readwrite");
-      tx.objectStore(name).delete(id);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
+    return runStoreOperation(db, name, "readwrite", (store) => store.delete(id), false, undefined);
   }
   function storeGet(db, name, id) {
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(name, "readonly");
-      const req = tx.objectStore(name).get(id);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
+    return runStoreOperation(db, name, "readonly", (store) => store.get(id), true, undefined);
   }
 
   // ── 卡片库统一存储（2026-08-24：IndexedDB → 后端 cards.json v2 信封 单一数据源）──

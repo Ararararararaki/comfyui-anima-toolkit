@@ -7,7 +7,7 @@
 ## 最近更新（2026-09-07 工作区）
 
 - **TK D站画廊**：搜索预设会根据 Danbooru 标签自动生成中文备注，并在预设下拉框与管理器中显示；同一工作流里多个画廊节点的页数、分类、搜索和筛选设置保持独立。Prompt 悬停预览按输出类别分组，预览图操作继续保留。
-- **TK Danbooru Tag Getter**：`tag_bundle` 改为可选输入；普通 Prompt/自然语言可接入 `natural_language`，语义沿用 Danbooru Sorter 的「未归类词」，勾选「未归类词」即可和其他分类一起筛选；正则/精准排除默认同样作用于自然语言，并可单独关闭。
+- **TK Danbooru Tag Getter**：`natural_language`（前端显示「统一 Prompt」）可直接接普通 Prompt 或 Packer `ALL_TAGS`，自动识别已知 Tag 并分类；每一类可独立调整 0.0–2.0 权重，1.0 保持原样；支持“保留自然语言”开关；`tag_bundle` 仍兼容旧的分类包接法，正则/精准排除可单独作用于自然语言。
 - **TK 服装抽卡**：服装库读取改为会话级轻量快照，预览图采用并发限流和小型缓存；工作流快照升级为 v2，仅保存当前抽卡结果和必要元数据，避免把整库或图片 Blob 塞进工作流，同时兼容旧 v1 快照。
 - **TK Prompt Cards**：①区已选具体分类时，「存入 prompt 库」直接写入该分类；隐藏卡片状态和整段 Prompt 的分段行为继续保持，避免刷新或入库时丢失用户的分组意图。
 
@@ -180,21 +180,31 @@ Steam 风格界面,管理全部本地 LoRA:
 - TK Prompt Saver(提示词保存):6 路 STRING 输入,支持单选/多选和每路名称;节点执行时自动将开启且非空的提示词写入 TK Toolkit 与 TK Prompt Cards 共用的 Prompt 库,对应 `image_1` 到 `image_6` 可作为预览图保存
 - TK Trigger Words(触发词):从 `<lora:name:weight>` 提取触发词(bridge 触发词优先,无记录时文件名兜底),支持手动追加、卡片编辑、一键复制
 - TK Text Join(文本合并):按逗号/空格/换行合并 4 路文本,自动清理连续逗号
-- TK String Router(字符串路由):6 路 STRING 输入,支持单选/多选放行、接口别名和工作流保存
-- TK Danbooru Tag Getter(Danbooru 分类提取):接收 `TAG_BUNDLE`,多选固定分类,支持正则排除和精准 Tag 排除,输出清理去重后的 `Tag String`
+- TK String Router(字符串路由):6 路 STRING 输入,支持单选/多选放行、拖拽交换输出顺序、自动读取连线源节点/输出名称、接口别名和工作流保存
+- TK Danbooru Tag Getter(Danbooru 分类提取):单一 Prompt 输入即可自动识别并分类 Danbooru Tag,每类可单独设置 0.0–2.0 权重,可选保留自然语言;兼容 `TAG_BUNDLE`,支持正则排除和精准 Tag 排除,输出清理去重后的 `Tag String`
 - TK 空Latent(预设空 Latent):Anima/Cosmos 5D 单帧空 latent;节点内支持宽高整体乘以 0.5 到 0.9 及 1.1 到 1.5,缩小/放大倍率分左右两列竖排显示;比例菜单按 1536px 标准长边列出竖向具体分辨率和倍率,尺寸自动取整为 16 的倍数
 
 #### TK Danbooru Tag Getter
 
-将 `ComfyUI-Danbooru-Tag-Sorter-Node` 的 `Danbooru Tag Sorter (Packer)` 的 `分类数据包` (`TAG_BUNDLE`) 连接到本节点,在节点内勾选需要的分类。分类按固定顺序合并,不需要填写 `category_name`。
+节点前端显示的「统一 Prompt」输入可直接接普通 Prompt、Packer 的 `ALL_TAGS` 或其他 STRING。勾选任一具体分类后,节点会按本机 Danbooru 数据库识别已知 Tag 并归类;未识别的句子由「保留自然语言」控制。分类按固定顺序合并,不需要填写 `category_name`。
+
+每个分类行右侧的 `×` 数值是该分类的 Tag 权重,范围 `0.0–2.0`,步进 `0.05`;默认 `1.0` 时输出原始 Tag,例如设置「角色表情词」为 `0.8` 会输出 `(smile:0.8)`.输入本身已经带权重时会与分类权重相乘,例如 `(smile:1.2)` × `0.5` 输出 `(smile:0.6)`.自然语言句子不会被分类权重包裹。
+
+如果上游已经提供 Packer 的「分类数据包」 (`TAG_BUNDLE`),仍可将其连接到兼容输入并直接按分类提取;旧工作流的双输入语义保持不变。新的单输入模式不需要同时连接两条线。
 
 节点底部的「正则排除」使用不区分大小写的正则匹配;「精准排除」支持逗号或换行分隔,按不区分大小写的完整 Tag 匹配。筛选只作用于本节点输出,不会修改上游 `TAG_BUNDLE`。
 
-节点的 `tag_bundle` 和 `natural_language` 都是可选输入。推荐把 Danbooru Tag Sorter (Packer) 的「分类数据包」连接到 `tag_bundle`,同时把 `ALL_TAGS` 连接到 `natural_language`;节点会用分类包去重已归类 Tag,再把剩余 Tag/自然语言按「未归类词」处理,与其他 11 个分类一起联合筛选。没有分类包时也可以直接把普通 Prompt/自然语言接入 `natural_language`;即使旧工作流没有保存「未归类词」开关,非空自然语言也不会被静默丢弃。默认应用正则/精准排除,并可单独关闭「过滤自然语言」。
+节点的 `tag_bundle` 和 `natural_language` 都是可选输入。单输入时只需把普通 Prompt 或 `ALL_TAGS` 接到 `natural_language`(前端显示「统一 Prompt」);勾选具体分类启用自动分类,「保留自然语言」决定未知句子是否附在分类结果后。默认应用正则/精准排除,并可单独关闭「过滤自然语言」。
 
 #### TK Prompt Saver
 
 将其他 STRING 节点连接到 `prompt_1` 到 `prompt_6`,将对应预览图连接到 `image_1` 到 `image_6`,在节点内选择单选或多选、设置每路显示名称和 Prompt 库分类。节点执行时会自动保存已开启且非空的输入;多选时每路保存为一条独立 Prompt,对应图像会作为该条 Prompt 的预览图,不需要额外保存按钮。保存内容使用 TK Toolkit 与 TK Prompt Cards 共用的 `anima-lora` Prompt 库,可在工具箱查看,也可在 TK Prompt Cards 的①区读取并调用。
+
+#### TK String Router
+
+节点内每一行对应一个固定输入接口。多选模式下,拖动行左侧的 `⠿` 把手到另一行即可交换**输出顺序**,不需要拆线或重新连接;顺序保存在工作流的隐藏配置中,旧工作流默认使用 `1 → 6` 的原顺序。单选模式的选中接口仍按原输入编号保存,不会因重排而改变。
+
+每行下方会显示当前连线源节点的标题和输出名称(例如 `TK Text Join · text`),连接或断开后自动刷新。默认优先读取画布上显示的自定义节点名,也可在“名称”下拉框切换为原始节点名；名称框留空时使用该动态标签作为提示,填写后则作为本节点内的自定义别名。拖拽中会显示占位高亮和短过渡动画,用于确认落点。
 
 ### 9. 服装库(面板)
 
