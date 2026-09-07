@@ -128,6 +128,25 @@ class AnimaTKDanbooruTagGetter:
         return raw
 
     @staticmethod
+    def _remove_bundle_tags(value, bundle_tags):
+        """从 ALL_TAGS/整段 Prompt 中移除 Packer 已识别的分类 Tag。"""
+        raw = str(value or "").strip()
+        known = {tag.casefold() for tag in bundle_tags if str(tag).strip()}
+        if not raw or not known:
+            return raw
+        paragraphs = []
+        for paragraph in re.split(r"\n\s*\n", raw):
+            kept_lines = []
+            for line in paragraph.splitlines() or [paragraph]:
+                pieces = [piece.strip() for piece in line.split(",") if piece.strip()]
+                kept = [piece for piece in pieces if piece.casefold() not in known]
+                if kept:
+                    kept_lines.append(", ".join(kept))
+            if kept_lines:
+                paragraphs.append("\n".join(kept_lines))
+        return "\n\n".join(paragraphs)
+
+    @staticmethod
     def _filter_natural_language(value, regex_pattern, exact_blacklist):
         """按排除规则过滤自然语言中的逗号片段，保留其余句子和段落。"""
         raw = str(value or "").strip()
@@ -156,17 +175,19 @@ class AnimaTKDanbooruTagGetter:
         regex_pattern = self._compile_regex(regex_blacklist)
         exact_blacklist = self._build_exact_blacklist(tag_blacklist)
         selected_tags = []
+        bundle_tags = []
         if not isinstance(tag_bundle, dict):
             tag_text = ""
         else:
             result = []
             seen = set()
             for category in self.CATEGORY_NAMES:
-                if not category_flags.get(category, False):
-                    continue
                 # 外部 Sorter 当前的真实结构是 dict[str, str]；缺失/空值直接跳过。
                 category_value = tag_bundle.get(category)
                 for tag in self._iter_category_tags(category_value) or ():
+                    bundle_tags.append(tag)
+                    if not category_flags.get(category, False):
+                        continue
                     if tag.casefold() in exact_blacklist:
                         continue
                     if regex_pattern is not None and regex_pattern.search(tag):
@@ -180,6 +201,7 @@ class AnimaTKDanbooruTagGetter:
             tag_text = ", ".join(result)
 
         raw_natural_language = self._natural_language_tail(natural_language, selected_tags)
+        raw_natural_language = self._remove_bundle_tags(raw_natural_language, bundle_tags)
         if filter_natural_language:
             raw_natural_language = self._filter_natural_language(raw_natural_language, regex_pattern, exact_blacklist)
         # 自然语言沿用外部 Sorter 的语义，归入“未归类词”；不额外制造第 13 类。

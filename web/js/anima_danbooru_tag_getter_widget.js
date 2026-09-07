@@ -197,7 +197,7 @@
         this.hideNativeWidget(naturalWidget);
         const hint = document.createElement("div");
         hint.className = "tk-dtb-natural-hint";
-        hint.textContent = "自然语言按“未归类词”处理；有分类包时勾选未归类词即可合并，没有分类包时非空自然语言自动保留，过滤开关控制排除规则。";
+        hint.textContent = "推荐同时连接 Packer：分类数据包→tag_bundle、ALL_TAGS→natural_language；已分类 Tag 会去重，剩余内容按“未归类词”处理。没有分类包时非空自然语言自动保留。";
         filters.appendChild(hint);
       }
       makeNaturalToggle("filter_natural_language", "过滤自然语言");

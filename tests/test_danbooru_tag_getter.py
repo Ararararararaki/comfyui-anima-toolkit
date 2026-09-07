@@ -115,6 +115,20 @@ def test_full_prompt_input_does_not_duplicate_prefix_tags():
     assert result == ("1girl, squatting\n\nA medium shot captures a fox-eared girl.",)
 
 
+def test_packer_bundle_and_all_tags_are_filtered_together():
+    """Packer 的分类包与 ALL_TAGS 同时接入时，只保留选中分类和剩余未归类文本。"""
+    result = AnimaTKDanbooruTagGetter().get_tags(
+        {"人物对象词": "1girl, ", "背景词": "indoors, "},
+        **{
+            "人物对象词": True,
+            "背景词": False,
+            "未归类词": True,
+            "natural_language": "1girl, indoors, A girl looks toward the viewer.",
+        },
+    )
+    assert result == ("1girl\n\nA girl looks toward the viewer.",)
+
+
 def test_all_categories_are_supported():
     bundle = {category: f"tag-{index}, " for index, category in enumerate(AnimaTKDanbooruTagGetter.CATEGORY_NAMES)}
     flags = {category: True for category in AnimaTKDanbooruTagGetter.CATEGORY_NAMES}
@@ -191,6 +205,7 @@ if __name__ == "__main__":
         test_natural_language_filter_applies_exact_blacklist_without_dropping_other_text,
         test_natural_language_can_be_excluded_explicitly,
         test_full_prompt_input_does_not_duplicate_prefix_tags,
+        test_packer_bundle_and_all_tags_are_filtered_together,
         test_all_categories_are_supported,
         test_empty_and_missing_categories_are_skipped,
         test_duplicate_tags_are_removed_case_insensitively,
