@@ -64,7 +64,7 @@ class AnimaTKDanbooruTagGetter:
                         "default": "",
                         "multiline": True,
                         "forceInput": True,
-                        "tooltip": "可选：接入普通 Prompt/自然语言；默认也会应用自然语言过滤。",
+                        "tooltip": "可选：接入 Packer 的 ALL_TAGS 或普通 Prompt/自然语言；默认也会应用自然语言过滤。",
                     },
                 ),
                 "include_natural_language": ("BOOLEAN", {"default": True, "label_on": "保留", "label_off": "过滤掉"}),
