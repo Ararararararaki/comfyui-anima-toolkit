@@ -10,6 +10,7 @@ data/danbooru_account.json
 data/translation_providers.json
 data/prompt_library.json
 data/prompt_library.json.bak
+data/tag_category_index.cache
 
 # Panel (frontend) — build artifacts & local config
 panel/node_modules/

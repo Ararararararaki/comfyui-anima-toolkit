@@ -84,6 +84,6 @@ export function renderPromptEditor(p: Partial<PromptEntry> & { id: string }) {
   getAllCategories().then(cats => {
     const sel = document.getElementById('pe_category') as HTMLSelectElement
     if (!sel) return
-    sel.innerHTML = cats.map(c => `<option value="${c.id}" ${(p.categoryId || 'uncategorized') === c.id ? 'selected' : ''}>${c.icon ? c.icon + ' ' : ''}${c.name}</option>`).join('')
+    sel.innerHTML = cats.map(c => `<option value="${esc(c.id)}" ${(p.categoryId || 'uncategorized') === c.id ? 'selected' : ''}>${c.icon ? esc(c.icon) + ' ' : ''}${esc(c.name)}</option>`).join('')
   })
 }

@@ -335,6 +335,8 @@ async def prompt_parse(request):
     path = _safe_resolve(request.query.get("path", ""))
     if not path or not os.path.isfile(path):
         return web.json_response({"ok": False, "error": "文件不存在或路径非法"}, status=404)
+    if os.path.getsize(path) > 64 * 1024 * 1024:
+        return web.json_response({"ok": False, "error": "文件超过 64MB，不是提示词文件"}, status=413)
     groups = parse_prompt_groups(path)
     return web.json_response({
         "ok": True,
@@ -354,6 +356,9 @@ async def prompt_read(request):
     if not path or not os.path.isfile(path):
         return web.json_response({"ok": False, "error": "文件不存在或路径非法"}, status=404)
     try:
+        # 误选超大文件（模型/视频等）会把整个文件读进内存；提示词文件远小于此，超限直接拒绝。
+        if os.path.getsize(path) > 64 * 1024 * 1024:
+            return web.json_response({"ok": False, "error": "文件超过 64MB，不是提示词文件"}, status=413)
         with open(path, encoding="utf-8-sig") as f:
             content = f.read()
     except Exception as e:

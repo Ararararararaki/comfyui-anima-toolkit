@@ -3,6 +3,7 @@
 import csv
 import json
 import os
+import pickle
 import re
 import zipfile
 import xml.etree.ElementTree as ET
@@ -222,9 +223,74 @@ class AnimaTKDanbooruTagGetter:
         return "未归类词"
 
     @classmethod
+    def _index_cache_signature(cls):
+        """缓存签名：任一依赖文件变化（xlsx/映射配置/CSV）即失效；含解析逻辑版本号。"""
+        root = cls._sorter_root()
+        plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        paths = (
+            os.path.join(root, "tags_database", "danbooru_tags.xlsx") if root else "",
+            os.path.join(root, "defaults_config.json") if root else "",
+            os.path.join(plugin_dir, "data", "danbooru_tags_with_description_v3_modified.csv"),
+        )
+        signature = [cls._INDEX_CACHE_VERSION]
+        for path in paths:
+            try:
+                stat = os.stat(path)
+                signature.extend((path, int(stat.st_mtime), int(stat.st_size)))
+            except OSError:
+                signature.append("")
+        return tuple(signature)
+
+    @classmethod
+    def _index_cache_path(cls):
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "tag_category_index.cache")
+
+    @classmethod
+    def _load_index_cache(cls):
+        """命中磁盘缓存则直接载入解析结果，避免每次重启 ComfyUI 后首次执行都重解 22 万行 xlsx。"""
+        try:
+            with open(cls._index_cache_path(), "rb") as handle:
+                payload = pickle.load(handle)
+            if isinstance(payload, dict) and payload.get("signature") == cls._index_cache_signature():
+                index = payload.get("index")
+                if isinstance(index, dict):
+                    return index
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def _save_index_cache(cls, index):
+        """缓存写盘失败不影响功能（只读安装/磁盘满时静默跳过）；原子替换防半写。"""
+        try:
+            cache_path = cls._index_cache_path()
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            tmp_path = cache_path + ".tmp"
+            with open(tmp_path, "wb") as handle:
+                pickle.dump({"signature": cls._index_cache_signature(), "index": index}, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp_path, cache_path)
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    @classmethod
     def _load_tag_category_index(cls):
         if cls._TAG_CATEGORY_INDEX is not None:
             return cls._TAG_CATEGORY_INDEX
+        index = cls._load_index_cache()
+        if index is None:
+            index = cls._parse_tag_category_index()
+            cls._save_index_cache(index)
+        cls._TAG_CATEGORY_INDEX = index
+        return index
+
+    _INDEX_CACHE_VERSION = 1  # 解析逻辑 / 分类名变化时递增，让旧缓存自动失效
+
+    @classmethod
+    def _parse_tag_category_index(cls):
         root = cls._sorter_root()
         mapping = cls._category_mapping()
         index = {}
@@ -302,7 +368,6 @@ class AnimaTKDanbooruTagGetter:
                             index[tag] = category
             except OSError:
                 pass
-        cls._TAG_CATEGORY_INDEX = index
         return index
 
     @classmethod

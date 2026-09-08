@@ -300,7 +300,7 @@ export function setupPromptHandlers() {
     input.value = ''
     const span = document.createElement('span')
     span.className = 'tag tag-editable'
-    span.innerHTML = `${tag} <button class="tag-del-btn" onclick="this.parentElement.remove()">${icon('x', 12)}</button>`
+    span.innerHTML = `${esc(tag)} <button class="tag-del-btn" onclick="this.parentElement.remove()">${icon('x', 12)}</button>`
     tagsContainer.appendChild(span)
   }
 
@@ -313,7 +313,7 @@ export function setupPromptHandlers() {
     input.value = ''
     const span = document.createElement('span')
     span.className = 'tag tag-editable'
-    span.innerHTML = `${lora} <button class="tag-del-btn" onclick="this.parentElement.remove()">${icon('x', 12)}</button>`
+    span.innerHTML = `${esc(lora)} <button class="tag-del-btn" onclick="this.parentElement.remove()">${icon('x', 12)}</button>`
     lorasContainer.appendChild(span)
   }
 

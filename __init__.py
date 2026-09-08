@@ -498,13 +498,30 @@ def _creator_name(model: dict) -> str:
 
 # ── Civitai 图片代理 ──
 # 浏览器（无代理）无法直连 image.civitai.com；改由后端 session（trust_env 走代理）下载后转发。
+# 缓存按「条数 + 总字节」双上限淘汰：只按条数时，连续浏览大图可能积累数百 MB 内存。
 _IMAGE_CACHE: dict[str, tuple[bytes, str]] = {}
 _IMAGE_CACHE_MAX = 200
+_IMAGE_CACHE_MAX_BYTES = 256 * 1024 * 1024  # 256MB 总预算，超限时从最旧条目开始淘汰
+_IMAGE_CACHE_BYTES = 0
+_IMAGE_CACHE_SKIP_SIZE = 16 * 1024 * 1024  # 单张超过 16MB 不缓存（原图直传，不占预算）
 _IMAGE_ALLOW_PREFIX = "https://image.civitai.com/"
 _IMAGE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
     "Referer": "https://civitai.com/",
 }
+
+
+def _image_cache_store(url: str, body: bytes, ctype: str) -> None:
+    """线程安全的图片缓存写入（aiohttp 单事件循环内串行执行，无需加锁）。"""
+    global _IMAGE_CACHE_BYTES
+    if len(body) > _IMAGE_CACHE_SKIP_SIZE:
+        return
+    while len(_IMAGE_CACHE) >= _IMAGE_CACHE_MAX or (_IMAGE_CACHE_BYTES + len(body) > _IMAGE_CACHE_MAX_BYTES and _IMAGE_CACHE):
+        oldest_url, (oldest_body, _t) = next(iter(_IMAGE_CACHE.items()))
+        _IMAGE_CACHE.pop(oldest_url)
+        _IMAGE_CACHE_BYTES -= len(oldest_body)
+    _IMAGE_CACHE[url] = (body, ctype)
+    _IMAGE_CACHE_BYTES += len(body)
 
 
 @PromptServer.instance.routes.get("/anima/image")
@@ -529,9 +546,7 @@ async def anima_image(request):
     except Exception as e:
         return web.Response(status=502, text=f"proxy error: {e}")
 
-    if len(_IMAGE_CACHE) >= _IMAGE_CACHE_MAX:
-        _IMAGE_CACHE.pop(next(iter(_IMAGE_CACHE)))
-    _IMAGE_CACHE[url] = (body, ctype)
+    _image_cache_store(url, body, ctype)
     return web.Response(body=body, content_type=ctype, headers={"Cache-Control": "public, max-age=86400"})
 
 
