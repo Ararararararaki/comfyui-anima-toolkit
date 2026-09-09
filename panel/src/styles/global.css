@@ -630,6 +630,9 @@ h1 small { font-size: 12px; color: var(--text2); font-weight: 400; margin-left: 
 
 .card-desc.expanded { -webkit-line-clamp: unset; display: block; }
 
+/* ModelCard 描述浮层：同节点浏览卡样式（半透明渐变覆盖预览图；基础样式内联在 ModelCard 模板中） */
+.card-desc-overlay > span.expanded { -webkit-line-clamp: unset !important; }
+
 .desc-translate { font-size: 12px; color: var(--text3); padding: 4px 0; border-top: 1px dashed var(--border); margin-top: 4px; }
 
 .desc-translate .cn { color: var(--text2); }

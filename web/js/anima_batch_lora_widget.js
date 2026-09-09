@@ -713,7 +713,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           .anima-tw-popover .tw-word { background:rgba(94,106,210,0.12); color:#C8C9CB; padding:3px 8px; border-radius:4px; font-size:10px; margin:2px; display:inline-block; cursor:pointer; transition:all 0.15s ease-out; border:1px solid rgba(94,106,210,0.1); }
           .anima-tw-popover .tw-word:hover { background:rgba(94,106,210,0.25); color:#EDEDEF; }
           .anima-tw-popover .tw-empty { color:rgba(255,255,255,0.3); font-size:10px; }
-          .anima-group-modal { width:min(900px,94vw); max-height:82vh; overflow-y:auto; box-sizing:border-box; padding:16px; border:1px solid #34383c; border-radius:10px; color:#e7e4de; background:linear-gradient(180deg,#1d2023,#111315); box-shadow:0 0 0 1px rgba(255,255,255,.035),0 20px 60px rgba(0,0,0,.65),inset 0 1px rgba(255,255,255,.05); }
+          .anima-group-modal { transform:scale(var(--bm-scale,1)); transform-origin:center center; width:min(900px,94vw); max-height:82vh; overflow-y:auto; box-sizing:border-box; padding:16px; border:1px solid #34383c; border-radius:10px; color:#e7e4de; background:linear-gradient(180deg,#1d2023,#111315); box-shadow:0 0 0 1px rgba(255,255,255,.035),0 20px 60px rgba(0,0,0,.65),inset 0 1px rgba(255,255,255,.05); }
           .anima-group-modal h3 { color:#f0ece4; }
           .anima-group-save { display:flex; gap:8px; margin-bottom:12px; }
           .anima-group-name-input { min-width:0; flex:1; padding:7px 9px; border:1px solid #34383c; border-radius:6px; outline:none; color:#e7e4de; background:#111315; font-size:11px; }
@@ -749,7 +749,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             --ease:cubic-bezier(0.16,1,0.3,1);
           }
           @keyframes bm-fade-up { from{opacity:0;transform:translateY(14px)} to{opacity:1;transform:none} }
-          @keyframes bm-scale-in { from{opacity:0;transform:scale(0.96)} to{opacity:1;transform:none} }
+          @keyframes bm-scale-in { from{opacity:0;transform:scale(calc(var(--bm-scale,1)*0.96))} to{opacity:1;transform:scale(var(--bm-scale,1))} }
           .bm-overlay-enter { animation:bm-fade-up 0.22s ease-out; }
           .bm-modal-enter { animation:bm-scale-in 0.28s var(--ease); }
           .bm-card { transition:box-shadow 0.2s var(--ease), border-color 0.2s var(--ease); }
@@ -769,7 +769,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
           /* ── TK Toolkit 同款表面层：中性灰阶、透明底色、精确微动效 ── */
           .bm-overlay { position:fixed !important; inset:0 !important; z-index:9999 !important; display:flex !important; align-items:center; justify-content:center; background:radial-gradient(ellipse at 50% 0%,rgba(30,29,27,.78),rgba(5,5,5,.90) 62%,rgba(2,2,2,.96)) !important; backdrop-filter:blur(14px) saturate(78%); }
-          .bm-modal { --bm-fg:#eeeae3; --bm-fg-muted:#a9a39a; --bm-fg-subtle:rgba(238,234,227,.56); --bm-accent:#e6dfd3; --bm-accent-ink:#1d1a16; --bm-line:rgba(238,234,227,.13); --bm-line-hover:rgba(238,234,227,.27); --bm-surface:rgba(238,234,227,.055); --bm-surface-hover:rgba(238,234,227,.105); --bm-danger:#d18b82; position:relative !important; display:flex !important; flex-direction:column !important; box-sizing:border-box !important; width:min(1180px,calc(100vw - 32px)) !important; max-width:1180px !important; height:min(88vh,820px) !important; max-height:88vh !important; padding:0 !important; overflow:hidden !important; color:var(--bm-fg) !important; background:linear-gradient(180deg,rgba(22,21,19,.93),rgba(10,10,9,.97)) !important; border:1px solid var(--bm-line) !important; border-radius:18px !important; box-shadow:0 0 0 1px rgba(255,255,255,.035),0 24px 70px rgba(0,0,0,.68),0 0 80px rgba(0,0,0,.24),inset 0 1px 0 rgba(255,255,255,.08) !important; font-family:"Inter","Geist Sans",system-ui,sans-serif !important; }
+          .bm-modal { --bm-fg:#eeeae3; --bm-fg-muted:#a9a39a; --bm-fg-subtle:rgba(238,234,227,.56); --bm-accent:#e6dfd3; --bm-accent-ink:#1d1a16; --bm-line:rgba(238,234,227,.13); --bm-line-hover:rgba(238,234,227,.27); --bm-surface:rgba(238,234,227,.055); --bm-surface-hover:rgba(238,234,227,.105); --bm-danger:#d18b82; position:relative !important; display:flex !important; flex-direction:column !important; box-sizing:border-box !important; width:min(1180px,calc(100vw - 32px)) !important; max-width:1180px !important; height:min(88vh,820px) !important; max-height:88vh !important; padding:0 !important; overflow:hidden !important; color:var(--bm-fg) !important; background:linear-gradient(180deg,rgba(22,21,19,.93),rgba(10,10,9,.97)) !important; border:1px solid var(--bm-line) !important; border-radius:18px !important; box-shadow:0 0 0 1px rgba(255,255,255,.035),0 24px 70px rgba(0,0,0,.68),0 0 80px rgba(0,0,0,.24),inset 0 1px 0 rgba(255,255,255,.08) !important; font-family:"Inter","Geist Sans",system-ui,sans-serif !important; transform:scale(var(--bm-scale,1)) !important; transform-origin:center center !important; }
           .bm-modal::before { content:""; position:absolute; inset:0; pointer-events:none; background:radial-gradient(600px 180px at 28% 0%,rgba(255,255,255,.065),transparent 72%); opacity:.8; }
           .bm-header { position:relative; z-index:1; display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:64px; padding:12px 16px 11px; border-bottom:1px solid rgba(238,234,227,.10); background:rgba(255,255,255,.018); }
           .bm-heading { display:flex; align-items:flex-end; gap:9px; min-width:0; }
@@ -2006,7 +2006,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         }
         if (metaEl) {
           const parts = [];
-          if (info.versionName) parts.push("v" + info.versionName);
+          if (info.versionName) parts.push(info.versionName);
           if (info.creator) parts.push(info.creator);
           if (parts.length) { metaEl.textContent = parts.join(" · "); metaEl.style.display = "block"; }
         }
@@ -2386,7 +2386,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       };
       sortEl.onchange = () => renderCurrent();
       listEl.addEventListener("scroll", () => { if (mode === "grid") paintGrid(); });
-      const onResize = () => { if (mode === "grid") paintGrid(); };
+      // 分辨率自适应：以 1080p 为基准等比放大弹窗（2K≈1.33x、4K 封顶 2x），低分屏保持 1:1。
+      // transform 视觉缩放：布局盒/虚拟滚动/内部滚动条不动，字号与卡片观感随分辨率同步变大。
+      const fitModalScale = () => {
+        const s = Math.min(2, Math.max(1, Math.min(window.innerWidth / 1920, window.innerHeight / 1080)));
+        // 设在根元素：浏览弹窗与分组管理弹窗共用同一缩放变量
+        document.documentElement.style.setProperty("--bm-scale", s.toFixed(3));
+      };
+      fitModalScale();
+      const onResize = () => { fitModalScale(); if (mode === "grid") paintGrid(); };
       window.addEventListener("resize", onResize);
 
       // ── 加载数据 ──
