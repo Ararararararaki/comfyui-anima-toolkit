@@ -1123,20 +1123,24 @@
       } catch (e) { return ""; }
     }
 
-    // 当前画布 API prompt 模板（graphToPrompt 优先）
+    // 当前画布 API prompt 模板（graphToPrompt 优先）。
+    // 新版 ComfyUI 前端的 graphToPrompt() 是 async（返回 Promise），必须 await——
+    // 否则拿到的是 Promise 对象，.output 恒为 undefined，批次永远报"无法获取工作流模板"。
     async _templateAsync() {
       const app = window.comfyAPI?.app?.app;
       if (app && typeof app.graphToPrompt === "function") {
         try {
-          const g = app.graphToPrompt();
-          if (g && g.output) return g.output;
+          const g = await app.graphToPrompt();
+          const t = g && typeof g === "object" ? (g.output ?? g.prompt ?? g) : null;
+          if (t && typeof t === "object" && !Array.isArray(t) && Object.keys(t).length) return t;
         } catch (e) { /* 落入 api.getPrompt */ }
       }
       const api = window.comfyAPI?.api?.api || window.api;
       if (api && typeof api.getPrompt === "function") {
         try {
           const p = await api.getPrompt();
-          return (p && (p.output || p.prompt)) || null;
+          const t = p && typeof p === "object" ? (p.output ?? p.prompt ?? p) : null;
+          if (t && typeof t === "object" && !Array.isArray(t) && Object.keys(t).length) return t;
         } catch (e) { return null; }
       }
       return null;
