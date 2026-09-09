@@ -1,19 +1,27 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="drinkit">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
+<script>
+/* 防主题闪烁(FOUC)：首帧渲染前同步应用已保存主题（与 main.ts initThemeSwitcher 同源，key: anima_theme）。
+   无保存值时保留 <html data-theme="drinkit"> 默认。 */
+try {
+  var __savedTheme = localStorage.getItem('anima_theme');
+  if (__savedTheme) document.documentElement.setAttribute('data-theme', __savedTheme);
+} catch (e) {}
+</script>
 <title>TK Toolkit · 本地工具箱</title>
 <link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#5E6AD2">
+<meta name="theme-color" content="#1683FF">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script type="module" crossorigin src="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-quY_oJIe.js"></script>
+  <script type="module" crossorigin src="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-DF9dE30K.js"></script>
   <link rel="modulepreload" crossorigin href="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/vendor-D6eCwX_v.js">
-  <link rel="stylesheet" crossorigin href="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-per2rcWJ.css">
+  <link rel="stylesheet" crossorigin href="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-casT3-f_.css">
 </head>
-<body>
+<body data-ui-version="drinkit-2026-09-08">
 
 <header>
   <div class="header-inner">
@@ -21,14 +29,16 @@
   <nav class="main-tabs" id="mainTabs" role="tablist">
       <button class="main-tab active" data-section="local" data-icon="monitor" role="tab" aria-selected="true"><span>本地 lora 管理</span></button>
       <button class="main-tab" data-section="lora" data-icon="package" role="tab" aria-selected="false"><span>LoRA 探索</span> <span class="badge-tab" id="loraBadge">0</span></button>
-      <button class="main-tab" data-section="artist" data-icon="brush" role="tab" aria-selected="false"><span>画师系列</span> <span class="badge-tab">8</span></button>
+      <!-- 画师系列：用户从不使用，隐藏入口（代码保留，去掉注释即可恢复；badge 8 原为写死值） -->
+      <button class="main-tab" data-section="artist" data-icon="brush" role="tab" aria-selected="false" style="display:none"><span>画师系列</span> <span class="badge-tab">8</span></button>
       <button class="main-tab" data-section="prompt" data-icon="book" role="tab" aria-selected="false"><span>Prompt 库</span></button>
       <button class="main-tab" data-section="clothing" data-icon="shirt" role="tab" aria-selected="false"><span>服装库</span></button>
       <button class="main-tab" data-section="prompt-freq" data-icon="image" role="tab" aria-selected="false"><span>图片解析</span></button>
       <button class="main-tab" data-section="outputs" data-icon="grid" role="tab" aria-selected="false"><span>Outputs</span></button>
     </nav>
     <div class="theme-switcher" id="themeSwitcher" title="切换主题">
-      <span class="theme-dot active" data-theme="mono" title="Monochrome 暗"></span>
+      <span class="theme-dot active" data-theme="drinkit" title="Drinkit 蓝色轻几何"></span>
+      <span class="theme-dot" data-theme="mono" title="Monochrome 暗"></span>
       <span class="theme-dot" data-theme="mono-light" title="Monochrome 亮"></span>
     </div>
     <span id="buildTime" class="build-time"></span>
@@ -78,17 +88,18 @@
       <button class="period-btn" data-period="Week" data-icon="calendar"><span>本周</span></button>
       <button class="period-btn" data-period="Day" data-icon="sun"><span>今日</span></button>
     </div>
-    <button class="btn btn-ghost btn-border-green" id="batchModeBtn" data-icon="checkSquare" type="button"><span>选择</span></button>
-    <button class="btn btn-ghost btn-border-accent" id="addLoraBtn" data-icon="plus" type="button"><span>手动添加</span></button>
-    <button class="btn btn-ghost" id="clearHiddenBtn" type="button"></button>
+    <button class="btn btn-ghost btn-border-green" id="batchModeBtn" data-icon="checkSquare" type="button" title="批量选择模式"></button>
+    <button class="btn btn-ghost btn-border-accent" id="addLoraBtn" data-icon="plus" type="button" title="手动添加 LoRA"></button>
+    <button class="btn btn-ghost" id="clearHiddenBtn" type="button" title="清空隐藏记录"></button>
   </div>
 
   <div class="quick-fetch-group" role="group" aria-label="快速抓取">
     <span class="qf-label">快速抓取</span>
-    <button class="btn btn-ghost qf-btn" id="fetchCharBtn" type="button" data-icon="user" data-label="人物角色"></button>
-    <button class="btn btn-ghost qf-btn" id="fetchLightBtn" type="button" data-icon="zap" data-label="光影"></button>
-    <button class="btn btn-ghost qf-btn" id="fetchStyleBtn" type="button" data-icon="palette" data-label="画风"></button>
-    <button class="btn btn-primary qf-btn" id="fetchRandomBtn" type="button" data-icon="dice" data-label="随机抓取"></button>
+    <button class="btn btn-ghost qf-btn" id="fetchCharBtn" type="button" data-icon="user" title="抓取人物角色类 LoRA"></button>
+    <button class="btn btn-ghost qf-btn" id="fetchLightBtn" type="button" data-icon="zap" title="抓取光影类 LoRA"></button>
+    <button class="btn btn-ghost qf-btn" id="fetchStyleBtn" type="button" data-icon="palette" title="抓取画风类 LoRA"></button>
+    <button class="btn btn-primary qf-btn" id="fetchRandomBtn" type="button" data-icon="dice" data-label="随机探索" title="随机排序×周期×类别，只看没看过的"></button>
+    <button class="btn btn-ghost qf-btn" id="exploreHistBtn" type="button" title="回看最近的探索记录"></button>
   </div>
 
 
@@ -210,6 +221,7 @@
           <span class="icon" data-icon="search" aria-hidden="true"></span>
           <input type="text" id="promptSearch" placeholder="搜索 Prompt、标签、模型…" autocomplete="off">
         </div>
+        <button class="btn btn-ghost" id="promptBatchBtn" data-icon="checkSquare" title="批量操作：选择卡片后批量分类 / 命名 / 删除，或整库去重"><span>批量</span></button>
         <button class="btn btn-primary" id="promptAddBtn" data-icon="plus"><span>新增 Prompt</span></button>
       </div>
       <div class="prompt-grid" id="promptGrid"><div class="empty-state empty-state-grid"><div class="big" data-icon="book"></div><p>Prompt 库为空</p><p class="sub">浏览 LoRA 列表，从卡片中提取触发词，或点击「新增 Prompt」手动添加</p></div></div>
@@ -320,7 +332,7 @@
           <select id="localSort">
             <option value="name">名称 A-Z</option>
             <option value="size">大小</option>
-            <option value="date">扫描顺序</option>
+            <option value="date" selected>扫描顺序（最新在前）</option>
             <option value="match">匹配状态</option>
           </select>
           <select id="localFilter">
