@@ -5,11 +5,11 @@
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#0b0d11",
-  "theme_color": "#7c5cfc",
+  "background_color": "#f5f5f3",
+  "theme_color": "#1683FF",
   "lang": "zh-CN",
   "icons": [
-    { "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='32' fill='%237c5cfc'/><text x='96' y='130' text-anchor='middle' font-size='100' fill='white'>🎨</text></svg>", "sizes": "192x192", "type": "image/svg+xml" },
-    { "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='80' fill='%237c5cfc'/><text x='256' y='340' text-anchor='middle' font-size='240' fill='white'>🎨</text></svg>", "sizes": "512x512", "type": "image/svg+xml" }
+    { "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='32' fill='%231683FF'/><text x='96' y='130' text-anchor='middle' font-size='100' fill='white'>🎨</text></svg>", "sizes": "192x192", "type": "image/svg+xml" },
+    { "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='80' fill='%231683FF'/><text x='256' y='340' text-anchor='middle' font-size='240' fill='white'>🎨</text></svg>", "sizes": "512x512", "type": "image/svg+xml" }
   ]
 }

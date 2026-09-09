@@ -160,6 +160,20 @@ function renderSettingsHTML(s: AppSettings): string {
           <div class="settings-row">
             <label class="settings-label">最小卡片宽度 ${s.cardSize}px</label>
             <input type="range" class="settings-range" id="cardSize" min="160" max="400" step="10" value="${s.cardSize}">
+            <span class="settings-hint">作用于 LoRA 探索 / Prompt 库 / Outputs 卡片</span>
+          </div>
+          <div class="settings-row">
+            <label class="settings-label">本地卡片宽度 ${s.localCardSize}px</label>
+            <input type="range" class="settings-range" id="localCardSize" min="120" max="320" step="10" value="${s.localCardSize}">
+            <span class="settings-hint">作用于本地 lora 管理 / 服装库网格，调小可一行放更多卡片</span>
+          </div>
+          <div class="settings-row">
+            <label class="settings-label">内容区宽度</label>
+            <div class="settings-btn-group">
+              <button class="settings-btn ${s.contentWidth === 'standard' ? 'active' : ''}" data-content-width="standard">标准</button>
+              <button class="settings-btn ${s.contentWidth === 'wide' ? 'active' : ''}" data-content-width="wide">宽</button>
+              <button class="settings-btn ${s.contentWidth === 'full' ? 'active' : ''}" data-content-width="full">全屏</button>
+            </div>
           </div>
         </div>
 
@@ -276,6 +290,10 @@ function renderSettingsHTML(s: AppSettings): string {
           <div class="settings-row">
             <label class="settings-label">C 站 API Key</label>
             <input type="password" id="civitaiApiKey" value="${(() => { try { return localStorage.getItem('anima_civitai_token') || '' } catch { return '' } })()}" placeholder="只读权限即可，下载需登录的模型用" style="flex:1;padding:6px 8px;background:var(--bg1);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:11px;outline:none;">
+          </div>
+          <div class="settings-row">
+            <label class="settings-label">本地 LoRA 扫描目录</label>
+            <input type="text" id="localScanDir" value="${(() => { try { return (s.localScanDir || '') } catch { return '' } })()}" placeholder="留空 = 使用 ComfyUI 注册的 loras 目录（自动扫描用，静默免弹窗）" style="flex:1;padding:6px 8px;background:var(--bg1);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:11px;outline:none;">
           </div>
           <div class="settings-row">
             <span style="font-size:10px;color:var(--text3);line-height:1.5">面板由 ComfyUI 直接提供（clone 即用），无需额外部署。数据通过 HTTP API 与节点桥接。</span>
@@ -449,6 +467,9 @@ export function applySettings(s?: AppSettings) {
   // Density
   root.setAttribute('data-density', st.density)
   root.style.setProperty('--card-min-width', `${st.cardSize}px`)
+  root.style.setProperty('--card-min-width-local', `${st.localCardSize}px`)
+  const contentMax = { standard: '1480px', wide: '1880px', full: '100%' }[st.contentWidth]
+  root.style.setProperty('--content-max-width', contentMax)
   root.style.setProperty('--ui-panel-opacity', `${Math.round(st.panelOpacity * 100)}%`)
   root.style.setProperty('--ui-button-opacity', `${Math.round(st.buttonOpacity * 100)}%`)
   // 外层可以很透，但承载文字的内层需要一个最低对比度，避免背景图亮部吞掉文字。
@@ -609,6 +630,13 @@ function openSettings() {
     if (v) localStorage.setItem('anima_civitai_token', v)
     else localStorage.removeItem('anima_civitai_token')
     showToast(v ? '✅ C 站 API Key 已保存' : '已清除 C 站 API Key')
+  })
+
+  // 本地 LoRA 扫描目录（预设路径）：留空 = 上次使用路径 = ComfyUI 注册的 loras 目录
+  document.getElementById('localScanDir')?.addEventListener('change', (e) => {
+    const v = ((e.target as HTMLInputElement).value || '').trim()
+    saveSettings({ localScanDir: v })
+    showToast(v ? '✅ 扫描目录已保存，下次扫描生效' : '已清除预设目录，将使用上次路径或 loras 目录')
   })
 }
 
@@ -771,6 +799,23 @@ function bindLayoutEvents() {
     applySettings()
     const row = (e.target as HTMLElement).closest('.settings-row')
     row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = `最小卡片宽度 ${v}px`)
+  })
+
+  document.getElementById('localCardSize')?.addEventListener('input', (e) => {
+    const v = Number((e.target as HTMLInputElement).value)
+    saveSettings({ localCardSize: v })
+    applySettings()
+    const row = (e.target as HTMLElement).closest('.settings-row')
+    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = `本地卡片宽度 ${v}px`)
+  })
+
+  document.querySelectorAll('[data-content-width]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const contentWidth = (btn as HTMLElement).dataset.contentWidth as AppSettings['contentWidth']
+      saveSettings({ contentWidth })
+      applySettings()
+      document.querySelectorAll('[data-content-width]').forEach(b => b.classList.toggle('active', b === btn))
+    })
   })
 }
 

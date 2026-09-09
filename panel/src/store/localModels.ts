@@ -5,6 +5,7 @@ import { fetchModelVersionByHash, fetchModelById } from '../api/civitai'
 import { showToast, stripExt } from '../utils'
 import { collectLoraFiles, groupLoraNamesByTopLevelFolder, isLoraFileName, normalizeRelativeLoraPath, pickerRelativeLoraPath, removeLoraFile } from '../services/localLoraScanner'
 import { hashFileSha256 } from '../services/fileHashWorker'
+import { getSettings } from './settings'
 
 let _lastBackendSync = 0
 let _backendMetaLoad: Promise<void> | null = null
@@ -12,7 +13,7 @@ let _backendMetaLoad: Promise<void> | null = null
 let _categorySyncQueue: Promise<void> = Promise.resolve()
 let activeScanController: AbortController | null = null
 let activeMatchController: AbortController | null = null
-let pendingScanFiles = new Map<string, File>()
+let pendingScanFiles = new Map<string, ScanFile>()
 
 function progressShow(done: number, total: number, label: string, partial = 0) {
   const wrap = document.getElementById('localProgress')
@@ -244,6 +245,7 @@ interface LocalModelState {
   setScanningDir: (d: string) => void
 
   scanDir: () => Promise<void>
+  scanIncremental: () => Promise<void>
   matchAll: () => Promise<void>
   matchOne: (name: string) => Promise<void>
   deleteFile: (name: string) => Promise<void>
@@ -253,6 +255,189 @@ interface LocalModelState {
   loadFromCache: () => boolean
   detectNewFiles: () => Promise<number>
   setNewFileCount: (n: number) => void
+}
+
+/** 后端静默扫描返回的文件引用：没有浏览器 File 对象，
+ *  哈希与删除走 /anima/panel_scan/* 端点（ComfyUI 后端与本机文件系统同权）。 */
+type BackendFileRef = { size: number; lastModified: number; __path: string }
+type ScanFile = File | BackendFileRef
+const isBackendRef = (f: ScanFile): f is BackendFileRef => '__path' in (f as BackendFileRef)
+
+/** 上次使用的后端扫描目录（预设目录 = ComfyUI 注册的 loras 根，用空串表示） */
+const SCAN_BACKEND_DIR_KEY = 'anima_scan_backend_dir'
+function getLastScanDir(): string {
+  try { return localStorage.getItem(SCAN_BACKEND_DIR_KEY) || '' } catch { return '' }
+}
+function setLastScanDir(dir: string) {
+  try { localStorage.setItem(SCAN_BACKEND_DIR_KEY, dir) } catch {}
+}
+
+/** 哈希分派：后端引用走 /anima/panel_scan/hash，浏览器 File 走原 FileReader 管线。 */
+async function hashScanFile(
+  file: ScanFile,
+  opts?: { signal?: AbortSignal; onProgress?: (p: { bytesRead: number; totalBytes: number }) => void }
+): Promise<string> {
+  if (isBackendRef(file)) {
+    const resp = await fetch('/anima/panel_scan/hash?path=' + encodeURIComponent(file.__path), { signal: opts?.signal })
+    if (!resp.ok) throw new Error(`后端哈希失败（HTTP ${resp.status}）`)
+    const data = await resp.json()
+    opts?.onProgress?.({ bytesRead: file.size, totalBytes: file.size })
+    return String(data.sha256 || '')
+  }
+  return hashFileSha256(file as File, opts)
+}
+
+/** 调用后端列目录（dir 空 = 全部 ComfyUI 注册 loras 目录），返回扫描管线入口。 */
+async function runBackendScan(
+  dir: string,
+  signal: AbortSignal,
+  dirLabel: string,
+  get: () => LocalModelState,
+  set: (partial: Partial<LocalModelState>) => void
+): Promise<void> {
+  const q = dir ? ('?dir=' + encodeURIComponent(dir)) : ''
+  const resp = await fetch('/anima/panel_scan/list' + q, { signal })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({} as { error?: string }))
+    throw new Error(err.error || `后端扫描失败（HTTP ${resp.status}）`)
+  }
+  const data = await resp.json() as { dir: string; files: { name: string; size: number; lastModified: number; path: string }[] }
+  const entries: { name: string; file: ScanFile }[] = (data.files || []).map(f => ({
+    name: f.name,
+    file: { size: f.size, lastModified: f.lastModified, __path: f.path },
+  }))
+  // 记住实际使用的目录（预设目录记为空串，表示"跟随 ComfyUI loras 根"）
+  setLastScanDir(dir)
+  set({ scanPath: dirLabel })
+  await applyScanEntries(entries, signal, dirLabel, get, set)
+}
+
+/** 扫描公共管线：手动选目录扫描与增量自动扫描共用。
+ * 登记→diff→后台哈希→落库→自动匹配，全程进度条 + 取消支持。
+ * 由 scanDir / scanIncremental 在拿到 entries 后调用。 */
+async function applyScanEntries(
+  entries: { name: string; file: ScanFile }[],
+  signal: AbortSignal,
+  dirName: string,
+  get: () => LocalModelState,
+  set: (partial: Partial<LocalModelState>) => void
+): Promise<void> {
+  try {
+    if (entries.length === 0) {
+      progressHide()
+      set({ scanStatus: 'done', files: [], newFileCount: 0 })
+      return
+    }
+
+    // --- 增量扫描逻辑 ---
+    const oldManifest = Cache.load<Record<string, ManifestEntry>>(MANIFEST_CACHE_KEY, 365 * 24 * 60 * 60 * 1000) || {}
+    const oldFiles = get().files
+    const oldFileMap = new Map(oldFiles.map(f => [f.name, f]))
+    pendingScanFiles = new Map(entries.map(entry => [normalizeRelativeLoraPath(entry.name), entry.file]))
+
+    const newManifest: Record<string, ManifestEntry> = {}
+    // 先登记全部文件，让列表和统计立即可见；新文件的哈希在后台逐个补齐。
+    const results: LocalLoraFile[] = entries.map(({ name, file }) => {
+      const relativeName = normalizeRelativeLoraPath(name)
+      const cached = oldManifest[relativeName]
+      const previous = oldFileMap.get(relativeName)
+      const unchanged = !!cached && cached.size === file.size && cached.lastModified === file.lastModified
+      return {
+        name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
+        sha256: unchanged ? cached.sha256 : '',
+        matched: unchanged ? previous?.matched || false : false,
+        matchData: unchanged ? previous?.matchData || null : null,
+        matchError: unchanged ? previous?.matchError || '' : '',
+        scanning: !unchanged,
+      }
+    })
+    let unchanged = 0, changed = 0, added = 0, total = entries.length
+
+    progressShow(0, total, '扫描')
+    set({ files: results, scanProgress: { done: 0, total }, scanningDir: dirName, scanStatus: 'scanning' })
+
+    for (let i = 0; i < entries.length; i++) {
+      if (signal.aborted) throw new DOMException('扫描已取消', 'AbortError')
+      const { name, file } = entries[i]
+      const relativeName = normalizeRelativeLoraPath(name)
+
+      const cached = oldManifest[relativeName]
+      if (cached && cached.size === file.size && cached.lastModified === file.lastModified) {
+        // 未变更: 保留上次的 sha256 和匹配状态
+        unchanged++
+        const prev = oldFileMap.get(relativeName)
+        results[i] = {
+          name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
+          sha256: cached.sha256,
+          matched: prev?.matched || false,
+          matchData: prev?.matchData || null,
+          matchError: prev?.matchError || '',
+          scanning: false,
+        }
+        newManifest[relativeName] = { ...cached, name: relativeName }
+      } else {
+        // 超大文件先完成登记，精确哈希放到后台匹配阶段，避免扫描界面长时间等待。
+        if (file.size > LARGE_HASH_DEFER_BYTES) {
+          results[i] = {
+            name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
+            sha256: '', matched: false, matchData: null, matchError: '', scanning: false,
+          }
+          newManifest[relativeName] = { name: relativeName, size: file.size, lastModified: file.lastModified, sha256: '' }
+        } else {
+          const sha256 = await hashScanFile(file, {
+            signal,
+            onProgress: ({ bytesRead, totalBytes }) => {
+              progressShowFile(i, total, relativeName, bytesRead, totalBytes)
+            },
+          })
+          results[i] = {
+            name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
+            sha256, matched: false, matchData: null, matchError: '', scanning: false,
+          }
+          newManifest[relativeName] = { name: relativeName, size: file.size, lastModified: file.lastModified, sha256 }
+        }
+        if (cached) changed++; else added++
+      }
+      progressShow(i + 1, total, `扫描  (新${added} 变${changed} 同${unchanged})`)
+      set({ files: [...results], scanProgress: { done: i + 1, total } })
+    }
+
+    // 清理 manifest 中已删除的文件，并统计"减少的 LoRA"
+    const currentNames = new Set(entries.map(e => normalizeRelativeLoraPath(e.name)))
+    const removedNames = oldFiles.filter(f => !currentNames.has(f.name)).map(f => f.name)
+    for (const k of Object.keys(oldManifest)) {
+      if (!currentNames.has(k)) delete oldManifest[k]
+    }
+    // 同步清理已删除文件的描述缓存（避免残留影响分类/搜索）
+    let descriptions = { ...get().descriptions }
+    let removedDesc = 0
+    for (const n of removedNames) {
+      if (n in descriptions) { delete descriptions[n]; removedDesc++ }
+      void deleteLocalLoraPreview(n)
+    }
+
+    progressHide()
+    Cache.save(MANIFEST_CACHE_KEY, newManifest)
+    set({ files: results, manifest: newManifest, descriptions, scanStatus: 'done', newFileCount: 0 })
+    get().saveToCache()
+    if (removedNames.length) get().rebuildTagFreq()
+    if (added + changed + removedNames.length > 0) {
+      showToast(`📁 扫描完成: 新增 ${added} · 变更 ${changed} · 移除 ${removedNames.length} · 跳过 ${unchanged}${removedDesc ? `（含 ${removedDesc} 条描述清理）` : ''}`)
+      // 自动匹配新文件
+      get().matchAll()
+    } else {
+      showToast(`📁 扫描完成: 无变化（${unchanged} 个未变）`)
+    }
+  } catch (err) {
+    progressHide()
+    if ((err as Error).name === 'AbortError' || (err as Error).message?.includes('abort')) {
+      set({ scanStatus: 'idle', scanProgress: { done: 0, total: 0 } })
+      showToast('⏹ 扫描已取消')
+    } else {
+      set({ scanStatus: 'error' })
+      showToast(`❌ 扫描失败：${(err as Error).message || '未知错误'}`)
+    }
+  }
 }
 
 export const useLocalModelStore = create<LocalModelState>((set, get) => ({
@@ -265,7 +450,8 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
   scanningDir: '',
 
   searchQuery: '',
-  sortKey: 'name',
+  // 默认按时间倒序（=「扫描顺序」选项）：最新添加的 LoRA 排最前，与节点浏览窗默认排序统一。
+  sortKey: 'date',
   filterKey: 'all',
   selectedModel: null,
   currentView: 'home',
@@ -519,144 +705,47 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     activeScanController = controller
     const signal = controller.signal
     try {
-      let dirName = ''
-      let entries: { name: string; file: File }[] = []
-
-      if ('showDirectoryPicker' in window) {
-        // 主路径：File System Access API（Chrome/Edge/夸克 + localhost/HTTPS）
-        try {
-          const dirHandle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
-          set({ dirHandle, scanStatus: 'scanning', scanProgress: { done: 0, total: 0 } })
-          get().saveDirHandle()
-          dirName = dirHandle.name
-          entries = await collectLoraFiles(dirHandle, signal)
-        } catch (e) {
-          if ((e as Error).name === 'AbortError' || (e as Error).message?.includes('abort')) {
-            set({ scanStatus: 'idle' })
-            return
-          }
-          throw e
-        }
-      } else {
-        // 回退：<input webkitdirectory> 文件选择（Firefox/Safari、夸克旧版、局域网 IP 访问）
-        showCompatScanHint()
-        entries = await pickDirFiles()
-        if (!entries.length) { set({ scanStatus: 'idle' }); return }
-        dirName = '已选文件夹'
-      }
-      if (entries.length === 0) {
-        progressHide()
-        set({ scanStatus: 'done', files: [], newFileCount: 0 })
-        return
-      }
-
-      // --- 增量扫描逻辑 ---
-      const oldManifest = Cache.load<Record<string, ManifestEntry>>(MANIFEST_CACHE_KEY, 365 * 24 * 60 * 60 * 1000) || {}
-      const oldFiles = get().files
-      const oldFileMap = new Map(oldFiles.map(f => [f.name, f]))
-      pendingScanFiles = new Map(entries.map(entry => [normalizeRelativeLoraPath(entry.name), entry.file]))
-
-      const newManifest: Record<string, ManifestEntry> = {}
-      // 先登记全部文件，让列表和统计立即可见；新文件的哈希在后台逐个补齐。
-      const results: LocalLoraFile[] = entries.map(({ name, file }) => {
-        const relativeName = normalizeRelativeLoraPath(name)
-        const cached = oldManifest[relativeName]
-        const previous = oldFileMap.get(relativeName)
-        const unchanged = !!cached && cached.size === file.size && cached.lastModified === file.lastModified
-        return {
-          name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
-          sha256: unchanged ? cached.sha256 : '',
-          matched: unchanged ? previous?.matched || false : false,
-          matchData: unchanged ? previous?.matchData || null : null,
-          matchError: unchanged ? previous?.matchError || '' : '',
-          scanning: !unchanged,
-        }
-      })
-      let unchanged = 0, changed = 0, added = 0, total = entries.length
-
-      progressShow(0, total, '扫描')
-      set({ files: results, scanProgress: { done: 0, total }, scanningDir: dirName, scanStatus: 'scanning' })
-
-      for (let i = 0; i < entries.length; i++) {
-        if (signal.aborted) throw new DOMException('扫描已取消', 'AbortError')
-        const { name, file } = entries[i]
-        const relativeName = normalizeRelativeLoraPath(name)
-
-        const cached = oldManifest[relativeName]
-        if (cached && cached.size === file.size && cached.lastModified === file.lastModified) {
-          // 未变更: 保留上次的 sha256 和匹配状态
-          unchanged++
-          const prev = oldFileMap.get(relativeName)
-          results[i] = {
-            name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
-            sha256: cached.sha256,
-            matched: prev?.matched || false,
-            matchData: prev?.matchData || null,
-            matchError: prev?.matchError || '',
-            scanning: false,
-          }
-          newManifest[relativeName] = { ...cached, name: relativeName }
-        } else {
-          // 超大文件先完成登记，精确哈希放到后台匹配阶段，避免扫描界面长时间等待。
-          if (file.size > LARGE_HASH_DEFER_BYTES) {
-            results[i] = {
-              name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
-              sha256: '', matched: false, matchData: null, matchError: '', scanning: false,
-            }
-            newManifest[relativeName] = { name: relativeName, size: file.size, lastModified: file.lastModified, sha256: '' }
-          } else {
-            const sha256 = await hashFileSha256(file, {
-              signal,
-              onProgress: ({ bytesRead, totalBytes }) => {
-                progressShowFile(i, total, relativeName, bytesRead, totalBytes)
-              },
-            })
-            results[i] = {
-              name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
-              sha256, matched: false, matchData: null, matchError: '', scanning: false,
-            }
-            newManifest[relativeName] = { name: relativeName, size: file.size, lastModified: file.lastModified, sha256 }
-          }
-          if (cached) changed++; else added++
-        }
-        progressShow(i + 1, total, `扫描  (新${added} 变${changed} 同${unchanged})`)
-        set({ files: [...results], scanProgress: { done: i + 1, total } })
-      }
-
-      // 清理 manifest 中已删除的文件，并统计"减少的 LoRA"
-      const currentNames = new Set(entries.map(e => normalizeRelativeLoraPath(e.name)))
-      const removedNames = oldFiles.filter(f => !currentNames.has(f.name)).map(f => f.name)
-      for (const k of Object.keys(oldManifest)) {
-        if (!currentNames.has(k)) delete oldManifest[k]
-      }
-      // 同步清理已删除文件的描述缓存（避免残留影响分类/搜索）
-      let descriptions = { ...get().descriptions }
-      let removedDesc = 0
-      for (const n of removedNames) {
-        if (n in descriptions) { delete descriptions[n]; removedDesc++ }
-        void deleteLocalLoraPreview(n)
-      }
-
-      progressHide()
-      Cache.save(MANIFEST_CACHE_KEY, newManifest)
-      set({ files: results, manifest: newManifest, descriptions, scanStatus: 'done', newFileCount: 0 })
-      get().saveToCache()
-      if (removedNames.length) get().rebuildTagFreq()
-      if (added + changed + removedNames.length > 0) {
-        showToast(`📁 扫描完成: 新增 ${added} · 变更 ${changed} · 移除 ${removedNames.length} · 跳过 ${unchanged}${removedDesc ? `（含 ${removedDesc} 条描述清理）` : ''}`)
-        // 自动匹配新文件
-        get().matchAll()
-      } else {
-        showToast(`📁 扫描完成: 无变化（${unchanged} 个未变）`)
-      }
+      // 全静默后端扫描，不再弹文件夹选择框：优先设置里的预设目录，
+      // 其次上次使用的目录，都为空 = ComfyUI 注册的全部 loras 目录。
+      const preset = (getSettings().localScanDir || '').trim()
+      const dir = preset || getLastScanDir()
+      await runBackendScan(dir, signal, dir || 'ComfyUI loras 目录', get, set)
     } catch (err) {
-      progressHide()
-      if ((err as Error).name === 'AbortError' || (err as Error).message?.includes('abort')) {
-        set({ scanStatus: 'idle', scanProgress: { done: 0, total: 0 } })
-        showToast('⏹ 扫描已取消')
-      } else {
+      if (!((err as Error).name === 'AbortError' || (err as Error).message?.includes('abort'))) {
         set({ scanStatus: 'error' })
         showToast(`❌ 扫描失败：${(err as Error).message || '未知错误'}`)
+      }
+    } finally {
+      if (activeScanController === controller) activeScanController = null
+    }
+  },
+
+  /** 增量自动扫描：优先已授权句柄；句柄缺失或权限失效时静默回退后端扫描。
+   *  全程零弹窗（requestPermission 需要用户手势且刷新后句柄必失效，纯前端免弹窗不可能）。 */
+  scanIncremental: async () => {
+    if (activeScanController) return
+    const dh = get().dirHandle
+    const controller = new AbortController()
+    activeScanController = controller
+    const signal = controller.signal
+    try {
+      if (dh) {
+        // 只在权限已授予时使用句柄；queryPermission 不触发任何浏览器弹窗
+        const perm = await (dh as any).queryPermission?.({ mode: 'readwrite' })
+        if (perm === 'granted') {
+          const entries = await collectLoraFiles(dh, signal)
+          await applyScanEntries(entries, signal, dh.name || '本地目录', get, set)
+          return
+        }
+      }
+      // 无句柄 / 权限失效：静默走后端（预设 → 上次路径 → 默认 loras 目录）
+      const preset = (getSettings().localScanDir || '').trim()
+      const dir = preset || getLastScanDir()
+      await runBackendScan(dir, signal, dir || 'ComfyUI loras 目录', get, set)
+    } catch (err) {
+      if (!((err as Error).name === 'AbortError' || (err as Error).message?.includes('abort'))) {
+        set({ scanStatus: 'error' })
+        showToast(`❌ 自动扫描失败：${(err as Error).message || '未知错误'}`)
       }
     } finally {
       if (activeScanController === controller) activeScanController = null
@@ -693,7 +782,7 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
             if (!sha256) {
               const source = pendingScanFiles.get(f.name)
               if (!source) throw new Error('请重新扫描此文件后再匹配')
-              sha256 = await hashFileSha256(source, {
+              sha256 = await hashScanFile(source, {
                 signal,
                 onProgress: ({ bytesRead, totalBytes }) => {
                   progressShowFile(done, unmatched.length, f.name, bytesRead, totalBytes)
@@ -749,7 +838,7 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
         return
       }
       try {
-        sha256 = await hashFileSha256(source)
+        sha256 = await hashScanFile(source)
         const manifest = { ...get().manifest }
         if (manifest[name]) manifest[name] = { ...manifest[name], sha256 }
         set({ manifest })
@@ -774,24 +863,36 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     if (!f) return
     const dh = get().dirHandle
     if (!dh) {
-      showToast('请重新扫描文件夹后再删除')
-      return
+      // 后端静默扫描没有句柄：走后端删除（dir 空 = 按 ComfyUI loras 根解析）
+      try {
+        const resp = await fetch('/anima/panel_scan/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dir: getLastScanDir(), name }),
+        })
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      } catch {
+        showToast('删除失败，权限不足或文件已被移动')
+        return
+      }
+    } else {
+      try {
+        await removeLoraFile(dh, name)
+      } catch {
+        showToast('删除失败，权限不足或文件已被移动')
+        return
+      }
     }
-    try {
-      await removeLoraFile(dh, name)
-      set(s => ({ files: s.files.filter(x => x.name !== name) }))
-      get().clearPreviewImage(name)
-      void deleteLocalLoraPreview(name)
-      // 同步清理 manifest
-      const m = { ...get().manifest }
-      delete m[name]
-      set({ manifest: m })
-      get().saveToCache()
-      get().rebuildTagFreq()
-      showToast(`已删除 ${name}`)
-    } catch {
-      showToast('删除失败，权限不足或文件已被移动')
-    }
+    set(s => ({ files: s.files.filter(x => x.name !== name) }))
+    get().clearPreviewImage(name)
+    void deleteLocalLoraPreview(name)
+    // 同步清理 manifest
+    const m = { ...get().manifest }
+    delete m[name]
+    set({ manifest: m })
+    get().saveToCache()
+    get().rebuildTagFreq()
+    showToast(`已删除 ${name}`)
   },
 
   saveDirHandle: async () => {
@@ -807,7 +908,8 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       const { getHandle } = await import('./handleManager')
       const dh = getHandle('localDir')
       if (!dh) return false
-      const ok = await (dh as any).requestPermission({ mode: 'readwrite' })
+      // queryPermission 不弹浏览器权限框：权限失效时返回 false，由调用方回退后端静默扫描
+      const ok = await (dh as any).queryPermission?.({ mode: 'readwrite' })
       if (ok !== 'granted') return false
       set({ dirHandle: dh })
       return true
@@ -852,7 +954,8 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     const dh = get().dirHandle
     if (!dh) return 0
     try {
-      const perm = await (dh as any).requestPermission({ mode: 'readwrite' })
+      // 零弹窗：权限失效返回 0，自动链路交给 scanIncremental 的后端回退
+      const perm = await (dh as any).queryPermission?.({ mode: 'readwrite' })
       if (perm !== 'granted') return 0
       const oldManifest = get().manifest || {}
       const entries = await collectLoraFiles(dh)

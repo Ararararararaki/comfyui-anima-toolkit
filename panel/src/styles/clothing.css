@@ -28,7 +28,7 @@
 
 /* 卡片网格 */
 .clothing-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card-min-width, 180px), 1fr)); gap: var(--grid-gap, 12px);
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card-min-width-local, 180px), 1fr)); gap: var(--grid-gap, 12px);
 }
 .clothing-grid:empty::after {
   content: '暂无卡片——点「导入」把 Prompt-Manager 的 92 条服装串搬进来，或「添加卡片」手建';

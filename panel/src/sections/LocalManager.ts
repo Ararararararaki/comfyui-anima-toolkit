@@ -5,7 +5,7 @@ import { openLightbox } from '../components/Lightbox'
 import type { PngMeta, LocalLoraFile, TagFreq } from '../types'
 import type { OutputMetadata } from '../types/outputs'
 import { promptModal, confirmModal } from '../components/Modal'
-import { openContextMenu } from '../components/ContextMenu'
+import { openContextMenu, type ContextMenuAction } from '../components/ContextMenu'
 import { refreshLocalNames } from '../components/ModelCard'
 import { useOutputStore } from '../store/outputStore'
 import { extractLorasFromWorkflow, decompressZlibAsync } from '../services/outputMetadata'
@@ -34,66 +34,108 @@ function clearDragHighlight() {
 }
 
 // 右键菜单：单个 LoRA 切换分类，或拖拽多选时批量添加分类
+// 菜单为「连续勾选」模式：点击分类后菜单保持打开（sticky），可一次勾选多个分类，点「✅ 完成」收尾
 function openLoraContextMenu(e: MouseEvent, name: string) {
-  const s = useLocalModelStore.getState()
-  const catActions = (existing: string[], apply: (cat: string) => void) => [
-    ...s.categories.map(cat => ({
-      label: existing.includes(cat) ? `☑ ${cat}` : `☐ ${cat}`,
-      handler: () => apply(cat),
-    })),
-    {
-      label: '➕ 新建分类…', icon: '',
-      handler: async () => {
-        const n = (await promptModal('新建分类'))?.trim()
-        if (!n) return
-        if (s.categories.includes(n)) { showToast('分类已存在'); return }
-        s.addCategory(n)
-        apply(n)
-        s.saveToCache()
-        renderLocalView()
-      },
-    },
-  ]
+  const x = e.clientX, y = e.clientY
 
-  // 拖拽多选优先：右键在选中项上 → 批量添加分类
+  // ── 拖拽多选：右键在选中项上 → 批量添加分类 ──
   if (_dragSelected.size > 1 && _dragSelected.has(name)) {
     const names = [..._dragSelected]
-    openContextMenu(e.clientX, e.clientY, [
-      {
-        label: `已选 ${names.length} 个 LoRA`,
-        items: [{
-          label: '添加到分类', icon: '🏷️', handler: () => {},
-          children: catActions([], (cat) => {
-            s.setBatchModelCategories(names, cat)
-            s.saveToCache()
-            _dragSelected.clear()
-            clearDragHighlight()
-            renderLocalView()
-            showToast(`✅ ${names.length} 个已添加到「${cat}」`)
-          }),
-        }],
-      },
-    ])
+    const openBatchMenu = () => {
+      const s = useLocalModelStore.getState()
+      let addedCount = 0
+      const catItems: ContextMenuAction[] = s.categories.map(cat => {
+        const it: ContextMenuAction = {
+          label: `🏷️ ${cat}`,
+          sticky: true,
+          handler: () => {
+            // setBatchModelCategories 为累加语义：可连续勾选多个分类
+            useLocalModelStore.getState().setBatchModelCategories(names, cat)
+            useLocalModelStore.getState().saveToCache()
+            addedCount++
+            it.label = `☑ ${cat}`
+          },
+        }
+        return it
+      })
+      catItems.push({
+        label: '➕ 新建分类…',
+        handler: async () => {
+          const n = (await promptModal('新建分类'))?.trim()
+          if (!n) return
+          const st = useLocalModelStore.getState()
+          if (st.categories.includes(n)) { showToast('分类已存在'); return }
+          st.addCategory(n)
+          st.setBatchModelCategories(names, n)
+          st.saveToCache()
+          addedCount++
+          openBatchMenu() // 重开菜单以纳入新分类
+        },
+      })
+      catItems.push({
+        label: '✅ 完成',
+        handler: () => {
+          _dragSelected.clear()
+          clearDragHighlight()
+          renderLocalView()
+          if (addedCount > 0) showToast(`✅ ${names.length} 个 LoRA 已添加 ${addedCount} 项分类`)
+        },
+      })
+      openContextMenu(x, y, [
+        {
+          label: `已选 ${names.length} 个 LoRA`,
+          items: [{ label: '添加到分类', icon: '🏷️', handler: () => {}, children: catItems }],
+        },
+      ])
+    }
+    openBatchMenu()
     return
   }
 
-  // 单个 LoRA：分类勾选/取消
-  const existing = s.modelCategories[stripExt(name)] || []
-  openContextMenu(e.clientX, e.clientY, [
-    {
-      label: name.replace(/\.\w+$/, ''),
-      items: [{
-        label: '分类', icon: '🏷️', handler: () => {},
-        children: catActions(existing, (cat) => {
-          const cur = s.modelCategories[stripExt(name)] || []
+  // ── 单个 LoRA：分类勾选/取消（菜单保持打开，可同时勾选多个分类）──
+  const openSingleMenu = () => {
+    const s = useLocalModelStore.getState()
+    const key = stripExt(name)
+    const current = () => useLocalModelStore.getState().modelCategories[key] || []
+    const catItems: ContextMenuAction[] = s.categories.map(cat => {
+      const it: ContextMenuAction = {
+        label: current().includes(cat) ? `☑ ${cat}` : `☐ ${cat}`,
+        sticky: true,
+        handler: () => {
+          const st = useLocalModelStore.getState()
+          const cur = st.modelCategories[key] || []
           const next = cur.includes(cat) ? cur.filter(c => c !== cat) : [...cur, cat]
-          s.setModelCategories(name, next)
-          s.saveToCache()
+          st.setModelCategories(name, next)
+          st.saveToCache()
+          it.label = next.includes(cat) ? `☑ ${cat}` : `☐ ${cat}`
           renderLocalView()
-        }),
-      }],
-    },
-  ])
+        },
+      }
+      return it
+    })
+    catItems.push({
+      label: '➕ 新建分类…',
+      handler: async () => {
+        const n = (await promptModal('新建分类'))?.trim()
+        if (!n) return
+        const st = useLocalModelStore.getState()
+        if (st.categories.includes(n)) { showToast('分类已存在'); return }
+        st.addCategory(n)
+        st.setModelCategories(name, [...(st.modelCategories[key] || []), n])
+        st.saveToCache()
+        renderLocalView()
+        openSingleMenu() // 重开菜单以纳入新分类并显示 ☑
+      },
+    })
+    catItems.push({ label: '✅ 完成', handler: () => {} }) // 点击即关闭菜单（默认行为）
+    openContextMenu(x, y, [
+      {
+        label: name.replace(/\.\w+$/, ''),
+        items: [{ label: '分类', icon: '🏷️', handler: () => {}, children: catItems }],
+      },
+    ])
+  }
+  openSingleMenu()
 }
 
 // 拖拽框选（复刻 Outputs）：在列表空白处按下并拖动，框选多个 LoRA
@@ -248,14 +290,23 @@ export async function activateLocalManager() {
     if (restored) {
       const newCount = await store.detectNewFiles()
       if (newCount > 0) {
+        // 自动增量扫描：用户痛点——新下载的 LoRA 必须手动重选目录扫描才会出现。
+        // 有已授权句柄时直接后台扫描 + 自动匹配，免弹窗。
         store.setNewFileCount(newCount)
-        showToast(`📁 发现 ${newCount} 个新 LoRA 文件，点击扫描增量更新`)
+        showToast(`📁 发现 ${newCount} 个新 LoRA 文件，自动扫描中…`)
+        await store.scanIncremental()
+        renderLocalView()
       } else {
         showToast('🔄 已恢复上次扫描会话')
       }
     } else {
-      showToast('🔄 已恢复缓存数据')
+      // 句柄已失效（页面刷新后的常态）：静默回退后端扫描，全程无需交互、不弹任何对话框
+      showToast('🔄 已恢复缓存数据，后台同步中…')
+      void store.scanIncremental().then(() => renderLocalView())
     }
+  } else {
+    // 首次使用（无缓存）：静默扫一次（预设路径 → 上次路径 → ComfyUI loras 目录）
+    void store.scanIncremental().then(() => renderLocalView())
   }
 }
 
@@ -577,6 +628,10 @@ async function resetLocalPreview(name: string) {
 function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>) {
   const el = $$('localFileList')
   if (!el) return
+  // 分类/批量操作会全量重建列表 DOM；图片异步加载期间高度塌陷会把 scrollTop 钳到 0，
+  // 打断"连续右键分类"的浏览位置 → 重建前记录、重建后立即+rAF 各恢复一次。
+  const keepScroll = el.scrollTop
+  const restoreScroll = () => { el.scrollTop = keepScroll }
   applyLocalDisplayMode(state)
 
   let files = [...state.files]
@@ -627,6 +682,8 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
 
   if (state.displayMode === 'grid') {
     el.innerHTML = `<div class="local-grid-card-list">${files.map(f => renderGridFileItem(f, state)).join('')}</div>`
+    restoreScroll()
+    requestAnimationFrame(restoreScroll)
     updateBatchBar(state)
     return
   }
@@ -689,6 +746,8 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
 
   html += '</div>'
   el.innerHTML = html
+  restoreScroll()
+  requestAnimationFrame(restoreScroll)
   updateBatchBar(state)
 }
 

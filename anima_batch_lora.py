@@ -6,6 +6,7 @@
 import re
 import json
 import os
+import hashlib
 import threading
 import asyncio
 import folder_paths
@@ -349,6 +350,146 @@ async def list_loras(request):
     """List all available LoRA files, including every registered subdirectory."""
     loras = _list_lora_entries()
     return web.json_response({"loras": loras, "total": len(loras)})
+
+
+# ── Panel silent scan endpoints ──
+# 面板「LoRA 管理」的自动扫描走后端文件系统：浏览器 File System Access 的目录授权
+# 在页面刷新后必然失效（重新 requestPermission 必须用户手势），纯前端永远做不到
+# 全静默。ComfyUI 后端与本机文件系统天然同权，这里提供三个只读端点，让面板
+# 启动/激活时按「预设路径（设置项）→ 上次使用路径 → 默认 loras 目录」静默扫描。
+# 与 /anima/prompt/* 同为单机工具的既定安全策略（本地信任任意绝对路径）。
+
+def _panel_scan_from_comfy_roots() -> list[dict]:
+    """List every ComfyUI-registered loras file, resolving absolute paths for hashing."""
+    out = []
+    for raw_filename in folder_paths.get_filename_list("loras"):
+        filename = _normalize_lora_list_path(raw_filename)
+        if not filename:
+            continue
+        full = folder_paths.get_full_path("loras", raw_filename)
+        size, mtime = 0, 0.0
+        if full and os.path.isfile(full):
+            try:
+                st = os.stat(full)
+                size, mtime = st.st_size, st.st_mtime
+            except OSError:
+                pass
+        out.append({
+            "name": filename,
+            "size": size,
+            "lastModified": int(mtime * 1000),
+            "path": full or "",
+        })
+    return out
+
+
+def _panel_scan_from_dir(root: str) -> list[dict]:
+    """Recursively list LoRA files under an arbitrary absolute directory."""
+    out = []
+    root_abs = os.path.abspath(root)
+    if not os.path.isdir(root_abs):
+        return out
+    for dirpath, dirnames, filenames in os.walk(root_abs):
+        dirnames.sort()
+        for fn in sorted(filenames):
+            if not fn.lower().endswith(_LORA_MODEL_EXTENSIONS):
+                continue
+            full = os.path.join(dirpath, fn)
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            out.append({
+                "name": os.path.relpath(full, root_abs).replace("\\", "/"),
+                "size": st.st_size,
+                "lastModified": int(st.st_mtime * 1000),
+                "path": full,
+            })
+    return out
+
+
+@PromptServer.instance.routes.get("/anima/panel_scan/dirs")
+async def panel_scan_dirs(request):
+    """Preset scan roots: every ComfyUI-registered loras directory."""
+    try:
+        roots = [r for r in folder_paths.get_folder_paths("loras") if r and os.path.isdir(r)]
+    except Exception:
+        roots = []
+    return web.json_response({"roots": roots})
+
+
+@PromptServer.instance.routes.get("/anima/panel_scan/list")
+async def panel_scan_list(request):
+    """List LoRA files for the panel scanner.
+
+    无 dir 参数 → 扫描全部 ComfyUI 注册 loras 目录（预设路径）；
+    带 dir 参数 → 递归扫描该绝对目录（上次使用路径 / 设置项）。
+    lastModified 单位为毫秒，与浏览器 File.lastModified 对齐。
+    """
+    root = str(request.query.get("dir") or "").strip()
+    if root:
+        if not os.path.isdir(root):
+            return web.json_response({"error": f"目录不存在: {root}"}, status=400)
+        entries = await asyncio.to_thread(_panel_scan_from_dir, root)
+    else:
+        entries = await asyncio.to_thread(_panel_scan_from_comfy_roots)
+    return web.json_response({"dir": root, "files": entries, "total": len(entries)})
+
+
+def _hash_file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+@PromptServer.instance.routes.get("/anima/panel_scan/hash")
+async def panel_scan_hash(request):
+    """Streaming sha256 of a local file (Civitai matching needs it)."""
+    path = str(request.query.get("path") or "")
+    if not path or not os.path.isfile(path):
+        return web.json_response({"error": "文件不存在"}, status=400)
+    try:
+        sha = await asyncio.to_thread(_hash_file_sha256, path)
+    except OSError as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+    return web.json_response({"sha256": sha, "path": path})
+
+
+@PromptServer.instance.routes.post("/anima/panel_scan/delete")
+async def panel_scan_delete(request):
+    """Delete a scanned LoRA file. dir 为空时按 ComfyUI loras 根解析 name。"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    dir_ = str((body or {}).get("dir") or "").strip()
+    name = str((body or {}).get("name") or "").strip()
+    if not name:
+        return web.json_response({"error": "缺少文件名"}, status=400)
+    target = None
+    if dir_:
+        root_abs = os.path.abspath(dir_)
+        cand = os.path.abspath(os.path.join(root_abs, name))
+        # commonpath 严格比较防目录逃逸（ ../ 等）
+        if os.path.isdir(root_abs) and os.path.commonpath([root_abs, cand]) == root_abs and os.path.isfile(cand):
+            target = cand
+    else:
+        try:
+            target = folder_paths.get_full_path("loras", name)
+        except Exception:
+            target = None
+    if not target or not os.path.isfile(target):
+        return web.json_response({"error": "文件不存在"}, status=404)
+    try:
+        await asyncio.to_thread(os.remove, target)
+    except OSError as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+    return web.json_response({"deleted": target})
 
 
 # ComfyUI 支持的模型文件夹类型（面板「模型管理」用它列出 checkpoint/VAE/embedding 等）

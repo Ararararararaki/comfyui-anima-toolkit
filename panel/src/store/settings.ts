@@ -10,6 +10,8 @@ export interface AppSettings {
   // Layout
   density: 'compact' | 'default' | 'comfortable'
   cardSize: number
+  localCardSize: number
+  contentWidth: 'standard' | 'wide' | 'full'
   panelOpacity: number
   buttonOpacity: number
 
@@ -33,6 +35,9 @@ export interface AppSettings {
   // ComfyUI
   comfyUIPath: string
 
+  // LoRA 管理静默扫描的预设目录（绝对路径；留空 = 上次使用路径 = ComfyUI 注册的 loras 目录）
+  localScanDir: string
+
   // ComfyUI 顶部工具箱入口
   toolboxIcon: string
 }
@@ -49,6 +54,9 @@ const DEFAULTS: AppSettings = {
   // Surface strength: lower values reveal more of the background image.
   panelOpacity: 0.72,
   buttonOpacity: 0.30,
+  localCardSize: 180,
+  // 默认全宽自适应铺满窗口；'standard'/'wide' 是用户主动选择的定宽档
+  contentWidth: 'full',
   motionMode: 'full',
   transitionSpeed: 250,
   customCSS: '',
@@ -64,6 +72,7 @@ const DEFAULTS: AppSettings = {
     toggleSettings: 'Ctrl+,',
   },
   comfyUIPath: '',
+  localScanDir: '',
   toolboxIcon: '',
 }
 

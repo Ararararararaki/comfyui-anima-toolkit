@@ -3,8 +3,32 @@
 import type { OutputThumbnail } from '../types/outputs'
 import { outputsDb } from '../db/outputsDb'
 
-const MAX_THUMBNAILS = 200
+const MAX_THUMBNAILS = 2000
 const THUMBNAIL_SIZE = 200
+
+// LRU 访问顺序持久化：没有它，刷新页面后顺序清零，2000 张上限形同虚设
+const LRU_KEY = 'anima_outputs_thumb_lru'
+let _lruSaveTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleLruPersist(): void {
+  if (_lruSaveTimer) return
+  _lruSaveTimer = setTimeout(() => {
+    _lruSaveTimer = null
+    try {
+      localStorage.setItem(LRU_KEY, JSON.stringify(accessOrder.slice(-MAX_THUMBNAILS)))
+    } catch { /* localStorage 配额不足时静默放弃，仅损失跨会话顺序 */ }
+  }, 3000)
+}
+
+function restoreLru(): void {
+  try {
+    const raw = localStorage.getItem(LRU_KEY)
+    if (raw) {
+      const arr = JSON.parse(raw) as string[]
+      if (Array.isArray(arr)) accessOrder = arr.slice(-MAX_THUMBNAILS)
+    }
+  } catch { accessOrder = [] }
+}
 
 // 缩略图解码并发限制：首屏数百张同时 new Image() 解码大图会阻塞主线程，限制同时解码数量
 let _thumbActive = 0
@@ -12,6 +36,7 @@ const _thumbQueue: (() => void)[] = []
 const _THUMB_CONCURRENT = 4
 
 let accessOrder: string[] = []
+restoreLru()
 
 function hashPath(path: string): string {
   let hash = 0
@@ -101,6 +126,7 @@ export async function getThumbnail(
     // 更新访问顺序
     accessOrder = accessOrder.filter(k => k !== id)
     accessOrder.push(id)
+    scheduleLruPersist()
     return cached.dataUrl
   }
 
@@ -120,6 +146,7 @@ export async function getThumbnail(
 
   // 更新访问顺序
   accessOrder.push(id)
+  scheduleLruPersist()
 
   // 清理旧缓存
   if (accessOrder.length > MAX_THUMBNAILS) {
@@ -127,6 +154,7 @@ export async function getThumbnail(
     for (const key of toRemove) {
       await outputsDb.thumbnails.delete(key)
     }
+    scheduleLruPersist()
   }
 
   return result.dataUrl
@@ -151,6 +179,7 @@ export async function getCachedThumbnail(fileId: string): Promise<string | null>
   if (cached) {
     accessOrder = accessOrder.filter(k => k !== id)
     accessOrder.push(id)
+    scheduleLruPersist()
     return cached.dataUrl
   }
   return null
@@ -165,4 +194,5 @@ export async function deleteThumbnails(paths: string[]): Promise<void> {
 export async function clearThumbnailCache(): Promise<void> {
   await outputsDb.thumbnails.clear()
   accessOrder = []
+  try { localStorage.removeItem(LRU_KEY) } catch { /* 忽略 */ }
 }

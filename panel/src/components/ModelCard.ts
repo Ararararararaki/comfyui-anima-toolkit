@@ -66,7 +66,7 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
     ? `<details class="prompts-details" style="margin-top:4px"><summary style="cursor:pointer;font-size:11px;color:var(--text2)">🔑 触发词 (${m.trainedWords.length})</summary>
         <div class="prompts-wrap" style="margin-top:4px">${
           m.trainedWords.map(w =>
-            `<div class="prompt-item"><code data-copy="${esc(w)}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${esc(w)}</code><div style="display:flex;gap:3px;flex-shrink:0"><button class="copy-btn" data-copy="${esc(w)}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${icon('copy', 12)}</button><button class="copy-btn" style="background:var(--purple-dim);font-size:9px" data-ew="${esc(w)}" onclick="event.stopPropagation();window.__extractPrompt(${m.id},this.dataset.ew,this)" title="提取到 Prompt 库">${icon('plus', 12)}</button></div></div>`
+            `<div class="prompt-item"><code data-copy="${esc(w)}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${esc(w)}</code><div style="display:flex;gap:3px;flex-shrink:0"><button class="copy-btn" data-copy="${esc(w)}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${icon('copy', 12)}</button><button class="copy-btn" style="background:var(--purple-dim);color:var(--text);font-size:9px" data-ew="${esc(w)}" onclick="event.stopPropagation();window.__extractPrompt(${m.id},this.dataset.ew,this)" title="提取到 Prompt 库">${icon('plus', 12)}</button></div></div>`
           ).join('')
         }<div class="prompt-actions">
           <button class="pa-btn pa-btn-cpy" data-copy="${esc(m.trainedWords.join(', '))}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${icon('copy', 12)} 复制全部</button>
@@ -110,6 +110,7 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
               ).join('')}</div>
             </div>`
           : m.downloadUrl ? `<button class="btn btn-primary" style="flex:1;padding:5px;font-size:11px;min-width:80px" onclick="window.open('${esc(m.downloadUrl)}','_blank')">${icon('download', 12)} 下载</button>` : ''}
+        ${m.versionId ? `<button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:11px;color:var(--accent)" onclick="event.stopPropagation();window.__queueModelDownload(${m.id})" title="一键后台下载 → ComfyUI models/loras">${icon('downloadCloud', 12)}</button>` : ''}
         <button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:11px" onclick="event.stopPropagation();window.__openNotes(${m.id})" title="备注/评分">${icon('star', 12)}</button>
         ${wfBtn}
         <button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:11px" onclick="event.stopPropagation();window.__copyCardInfo(${m.id})" title="复制卡片信息">${icon('copy', 12)}</button>
@@ -130,7 +131,7 @@ function renderGalleryHtml(m: ProcessedModel, imgs: string[], multi: boolean): s
     `<span class="${i === 0 ? 'active' : ''}" data-uid="${m.uid}" data-imgidx="${i}"></span>`
   ).join('') : ''
   const fbBadge = m.fallbackDone
-    ? `<span class="img-count" style="right:6px;left:auto;top:auto;bottom:36px;background:var(--purple-dim)">${icon('refreshCw', 10)} 公开图库</span>`
+    ? `<span class="img-count" style="right:6px;left:auto;top:auto;bottom:36px">${icon('refreshCw', 10)} 公开图库</span>`
     : ''
   const isFavStatus = isFav(m.id)
   return `<div class="gallery" data-uid="${m.uid}">

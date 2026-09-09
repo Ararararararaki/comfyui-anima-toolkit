@@ -31,6 +31,54 @@ import { activateOutputs } from './Outputs'
 const MAX_PAGES = 20
 /** 已使用的 cursor 集合：防止 API 异常/回环导致重复加载已看内容 */
 let usedCursors = new Set<string>()
+
+// ── 随机探索：已看过 id 记录（跨会话，FIFO 上限），让每次探索优先带出新内容 ──
+const SEEN_KEY = 'anima_lora_seen_ids'
+const SEEN_CAP = 6000
+let seenIds: Set<number> | null = null
+function getSeen(): Set<number> {
+  if (!seenIds) {
+    try { seenIds = new Set(JSON.parse(localStorage.getItem(SEEN_KEY) || '[]') as number[]) }
+    catch { seenIds = new Set() }
+  }
+  return seenIds
+}
+function markSeen(ids: number[]) {
+  const s = getSeen()
+  for (const id of ids) { s.delete(id); s.add(id) } // 重新插入刷新顺序
+  if (s.size > SEEN_CAP) {
+    const arr = [...s]
+    seenIds = new Set(arr.slice(arr.length - SEEN_CAP))
+  }
+  try { localStorage.setItem(SEEN_KEY, JSON.stringify([...getSeen()])) } catch { /* 存储满时静默跳过 */ }
+}
+
+/** 随机探索进行中：fetchPage 据此过滤已看过、自动续页、结束后标记 */
+let exploring = false
+/** 探索单次最多连续翻的页数（某组合新内容翻完就停，不无限请求） */
+const EXPLORE_WALK_MAX = 6
+/** 第一页新内容少于此数时自动再续一页，保证首屏有足够新货 */
+const EXPLORE_MIN_FRESH = 60
+
+const EXPLORE_SORTS: { key: SortKey; w: number; label: string }[] = [
+  { key: 'Most Downloaded', w: 3, label: '下载量' },
+  { key: 'Highest Rated', w: 2.5, label: '评分' },
+  { key: 'Most Collected', w: 1.5, label: '收藏' },
+  { key: 'Newest', w: 2, label: '最新发布' },
+  { key: 'Most Discussed', w: 1, label: '讨论' },
+]
+const EXPLORE_PERIODS: { key: PeriodKey; w: number; label: string }[] = [
+  { key: 'Month', w: 3, label: '本月' },
+  { key: 'Week', w: 2, label: '本周' },
+  { key: 'Year', w: 2.5, label: '今年' },
+  { key: 'AllTime', w: 2.5, label: '全部' },
+]
+function weightedPick<T extends { w: number }>(arr: T[]): T {
+  const total = arr.reduce((s, x) => s + x.w, 0)
+  let r = Math.random() * total
+  for (const x of arr) { r -= x.w; if (r <= 0) return x }
+  return arr[arr.length - 1]
+}
 // ── 虚拟滚动:网格 absolute 布局,只渲染视口行 ──
 let gridVirtual: VirtualScroll | null = null
 let virtualList: any[] = []
@@ -109,9 +157,10 @@ function cacheKey(store: ReturnType<typeof useModelStore.getState>): string {
   return `models_${store.period}_${store.sort}_${store.filterBaseModel || 'all'}_${store.nsfw}_${store.remoteQuery}_${store.remoteTags.join(',')}`
 }
 
-/** 筛选条件变化：清空列表与 cursor，重新抓第一页 */
-function resetAndFetch() {
+/** 筛选条件变化：清空列表与 cursor，重新抓第一页（explore=true 时进入随机探索的过滤逻辑） */
+function resetAndFetch(explore = false) {
   const store = useModelStore.getState()
+  exploring = explore
   usedCursors.clear()
   store.clearPageCursors()
   store.setRaw([])
@@ -211,14 +260,17 @@ async function fetchPage(p: number, options?: { quietError?: boolean; append?: b
     // cursor 分页：API 的 page 参数已失效（实测 page=1/2 返回相同数据），翻页必须携带 cursor
     const data = await fetchModels(currentParams(), options?.cursor)
     if (!data) return
-    const items = data.items || []
     const meta = data.metadata || {}
     const nextCursor = meta.nextCursor || null
+    // 探索模式：过滤掉已看过的 id，只带出新内容
+    const items = exploring
+      ? (data.items || []).filter(m => !getSeen().has(m.id))
+      : (data.items || [])
     const before = options?.append ? store.raw.length : 0
     if (options?.append) store.appendRaw(items); else store.setRaw(items)
     const appended = store.raw.length - before
-    // 守卫②：整页全是已加载 id（无新增）→ 视为到底，终止
-    const noGain = options?.append && appended === 0
+    // 守卫②：整页全是已加载 id（无新增）→ 视为到底，终止（探索模式有自己的续页逻辑，不受此守卫影响）
+    const noGain = options?.append && appended === 0 && !exploring
     const hasMore = !noGain && !!nextCursor && p < MAX_PAGES && !(nextCursor && usedCursors.has(nextCursor))
     // 真实总页数：由 API metadata.totalPages 提供（跳转上限仍为 MAX_PAGES）
     const totalPages = meta.totalPages ? Math.max(p, meta.totalPages) : Math.max(p, store.maxPage)
@@ -229,6 +281,35 @@ async function fetchPage(p: number, options?: { quietError?: boolean; append?: b
     refreshView(!!options?.append)
 
     Cache.save(cacheKey(store), store.raw)
+    if (exploring) {
+      // 本组合抓到的都记为已看过（含被过滤的重复项，幂等）
+      markSeen((data.items || []).map(m => m.id))
+      // 探索历史：把本页新内容记入当前探索条目（供历史回看）
+      if (_exploreEntry && items.length) {
+        const pm = useModelStore.getState().processed
+        for (const it of items) {
+          if (_exploreEntry.items.length >= EXPLORE_HIST_ITEMS_CAP) break
+          if (_exploreEntry.items.some(x => x.id === it.id)) continue
+          const p2 = pm.find(x => x.id === it.id)
+          if (!p2) continue
+          _exploreEntry.items.push({ id: p2.id, uid: p2.uid, name: p2.name, creator: p2.creator, url: p2.url, thumb: p2.images?.[0] || '', categoryLabel: p2.categoryLabel || '', words: (p2.trainedWords || []).slice(0, 4), versionId: p2.versionId || 0 })
+        }
+      }
+      let continueTo: (() => void) | null = null
+      if (appended === 0) {
+        if (nextCursor && p < EXPLORE_WALK_MAX) {
+          // 本页全是看过的：继续翻下一页找新内容（有页数上限，不无限请求）
+          continueTo = () => { void fetchPage(p + 1, { append: true, cursor: nextCursor, quietError: true }) }
+        } else if (!options?.quietError) {
+          showToast('🎲 这一组合的新内容探索完了，再点一次「随机探索」换个角度', 'success')
+        }
+      } else if (p === 1 && appended < EXPLORE_MIN_FRESH && nextCursor) {
+        // 首屏新内容太少：自动再续一页补足
+        continueTo = () => { void loadMore() }
+      }
+      if (continueTo) setTimeout(continueTo, 80)
+      else { exploring = false; finishExploreEntry() }
+    }
     return items
   } catch (err) {
     if ((err as Error).name === 'AbortError') return null
@@ -250,6 +331,67 @@ export function quickFetchByTag(tag: string | null) {
   if (tagInput) tagInput.value = pick
   showToast(tag ? `⏳ 正在抓取「${pick}」类 LoRA…` : `🎲 随机抓取「${pick}」类…`)
   resetAndFetch()
+}
+
+// ── 探索历史：记录每次随机探索的组合与带出的新内容，支持回看 ──
+const EXPLORE_HIST_KEY = 'anima_explore_history'
+const EXPLORE_HIST_CAP = 20
+const EXPLORE_HIST_ITEMS_CAP = 36
+interface ExploreHistItem { id: number; uid: number; name: string; creator: string; url: string; thumb: string; categoryLabel: string; words: string[]; versionId: number }
+interface ExploreHistEntry { time: number; sort: string; period: string; tag: string; items: ExploreHistItem[] }
+let _exploreEntry: ExploreHistEntry | null = null
+function loadExploreHist(): ExploreHistEntry[] {
+  try { const r = JSON.parse(localStorage.getItem(EXPLORE_HIST_KEY) || '[]'); return Array.isArray(r) ? r : [] } catch { return [] }
+}
+function pushExploreHist(e: ExploreHistEntry) {
+  const list = [e, ...loadExploreHist().filter(x => x.time !== e.time)]
+  try { localStorage.setItem(EXPLORE_HIST_KEY, JSON.stringify(list.slice(0, EXPLORE_HIST_CAP))) }
+  catch { try { localStorage.setItem(EXPLORE_HIST_KEY, JSON.stringify(list.slice(0, 5))) } catch { /* 存储满，放弃 */ } }
+}
+function finishExploreEntry() {
+  if (!_exploreEntry) return
+  if (_exploreEntry.items.length > 0) pushExploreHist(_exploreEntry)
+  _exploreEntry = null
+}
+// ── 一键后台下载核心：入队后由服务端断点续传到 ComfyUI models/loras 根目录 ──
+async function queueLoraDownload(versionId: string | number, url: string, label: string) {
+  if (!versionId) { showToast('⚠️ 缺少版本 ID，请从 C 站页面手动下载'); return }
+  try {
+    const res = await fetch('/anima/lora/download/queue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: [{ versionId: String(versionId), target: 'auto', token: localStorage.getItem('anima_civitai_token') || '', url, label }] }),
+    })
+    const result = await res.json()
+    if (!res.ok || !result.ok) throw new Error(result.error || `HTTP ${res.status}`)
+    showToast(`📥 「${label}」已加入后台下载，完成后 LoRA 管理页会自动发现`, 'success')
+  } catch (error) {
+    showToast(`❌ 加入后台下载失败：${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+// ── 随机探索：随机「排序×周期×类别」组合 + 只看没看过的 ──
+// 解决"每次抓取都是固定那批"：同一组合的第一页内容恒定（cursor 分页无页码偏移），
+// 所以随机化的是组合本身，并跨会话记录看过的 id，让每次探索优先带出新面孔。
+// 质量与新旧由加权保证：下载/评分/收藏偏质量，本月/本周/最新偏新，今年/全部偏经典。
+export function randomExploreFetch() {
+  const store = useModelStore.getState()
+  if (store.loading) return
+  const sort = weightedPick(EXPLORE_SORTS)
+  const period = weightedPick(EXPLORE_PERIODS)
+  const tag = Math.random() < 0.45 ? QUICK_FETCH_TAGS[Math.floor(Math.random() * QUICK_FETCH_TAGS.length)] : ''
+  store.setSort(sort.key)
+  store.setPeriod(period.key)
+  store.setRemoteTags(tag ? [tag] : [])
+  // 同步工具栏 UI（直接改值，不触发各自的 resetAndFetch）
+  const sel = document.getElementById('sortSelect') as HTMLSelectElement
+  if (sel) sel.value = sort.key
+  document.querySelectorAll('.period-btn').forEach(b => b.classList.toggle('active', (b as HTMLElement).dataset.period === period.key))
+  const tagInput = document.getElementById('tagInput') as HTMLInputElement
+  if (tagInput) tagInput.value = tag
+  _exploreEntry = { time: Date.now(), sort: sort.key, period: period.key, tag, items: [] }
+  showToast(`🎲 探索：${sort.label} · ${period.label}${tag ? ' · ' + tag : ' · 全类别'}`)
+  resetAndFetch(true)
 }
 
 export async function loadMore() {
@@ -379,7 +521,7 @@ function renderGrid(append = false) {
     grid.classList.remove('virtualized')
     grid.onscroll = null
     if (store.processed.length === 0 && store.page > 0) {
-      grid.innerHTML = `<div class="empty-state"><div class="big">${icon('search', 28)}</div><p>所有 LoRA 未达筛选条件</p><p class="sub">下载量 > 250，赞/比 > 5%</p></div>`
+      grid.innerHTML = `<div class="empty-state"><div class="big">${icon('search', 28)}</div><p>没有符合当前条件的新 LoRA</p><p class="sub">点「随机探索」换个角度，或调整筛选条件</p></div>`
     } else {
       grid.innerHTML = `<div class="empty-state"><div class="big">${icon('package', 28)}</div><p>${store.processed.length === 0 ? '还没有数据，点击上方「快速抓取」或搜索开始' : '没有匹配的 LoRA'}</p></div>`
     }
@@ -694,6 +836,63 @@ export function setupGlobalHandlers() {
   }
 
   w.__openLightbox = (imgs: string[], idx: number) => openLightbox(imgs, idx)
+
+  // ── 一键后台下载：直接入队，服务端断点续传下载到 ComfyUI models/loras 根目录 ──
+  w.__queueModelDownload = (id: number) => {
+    const m = useModelStore.getState().processed.find(p => p.id === id)
+    if (!m) return
+    void queueLoraDownload(m.versionId, m.url, m.name)
+  }
+
+  // ── 探索历史回看面板 ──
+  w.__showExploreHistory = () => {
+    document.getElementById('exploreHistOverlay')?.remove()
+    const list = loadExploreHist()
+    const SORT_LBL: Record<string, string> = { 'Most Downloaded': '下载量', 'Highest Rated': '评分', 'Most Collected': '收藏', 'Newest': '最新发布', 'Most Discussed': '讨论' }
+    const PERIOD_LBL: Record<string, string> = { AllTime: '全部', Year: '今年', Month: '本月', Week: '本周', Day: '今日' }
+    const overlay = document.createElement('div')
+    overlay.id = 'exploreHistOverlay'
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:10050;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:24px'
+    const panel = document.createElement('div')
+    panel.style.cssText = 'background:var(--bg1);border:1px solid var(--border);border-radius:14px;max-width:880px;width:100%;max-height:80vh;display:flex;flex-direction:column;overflow:hidden'
+    panel.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)">
+        <div style="font-weight:700;font-size:14px">🕘 探索历史${list.length ? `（最近 ${list.length} 次）` : ''}</div>
+        <button class="eh-close btn btn-ghost" style="padding:4px 8px">${icon('x', 14)}</button>
+      </div>
+      <div style="overflow:auto;padding:12px 16px;display:flex;flex-direction:column;gap:16px">
+        ${list.length === 0 ? '<div style="color:var(--text3);font-size:13px;padding:24px;text-align:center">还没有探索记录，点「随机探索」开始</div>' : list.map(e => `
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px;color:var(--text2)">
+              <span style="font-weight:600">${esc(SORT_LBL[e.sort] || e.sort)} · ${esc(PERIOD_LBL[e.period] || e.period)}${e.tag ? ' · ' + esc(e.tag) : ' · 全类别'}</span>
+              <span style="color:var(--text3)">${new Date(e.time).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${e.items.length} 个</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(126px,1fr));gap:8px">
+              ${e.items.map(it => `
+                <div class="eh-item" data-url="${escAttr(it.url)}" style="border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--bg2);cursor:pointer">
+                  ${it.thumb ? `<img src="${esc(thumbUrl(it.thumb, 300))}" loading="lazy" alt="" style="width:100%;aspect-ratio:1;object-fit:cover;display:block">` : '<div style="width:100%;aspect-ratio:1;display:flex;align-items:center;justify-content:center;color:var(--text3)">🖼️</div>'}
+                  <div style="padding:6px 8px">
+                    <div style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escAttr(it.name)}">${esc(it.name)}</div>
+                    <div style="font-size:10px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.creator)}</div>
+                    ${it.words?.length ? `<div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">${it.words.slice(0, 2).map(wd => `<code data-copy="${esc(wd)}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)" style="font-size:9px;background:var(--bg3);padding:1px 4px;border-radius:4px;cursor:pointer">${esc(wd)}</code>`).join('')}</div>` : ''}
+                    ${it.versionId ? `<button class="eh-dl" data-vid="${it.versionId}" data-url="${escAttr(it.url)}" data-nm="${escAttr(it.name)}" style="margin-top:4px;width:100%;border:none;border-radius:6px;background:var(--accent-soft);color:var(--accent);font-size:10px;padding:3px 0;cursor:pointer">⬇ 后台下载</button>` : ''}
+                  </div>
+                </div>`).join('')}
+            </div>
+          </div>`).join('')}
+      </div>`
+    overlay.appendChild(panel)
+    overlay.addEventListener('click', ev => {
+      if (ev.target === overlay) { overlay.remove(); return }
+      const t = ev.target as HTMLElement
+      if (t.closest('.eh-close')) { overlay.remove(); return }
+      const dl = t.closest('.eh-dl') as HTMLElement | null
+      if (dl) { void queueLoraDownload(dl.dataset.vid || '', dl.dataset.url || '', dl.dataset.nm || ''); return }
+      const item = t.closest('.eh-item') as HTMLElement | null
+      if (item?.dataset.url) window.open(item.dataset.url, '_blank', 'noopener')
+    })
+    document.body.appendChild(overlay)
+  }
 
   w.__openLoraLightbox = (modelId: number, imgIdx: number) => {
     const m = useModelStore.getState().processed.find(p => p.id === modelId)
@@ -1104,7 +1303,7 @@ export function setupBindingListeners() {
   })
   // 清空历史隐藏记录(之前隐藏的数据一并永久清理)
   const clearHiddenBtn = document.getElementById('clearHiddenBtn') as HTMLButtonElement
-  if (clearHiddenBtn) clearHiddenBtn.innerHTML = icon('trash', 14) + '<span style="margin-left:5px">清空隐藏记录</span>'
+  if (clearHiddenBtn) clearHiddenBtn.innerHTML = icon('trash', 14)
   document.getElementById('clearHiddenBtn')?.addEventListener('click', async () => {
     const n = hiddenCount()
     if (n === 0) { showToast('没有隐藏记录'); return }
@@ -1151,7 +1350,7 @@ export function setupBindingListeners() {
     pageJumpInput.addEventListener('change', doJump)
   }
   // 触底自动加载已交由 renderGrid 的 grid.onscroll 处理（虚拟滚动容器内部滚动）
-  // 快速抓取按钮:图标由 icon() 生成(符合色调),点击定向/随机抓取
+  // 快速抓取按钮:图标由 icon() 生成(符合色调);前三个为定向类别,骰子为随机探索
   ;([
     { id: 'fetchCharBtn', iconName: 'user', tag: 'character' },
     { id: 'fetchLightBtn', iconName: 'zap', tag: 'lighting' },
@@ -1161,11 +1360,16 @@ export function setupBindingListeners() {
     const btn = document.getElementById(id) as HTMLButtonElement
     if (!btn) return
     const label = btn.dataset.label || ''
-    btn.innerHTML = icon(iconName, 14) + '<span style="margin-left:5px">' + label + '</span>'
-    btn.addEventListener('click', () => quickFetchByTag(tag))
+    btn.innerHTML = icon(iconName, 14) + (label ? '<span style="margin-left:5px">' + label + '</span>' : '')
+    btn.addEventListener('click', () => (tag ? quickFetchByTag(tag) : randomExploreFetch()))
   })
+  const exploreHistBtn = document.getElementById('exploreHistBtn') as HTMLButtonElement
+  if (exploreHistBtn) {
+    exploreHistBtn.innerHTML = icon('clock', 14)
+    exploreHistBtn.addEventListener('click', () => (window as any).__showExploreHistory())
+  }
   const batchModeBtn = document.getElementById('batchModeBtn') as HTMLButtonElement
-  if (batchModeBtn) batchModeBtn.innerHTML = icon('checkSquare', 14) + '<span style="margin-left:5px">选择</span>'
+  if (batchModeBtn) batchModeBtn.innerHTML = icon('checkSquare', 14)
   document.getElementById('batchModeBtn')?.addEventListener('click', () => {
     const w = window as any
     if (w.__toggleBatchMode) w.__toggleBatchMode()
@@ -1173,7 +1377,7 @@ export function setupBindingListeners() {
 
   // Add LoRA modal
   const addLoraBtn = document.getElementById('addLoraBtn') as HTMLButtonElement
-  if (addLoraBtn) addLoraBtn.innerHTML = icon('plus', 14) + '<span style="margin-left:5px">手动添加</span>'
+  if (addLoraBtn) addLoraBtn.innerHTML = icon('plus', 14)
   document.getElementById('addLoraBtn')?.addEventListener('click', () => {
     openModal('addModal')
     const input = document.getElementById('addUrlInput') as HTMLInputElement

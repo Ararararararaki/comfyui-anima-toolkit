@@ -284,10 +284,10 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  row-gap: 8px;
-  margin-bottom: 16px;
-  padding: 12px;
+  gap: 10px;
+  row-gap: 6px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
   background: var(--bg2);
   border-radius: var(--radius);
   border: 1px solid var(--border);
@@ -325,9 +325,9 @@
 }
 
 .outputs-toolbar-btn {
-  padding: 6px 10px;
-  min-width: 34px;
-  min-height: 34px;
+  padding: 4px 8px;
+  min-width: 28px;
+  min-height: 28px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -534,8 +534,8 @@
 .outputs-card-info {
   padding: 8px 10px;
   /* 固定高度：虚拟滚动行高依赖它（与 Outputs.ts OUTPUTS_INFO_H 同步）；
-     内部 actions 两行预留，超出裁剪，保证每张卡高度一致 */
-  height: 136px;
+     actions 已图标化单行，超出裁剪，保证每张卡高度一致 */
+  height: 92px;
   overflow: hidden;
 }
 
@@ -567,6 +567,19 @@
   gap: 4px;
   margin-top: 6px;
   flex-wrap: wrap;
+}
+/* 图标化动作按钮：单行小方块，悬停看 title */
+.outputs-copy-prompt-btn,
+.outputs-save-prompt-btn,
+.outputs-copy-lora-btn,
+.outputs-dl-wf-btn,
+.outputs-meta-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  padding: 0;
 }
 .outputs-copy-prompt-btn,
 .outputs-save-prompt-btn,
@@ -1352,7 +1365,7 @@
 .outputs-card-img { background: #050505; }
 .outputs-card-img img { transition: opacity var(--transition-fast) var(--ease-standard); }
 .outputs-card:hover .outputs-card-img img { transform: none; }
-.outputs-card-info { height: 136px; padding: 9px; background: var(--bg2); border-top: 1px solid var(--border); }
+.outputs-card-info { height: 92px; padding: 9px; background: var(--bg2); border-top: 1px solid var(--border); }
 .outputs-card-name { font-size: 12px; font-weight: 600; letter-spacing: .01em; }
 .outputs-card-meta, .outputs-card-date { color: var(--text3); }
 .outputs-card-actions { gap: 4px; margin-top: 5px; }

@@ -2,6 +2,7 @@ import './styles/global.css'
 import './styles/outputs.css'
 import './styles/clothing.css'
 import './styles/polish.css'
+import './styles/design-system.css'
 import { initLoraExplorer, setupBindingListeners, setupGlobalHandlers } from './sections/LoraExplorer'
 import { setupModalListeners } from './components/Modal'
 import { setupPromptHandlers } from './sections/PromptLibrary'
@@ -27,7 +28,7 @@ function initBuildTime() {
 
 // ── Theme switcher ──
 function initThemeSwitcher() {
-  const saved = localStorage.getItem('anima_theme') || 'mono-light'
+  const saved = localStorage.getItem('anima_theme') || 'drinkit'
   if (saved) document.documentElement.setAttribute('data-theme', saved)
 
   document.getElementById('themeSwitcher')?.addEventListener('click', (e) => {
@@ -45,9 +46,23 @@ function initThemeSwitcher() {
   })
 }
 
+// ── 布局自适应：header 实际高度写入 CSS 变量，主容器高度跟随（替换写死的 calc(100vh - 100px)）──
+function initLayoutVars() {
+  const header = document.querySelector('header')
+  if (!header) return
+  const update = () => document.documentElement.style.setProperty('--header-h', `${Math.round(header.getBoundingClientRect().height)}px`)
+  update()
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(update).observe(header)
+  } else {
+    window.addEventListener('resize', update)
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   initIconButtons()
   initThemeSwitcher()
+  initLayoutVars()
   initBuildTime()
   initSettings()
   setupGlobalHandlers()

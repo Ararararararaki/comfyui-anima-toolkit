@@ -1,5 +1,6 @@
 import { db } from '../store/db'
 import type { PromptCategory, PromptEntry } from '../types'
+import { showToast } from '../utils'
 
 export interface PromptLibrarySnapshot {
   schemaVersion: 1
@@ -17,6 +18,9 @@ interface PromptLibraryResponse {
 
 const ENDPOINT = '/anima/prompt-library'
 const SYNC_DELAY = 800
+// 服务端 413 阈值为 64MB，预检留出余量，避免注定失败的请求白跑
+const MAX_PUSH_BYTES = 60 * 1024 * 1024
+let lastPushFailToast = 0
 let syncTimer: ReturnType<typeof setTimeout> | undefined
 let hydratePromise: Promise<void> | null = null
 let remoteChecked = false
@@ -79,13 +83,50 @@ async function fetchRemote(): Promise<PromptLibrarySnapshot | null> {
   }
 }
 
+async function fetchDeletedIds(): Promise<string[]> {
+  try {
+    const response = await fetch(ENDPOINT + '/deleted', { cache: 'no-store' })
+    const payload = await response.json() as { ok?: boolean; deletedIds?: unknown[] }
+    if (!response.ok || !payload.ok || !Array.isArray(payload.deletedIds)) return []
+    return payload.deletedIds.map(v => String(v).trim()).filter(Boolean)
+  } catch (error) {
+    console.warn('[Prompt 库] 墓碑列表读取失败（跳过删除同步）:', error)
+    return []
+  }
+}
+
+/** 把删除同步为服务端墓碑：从镜像剔除并记录，防止下次 hydrate 复活 */
+export async function tombstonePrompts(ids: string[]): Promise<void> {
+  const cleaned = [...new Set(ids.map(id => String(id).trim()).filter(Boolean))]
+  if (!cleaned.length) return
+  try {
+    const response = await fetch(ENDPOINT + '/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: cleaned }),
+      keepalive: true,
+    })
+    const payload = await response.json().catch(() => ({})) as { ok?: boolean; error?: string }
+    if (!response.ok || !payload.ok) throw new Error(payload.error || `HTTP ${response.status}`)
+  } catch (error) {
+    console.warn('[Prompt 库] 删除同步失败（该条目刷新后可能复活）:', error)
+    showToast('⚠️ 删除未能同步到镜像，此条目刷新后可能复现（可稍后重删）')
+  }
+}
+
 export async function pushPromptLibrary(): Promise<boolean> {
   try {
     const snapshot = await readLocalSnapshot()
+    const body = JSON.stringify(snapshot)
+    if (body.length > MAX_PUSH_BYTES) {
+      console.warn('[Prompt 库] 快照超过预检上限，跳过镜像写入')
+      showToast('⚠️ Prompt 库体积过大（>60MB），镜像写入已跳过，数据仍保存在浏览器本地')
+      return false
+    }
     const response = await fetch(ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(snapshot),
+      body,
       keepalive: true,
     })
     const payload = await response.json().catch(() => ({})) as PromptLibraryResponse
@@ -94,6 +135,10 @@ export async function pushPromptLibrary(): Promise<boolean> {
   } catch (error) {
     // IndexedDB 仍是前端主库；服务端不可用时不阻塞用户保存。
     console.warn('[Prompt 库] 服务端镜像写入失败:', error)
+    if (Date.now() - lastPushFailToast > 30000) {
+      lastPushFailToast = Date.now()
+      showToast('⚠️ Prompt 库镜像写入失败，本次更改仅保存在浏览器本地')
+    }
     return false
   }
 }
@@ -102,7 +147,9 @@ export function schedulePromptLibrarySync(): void {
   if (syncTimer) clearTimeout(syncTimer)
   syncTimer = setTimeout(() => {
     syncTimer = undefined
-    if (remoteChecked) void pushPromptLibrary()
+    if (remoteChecked) { void pushPromptLibrary(); return }
+    // 首次远端校验尚未完成时不静默丢推送：等 hydrate 完成后立即补发
+    void (hydratePromise ?? Promise.resolve()).then(() => pushPromptLibrary())
   }, SYNC_DELAY)
 }
 

@@ -10,6 +10,7 @@
     x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
     download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
     clipboard: '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/>',
+    filesearch: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><circle cx="11.5" cy="14.5" r="2.5"/><path d="M13.3 16.3 15 18"/>',
   };
   function svgIcon(name, size) {
     return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;pointer-events:none;">${_ICON[name] || ""}</svg>`;
@@ -266,6 +267,86 @@
       showToast(failed ? `提取完成：${found} 个有触发词，${failed} 个失败` : `提取完成：${found} 个有触发词`);
     }
 
+    // ── 读取工作流：遍历图找 LoRA Loader 节点，提取已选 LoRA 名（去重）──
+    // TK 批量 LoRA Loader 读 lora_syntax widget；原生 LoraLoader / LoraLoaderModelOnly 读 lora_name 。
+    _readWorkflowLoras() {
+      const app = window.comfyAPI?.app?.app || window.app;
+      const g = app?.rootGraph || app?.graph || app?.canvas?.graph || null;
+      if (!g) return null;
+      const nodes = g.nodes ?? g._nodes ?? [];
+      const found = [];
+      const seen = new Set();
+      for (const nd of nodes) {
+        const cls = nd.comfyClass || nd.type;
+        if (cls === "TK Batch LoRA Loader") {
+          const w = nd.widgets?.find((x) => x.name === "lora_syntax");
+          for (const p of parseLoraSyntax(w?.value || "")) {
+            const key = p.name.toLowerCase();
+            if (!seen.has(key)) { seen.add(key); found.push({ name: p.name }); }
+          }
+        } else if (cls === "LoraLoader" || cls === "LoraLoaderModelOnly") {
+          const w = nd.widgets?.find((x) => x.name === "lora_name");
+          const nm = String(w?.value || "").trim();
+          if (!nm) continue;
+          // 原生节点值是相对路径，取文件名并去扩展名
+          const norm = nm.split("\\").join("/");
+          const raw = norm.substring(norm.lastIndexOf("/") + 1);
+          const dot = raw.lastIndexOf(".");
+          const base = dot > 0 ? raw.substring(0, dot) : raw;
+          if (!base) continue;
+          const key = base.toLowerCase();
+          if (!seen.has(key)) { seen.add(key); found.push({ name: base }); }
+        }
+      }
+      return found;
+    }
+
+    // 单个 LoRA 的触发词查询（与「提取触发词」按钮同路径：GET /anima/lora/info）
+    async _extractOne(name) {
+      const resp = await fetch("/anima/lora/info?name=" + encodeURIComponent(name));
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const data = await resp.json();
+      const src = data.source || "";
+      if (data.error || src.startsWith("error") || src.startsWith("http")) throw new Error(data.error || src);
+      return data.trainedWords || [];
+    }
+
+    async _readWorkflow() {
+      const found = this._readWorkflowLoras();
+      if (found === null) { this._setStatus("无法访问 ComfyUI 工作流图"); return; }
+      if (!found.length) { this._setStatus("工作流中未找到 TK 批量 LoRA Loader / LoraLoader 节点"); showToast("未在工作流中找到 LoRA Loader 节点"); return; }
+      let added = 0, extracted = 0, failed = 0;
+      for (let i = 0; i < found.length; i++) {
+        const l = found[i];
+        this._setStatus("读取工作流 " + (i + 1) + "/" + found.length + "：" + l.name + "…");
+        if (!this.loras.some((e) => e.name.toLowerCase() === l.name.toLowerCase())) {
+          this.loras.push({ name: l.name, weight: 1.0 });
+          added++;
+        }
+        try {
+          const tw = await this._extractOne(l.name);
+          this.twMap[l.name] = tw;
+          if (tw.length) extracted++;
+        } catch (e) {
+          failed++;
+          console.error("[Anima TW] 工作流提取失败:", l.name, e);
+        }
+        this._render();
+        if (i < found.length - 1) await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      this._commit();
+      this._render();
+      const msg = "读取到 " + found.length + " 个 LoRA（新增 " + added + "），已提取 " + extracted + " 个" + (failed ? "，失败 " + failed + " 个" : "");
+      this._setStatus(msg);
+      showToast(msg);
+    }
+
+    _setStatus(text) {
+      if (!this.statusEl) { if (text) showToast(text); return; }
+      this.statusEl.textContent = text;
+      this.statusEl.style.display = text ? "block" : "none";
+    }
+
     build() {
       const container = document.createElement("div");
       container.className = "anima-tw-widget";
@@ -281,6 +362,7 @@
           .anima-tw-widget .atw-toolbar button { display:inline-flex; align-items:center; gap:4px; padding:4px 10px; border:none; border-radius:6px; cursor:pointer; font-size:9px; font-weight:600; color:#EDEDEF; white-space:nowrap; transition:all 0.2s ease-out; background:linear-gradient(135deg,#5E6AD2,#6872D9); box-shadow:0 0 0 1px rgba(94,106,210,0.3),inset 0 1px 0 0 rgba(255,255,255,0.15); }
           .anima-tw-widget .atw-toolbar button:hover { background:linear-gradient(135deg,#6872D9,#7B83E0); transform:translateY(-1px); }
           .anima-tw-widget .atw-toolbar button:active { transform:scale(0.97); }
+          .anima-tw-widget .atw-status { font-size:10px; color:#9DB4F0; padding:2px 8px 0; line-height:1.5; }
           .anima-tw-widget .atw-list { display:flex; flex-direction:column; gap:4px; max-height:300px; overflow-y:auto; }
           .anima-tw-widget .atw-empty { font-size:10px; color:#8A8F98; padding:14px 8px; text-align:center; line-height:1.6; }
           .anima-tw-widget .atw-card { background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.06); border-radius:6px; padding:6px 8px; }
@@ -307,12 +389,20 @@
         if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(() => {});
         showToast("已复制全部触发词");
       };
-      toolbar.append(extractBtn, copyBtn);
+      const wfBtn = this._btn("读取工作流", "atw-workflow", "从工作流中的 LoRA Loader 节点读取已选 LoRA 并批量提取触发词", "filesearch");
+      wfBtn.onclick = () => this._readWorkflow();
+
+      const statusEl = document.createElement("div");
+      statusEl.className = "atw-status";
+      statusEl.style.display = "none";
+      this.statusEl = statusEl;
+
+      toolbar.append(extractBtn, wfBtn, copyBtn);
 
       const listEl = document.createElement("div");
       listEl.className = "atw-list";
 
-      container.append(toolbar, listEl);
+      container.append(toolbar, statusEl, listEl);
       this.listEl = listEl;
       this._render();
 

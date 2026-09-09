@@ -1,4 +1,4 @@
-import { getAllPrompts, countAllPrompts, countPromptsByCategory, searchPrompts, getPromptsByCategory, searchPromptsByCategory, getAllCategories, addCategory, deleteCategory, updateCategory, generateCategoryId, addPrompt, updatePrompt, deletePrompt, getPromptsByModel, getPrompt, generatePromptId } from '../store/prompts'
+import { getAllPrompts, countAllPrompts, countPromptsByCategory, searchPrompts, getPromptsByCategory, searchPromptsByCategory, getAllCategories, addCategory, deleteCategory, updateCategory, generateCategoryId, addPrompt, updatePrompt, deletePrompt, deletePromptsBulk, getPromptsByModel, getPrompt, generatePromptId } from '../store/prompts'
 import { renderPromptCard } from '../components/PromptCard'
 import { renderPromptEditor } from '../components/PromptEditor'
 import type { PromptEntry, PromptCategory } from '../types'
@@ -12,6 +12,119 @@ let currentCategory = ''
 let hasRenderedList = false
 let listLoadSeq = 0
 const promptListCache = new Map<string, PromptEntry[]>()
+
+// ── 批量模式：选择卡片 → 批量分类 / 批量命名 / 批量删除；另附整库去重 ──
+let batchMode = false
+const batchSelected = new Set<string>()
+let batchBar: HTMLElement | null = null
+
+function updateBatchBar() {
+  if (!batchBar) return
+  const countEl = batchBar.querySelector('.pbb-count')
+  if (countEl) countEl.textContent = String(batchSelected.size)
+  ;(['.pbb-cat', '.pbb-ren', '.pbb-del'] as const).forEach(sel => {
+    const btn = batchBar?.querySelector(sel) as HTMLButtonElement | null
+    if (btn) btn.disabled = batchSelected.size === 0
+  })
+}
+
+function exitPromptBatchMode() {
+  batchMode = false
+  batchSelected.clear()
+  document.querySelectorAll('.prompt-card.batch-selected').forEach(el => el.classList.remove('batch-selected'))
+  batchBar?.remove()
+  batchBar = null
+  document.getElementById('promptBatchBtn')?.classList.remove('active')
+}
+
+function ensureBatchBar() {
+  const w = window as any
+  if (batchBar) return
+  batchBar = document.createElement('div')
+  batchBar.id = 'promptBatchBar'
+  batchBar.innerHTML = `
+    <span class="pbb-info">已选 <b class="pbb-count">0</b> 项</span>
+    <button class="btn btn-primary pbb-cat" disabled>${icon('folder', 12)} 批量分类</button>
+    <button class="btn btn-ghost pbb-ren" disabled>${icon('edit3', 12)} 批量命名</button>
+    <button class="btn btn-danger pbb-del" disabled>${icon('trash', 12)} 删除选中</button>
+    <button class="btn btn-ghost pbb-dedup">${icon('copy', 12)} 整库去重</button>
+    <button class="btn btn-ghost pbb-exit">${icon('x', 12)} 退出</button>`
+  document.body.appendChild(batchBar)
+
+  batchBar.querySelector('.pbb-exit')?.addEventListener('click', () => { if (w.__togglePromptBatch) w.__togglePromptBatch() })
+
+  batchBar.querySelector('.pbb-cat')?.addEventListener('click', async () => {
+    if (!batchSelected.size) return
+    const cats = await getAllCategories()
+    const name = await promptModal('批量分类', '', `输入目标分类名（现有: ${cats.map(c => c.name).join(' / ')}；不存在则自动新建）:`)
+    const trimmed = name?.trim()
+    if (!trimmed) return
+    const target = cats.find(c => c.name === trimmed)
+    const catId = target
+      ? target.id
+      : await addCategory({ id: generateCategoryId(), name: trimmed, icon: '📁', sortOrder: (await getAllCategories()).length })
+    for (const id of batchSelected) await updatePrompt(id, { categoryId: catId })
+    showToast(`✅ 已将 ${batchSelected.size} 条移入「${trimmed}」`, 'success')
+    batchSelected.clear()
+    updateBatchBar()
+    promptListCache.clear()
+    await renderPromptLibrary()
+  })
+
+  batchBar.querySelector('.pbb-ren')?.addEventListener('click', async () => {
+    if (!batchSelected.size) return
+    const base = await promptModal('批量命名', '', '输入名称前缀（自动按创建时间从旧到新编号 01、02…）:')
+    const prefix = base?.trim()
+    if (!prefix) return
+    const ids = new Set(batchSelected)
+    const entries = (await getAllPrompts()).filter(p => ids.has(p.id)).reverse() // getAllPrompts 为新→旧，反转后旧→新
+    for (let i = 0; i < entries.length; i++) {
+      await updatePrompt(entries[i].id, { displayText: `${prefix} ${String(i + 1).padStart(2, '0')}` })
+    }
+    showToast(`✅ 已重命名 ${entries.length} 条`, 'success')
+    batchSelected.clear()
+    updateBatchBar()
+    promptListCache.clear()
+    await renderPromptLibrary()
+  })
+
+  batchBar.querySelector('.pbb-del')?.addEventListener('click', async () => {
+    if (!batchSelected.size) return
+    if (!await confirmModal('批量删除', `确认删除选中的 ${batchSelected.size} 条 Prompt？此操作不可恢复！`)) return
+    await deletePromptsBulk([...batchSelected])
+    showToast(`🗑️ 已删除 ${batchSelected.size} 条`, 'success')
+    batchSelected.clear()
+    updateBatchBar()
+    promptListCache.clear()
+    await renderPromptLibrary()
+  })
+
+  batchBar.querySelector('.pbb-dedup')?.addEventListener('click', async () => {
+    const all = await getAllPrompts()
+    const groups = new Map<string, PromptEntry[]>()
+    for (const p of all) {
+      const key = p.prompt.replace(/\s+/g, ' ').trim()
+      if (!key) continue
+      const arr = groups.get(key) || []
+      arr.push(p)
+      groups.set(key, arr)
+    }
+    const dead: string[] = []
+    for (const arr of groups.values()) {
+      if (arr.length < 2) continue
+      arr.sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt))
+      for (let i = 1; i < arr.length; i++) dead.push(arr[i].id)
+    }
+    if (!dead.length) { showToast('✅ 没有发现重复 Prompt', 'success'); return }
+    if (!await confirmModal('整库去重', `发现 ${dead.length} 条重复 Prompt（每组保留最新一条）。确认删除其余重复项？`)) return
+    await deletePromptsBulk(dead)
+    showToast(`🧹 去重完成，已删除 ${dead.length} 条`, 'success')
+    batchSelected.clear()
+    updateBatchBar()
+    promptListCache.clear()
+    await renderPromptLibrary()
+  })
+}
 
 export async function renderPromptLibrary() {
   const container = document.getElementById('promptGrid')
@@ -94,6 +207,12 @@ function renderListContent(container: HTMLElement, prompts: PromptEntry[]) {
     return
   }
   container.innerHTML = prompts.map(p => renderPromptCard(p, currentSearch)).join('')
+  // 批量模式下重渲染后恢复选中高亮
+  if (batchMode && batchSelected.size) {
+    for (const id of batchSelected) {
+      container.querySelector(`.prompt-card[data-prompt-id="${CSS.escape(id)}"]`)?.classList.add('batch-selected')
+    }
+  }
 }
 
 async function renderPromptList() {
@@ -210,6 +329,19 @@ export function setupPromptHandlers() {
     promptListCache.clear()
     await renderPromptList()
     showToast('🗑️ Prompt 已删除')
+  }
+
+  // ── 批量模式开关 ──
+  w.__togglePromptBatch = () => {
+    if (batchMode) {
+      exitPromptBatchMode()
+      return
+    }
+    batchMode = true
+    document.getElementById('promptBatchBtn')?.classList.add('active')
+    ensureBatchBar()
+    updateBatchBar()
+    showToast('🖱️ 批量模式：点击卡片选择/取消，底部操作条执行批量操作')
   }
 
   w.__editPrompt = async (id: string) => {
@@ -392,6 +524,28 @@ export function setupPromptHandlers() {
         await renderPromptList()
         showToast('🗑️ Prompt 已删除')
       }
+      return
     }
+    // 批量模式：点击卡片本体切换选中（卡片内按钮/图片/标签不参与）
+    if (!batchMode) return
+    if (target.closest('button') || target.closest('.prompt-card-img') || target.closest('.tag-sm') || target.closest('.prompt-card-fav')) return
+    const card = target.closest('.prompt-card') as HTMLElement | null
+    const id = card?.dataset.promptId
+    if (!card || !id) return
+    if (batchSelected.has(id)) {
+      batchSelected.delete(id)
+      card.classList.remove('batch-selected')
+    } else {
+      batchSelected.add(id)
+      card.classList.add('batch-selected')
+    }
+    updateBatchBar()
   })
+
+  // 批量模式入口按钮
+  const batchBtn = document.getElementById('promptBatchBtn') as HTMLButtonElement | null
+  if (batchBtn) {
+    batchBtn.innerHTML = icon('checkSquare', 12) + '<span>批量</span>'
+    batchBtn.addEventListener('click', () => { if (w.__togglePromptBatch) w.__togglePromptBatch() })
+  }
 }

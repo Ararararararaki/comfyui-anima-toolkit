@@ -1,7 +1,7 @@
 // Deploy built web app to ComfyUI custom node web directory
 // Detection order: --path CLI arg > COMFYUI_NODE_DIR env var > .comfyui-path file
 
-import { cp, readFile, writeFile, mkdir } from 'fs/promises'
+import { cp, readFile, writeFile, mkdir, rm } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
@@ -82,6 +82,8 @@ async function deploy() {
   }
 
   await mkdir(target, { recursive: true })
+  // 清掉旧 hash 产物（每次构建文件名都变，不清会无限累积）；只清 assets，app 下其他文件不动
+  await rm(join(target, 'assets'), { recursive: true, force: true })
   await cp(src, target, { recursive: true, force: true })
 
   if (existsSync(targetIndexPath)) {

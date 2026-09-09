@@ -1,0 +1,396 @@
+/*
+ * TK Toolkit · Drinkit-inspired design system
+ *
+ * This layer is intentionally separate from the feature styles.  It provides
+ * stable tokens and shared primitives while leaving the existing DOM and
+ * feature behaviour untouched.
+ */
+
+:root {
+  /* Brand */
+  --color-primary: #1683ff;
+  --color-primary-hover: #0874eb;
+  --color-primary-soft: #eaf4ff;
+  --color-background: #f5f5f3;
+  --color-surface: #ffffff;
+  --color-surface-secondary: #ececea;
+  --color-text: #111111;
+  --color-text-secondary: #686868;
+  --color-text-tertiary: #9a9a9a;
+  --color-border: rgba(0, 0, 0, .06);
+
+  /* Typography */
+  --ds-font-sans: Inter, Arial, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --ds-font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  --ds-display: clamp(40px, 5vw, 72px);
+  --ds-h1: clamp(32px, 4vw, 56px);
+  --ds-h2: clamp(26px, 3vw, 40px);
+  --ds-h3: clamp(20px, 2vw, 26px);
+  --ds-body: 15px;
+  --ds-caption: 13px;
+
+  /* Geometry */
+  --ds-radius-sm: 12px;
+  --ds-radius-md: 16px;
+  --ds-radius-card: 22px;
+  --ds-radius-lg: 30px;
+  --ds-radius-pill: 999px;
+  --ds-space-1: 4px;
+  --ds-space-2: 8px;
+  --ds-space-3: 12px;
+  --ds-space-4: 16px;
+  --ds-space-5: 20px;
+  --ds-space-6: 24px;
+  --ds-space-8: 32px;
+
+  /* Motion */
+  --ds-ease-out: cubic-bezier(.16, 1, .3, 1);
+  --ds-motion-fast: 160ms;
+  --ds-motion-standard: 240ms;
+  --ds-motion-slow: 360ms;
+}
+
+/* New default product theme.  mono and mono-light remain available for users
+ * who already saved one of those themes in localStorage. */
+html[data-theme="drinkit"] {
+  color-scheme: light;
+  --bg: var(--color-background);
+  --bg2: var(--color-surface-secondary);
+  --bg3: var(--color-surface);
+  --bg4: rgba(22, 131, 255, .055);
+  --text: var(--color-text);
+  --text2: var(--color-text-secondary);
+  --text3: var(--color-text-tertiary);
+  --border: var(--color-border);
+  --border-hover: rgba(22, 131, 255, .26);
+  --surface: rgba(255, 255, 255, .78);
+  --surface-raised: rgba(255, 255, 255, .92);
+  --surface-muted: var(--color-surface-secondary);
+  --control: rgba(255, 255, 255, .72);
+  --accent: var(--color-primary);
+  --accent2: var(--color-primary-hover);
+  --accent-soft: rgba(22, 131, 255, .11);
+  --accent-line: rgba(22, 131, 255, .30);
+  --accent-foreground: #fff;
+  --card-radius: var(--ds-radius-card);
+  --radius: var(--ds-radius-sm);
+  --radius-sm: 10px;
+  --radius-md: var(--ds-radius-md);
+  --radius-lg: var(--ds-radius-card);
+  --radius-xl: var(--ds-radius-lg);
+  --font-default: var(--ds-font-sans);
+  --font: var(--ds-font-sans);
+  --font-body: var(--ds-font-sans);
+  --font-heading: var(--ds-font-sans);
+  --font-mono: var(--ds-font-mono);
+  --shadow-surface: 0 1px 1px rgba(17, 17, 17, .025), 0 12px 32px rgba(17, 17, 17, .07);
+  --shadow-hover: 0 16px 36px rgba(17, 17, 17, .11), 0 4px 12px rgba(22, 131, 255, .08);
+  --shadow-focus: 0 0 0 4px rgba(22, 131, 255, .16);
+  --ink-line: rgba(17, 17, 17, .08);
+}
+
+/* Let the new theme feel translucent without making text low contrast. */
+html[data-theme="drinkit"] body {
+  background:
+    radial-gradient(42rem 30rem at 0% 0%, rgba(22, 131, 255, .10), transparent 68%),
+    radial-gradient(34rem 28rem at 100% 18%, rgba(22, 131, 255, .06), transparent 70%),
+    var(--color-background);
+  color: var(--color-text);
+  font-family: var(--ds-font-sans);
+  font-size: var(--ds-body);
+}
+
+html[data-theme="drinkit"] body::before {
+  display: block;
+  opacity: .8;
+  background: radial-gradient(32rem 24rem at 68% 100%, rgba(22, 131, 255, .08), transparent 70%);
+}
+
+html[data-theme="drinkit"] body::after {
+  display: block;
+  opacity: .025;
+  background-image:
+    linear-gradient(rgba(17, 17, 17, .22) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(17, 17, 17, .22) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mix-blend-mode: multiply;
+}
+
+html[data-theme="drinkit"] header {
+  background: rgba(255, 255, 255, .72) !important;
+  border-bottom-color: rgba(17, 17, 17, .07) !important;
+  box-shadow: 0 8px 26px rgba(17, 17, 17, .045) !important;
+  backdrop-filter: blur(24px) saturate(145%) !important;
+}
+
+html[data-theme="drinkit"] h1 {
+  font-weight: 600;
+  letter-spacing: -.04em;
+}
+
+html[data-theme="drinkit"] h1 .h1-icon {
+  background: var(--color-primary);
+  box-shadow: 0 5px 14px rgba(22, 131, 255, .22);
+}
+
+/* Shared primitives */
+html[data-theme="drinkit"] .ds-surface,
+html[data-theme="drinkit"] .ds-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--ds-radius-card);
+  background: rgba(255, 255, 255, .70);
+  box-shadow: var(--shadow-surface);
+  backdrop-filter: blur(18px) saturate(125%);
+}
+
+html[data-theme="drinkit"] .ds-card {
+  padding: var(--ds-space-6);
+}
+
+html[data-theme="drinkit"] .ds-card:hover {
+  border-color: var(--accent-line);
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-4px);
+}
+
+html[data-theme="drinkit"] .ds-button {
+  display: inline-flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ds-space-2);
+  padding: 0 var(--ds-space-6);
+  border: 1px solid transparent;
+  border-radius: var(--ds-radius-md);
+  font: 600 var(--ds-body)/1 var(--ds-font-sans);
+  cursor: pointer;
+  transition: background var(--ds-motion-fast) var(--ds-ease-out), color var(--ds-motion-fast) var(--ds-ease-out), border-color var(--ds-motion-fast) var(--ds-ease-out), transform var(--ds-motion-fast) var(--ds-ease-out), box-shadow var(--ds-motion-standard) var(--ds-ease-out);
+}
+
+html[data-theme="drinkit"] .ds-button-primary {
+  background: var(--color-primary);
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(22, 131, 255, .18);
+}
+
+html[data-theme="drinkit"] .ds-button-primary:hover {
+  background: var(--color-primary-hover);
+  transform: translateY(-2px);
+}
+
+html[data-theme="drinkit"] .ds-button-secondary {
+  border-color: var(--color-border);
+  background: rgba(255, 255, 255, .62);
+  color: var(--color-text);
+}
+
+html[data-theme="drinkit"] .ds-button-secondary:hover {
+  border-color: var(--accent-line);
+  background: var(--color-primary-soft);
+  color: var(--color-primary-hover);
+}
+
+html[data-theme="drinkit"] .ds-input {
+  min-height: 46px;
+  padding: 0 var(--ds-space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--ds-radius-sm);
+  background: rgba(255, 255, 255, .68);
+  color: var(--color-text);
+  font: 400 var(--ds-body)/1.4 var(--ds-font-sans);
+  outline: none;
+  transition: border-color var(--ds-motion-fast) var(--ds-ease-out), box-shadow var(--ds-motion-fast) var(--ds-ease-out);
+}
+
+html[data-theme="drinkit"] .ds-input:focus {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+html[data-theme="drinkit"] .ds-pill {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: var(--ds-space-1);
+  padding: 0 var(--ds-space-3);
+  border-radius: var(--ds-radius-pill);
+  background: var(--color-primary-soft);
+  color: var(--color-primary-hover);
+  font-size: var(--ds-caption);
+  font-weight: 600;
+}
+
+html[data-theme="drinkit"] .btn,
+html[data-theme="drinkit"] .main-tab,
+html[data-theme="drinkit"] .tab,
+html[data-theme="drinkit"] .period-btn,
+html[data-theme="drinkit"] .theme-dot {
+  transition:
+    color var(--ds-motion-fast) var(--ds-ease-out),
+    background var(--ds-motion-fast) var(--ds-ease-out),
+    border-color var(--ds-motion-fast) var(--ds-ease-out),
+    box-shadow var(--ds-motion-standard) var(--ds-ease-out),
+    transform var(--ds-motion-fast) var(--ds-ease-out);
+}
+
+html[data-theme="drinkit"] .btn {
+  border-radius: var(--ds-radius-md) !important;
+  font-weight: 600;
+}
+
+html[data-theme="drinkit"] .btn-primary,
+html[data-theme="drinkit"] .main-tab.active,
+html[data-theme="drinkit"] .tab.active,
+html[data-theme="drinkit"] .period-btn.active {
+  border-color: var(--color-primary) !important;
+  background: var(--color-primary) !important;
+  color: #fff !important;
+  box-shadow: 0 8px 18px rgba(22, 131, 255, .18) !important;
+}
+
+html[data-theme="drinkit"] .btn-primary:hover,
+html[data-theme="drinkit"] .main-tab.active:hover,
+html[data-theme="drinkit"] .tab.active:hover,
+html[data-theme="drinkit"] .period-btn.active:hover {
+  border-color: var(--color-primary-hover) !important;
+  background: var(--color-primary-hover) !important;
+  transform: translateY(-2px);
+}
+
+html[data-theme="drinkit"] .btn-ghost,
+html[data-theme="drinkit"] .main-tab,
+html[data-theme="drinkit"] .tab,
+html[data-theme="drinkit"] .period-btn {
+  border-color: rgba(17, 17, 17, .07) !important;
+  background: rgba(255, 255, 255, .58) !important;
+  color: var(--color-text-secondary) !important;
+  backdrop-filter: blur(12px);
+}
+
+html[data-theme="drinkit"] .btn-ghost:hover,
+html[data-theme="drinkit"] .main-tab:hover,
+html[data-theme="drinkit"] .tab:hover,
+html[data-theme="drinkit"] .period-btn:hover {
+  border-color: var(--accent-line) !important;
+  background: var(--color-primary-soft) !important;
+  color: var(--color-primary-hover) !important;
+  transform: translateY(-2px);
+}
+
+html[data-theme="drinkit"] input,
+html[data-theme="drinkit"] select,
+html[data-theme="drinkit"] textarea,
+html[data-theme="drinkit"] .search-wrap,
+html[data-theme="drinkit"] .ctrl-group,
+html[data-theme="drinkit"] .quick-fetch-group,
+html[data-theme="drinkit"] .toolbar,
+html[data-theme="drinkit"] .artist-toolbar,
+html[data-theme="drinkit"] .prompt-toolbar,
+html[data-theme="drinkit"] .clothing-toolbar,
+html[data-theme="drinkit"] .local-toolbar,
+html[data-theme="drinkit"] .outputs-toolbar {
+  border-color: var(--color-border) !important;
+}
+
+html[data-theme="drinkit"] input,
+html[data-theme="drinkit"] select,
+html[data-theme="drinkit"] textarea,
+html[data-theme="drinkit"] .search-wrap {
+  background: rgba(255, 255, 255, .68) !important;
+  color: var(--color-text) !important;
+  border-radius: var(--ds-radius-sm) !important;
+  backdrop-filter: blur(14px);
+}
+
+html[data-theme="drinkit"] input:focus,
+html[data-theme="drinkit"] select:focus,
+html[data-theme="drinkit"] textarea:focus,
+html[data-theme="drinkit"] .search-wrap:focus-within {
+  border-color: var(--color-primary) !important;
+  box-shadow: var(--shadow-focus) !important;
+  outline: none;
+}
+
+html[data-theme="drinkit"] .card,
+html[data-theme="drinkit"] .model-card,
+html[data-theme="drinkit"] .prompt-card,
+html[data-theme="drinkit"] .clothing-card,
+html[data-theme="drinkit"] .artist-card,
+html[data-theme="drinkit"] .outputs-card,
+html[data-theme="drinkit"] .local-grid-card,
+html[data-theme="drinkit"] .artist-panel,
+html[data-theme="drinkit"] .local-split,
+html[data-theme="drinkit"] .outputs-main,
+html[data-theme="drinkit"] .outputs-sidebar,
+html[data-theme="drinkit"] .prompt-sidebar {
+  border-color: var(--color-border) !important;
+  border-radius: var(--ds-radius-card) !important;
+  background: rgba(255, 255, 255, .70) !important;
+  box-shadow: var(--shadow-surface);
+  backdrop-filter: blur(18px) saturate(125%);
+}
+
+html[data-theme="drinkit"] .card:hover,
+html[data-theme="drinkit"] .model-card:hover,
+html[data-theme="drinkit"] .prompt-card:hover,
+html[data-theme="drinkit"] .clothing-card:hover,
+html[data-theme="drinkit"] .artist-card:hover,
+html[data-theme="drinkit"] .outputs-card:hover,
+html[data-theme="drinkit"] .local-grid-card:hover {
+  border-color: var(--accent-line) !important;
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-4px);
+}
+
+html[data-theme="drinkit"] .modal-overlay,
+html[data-theme="drinkit"] .cmdk-overlay,
+html[data-theme="drinkit"] .lightbox {
+  background: rgba(17, 17, 17, .34) !important;
+  backdrop-filter: blur(18px) saturate(125%);
+}
+
+html[data-theme="drinkit"] .modal-box,
+html[data-theme="drinkit"] .settings-modal-box,
+html[data-theme="drinkit"] .cmdk-box,
+html[data-theme="drinkit"] .ld-modal,
+html[data-theme="drinkit"] .local-preview-modal-box {
+  border: 1px solid var(--color-border) !important;
+  border-radius: var(--ds-radius-lg) !important;
+  background: rgba(255, 255, 255, .86) !important;
+  box-shadow: 0 24px 80px rgba(17, 17, 17, .18);
+  backdrop-filter: blur(24px) saturate(135%);
+}
+
+html[data-theme="drinkit"] .empty-state .big,
+html[data-theme="drinkit"] a,
+html[data-theme="drinkit"] .card-title a:hover,
+html[data-theme="drinkit"] .outputs-filter-panel-header:hover,
+html[data-theme="drinkit"] .settings-heading h3 svg {
+  color: var(--color-primary);
+}
+
+html[data-theme="drinkit"] .theme-dot[data-theme="drinkit"] {
+  background: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(22, 131, 255, .16);
+}
+
+/* Keep the dense tool UI usable on smaller screens. */
+@media (max-width: 680px) {
+  html[data-theme="drinkit"] .btn-primary { min-height: 46px; }
+  html[data-theme="drinkit"] .card,
+  html[data-theme="drinkit"] .model-card,
+  html[data-theme="drinkit"] .prompt-card,
+  html[data-theme="drinkit"] .clothing-card,
+  html[data-theme="drinkit"] .artist-card,
+  html[data-theme="drinkit"] .outputs-card,
+  html[data-theme="drinkit"] .local-grid-card { border-radius: 18px !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="drinkit"] *,
+  html[data-theme="drinkit"] *::before,
+  html[data-theme="drinkit"] *::after {
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+  }
+}

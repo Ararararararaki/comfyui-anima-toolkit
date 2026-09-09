@@ -11,6 +11,8 @@ export interface ContextMenuAction {
   danger?: boolean
   disabled?: boolean
   children?: ContextMenuAction[]
+  /** 勾选型条目：点击后菜单保持打开（handler 可更新自身 label 反映 ☑/☐），用于连续多选 */
+  sticky?: boolean
 }
 
 export interface ContextMenuGroup {
@@ -122,8 +124,15 @@ export function openContextMenu(
         el.addEventListener('click', (e) => {
           e.stopPropagation()
           if (!item.disabled) {
-            closeContextMenu()
-            item.handler()
+            if (item.sticky) {
+              // 勾选型条目：不关菜单，handler 内可改 item.label，这里同步刷新显示
+              item.handler()
+              const labelEl = el.querySelector('.context-menu-item-label')
+              if (labelEl) labelEl.innerHTML = item.icon ? `${menuIcon(item.icon)}${esc(item.label)}` : esc(item.label)
+            } else {
+              closeContextMenu()
+              item.handler()
+            }
           }
         })
       }
@@ -175,8 +184,15 @@ function openSubMenu(parentEl: HTMLElement, items: ContextMenuAction[], parentX:
     el.addEventListener('click', (e) => {
       e.stopPropagation()
       if (!item.disabled) {
-        closeContextMenu()
-        item.handler()
+        if (item.sticky) {
+          // 勾选型条目：不关菜单，handler 内可改 item.label，这里同步刷新显示
+          item.handler()
+          const labelEl = el.querySelector('.context-menu-item-label')
+          if (labelEl) labelEl.innerHTML = item.icon ? `${menuIcon(item.icon)}${esc(item.label)}` : esc(item.label)
+        } else {
+          closeContextMenu()
+          item.handler()
+        }
       }
     })
     sub.appendChild(el)

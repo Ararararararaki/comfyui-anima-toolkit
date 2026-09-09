@@ -845,6 +845,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           .bm-catpicker { min-width:210px; padding:9px !important; border:1px solid var(--bm-line-hover) !important; border-radius:12px !important; background:rgba(20,19,17,.96) !important; box-shadow:0 18px 44px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.07) !important; backdrop-filter:blur(14px); }
           .bm-cat-title { margin-bottom:6px; color:var(--bm-fg-subtle); font-size:9px; letter-spacing:.04em; }
           .bm-cat-empty { padding:4px 0; color:var(--bm-fg-subtle); font-size:9px; }
+          .bm-catpicker .bm-cat-done { margin-top:4px !important; justify-content:center; border:1px dashed rgba(230,223,211,.28) !important; color:var(--bm-fg) !important; }
+          .bm-catpicker .bm-cat-done:hover { border-color:var(--bm-accent) !important; color:var(--bm-accent) !important; }
           .bm-catpicker button { display:flex !important; align-items:center; gap:7px; width:100% !important; min-height:30px; margin:0 0 3px !important; padding:6px 8px !important; border:1px solid transparent !important; border-radius:8px !important; background:transparent !important; color:var(--bm-fg-muted) !important; font-size:10px !important; text-align:left; transition:background .18s ease,border-color .18s ease,color .18s ease,transform .18s ease !important; }
           .bm-catpicker button.is-active { border-color:rgba(230,223,211,.22) !important; background:rgba(230,223,211,.13) !important; color:var(--bm-accent) !important; }
           .bm-catpicker button:hover { transform:translateX(2px); background:var(--bm-surface-hover) !important; border-color:var(--bm-line) !important; color:var(--bm-fg) !important; }
@@ -1793,7 +1795,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           <select class="bm-sort" aria-label="排序方式">
             <option value="name">按名称</option>
             <option value="size">按大小</option>
-            <option value="date">按日期</option>
+            <option value="date" selected>按日期（最新在前）</option>
             <option value="usage">按使用次数</option>
           </select>
         </div>
@@ -1921,7 +1923,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         return allLoras
           .map((l) => {
             const m = loraMeta(l.name);
-            if (curFilter !== "all" && meta.categories.includes(curFilter) && !m.categories.includes(curFilter)) return null;
+            if (curFilter === "__uncategorized__") { if ((m.categories || []).length) return null; }
+            else if (curFilter !== "all" && meta.categories.includes(curFilter) && !m.categories.includes(curFilter)) return null;
             const info = this._imgCache[l.name] || this.loraInfoMap[l.name] || null;
             const searchIndex = loraSearchIndex(l, m, info);
             if (!matchesLoraSearch(searchIndex, q)) return null;
@@ -1960,6 +1963,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         meta.categories.forEach((cat) => {
           mk(cat, cat, allLoras.filter((l) => loraMeta(l.name).categories.includes(cat)).length, "tag");
         });
+        // 未分类 = 未归属任何分类（key __uncategorized__ 与面板「LoRA 管理」侧栏约定一致）
+        mk("__uncategorized__", "未分类", allLoras.filter((l) => !(loraMeta(l.name).categories || []).length).length, "tag");
       };
 
       // ── 预览图懒加载 ──
@@ -2414,7 +2419,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       }
     }
 
-    // ── 分类分配下拉 ──
+    // ── 分类分配下拉（连续勾选：点击分类后保持打开继续勾选，点「完成」或点击外部才关闭，与面板 LoRA 管理一致） ──
     _showCatPicker(card, name, meta, saveMeta, renderList) {
       document.querySelectorAll(".bm-catpicker").forEach((el) => el.remove());
       const picker = document.createElement("div");
@@ -2423,33 +2428,39 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const rect = card.getBoundingClientRect();
       let m = meta.loraMeta[name];
       if (!m) m = meta.loraMeta[name] = { categories: [], favorite: false, pinned: false };
-      let html = '<div class="bm-cat-title">分配分类</div>';
-      if (!meta.categories.length) html += '<div class="bm-cat-empty">暂无分类，点「分类」创建</div>';
-      meta.categories.forEach((cat) => {
-        const on = m.categories.includes(cat);
-        html += `<button class="bm-cat-option${on ? " is-active" : ""}" data-cat="${escAttr(cat)}" aria-pressed="${on}">${svgIcon(on ? "checkSquare" : "square", 12)}<span>${esc(cat)}</span></button>`;
-      });
-      picker.innerHTML = html;
-      picker.querySelectorAll("[data-cat]").forEach((btn) => {
-        btn.onclick = (ev) => {
-          ev.stopPropagation();
-          const cat = btn.dataset.cat;
-          if (m.categories.includes(cat)) m.categories = m.categories.filter((c) => c !== cat);
-          else m.categories.push(cat);
-          saveMeta(); renderList();
-          picker.remove();
-        };
-      });
+      const renderBody = () => {
+        let html = '<div class="bm-cat-title">分配分类</div>';
+        if (!meta.categories.length) html += '<div class="bm-cat-empty">暂无分类，点「分类」创建</div>';
+        meta.categories.forEach((cat) => {
+          const on = m.categories.includes(cat);
+          html += `<button class="bm-cat-option${on ? " is-active" : ""}" data-cat="${escAttr(cat)}" aria-pressed="${on}">${svgIcon(on ? "checkSquare" : "square", 12)}<span>${esc(cat)}</span></button>`;
+        });
+        html += `<button class="bm-cat-done" data-cat-done>${svgIcon("check", 12)}<span>完成</span></button>`;
+        picker.innerHTML = html;
+        picker.querySelectorAll("[data-cat]").forEach((btn) => {
+          btn.onclick = (ev) => {
+            ev.stopPropagation();
+            const cat = btn.dataset.cat;
+            if (m.categories.includes(cat)) m.categories = m.categories.filter((c) => c !== cat);
+            else m.categories.push(cat);
+            saveMeta(); renderList();
+            renderBody(); // 保持打开，仅刷新勾选态
+          };
+        });
+        picker.querySelector("[data-cat-done]").onclick = (ev) => { ev.stopPropagation(); close(); };
+      };
+      const close = () => { picker.remove(); document.removeEventListener("mousedown", rm, true); };
+      const rm = (e) => { if (!picker.contains(e.target)) close(); };
+      renderBody();
       document.body.appendChild(picker);
       let left = rect.right + 6;
       if (left + 220 > window.innerWidth) left = rect.left - 220 - 6;
       picker.style.left = left + "px";
       picker.style.top = Math.max(4, rect.top) + "px";
-      const rm = (e) => { if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener("mousedown", rm, true); } };
       setTimeout(() => document.addEventListener("mousedown", rm, true), 10);
     }
 
-    // ── 右键分类菜单（支持拖拽多选批量添加分类） ──
+    // ── 右键分类菜单（支持拖拽多选批量；连续勾选：保持打开直到「完成」/点击外部，与面板 LoRA 管理一致） ──
     _showCatContextMenu(host, name, meta, saveMeta, onDone) {
       document.querySelectorAll(".bm-catpicker").forEach((el) => el.remove());
       // 拖拽/批量勾选多个时 → 批量分类
@@ -2473,26 +2484,32 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         if (sel && this._bmSelected) this._bmSelected.clear();
         onDone && onDone();
       };
-      let html = `<div class="bm-cat-title">${sel ? `批量添加分类 (${targets.length} 个)` : "分配分类"}</div>`;
-      if (!meta.categories.length) html += '<div class="bm-cat-empty">暂无分类，先点顶部「分类」创建</div>';
-      meta.categories.forEach((cat) => {
-        const allOn = targets.every((n) => (meta.loraMeta[n] || {}).categories?.includes(cat));
-        html += `<button class="bm-cat-option${allOn ? " is-active" : ""}" data-cat="${escAttr(cat)}" aria-pressed="${allOn}">${svgIcon(allOn ? "checkSquare" : "square", 12)}<span>${esc(cat)}</span></button>`;
-      });
-      picker.innerHTML = html;
-      picker.querySelectorAll("[data-cat]").forEach((btn) => {
-        btn.onclick = (ev) => {
-          ev.stopPropagation();
-          apply(btn.dataset.cat);
-          picker.remove();
-        };
-      });
+      const renderBody = () => {
+        let html = `<div class="bm-cat-title">${sel ? `批量添加分类 (${targets.length} 个)` : "分配分类"}</div>`;
+        if (!meta.categories.length) html += '<div class="bm-cat-empty">暂无分类，先点顶部「分类」创建</div>';
+        meta.categories.forEach((cat) => {
+          const allOn = targets.every((n) => (meta.loraMeta[n] || {}).categories?.includes(cat));
+          html += `<button class="bm-cat-option${allOn ? " is-active" : ""}" data-cat="${escAttr(cat)}" aria-pressed="${allOn}">${svgIcon(allOn ? "checkSquare" : "square", 12)}<span>${esc(cat)}</span></button>`;
+        });
+        html += `<button class="bm-cat-done" data-cat-done>${svgIcon("check", 12)}<span>完成</span></button>`;
+        picker.innerHTML = html;
+        picker.querySelectorAll("[data-cat]").forEach((btn) => {
+          btn.onclick = (ev) => {
+            ev.stopPropagation();
+            apply(btn.dataset.cat);
+            renderBody(); // 保持打开，刷新勾选态（targets 闭包快照继续生效，可连续勾选多个分类）
+          };
+        });
+        picker.querySelector("[data-cat-done]").onclick = (ev) => { ev.stopPropagation(); close(); };
+      };
+      const close = () => { picker.remove(); document.removeEventListener("mousedown", rm, true); };
+      const rm = (e) => { if (!picker.contains(e.target)) close(); };
+      renderBody();
       document.body.appendChild(picker);
       let left = rect.right + 6;
       if (left + 200 > window.innerWidth) left = rect.left - 200 - 6;
       picker.style.left = left + "px";
       picker.style.top = Math.max(4, rect.top) + "px";
-      const rm = (e) => { if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener("mousedown", rm, true); } };
       setTimeout(() => document.addEventListener("mousedown", rm, true), 10);
     }
 

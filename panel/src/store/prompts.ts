@@ -1,6 +1,6 @@
 import { db } from './db'
 import type { PromptEntry, PromptCategory } from '../types'
-import { restorePromptLibrary, schedulePromptLibrarySync } from '../services/promptPersistence'
+import { restorePromptLibrary, schedulePromptLibrarySync, tombstonePrompts } from '../services/promptPersistence'
 
 // ── Prompt CRUD ──
 
@@ -61,6 +61,16 @@ export async function updatePrompt(id: string, data: Partial<PromptEntry>): Prom
 
 export async function deletePrompt(id: string): Promise<void> {
   await db.prompts.delete(id)
+  // 删除同步为服务端墓碑，防止 merge-only 镜像在下次恢复时复活该条目
+  void tombstonePrompts([id])
+  schedulePromptLibrarySync()
+}
+
+/** 批量删除：一次墓碑同步 + bulkDelete */
+export async function deletePromptsBulk(ids: string[]): Promise<void> {
+  if (!ids.length) return
+  await db.prompts.bulkDelete(ids)
+  void tombstonePrompts(ids)
   schedulePromptLibrarySync()
 }
 
