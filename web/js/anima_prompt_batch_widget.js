@@ -1156,6 +1156,14 @@
       this.resultEl.prepend(line);
     }
 
+    // 与 ComfyUI api.queuePrompt 一致的客户端 ID：execution.py 据此把
+    // executing/executed/progress 与 K 采样器 PreviewImage 送回当前画布 websocket，
+    // 否则批次任务虽然正常执行，画布上看不到任何实时预览。
+    currentComfyClientId() {
+      const api = window.comfyAPI?.api?.api || window.api;
+      return String(api?.clientId || api?.client_id || window.name || "").trim();
+    }
+
     // 启动批次（服务端执行）
     async startBatch() {
       const app = window.comfyAPI?.app?.app;
@@ -1211,6 +1219,7 @@
         const payload = {
           template,
           node_ref: String(this.node.id || ""),
+          client_id: this.currentComfyClientId(),
           jobs: jobs.map((j) => ({
             group: j.groupName || "组",
             text: j.text,
@@ -1276,6 +1285,19 @@
     }
 
     async _batchAction(action, idx) {
+      // 全局一键取消：不绑定具体 batchId，终止所有批次 + 清空原生队列 + 中断执行
+      if (action === "cancel_all") {
+        try {
+          const r = await fetchJson("/anima/batch/cancel_all", "POST", "{}");
+          if (!r || !r.ok) throw new Error((r && r.error) || "操作失败");
+          this._setBatchStatus("已一键取消全部：正在执行的任务已中断，所有排队已清空");
+        } catch (e) {
+          this._setBatchStatus("操作失败：" + String((e && e.message) || e), true);
+        }
+        if (this.batchId) this.schedulePoll();
+        if (typeof this._renderRecover === "function") this._renderRecover();
+        return;
+      }
       if (!this.batchId) return;
       const path = "/anima/batch/" + encodeURIComponent(this.batchId) + "/" + action;
       try {
@@ -1303,6 +1325,7 @@
       if (st === "running") out.push(make("⏸ 暂停", "pause", "暂停提交后续任务（正在执行的任务会自然完成）"));
       if (st === "paused") out.push(make("▶ 继续", "resume", "继续推进未执行任务"));
       if (st !== "finished" && st !== "cancelled") out.push(make("⏹ 取消", "cancel", "取消批次：移除排队任务，正在执行的让其完成"));
+      if (st !== "finished" && st !== "cancelled") out.push(make("⏹ 全部取消", "cancel_all", "一键终止全部：中断正在执行的任务 + 清空所有排队（含原生队列），无需逐组等待"));
       return out;
     }
 

@@ -968,6 +968,66 @@ async def batch_cancel(request):
     return web.json_response({"ok": True, "summary": summary})
 
 
+@PromptServer.instance.routes.post("/anima/batch/cancel_all")
+async def batch_cancel_all(request):
+    """一键取消全部：终止所有活动批次 + 清空原生排队 + 中断正在执行的任务。
+
+    对应浏览器端「⏹ 全部取消」按钮——不必等当前组跑完再逐组取消。
+    覆盖范围：所有 TK 批次的排队/运行中任务，以及手动排队到原生队列的其余任务。
+    """
+    import nodes
+    from server import PromptServer
+    q = PromptServer.instance.prompt_queue
+    os.makedirs(BATCH_DIR, exist_ok=True)
+    try:
+        names = [n for n in os.listdir(BATCH_DIR) if n.endswith(".json") and not n.endswith(".tmp.json")]
+    except OSError:
+        names = []
+    stopped = 0
+    for n in sorted(names, reverse=True)[:200]:
+        try:
+            with open(os.path.join(BATCH_DIR, n), "r", encoding="utf-8") as f:
+                peek = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(peek, dict) or peek.get("state") not in (BS_RUNNING, BS_PAUSED):
+            continue
+        bid = str(peek.get("id") or "")
+        if not bid:
+            continue
+        with _batch_lock(bid):
+            batch = _load_batch(bid)  # 锁内重读，避免覆盖并发写入
+            if batch is None or batch.get("state") not in (BS_RUNNING, BS_PAUSED):
+                continue
+            for job in batch.get("jobs", []):
+                pid = job.get("prompt_id")
+                st = job.get("status")
+                if st == ST_QUEUED and pid:
+                    try:
+                        q.delete_queue_item(lambda a, p=pid: a[1] == p)
+                    except Exception:
+                        pass
+                    job["status"] = ST_SKIPPED
+                    job["error"] = "一键取消全部（排队任务已移除）"
+                elif st == ST_RUNNING:
+                    job["status"] = ST_INTERRUPTED
+                    job["error"] = "一键取消全部（正在执行的任务已中断）"
+            batch["state"] = BS_CANCELLED
+            batch["updated"] = time.time()
+            _save_batch(batch)
+        stopped += 1
+    # 原生队列兜底：清掉剩余排队项（含非 TK 手动排队），并中断正在执行的提示
+    try:
+        q.wipe_queue()
+    except Exception:
+        pass
+    try:
+        nodes.interrupt_processing()
+    except Exception:
+        pass
+    return web.json_response({"ok": True, "stopped_batches": stopped})
+
+
 @PromptServer.instance.routes.post("/anima/batch/{batch_id}/skip")
 async def batch_skip(request):
     """跳过一条任务：未入队的直接跳过；排队中的从队列删除；运行中的拒绝。"""
