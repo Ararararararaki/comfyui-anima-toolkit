@@ -1,10 +1,10 @@
 import { useOutputStore } from '../store/outputStore'
+import { computeMasonryLayout } from '../components/masonry'
 
 export interface OutputGridGeometry {
   cols: number
   gap: number
   cardW: number
-  rowH: number
 }
 
 export interface OutputDragSelectionOptions {
@@ -33,22 +33,25 @@ export function initOutputDragSelection(options: OutputDragSelectionOptions): vo
   let rectEl: HTMLElement | null = null
   let justBoxed = false
 
+  /**
+   * 瀑布流框选：直接用与渲染相同的列填充布局反查「矩形覆盖了哪些卡」。
+   * 布局带缓存（同 files 引用 + 几何不变时复用），拖拽逐帧调用开销可忽略。
+   */
   function getGridCardIdsInRect(l: number, t: number, r: number, b: number, grid: HTMLElement): string[] {
     const state = useOutputStore.getState()
     if (grid.clientWidth <= 0) return []
     const geom = options.getGridGeometry(grid.clientWidth)
     const files = state.filteredFiles
-    const maxRow = Math.max(0, Math.ceil(files.length / geom.cols) - 1)
-    const firstRow = Math.min(maxRow, Math.max(0, Math.floor(t / geom.rowH)))
-    const lastRow = Math.min(maxRow, Math.max(0, Math.floor(b / geom.rowH)))
-    const firstCol = Math.min(geom.cols - 1, Math.max(0, Math.floor(l / (geom.cardW + geom.gap))))
-    const lastCol = Math.min(geom.cols - 1, Math.max(0, Math.floor(r / (geom.cardW + geom.gap))))
+    if (files.length === 0) return []
+    const layout = computeMasonryLayout(files, geom.cols, geom.cardW, geom.gap)
+    const colStep = geom.cardW + geom.gap
     const ids: string[] = []
-    for (let row = firstRow; row <= lastRow; row++) {
-      for (let col = firstCol; col <= lastCol; col++) {
-        const file = files[row * geom.cols + col]
-        if (file) ids.push(file.id)
-      }
+    for (let i = 0; i < files.length; i++) {
+      const x = layout.colsOf[i] * colStep
+      const y = layout.tops[i]
+      const w = geom.cardW
+      const h = layout.heights[i]
+      if (l < x + w && r > x && t < y + h && b > y) ids.push(files[i].id)
     }
     return ids
   }

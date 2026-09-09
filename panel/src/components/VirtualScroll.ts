@@ -23,17 +23,35 @@ export interface VirtualScrollOptions {
    */
   beforeRender?: (inner: HTMLElement) => void
   afterRender?: (inner: HTMLElement) => void
+  /**
+   * 可变条目高度：提供后按 index 计算每条高度（应含条目间间距），
+   * 替代固定 itemHeight 的等行高布局（瀑布流等异构高度场景）。
+   * 不提供时行为与固定行高完全一致。
+   */
+  getItemHeight?: (index: number) => number
+}
+
+type ResolvedOptions = Required<Omit<VirtualScrollOptions, 'getItemHeight'>> & {
+  getItemHeight?: (index: number) => number
 }
 
 export class VirtualScroll {
   private container: HTMLElement
   private inner: HTMLElement
-  private opts: Required<VirtualScrollOptions>
+  private opts: ResolvedOptions
   private onScroll: () => void
   private rafId: number | null = null
   private renderedStartIndex = -1
   private renderedEndIndex = -1
   private renderedItems = new Map<number, HTMLElement>()
+
+  // 可变高度布局：offsets[i] = 第 i 条顶部位置（offsets[0]=0），total 为内容总高度。
+  // 只在 totalItems / itemHeight / getItemHeight 变化时重建。
+  private offsets: number[] | null = null
+  private sizes: number[] | null = null
+  private lastTotalItems = -1
+  private lastItemHeight = -1
+  private lastGetItemHeight: ((index: number) => number) | null = null
 
   constructor(opts: VirtualScrollOptions) {
     this.opts = {
@@ -70,8 +88,49 @@ export class VirtualScroll {
     this.render(true)
   }
 
+  // 重建 offsets/sizes。固定行高模式也统一走前缀数组，保证两条路径的滚动换算一致。
+  private ensureLayout(): void {
+    const { itemHeight, totalItems, getItemHeight } = this.opts
+    if (this.lastTotalItems === totalItems && this.lastItemHeight === itemHeight
+      && this.lastGetItemHeight === (getItemHeight || null)) return
+
+    const offsets = new Array<number>(totalItems + 1)
+    offsets[0] = 0
+    let sizes: number[] | null = null
+    if (getItemHeight) {
+      sizes = new Array<number>(totalItems)
+      for (let i = 0; i < totalItems; i++) {
+        const s = getItemHeight(i)
+        sizes[i] = s
+        offsets[i + 1] = offsets[i] + s
+      }
+    } else {
+      for (let i = 0; i < totalItems; i++) offsets[i + 1] = offsets[i] + itemHeight
+    }
+    this.offsets = offsets
+    this.sizes = sizes
+    this.lastTotalItems = totalItems
+    this.lastItemHeight = itemHeight
+    this.lastGetItemHeight = getItemHeight || null
+  }
+
+  /** 第一个 offsets[i] >= x 的下标 */
+  private lowerBound(x: number): number {
+    const arr = this.offsets!
+    let lo = 0
+    let hi = arr.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (arr[mid] < x) lo = mid + 1
+      else hi = mid
+    }
+    return lo
+  }
+
   private render(force = false): void {
-    const { itemHeight, overscan, totalItems } = this.opts
+    const { overscan, totalItems } = this.opts
+    this.ensureLayout()
+    const offsets = this.offsets!
     const scrollTop = this.container.scrollTop
     const viewportHeight = this.container.clientHeight
 
@@ -88,9 +147,11 @@ export class VirtualScroll {
       return
     }
 
-    const totalHeight = totalItems * itemHeight
-    const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan)
-    const endIndex = Math.min(totalItems, Math.ceil((scrollTop + viewportHeight) / itemHeight) + overscan)
+    const totalHeight = offsets[totalItems]
+    const startIndex = Math.max(0, this.lowerBound(scrollTop) - overscan)
+    // 视口底边重用 lowerBound（第一个 top >= 底边的行）：与旧固定行高
+    // ceil((scrollTop+viewport)/itemHeight) 的端点语义逐像素一致。
+    const endIndex = Math.min(totalItems, this.lowerBound(scrollTop + viewportHeight) + overscan)
 
     // 范围未变时保留现有 DOM：每个滚动像素都重建 img 会触发重复解码，
     // 即使缩略图已缓存也会短暂显示卡片背景色。
@@ -119,11 +180,13 @@ export class VirtualScroll {
     // 仅创建新进入窗口的行。包装层提供固定坐标，让所有现有 renderItem 保持不变。
     for (let i = startIndex; i < endIndex; i++) {
       if (this.renderedItems.has(i)) continue
+      const itemTop = offsets[i]
+      const itemHeight = offsets[i + 1] - offsets[i]
       const item = document.createElement('div')
       item.className = 'virtual-scroll-item'
       item.dataset.index = String(i)
       item.style.position = 'absolute'
-      item.style.top = (i * itemHeight) + 'px'
+      item.style.top = itemTop + 'px'
       item.style.left = '0'
       item.style.width = '100%'
       item.style.height = itemHeight + 'px'
@@ -161,8 +224,8 @@ export class VirtualScroll {
    * 滚动到指定索引
    */
   scrollToIndex(index: number): void {
-    const { itemHeight } = this.opts
-    this.container.scrollTop = index * itemHeight
+    this.ensureLayout()
+    this.container.scrollTop = this.offsets![Math.min(index, this.opts.totalItems)]
   }
 
   /**

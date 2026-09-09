@@ -171,6 +171,8 @@ export interface PromptEntry {
   images: string[]
   primaryImage: string
   tags: string[]
+  /** D 站入库时保存的英文 tag → 中文译文索引，供 TK Prompt Cards 导入后直接显示 */
+  tagTranslations?: Record<string, string>
   loras?: string[]
   categoryId: string
   /** 已废弃：新记录不再写入，仅兼容旧数据 */

@@ -155,12 +155,8 @@ export async function bulkDeleteCards(ids: string[]): Promise<void> {
   await clothingDb.cards.bulkDelete(ids)
 }
 
-export async function clearCards(): Promise<number> {
-  return clothingDb.transaction('rw', clothingDb.cards, async () => {
-    const count = await clothingDb.cards.count()
-    await clothingDb.cards.clear()
-    return count
-  })
+export async function clearCards(): Promise<void> {
+  await clothingDb.cards.clear()
 }
 
 export function generateCardId(): string {

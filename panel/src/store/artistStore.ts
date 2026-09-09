@@ -5,7 +5,7 @@ import type { ArtistPreset } from '../types'
 const KEY_SEL = 'artist_sel_v3'
 const KEY_PRE = 'artist_presets_v3'
 
-const COLORS = ['#222222', '#3a3a3a', '#4a4a4a', '#5a5a5a', '#6a6a6a', '#7a7a7a', '#8a8a8a', '#999999', '#b0b0b0', '#c2c2c2']
+const COLORS = ['#f43f5e', '#8b5cf6', '#06b6d4', '#22c55e', '#eab308', '#f97316', '#ec4899', '#14b8a6', '#6366f1', '#d946ef']
 
 interface ArtistStoreState {
   // 选择状态 — 核心简化：单一数组保证顺序

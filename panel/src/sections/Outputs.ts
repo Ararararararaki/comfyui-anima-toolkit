@@ -17,8 +17,10 @@ import { extractPngTextChunks, injectPngTextChunks } from '../services/pngChunks
 import { backfillPrompts } from '../services/outputMetadataService'
 import { VirtualScroll, type VirtualScrollItemStyle } from '../components/VirtualScroll'
 import { ImageNodeCache } from '../components/ImageNodeCache'
+import { computeMasonryLayout, OUTPUTS_INFO_H, MASONRY_CARD_BORDER } from '../components/masonry'
 import { initOutputDragSelection, type OutputGridGeometry } from './outputDragSelection'
 import JSZip from 'jszip'
+import { nativeOutputUrl, nativeScanOutputs, nativeListOutputs, probeNativeStorage } from '../services/nativeStorage'
 
 import {
   renderDirTree as renderDirTreeHtml,
@@ -40,6 +42,40 @@ let _currentPreviewFileId = ''
 let _focusMode = false
 // 当前预览的原图 Blob URL（切换/关闭时 revoke，避免反复预览累积大图内存）
 let _previewBlobUrl = ''
+let _nativeOutputs = false
+
+async function refreshNativeOutputs() {
+  await nativeScanOutputs()
+  const page = await nativeListOutputs({ limit: 10000, sort: 'date', order: 'desc' })
+  const files = page.items.map(item => ({
+    ...item,
+    width: item.width || 0,
+    height: item.height || 0,
+    favorite: !!item.favorite,
+    pinned: !!item.pinned,
+    tags: Array.isArray(item.tags) ? item.tags : [],
+  })) as OutputFile[]
+  const metadata = page.items.flatMap(item => {
+    const meta = item.metadata
+    if (!meta) return []
+    return [{
+      imageId: item.id,
+      model: meta.model || '', seed: meta.seed || '', steps: meta.steps || '', cfg: meta.cfg || '',
+      sampler: meta.sampler || '', scheduler: meta.scheduler, denoise: meta.denoise, noiseSeed: meta.noiseSeed,
+      vae: meta.vae || '', clipSkip: meta.clipSkip || 0, prompt: meta.prompt || '',
+      negativePrompt: meta.negativePrompt || '', workflowJson: meta.workflowJson || '', rawMetadata: meta.rawMetadata || {},
+    } satisfies OutputMetadata]
+  })
+  useOutputStore.setState({ dirHandle: null, rootPath: 'TK SQLite · ComfyUI/output', files, metadataCache: new Map() })
+  useOutputStore.getState().putMetadataBatch(metadata)
+  useOutputStore.getState().applyFilters()
+  renderNativeDirTree(page.total)
+}
+
+function renderNativeDirTree(total: number) {
+  const el = document.getElementById('outputsDirTree')
+  if (el) el.innerHTML = `<div class="outputs-dir-node active" data-path=""><span class="outputs-dir-icon">🗃️</span><span class="outputs-dir-name">TK SQLite · ComfyUI/output</span><span class="outputs-dir-count">${total}</span></div>`
+}
 
 /**
  * 下载工作流 .json（ComfyUI 用 Load 或拖入画布导入最稳妥，替代复制——画布 Ctrl+V 易误导）
@@ -64,6 +100,25 @@ async function downloadOutputWorkflow(meta: OutputMetadata | undefined, baseName
 export async function initOutputs() {
   if (_initDone) return
   _initDone = true
+
+  _nativeOutputs = await probeNativeStorage()
+  if (_nativeOutputs) {
+    try {
+      await refreshNativeOutputs()
+      renderOutputsView()
+    } catch (error) {
+      console.warn('[Outputs] TK SQLite 初始化失败，回退 IndexedDB:', error)
+      _nativeOutputs = false
+    }
+  }
+  if (_nativeOutputs) {
+    bindOutputsEvents()
+    bindOutputsSettingsRefresh()
+    startOutputsAutoScan()
+    window.addEventListener('focus', triggerOutputsIncrementalScan)
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) triggerOutputsIncrementalScan() })
+    return
+  }
 
   // 尝试恢复目录句柄与权限状态（句柄引用始终恢复；权限降级时用横幅引导一键重新授权）
   const loadResult = await loadOutputDirHandle()
@@ -171,6 +226,11 @@ function startOutputsAutoScan() {
 
 async function triggerOutputsIncrementalScan() {
   const s = useOutputStore.getState()
+  if (_nativeOutputs) {
+    if (!isOutputsActive() || s.scanStatus === 'scanning') return
+    try { await refreshNativeOutputs(); renderOutputsView() } catch { /* 静默 */ }
+    return
+  }
   if (s.dirHandle && s.files.length > 0 && isOutputsActive() && s.scanStatus !== 'scanning') {
     try {
       const count = await scanOutputDirIncremental(s.dirHandle)
@@ -183,6 +243,12 @@ let _lastIncrementalScan = 0
 
 export async function activateOutputs() {
   if (!_initDone) return
+  if (_nativeOutputs) {
+    try { await refreshNativeOutputs() } catch { /* 保留当前缓存 */ }
+    renderOutputsView()
+    setupInfiniteScroll()
+    return
+  }
   const state = useOutputStore.getState()
 
   // 有目录句柄时尝试增量扫描
@@ -421,10 +487,8 @@ function updateFilterPanel() {
   if (clearBtn) clearBtn.style.display = hasAny ? 'block' : 'none'
 }
 
-// ── 网格虚拟滚动（Perf-1：全量数据虚拟渲染，DOM 只含可视行）──
+// ── 网格/瀑布流虚拟滚动（Perf-1：全量数据虚拟渲染，DOM 只含可视条目）──
 let _outputsVS: VirtualScroll | null = null
-/** 卡片信息区固定高度（含 actions 两行预留），与 CSS `.outputs-card-info` 同步 */
-const OUTPUTS_INFO_H = 136
 
 // 已解码缩略图节点缓存：虚拟滚动 update 会重建行容器，但不能再销毁同一路径的 img。
 // dataURL 在内存里并不等于浏览器已完成解码；只有复用原 img 节点才能从根上消除重解码黑帧。
@@ -432,8 +496,7 @@ const _outputImageNodes = new ImageNodeCache(600)
 
 type OutputsGeom = OutputGridGeometry
 
-/** 网格几何：与 CSS 网格保持一致（卡片最小宽度来自设置；≤768px 时默认 150px/10px）；
- *  行高 = 卡宽 + 信息区高 + 卡片上下边框 4px（box-sizing: border-box 下内容区少 4px） */
+/** 网格几何：与 CSS 网格保持一致（卡片最小宽度来自设置；≤768px 时默认 150px/10px） */
 function outputsGeom(width: number): OutputsGeom {
   const narrow = window.innerWidth <= 768
   const fallbackMin = narrow ? 150 : 200
@@ -443,7 +506,7 @@ function outputsGeom(width: number): OutputsGeom {
   const gap = Number.isFinite(configuredGap) && configuredGap > 0 ? configuredGap : (narrow ? 10 : 16)
   const cols = Math.max(1, Math.floor((width + gap) / (min + gap)))
   const cardW = (width - (cols - 1) * gap) / cols
-  return { cols, gap, cardW, rowH: Math.round(cardW + OUTPUTS_INFO_H + 4) }
+  return { cols, gap, cardW }
 }
 
 function destroyOutputsVS() {
@@ -494,40 +557,46 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
   }
 
   if (state.viewMode === 'grid') {
-    // ── 网格模式：虚拟滚动渲染全量（缩略图走 thumbMemory 回填 + IntersectionObserver，翻页不闪烁）──
+    // ── 网格模式：瀑布流虚拟滚动渲染全量（缩略图走 thumbMemory 回填 + IntersectionObserver，翻页不闪烁）──
     const geom = outputsGeom(el.clientWidth)
-    const totalRows = Math.ceil(files.length / geom.cols)
+    // 列填充布局：卡高随图片真实宽高比，逐张放入当前最短列；布局带缓存，滚动画框选可复用
+    const layout = computeMasonryLayout(files, geom.cols, geom.cardW, geom.gap)
+    const colStep = geom.cardW + geom.gap
 
-    // renderItem 闭包捕获本次 files/geom，每次渲染带最新闭包
-    const renderItem = (rowIndex: number, style: VirtualScrollItemStyle) => {
+    // renderItem 闭包捕获本次 files/layout/geom，每次渲染带最新闭包
+    const renderItem = (index: number, style: VirtualScrollItemStyle) => {
       const s = useOutputStore.getState()
-      const startIdx = rowIndex * geom.cols
-      let html = ''
-      for (let i = 0; i < geom.cols; i++) {
-        const f = files[startIdx + i]
-        if (!f) break
-        const meta = s.metadataCache.get(f.id)
-        // thumbSrc 同步回填内存缩略图：虚拟滚动滚动时行会被重建，
-        // 若等 IntersectionObserver 异步回填会有几帧黑图闪烁
-        html += renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined, undefined, s.thumbMemory.get(f.path))
-      }
-      return `<div style="position:absolute;top:${style.top}px;left:0;width:100%;height:${geom.rowH}px;display:grid;grid-template-columns:repeat(${geom.cols}, minmax(0,1fr));gap:${geom.gap}px;padding:0">${html}</div>`
+      const f = files[index]
+      if (!f) return ''
+      const meta = s.metadataCache.get(f.id)
+      const left = Math.round(layout.colsOf[index] * colStep)
+      const h = layout.heights[index]
+      const imgH = h - OUTPUTS_INFO_H - MASONRY_CARD_BORDER
+      // thumbSrc 同步回填内存缩略图：虚拟滚动滚动时条目会被重建，
+      // 若等 IntersectionObserver 异步回填会有几帧黑图闪烁
+      const html = renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined, undefined, s.thumbMemory.get(f.path), imgH)
+      return `<div style="position:absolute;top:0;left:${left}px;width:${geom.cardW}px;height:${h}px">${html}</div>`
     }
 
     if (_outputsVS && el.querySelector('.virtual-scroll-inner')) {
-      // itemHeight 必须一起更新：隐藏期创建的实例可能是退化几何（宽 0），
+      // getItemHeight 必须一起更新：隐藏期创建的实例可能是退化几何（宽 0），
       // 只改 totalItems 会导致 padding 沿用旧行高、滚动高度错乱
       el.querySelector('.outputs-empty')?.remove()   // 清掉静态 HTML 占位残留
-      _outputsVS.update({ totalItems: totalRows, renderItem, itemHeight: geom.rowH })
+      _outputsVS.update({
+        totalItems: files.length,
+        renderItem,
+        getItemHeight: i => layout.heights[i] + geom.gap,
+      })
     } else {
       destroyOutputsVS()
       removeOutputsSentinel()
       el.innerHTML = ''   // 清空容器（含 index.html 静态 .outputs-empty 占位），VirtualScroll 只 append 不清
       _outputsVS = new VirtualScroll({
         container: el,
-        itemHeight: geom.rowH,
-        totalItems: totalRows,
+        itemHeight: 220,   // 瀑布流布局走 getItemHeight，此项仅作退化默认
+        totalItems: files.length,
         renderItem,
+        getItemHeight: i => layout.heights[i] + geom.gap,
         beforeRender: inner => _outputImageNodes.capture(inner),
         afterRender: inner => _outputImageNodes.restore(inner, useOutputStore.getState().thumbMemory),
       })
@@ -574,11 +643,11 @@ function syncCardMeta(card: HTMLElement, file: OutputFile, meta: OutputMetadata 
   const hasWf = !!meta?.hasWorkflow
   const id = file.id
   actionsEl.innerHTML =
-    (hasPrompt ? `<button class="outputs-copy-prompt-btn" data-id="${id}" title="复制正面 Prompt">${icon('file-text', 12)} 正面</button>` : '') +
-    (hasPrompt ? `<button class="outputs-save-prompt-btn" data-id="${id}" title="将 Prompt 和图片存入 Prompt 库">${icon('book', 12)} 入库</button>` : '') +
-    (hasLoras ? `<button class="outputs-copy-lora-btn" data-id="${id}" title="复制 LoRA 标签">${icon('tag', 12)} LoRA</button>` : '') +
-    (hasWf ? `<button class="outputs-dl-wf-btn" data-id="${id}" title="保存为 .json 文件，拖入 ComfyUI 画布即可导入">${icon('download', 12)} 下载工作流</button>` : '') +
-    (meta ? `<button class="outputs-meta-btn" data-id="${id}" title="查看元数据">${icon('info', 12)} 元数据</button>` : '')
+    (hasPrompt ? `<button class="outputs-copy-prompt-btn" data-id="${id}" title="复制正面 Prompt">${icon('file-text', 12)}</button>` : '') +
+    (hasPrompt ? `<button class="outputs-save-prompt-btn" data-id="${id}" title="将 Prompt 和图片存入 Prompt 库">${icon('book', 12)}</button>` : '') +
+    (hasLoras ? `<button class="outputs-copy-lora-btn" data-id="${id}" title="复制 LoRA 标签">${icon('tag', 12)}</button>` : '') +
+    (hasWf ? `<button class="outputs-dl-wf-btn" data-id="${id}" title="下载工作流（保存 .json，拖入 ComfyUI 画布导入）">${icon('download', 12)}</button>` : '') +
+    (meta ? `<button class="outputs-meta-btn" data-id="${id}" title="查看元数据">${icon('info', 12)}</button>` : '')
 }
 
 function updateOutputsStats(state: ReturnType<typeof useOutputStore.getState>) {
@@ -1421,7 +1490,7 @@ function bindOutputsEvents() {
         observer.unobserve(img)
       }
     }
-  }, { root: grid, rootMargin: '900px 0px' })
+  }, { root: grid, rootMargin: '600px 0px' })
 
   // 观察所有图片
   const observeImages = () => {
@@ -1644,8 +1713,12 @@ async function restoreOutputsFromDb(): Promise<boolean> {
   if (restored.length === 0) return false
   useOutputStore.getState().setFiles(restored)
   // 并行回填：缩略图 → 内存缓存（渲染走同步路径）；元数据 → 只读缺失
+  // 有句柄时限预载前 240 张（其余交给 IntersectionObserver 按需从 IndexedDB 取，
+  // 大图库全量灌内存会造成打开卡顿）；无句柄时保持全量——无句柄回退路径下
+  // loadImageThumbnail 直接 return，内存预载是唯一出图通道
+  const hasHandle = !!useOutputStore.getState().dirHandle || !!_nativeOutputs
   const [thumbs] = await Promise.all([
-    preloadThumbnailsFromDb(restored),
+    preloadThumbnailsFromDb(hasHandle ? restored.slice(0, 240) : restored),
     preloadMetadataBatch(restored, useOutputStore.getState().metadataCache),
   ])
   if (thumbs.size > 0) {
@@ -1702,6 +1775,13 @@ function updateScanProgress(status: OutputScanStatus, progress: { done: number; 
 
 async function loadImageThumbnail(img: HTMLImageElement, fileId: string, filePath: string) {
   const dh = useOutputStore.getState().dirHandle
+  if (_nativeOutputs) {
+    const mem = useOutputStore.getState().thumbMemory.get(filePath)
+    if (mem) img.src = mem
+    else img.src = nativeOutputUrl(filePath)
+    _outputImageNodes.remember(img)
+    return
+  }
   if (!dh) return
 
   try {
@@ -1770,6 +1850,13 @@ function navigatePreview(direction: number) {
 async function getFileBlob(fileId: string): Promise<{ name: string; blob: Blob } | null> {
   const dh = useOutputStore.getState().dirHandle
   const file = useOutputStore.getState().files.find(f => f.id === fileId)
+  if (_nativeOutputs && file) {
+    try {
+      const response = await fetch(nativeOutputUrl(file.path))
+      if (!response.ok) return null
+      return { name: file.filename, blob: await response.blob() }
+    } catch { return null }
+  }
   if (!dh || !file) return null
   try {
     const current = await resolveDirEntry(dh, file.path)
@@ -2370,15 +2457,21 @@ async function openPreview(fileId: string) {
 
   // 获取图片 URL
   const dh = useOutputStore.getState().dirHandle
-  if (!dh) return
+  if (!_nativeOutputs && !dh) return
 
   let imgUrl = ''
+  if (_nativeOutputs) {
+    imgUrl = nativeOutputUrl(file.path)
+  }
   try {
-    const current = await resolveDirEntry(dh, file.path)
-    const fileHandle = await current.getFileHandle(file.filename)
-    const f = await fileHandle.getFile()
-    imgUrl = URL.createObjectURL(f)
-    _previewBlobUrl = imgUrl
+    if (!_nativeOutputs) {
+      if (!dh) return
+      const current = await resolveDirEntry(dh, file.path)
+      const fileHandle = await current.getFileHandle(file.filename)
+      const f = await fileHandle.getFile()
+      imgUrl = URL.createObjectURL(f)
+      _previewBlobUrl = imgUrl
+    }
   } catch {
     return
   }

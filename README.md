@@ -62,7 +62,7 @@ git clone https://github.com/Ararararararaki/comfyui-anima-toolkit.git
 - `TK/loaders`: **TK 批量 LoRA 加载器**、**TK 触发词**。前者批量加载 `<lora:name:weight>` 标签,后者提取和整理触发词。
 - `TK/camera`: **TK 相机控制**、**TK 可动素体相机**。前者保留原有机位控制；后者用极简可动空壳素体作为角度参照。
 - `TK/batch`: **TK 批量提示词注入**。按提示词文件分组批量出图,支持独立机位和批次控制。
-- `TK/prompt`: **TK Prompt Cards**、**TK Prompt Saver**。管理提示词卡片、翻译、标签、可选 CLIP 输出，并在节点执行时自动保存多路提示词。
+- `TK/prompt`: **TK Prompt Cards**、**TK Prompt Saver**、**TK 光影提示词**。管理提示词卡片、翻译与保存，并通过单一下拉框输出 Anima Base 光影预设。
 - `TK/image`: **TK 图像选择**。在多路图像输入之间按策略选择并输出来源信息。
 - `TK/latent`: **TK 空Latent 图像**。生成 Anima/Cosmos 5D 空 latent，支持宽高整体缩放、常用宽高比悬浮选择，以及以 1536px 标准长边生成具体尺寸。
 - `TK/Danbooru`: **TK D站画廊**。按标签搜索、筛选、下载和输出 Danbooru 图片及元数据。
@@ -179,6 +179,7 @@ Steam 风格界面,管理全部本地 LoRA:
 - TK 图像选择:多路图像路由(image1~image8,用几路接几路 2~8 任意;未接的自动跳过、至少一路有效)。五种路由模式:优先顺序(默认,首选为空自动按 image1→image8 兜底)/ 指定索引 / 随机 / Seed 稳定(同 seed 可复现) / 轮询(循环换源);另输出 source_index(来源编号 1~8)+ source_name(imageN),下游可精确知道图源。典型场景:D站画廊图源接 image1、自定义图源接 image2/3…,生图来源一键切换,不必改连线;输出恒为列表,兼容 D站画廊列表输出与下游单输入节点
 - TK Prompt Cards(提示词卡片库编辑器):英中对照 tag 卡片拼/存提示词、②区支持逐片段隐藏/恢复（隐藏片段保留在卡片区但不进入上方 Prompt 输出）、“翻译未翻译片段”会跳过已有卡片中文注释和已完成译文；中文片段可选择翻译源并校准为 Danbooru 规范标签（支持单条翻译/自然语言语义解析；自动回退含本地 Argos，DeepLX 按需启动；支持百度翻译 APPID + API Key，设置位于翻译状态中的“百度设置”，接口参考[百度官方文档](https://fanyi-api.baidu.com/doc/21)）、批文件一键切换、工具箱 Prompt 库条目双击弹窗编辑保存、①区库面板高度可拖拽调整、可选 CLIP 直接编码输出 CONDITIONING、`lora_syntax` 直连批量 LoRA 节点、LLM 自动分类、PNG 解析、导出批词文件；②区输入联想使用 `data/danbooru_tags_with_description_v3_modified.csv`，支持英文、中文说明和模糊匹配，结果按标签匹配级别与 D 站帖数排序
 - TK Prompt Saver(提示词保存):6 路 STRING 输入,支持单选/多选和每路名称;节点执行时自动将开启且非空的提示词写入 TK Toolkit 与 TK Prompt Cards 共用的 Prompt 库,对应 `image_1` 到 `image_6` 可作为预览图保存
+- TK 光影提示词:一个“分类｜预设”下拉框切换 Anima Base 光影组合,默认“通用｜平衡柔光”不限定昼夜、室内外或主光方向;可选启用 `custom_tags` 追加自定义光影标签,输出固定为带末尾英文逗号的 `lighting_prompt` STRING
 - TK Trigger Words(触发词):从 `<lora:name:weight>` 提取触发词(bridge 触发词优先,无记录时文件名兜底),支持手动追加、卡片编辑、一键复制
 - TK Text Join(文本合并):按逗号/空格/换行合并 4 路文本,自动清理连续逗号
 - TK String Router(字符串路由):6 路 STRING 输入,支持单选/多选放行、拖拽交换输出顺序、自动读取连线源节点/输出名称、接口别名和工作流保存
@@ -198,6 +199,12 @@ Steam 风格界面,管理全部本地 LoRA:
 节点底部的「正则排除」使用不区分大小写的正则匹配;「精准排除」支持逗号或换行分隔,按不区分大小写的完整 Tag 匹配。筛选只作用于本节点输出,不会修改上游 `TAG_BUNDLE`。
 
 节点的 `tag_bundle` 和 `natural_language` 都是可选输入。单输入时只需把普通 Prompt 或 `ALL_TAGS` 接到 `natural_language`(前端显示「统一 Prompt」);勾选具体分类启用自动分类,「保留自然语言」决定未知句子是否附在分类结果后。默认应用正则/精准排除,并可单独关闭「过滤自然语言」。
+
+#### TK 光影提示词
+
+在 `TK/prompt` 中添加 **TK 光影提示词**，平时只需切换一个“分类｜预设”下拉框，再把 `lighting_prompt` 接到 **TK 文本合并**、CLIP 文本编码或其他正向提示词流程。默认“通用｜平衡柔光”用于亮/暗、室内/室外和图生图场景，不指定太阳、月亮、窗户、霓虹或主光方向。
+
+节点提供 4 个完全通用预设，以及室内、室外、时段、夜景、方向和氛围专用预设。高级用法可打开“启用追加”并在 `custom_tags` 中写入逗号或换行分隔的额外光影 tag；节点会去空、去重并统一输出成 `tag1, tag2, tag3,`，不会附加预设名称、质量词或画风词。为避免给 Anima 制造无效权重语法，本节点不提供数值强度滑块，强弱差异由经过审视的预设本身表达。
 
 #### TK Prompt Saver
 

@@ -79,10 +79,11 @@ export function cardSignature(file: OutputFile): string {
   ].join('|')
 }
 
-export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, isSelected: boolean, loras?: string[], sig?: string, thumbSrc?: string): string {
+export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, isSelected: boolean, loras?: string[], sig?: string, thumbSrc?: string, imgH?: number): string {
   const st = file.status ? STATUS_DEFS[file.status] : null
-  return `<div class="outputs-card ${isSelected ? 'selected' : ''}${file.status ? ` status-${file.status}` : ''}" data-id="${escAttr(file.id)}" data-path="${escAttr(file.path)}"${sig ? ` data-sig="${escAttr(sig)}"` : ''}>
-    <div class="outputs-card-img">
+  const masonry = imgH ? ' masonry' : ''
+  return `<div class="outputs-card ${isSelected ? 'selected' : ''}${file.status ? ` status-${file.status}` : ''}${masonry}" data-id="${escAttr(file.id)}" data-path="${escAttr(file.path)}"${sig ? ` data-sig="${escAttr(sig)}"` : ''}>
+    <div class="outputs-card-img"${imgH ? ` style="height:${imgH}px"` : ''}>
       ${st ? `<div class="outputs-card-status-tag" style="background:${st.color}">${st.label}</div>` : ''}
       <img src="${escAttr(thumbSrc || '')}" data-file-id="${escAttr(file.id)}" data-file-path="${escAttr(file.path)}" data-file-version="${file.mtime}:${file.size}" alt="${esc(file.filename)}" loading="eager">
       <div class="outputs-card-actions-top">

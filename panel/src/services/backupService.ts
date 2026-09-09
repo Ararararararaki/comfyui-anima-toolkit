@@ -4,9 +4,6 @@
  */
 import { outputsDb } from '../db/outputsDb'
 import { exportSettings, importSettings, saveBgImageDB, loadBgImageDB } from '../store/settings'
-import { db as promptDb } from '../store/db'
-import type { PromptCategory, PromptEntry } from '../types'
-import { schedulePromptLibrarySync } from './promptPersistence'
 
 export interface BackupData {
   schemaVersion: 1
@@ -18,10 +15,6 @@ export interface BackupData {
     metadata: unknown[]
     manifest: unknown[]
     dirHandles: unknown[]
-  }
-  promptLibrary: {
-    categories: PromptCategory[]
-    prompts: PromptEntry[]
   }
 }
 
@@ -59,14 +52,12 @@ export async function exportAll(): Promise<BackupData> {
     settings = {}
   }
 
-  const [files, metadata, manifest, dirHandles, bgImageData, promptCategories, prompts] = await Promise.all([
+  const [files, metadata, manifest, dirHandles, bgImageData] = await Promise.all([
     outputsDb.files.toArray(),
     outputsDb.metadata.toArray(),
     outputsDb.manifest.toArray(),
     serializeDirHandles(),
     loadBgImageDB().catch(() => null),
-    promptDb.promptCategories.toArray(),
-    promptDb.prompts.toArray(),
   ])
 
   return {
@@ -75,7 +66,6 @@ export async function exportAll(): Promise<BackupData> {
     settings,
     bgImageData: bgImageData || null,
     db: { files, metadata, manifest, dirHandles },
-    promptLibrary: { categories: promptCategories, prompts },
   }
 }
 
@@ -131,22 +121,6 @@ export async function importAll(json: string): Promise<{ ok: boolean; error?: st
     })
   } catch (e) {
     return { ok: false, error: `IndexedDB 导入失败：${String((e && (e as Error).message) || e)}` }
-  }
-
-  // Prompt 库采用按 ID 合并，不清空现有条目，避免导入一个旧备份时误删新内容。
-  if (data.promptLibrary && typeof data.promptLibrary === 'object') {
-    const categories = Array.isArray(data.promptLibrary.categories) ? data.promptLibrary.categories : []
-    const prompts = Array.isArray(data.promptLibrary.prompts) ? data.promptLibrary.prompts : []
-    try {
-      await promptDb.transaction('rw', promptDb.promptCategories, promptDb.prompts, async () => {
-        if (categories.length) await promptDb.promptCategories.bulkPut(categories)
-        if (prompts.length) await promptDb.prompts.bulkPut(prompts)
-      })
-      // 导入的数据也立即进入服务端镜像，避免只恢复到当前浏览器。
-      schedulePromptLibrarySync()
-    } catch (e) {
-      return { ok: false, error: `Prompt 库导入失败：${String((e && (e as Error).message) || e)}` }
-    }
   }
 
   return { ok: true }

@@ -427,6 +427,11 @@
   background: var(--bg3);
 }
 
+/* 瀑布流卡片：图片区高度由 JS 按图片真实宽高比内联，取消固定方形容器 */
+.outputs-card.masonry .outputs-card-img {
+  aspect-ratio: auto;
+}
+
 .outputs-card-img img {
   width: 100%;
   height: 100%;
@@ -1365,16 +1370,18 @@
 .outputs-card-img { background: #050505; }
 .outputs-card-img img { transition: opacity var(--transition-fast) var(--ease-standard); }
 .outputs-card:hover .outputs-card-img img { transform: none; }
-.outputs-card-info { height: 92px; padding: 9px; background: var(--bg2); border-top: 1px solid var(--border); }
-.outputs-card-name { font-size: 12px; font-weight: 600; letter-spacing: .01em; }
+.outputs-card-info { height: 92px; padding: 7px; background: var(--bg2); border-top: 1px solid var(--border); }
+.outputs-card-name { font-size: 12px; font-weight: 600; letter-spacing: .01em; line-height: 16px; }
 .outputs-card-meta, .outputs-card-date { color: var(--text3); }
-.outputs-card-actions { gap: 4px; margin-top: 5px; }
+.outputs-card-meta { margin-top: 2px; line-height: 17px; height: 17px; overflow: hidden; }
+.outputs-card-date { margin-top: 1px; line-height: 14px; }
+.outputs-card-actions { gap: 4px; margin-top: 2px; }
 .outputs-copy-prompt-btn,
 .outputs-save-prompt-btn,
 .outputs-copy-lora-btn,
 .outputs-dl-wf-btn,
 .outputs-meta-btn {
-  min-height: 24px;
+  min-height: 21px;
   border-radius: 3px;
   border-color: transparent;
   background: var(--bg3);

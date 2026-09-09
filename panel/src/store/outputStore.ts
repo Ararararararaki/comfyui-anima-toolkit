@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { OutputFile, OutputMetadata, OutputViewMode, OutputSortKey, OutputFilterKey, OutputScanStatus } from '../types/outputs'
 import { outputsDb } from '../db/outputsDb'
 import { extractLorasFromWorkflow } from '../services/outputMetadata'
+import { nativeStorageEnabled, nativeUpdateOutput } from '../services/nativeStorage'
 
 const PAGE_SIZE = 50
 
@@ -219,13 +220,16 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   setFilterCategory: (filterCategory) => { set({ filterCategory, page: 1 }); persistFilterState(get()); get().applyFilters() },
   setCategory: async (id, category) => {
     try {
-      await outputsDb.files.update(id, { category })
+      if (nativeStorageEnabled()) await nativeUpdateOutput(id, { category })
+      else await outputsDb.files.update(id, { category })
       set(s => ({ files: s.files.map(f => f.id === id ? { ...f, category } : f) }))
       get().applyFilters()
     } catch (err) { console.warn('[outputStore] setCategory 失败:', err) }
   },
   batchSetCategory: async (ids, category) => {
-    const results = await Promise.allSettled(ids.map(id => outputsDb.files.update(id, { category })))
+    const results = await Promise.allSettled(ids.map(id => nativeStorageEnabled()
+      ? nativeUpdateOutput(id, { category })
+      : outputsDb.files.update(id, { category })))
     const failed = results.filter(r => r.status === 'rejected')
     if (failed.length > 0) console.warn(`[outputStore] batchSetCategory 失败 ${failed.length}/${ids.length}`)
     // 仅更新 DB 写入成功的项，失败项保持原值（内存与 DB 一致）
@@ -237,7 +241,9 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   deleteCategory: async (category) => {
     if (!category) return
     const ids = get().files.filter(f => f.category === category).map(f => f.id)
-    const results = await Promise.allSettled(ids.map(id => outputsDb.files.update(id, { category: '' })))
+    const results = await Promise.allSettled(ids.map(id => nativeStorageEnabled()
+      ? nativeUpdateOutput(id, { category: '' })
+      : outputsDb.files.update(id, { category: '' })))
     const failed = results.filter(r => r.status === 'rejected')
     if (failed.length > 0) console.warn(`[outputStore] deleteCategory 失败 ${failed.length}/${ids.length}`)
     const okIds = new Set(ids.filter((_, i) => results[i].status === 'fulfilled'))
@@ -247,7 +253,9 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   renameCategory: async (oldName, newName) => {
     if (!oldName || !newName) return
     const ids = get().files.filter(f => f.category === oldName).map(f => f.id)
-    const results = await Promise.allSettled(ids.map(id => outputsDb.files.update(id, { category: newName })))
+    const results = await Promise.allSettled(ids.map(id => nativeStorageEnabled()
+      ? nativeUpdateOutput(id, { category: newName })
+      : outputsDb.files.update(id, { category: newName })))
     const failed = results.filter(r => r.status === 'rejected')
     if (failed.length > 0) console.warn(`[outputStore] renameCategory 失败 ${failed.length}/${ids.length}`)
     const okIds = new Set(ids.filter((_, i) => results[i].status === 'fulfilled'))
@@ -275,7 +283,8 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     const file = get().files.find(f => f.id === id)
     if (!file) return
     const next = !file.favorite
-    await outputsDb.files.update(id, { favorite: next })
+    if (nativeStorageEnabled()) await nativeUpdateOutput(id, { favorite: next })
+    else await outputsDb.files.update(id, { favorite: next })
     set(s => ({
       files: s.files.map(f => f.id === id ? { ...f, favorite: next } : f)
     }))
@@ -284,7 +293,8 @@ export const useOutputStore = create<OutputState>((set, get) => ({
 
   setRating: async (id, rating) => {
     try {
-      await outputsDb.files.update(id, { rating })
+      if (nativeStorageEnabled()) await nativeUpdateOutput(id, { rating })
+      else await outputsDb.files.update(id, { rating })
       set(s => ({
         files: s.files.map(f => f.id === id ? { ...f, rating } : f)
       }))
@@ -295,21 +305,24 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   },
 
   setNotes: async (id, notes) => {
-    await outputsDb.files.update(id, { notes })
+    if (nativeStorageEnabled()) await nativeUpdateOutput(id, { notes })
+    else await outputsDb.files.update(id, { notes })
     set(s => ({
       files: s.files.map(f => f.id === id ? { ...f, notes } : f)
     }))
   },
 
   setTags: async (id, tags) => {
-    await outputsDb.files.update(id, { tags })
+    if (nativeStorageEnabled()) await nativeUpdateOutput(id, { tags })
+    else await outputsDb.files.update(id, { tags })
     set(s => ({
       files: s.files.map(f => f.id === id ? { ...f, tags } : f)
     }))
   },
 
   setStatus: async (id, status) => {
-    await outputsDb.files.update(id, { status })
+    if (nativeStorageEnabled()) await nativeUpdateOutput(id, { status })
+    else await outputsDb.files.update(id, { status })
     set(s => ({
       files: s.files.map(f => f.id === id ? { ...f, status } : f)
     }))
@@ -320,7 +333,8 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     const file = get().files.find(f => f.id === id)
     if (!file) return
     const next = !file.pinned
-    await outputsDb.files.update(id, { pinned: next })
+    if (nativeStorageEnabled()) await nativeUpdateOutput(id, { pinned: next })
+    else await outputsDb.files.update(id, { pinned: next })
     set(s => ({
       files: s.files.map(f => f.id === id ? { ...f, pinned: next } : f)
     }))
@@ -328,13 +342,21 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   },
 
   batchPin: async (ids) => {
-    for (const id of ids) await outputsDb.files.update(id, { pinned: true })
+    if (nativeStorageEnabled()) {
+      for (const id of ids) await nativeUpdateOutput(id, { pinned: true })
+    } else {
+      for (const id of ids) await outputsDb.files.update(id, { pinned: true })
+    }
     set(s => ({ files: s.files.map(f => ids.includes(f.id) ? { ...f, pinned: true } : f) }))
     get().applyFilters()
   },
 
   batchUnpin: async (ids) => {
-    for (const id of ids) await outputsDb.files.update(id, { pinned: false })
+    if (nativeStorageEnabled()) {
+      for (const id of ids) await nativeUpdateOutput(id, { pinned: false })
+    } else {
+      for (const id of ids) await outputsDb.files.update(id, { pinned: false })
+    }
     set(s => ({ files: s.files.map(f => ids.includes(f.id) ? { ...f, pinned: false } : f) }))
     get().applyFilters()
   },

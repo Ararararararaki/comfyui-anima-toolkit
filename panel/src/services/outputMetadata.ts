@@ -66,7 +66,7 @@ export async function decompressZlibAsync(data: Uint8Array): Promise<string> {
 /**
  * 解析器版本：解析逻辑变更时递增，Outputs 借此自动失效旧的元数据缓存并重新解析。
  */
-export const PARSER_VERSION = 4
+export const PARSER_VERSION = 6
 
 /**
  * 安全 JSON 解析：ComfyUI 的 json.dumps 会把 NaN/Infinity 原样写入（如 is_changed:[NaN]），
@@ -175,10 +175,18 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
   const _TEXT_KEY_RE = /(text|prompt|caption|description|tags|keyword|string|content|value|nl_prompt|extra_tags|subtitle|quality|style|character|background|general|identity|rating|aspect_ratio|length)$/i
   const _CONFIG_KEY_RE = /^(delimiter|separator|clean_whitespace|seed|width|height|steps|cfg|sampler_name|scheduler|denoise|device|type|model|clip|unet|vae|batch_size|anything|preset|roll|pos_x|pos_y|pos_z|excel_file|category_mapping|new_category_order|regex_blacklist|tag_blacklist|validation|is_comment|force_reload|config|settings|json|data_json|schema)$/i
   const _LEAF_CT_RE = /^(primitive|string|multiline|textbox|keyword|property|single.?line|text.?input)/i
-  const _JOIN_CT_RE = /(concat|combine|concatenate|joining|join|assemble|merge|compose|builder|section|smith|text.?comb)/i
+const _JOIN_CT_RE = /(concat|combine|concatenate|joining|join|assemble|merge|compose|builder|section|smith|text.?comb)/i
 
-  const _cleanTags = (t: string) => t.split(/[\r\n]+/).join(', ').replace(/,\s*,/g, ',').trim()
-  const _isContentKey = (k: string) => !_CONFIG_KEY_RE.test(k) && _TEXT_KEY_RE.test(k)
+const _cleanTags = (t: string) => t.split(/[\r\n]+/).join(', ').replace(/,\s*,/g, ',').trim()
+const _isContentKey = (k: string) => !_CONFIG_KEY_RE.test(k) && _TEXT_KEY_RE.test(k)
+
+/** TK Prompt Cards 的正面 prompt：API 格式在 inputs.positive，UI 格式在 widgets_values[0]。 */
+function getTkPromptCardsPositive(node: any): string {
+  const inputs = node?.inputs
+  if (inputs && !Array.isArray(inputs) && typeof inputs.positive === 'string') return inputs.positive
+  if (Array.isArray(node?.widgets_values) && typeof node.widgets_values[0] === 'string') return node.widgets_values[0]
+  return ''
+}
 
   function getNodeText(node: any, visited = new Set<string>()): string {
     const inputs = node.inputs || {}
@@ -188,6 +196,15 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
     // 否则像 DanbooruTagSorter 这类"文本来自其输入链路"的节点会在自身递归段被判 visited 而整支丢失。
     if (nodeId && visited.has(nodeId)) return ''
     if (nodeId) visited.add(nodeId)
+
+    if (ct === 'tkpromptcards') return getTkPromptCardsPositive(node)
+
+    // 兼容旧版 WeiLinPromptUI 等节点：正/负 prompt 直接存放在 inputs.positive/negative，
+    // 不是标准的 text/prompt 字段，不能交给通用内容字段白名单，否则历史 PNG 会丢正面 prompt。
+    for (const key of ['positive', 'negative']) {
+      const value = inputs[key]
+      if (typeof value === 'string' && value.trim().length > 3) return _cleanTags(value)
+    }
 
     const resolveSource = (v: any): string => {
       if (typeof v === 'string' && v.length > 3) return v
@@ -267,6 +284,7 @@ export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
   // 判断节点是否为文本节点
   function isTextNode(node: any): boolean {
     const ct = node.class_type || node.type || ''
+    if (String(ct).toLowerCase() === 'tkpromptcards') return Boolean(getTkPromptCardsPositive(node).trim())
     if (ct === 'CLIPTextEncode' || ct === 'WeiLinPromptUI' || ct === 'TextConcatenate' || ct === 'Text Concatenate') return true
     // 带有文本输入字段的节点
     const inputs = node.inputs || {}
@@ -753,6 +771,13 @@ function parseA1111Parameters(params: string): Partial<ParsedMetadata> {
   const negParts: string[] = []
 
   for (const line of lines) {
+    // 兼容部分旧工作流把 A1111 正面提示词写成「Prompt: ...」的格式。
+    if (!inNeg && /^Prompt:/i.test(line)) {
+      const positive = line.replace(/^Prompt:/i, '').trim()
+      if (positive) posParts.push(positive)
+      continue
+    }
+
     // 负向提示词开始
     if (line.startsWith('Negative prompt:')) {
       inNeg = true
