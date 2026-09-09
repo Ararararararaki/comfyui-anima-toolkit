@@ -41,8 +41,8 @@ class AnimaPresetEmptyLatent:
             },
         }
 
-    RETURN_TYPES = ("LATENT",)
-    RETURN_NAMES = ("latent",)
+    RETURN_TYPES = ("LATENT", "INT", "INT")
+    RETURN_NAMES = ("latent", "width", "height")
     FUNCTION = "generate"
     CATEGORY = "TK/latent"
     DESCRIPTION = "为 Anima/Cosmos 图像工作流创建带常用尺寸预设的单帧空 latent。"
@@ -56,7 +56,7 @@ class AnimaPresetEmptyLatent:
             [batch_size, 16, 1, height // 8, width // 8],
             device=comfy.model_management.intermediate_device(),
         )
-        return ({"samples": latent},)
+        return ({"samples": latent}, width, height)
 
 
 NODE_CLASS_MAPPINGS = {

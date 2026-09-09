@@ -22,8 +22,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     "荷兰角": [0, 0, 0, 0.6],
   };
   const THREE_SOURCES = [
-    // ComfyUI 的扩展静态路由会把 web 目录映射到扩展根路径；当前安装中的
-    // Comfyui-Anima_camera_angle/js/three.module.js 对外地址是下面这一条。
+    // 优先读本插件自带的 Three.js（web/js/three.module.js，无第三方依赖）
+    "/extensions/ComfyUI-Anima-Batch-LoRA/js/three.module.js",
+    // 兼容旧环境：ComfyUI 的扩展静态路由会把 web 目录映射到扩展根路径；
+    // 安装了 Comfyui-Anima_camera_angle 的机器其 three.module.js 对外地址是下面这两条。
     "/extensions/Comfyui-Anima_camera_angle/three.module.js",
     "/extensions/ComfyUI-Anima_camera_angle/three.module.js",
   ];

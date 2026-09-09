@@ -210,6 +210,9 @@ class AnimaBatchLoRALoader:
 
         trigger_words = []
         for entry in entries:
+            # Skip no-op LoRAs (both strengths 0.00) to avoid useless loads
+            if entry["model_strength"] == 0 and entry["clip_strength"] == 0:
+                continue
             lora_path = _find_lora_path(entry["name"])
             if lora_path is None:
                 print(f"[Anima] LoRA not found: {entry['name']}")
@@ -226,8 +229,7 @@ class AnimaBatchLoRALoader:
                 tws = tw_lookup.get(_normalize_lora_name(entry["name"]), [])
                 if tws:
                     trigger_words.extend(tws)
-                else:
-                    trigger_words.append(entry["name"])
+                # Bridge查不到触发词时输出空，不回退到文件名(避免污染提示词)
             except Exception as e:
                 print(f"[Anima] Failed to load {entry['name']}: {e}")
 
