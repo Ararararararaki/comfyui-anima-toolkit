@@ -808,7 +808,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           .bm-card:hover { transform:translateY(-3px) !important; border-color:var(--bm-line-hover) !important; box-shadow:0 0 0 1px rgba(238,234,227,.12),0 12px 28px rgba(0,0,0,.42),0 0 36px rgba(238,234,227,.045) !important; }
           .bm-card.is-added { border-color:rgba(230,223,211,.38) !important; }
           .bm-card.is-selected { border-color:var(--bm-accent) !important; box-shadow:0 0 0 2px rgba(230,223,211,.30),0 12px 30px rgba(0,0,0,.38) !important; filter:brightness(1.07); }
-          .bm-img { position:relative; height:150px !important; overflow:hidden; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.22) !important; color:var(--bm-fg-subtle) !important; }
+          .bm-img { position:relative; height:100% !important; overflow:hidden; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.22) !important; color:var(--bm-fg-subtle) !important; }
           .bm-img::after { content:""; position:absolute; inset:0; pointer-events:none; background:linear-gradient(180deg,rgba(0,0,0,0) 54%,rgba(0,0,0,.16)); opacity:.7; }
           .bm-thumb-img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; transition:transform .45s cubic-bezier(.16,1,.3,1),filter .3s ease; }
           .bm-card:hover .bm-thumb-img { transform:scale(1.035); filter:saturate(.92) contrast(1.03); }
@@ -820,11 +820,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           .bm-card-actions button:hover, .bm-li-actions button:hover { transform:translateY(-1px); border-color:var(--bm-line-hover) !important; background:rgba(238,234,227,.16) !important; color:var(--bm-fg) !important; }
           .bm-card-actions button:active, .bm-li-actions button:active { transform:scale(.94); }
           .bm-card-actions .bm-catbtn.is-active { border-color:rgba(230,223,211,.55) !important; color:var(--bm-accent) !important; background:rgba(230,223,211,.17) !important; }
-          .bm-card-info { position:absolute; right:0; bottom:0; left:0; min-height:70px; padding:24px 9px 8px; background:linear-gradient(180deg,transparent,rgba(8,8,7,.94) 34%); }
-          .bm-mname { overflow:hidden; color:var(--bm-fg) !important; font-size:11px !important; font-weight:620; line-height:1.35; text-overflow:ellipsis; white-space:nowrap; }
-          .bm-lname, .bm-meta { display:none; overflow:hidden; color:var(--bm-fg-muted) !important; font-size:9px !important; line-height:1.35; text-overflow:ellipsis; white-space:nowrap; }
-          .bm-tw { overflow:hidden; min-height:12px; color:var(--bm-fg-subtle) !important; font-size:8px !important; line-height:1.5; text-overflow:ellipsis; white-space:nowrap; }
-          .bm-cattags { display:flex; gap:3px; flex-wrap:wrap; min-height:13px; margin-top:3px; }
+          .bm-card-info { position:absolute; right:0; bottom:0; left:0; padding:30px 9px 7px; background:linear-gradient(180deg,rgba(8,8,7,0),rgba(8,8,7,.55) 40%,rgba(8,8,7,.86) 100%); }
+          .bm-mname { overflow:hidden; color:var(--bm-fg) !important; font-size:11px !important; font-weight:620; line-height:1.35; text-overflow:ellipsis; white-space:nowrap; text-shadow:0 1px 3px rgba(0,0,0,.85); }
+          .bm-lname, .bm-meta { display:none; overflow:hidden; color:var(--bm-fg-muted) !important; font-size:9px !important; line-height:1.35; text-overflow:ellipsis; white-space:nowrap; text-shadow:0 1px 2px rgba(0,0,0,.8); }
+          .bm-cattags { display:flex; gap:3px; flex-wrap:wrap; min-height:0; margin-top:3px; }
+          .bm-cattags:empty { display:none; margin-top:0; }
           .bm-cat-tag { display:inline-flex; align-items:center; max-width:100%; padding:2px 5px; overflow:hidden; border:1px solid rgba(230,223,211,.20); border-radius:999px; background:rgba(230,223,211,.11); color:var(--bm-accent) !important; font-size:8px; cursor:pointer; text-overflow:ellipsis; white-space:nowrap; }
           .bm-cat-tag:hover { background:rgba(230,223,211,.19); }
           .bm-li { display:flex !important; align-items:center; gap:10px; min-height:56px; margin:0 0 6px !important; padding:7px 9px !important; border:1px solid rgba(238,234,227,.10) !important; border-radius:11px !important; background:rgba(238,234,227,.035) !important; box-shadow:0 3px 12px rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.04) !important; transition:transform .2s cubic-bezier(.16,1,.3,1),background .2s ease,border-color .2s ease,box-shadow .2s ease !important; }
@@ -1847,7 +1847,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // HTML 转义：本地文件名插入 innerHTML 前必须转义，防属性注入与标签注入
       const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-      const ITEM_W = 150, GAP = 10, IMG_H = 150, INFO_H = 62, ROW_H = IMG_H + INFO_H + GAP;
+      const ITEM_W = 150, GAP = 10, CARD_H = 190, ROW_H = CARD_H + GAP; // 卡片全出血图 + 底部半透明浮层，无独立文字区
 
       let metaSaveQueue = Promise.resolve();
       const saveMeta = () => {
@@ -2031,6 +2031,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         card.className = "bm-card";
         if (added) card.classList.add("is-added");
         card.dataset.name = l.name;
+        card.title = l.name; // 本地文件名悬停可见（卡片不再显示"本地:"行）
         const left = (idx % cols) * (ITEM_W + GAP);
         const top = Math.floor(idx / cols) * ROW_H;
         card.style.cssText = `position:absolute;left:${left}px;top:${top}px;width:${ITEM_W}px;height:${ROW_H - GAP}px;border-radius:8px;overflow:hidden;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);cursor:pointer;`;
@@ -2043,9 +2044,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           </div>
           <div class="bm-card-info">
             <div class="bm-mname">${esc(l.name)}</div>
-            <div class="bm-lname"></div>
             <div class="bm-meta"></div>
-            <div class="bm-tw"></div>
             <div class="bm-cattags"></div>
           </div>
         `;
@@ -2126,7 +2125,6 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             <div class="bm-mname">${esc(l.name)}</div>
             <div class="bm-lname"></div>
             <div class="bm-meta"></div>
-            <div class="bm-tw"></div>
           </div>
           <div class="bm-li-actions">
             <button class="bm-catbtn ${m.categories.length ? "is-active" : ""}" title="分配分类" aria-label="分配分类">${svgIcon("tag", 12)}</button>
