@@ -1,0 +1,1 @@
+const n={comfyBridge:"anima_comfy_bridge",scanDir:"anima_scan_dir",localDir:"anima_local_dir"},a=new Map;function c(e){return a.get(e)??null}function o(e,t){if(t){a.set(e,t);try{localStorage.setItem(n[e],t.name)}catch{}}else{a.delete(e);try{localStorage.removeItem(n[e])}catch{}}}export{c as getHandle,o as setHandle};
