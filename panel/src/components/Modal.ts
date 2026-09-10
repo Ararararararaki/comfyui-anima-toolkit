@@ -197,8 +197,7 @@ export function setupModalListeners() {
     if (e.key === 'Enter') document.getElementById('createColBtn')?.click()
   })
 
-  // Notes modal
-  setupModal('notesModal', 'notesCancelBtn')
+  // Notes modal
 
   // Prompt edit modal
   setupModal('promptEditModal', 'promptEditCancelBtn')
