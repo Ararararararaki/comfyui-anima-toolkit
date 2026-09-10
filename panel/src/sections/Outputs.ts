@@ -127,12 +127,15 @@ export async function initOutputs() {
   const dh = useOutputStore.getState().dirHandle
   if (dh && loadResult.permission === 'granted') {
     // 解析逻辑升级时自动失效旧元数据缓存并重新解析（增量扫描按 mtime 会跳过未变更文件）
-    await ensureMetadataFresh(dh)
+    // ⚠️ 首屏红线：这里绝不能 await —— 解析器版本变化时它会全库重新解析（逐个读回近 4000
+    // 个原图再解析，实测 195MB IndexedDB 写入 / 数分钟），await 在首次渲染之前就是「卡几分钟
+    // 且页面毫无变化」。现在先用现有缓存渲染，重解析后台跑、结束后再刷新一次。
+    void ensureMetadataFresh(dh).then(fresh => { if (fresh) { renderOutputsView(); updateFilterPanel() } })
     // 快速恢复：直接从 DB 恢复文件列表/元数据/缩略图缓存（跳过全量目录遍历），首屏秒出
     await restoreOutputsFromDb()
     // 构建目录树（buildDirTree 是轻量操作，仅遍历文件名）
-    dirTree = await buildDirTree(dh)
-    renderDirTree(dirTree)
+    // 目录树也不挡首屏（要遍历整个输出目录，几千个条目）
+    void buildDirTree(dh).then(t => { dirTree = t; renderDirTree(t); renderOutputsView() }).catch(() => {})
   } else if (dh) {
     // 权限降级（prompt/denied，如浏览器重启后）：显示重新授权横幅，避免被迫重新「选择目录」
     showReauthBanner()

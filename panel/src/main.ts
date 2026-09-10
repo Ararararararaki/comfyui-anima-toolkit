@@ -13,10 +13,42 @@ import { initOutputs } from './sections/Outputs'
 import { ensureOutputsDbCompatible } from './db/outputsDb'
 import { bindPromptFreqEvents } from './sections/PromptFreq'
 import { initClothing } from './sections/ClothingLibrary'
-import { initIconButtons } from './utils'
+import { initIconButtons, showToast } from './utils'
 import { initCommandPalette } from './sections/CommandPalette'
 
 declare const __BUILD_TIME__: string
+
+/**
+ * 「有新版本」自检（2026-09-10 增）：
+ * 面板是长时间开着的标签页，部署新版后旧页面**不会自己刷新**，而右上角构建时间
+ * 又是旧 bundle 里烤进去的 —— 于是"看起来是最新版、行为却是旧版"极难分辨
+ * （本次 Outputs 卡顿排查就卡在这一步）。这里在页面获得焦点/可见时对比
+ * `index.html` 实际引用的 bundle 名与当前运行的 bundle 名，不一致就明确提示刷新。
+ */
+function initBuildFreshnessCheck() {
+  const running = Array.from(document.querySelectorAll<HTMLScriptElement>('script[src]'))
+    .map(s => (/(index-[A-Za-z0-9_-]+\.js)/.exec(s.src) || [])[1])
+    .find(Boolean)
+  if (!running) return
+  let last = 0
+  const check = async () => {
+    if (Date.now() - last < 60000) return
+    last = Date.now()
+    try {
+      const res = await fetch(location.pathname + '?_=' + Date.now(), { cache: 'no-store' })
+      if (!res.ok) return
+      const html = await res.text()
+      const latest = (/(index-[A-Za-z0-9_-]+\.js)/.exec(html) || [])[1]
+      if (latest && latest !== running) {
+        console.warn(`[panel] 有新版可用：运行中 ${running} → 服务器上 ${latest}（请 Ctrl+Shift+R 刷新）`)
+        showToast('🔄 面板有新版本，按 Ctrl+Shift+R 刷新即可生效')
+      }
+    } catch { /* 离线/服务未起：忽略 */ }
+  }
+  window.addEventListener('focus', check)
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) check() })
+  setTimeout(check, 8000)
+}
 
 // ── 构建时间显示（右上角；确认是否加载新版本）──
 function initBuildTime() {
@@ -68,6 +100,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initThemeSwitcher()
   initLayoutVars()
   initBuildTime()
+  initBuildFreshnessCheck()
   initSettings()
   setupGlobalHandlers()
   setupBindingListeners()

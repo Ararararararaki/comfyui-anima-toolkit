@@ -107,6 +107,26 @@ async function dedupFilesByPath(allFiles: OutputFile[]): Promise<void> {
 
 // hashPath 已迁移至 outputManifest.ts，通过 import 使用
 
+/**
+ * 元数据所在位置：PNG 的 tEXt/iTXt 块紧跟在 IHDR 之后、JPEG 的 APPn 段也在最前面，
+ * 都在文件头部。而 ComfyUI 出图常见 2~5MB，**近 4000 张整文件读取 = 8~20GB 磁盘 IO**
+ * （实测一轮全库重解析要数分钟、并刷出 195MB IndexedDB 写入）。
+ * 这里先只读头部一小段解析；解析不出内容（元数据块在文件后段）才退回整读。
+ */
+const META_HEAD_BYTES = 1024 * 1024
+
+/** 头部能解析出内容就返回，否则整读兜底（保持与原来完全一致的解析结果） */
+async function readAndParseMetadata<T>(file: File, ext: string, parse: (buf: ArrayBuffer, ext: string) => Promise<T | null>): Promise<{ meta: T | null; buf: ArrayBuffer }> {
+  if (file.size > META_HEAD_BYTES) {
+    const head = await readFileAsArrayBuffer(file.slice(0, META_HEAD_BYTES) as unknown as File)
+    const meta = await parse(head, ext)
+    const raw = meta as unknown as { prompt?: string; workflowJson?: string; model?: string } | null
+    if (raw && (raw.prompt || raw.workflowJson || raw.model)) return { meta, buf: head }
+  }
+  const buf = await readFileAsArrayBuffer(file)
+  return { meta: await parse(buf, ext), buf }
+}
+
 async function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
   return new Promise((resolve, reject) => {
     // 超大文件直接拒绝，避免全量读入内存放大攻击面（review low 修复，与 PNG 解析 20MB 上限一致）
@@ -169,9 +189,8 @@ async function processFile(
       return existing
     }
 
-    // 读取文件内容用于元数据解析
-    const buf = await readFileAsArrayBuffer(file)
-    const meta = await parseOutputMetadata(buf, extension)
+    // 读取文件内容用于元数据解析（头部优先，避免整读原图）
+    const { buf, meta } = await readAndParseMetadata(file, extension, parseOutputMetadata)
 
     // 获取尺寸（PNG 走 IHDR 免解码，其余格式解码回退）
     const dims = await getDimensions(buf, extension)
@@ -239,9 +258,9 @@ export async function reparseAllMetadata(dirHandle: FileSystemDirectoryHandle): 
       }
       const handle = await current.getFileHandle(parts[parts.length - 1])
       const file = await handle.getFile()
-      const buf = await readFileAsArrayBuffer(file)
       const ext = f.extension || (f.filename.split('.').pop() || '')
-      const meta = await parseOutputMetadata(buf, ext)
+      // 头部优先（元数据在文件头）→ 避免把 8~20GB 的原图整读一遍
+      const { meta } = await readAndParseMetadata(file, ext, parseOutputMetadata)
       if (meta) {
         const outputMeta: OutputMetadata = {
           imageId: f.id,
@@ -264,6 +283,9 @@ export async function reparseAllMetadata(dirHandle: FileSystemDirectoryHandle): 
       errors.push(f.filename)
     }
     done++
+    // 让出主线程：每 20 张喘一口气，避免长时间连续 IO 让界面无响应（扫描进度条仍在更新）
+    if (done % 20 === 0) await new Promise(r => setTimeout(r, 0))
+    if (done % 200 === 0) console.log(`[outputScanner] 重新解析 ${done}/${total}`)
     useOutputStore.setState({ scanProgress: { done, total } })
   }
   useOutputStore.setState({ scanStatus: 'done', loading: false, scanProgress: { done, total } })
