@@ -1482,3 +1482,55 @@
 /* 超高图（宽高比超 CLAMP_MAX_ASPECT，盒子比例在布局层已被截断）改用 contain，
    完整嵌入、保住画面内容。超宽图不截断（靠跨列拿宽度），因此不再需要 wide-clamped。 */
 .outputs-card.tall-clamped .outputs-card-img img { object-fit: contain; }
+
+/* ── 瀑布流卡片：信息区改为「图片内浮层」（与 LoRA 管理的描述浮层同一思路）──
+   名称 / 分类 / 模型 / 大小 / 日期 / 操作按钮浮在图片底部：渐变暗底 + 反白文字 + 文本阴影，
+   不再占据图片下方整条高度 → 图片更大、整屏更紧凑。
+   ⚠️ 绝对定位**不参与布局**：masonry 的卡高因此不再加信息区高度
+   （见 masonry.ts 的 MASONRY_CARD_BORDER 注释），改这里的视觉不必同步布局层。 */
+.outputs-card.masonry .outputs-card-info {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: auto;
+  padding: 30px 8px 7px;          /* 上留白给渐变过渡，文字落在实底上 */
+  /* ⚠️ 必须 !important：polish.css 用 `.outputs-card-info { background: ... !important }`
+     给所有信息区套了半透明面板底色（含 backdrop-filter），不加就压不掉 ——
+     实测表现为浮层变成浅色底、白字不可读。同权重下本选择器优先级更高，故可稳定胜出。 */
+  background: linear-gradient(to top,
+    rgba(0, 0, 0, .88) 0%,
+    rgba(0, 0, 0, .62) 38%,
+    rgba(0, 0, 0, .28) 68%,
+    rgba(0, 0, 0, 0) 100%) !important;
+  backdrop-filter: none !important;
+  border-top: 0;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .7);
+  /* 容器不吃事件：点图片仍能预览 / 框选；按钮单独恢复 pointer-events */
+  pointer-events: none;
+}
+
+.outputs-card.masonry:hover .outputs-card-info {
+  background: linear-gradient(to top,
+    rgba(0, 0, 0, .94) 0%,
+    rgba(0, 0, 0, .70) 42%,
+    rgba(0, 0, 0, .32) 70%,
+    rgba(0, 0, 0, 0) 100%) !important;
+}
+
+.outputs-card.masonry .outputs-card-info .outputs-card-name { color: #fff; }
+.outputs-card.masonry .outputs-card-info .outputs-card-meta,
+.outputs-card.masonry .outputs-card-info .outputs-card-date {
+  color: rgba(255, 255, 255, .84);
+  opacity: 1;
+}
+.outputs-card.masonry .outputs-card-info .outputs-card-category,
+.outputs-card.masonry .outputs-card-info .outputs-card-model { color: rgba(255, 255, 255, .94); }
+
+/* 操作按钮恢复可点（容器是 pointer-events:none），图标改反白以贴合暗底 */
+.outputs-card.masonry .outputs-card-info .outputs-card-actions { pointer-events: auto; }
+.outputs-card.masonry .outputs-card-info .outputs-card-actions button {
+  color: #fff;
+  border-color: rgba(255, 255, 255, .3);
+}

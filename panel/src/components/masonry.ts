@@ -18,11 +18,21 @@ import type { OutputFile } from '../types/outputs'
 /** 信息区高度兜底值：CSS 变量 --outputs-info-h 缺失时使用（与 outputs.css 默认值一致） */
 export const OUTPUTS_INFO_H = 82
 /**
- * 卡片在图片区 + 信息区之外额外占用的垂直高度。
- * 卡片边框已改为 inset 阴影（outputs.css：`.outputs-card.masonry { border: 0 }`），
- * **不占布局空间**，因此这里是 0 —— 卡高 = 图片区 + 信息区，与 DOM 实测一致。
+ * 卡片在图片区之外额外占用的垂直高度。
+ * · 卡片边框已改为 inset 阴影（outputs.css：`.outputs-card.masonry { border: 0 }`）
+ * · **信息区（文件名/模型/日期/按钮）已改为图片内的浮层**（outputs.css：
+ *   `.outputs-card.masonry .outputs-card-info { position:absolute; bottom:0 }`）
+ *   绝对定位不参与布局 → 不再占高度。
+ * ⇒ 卡高 == 图片区高度，与 DOM 实测一致（这也是必须为 0 的原因：
+ *   布局层多了任何一项，行与行之间就会出现错位缝隙）。
  */
 export const MASONRY_CARD_BORDER = 0
+
+/**
+ * ⚠️ 信息区高度**不再参与布局计算**（见上）。此变量仅为兼容旧引用保留：
+ * 需要它的是 CSS 里浮层的排版，不是 masonry 的卡高。
+ */
+export const LEGACY_INFO_H_NOTE = true
 /**
  * 宽高比（h/w）上限 = 盒子比例下限：超过即视为超高图，盒子比例按上限截断，
  * 渲染层加 .tall-clamped 用 object-fit:contain 完整嵌入。
@@ -61,7 +71,7 @@ export interface MasonryLayout {
   total: number
 }
 
-/** 运行时读取信息区高度：CSS 变量为唯一真源，读不到时用兜底常量 */
+/** 运行时读取信息区高度（仅供 CSS/调试参考；布局的卡高不再使用它，见 MASONRY_CARD_BORDER 注释） */
 export function readInfoHeight(): number {
   try {
     const raw = getComputedStyle(document.documentElement).getPropertyValue('--outputs-info-h')
@@ -124,7 +134,8 @@ export function computeMasonryLayout(files: OutputFile[], cols: number, cardW: n
     const ratio = boxRatioFor(aspect)
     // 高度 = 宽度 ÷ 盒比：**不取整**，与 CSS 由 aspect-ratio 反算的高度保持同源
     const imgH = boxW / ratio
-    const h = imgH + infoH + MASONRY_CARD_BORDER
+    // 信息区是图片内浮层（绝对定位）→ 不占卡高（见 MASONRY_CARD_BORDER 注释）
+    const h = imgH + MASONRY_CARD_BORDER
 
     // 选「放下去之后这组列的顶部最靠上」的起始列；跨列时整组列高度对齐到同一 top，
     // 后续单列卡不会插进跨列卡的缝隙，避免重叠。
