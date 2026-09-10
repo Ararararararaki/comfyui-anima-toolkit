@@ -94,12 +94,12 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
               ).join('')}</div>
             </div>`
           : m.downloadUrl ? `<button class="btn btn-primary" style="flex:1;padding:5px;font-size:10px;min-width:80px" onclick="window.open('${esc(m.downloadUrl)}','_blank')">${icon('download', 12)} 下载</button>` : ''}
-        ${(m.versionId || m.downloadUrl) ? `<button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:10px;color:var(--accent)" onclick="event.stopPropagation();window.__queueModelDownload(${m.id})" title="一键后台下载 → ComfyUI models/loras（有下载链接即可，无需版本 ID）">${icon('downloadCloud', 12)}</button>` : ''}
-        <button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:10px" onclick="event.stopPropagation();window.__openNotes(${m.id})" title="备注/评分">${icon('star', 12)}</button>
-        <button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:10px" onclick="event.stopPropagation();window.__copyCardInfo(${m.id})" title="复制卡片信息">${icon('copy', 12)}</button>
+        ${(m.versionId || m.downloadUrl) ? `<button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:10px;color:var(--accent)" onclick="event.stopPropagation();window.__queueModelDownload(${m.id})" title="一键后台下载 → ComfyUI models/loras（有下载链接即可，无需版本 ID）">${icon('downloadCloud', 12)} 后台下载</button>` : ''}
+        <button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:10px" onclick="event.stopPropagation();window.__openNotes(${m.id})" title="备注/评分">${icon('star', 12)} 备注</button>
+        <button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:10px" onclick="event.stopPropagation();window.__copyCardInfo(${m.id})" title="复制卡片信息">${icon('copy', 12)} 信息</button>
         ${currentCategory === 'hidden'
           ? '<button class="btn" style="flex:1;padding:5px;font-size:10px;min-width:60px;background:var(--green-dim);color:var(--green)" onclick="event.stopPropagation();window.__restoreCard(' + m.id + ')">' + icon('refresh', 12) + ' 恢复</button>'
-          : '<button class="btn btn-danger" style="flex:0;padding:5px 10px;font-size:10px" onclick="event.stopPropagation();window.__deleteCard(' + m.id + ')" title="永久删除此 LoRA">' + icon('trash', 12) + '</button>'}
+          : '<button class="btn btn-danger" style="flex:0;padding:5px 10px;font-size:10px" onclick="event.stopPropagation();window.__deleteCard(' + m.id + ')" title="永久删除此 LoRA">' + icon('trash', 12) + ' 删除</button>'}
       </div>
     </div>
   </div>`

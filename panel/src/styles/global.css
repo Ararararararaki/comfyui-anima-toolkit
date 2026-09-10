@@ -554,7 +554,7 @@ h1 small { font-size: 12px; color: var(--text2); font-weight: 400; margin-left: 
 
 }
 
-.gallery { position: relative; height: 300px; overflow: hidden; background: var(--bg3); touch-action: pan-y; }
+.gallery { position: relative; height: 260px; overflow: hidden; background: var(--bg3); touch-action: pan-y; }
 
 .gallery-track { display: flex; height: 100%; transition: transform .4s ease; will-change: transform; }
 
@@ -590,7 +590,7 @@ h1 small { font-size: 12px; color: var(--text2); font-weight: 400; margin-left: 
 
 .gallery .img-count { position: absolute; top: 6px; right: 6px; background: rgba(0, 0, 0, .65); color: #fff; font-size: 10px; padding: 2px 6px; border-radius: 4px; z-index: 5; }
 
-.card-body { padding: 16px; flex: 1; display: flex; flex-direction: column; gap: 8px; }
+.card-body { padding: 12px; flex: 1; display: flex; flex-direction: column; gap: 6px; }
 
 .card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 6px; }
 
@@ -4830,12 +4830,43 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 .grid.virtualized .card .btn,
 .grid.virtualized .card .wf-btn {
   min-height: 28px !important;
+  white-space: nowrap !important;
   padding: 4px 8px !important;
   font-size: 11px !important;
   line-height: 1.2 !important;
   opacity: 1 !important;
 }
 .grid.virtualized .card .btn svg { width: 12px; height: 12px; }
+
+/* CJK 文本在 flex 容器里 min-content 可退化到单字（逐字断行）→ 图标小按钮会被压成
+   「一字一行」；flex:none + max-content 明确禁止收缩，宽度由文字决定。
+   ⚠️ 只用于 ghost/danger 小按钮 —— 下载主按钮（btn-primary）必须保留 inline flex:1
+   作为弹性填充，全部 none 会让一行装不下、按钮换 3 排（实测行盒 96px 高）。 */
+.grid.virtualized .card .btn-ghost,
+.grid.virtualized .card .btn-danger {
+  flex: none !important;
+  min-width: max-content !important;
+}
+/* 下载主按钮的 flex:1 写在按钮上，但行的 flex 子项是外层 .version-dropdown-wrap ——
+   wrap 不拉伸 → 主按钮从不填满行 → 一行装不下、按钮掉到 3 排（实测行盒 96px）。
+   让 wrap 接管弹性，按钮在 wrap 内 100% 宽。 */
+.grid.virtualized .card .version-dropdown-wrap {
+  flex: 1 1 80px !important;
+  min-width: 80px;
+}
+.grid.virtualized .card .version-dropdown-wrap .btn-primary {
+  width: 100%;
+}
+/* 下载主按钮的 flex:1 写在按钮上，但行的 flex 子项是外层 .version-dropdown-wrap ——
+   wrap 不拉伸 → 主按钮从不填满行 → 一行装不下、按钮掉到 3 排（实测行盒 96px）。
+   让 wrap 接管弹性，按钮在 wrap 内 100% 宽。 */
+.grid.virtualized .card .version-dropdown-wrap {
+  flex: 1 1 80px !important;
+  min-width: 80px;
+}
+.grid.virtualized .card .version-dropdown-wrap .btn-primary {
+  width: 100%;
+}
 
 /* ── 卡片按钮可读性：浅色/深色主题下都清晰可点 ──
    必须同样 !important 且选择器优先级(.grid.virtualized .card .btn-*)高于 polish.css
@@ -4849,10 +4880,14 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
    实测几乎隐形（「按钮看不清」的根源）。改成「accent 淡底 + accent 边框」：
    按钮边界明确，白卡/深卡上都是一眼可辨的控件；文字用主题前景色保证对比。 */
 .grid.virtualized .card .btn-ghost {
-  background: color-mix(in srgb, var(--accent) 16%, transparent) !important;
+  /* 配对沿用本项目徽章（.badge-character 等）已验证的「accent-soft 底 + accent 文字」：
+     文字与底色同源自 accent → 任何主题下自动同向、保证可读；
+     mono 深色（accent=#e2e2e2）：浅字配深卡上的淡底 ✓；drinkit 浅色（accent=蓝）：蓝字配淡蓝底 ✓。
+     之前的 color-mix(bg)+var(--text) 组合在 mono 下是「浅底配浅字」，实测不可读。 */
+  background: var(--accent-soft, var(--bg3)) !important;
   border-width: 1.5px !important;
-  color: var(--text) !important;
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent) !important;
+  color: var(--accent, var(--text)) !important;
+  border-color: var(--accent-line, var(--border)) !important;
   box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
 }
 .grid.virtualized .card .btn-ghost:hover {
@@ -5204,4 +5239,46 @@ html[data-theme="drinkit"] .main-tabs .main-tab.active {
   background: var(--color-primary-hover, #0874eb) !important;
   color: #fff !important;
   text-shadow: 0 1px 2px rgba(0, 0, 0, .25);
+}
+
+/* ── LoRA 卡片内容上限钳制（2026-09-10）：虚拟滚动的行高必须全网格统一，
+   而标题（1~4 行）与标签（1~3 行）高度无上界 → 高度设够大就留大空白、设小就裁按钮。
+   唯一正确解：把内容钳到有界 —— 标题最多 2 行、作者行单行省略、标签只显示一行，
+   内容高度就此有界（≈178px），卡片高度随之收紧（BASE 480→440，图片区 300→260）。 ── */
+.grid.virtualized .card .card-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.grid.virtualized .card .card-creator {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.grid.virtualized .card .tags-wrap {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  max-height: 24px;
+}
+
+/* ── LoRA 卡片内容上限钳制（2026-09-10）：虚拟滚动的行高必须全网格统一，
+   而标题（1~4 行）与标签（1~3 行）高度无上界 → 高度设够大就留大空白、设小就裁按钮。
+   唯一正确解：把内容钳到有界 —— 标题最多 2 行、作者行单行省略、标签只显示一行，
+   内容高度就此有界（≈178px），卡片高度随之收紧（BASE 480→440，图片区 300→260）。 ── */
+.grid.virtualized .card .card-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.grid.virtualized .card .card-creator {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.grid.virtualized .card .tags-wrap {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  max-height: 24px;
 }
