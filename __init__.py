@@ -125,7 +125,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 
 WEB_DIRECTORY = "./web"
 
-__version__ = "2.4.0"  # 与仓库根 VERSION 文件保持一致，发布更新时同步递增
+__version__ = "2.5.0"  # 与仓库根 VERSION 文件保持一致，发布更新时同步递增
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 

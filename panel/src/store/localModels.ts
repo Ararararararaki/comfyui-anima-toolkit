@@ -8,7 +8,7 @@ import { hashFileSha256 } from '../services/fileHashWorker'
 import { getSettings } from './settings'
 
 let _lastBackendSync = 0
-let _backendMetaLoad: Promise<void> | null = null
+let _backendMetaLoad: Promise<boolean> | null = null
 // 分类操作可能在短时间内连续触发；串行化 POST，避免后发请求先完成后又被旧快照覆盖。
 let _categorySyncQueue: Promise<void> = Promise.resolve()
 let activeScanController: AbortController | null = null
@@ -218,7 +218,7 @@ interface LocalModelState {
 
   // 与节点 /anima/meta 双向分类同步
   fetchBackendMeta: () => Promise<any | null>
-  loadBackendMeta: (force?: boolean) => Promise<void>
+  loadBackendMeta: (force?: boolean) => Promise<boolean>
   syncCategoriesToBackend: () => Promise<void>
 
   matchByUrl: (name: string, url: string) => Promise<void>
@@ -988,47 +988,52 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     } catch { return null }
   },
   // 从后端拉取分类合并到本地(节点侧改的分类同步回面板);60s 节流避免每次切换栏目都请求+重渲染
-  loadBackendMeta: async (force = false) => {
+  // 返回是否真的发生了变化（无变化时调用方不应重渲染 —— 切页路径的全量重建是大头开销）
+  loadBackendMeta: async (force = false): Promise<boolean> => {
     if (_backendMetaLoad) return _backendMetaLoad
     const now = Date.now()
-    if (!force && now - _lastBackendSync < 60000) return
-    const request = (async () => {
+    if (!force && now - _lastBackendSync < 60000) return false
+    const request = (async (): Promise<boolean> => {
       const backend = await get().fetchBackendMeta()
       // 只有成功拿到快照才更新时间戳；网络/服务端异常允许下一次激活立即重试。
-      if (!backend) return
+      if (!backend) return false
       _lastBackendSync = Date.now()
       const cats: string[] = Array.isArray(backend.categories) ? backend.categories.map(String) : []
       const lm: Record<string, { categories?: string[] }> = backend.loraMeta || {}
-      set(s => {
-        // 后端列表是双向同步的权威快照。使用并集会让已删除分类在下一次拉取时复活。
-        // 全新安装且后端还没有任何元数据时保留本地默认分类，避免空响应清空初始界面。
+      // 先比较后写入：快照与本地一致时不动 store、不触发任何重渲染
+      const cur = get()
+      const curCats = cur.categories
+      const normCurMc: Record<string, string[]> = {}
+      for (const [k, v] of Object.entries(cur.modelCategories)) normCurMc[stripExt(k)] = v
+      const backendCats = (() => {
         const hasBackendMeta = cats.length > 0 || Object.keys(lm).length > 0
-        const categories = hasBackendMeta ? [...new Set(cats.filter(Boolean))] : [...s.categories]
-        // 本地旧 key(可能带扩展名)归一到无扩展名,避免与节点 key 并存/冲突
-        const modelCategories: Record<string, string[]> = {}
-        for (const [k, v] of Object.entries(s.modelCategories)) {
-          modelCategories[stripExt(k)] = v
+        return hasBackendMeta ? [...new Set(cats.filter(Boolean))] : curCats
+      })()
+      const backendMc: Record<string, string[]> = { ...normCurMc }
+      const lmBase: Record<string, { categories?: string[] }> = {}
+      for (const [name, entry] of Object.entries(lm)) {
+        const base = stripExt(name)
+        if (!(base in lmBase) || name === base) lmBase[base] = entry
+      }
+      for (const [base, entry] of Object.entries(lmBase)) {
+        // 空数组也是有意义的状态：它表示节点侧已清空该 LoRA 的分类。
+        if (entry && Array.isArray(entry.categories)) {
+          backendMc[base] = [...new Set(entry.categories.map(String).filter(Boolean))]
         }
-        // 无扩展名 key 优先（节点新数据）；带扩展名仅在无扩展名缺失时兜底（消除顺序依赖）
-        const lmBase: Record<string, { categories?: string[] }> = {}
-        for (const [name, entry] of Object.entries(lm)) {
-          const base = stripExt(name)
-          if (!(base in lmBase) || name === base) lmBase[base] = entry
-        }
-        for (const [base, entry] of Object.entries(lmBase)) {
-          // 空数组也是有意义的状态：它表示节点侧已清空该 LoRA 的分类。
-          if (entry && Array.isArray(entry.categories)) {
-            modelCategories[base] = [...new Set(entry.categories.map(String).filter(Boolean))]
-          }
-        }
-        Cache.save(CAT_CACHE_KEY, categories)
-        Cache.save(CAT_CACHE_KEY + '_mc', modelCategories)
-        return { categories, modelCategories }
-      })
+      }
+      const catsEqual = backendCats.length === curCats.length && backendCats.every((c, i) => c === curCats[i])
+      const mcKeys = Object.keys(backendMc)
+      const mcEqual = mcKeys.length === Object.keys(normCurMc).length &&
+        mcKeys.every(k => { const a = backendMc[k]; const b = normCurMc[k]; if (!b) return false; return a.length === b.length && a.every((x, i) => x === b[i]) })
+      if (catsEqual && mcEqual) return false
+      Cache.save(CAT_CACHE_KEY, backendCats)
+      Cache.save(CAT_CACHE_KEY + '_mc', backendMc)
+      set({ categories: backendCats, modelCategories: backendMc })
+      return true
     })()
     _backendMetaLoad = request
     try {
-      await request
+      return await request
     } finally {
       if (_backendMetaLoad === request) _backendMetaLoad = null
     }

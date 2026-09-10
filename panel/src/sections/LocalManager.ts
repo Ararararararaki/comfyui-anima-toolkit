@@ -24,6 +24,18 @@ function highlightText(text: string, query: string): string {
 let _initDone = false
 let _localStoreUnsubscribe: (() => void) | null = null
 
+// ── 渲染调度：扫描/匹配期间 store 高频变化（每个文件 updateFile 一次），
+// 若每次都全量重建列表 DOM（数千卡片）会把主线程反复打满 —— 表现为弹窗/滚动期间
+// 页面接近无响应。这里做 250ms 尾沿节流：短风暴合并成每 250ms 最多一次重渲染。──
+let _renderTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleRenderLocalView(): void {
+  if (_renderTimer !== null) return
+  _renderTimer = setTimeout(() => {
+    _renderTimer = null
+    renderLocalView()
+  }, 250)
+}
+
 // ── 拖拽框选选中的 LoRA（右键可批量添加分类） ──
 let _dragSelected = new Set<string>()
 let _dragInitDone = false
@@ -261,7 +273,8 @@ export async function initLocalManager() {
   if (!_localStoreUnsubscribe) {
     _localStoreUnsubscribe = useLocalModelStore.subscribe((state, previous) => {
       if (state.files !== previous.files || state.scanStatus !== previous.scanStatus || state.scanningDir !== previous.scanningDir) {
-        renderLocalView()
+        // 扫描/匹配风暴期间 store 每个文件都变一次 → 节流合并，别每次全量重建 DOM
+        scheduleRenderLocalView()
       }
     })
   }
@@ -272,9 +285,9 @@ export async function initLocalManager() {
     renderSidebarList(useLocalModelStore.getState())
     renderDetail(useLocalModelStore.getState())
   })
-  // 与节点 /anima/meta 双向分类同步：启动时拉取后端分类合并到本地
-  useLocalModelStore.getState().loadBackendMeta().then(() => {
-    renderSidebarList(useLocalModelStore.getState())
+  // 与节点 /anima/meta 双向分类同步：启动时拉取后端分类合并到本地（无变化不重渲染）
+  useLocalModelStore.getState().loadBackendMeta().then((changed) => {
+    if (changed) renderSidebarList(useLocalModelStore.getState())
   })
 }
 
@@ -290,6 +303,8 @@ export async function activateLocalManager() {
   _activateBusy = true
   try {
     await activateLocalManagerInner()
+    // 全库元数据补齐（关联出图统计用）：内部再延迟 1.2s，幂等
+    scheduleMetadataIndexKick()
   } finally {
     _activateBusy = false
   }
@@ -299,9 +314,9 @@ async function activateLocalManagerInner() {
   // 拉取后端分类快照。⚠️ 不用 force=true：强制模式绕过 60s 节流，导致每次切到本页
   // 都做一次后端 fetch + 全量 renderLocalView（快速切页时的无谓开销）。
   // 非强制模式自带 60s 节流 —— TK 节点刚改的分类最迟 1 分钟内出现，需要立刻刷新
-  // 可用工具箱里的「扫描/刷新」按钮。
-  useLocalModelStore.getState().loadBackendMeta().then(() => {
-    renderLocalView()
+  // 可用工具箱里的「扫描/刷新」按钮。⚠️ 无变化时不重渲染（changed 才渲染）。
+  useLocalModelStore.getState().loadBackendMeta().then((changed) => {
+    if (changed) scheduleRenderLocalView()
   })
   const store = useLocalModelStore.getState()
   if (store.dirHandle) return
@@ -418,7 +433,7 @@ function renderGridFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalM
   const label = f.matchData?.modelName || f.name.replace(/\.\w+$/, '')
   const localName = f.matchData?.modelName ? f.name.replace(/\.\w+$/, '') : ''
   const tags = (state.modelCategories[stripExt(f.name)] || []).slice(0, 2)
-  const image = localPreviewImg(f, state, 'local-grid-preview-img', 480)
+  const image = localPreviewImg(f, state, 'local-grid-preview-img', 240) // 卡片实际显示 ~180px，240 覆盖 2x DPI；480 是解码内存浪费
   const preview = image
     ? `<div class="local-grid-preview">${image}${custom ? '<span class="local-grid-custom">自定义</span>' : ''}</div>`
     : `<div class="local-grid-preview local-grid-preview-empty"><span>${icon('package', 30)}</span><small>暂无预览图</small></div>`
@@ -454,14 +469,26 @@ function renderGridFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalM
  * Local 页的「本地 LoRA ↔ 出图关联」需要**全库**元数据视野（见下方两处遍历 metadataCache 的地方）。
  * 元数据已改为按需加载（不再进页面全量预载），所以这里做一次性的按需补齐：
  * 补齐完成后重渲染一次 Local 视图；_localIndexKick 保证不会反复触发。
+ *
+ * ⚠️ 2026-09-10 性能修复：kick 延迟到激活后 1.2s（让首帧与第一波交互先走），
+ * 且完成回调走节流渲染 —— 全库补齐（真实环境数千条，分片 bulkGet）期间用户已经在
+ * 操作页面，不能让补齐结束的全量重渲染插入到用户交互中间。
  */
 let _localIndexKick = false
+let _localKickTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleMetadataIndexKick(): void {
+  if (_localIndexKick || _localKickTimer !== null) return
+  _localKickTimer = setTimeout(() => {
+    _localKickTimer = null
+    kickMetadataIndexForLocal()
+  }, 1200)
+}
 function kickMetadataIndexForLocal(): void {
   if (_localIndexKick) return
   _localIndexKick = true
   void ensureAllMetadata().then(() => {
     // 只有真的读了新数据才需要重渲染（ensureAllMetadata 在无缺失时立即 resolve，不会死循环）
-    if (isMetadataIndexComplete()) renderLocalView()
+    if (isMetadataIndexComplete()) scheduleRenderLocalView()
   })
 }
 
@@ -474,8 +501,6 @@ export function renderLocalView() {
   // PNG 解析视图：gallery 页始终渲染（空态/数据态），标签统计同步（review blocking 修复）
   renderGallery(state)
   renderTagFreq(state.tagFreq)
-  // 关联出图统计需要全库元数据 → 按需补齐（首次进入该页时触发一次）
-  kickMetadataIndexForLocal()
 }
 
 function renderFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalModelStore.getState>): string {
@@ -730,10 +755,7 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
   }
 
   if (state.displayMode === 'grid') {
-    el.innerHTML = `<div class="local-grid-card-list">${files.map(f => renderGridFileItem(f, state)).join('')}</div>`
-    restoreScroll()
-    requestAnimationFrame(restoreScroll)
-    updateBatchBar(state)
+    renderGridChunked(el, files, state)
     return
   }
 
@@ -773,7 +795,7 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
         <button class="local-new-cat-btn" title="新建分类">${icon('plus', 12)}</button>
       </div>
       <div class="local-tree-cat-items ${isExpanded ? '' : 'collapsed'}">
-        ${catFiles.map(f => renderFileItem(f, state)).join('')}
+        ${isExpanded ? catFiles.map(f => renderFileItem(f, state)).join('') : ''}
       </div>
     </div>`
   }
@@ -788,7 +810,7 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
         <span class="local-tree-cat-count">${uncatFiles.length}</span>
       </div>
       <div class="local-tree-cat-items ${isExpanded ? '' : 'collapsed'}">
-        ${uncatFiles.map(f => renderFileItem(f, state)).join('')}
+        ${isExpanded ? uncatFiles.map(f => renderFileItem(f, state)).join('') : ''}
       </div>
     </div>`
   }
@@ -810,6 +832,59 @@ function updateBatchBar(state: ReturnType<typeof useLocalModelStore.getState>) {
     return
   }
   bar.style.display = 'flex'
+}
+
+// ── grid 分片渲染（2026-09-10 性能修复，CDP 实测依据）──
+// 此前 grid 模式一次性 innerHTML 渲染全部卡片：1200 个 LoRA = 3.2 万 DOM 节点 +
+// 960 张图片，单次主线程阻塞 ~500ms（探针实测 521/479ms），且每次切页/搜索/
+// 匹配风暴都重复付出。改为「首片 150 + 底部 sentinel 无限追加」：首帧成本约 1/8，
+// 滚动到底自动补齐，内容与全量渲染一致。
+const LOCAL_GRID_CHUNK = 150
+let _gridObserver: IntersectionObserver | null = null
+
+function disconnectGridObserver(): void {
+  if (_gridObserver) { _gridObserver.disconnect(); _gridObserver = null }
+}
+
+function renderGridChunked(el: HTMLElement, files: LocalLoraFile[], state: ReturnType<typeof useLocalModelStore.getState>): void {
+  disconnectGridObserver()
+
+  // 恢复滚动位置：只渲染首片时内容高度可能低于原 scrollTop（被浏览器钳到 0 → 丢失浏览位置），
+  // 按容器宽度估列数、每卡 ~340px 估算需要预渲染到原位置的卡数，再恢复 scrollTop。
+  const keepScroll = el.scrollTop
+  const estCols = Math.max(1, Math.round(el.clientWidth / 192)) // 卡宽 180 + gap 12
+  const minCards = Math.min(files.length, Math.ceil((Math.ceil(keepScroll / 340) + 2) * estCols))
+  let rendered = Math.max(LOCAL_GRID_CHUNK, minCards)
+
+  // 追加下一片并按需重挂 sentinel；数据已变（files 引用不同）则放弃 —— subscribe 会触发整体重渲染
+  const mountSentinel = () => {
+    const listEl = el.querySelector('.local-grid-card-list')
+    if (!listEl) return
+    const s = document.createElement('div')
+    s.className = 'local-grid-sentinel'
+    s.style.cssText = 'grid-column:1/-1;height:1px'
+    listEl.appendChild(s)
+    _gridObserver = new IntersectionObserver((entries) => {
+      if (!entries.some(e => e.isIntersecting)) return
+      const obs = _gridObserver
+      if (obs) { obs.disconnect(); _gridObserver = null }
+      if (useLocalModelStore.getState().files !== state.files) return
+      listEl.querySelector('.local-grid-sentinel')?.remove()
+      const to = Math.min(files.length, rendered + LOCAL_GRID_CHUNK)
+      const frag = document.createElement('template')
+      frag.innerHTML = files.slice(rendered, to).map(f => renderGridFileItem(f, useLocalModelStore.getState())).join('')
+      listEl.appendChild(frag.content)
+      rendered = to
+      if (rendered < files.length) mountSentinel()
+    }, { root: el, rootMargin: '600px 0px' })
+    _gridObserver.observe(s)
+  }
+
+  el.innerHTML = `<div class="local-grid-card-list">${files.slice(0, rendered).map(f => renderGridFileItem(f, state)).join('')}</div>`
+  if (rendered < files.length) mountSentinel()
+  el.scrollTop = keepScroll
+  requestAnimationFrame(() => { el.scrollTop = keepScroll })
+  updateBatchBar(state)
 }
 
 // ── 模型管理 tab（checkpoint/VAE/embedding/controlnet 等）──
