@@ -15,10 +15,6 @@ export function addView(m: ViewItem) {
   Cache.save('views', views)
 }
 
-export function clearViews() {
-  Cache.remove('views')
-}
-
 export function getSearches(): string[] {
   return Cache.load<string[]>('searches', 30 * 24 * 60 * 60 * 1000) || []
 }

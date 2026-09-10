@@ -54,11 +54,6 @@ export function getArtistById(id: string): ArtistData | undefined {
   return getAll().find(a => a.id === id)
 }
 
-export function getArtistByTag(tag: string): ArtistData | undefined {
-  const t = tag.toLowerCase().trim()
-  return getAll().find(a => a.tag.toLowerCase().trim() === t)
-}
-
 export function getArtistCategories(): string[] {
   const cats = new Set<string>()
   getAll().forEach(a => a.categories.forEach(c => cats.add(c)))

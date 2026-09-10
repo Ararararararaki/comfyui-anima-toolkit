@@ -23,11 +23,6 @@ export function removeHidden(id: number) {
   Cache.save(KEY, getHiddenIds().filter(x => x !== id))
 }
 
-export function toggleHidden(id: number): boolean {
-  if (isHidden(id)) { removeHidden(id); return false }
-  addHidden(id); return true
-}
-
 export function hiddenCount(): number {
   return getHiddenIds().length
 }

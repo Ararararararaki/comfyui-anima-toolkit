@@ -49,15 +49,6 @@ export function isFav(id: number) {
   return getAllFavs().some(f => f.id === id)
 }
 
-export function findItemCollection(id: number): string | null {
-  const data = getFavData()
-  if (!data?.collections) return null
-  for (const colId of data.order) {
-    if (data.collections[colId]?.items?.some(f => f.id === id)) return colId
-  }
-  return null
-}
-
 export function toggleFav(m: ProcessedModel, colId?: string): boolean {
   const data = getFavData() ?? defaultFavData()
   if (!data.collections) return false
@@ -90,16 +81,6 @@ export function toggleFav(m: ProcessedModel, colId?: string): boolean {
   if (target.items.length > MAX_PER_COL) target.items.length = MAX_PER_COL
   saveFavData(data)
   return true
-}
-
-export function removeFav(id: number) {
-  const data = getFavData()
-  if (!data?.collections) return
-  for (const cid of data.order) {
-    const col = data.collections[cid]
-    if (col?.items) col.items = col.items.filter(f => f.id !== id)
-  }
-  saveFavData(data)
 }
 
 export function favCount() {

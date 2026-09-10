@@ -63,23 +63,6 @@ export function renderGrid(
   }).join('')
 }
 
-/**
- * 卡片数据签名：内容未变的卡片在增量渲染时复用 DOM（img 保持已加载的 src，避免闪烁）。
- * 只含文件自身字段，不含 meta：元数据是异步分批加载的，若把 meta 计入签名，
- * 每次进入页面 meta 从空→有都会让全部卡片签名变化 → 整页重建 → 图片全部重载。
- */
-export function cardSignature(file: OutputFile): string {
-  return [
-    file.filename,
-    file.size,
-    file.mtime,
-    file.category || '',
-    file.favorite ? 1 : 0,
-    file.pinned ? 1 : 0,
-    file.rating || 0,
-  ].join('|')
-}
-
 export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, isSelected: boolean, loras?: string[], sig?: string, thumbSrc?: string, boxAspect?: number): string {
   const st = file.status ? STATUS_DEFS[file.status] : null
   const masonry = boxAspect ? ' masonry' : ''
@@ -261,62 +244,6 @@ export interface FilterPanelState {
   filterStepsMin: string
   filterStepsMax: string
   filterTag: string
-}
-
-export function renderFilterPanel(
-  filters: FilterPanelState,
-  models: string[],
-  loras: string[]
-): string {
-  const modelOptions = models.map(m =>
-    `<option value="${escAttr(m)}"${filters.filterModel === m ? ' selected' : ''}>${esc(m)}</option>`
-  ).join('')
-
-  const loraOptions = loras.map(l =>
-    `<option value="${escAttr(l)}"${filters.filterLora === l ? ' selected' : ''}>${esc(l)}</option>`
-  ).join('')
-
-  const hasAny = filters.filterModel || filters.filterLora || filters.filterSeedMin ||
-    filters.filterSeedMax || filters.filterStepsMin || filters.filterStepsMax || filters.filterTag
-
-  return `
-    <div class="outputs-filter-panel">
-      <div class="outputs-filter-panel-header" id="outputsFilterToggle">
-        <span>🔍 高级筛选</span>
-        <span class="outputs-filter-toggle-arrow${hasAny ? ' expanded' : ''}">▶</span>
-      </div>
-      <div class="outputs-filter-panel-body${hasAny ? '' : ' collapsed'}" id="outputsFilterBody">
-        ${models.length > 0 ? `
-        <div class="outputs-filter-group">
-          <label>模型</label>
-          <input type="text" class="outputs-filter-input outputs-filter-model" placeholder="输入模型名..." value="${escAttr(filters.filterModel)}">
-          <datalist id="outputsModelList">${modelOptions}</datalist>
-        </div>` : ''}
-        ${loras.length > 0 ? `
-        <div class="outputs-filter-group">
-          <label>LoRA</label>
-          <input type="text" class="outputs-filter-input outputs-filter-lora" placeholder="输入 LoRA 名..." value="${escAttr(filters.filterLora)}">
-          <datalist id="outputsLoraList">${loraOptions}</datalist>
-        </div>` : ''}
-        <div class="outputs-filter-group">
-          <label>种子范围</label>
-          <div class="outputs-filter-range">
-            <input type="number" class="outputs-filter-input outputs-filter-seed-min" placeholder="最小" value="${escAttr(filters.filterSeedMin)}">
-            <span>~</span>
-            <input type="number" class="outputs-filter-input outputs-filter-seed-max" placeholder="最大" value="${escAttr(filters.filterSeedMax)}">
-          </div>
-        </div>
-        <div class="outputs-filter-group">
-          <label>步数范围</label>
-          <div class="outputs-filter-range">
-            <input type="number" class="outputs-filter-input outputs-filter-steps-min" placeholder="最小" value="${escAttr(filters.filterStepsMin)}">
-            <span>~</span>
-            <input type="number" class="outputs-filter-input outputs-filter-steps-max" placeholder="最大" value="${escAttr(filters.filterStepsMax)}">
-          </div>
-        </div>
-        ${hasAny ? `<button class="btn btn-ghost btn-xs outputs-filter-clear" style="margin-top:8px;width:100%">${icon('x', 12)} 清除筛选</button>` : ''}
-      </div>
-    </div>`
 }
 
 function renderWorkflowSection(workflowJson: string): string {

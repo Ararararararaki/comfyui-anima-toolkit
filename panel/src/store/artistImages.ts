@@ -40,7 +40,3 @@ export function getMergedImages(tag: string, defaultImages: string[]): string[] 
   return all.slice(0, 8)
 }
 
-export function hasCustomImages(tag: string): boolean {
-  const all = getAll()
-  return !!all[tag]?.length
-}

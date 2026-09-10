@@ -25,7 +25,3 @@ export function setHandle(key: HandleKey, dh: FileSystemDirectoryHandle | null) 
   }
 }
 
-/** Returns the previously stored directory name (for display), or null */
-export function getStoredDirName(key: HandleKey): string | null {
-  try { return localStorage.getItem(HANDLE_KEYS[key]) } catch { return null }
-}

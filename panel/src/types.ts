@@ -129,18 +129,6 @@ export interface ArtistData {
   _ghost?: boolean
 }
 
-export interface RankEntry {
-  tag: string
-  name: string
-  desc: string
-  dl: number
-  like: number
-  hasLora: boolean
-  danbooruCount: number
-  socialLinks: string[]
-  score: number
-}
-
 export interface PromptParsed {
   tag: string
   weight: number
@@ -241,7 +229,6 @@ export interface LocalLoraFile {
   matchError: string
   scanning: boolean
 }
-
 
 export interface LocalLoraMatch {
   modelId: number

@@ -43,16 +43,6 @@ export async function searchCards(keyword: string): Promise<ClothingCard[]> {
   ).reverse().sortBy('createdAt')
 }
 
-export async function searchCardsByCategory(keyword: string, catId: string): Promise<ClothingCard[]> {
-  if (!keyword.trim()) return getCardsByCategory(catId)
-  const q = keyword.toLowerCase()
-  return clothingDb.cards.where('categoryId').equals(catId).filter(c =>
-    c.name.toLowerCase().includes(q) ||
-    c.prompt.toLowerCase().includes(q) ||
-    c.tags.some(t => t.toLowerCase().includes(q))
-  ).reverse().sortBy('createdAt')
-}
-
 // ── 分页查询（Perf-2：DB 端 offset/limit，只取一页，不再全量 toArray 后切片）──
 
 export interface CardPageQuery {
@@ -153,10 +143,6 @@ export async function bulkUpdateCards(keys: string[], changes: Partial<ClothingC
 export async function bulkDeleteCards(ids: string[]): Promise<void> {
   if (!ids.length) return
   await clothingDb.cards.bulkDelete(ids)
-}
-
-export async function clearCards(): Promise<void> {
-  await clothingDb.cards.clear()
 }
 
 export function generateCardId(): string {
