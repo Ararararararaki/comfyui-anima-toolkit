@@ -296,12 +296,20 @@ export async function activateLocalManager() {
 }
 
 async function activateLocalManagerInner() {
-  // 激活栏目时强制拉取后端快照，保证 TK 节点刚改的分类能立即出现在工具箱。
-  useLocalModelStore.getState().loadBackendMeta(true).then(() => {
+  // 拉取后端分类快照。⚠️ 不用 force=true：强制模式绕过 60s 节流，导致每次切到本页
+  // 都做一次后端 fetch + 全量 renderLocalView（快速切页时的无谓开销）。
+  // 非强制模式自带 60s 节流 —— TK 节点刚改的分类最迟 1 分钟内出现，需要立刻刷新
+  // 可用工具箱里的「扫描/刷新」按钮。
+  useLocalModelStore.getState().loadBackendMeta().then(() => {
     renderLocalView()
   })
   const store = useLocalModelStore.getState()
   if (store.dirHandle) return
+  // ⚠️ 自动扫描统一节流（2026-09-10 二次修复）：此前只在「句柄失效」分支判节流，
+  // 「首次使用」分支（files=0）漏判 —— 扫描进行中 files 仍为 0，快速切页每次激活
+  // 都重新 scanIncremental（CDP 实测 10 次往返产生 59 个后端扫描请求）。
+  if (Date.now() - _lastAutoScanAt < AUTO_SCAN_THROTTLE_MS) return
+  _lastAutoScanAt = Date.now()
   const hasCache = store.files.length > 0
   if (hasCache) {
     const restored = await store.loadDirHandle()
@@ -330,7 +338,6 @@ async function activateLocalManagerInner() {
     }
   } else {
     // 首次使用（无缓存）：静默扫一次（预设路径 → 上次路径 → ComfyUI loras 目录）
-    _lastAutoScanAt = Date.now()
     void store.scanIncremental().then(() => renderLocalView())
   }
 }
