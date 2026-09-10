@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { ProcessedModel, CivitaiModel, ModelCategory, SortKey, PeriodKey, SectionKey } from '../types'
 import { Cache } from './cache'
 import { stripHtml } from '../utils'
+import { getCivitaiHost } from '../api/civitai'
 import { isHidden, getHiddenIds } from './hidden'
 import { isFav, getCollectionFavs, getActiveCol } from './favorites'
 import { getLocalFileNames } from './localModels'
@@ -21,6 +22,75 @@ const CAT_BADGE: Record<ModelCategory, string> = {
   artist: 'badge-artist', character: 'badge-character', aesthetic: 'badge-aesthetic', background: 'badge-bg', other: 'badge-other',
 }
 
+interface FilterStage { key: string; label: string; count: number }
+
+/**
+ * 逐级筛选：getFiltered 与 filterBreakdown 共用同一实现，
+ * 保证空状态里显示的"是谁筛掉了结果"与实际展示完全一致。
+ */
+function applyFilters(state: ModelState): { list: ProcessedModel[]; stages: FilterStage[] } {
+  let list = [...state.processed]
+  const stages: FilterStage[] = []
+  const step = (key: string, label: string, fn: (m: ProcessedModel) => boolean) => {
+    list = list.filter(fn)
+    stages.push({ key, label, count: list.length })
+  }
+
+  if (state.category === 'fav') {
+    const favIds = new Set(getCollectionFavs(getActiveCol()).map(f => f.id))
+    step('category', '收藏合集', m => favIds.has(m.id))
+  } else if (state.category === 'hidden') {
+    const hiddenIds = new Set(getHiddenIds())
+    step('category', '隐藏记录', m => hiddenIds.has(m.id))
+  } else if (state.category !== 'all') {
+    step('category', `分类 = ${CAT_LABEL[state.category as ModelCategory] || state.category}`, m => m.category === state.category)
+  }
+
+  if (state.category !== 'hidden') {
+    const hiddenIds = new Set(getHiddenIds())
+    if (hiddenIds.size > 0) step('hidden', `已隐藏 ${hiddenIds.size} 条`, m => !hiddenIds.has(m.id))
+  }
+
+  if (state.qualityFilter === 'rec') {
+    step('quality', '质量筛选 = 推荐', m => m.quality.some(q => q === 'hot' || q === 'quality'))
+  } else if (state.qualityFilter === 'new') {
+    step('quality', '质量筛选 = 新发布', m => m.quality.includes('new'))
+  } else if (state.qualityFilter === 'local') {
+    step('quality', '质量筛选 = 仅本地', m => isLocalByName(m.name))
+  } else if (state.qualityFilter === 'highq') {
+    // 高质：下载量 ≥ 250 且 赞比 ≥ 5%（沿用第三方补丁的阈值语义）。
+    // 与既有「推荐」的区别：阈值更宽松（推荐 = 热门或赞比 ≥ 15%），且两项必须同时满足。
+    // 必须由用户显式选中才生效——不做默认开启，避免静默丢掉结果。
+    step('quality', '质量筛选 = 高质（下载≥250 且 赞比≥5%）', m =>
+      m.stats.downloadCount >= 250 && m.stats.ratio >= 0.05)
+  }
+
+  if (state.filterBaseModel) {
+    step('baseModel', `基座模型 = ${state.filterBaseModel}`, m => m.baseModel === state.filterBaseModel)
+  }
+
+  const q = state.search.trim().toLowerCase()
+  // 远程已按同一关键词检索完成时不再本地二次过滤：否则会出现"远程有结果、本地全被筛掉"
+  // 的空状态（用户看到的"无符合条件的 LoRA"闪烁）。本地过滤只在输入防抖期间生效。
+  const handledByApi = !!q && state.resolvedQuery.trim().toLowerCase() === q
+  if (q && !handledByApi) {
+    step('search', `关键词 = ${state.search.trim()}`, m =>
+      m.name.toLowerCase().includes(q) ||
+      m.description.toLowerCase().includes(q) ||
+      m.tags.some(t => t.toLowerCase().includes(q)) ||
+      m.creator.toLowerCase().includes(q) ||
+      m.trainedWords.some(w => w.toLowerCase().includes(q))
+    )
+  }
+
+  // 赞比排序：Civitai API 无该排序参数，按已加载结果本地降序
+  if (state.sort === 'LikeRatio') {
+    list = [...list].sort((a, b) => b.stats.ratio - a.stats.ratio || b.stats.thumbsUpCount - a.stats.thumbsUpCount)
+  }
+
+  return { list, stages }
+}
+
 interface ModelState {
   raw: CivitaiModel[]
   processed: ProcessedModel[]
@@ -33,6 +103,8 @@ interface ModelState {
   search: string
   /** 远程搜索关键词（Civitai API query 参数） */
   remoteQuery: string
+  /** 已经由远程 API 检索完成的关键词；与 search 相等时本地不再二次严格过滤 */
+  resolvedQuery: string
   /** 远程标签过滤（Civitai API tag 参数，逗号分隔） */
   remoteTags: string[]
   /** NSFW 过滤：all 全部 / sfw 仅安全 */
@@ -57,6 +129,7 @@ interface ModelState {
   setCategory: (cat: string) => void
   setSearch: (q: string) => void
   setRemoteQuery: (q: string) => void
+  setResolvedQuery: (q: string) => void
   setRemoteTags: (t: string[]) => void
   setNsfw: (n: 'all' | 'sfw') => void
   setNextPage: (u: string | null) => void
@@ -74,6 +147,8 @@ interface ModelState {
   processModel: (m: CivitaiModel, needsFallback?: boolean) => ProcessedModel
   rebuild: () => void
   getFiltered: () => ProcessedModel[]
+  /** 逐级统计各筛选条件剩余数量（用于空状态定位"是谁把结果筛没了"） */
+  filterBreakdown: () => { remote: number; stages: { key: string; label: string; count: number }[] }
   setRaw: (raw: CivitaiModel[]) => void
   appendRaw: (items: CivitaiModel[]) => void
   setPagination: (page: number, maxPage: number, hasMore: boolean) => void
@@ -90,6 +165,7 @@ export const useModelStore = create<ModelState>((set, get) => ({
   category: 'all',
   search: '',
   remoteQuery: '',
+  resolvedQuery: '',
   remoteTags: [],
   nsfw: 'all',
   nextPage: null,
@@ -110,6 +186,7 @@ export const useModelStore = create<ModelState>((set, get) => ({
   setCategory: (category) => set({ category }),
   setSearch: (search) => set({ search }),
   setRemoteQuery: (remoteQuery) => set({ remoteQuery }),
+  setResolvedQuery: (resolvedQuery) => set({ resolvedQuery }),
   setRemoteTags: (remoteTags) => set({ remoteTags }),
   setNsfw: (nsfw) => set({ nsfw }),
   setNextPage: (nextPage) => set({ nextPage }),
@@ -155,11 +232,13 @@ export const useModelStore = create<ModelState>((set, get) => ({
     const pf = (ver.files || []).find(f => f.primary) || (ver.files || [])[0]
     const desc = stripHtml(m.description || '')
     const uid = ++get().cardUid
+    // 详情/作者链接跟随当前 C 站线路（镜像站下 .com 链接打不开）
+    const host = getCivitaiHost()
     return {
       id: m.id, uid, name: m.name || 'Untitled', description: desc,
       creator: m.creator?.username || 'unknown',
-      creatorUrl: m.creator?.username ? `https://civitai.com/user/${encodeURIComponent(m.creator.username)}` : '',
-      url: `https://civitai.com/models/${m.id}`,
+      creatorUrl: m.creator?.username ? `${host}/user/${encodeURIComponent(m.creator.username)}` : '',
+      url: `${host}/models/${m.id}`,
       downloadUrl: pf?.downloadUrl || '',
       stats: { downloadCount: dl, thumbsUpCount: like, ratio },
       nsfw: m.nsfw || m.nsfwLevel >= 15,
@@ -242,50 +321,12 @@ export const useModelStore = create<ModelState>((set, get) => ({
   },
 
   getFiltered() {
+    return applyFilters(get()).list
+  },
+
+  filterBreakdown() {
     const state = get()
-    let list = [...state.processed]
-
-    if (state.category === 'fav') {
-      const activeCol = getActiveCol()
-      const favIds = new Set(getCollectionFavs(activeCol).map(f => f.id))
-      list = list.filter(m => favIds.has(m.id))
-    } else if (state.category === 'hidden') {
-      const hiddenIds = new Set(getHiddenIds())
-      list = list.filter(m => hiddenIds.has(m.id))
-    } else if (state.category !== 'all') {
-      list = list.filter(m => m.category === state.category)
-    }
-
-    if (state.category !== 'hidden') {
-      const hiddenIds = new Set(getHiddenIds())
-      list = list.filter(m => !hiddenIds.has(m.id))
-    }
-
-    if (state.qualityFilter === 'rec') {
-      list = list.filter(m => m.quality.some(q => q === 'hot' || q === 'quality'))
-    } else if (state.qualityFilter === 'new') {
-      list = list.filter(m => m.quality.includes('new'))
-    } else if (state.qualityFilter === 'local') {
-      list = list.filter(m => isLocalByName(m.name))
-    }
-
-    if (state.filterBaseModel) {
-      list = list.filter(m => m.baseModel === state.filterBaseModel)
-    }
-
-    const q = state.search.trim().toLowerCase()
-    if (q) {
-      list = list.filter(m =>
-        m.name.toLowerCase().includes(q) ||
-        m.description.toLowerCase().includes(q) ||
-        m.tags.some(t => t.toLowerCase().includes(q)) ||
-        m.creator.toLowerCase().includes(q) ||
-        m.trainedWords.some(w => w.toLowerCase().includes(q))
-      )
-    }
-
-    // 远程排序由 Civitai API 完成（sort 参数），本地保持返回顺序
-    return list
+    return { remote: state.processed.length, stages: applyFilters(state).stages }
   },
 
   setRaw(raw) { set({ raw }) },

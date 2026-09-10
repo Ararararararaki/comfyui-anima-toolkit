@@ -258,7 +258,8 @@ async function fetchPage(p: number, options?: { quietError?: boolean; append?: b
   try {
     if (options?.cursor) usedCursors.add(options.cursor)
     // cursor 分页：API 的 page 参数已失效（实测 page=1/2 返回相同数据），翻页必须携带 cursor
-    const data = await fetchModels(currentParams(), options?.cursor)
+    const params = currentParams()
+    const data = await fetchModels(params, options?.cursor)
     if (!data) return
     const meta = data.metadata || {}
     const nextCursor = meta.nextCursor || null
@@ -266,9 +267,15 @@ async function fetchPage(p: number, options?: { quietError?: boolean; append?: b
     const items = exploring
       ? (data.items || []).filter(m => !getSeen().has(m.id))
       : (data.items || [])
-    const before = options?.append ? store.raw.length : 0
-    if (options?.append) store.appendRaw(items); else store.setRaw(items)
-    const appended = store.raw.length - before
+    // ⚠️ 一律读实时 state：appendRaw 会写入新数组，起始快照 store.raw 仍指向旧数组。
+    // 用快照算新增数会让 appended 恒为 0 → noGain → hasMore=false →
+    // #loadMoreWrap（加载更多 + 回到顶部 + 分页栏）整块被隐藏且不再恢复。
+    const before = options?.append ? useModelStore.getState().raw.length : 0
+    if (options?.append) useModelStore.getState().appendRaw(items)
+    else useModelStore.getState().setRaw(items)
+    const appended = useModelStore.getState().raw.length - before
+    // 记录本次结果对应的关键词：命中后本地不再二次过滤同一关键词（避免空态闪烁）
+    useModelStore.getState().setResolvedQuery((params.query || '').trim().toLowerCase())
     // 守卫②：整页全是已加载 id（无新增）→ 视为到底，终止（探索模式有自己的续页逻辑，不受此守卫影响）
     const noGain = options?.append && appended === 0 && !exploring
     const hasMore = !noGain && !!nextCursor && p < MAX_PAGES && !(nextCursor && usedCursors.has(nextCursor))
@@ -277,10 +284,11 @@ async function fetchPage(p: number, options?: { quietError?: boolean; append?: b
     store.setPagination(p, totalPages, hasMore)
     store.setNextPage(nextCursor)
     if (nextCursor) store.setPageCursor(p + 1, nextCursor)
-    store.rebuild()
+    useModelStore.getState().rebuild()
     refreshView(!!options?.append)
 
-    Cache.save(cacheKey(store), store.raw)
+    const saved = useModelStore.getState()
+    Cache.save(cacheKey(saved), saved.raw)
     if (exploring) {
       // 本组合抓到的都记为已看过（含被过滤的重复项，幂等）
       markSeen((data.items || []).map(m => m.id))
@@ -508,6 +516,48 @@ function renderColTabs() {
     `<button class="tab" id="manageColBtn" role="tab" style="border-color:var(--accent);color:var(--accent);font-size:11px">${icon('settings', 12)} 管理</button>`
 }
 
+/** 上一次虚拟网格的布局签名：签名不变时不重建 DOM，避免缩放/设置变更时整块闪烁 */
+let lastGridSig = ''
+
+/** 空状态签名：同一条空态只渲染一次，缩放/重排不再重建节点（否则文案会反复闪烁） */
+function emptyStateSignature(store: ReturnType<typeof useModelStore.getState>): string {
+  const b = store.filterBreakdown()
+  return [store.page, b.remote, store.raw.length, store.search, store.filterBaseModel, store.qualityFilter, store.category, store.remoteQuery, b.stages.map(s => s.key + s.count).join('.')].join('|')
+}
+
+/** 清掉遗留的空状态节点（空态 → 有结果时旧代码只 append 虚拟层，空态会一直留在网格里） */
+function clearEmptyState(grid: HTMLElement) {
+  grid.querySelectorAll(':scope > .empty-state').forEach(el => el.remove())
+}
+
+function emptyStateHtml(store: ReturnType<typeof useModelStore.getState>): string {
+  const b = store.filterBreakdown()
+  const esc = (s: string) => s.replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c] as string))
+
+  // ① 远程就没有数据
+  if (b.remote === 0) {
+    if (store.page === 0 && !store.loading) {
+      return `<div class="big">${icon('package', 28)}</div><p>还没有数据，点击上方「快速抓取」或搜索开始</p>`
+    }
+    const conds = [store.remoteQuery ? `关键词「${esc(store.remoteQuery)}」` : '', store.filterBaseModel ? `基座 ${esc(store.filterBaseModel)}` : '', store.remoteTags.length ? `标签 ${esc(store.remoteTags.join(','))}` : ''].filter(Boolean).join(' · ')
+    return `<div class="big">${icon('search', 28)}</div><p>C 站没有匹配结果</p><p class="sub">当前条件：${conds || '无'}</p>` +
+      `<div class="empty-actions">` +
+      (store.filterBaseModel ? `<button class="btn btn-primary btn-sm" data-clear="baseModel" data-research="1">放宽为「全部基座」重搜</button>` : '') +
+      (store.remoteQuery ? `<button class="btn btn-ghost btn-sm" data-clear="search" data-research="1">清空关键词重搜</button>` : '') +
+      `</div>`
+  }
+
+  // ② 远程有结果，被本地条件筛掉 → 指出是哪个条件
+  const culprit = b.stages.find(s => s.count === 0)
+  if (culprit) {
+    const clearable = culprit.key !== 'hidden' && culprit.key !== 'category'
+    return `<div class="big">${icon('search', 28)}</div><p>C 站返回 ${b.remote} 个结果，但都被「${esc(culprit.label)}」筛掉了</p>` +
+      (clearable ? `<div class="empty-actions"><button class="btn btn-primary btn-sm" data-clear="${culprit.key}">清除「${esc(culprit.label)}」并显示</button></div>` : '<p class="sub">切回「全部」标签页即可看到这些结果</p>')
+  }
+
+  return `<div class="big">${icon('package', 28)}</div><p>没有匹配的 LoRA</p>`
+}
+
 function renderGrid(append = false) {
   refreshLocalNames()
   const grid = document.getElementById('grid')
@@ -520,18 +570,23 @@ function renderGrid(append = false) {
     if (gridVirtual) { gridVirtual.destroy(); gridVirtual = null }
     grid.classList.remove('virtualized')
     grid.onscroll = null
-    if (store.processed.length === 0 && store.page > 0) {
-      grid.innerHTML = `<div class="empty-state"><div class="big">${icon('search', 28)}</div><p>没有符合当前条件的新 LoRA</p><p class="sub">点「随机探索」换个角度，或调整筛选条件</p></div>`
+    lastGridSig = ''
+    const inner = emptyStateHtml(store)
+    const sig = emptyStateSignature(store)
+    const existing = grid.querySelector(':scope > .empty-state') as HTMLElement | null
+    if (existing?.dataset.sig === sig && existing.innerHTML === inner) {
+      // 同一条空态：保留现有节点，避免每次 resize/缩放都重建文案（反复闪烁的观感来源）
     } else {
-      grid.innerHTML = `<div class="empty-state"><div class="big">${icon('package', 28)}</div><p>${store.processed.length === 0 ? '还没有数据，点击上方「快速抓取」或搜索开始' : '没有匹配的 LoRA'}</p></div>`
+      grid.replaceChildren()
+      grid.insertAdjacentHTML('beforeend', `<div class="empty-state" data-sig="${escAttr(sig)}">${inner}</div>`)
     }
-    const wrap = document.getElementById('loadMoreWrap')
-    if (wrap) wrap.style.display = 'none'
+    updatePager(store)
     return
   }
 
-  const wrap = document.getElementById('loadMoreWrap')
-  if (wrap) wrap.style.display = store.hasMore ? 'flex' : 'none'
+  // 有结果：先清掉可能残留的空状态节点，否则它会一直压在卡片上方
+  clearEmptyState(grid)
+  updatePager(store)
 
   // 虚拟滚动：读取设置后的卡片宽度/间距，并为窄卡片预留换行高度。
   const { cardWidth, gap, cardHeight } = getGridMetrics()
@@ -549,25 +604,49 @@ function renderGrid(append = false) {
     }
     return html
   }
+  // 布局签名一致（列数/行高/内容都没变，仅窗口变宽）时跳过重建：
+  // VirtualScroll.update() 内部是 replaceChildren 全量重建，会让所有缩略图重新解码，看起来就是整屏闪烁。
+  const sig = [cardWidth, gap, cardHeight, virtualCols, list.length, list[0]?.uid ?? 0, list[list.length - 1]?.uid ?? 0, store.category, store.qualityFilter, store.sort, store.search, store.resolvedQuery].join('|')
   if (!gridVirtual) {
+    grid.replaceChildren()
     gridVirtual = new VirtualScroll({
       container: grid,
       itemHeight: cardHeight + gap,
       totalItems: rows,
       renderItem,
     })
-  } else {
+    lastGridSig = sig
+  } else if (sig !== lastGridSig) {
     // 复用实例时也必须替换 renderItem；否则滑块/窗口缩放后仍会用旧宽度闭包渲染。
     gridVirtual.update({ totalItems: rows, itemHeight: cardHeight + gap, renderItem })
     gridVirtual.refresh()
+    lastGridSig = sig
   }
   // 触底自动加载（网格内部滚动，提前 400px；loadMore 自带 loading/hasMore 保护）
   grid.onscroll = () => {
     const st = useModelStore.getState()
-    if (st.hasMore && !st.loading && grid.scrollTop + grid.clientHeight >= grid.scrollHeight - 400) {
+    if (!st.hasMore || st.loading) return
+    // 内容未超过视口（可滚动余量不足 400px）时不自动加载：此时滚动事件会反复命中「触底」条件，
+    // 反复触发 loadMore 是空态/网格闪烁的来源之一（取第三方补丁的守卫）
+    if (grid.scrollHeight <= grid.clientHeight + 400) return
+    if (grid.scrollTop + grid.clientHeight >= grid.scrollHeight - 400) {
       loadMore()
     }
   }
+}
+
+/**
+ * 分页区显示规则：只要抓过（page>0）就保留整块分页区，
+ * 仅在没有下一页时隐藏「加载更多」按钮 —— 而不是把分页栏一起藏掉。
+ */
+function updatePager(store: ReturnType<typeof useModelStore.getState>) {
+  const wrap = document.getElementById('loadMoreWrap')
+  if (!wrap) return
+  wrap.style.display = store.page > 0 ? 'flex' : 'none'
+  const lm = document.getElementById('loadMoreBtn')
+  if (lm) (lm as HTMLElement).style.display = store.hasMore ? '' : 'none'
+  const tip = document.getElementById('loadMoreTip')
+  if (tip) (tip as HTMLElement).style.display = store.page > 0 && !store.hasMore ? '' : 'none'
 }
 
 function setText(id: string, text: string) {
@@ -848,7 +927,7 @@ export function setupGlobalHandlers() {
   w.__showExploreHistory = () => {
     document.getElementById('exploreHistOverlay')?.remove()
     const list = loadExploreHist()
-    const SORT_LBL: Record<string, string> = { 'Most Downloaded': '下载量', 'Highest Rated': '评分', 'Most Collected': '收藏', 'Newest': '最新发布', 'Most Discussed': '讨论' }
+    const SORT_LBL: Record<string, string> = { 'Most Downloaded': '下载量', 'Highest Rated': '评分', 'Most Collected': '收藏', 'Newest': '最新发布', 'Most Discussed': '讨论', 'LikeRatio': '赞比' }
     const PERIOD_LBL: Record<string, string> = { AllTime: '全部', Year: '今年', Month: '本月', Week: '本周', Day: '今日' }
     const overlay = document.createElement('div')
     overlay.id = 'exploreHistOverlay'
@@ -1240,9 +1319,46 @@ export function setupBindingListeners() {
     })
   }
 
-  // Sort —— 远程排序（Civitai API sort 参数）
+  // 空状态里的可操作按钮：一键清除"把结果全筛掉"的那一条条件
+  document.getElementById('grid')?.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest('[data-clear]') as HTMLElement | null
+    if (!btn) return
+    const key = btn.dataset.clear || ''
+    const reSearch = btn.dataset.research === '1'
+    const store = useModelStore.getState()
+    if (key === 'baseModel') {
+      store.setFilterBaseModel('')
+      const sel = document.getElementById('baseModelFilter') as HTMLSelectElement | null
+      if (sel) sel.value = ''
+      showToast('🗂️ 已放宽为「全部基座」')
+    } else if (key === 'search') {
+      store.setSearch('')
+      const input = document.getElementById('searchInput') as HTMLInputElement | null
+      if (input) input.value = ''
+      showToast('🔍 已清空关键词')
+    } else if (key === 'quality') {
+      store.setQualityFilter('all')
+      const sel = document.getElementById('qualityFilter') as HTMLSelectElement | null
+      if (sel) sel.value = 'all'
+      showToast('📋 已恢复「全部」质量筛选')
+    } else if (key === 'category') {
+      store.setCategory('all')
+      showToast('📂 已切回「全部」分类')
+    } else return
+    updateTabs()
+    if (reSearch) resetAndFetch()
+    else refreshView()
+  })
+
+  // Sort —— 赞比是本地排序（API 无此参数），其余走远程 sort 参数
   document.getElementById('sortSelect')?.addEventListener('change', (e) => {
-    useModelStore.getState().setSort((e.target as HTMLSelectElement).value as SortKey)
+    const sort = (e.target as HTMLSelectElement).value as SortKey
+    useModelStore.getState().setSort(sort)
+    if (sort === 'LikeRatio') {
+      showToast('📊 已按赞比（点赞/下载）排序已加载结果')
+      refreshView()
+      return
+    }
     resetAndFetch()
   })
 

@@ -75,7 +75,7 @@ export interface ProcessedModel {
   versionCreatedAt: string
 }
 
-export type SortKey = 'Most Downloaded' | 'Highest Rated' | 'Newest' | 'Most Discussed' | 'Most Collected'
+export type SortKey = 'Most Downloaded' | 'Highest Rated' | 'Newest' | 'Most Discussed' | 'Most Collected' | 'LikeRatio'
 export type PeriodKey = 'AllTime' | 'Year' | 'Month' | 'Week' | 'Day'
 export type SectionKey = 'lora' | 'artist' | 'prompt' | 'prompt-freq' | 'local' | 'outputs'
 

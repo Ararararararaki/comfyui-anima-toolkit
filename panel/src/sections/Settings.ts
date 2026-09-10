@@ -4,6 +4,7 @@ import { exportAll, importAll } from '../services/backupService'
 import { openModal, closeModal, confirmModal, promptModal } from '../components/Modal'
 import { showToast } from '../utils'
 import { icon } from '../utils/icon'
+import { getCivitaiHost, setCivitaiHost } from '../api/civitai'
 
 const SETTINGS_MODAL_ID = 'settingsModal'
 
@@ -290,6 +291,21 @@ function renderSettingsHTML(s: AppSettings): string {
           <div class="settings-row">
             <label class="settings-label">C 站 API Key</label>
             <input type="password" id="civitaiApiKey" value="${(() => { try { return localStorage.getItem('anima_civitai_token') || '' } catch { return '' } })()}" placeholder="只读权限即可，下载需登录的模型用" style="flex:1;padding:6px 8px;background:var(--bg1);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:11px;outline:none;">
+          </div>
+          <div class="settings-row">
+            <label class="settings-label">C 站线路</label>
+            <select id="civitaiHost" style="flex:1;padding:6px 8px;background:var(--bg1);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:11px;outline:none;">
+              <option value="">默认 · civitai.com</option>
+              <option value="https://civitai.red">镜像 · civitai.red</option>
+              <option value="custom">自定义域名…</option>
+            </select>
+          </div>
+          <div class="settings-row" id="civitaiHostCustomRow" style="display:none">
+            <label class="settings-label">自定义域名</label>
+            <input type="text" id="civitaiHostCustomInput" value="${(() => { try { return localStorage.getItem('anima_civitai_host') || '' } catch { return '' } })()}" placeholder="https://civitai.com" style="flex:1;padding:6px 8px;background:var(--bg1);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:11px;outline:none;">
+          </div>
+          <div class="settings-row">
+            <span style="font-size:10px;color:var(--text3);line-height:1.5">线路只影响 API 请求与模型/作者链接（图片仍走 image.civitai.com，由 ComfyUI 后端代理）。部分网络下 civitai.com 不可达时可切镜像站，切换后需重新抓取才生效。</span>
           </div>
           <div class="settings-row">
             <label class="settings-label">本地 LoRA 扫描目录</label>
@@ -632,6 +648,34 @@ function openSettings() {
     else localStorage.removeItem('anima_civitai_token')
     showToast(v ? '✅ C 站 API Key 已保存' : '已清除 C 站 API Key')
   })
+
+  // C 站线路：默认 civitai.com；部分网络不可达时可切镜像站（civitai.red）
+  const hostSel = document.getElementById('civitaiHost') as HTMLSelectElement | null
+  const hostCustomRow = document.getElementById('civitaiHostCustomRow')
+  const hostCustomInput = document.getElementById('civitaiHostCustomInput') as HTMLInputElement | null
+  if (hostSel) {
+    const current = getCivitaiHost()
+    hostSel.value = current === 'https://civitai.com' ? '' : (current === 'https://civitai.red' ? current : 'custom')
+    if (hostSel.value === 'custom') {
+      if (hostCustomRow) hostCustomRow.style.display = ''
+      if (hostCustomInput) hostCustomInput.value = current
+    }
+    hostSel.addEventListener('change', () => {
+      if (hostSel.value === 'custom') {
+        if (hostCustomRow) hostCustomRow.style.display = ''
+        if (hostCustomInput) { if (!hostCustomInput.value.trim()) hostCustomInput.value = current; hostCustomInput.focus() }
+        return
+      }
+      if (hostCustomRow) hostCustomRow.style.display = 'none'
+      setCivitaiHost(hostSel.value)
+      showToast(hostSel.value ? `✅ C 站线路已切到 ${getCivitaiHost()}` : '已恢复默认线路 civitai.com')
+    })
+    hostCustomInput?.addEventListener('change', () => {
+      const v = hostCustomInput.value.trim()
+      setCivitaiHost(v)
+      showToast(v ? `✅ C 站线路已切到 ${getCivitaiHost()}` : '已恢复默认线路 civitai.com')
+    })
+  }
 
   // 本地 LoRA 扫描目录（预设路径）：留空 = 上次使用路径 = ComfyUI 注册的 loras 目录
   document.getElementById('localScanDir')?.addEventListener('change', (e) => {

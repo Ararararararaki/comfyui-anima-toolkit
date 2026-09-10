@@ -52,6 +52,7 @@ try {
     </div>
     <select id="sortSelect" aria-label="排序方式">
       <option value="Most Downloaded">⬇ 下载量</option>
+      <option value="LikeRatio">📊 赞比（本地排序）</option>
       <option value="Highest Rated">⭐ 评分</option>
       <option value="Newest">🆕 最新发布</option>
       <option value="Most Discussed">💬 讨论最多</option>
@@ -62,6 +63,7 @@ try {
       <option value="rec">🏆 推荐</option>
       <option value="new">🆕 新发布</option>
       <option value="local">✅ 仅本地</option>
+      <option value="highq">🎯 高质（下载≥250 且 赞比≥5%）</option>
     </select>
     <select id="baseModelFilter" aria-label="基座模型" title="远程限定基座模型">
       <option value="">🗂️ 全部基座</option>
@@ -74,7 +76,7 @@ try {
       <option value="Other">📦 Other</option>
     </select>
     <select id="nsfwFilter" aria-label="NSFW 过滤">
-      <option value="all">🔞 全部</option>
+      <option value="all">🔞 全部（含 NSFW）</option>
       <option value="sfw">🛡️ 仅 SFW</option>
     </select>
     <input type="text" id="tagInput" placeholder="🏷️ 标签过滤（逗号分隔）" autocomplete="off" style="width:150px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text);font-size:12px" aria-label="标签过滤">
@@ -129,6 +131,7 @@ try {
       <button class="btn btn-primary" id="loadMoreBtn" type="button">加载更多</button>
       <button class="btn btn-ghost" onclick="window.scrollTo({top:0,behavior:'smooth'})" type="button">回到顶部</button>
       <div id="scrollSentinel" style="height:1px"></div>
+      <span class="load-more-tip" id="loadMoreTip" style="display:none">✅ 已加载全部</span>
       <div class="pager-wrap" id="pagerWrap">
         <button class="btn btn-ghost btn-sm pager-btn" id="pagePrevBtn" type="button">上一页</button>
         <span class="pager-info">第
