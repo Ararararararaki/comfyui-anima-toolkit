@@ -5,7 +5,7 @@
 import { esc, escAttr } from '../utils'
 import type { OutputFile, OutputMetadata, OutputDir } from '../types/outputs'
 import { icon } from '../utils/icon'
-import { MAX_IMG_RATIO } from '../components/masonry'
+import { CLAMP_MAX_ASPECT, CLAMP_MIN_ASPECT } from '../components/masonry'
 
 // ── 状态标签定义 ──
 
@@ -83,9 +83,12 @@ export function cardSignature(file: OutputFile): string {
 export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, isSelected: boolean, loras?: string[], sig?: string, thumbSrc?: string, imgH?: number): string {
   const st = file.status ? STATUS_DEFS[file.status] : null
   const masonry = imgH ? ' masonry' : ''
-  // 超长图被 MAX_IMG_RATIO 截断 → 卡片加类，CSS 用 object-fit:contain 保住画面内容
-  const tallClamped = file.width > 0 && file.height > 0 && file.height / file.width > MAX_IMG_RATIO
-  return `<div class="outputs-card ${isSelected ? 'selected' : ''}${file.status ? ` status-${file.status}` : ''}${masonry}${tallClamped ? ' tall-clamped' : ''}" data-id="${escAttr(file.id)}" data-path="${escAttr(file.path)}"${sig ? ` data-sig="${escAttr(sig)}"` : ''}>
+  // 极端比例（超高 1:2.2+ / 超宽全景 3:1+）在装箱时已按上下限截断 → 卡片加类，
+  // CSS 用 object-fit:contain 显示完整画面，避免被 cover 裁掉主体
+  const cardAspect = file.width > 0 && file.height > 0 ? file.height / file.width : 1
+  const clampClass = cardAspect > CLAMP_MAX_ASPECT ? ' tall-clamped'
+    : (cardAspect < CLAMP_MIN_ASPECT ? ' wide-clamped' : '')
+  return `<div class="outputs-card ${isSelected ? 'selected' : ''}${file.status ? ` status-${file.status}` : ''}${masonry}${clampClass}" data-id="${escAttr(file.id)}" data-path="${escAttr(file.path)}"${sig ? ` data-sig="${escAttr(sig)}"` : ''}>
     <div class="outputs-card-img"${imgH ? ` style="height:${imgH}px"` : ''}>
       ${st ? `<div class="outputs-card-status-tag" style="background:${st.color}">${st.label}</div>` : ''}
       <img src="${escAttr(thumbSrc || '')}" data-file-id="${escAttr(file.id)}" data-file-path="${escAttr(file.path)}" data-file-version="${file.mtime}:${file.size}" alt="${esc(file.filename)}" loading="eager">

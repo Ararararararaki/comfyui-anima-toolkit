@@ -427,7 +427,7 @@
   background: var(--bg3);
 }
 
-/* 瀑布流卡片：图片区高度由 JS 按图片真实宽高比内联，取消固定方形容器 */
+/* B 布局卡片：图片区高度由 JS 按「本行归一后的行高」内联（同一行内相等），取消固定方形容器 */
 .outputs-card.masonry .outputs-card-img {
   aspect-ratio: auto;
 }
@@ -1451,5 +1451,6 @@
   .outputs-toolbar-group { padding-left: 5px; }
 }
 
-/* 超长图（比例超 MAX_IMG_RATIO 被截断）改用 contain，保住画面内容不裁切 */
+/* 极端比例（超出装箱上下限被截断）改用 contain，保住画面内容不裁切 */
 .outputs-card.tall-clamped .outputs-card-img img { object-fit: contain; }
+.outputs-card.wide-clamped .outputs-card-img img { object-fit: contain; }

@@ -497,7 +497,11 @@ const _outputImageNodes = new ImageNodeCache(600)
 
 type OutputsGeom = OutputGridGeometry
 
-/** 网格几何：与 CSS 网格保持一致（卡片最小宽度来自设置；≤768px 时默认 150px/10px） */
+/**
+ * 网格几何：与 CSS 网格保持一致（卡片最小宽度来自设置；≤768px 时默认 150px/10px）。
+ * B 布局（行内等高）下 `cardW` 的角色变为「目标行高 / 理想卡宽」——全正方形图时
+ * 行高即 cardW，观感与等宽网格一致；`cols` 仅用于反推容器可用宽度。
+ */
 function outputsGeom(width: number): OutputsGeom {
   const narrow = window.innerWidth <= 768
   const fallbackMin = narrow ? 150 : 200
@@ -558,13 +562,14 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
   }
 
   if (state.viewMode === 'grid') {
-    // ── 网格模式：瀑布流虚拟滚动渲染全量（缩略图走 thumbMemory 回填 + IntersectionObserver，翻页不闪烁）──
+    // ── 网格模式：B 布局（行内等高 / 宽度随比例伸缩）虚拟滚动渲染全量
+    //    （缩略图走 thumbMemory 回填 + IntersectionObserver，翻页不闪烁）──
     const geom = outputsGeom(el.clientWidth)
-    // 列填充布局：卡高随图片真实宽高比，逐张放入当前最短列；布局带缓存，滚动画框选可复用
+    // 行装箱布局：整行按可用宽度归一，同一行图片区等高；布局带缓存，滚动画框选可复用
     const layout = computeMasonryLayout(files, geom.cols, geom.cardW, geom.gap)
 
     // renderItem 只负责卡片内容；二维位置由 MasonryVirtualScroll 的 item rect 承担。
-    // 普通 VirtualScroll 会把高度做一维前缀累加，无法表达多列共享 top 的瀑布流。
+    // 普通 VirtualScroll 会把高度做一维前缀累加，无法表达「同行共享 top、行内等高」的 B 布局。
     const renderItem = (index: number, style: VirtualScrollItemStyle) => {
       const s = useOutputStore.getState()
       const f = files[index]
