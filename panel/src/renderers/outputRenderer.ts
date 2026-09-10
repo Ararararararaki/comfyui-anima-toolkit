@@ -5,7 +5,7 @@
 import { esc, escAttr } from '../utils'
 import type { OutputFile, OutputMetadata, OutputDir } from '../types/outputs'
 import { icon } from '../utils/icon'
-import { CLAMP_MAX_ASPECT, CLAMP_MIN_ASPECT } from '../components/masonry'
+import { CLAMP_MAX_ASPECT } from '../components/masonry'
 
 // ── 状态标签定义 ──
 
@@ -92,11 +92,11 @@ export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, i
   // 因此 CSS 反算出的高度与布局的 imgHeights 严格一致；没有布局信息时退回原图比例。
   const fileRatio = file.width > 0 && file.height > 0 ? file.width / file.height : 0
   const arValue = boxAspect || fileRatio || 'auto'
-  // 极端比例（超高 1:2.2+ / 超宽全景 3:1+）：布局层按上下限截断了盒子比例，
-  // 盒子与原图形状不同 → 用 contain 显示完整画面（容器底色近黑，留白观感自然）。
+  // 超高图（h/w 超 CLAMP_MAX_ASPECT，布局层已按上限截断盒子比例）→ 加类，
+  // 用 object-fit:contain 完整嵌入，避免被 cover 裁掉主体。
+  // 超宽图不再截断：布局层用「跨 2/3 列」给它足够的宽度，保持真实比例零裁切。
   const cardAspect = file.width > 0 && file.height > 0 ? file.height / file.width : 1
-  const clampClass = cardAspect > CLAMP_MAX_ASPECT ? ' tall-clamped'
-    : (cardAspect < CLAMP_MIN_ASPECT ? ' wide-clamped' : '')
+  const clampClass = cardAspect > CLAMP_MAX_ASPECT ? ' tall-clamped' : ''
   return `<div class="outputs-card ${isSelected ? 'selected' : ''}${file.status ? ` status-${file.status}` : ''}${masonry}${clampClass}" data-id="${escAttr(file.id)}" data-path="${escAttr(file.path)}"${sig ? ` data-sig="${escAttr(sig)}"` : ''}>
     <div class="outputs-card-img" style="--card-ar:${arValue}">
       ${st ? `<div class="outputs-card-status-tag" style="background:${st.color}">${st.label}</div>` : ''}

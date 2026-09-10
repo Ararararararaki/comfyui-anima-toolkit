@@ -1479,6 +1479,6 @@
   .outputs-toolbar-group { padding-left: 5px; }
 }
 
-/* 极端比例（超出装箱上下限被截断）改用 contain，保住画面内容不裁切 */
+/* 超高图（宽高比超 CLAMP_MAX_ASPECT，盒子比例在布局层已被截断）改用 contain，
+   完整嵌入、保住画面内容。超宽图不截断（靠跨列拿宽度），因此不再需要 wide-clamped。 */
 .outputs-card.tall-clamped .outputs-card-img img { object-fit: contain; }
-.outputs-card.wide-clamped .outputs-card-img img { object-fit: contain; }
