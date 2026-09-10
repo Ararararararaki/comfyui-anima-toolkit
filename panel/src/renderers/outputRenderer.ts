@@ -80,16 +80,25 @@ export function cardSignature(file: OutputFile): string {
   ].join('|')
 }
 
-export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, isSelected: boolean, loras?: string[], sig?: string, thumbSrc?: string, imgH?: number): string {
+export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, isSelected: boolean, loras?: string[], sig?: string, thumbSrc?: string, boxAspect?: number): string {
   const st = file.status ? STATUS_DEFS[file.status] : null
-  const masonry = imgH ? ' masonry' : ''
-  // 极端比例（超高 1:2.2+ / 超宽全景 3:1+）在装箱时已按上下限截断 → 卡片加类，
-  // CSS 用 object-fit:contain 显示完整画面，避免被 cover 裁掉主体
+  const masonry = boxAspect ? ' masonry' : ''
+  // 图片区高度**不再由 JS 内联**：一旦同时定死宽和高，CSS 的 aspect-ratio 与
+  // <img> 的固有比例都会被忽略（MDN：「宽和高都确定时 aspect-ratio 不起作用」），
+  // 盒子比例只能由外部决定，图片就只剩被 object-fit 裁切一条路 ——
+  // 这正是「所有卡片高度被统一成同一个值、图片被裁」的根源。
+  // 改为只传「盒子宽高比」，让浏览器按 高度 = 宽度 ÷ 比例 自己算。
+  // boxAspect 由布局层给出（= 装箱时实际使用的比例，极端比例已按上下限截断），
+  // 因此 CSS 反算出的高度与布局的 imgHeights 严格一致；没有布局信息时退回原图比例。
+  const fileRatio = file.width > 0 && file.height > 0 ? file.width / file.height : 0
+  const arValue = boxAspect || fileRatio || 'auto'
+  // 极端比例（超高 1:2.2+ / 超宽全景 3:1+）：布局层按上下限截断了盒子比例，
+  // 盒子与原图形状不同 → 用 contain 显示完整画面（容器底色近黑，留白观感自然）。
   const cardAspect = file.width > 0 && file.height > 0 ? file.height / file.width : 1
   const clampClass = cardAspect > CLAMP_MAX_ASPECT ? ' tall-clamped'
     : (cardAspect < CLAMP_MIN_ASPECT ? ' wide-clamped' : '')
   return `<div class="outputs-card ${isSelected ? 'selected' : ''}${file.status ? ` status-${file.status}` : ''}${masonry}${clampClass}" data-id="${escAttr(file.id)}" data-path="${escAttr(file.path)}"${sig ? ` data-sig="${escAttr(sig)}"` : ''}>
-    <div class="outputs-card-img"${imgH ? ` style="height:${imgH}px"` : ''}>
+    <div class="outputs-card-img" style="--card-ar:${arValue}">
       ${st ? `<div class="outputs-card-status-tag" style="background:${st.color}">${st.label}</div>` : ''}
       <img src="${escAttr(thumbSrc || '')}" data-file-id="${escAttr(file.id)}" data-file-path="${escAttr(file.path)}" data-file-version="${file.mtime}:${file.size}" alt="${esc(file.filename)}" loading="eager">
       <div class="outputs-card-actions-top">

@@ -575,10 +575,13 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
       const f = files[index]
       if (!f) return ''
       const meta = s.metadataCache.get(f.id)
-      const imgH = layout.imgHeights[index]
+      // 传「布局实际使用的盒子比例」（极端比例已被上下限截断），而不是原图比例：
+      // CSS 用 高度 = 宽度 ÷ 比例 反算高度，两者同源才能保证盒子高度与虚拟滚动
+      // 的行几何严格一致（否则被截断的卡会比预算更高，压到下一行）。
+      const boxAspect = layout.boxAspects[index]
       // thumbSrc 同步回填内存缩略图：虚拟滚动滚动时条目会被重建，
       // 若等 IntersectionObserver 异步回填会有几帧黑图闪烁
-      return renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined, undefined, s.thumbMemory.get(f.path), imgH)
+      return renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined, undefined, s.thumbMemory.get(f.path), boxAspect)
     }
 
     const getItemRect = (index: number) => ({

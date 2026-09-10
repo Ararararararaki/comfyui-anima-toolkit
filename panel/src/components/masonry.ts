@@ -25,8 +25,13 @@ import type { OutputFile } from '../types/outputs'
 
 /** 信息区高度兜底值：CSS 变量 --outputs-info-h 缺失时使用（与 outputs.css 默认值一致） */
 export const OUTPUTS_INFO_H = 82
-/** 卡片上下边框 2px×2（box-sizing: border-box 下内容区少 4px） */
-export const MASONRY_CARD_BORDER = 4
+/**
+ * 卡片在图片区之外额外占用的垂直高度（信息区以外）。
+ * B 布局下卡片的边框已改为 inset 阴影（outputs.css：`.outputs-card.masonry { border: 0 }`），
+ * **不占布局空间**，因此这里是 0 —— 卡高 = 图片区 + 信息区，与 DOM 实测严格一致。
+ * （历史值 4 是「border 2px×2」时代的假设，与实测的 2px 不符，会让每行多算 2px。）
+ */
+export const MASONRY_CARD_BORDER = 0
 /** 单行行高下限（软下限，见 computeMasonryLayout 内注释）：防止极端比例把整行压成细条 */
 export const MIN_ROW_H = 90
 /** 单行行高上限 = 目标行高 × 此系数：防止稀疏行把图片吹得过大 */
@@ -58,6 +63,13 @@ export interface MasonryLayout {
   imgHeights: number[]
   /** 图片区是否被比例上下限截断（渲染层用 object-fit: contain 保内容） */
   clamped: boolean[]
+  /**
+   * 每张卡**装箱时实际使用的宽高比**（= 宽/高，极端比例已被上下限截断）。
+   * 渲染层必须用这个值（而不是原图真实比例）作为 `--card-ar`：
+   * CSS 用「高度 = 宽度 ÷ 比例」反算出的高度，才会严格等于本布局的 imgHeights；
+   * 若 CSS 用原图真实比例，被截断的卡片会比布局预算更高/更窄，与相邻行重叠。
+   */
+  boxAspects: number[]
   /** 内容总高度 */
   total: number
 }
@@ -108,6 +120,7 @@ export function computeMasonryLayout(files: OutputFile[], cols: number, cardW: n
   const heights = new Array<number>(n)
   const imgHeights = new Array<number>(n)
   const clamped = new Array<boolean>(n)
+  const boxAspects = new Array<number>(n)
 
   // 容器可用宽度 = 旧网格几何推回（cols 列 + 列间距），与实际渲染宽度一致
   const width = cols * cardW + (cols - 1) * gap
@@ -150,21 +163,26 @@ export function computeMasonryLayout(files: OutputFile[], cols: number, cardW: n
       if (sumRatio * floored + gap * (count - 1) <= width + EPS) rowH = floored
     }
 
-    // 图片区高度取整后**整行共用**：这是「行内等高」的落点
-    const imgH = Math.round(rowH)
+    // 图片区高度**整行共用**（这是「行内等高」的落点），但不取整：
+    // 卡片盒子的真实高度由 CSS `aspect-ratio: var(--card-ar)` 从宽度算出来，
+    // 这里必须用同一个算术值（height = width / ratio），取整会引入 ≤0.5px 的
+    // 系统性偏差（可见为行间 1px 缝或重叠）。
+    const imgH = rowH
     const cardH = imgH + infoH + MASONRY_CARD_BORDER
 
     // ③ 行内按比例分配宽度（浮点累计，Σwidth + gap 恰好等于容器宽度）
     let left = 0
     for (let k = rowStart; k < rowStart + count; k++) {
       const aspect = aspectOf(files[k])
-      const w = packRatio(aspect) * rowH
+      const ratio = packRatio(aspect)
+      const w = ratio * rowH
       tops[k] = y
       lefts[k] = left
       widths[k] = w
       heights[k] = cardH
       imgHeights[k] = imgH
       clamped[k] = aspect > CLAMP_MAX_ASPECT || aspect < CLAMP_MIN_ASPECT
+      boxAspects[k] = ratio
       left += w + gap
     }
 
@@ -178,6 +196,6 @@ export function computeMasonryLayout(files: OutputFile[], cols: number, cardW: n
   _cacheCardW = cardW
   _cacheGap = gap
   _cacheInfoH = infoH
-  _cache = { tops, lefts, colsOf, widths, heights, imgHeights, clamped, total }
+  _cache = { tops, lefts, colsOf, widths, heights, imgHeights, clamped, boxAspects, total }
   return _cache
 }

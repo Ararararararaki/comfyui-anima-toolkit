@@ -427,9 +427,15 @@
   background: var(--bg3);
 }
 
-/* B 布局卡片：图片区高度由 JS 按「本行归一后的行高」内联（同一行内相等），取消固定方形容器 */
+/* B 布局卡片：图片区比例 = 原图比例（--card-ar 由渲染层写入：`宽 / 高`）。
+   ⚠️ 高度必须是**自动尺寸**：CSS 的 aspect-ratio 只在「至少一个方向是自动尺寸」时
+   生效，宽和高都确定时它会被完全忽略（MDN）。此前渲染层用内联 height 把高度定死，
+   于是盒子比例既不听原图、也不听 aspect-ratio，只能靠 object-fit 裁切 ——
+   这正是「所有卡片高度被统一成同一个值、图片被裁」的成因。
+   旧数据缺宽高时 --card-ar 退化为 auto → 交给 <img> 的固有比例决定，仍然零裁切。 */
 .outputs-card.masonry .outputs-card-img {
-  aspect-ratio: auto;
+  height: auto;
+  aspect-ratio: var(--card-ar, auto);
 }
 
 .outputs-card-img img {
@@ -437,6 +443,28 @@
   height: 100%;
   object-fit: cover;
   transition: transform 0.3s ease;
+}
+
+/* B 布局改用 contain：盒子比例已等于原图比例时，contain 与 cover 等价（同一个缩放
+   因子作用于宽高两轴，既不留白也不裁切）；一旦比例缺失（--card-ar=auto）或越界
+   （极端比例在装箱时被截断），cover 会静默裁掉画面，contain 只留白 ——
+   用「留白」换「不丢内容」。要改回裁切式填满，只需把这一条换成 cover。 */
+.outputs-card.masonry .outputs-card-img img {
+  object-fit: contain;
+}
+
+/* B 布局的卡片边框改为**不占布局空间**的 inset 阴影。
+   原因：box-sizing:border-box 下 border 会从内容宽里扣掉（实测左右各 1px = 2px），
+   而布局层按「盒宽 = 行内分配宽度」推算高度（高度 = 宽度 ÷ 比例），于是
+   每张卡的图片区实际窄 2px、比布局预测矮 2px —— 行内出现 2px 级缝隙累积。
+   inset 阴影视觉上是同样的 1px 描边，但不参与盒模型，布局算术因此精确成立。 */
+.outputs-card.masonry {
+  border: 0;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.outputs-card.masonry:hover {
+  box-shadow: inset 0 0 0 1px var(--border-hover, var(--border));
 }
 
 .outputs-card:hover .outputs-card-img img {
