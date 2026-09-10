@@ -30,12 +30,6 @@ let _running = false
 let _token = 0
 const _listeners = new Set<(p: MetadataIndexProgress) => void>()
 
-/** 订阅进度（用于 toast / 重渲染）；返回取消订阅函数 */
-export function onMetadataIndexProgress(fn: (p: MetadataIndexProgress) => void): () => void {
-  _listeners.add(fn)
-  return () => { _listeners.delete(fn) }
-}
-
 function emit(running: boolean, done: number, total: number): void {
   for (const fn of _listeners) {
     try { fn({ running, done, total }) } catch { /* 单个订阅者异常不影响其它 */ }
@@ -106,8 +100,3 @@ export function ensureAllMetadata(): Promise<void> {
   })
 }
 
-/** 中断正在进行的补齐（例如用户离开/切栏目时调用） */
-export function cancelMetadataIndex(): void {
-  _token++
-  _running = false
-}

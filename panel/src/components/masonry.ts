@@ -29,11 +29,6 @@ export const OUTPUTS_INFO_H = 82
 export const MASONRY_CARD_BORDER = 0
 
 /**
- * ⚠️ 信息区高度**不再参与布局计算**（见上）。此变量仅为兼容旧引用保留：
- * 需要它的是 CSS 里浮层的排版，不是 masonry 的卡高。
- */
-export const LEGACY_INFO_H_NOTE = true
-/**
  * 宽高比（h/w）上限 = 盒子比例下限：超过即视为超高图，盒子比例按上限截断，
  * 渲染层加 .tall-clamped 用 object-fit:contain 完整嵌入。
  * 不设下限（超宽图保持真实比例、不做任何留白/裁切），宽度不足由「跨列」解决。

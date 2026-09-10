@@ -238,7 +238,3 @@ export function clearLoraImageCache(): void {
   active = 0
 }
 
-// 调试用：当前缓存占用
-export function loraImageCacheInfo(): { entries: number; okBytes: number } {
-  return { entries: cache.size, okBytes: totalOkBytes }
-}
