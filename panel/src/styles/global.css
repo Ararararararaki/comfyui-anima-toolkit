@@ -452,28 +452,6 @@ h1 small { font-size: 12px; color: var(--text2); font-weight: 400; margin-left: 
 
 .period-btn.active { background: var(--accent); color: #fff; box-shadow: 0 1px 6px var(--accent-glow); }
 
-.stats-bar {
-
-  display: flex; gap: 14px; padding: 10px 24px; font-size: 12px;
-
-  background: rgba(10,10,12,.5); border-bottom: 1px solid var(--border);
-
-  flex-wrap: wrap; align-items: center; max-width: var(--content-max-width, 1480px); margin: 0 auto;
-
-  position: relative; z-index: 1;
-
-}
-
-.stats-bar .stat { display: flex; align-items: center; gap: 4px; color: var(--text2); }
-
-.stats-bar .stat strong { color: var(--text); font-weight: 600; }
-
-.stats-bar .ratio { color: var(--green); }
-
-.stats-bar .loading-bar { flex: 1; min-width: 80px; height: 4px; background: var(--bg4); border-radius: 2px; overflow: hidden; }
-
-.stats-bar .loading-bar .fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 2px; transition: width .4s; }
-
 .tabs-wrap { max-width: var(--content-max-width, 1480px); margin: 0 auto; padding: 10px 24px 0; overflow-x: auto; position: relative; z-index: 1; }
 
 .tabs { display: flex; gap: 4px; padding-bottom: 8px; border-bottom: 1px solid var(--border); min-width: max-content; }
@@ -1524,19 +1502,12 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 
 /* ── MODEL NOTES ── */
 
-.notes-indicator { display: inline-flex; align-items: center; gap: 2px; margin-left: 4px; cursor: pointer; font-size: 11px; }
 
-.notes-indicator.has-notes { color: var(--accent); }
 
-.notes-indicator.no-notes { color: var(--text3); opacity: .4; }
 
-.notes-indicator.no-notes:hover { opacity: .8; }
 
-.notes-stars { display: inline-flex; gap: 1px; margin-left: 4px; font-size: 11px; cursor: default; }
 
-.notes-stars .star { color: var(--orange); }
 
-.notes-stars .star.empty { color: var(--text3); opacity: .25; }
 
 .model-status-badge { display: inline-block; margin-left: 4px; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: 600; white-space: nowrap; }
 
@@ -2264,18 +2235,6 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 .ghost-artist { opacity: .65; border: 1px dashed var(--border) !important; background: repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(148,163,184,.04) 4px, rgba(148,163,184,.04) 8px) !important; }
 
 .ghost-artist .ghost-badge { display: inline-flex; align-items: center; gap: 2px; font-size: 9px; font-weight: 700; color: var(--orange); background: rgba(245,158,11,.12); padding: 1px 6px; border-radius: 6px; margin-left: 4px; }
-
-/* Danbooru bar */
-
-.danbooru-bar { height: 6px; border-radius: 99px; background: var(--bg2); overflow: hidden; margin-top: 4px; position: relative; }
-
-.danbooru-bar-fill { height: 100%; border-radius: 99px; background: linear-gradient(90deg, #f97316, #f59e0b, #eab308); transition: width .3s ease; position: relative; }
-
-.danbooru-bar-fill::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.3), transparent); animation: danbooruShimmer 1.5s infinite; }
-
-@keyframes danbooruShimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
-
-.danbooru-count { position: absolute; right: 0; top: -16px; font-size: 9px; color: var(--orange); font-weight: 700; }
 
 .danbooru-progress { padding: 8px; display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text2); }
 
@@ -3020,8 +2979,6 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
   .ctrl-group { padding: 8px 12px 0; }
 
   .tabs-wrap { padding: 8px 12px 0; }
-
-  .stats-bar { padding: 8px 12px; font-size: 11px; }
 
   .artist-hero h2 { font-size: 15px; }
 
@@ -3877,10 +3834,6 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 
 .batch-bar-hidden { display: none; }
 
-/* Danbooru status */
-
-.danbooru-status { display: none; padding: 8px 12px; }
-
 /* Modal width variants */
 
 .modal-md { max-width: 540px; }
@@ -3921,7 +3874,6 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 
 .notes-rating-label { font-size: 12px; color: var(--text2); }
 
-.notes-stars-wrap { display: flex; gap: 2px; font-size: 20px; cursor: pointer; }
 
 .notes-status-wrap { margin-left: auto; display: flex; gap: 4px; }
 
@@ -5281,4 +5233,34 @@ html[data-theme="drinkit"] .main-tabs .main-tab.active {
   flex-wrap: nowrap;
   overflow: hidden;
   max-height: 24px;
+}
+
+/* ── 分类标签页（#tabsContainer 内 .tab：全部/画师风格/人物角色/背景环境/其他/收藏）──
+ * 需求：浅色主题下「淡底淡字几乎隐形」→ 未激活 tab 给实底+边框+对比字；激活 tab 醒目不刺眼。
+ * 铁律：polish.css / design-system.css 对 .tab 用了 !important 覆盖，故这里必须：
+ *   ① 用 #tabsContainer（id，特异性 a=1）前缀，压过其 html[data-theme] .tab（a=0）；
+ *   ② 同带 !important，才能在特异性+重要度双重上胜出。
+ * 实底用 --surface-muted（drinkit=#ededed 实灰 / mono=#292929 实深），
+ *   不写死 --surface(#fff) —— 否则浅色下复发「淡底隐形」旧病；
+ *   边框用 --border-hover：design-system 把 drinkit --border 覆成 rgba(0,0,0,.06)，
+ *   用 --border-hover 才能保证浅色主题下看得到边框。
+ * 激活态走「accent 底 + accent-foreground 字」：
+ *   drinkit=深墨#171717+白字 / mono=亮#e2e2e2+深字 / mono-light=深#151515+白字，
+ *   深浅两套主题都保证对比、且符合本项目克制风格（不刺眼）。 */
+#tabsContainer .tab {
+  /* 未激活：透明底 + 边框 + 主题前景字 —— 不能用 --surface-muted：
+     mono 主题下它与 --accent 同为 #e2e2e2，激活/未激活会同色不可分（CDP 实测）。 */
+  background: transparent !important;
+  border: 1px solid var(--border-hover) !important;
+  color: var(--text) !important;
+}
+#tabsContainer .tab:hover {
+  background: var(--accent-soft) !important;
+  border-color: var(--accent-line) !important;
+  color: var(--accent) !important;
+}
+#tabsContainer .tab.active {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent-foreground) !important;
 }

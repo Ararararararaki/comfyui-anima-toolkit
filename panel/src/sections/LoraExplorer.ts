@@ -15,7 +15,7 @@ import { removeHidden, hiddenCount, getHiddenIds, clearHidden } from '../store/h
 import { addSearch, getSearches, clearSearches, getViews, addView } from '../store/history'
 import { addArtistImage, removeArtistImage, getCustomImages, getMergedImages } from '../store/artistImages'
 import { addArtist, deleteArtist, getArtists, extractTagsFromModels, addArtistFromExtraction } from '../store/artists'
-import { getNote, saveNote, getModelStatusText } from '../store/notes'
+
 import { openLightbox, closeLightbox, navLightbox } from '../components/Lightbox'
 import { openModal, closeModal, confirmModal } from '../components/Modal'
 import { esc, escAttr, copyText, showToast, sleep, thumbUrl, fmtNum } from '../utils'
@@ -982,28 +982,7 @@ export function setupGlobalHandlers() {
     addView({ ...data, time: Date.now() })
   }
 
-  w.__copyCardInfo = (id: number) => {
-    const m = useModelStore.getState().processed.find(p => p.id === id)
-    if (!m) return
-    const text = '📦 ' + m.name + '\n' +
-      '👤 作者: ' + m.creator + '\n' +
-      '⬇ 下载: ' + fmtNum(m.stats.downloadCount) + '\n' +
-      '👍 点赞: ' + fmtNum(m.stats.thumbsUpCount) + '\n' +
-      '📊 赞比: ' + (m.stats.ratio * 100).toFixed(2) + '%\n' +
-      '🏷️ 分类: ' + m.categoryLabel + '\n' +
-      '🔗 ' + m.url
-    copyText(text)
-    showToast('📋 信息已复制', 'success')
-  }
-
   w.__openLightbox = (imgs: string[], idx: number) => openLightbox(imgs, idx)
-
-  // ── 一键后台下载：直接入队，服务端断点续传下载到 ComfyUI models/loras 根目录 ──
-  w.__queueModelDownload = (id: number) => {
-    const m = useModelStore.getState().processed.find(p => p.id === id)
-    if (!m) return
-    void queueLoraDownload(m.versionId, m.url, m.name)
-  }
 
   // ── 探索历史回看面板 ──
   w.__showExploreHistory = () => {
@@ -1057,59 +1036,6 @@ export function setupGlobalHandlers() {
   w.__openLoraLightbox = (modelId: number, imgIdx: number) => {
     const m = useModelStore.getState().processed.find(p => p.id === modelId)
     if (m?.images?.length) openLightbox(m.images, imgIdx)
-  }
-
-  w.__openNotes = (modelId: number) => {
-    const store = useModelStore.getState()
-    const m = store.processed.find(p => p.id === modelId)
-    if (!m) return
-    const note = getNote(modelId)
-    const modal = document.getElementById('notesModal')
-    if (modal) modal.dataset.modelId = String(modelId)
-
-    const nameEl = document.getElementById('notesModalName')
-    if (nameEl) nameEl.textContent = '· ' + m.name
-
-    const content = document.getElementById('notesContent') as HTMLTextAreaElement
-    if (content) content.value = note?.notes || ''
-
-    const starsContainer = document.getElementById('notesStars')
-    if (starsContainer) {
-      const r = note?.rating || 0
-      starsContainer.innerHTML = Array.from({ length: 5 }, (_, i) =>
-        `<button class="star-btn" data-star="${i + 1}" onclick="event.stopPropagation();document.getElementById('notesStars').querySelectorAll('.star-btn').forEach((b,j)=>b.textContent=j<${i + 1}?'★':'☆')">${i < r ? '★' : '☆'}</button>`
-      ).join('')
-    }
-
-    const statusContainer = document.getElementById('notesQuickStatus')
-    if (statusContainer) {
-      const cur = note?.status || 'untried'
-      statusContainer.innerHTML = ['untried', 'trying', 'success', 'abandoned'].map(s =>
-        `<button class="status-btn ${s === cur ? 'active' : ''}" data-status="${s}" onclick="document.getElementById('notesQuickStatus').querySelectorAll('.status-btn').forEach(b=>b.classList.toggle('active',b.dataset.status==='${s}'));this.classList.add('active')">${getModelStatusText(s)}</button>`
-      ).join('')
-    }
-
-    openModal('notesModal')
-  }
-
-  w.__saveNotes = () => {
-    const modal = document.getElementById('notesModal')
-    const id = parseInt(modal?.dataset.modelId || '0')
-    if (!id) return
-
-    const content = (document.getElementById('notesContent') as HTMLTextAreaElement)?.value || ''
-    const starsEl = document.getElementById('notesStars')
-    let rating = 0
-    if (starsEl) {
-      rating = [...starsEl.querySelectorAll('.star-btn')].filter(b => b.textContent === '★').length
-    }
-    const activeStatus = document.querySelector('#notesQuickStatus .status-btn.active')
-    const status = (activeStatus as HTMLElement)?.dataset?.status || 'untried'
-
-    saveNote(id, { notes: content, rating, status: status as any })
-    closeModal('notesModal')
-    refreshView()
-    showToast('✅ 备注已保存', 'success')
   }
 
   w.__copyWorkflowPrompt = (modelId: number, btn: HTMLElement) => {
@@ -1516,12 +1442,6 @@ export function setupBindingListeners() {
     if (w.__batchCopy) w.__batchCopy()
   })
 
-  // Notes modal
-  document.getElementById('notesSaveBtn')?.addEventListener('click', () => {
-    const w = window as any
-    if (w.__saveNotes) w.__saveNotes()
-  })
-
   // Buttons
   const loadMoreBtn = document.getElementById('loadMoreBtn') as HTMLButtonElement
   if (loadMoreBtn) loadMoreBtn.innerHTML = icon('arrowDown', 14) + '<span style="margin-left:5px">加载更多</span>'
@@ -1782,13 +1702,14 @@ export function setupBindingListeners() {
   // Global gallery click delegation
   document.addEventListener('click', handleGalleryClick)
 
-  // Version dropdown toggle
+  // Version dropdown：caret 展开/收起，主按钮本体下载当前版本，option 下载选定版本
   document.addEventListener('click', (e) => {
     const target = e.target as HTMLElement
-    const btn = target.closest('.version-dropdown-btn') as HTMLElement
-    if (btn) {
+    // 展开/收起下拉（点 caret）
+    const caret = target.closest('.version-caret') as HTMLElement
+    if (caret) {
       e.stopPropagation()
-      const wrap = btn.closest('.version-dropdown-wrap') as HTMLElement
+      const wrap = caret.closest('.version-dropdown-wrap') as HTMLElement
       if (!wrap) return
       // 关闭其他 dropdown
       document.querySelectorAll('.version-dropdown').forEach(d => { if (d !== wrap.querySelector('.version-dropdown')) (d as HTMLElement).style.display = 'none' })
@@ -1796,11 +1717,28 @@ export function setupBindingListeners() {
       dd.style.display = dd.style.display === 'none' ? 'block' : 'none'
       return
     }
+    // 主按钮本体点击 = 后台下载当前显示的版本
+    const btn = target.closest('.version-dropdown-btn') as HTMLElement
+    if (btn) {
+      e.stopPropagation()
+      const wrap = btn.closest('.version-dropdown-wrap') as HTMLElement
+      if (wrap) {
+        void queueLoraDownload(wrap.dataset.vid || '', wrap.dataset.url || '', wrap.dataset.label || '')
+      }
+      return
+    }
+    // 某个版本 option 点击 = 后台下载该版本
     const opt = target.closest('.version-option') as HTMLElement
     if (opt) {
       e.stopPropagation()
-      const url = opt.dataset.url
-      if (url) { window.open(url, '_blank'); return }
+      const vid = opt.dataset.vid || ''
+      const url = opt.dataset.url || ''
+      const nm = opt.dataset.nm || ''
+      if (url || vid) { void queueLoraDownload(vid, url, nm) }
+      // 下载后收起下拉
+      const dd = opt.closest('.version-dropdown') as HTMLElement
+      if (dd) dd.style.display = 'none'
+      return
     }
     // 点击外部关闭所有 dropdown
     if (!target.closest('.version-dropdown-wrap')) {
