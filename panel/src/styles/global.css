@@ -4817,6 +4817,53 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
    否则窄卡片正文换行后会被固定行窗口裁掉或压到下一行。 */
 .grid.virtualized .vs-card-wrap > .card { height: 100%; min-height: 0; }
 .grid.virtualized .vs-card-wrap > .card .card-body { min-height: 0; }
+
+/* ── 卡片完整显示：BASE_CARD_H 已提到 560，这里做兜底，确保图片+信息+按钮整张可见 ──
+   .vs-card-wrap 仍 overflow:hidden（防行重叠），但 body 内溢出只裁剪到信息区，
+   按钮行(.card-body 最后一个子元素)永不压缩，始终可见可点。 */
+.grid.virtualized .card-body { overflow: hidden; }
+.grid.virtualized .card-body > :last-child { flex-shrink: 0; }
+
+/* ── 卡片按钮可读性：浅色/深色主题下都清晰可点 ──
+   必须同样 !important 且选择器优先级(.grid.virtualized .card .btn-*)高于 polish.css
+   的 .btn / html[data-theme] .btn-* 规则，才能覆盖其 !important 透明背景。 */
+.grid.virtualized .card .btn-primary {
+  background: var(--accent) !important;
+  color: var(--accent-foreground) !important;
+  border-color: var(--accent) !important;
+}
+.grid.virtualized .card .btn-ghost {
+  background: var(--bg4) !important;
+  color: var(--text) !important;
+  border-color: var(--border) !important;
+}
+.grid.virtualized .card .btn-ghost:hover {
+  background: var(--bg3) !important;
+  color: var(--text) !important;
+}
+.grid.virtualized .card .btn-danger {
+  background: var(--red) !important;
+  color: #fff !important;
+  border-color: var(--red) !important;
+}
+.grid.virtualized .card .wf-btn { color: #fff !important; }
+
+/* ── LoRA 探索：顶部错误态 banner（覆盖 polish 的 !important，保证可读可重试）── */
+.lora-error-banner {
+  display: flex; align-items: center; gap: 12px;
+  margin: 10px 2px 14px; padding: 14px 16px;
+  border: 1px solid var(--red);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--red) 12%, var(--surface)) !important;
+  color: var(--text) !important;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .18);
+}
+.lora-error-banner .leb-icon { font-size: 22px; line-height: 1; flex-shrink: 0; }
+.lora-error-banner .leb-text { flex: 1; min-width: 0; }
+.lora-error-banner .leb-title { font-size: 14px; font-weight: 700; color: var(--red) !important; }
+.lora-error-banner .leb-hint { font-size: 12px; color: var(--text2); margin-top: 2px; }
+.lora-error-banner .leb-detail { font-size: 11px; color: var(--text3); margin-top: 4px; word-break: break-all; }
+.lora-error-banner .leb-retry { flex-shrink: 0; }
 /* ── PNG 解析视图（本地管理 → PNG 解析 tab）── */
 .local-png-dropzone {
   border: 2px dashed var(--border);

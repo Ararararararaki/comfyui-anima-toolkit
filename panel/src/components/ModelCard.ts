@@ -1,5 +1,6 @@
 import type { ProcessedModel } from '../types'
-import { esc, escAttr, thumbUrl, icon } from '../utils'
+import { esc, escAttr, icon } from '../utils'
+import { loraImgTag } from '../services/loraCardImage'
 import { isFav } from '../store/favorites'
 import { getNote } from '../store/notes'
 import { useModelStore } from '../store/models'
@@ -48,9 +49,8 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
     ? `<span class="notes-stars">${'★'.repeat(note.rating)}${'☆'.repeat(5 - note.rating)}</span>`
     : ''
 
-  const statusBadge = note && note.status !== 'untried'
-    ? `<span class="model-status-badge ${note.status}">${{ trying: '🔄 尝试中', success: '✅ 好用', abandoned: '❌ 放弃' }[note.status]}</span>`
-    : ''
+  // 绿/红状态标签（🔄尝试中 / ✅好用 / ❌放弃）已按用户要求移除（2026-09-10）：
+  // 评分与状态数据仍保留在 note 里（详情/统计仍可用），只是不再渲染难看的彩色徽章。
 
   // ── Batch mode ──
   const { batchSelected, batchMode } = useModelStore.getState()
@@ -65,19 +65,8 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
     ? `<button class="wf-btn" onclick="event.stopPropagation();window.__copyWorkflowPrompt(${m.id},this)">${icon('zap', 12)} 工作流 Prompt</button>`
     : ''
 
-  const promptsHtml = (m.trainedWords?.length > 0)
-    ? `<details class="prompts-details" style="margin-top:4px"><summary style="cursor:pointer;font-size:10px;color:var(--text2)">🔑 触发词 (${m.trainedWords.length})</summary>
-        <div class="prompts-wrap" style="margin-top:4px">${
-          m.trainedWords.map(w =>
-            `<div class="prompt-item"><code data-copy="${esc(w)}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${esc(w)}</code><div style="display:flex;gap:3px;flex-shrink:0"><button class="copy-btn" data-copy="${esc(w)}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${icon('copy', 12)}</button><button class="copy-btn" style="background:var(--purple-dim);color:var(--text);font-size:9px" data-ew="${esc(w)}" onclick="event.stopPropagation();window.__extractPrompt(${m.id},this.dataset.ew,this)" title="提取到 Prompt 库">${icon('plus', 12)}</button></div></div>`
-          ).join('')
-        }<div class="prompt-actions">
-          <button class="pa-btn pa-btn-cpy" data-copy="${esc(m.trainedWords.join(', '))}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${icon('copy', 12)} 复制全部</button>
-          <button class="pa-btn pa-btn-cf" data-copy="${esc(m.trainedWords.join(', ') + ', masterpiece, best quality')}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${icon('sparkles', 12)} +质量词</button>
-          <button class="pa-btn pa-btn-sd" data-copy="${esc(m.trainedWords.map(w => '<lora:' + m.name.replace(/[^a-zA-Z0-9_]/g, '_') + ':' + w.replace(/^@/, '') + ':1.0>').join(' '))}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${icon('zap', 12)} ComfyUI 格式</button>
-        </div></div>
-      </details>`
-    : ''
+  // 触发词展示已按用户要求移除（2026-09-10）：卡片上的「🔑 触发词」折叠块不再渲染。
+  // 搜索索引与复制工作流仍可用 trainedWords（仅数据层，不出现在卡片 UI）。
 
   const tagsHtml = (m.tags || []).slice(0, 5).map(t =>
     `<span class="tag" data-tag="${esc(t)}" onclick="event.stopPropagation();window.__searchByTag(this.dataset.tag)">${esc(t)}</span>`
@@ -86,17 +75,16 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
   const historyObj = { id: m.id, uid: m.uid, name: m.name, creator: m.creator, url: m.url, category: m.category, thumb: m.images?.[0] || '' }
 
   return `<div class="card${isSelected ? ' selected' : ''}" data-uid="${m.uid}" role="listitem">
-    <div style="position:relative">${galleryHtml}${descOverlayHtml}${isLocal ? '<div class="local-badge-card">✅ 本地已有</div>' : ''}</div>${batchCheckbox}
+    <div style="position:relative">${galleryHtml}${descOverlayHtml}</div>${batchCheckbox}
     <div class="card-body">
       <div class="card-header">
         <div>
-          <div class="card-title" style="font-size:12.5px"><a href="${esc(m.url)}" target="_blank" rel="noopener" data-history="${esc(JSON.stringify(historyObj))}" onclick="window.__addViewHistory(JSON.parse(this.dataset.history))">${esc(m.name)}</a> <span class="badge badge-sm ${m.badgeClass}">${m.categoryLabel}</span>${notesIcon}${starsHtml}${statusBadge}</div>
+          <div class="card-title" style="font-size:12.5px"><a href="${esc(m.url)}" target="_blank" rel="noopener" data-history="${esc(JSON.stringify(historyObj))}" onclick="window.__addViewHistory(JSON.parse(this.dataset.history))">${esc(m.name)}</a> <span class="badge badge-sm ${m.badgeClass}">${m.categoryLabel}</span>${notesIcon}${starsHtml}</div>
           <div class="card-creator" style="font-size:10px">👤 <a href="${esc(m.creatorUrl)}" target="_blank">${esc(m.creator)}</a><button class="creator-search" title="按作者搜索" onclick="event.stopPropagation();window.__searchCreator('${escAttr(m.creator)}')">${icon('search', 11)}</button>${m.versionName ? ' · <span style="color:var(--text3)">' + esc(m.versionName) + '</span>' : ''}</div>
         </div>
-        ${m.customAdded ? '<span class="custom-badge">📌 手动</span>' : ''}${(m.quality || []).map(q => q === 'hot' ? '<span class="quality-badge hot">🔥 热门</span>' : q === 'quality' ? '<span class="quality-badge good">👍 优质</span>' : q === 'new' ? '<span class="quality-badge new">🆕 新</span>' : '').join('')}
+        ${m.customAdded ? '<span class="custom-badge">📌 手动</span>' : ''}
       </div>
       ${tagsHtml ? `<div class="tags-wrap">${tagsHtml}</div>` : ''}
-      ${promptsHtml}
       ${recHtml}
       <div style="display:flex;gap:6px;margin-top:2px;flex-wrap:wrap">
         ${m.versions && m.versions.length > 0
@@ -107,7 +95,7 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
               ).join('')}</div>
             </div>`
           : m.downloadUrl ? `<button class="btn btn-primary" style="flex:1;padding:5px;font-size:10px;min-width:80px" onclick="window.open('${esc(m.downloadUrl)}','_blank')">${icon('download', 12)} 下载</button>` : ''}
-        ${m.versionId ? `<button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:10px;color:var(--accent)" onclick="event.stopPropagation();window.__queueModelDownload(${m.id})" title="一键后台下载 → ComfyUI models/loras">${icon('downloadCloud', 12)}</button>` : ''}
+        ${(m.versionId || m.downloadUrl) ? `<button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:10px;color:var(--accent)" onclick="event.stopPropagation();window.__queueModelDownload(${m.id})" title="一键后台下载 → ComfyUI models/loras（有下载链接即可，无需版本 ID）">${icon('downloadCloud', 12)}</button>` : ''}
         <button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:10px" onclick="event.stopPropagation();window.__openNotes(${m.id})" title="备注/评分">${icon('star', 12)}</button>
         ${wfBtn}
         <button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:10px" onclick="event.stopPropagation();window.__copyCardInfo(${m.id})" title="复制卡片信息">${icon('copy', 12)}</button>
@@ -121,9 +109,7 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
 
 function renderGalleryHtml(m: ProcessedModel, imgs: string[], multi: boolean): string {
   const maxImgs = imgs.slice(0, 3)
-  const track = maxImgs.map((u, i) =>
-    `<img src="${esc(thumbUrl(u, 400))}" alt="" loading="${i === 0 ? 'eager' : 'lazy'}" data-uid="${m.uid}" data-imgidx="${i}" data-fullurl="${esc(u)}">`
-  ).join('')
+  const track = maxImgs.map((u, i) => loraImgTag(u, i, m.uid)).join('')
   const dots = multi ? maxImgs.map((_, i) =>
     `<span class="${i === 0 ? 'active' : ''}" data-uid="${m.uid}" data-imgidx="${i}"></span>`
   ).join('') : ''

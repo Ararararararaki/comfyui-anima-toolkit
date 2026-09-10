@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ProcessedModel, CivitaiModel, ModelCategory, SortKey, PeriodKey, SectionKey } from '../types'
+import type { ProcessedModel, CivitaiModel, ModelCategory, SortKey, PeriodKey, SectionKey, ModelError } from '../types'
 import { Cache } from './cache'
 import { stripHtml } from '../utils'
 import { getCivitaiHost } from '../api/civitai'
@@ -8,11 +8,12 @@ import { isFav, getCollectionFavs, getActiveCol } from './favorites'
 import { getLocalFileNames } from './localModels'
 
 // 与 ModelCard.isLocalModel 保持一致的本地匹配（名称规范化后与本地文件名互相包含）
-function isLocalByName(name: string): boolean {
-  const names = getLocalFileNames()
-  if (names.length === 0) return false
+// 注意：getLocalFileNames() 每次调用都会重新 map/filter/正则处理本地文件列表，
+// 不能在逐条过滤里反复调用（否则 O(n_models × n_files)）。见 applyFilters 中一次性取出 localNames。
+function isLocalMatch(name: string, localNames: string[]): boolean {
+  if (localNames.length === 0) return false
   const q = name.toLowerCase().replace(/[\s_-]/g, '')
-  return names.some(n => n.includes(q) || q.includes(n))
+  return localNames.some(n => n.includes(q) || q.includes(n))
 }
 
 const CAT_LABEL: Record<ModelCategory, string> = {
@@ -20,6 +21,21 @@ const CAT_LABEL: Record<ModelCategory, string> = {
 }
 const CAT_BADGE: Record<ModelCategory, string> = {
   artist: 'badge-artist', character: 'badge-character', aesthetic: 'badge-aesthetic', background: 'badge-bg', other: 'badge-other',
+}
+
+/**
+ * getFiltered 记忆化：applyFilters 是 O(n) 逐级过滤，renderGrid 每次渲染都会调一次，
+ * 空态下 filterBreakdown 还会再调一次。输入未变时直接复用上一次结果，避免无意义重算。
+ * 签名覆盖所有影响过滤结果的字段（含隐藏列表，避免漏判）。
+ */
+let _filteredMemo: { sig: string; list: ProcessedModel[] } | null = null
+function filteredSignature(s: ModelState): string {
+  const hidden = new Set(getHiddenIds())
+  return [
+    s.processed.length, s.raw.length, s.cardUid, s.category, s.qualityFilter, s.filterBaseModel,
+    s.search, s.resolvedQuery, s.sort, s.remoteQuery, s.remoteTags.join(','),
+    hidden.size, hidden.size ? [...hidden].sort().join(',') : '',
+  ].join('|')
 }
 
 interface FilterStage { key: string; label: string; count: number }
@@ -56,7 +72,9 @@ function applyFilters(state: ModelState): { list: ProcessedModel[]; stages: Filt
   } else if (state.qualityFilter === 'new') {
     step('quality', '质量筛选 = 新发布', m => m.quality.includes('new'))
   } else if (state.qualityFilter === 'local') {
-    step('quality', '质量筛选 = 仅本地', m => isLocalByName(m.name))
+    // 一次性取出本地文件名列表，避免在逐条过滤里反复重算（O(N²) 隐患）
+    const localNames = getLocalFileNames()
+    step('quality', '质量筛选 = 仅本地', m => isLocalMatch(m.name, localNames))
   } else if (state.qualityFilter === 'highq') {
     // 高质：下载量 ≥ 250 且 赞比 ≥ 5%（沿用第三方补丁的阈值语义）。
     // 与既有「推荐」的区别：阈值更宽松（推荐 = 热门或赞比 ≥ 15%），且两项必须同时满足。
@@ -124,6 +142,9 @@ interface ModelState {
   fetchAllBusy: boolean
   cardUid: number
   imgStore: Record<number, string[]>
+  /** 取数错误态（供 UI 展示）：null 表示正常；非 null 为最近一次失败（HTTP 状态 + 信息） */
+  error: ModelError | null
+  setError: (e: ModelError | null) => void
 
   setPeriod: (period: PeriodKey) => void
   setCategory: (cat: string) => void
@@ -181,6 +202,7 @@ export const useModelStore = create<ModelState>((set, get) => ({
   fetchAllBusy: false,
   cardUid: 0,
   imgStore: {},
+  error: null,
 
   setPeriod: (period) => set({ period, raw: [], page: 0, hasMore: true, nextPage: null, pageCursors: {} }),
   setCategory: (category) => set({ category }),
@@ -203,6 +225,8 @@ export const useModelStore = create<ModelState>((set, get) => ({
     return { batchSelected: next }
   }),
   clearBatch: () => set({ batchSelected: new Set(), batchMode: false }),
+
+  setError: (error) => set({ error }),
 
   categorize(m) {
     const n = (m.name || '').toLowerCase()
@@ -321,7 +345,12 @@ export const useModelStore = create<ModelState>((set, get) => ({
   },
 
   getFiltered() {
-    return applyFilters(get()).list
+    const s = get()
+    const sig = filteredSignature(s)
+    if (_filteredMemo && _filteredMemo.sig === sig) return _filteredMemo.list
+    const list = applyFilters(s).list
+    _filteredMemo = { sig, list }
+    return list
   },
 
   filterBreakdown() {

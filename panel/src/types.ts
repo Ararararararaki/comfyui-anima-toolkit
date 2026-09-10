@@ -280,3 +280,9 @@ export interface TagFreq {
 }
 
 export type LocalScanStatus = 'idle' | 'scanning' | 'matching' | 'done' | 'error'
+
+/** LoRA 探索取数错误态（供 UI 展示）：status 为 HTTP 状态码，0 表示网络/解析失败 */
+export interface ModelError {
+  status: number
+  message: string
+}

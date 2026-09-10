@@ -1,5 +1,6 @@
 import type { CivitaiResponse, PeriodKey, SortKey } from '../types'
 import { sleep, showToast, stripHtml } from '../utils'
+import { Cache } from '../store/cache'
 
 let controller: AbortController | null = null
 
@@ -36,6 +37,27 @@ export function setCivitaiHost(host: string): void {
 
 function apiBase(path: string): string {
   return `${getCivitaiHost()}/api/v1${path}`
+}
+
+/** 带 HTTP 状态的错误：便于上层按 401/403/429/5xx 区分展示，而不是静默吞掉 */
+export class CivitaiHttpError extends Error {
+  status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'CivitaiHttpError'
+    this.status = status
+  }
+}
+
+/** 首屏（无 cursor）缓存 TTL：同一 query 的重复请求直接走缓存，避免重复打 C 站 */
+const MODELS_CACHE_TTL = 5 * 60 * 1000
+
+/**
+ * 缓存 key 单一来源：与取数参数一一对应，避免不同筛选条件串数据。
+ * 与 LoraExplorer 旧 cacheKey 同构，但用 v2 前缀隔离旧缓存（旧缓存只存 raw 缺 nextCursor，不可直接复用）。
+ */
+export function modelsCacheKey(params: ModelFetchParams): string {
+  return `models_v2_${params.period ?? 'AllTime'}_${params.sort ?? ''}_${params.baseModels || 'all'}_${params.nsfw ?? 'all'}_${(params.query || '').trim()}_${(params.tags || []).join(',')}`
 }
 
 /** 只读 API Key（设置 → C 站 API Key）。带 token 时能取到登录级浏览内容 */
@@ -78,7 +100,7 @@ async function getJson(url: string, signal?: AbortSignal): Promise<CivitaiRespon
         await sleep(3000)
         continue
       }
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      if (!resp.ok) throw new CivitaiHttpError(resp.status, `HTTP ${resp.status}${resp.statusText ? ' ' + resp.statusText : ''}`)
       return resp.json()
     } catch (err) {
       if ((err as Error).name === 'AbortError') return null
@@ -95,9 +117,28 @@ async function getJson(url: string, signal?: AbortSignal): Promise<CivitaiRespon
  * 注意：API 已改为 cursor 分页，page 参数不再生效（实测 page=1/2 返回相同数据）。
  */
 export async function fetchModels(params: ModelFetchParams, cursor?: string | null): Promise<CivitaiResponse | null> {
+  // 仅首屏（无 cursor）走缓存：翻页靠 API 返回的 nextCursor，必须实时请求，不可复用旧结果
+  if (!cursor) {
+    const hit = Cache.load<CivitaiResponse>(modelsCacheKey(params), MODELS_CACHE_TTL)
+    if (hit && Array.isArray(hit.items)) {
+      console.debug('[civitai] 命中缓存', modelsCacheKey(params), '条数', hit.items.length)
+      return hit
+    }
+  }
+  // 新请求中止上一请求：避免慢响应把旧结果写进新列表（数据串味/闪烁的根因）
   if (controller) controller.abort()
   controller = new AbortController()
-  return getJson(buildModelsUrl(params, cursor), controller.signal)
+  const url = buildModelsUrl(params, cursor)
+  const data = await getJson(url, controller.signal)
+  if (data) {
+    if (!cursor) {
+      Cache.save(modelsCacheKey(params), data)
+      console.debug('[civitai] 请求完成(已写缓存)', url, '返回', data.items?.length ?? 0)
+    } else {
+      console.debug('[civitai] 翻页完成', 'cursor=', (cursor || '').slice(0, 16), '返回', data.items?.length ?? 0)
+    }
+  }
+  return data
 }
 
 export async function fetchModelById(id: number): Promise<CivitaiResponse['items'][0] | null> {

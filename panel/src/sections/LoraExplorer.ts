@@ -27,6 +27,8 @@ import { initPromptDB, getPromptCountByModel } from '../store/prompts'
 import { renderPromptLibrary, setupPromptHandlers } from './PromptLibrary'
 import { activatePromptFreq, bindPromptFreqEvents } from './PromptFreq'
 import { activateOutputs } from './Outputs'
+// 图片加载服务（已实现，勿改）：重建后补水卡片图片；离开栏目时清缓存
+import { hydrateLoraGallery, clearLoraImageCache } from '../services/loraCardImage'
 
 const MAX_PAGES = 20
 /** 已使用的 cursor 集合：防止 API 异常/回环导致重复加载已看内容 */
@@ -94,6 +96,10 @@ let gridSettingsFrame = 0
 let gridRefreshBound = false
 const galleryPos: Record<number, number> = {}
 
+/** 自增请求序号：仅最新一次 fetchPage 负责把 loading 归位，
+ *  避免被已 abort 的旧请求 finally 提前清零（修复「搜了没反应」的关键之一）。 */
+let fetchSeq = 0
+
 function cssPx(variable: string, fallback: number): number {
   const value = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(variable))
   return Number.isFinite(value) ? value : fallback
@@ -160,6 +166,8 @@ function cacheKey(store: ReturnType<typeof useModelStore.getState>): string {
 /** 筛选条件变化：清空列表与 cursor，重新抓第一页（explore=true 时进入随机探索的过滤逻辑） */
 function resetAndFetch(explore = false) {
   const store = useModelStore.getState()
+  // 新搜索/筛选开始：清掉上次的错误态（数据层已新增 setError）
+  useModelStore.getState().setError(null)
   exploring = explore
   usedCursors.clear()
   store.clearPageCursors()
@@ -183,6 +191,7 @@ function currentParams(): ModelFetchParams {
 
 export async function initLoraExplorer() {
   bindGridRefreshEvents()
+  initFavorites()
   initFavorites()
   initPromptDB() // Initialize IndexedDB prompt library
 
@@ -224,6 +233,8 @@ export function switchSection(id: 'lora' | 'artist' | 'prompt' | 'clothing' | 'p
   document.querySelectorAll('#sectionLora, #sectionArtist, #sectionPrompt, #sectionClothing, #sectionPromptFreq, #sectionLocal, #sectionOutputs').forEach(el => el.classList.add('section-hidden'))
   const sectionMap: Record<string, string> = { lora: 'sectionLora', artist: 'sectionArtist', prompt: 'sectionPrompt', clothing: 'sectionClothing', 'prompt-freq': 'sectionPromptFreq', local: 'sectionLocal', outputs: 'sectionOutputs' }
   document.getElementById(sectionMap[id])?.classList.remove('section-hidden')
+  // 离开 LoRA 栏目时释放图片缓存（图片服务要求），把内存让给生图；再次进入会重新 hydrate
+  if (id !== 'lora') clearLoraImageCache()
   document.querySelectorAll('.main-tab').forEach(t => {
     const active = (t as HTMLElement).dataset.section === id
     t.classList.toggle('active', active)
@@ -244,7 +255,11 @@ export function switchSection(id: 'lora' | 'artist' | 'prompt' | 'clothing' | 'p
 
 async function fetchPage(p: number, options?: { quietError?: boolean; append?: boolean; cursor?: string | null }) {
   const store = useModelStore.getState()
-  if (store.loading) return
+  // 修复：在途请求时不再直接 return 丢弃新搜索。新请求到达 fetchModels 后，
+  // 其内部的 AbortController 会中止旧的在途请求（旧请求拿到 null 后不写任何状态），
+  // 从而解决「搜了没反应 / 旧结果残留」。若当前仍在 loading，旧请求的 finally 不会
+  // 提前清零 loading（见下方 fetchSeq 守卫）。
+  const mySeq = ++fetchSeq
 
   // 守卫①：重复 cursor（API 异常/回环）→ 立即终止，不再重复加载已看内容
   if (options?.cursor && usedCursors.has(options.cursor)) {
@@ -322,10 +337,15 @@ async function fetchPage(p: number, options?: { quietError?: boolean; append?: b
   } catch (err) {
     if ((err as Error).name === 'AbortError') return null
     console.error(err)
+    const e = err as any
+    const status = typeof e?.status === 'number' ? e.status : 0
+    // 数据层已新增 error / setError：把失败写入 store，UI 顶部 banner 展示可重试的错误态
+    useModelStore.getState().setError({ status, message: String(e?.message || err) })
     if (!options?.quietError) showToast('❌ 抓取出错: ' + (err as Error).message)
     return null
   } finally {
-    useModelStore.setState({ loading: false })
+    // 仅当本次请求仍是最新一次时才把 loading 归位，避免被已 abort 的旧请求 finally 提前清零
+    if (mySeq === fetchSeq) useModelStore.setState({ loading: false })
   }
 }
 
@@ -362,13 +382,35 @@ function finishExploreEntry() {
   _exploreEntry = null
 }
 // ── 一键后台下载核心：入队后由服务端断点续传到 ComfyUI models/loras 根目录 ──
-async function queueLoraDownload(versionId: string | number, url: string, label: string) {
-  if (!versionId) { showToast('⚠️ 缺少版本 ID，请从 C 站页面手动下载'); return }
+/**
+ * 后台下载入队。**对齐「本地 lora 管理」面板的 URL 下载逻辑**（2026-09-10）：
+ * 只要拿得到 C 站下载链接就能入队 —— 缺 versionId 时从 url 里解析
+ * （`modelVersionId=123` 或 `/models/123`），不再直接拒绝用户。
+ * 服务端 `/anima/lora/download/queue` 同时接受 versionId / modelId / url 三种入口。
+ */
+async function queueLoraDownload(versionId: string | number | undefined, url: string, label: string) {
+  let vid = versionId ? String(versionId) : ''
+  let modelId = ''
+  if (!vid && url) {
+    const mv = url.match(/modelVersionId=(\d+)/)
+    const mm = url.match(/models\/(\d+)/)
+    if (mv) vid = mv[1]
+    else if (mm) modelId = mm[1]
+  }
+  if (!vid && !modelId && !url) { showToast('⚠️ 缺少下载链接，请从 C 站页面复制链接后手动下载'); return }
   try {
+    const item: Record<string, string> = {
+      target: 'auto',
+      token: localStorage.getItem('anima_civitai_token') || '',
+      url,
+      label,
+    }
+    if (vid) item.versionId = vid
+    else if (modelId) item.modelId = modelId
     const res = await fetch('/anima/lora/download/queue', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items: [{ versionId: String(versionId), target: 'auto', token: localStorage.getItem('anima_civitai_token') || '', url, label }] }),
+      body: JSON.stringify({ items: [item] }),
     })
     const result = await res.json()
     if (!res.ok || !result.ok) throw new Error(result.error || `HTTP ${res.status}`)
@@ -564,6 +606,8 @@ function renderGrid(append = false) {
   if (!grid) return
   bindGridResize(grid)
   const store = useModelStore.getState()
+  // 顶部错误态（401/403/429/0）：先于网格渲染，保证即使列表为空也可见且可重试
+  renderErrorBanner(store)
   const list = store.getFiltered()
 
   if (list.length === 0) {
@@ -606,7 +650,10 @@ function renderGrid(append = false) {
   }
   // 布局签名一致（列数/行高/内容都没变，仅窗口变宽）时跳过重建：
   // VirtualScroll.update() 内部是 replaceChildren 全量重建，会让所有缩略图重新解码，看起来就是整屏闪烁。
-  const sig = [cardWidth, gap, cardHeight, virtualCols, list.length, list[0]?.uid ?? 0, list[list.length - 1]?.uid ?? 0, store.category, store.qualityFilter, store.sort, store.search, store.resolvedQuery].join('|')
+  // 布局签名：覆盖所有影响「要不要重建」的入口（筛选/排序/回到顶部不改变 sig → 不重建）。
+  // 补充 period/nsfw/filterBaseModel —— 这几项变化会经 resetAndFetch 重新取数，
+  // 极端情况下（返回首末 uid 与条数恰好相同）需靠它们命中 sig 差异以触发重建。
+  const sig = [cardWidth, gap, cardHeight, virtualCols, list.length, list[0]?.uid ?? 0, list[list.length - 1]?.uid ?? 0, store.category, store.qualityFilter, store.sort, store.search, store.resolvedQuery, store.period, store.nsfw, store.filterBaseModel].join('|')
   if (!gridVirtual) {
     grid.replaceChildren()
     gridVirtual = new VirtualScroll({
@@ -614,11 +661,13 @@ function renderGrid(append = false) {
       itemHeight: cardHeight + gap,
       totalItems: rows,
       renderItem,
+      // 虚拟行渲染完成后立即补水卡片图片；放在 afterRender 内不会触发二次重建（整屏闪的根因）
+      afterRender: (inner: HTMLElement) => { hydrateLoraGallery(inner) },
     })
     lastGridSig = sig
   } else if (sig !== lastGridSig) {
     // 复用实例时也必须替换 renderItem；否则滑块/窗口缩放后仍会用旧宽度闭包渲染。
-    gridVirtual.update({ totalItems: rows, itemHeight: cardHeight + gap, renderItem })
+    gridVirtual.update({ totalItems: rows, itemHeight: cardHeight + gap, renderItem, afterRender: (inner: HTMLElement) => { hydrateLoraGallery(inner) } })
     gridVirtual.refresh()
     lastGridSig = sig
   }
@@ -647,6 +696,48 @@ function updatePager(store: ReturnType<typeof useModelStore.getState>) {
   if (lm) (lm as HTMLElement).style.display = store.hasMore ? '' : 'none'
   const tip = document.getElementById('loadMoreTip')
   if (tip) (tip as HTMLElement).style.display = store.page > 0 && !store.hasMore ? '' : 'none'
+}
+
+/**
+ * 顶部错误态 banner（数据层 error / setError 已就绪）。
+ * - 401/403 → 提示检查 API Key / 线路
+ * - 429     → 请求过频稍后再试
+ * - 0       → 网络失败
+ * 始终带「重试」按钮（调用 resetAndFetch，会先清 error 再重抓）。
+ * 安全：message 来自服务端错误，必须用 esc() 插值；重试按钮用 onclick 属性绑定（非内联字符串）。
+ */
+function renderErrorBanner(store: ReturnType<typeof useModelStore.getState>) {
+  const grid = document.getElementById('grid')
+  if (!grid) return
+  const err = store.error
+  let banner = document.getElementById('loraErrorBanner')
+  if (!err) {
+    if (banner) banner.remove()
+    return
+  }
+  const container = grid.parentElement
+  if (!container) return
+  if (!banner) {
+    banner = document.createElement('div')
+    banner.id = 'loraErrorBanner'
+    container.insertBefore(banner, grid)
+  }
+  const code = err.status
+  let title = '加载失败'
+  let hint = '请稍后重试，或检查网络与线路设置'
+  if (code === 401 || code === 403) { title = '🔑 API Key / 线路异常'; hint = '请检查 Civitai API Key 是否填写，或切换镜像线路' }
+  else if (code === 429) { title = '⏳ 请求过于频繁'; hint = 'C 站正在限流，请稍候再试' }
+  else if (code === 0) { title = '🌐 网络请求失败'; hint = '请检查网络连接、代理或防火墙设置' }
+  // 所有插值走 esc()，避免 XSS / 样式注入
+  banner.innerHTML =
+    `<div class="leb-icon">⚠️</div>` +
+    `<div class="leb-text"><div class="leb-title">${esc(title)}</div>` +
+    `<div class="leb-hint">${esc(hint)}</div>` +
+    (err.message ? `<div class="leb-detail">${esc(err.message)}</div>` : '') +
+    `</div>` +
+    `<button class="btn btn-primary btn-sm leb-retry" type="button">↻ 重试</button>`
+  const retry = banner.querySelector('.leb-retry') as HTMLButtonElement | null
+  if (retry) retry.onclick = () => { resetAndFetch() }
 }
 
 function setText(id: string, text: string) {
