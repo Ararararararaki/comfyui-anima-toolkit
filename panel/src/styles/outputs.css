@@ -31,8 +31,7 @@
   display: flex;
   gap: 16px;
   padding: 16px;
-  height: calc(100vh - var(--header-h, 64px));
-  height: calc(100dvh - var(--header-h, 64px));
+  height: calc(100vh - 120px);
   min-height: 480px;
 }
 
@@ -45,9 +44,10 @@
   border: 1px solid var(--border);
 
   /* 滚动页面时侧栏固定跟随视口（body 整页滚动，侧栏不随内容滚走） */
-  position: relative;
-  align-self: stretch;
-  max-height: none;
+  position: sticky;
+  top: 12px;
+  align-self: flex-start;
+  max-height: calc(100vh - 24px);
   display: flex;
   flex-direction: column;}
 
@@ -1370,20 +1370,18 @@
 .outputs-card-img { background: #050505; }
 .outputs-card-img img { transition: opacity var(--transition-fast) var(--ease-standard); }
 .outputs-card:hover .outputs-card-img img { transform: none; }
-/* 信息区高度唯一真源：masonry.ts 布局与卡片共用此变量（只改这里，布局自动跟随） */
-:root { --outputs-info-h: 82px; }
-.outputs-card-info { height: var(--outputs-info-h, 82px); padding: 6px 8px; background: var(--bg2); border-top: 1px solid var(--border); }
-.outputs-card-name { font-size: 12px; font-weight: 600; letter-spacing: .01em; line-height: 15px; }
+.outputs-card-info { height: 92px; padding: 7px; background: var(--bg2); border-top: 1px solid var(--border); }
+.outputs-card-name { font-size: 12px; font-weight: 600; letter-spacing: .01em; line-height: 16px; }
 .outputs-card-meta, .outputs-card-date { color: var(--text3); }
-.outputs-card-meta { margin-top: 2px; line-height: 15px; height: 15px; overflow: hidden; }
-.outputs-card-date { margin-top: 1px; line-height: 13px; }
+.outputs-card-meta { margin-top: 2px; line-height: 17px; height: 17px; overflow: hidden; }
+.outputs-card-date { margin-top: 1px; line-height: 14px; }
 .outputs-card-actions { gap: 4px; margin-top: 2px; }
 .outputs-copy-prompt-btn,
 .outputs-save-prompt-btn,
 .outputs-copy-lora-btn,
 .outputs-dl-wf-btn,
 .outputs-meta-btn {
-  min-height: 20px;
+  min-height: 21px;
   border-radius: 3px;
   border-color: transparent;
   background: var(--bg3);
@@ -1450,6 +1448,3 @@
   .outputs-toolbar { gap: 6px; }
   .outputs-toolbar-group { padding-left: 5px; }
 }
-
-/* 超长图（比例超 MAX_IMG_RATIO 被截断）改用 contain，保住画面内容不裁切 */
-.outputs-card.tall-clamped .outputs-card-img img { object-fit: contain; }

@@ -1,6 +1,7 @@
 import { IncrementalSha256 } from './sha256'
 
 export const HASH_CHUNK_SIZE = 16 * 1024 * 1024
+export const NATIVE_HASH_MAX_BYTES = 256 * 1024 * 1024
 
 export type FileHashProgress = {
   bytesRead: number
@@ -17,6 +18,12 @@ type WorkerResponse =
   | { type: 'done'; id: number; sha256: string }
   | { type: 'cancelled'; id: number }
   | { type: 'error'; id: number; message: string }
+
+function digestToHex(digest: ArrayBuffer): string {
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+}
 
 type PendingJob = {
   resolve: (sha256: string) => void
@@ -69,6 +76,12 @@ function createHashWorker(): Worker {
 }
 
 async function hashInMainThread(file: File, options: FileHashOptions): Promise<string> {
+  if (file.size <= NATIVE_HASH_MAX_BYTES && crypto.subtle) {
+    const buffer = await file.arrayBuffer()
+    const digest = await crypto.subtle.digest('SHA-256', buffer)
+    options.onProgress?.({ bytesRead: file.size, totalBytes: file.size })
+    return digestToHex(digest)
+  }
   const hasher = new IncrementalSha256()
   let offset = 0
   while (offset < file.size) {
@@ -78,7 +91,6 @@ async function hashInMainThread(file: File, options: FileHashOptions): Promise<s
     hasher.update(new Uint8Array(buffer))
     offset = end
     options.onProgress?.({ bytesRead: offset, totalBytes: file.size })
-    // Give the page a chance to paint and process input on browsers without Worker.
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
   }
   return hasher.digest()

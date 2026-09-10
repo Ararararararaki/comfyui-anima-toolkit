@@ -743,9 +743,13 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       const dir = preset || getLastScanDir()
       await runBackendScan(dir, signal, dir || 'ComfyUI loras 目录', get, set)
     } catch (err) {
-      if (!((err as Error).name === 'AbortError' || (err as Error).message?.includes('abort'))) {
+      progressHide()
+      if ((err as Error).name === 'AbortError' || (err as Error).message?.includes('abort')) {
+        set({ scanStatus: 'idle', scanProgress: { done: 0, total: 0 } })
+        showToast('⏹ 扫描已取消')
+      } else {
         set({ scanStatus: 'error' })
-        showToast(`❌ 自动扫描失败：${(err as Error).message || '未知错误'}`)
+        showToast(`❌ 扫描失败：${(err as Error).message || '未知错误'}`)
       }
     } finally {
       if (activeScanController === controller) activeScanController = null
