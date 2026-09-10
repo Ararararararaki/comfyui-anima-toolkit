@@ -8,6 +8,7 @@ import { promptModal, confirmModal } from '../components/Modal'
 import { openContextMenu, type ContextMenuAction } from '../components/ContextMenu'
 import { refreshLocalNames } from '../components/ModelCard'
 import { useOutputStore } from '../store/outputStore'
+import { ensureAllMetadata, isMetadataIndexComplete } from '../services/outputMetadataIndex'
 import { extractLorasFromWorkflow, decompressZlibAsync } from '../services/outputMetadata'
 
 // ── 搜索高亮工具 ──
@@ -418,6 +419,21 @@ function renderGridFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalM
   </div>`
 }
 
+/**
+ * Local 页的「本地 LoRA ↔ 出图关联」需要**全库**元数据视野（见下方两处遍历 metadataCache 的地方）。
+ * 元数据已改为按需加载（不再进页面全量预载），所以这里做一次性的按需补齐：
+ * 补齐完成后重渲染一次 Local 视图；_localIndexKick 保证不会反复触发。
+ */
+let _localIndexKick = false
+function kickMetadataIndexForLocal(): void {
+  if (_localIndexKick) return
+  _localIndexKick = true
+  void ensureAllMetadata().then(() => {
+    // 只有真的读了新数据才需要重渲染（ensureAllMetadata 在无缺失时立即 resolve，不会死循环）
+    if (isMetadataIndexComplete()) renderLocalView()
+  })
+}
+
 export function renderLocalView() {
   const state = useLocalModelStore.getState()
   renderSidebarList(state)
@@ -427,6 +443,8 @@ export function renderLocalView() {
   // PNG 解析视图：gallery 页始终渲染（空态/数据态），标签统计同步（review blocking 修复）
   renderGallery(state)
   renderTagFreq(state.tagFreq)
+  // 关联出图统计需要全库元数据 → 按需补齐（首次进入该页时触发一次）
+  kickMetadataIndexForLocal()
 }
 
 function renderFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalModelStore.getState>): string {

@@ -2,7 +2,7 @@
 
 import { useOutputStore } from '../store/outputStore'
 import { deleteFiles, renameFile, batchFavorite, batchRate } from '../services/outputService'
-import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, ensureThumbnails, reparseAllMetadata, ensureMetadataFresh } from '../services/outputScanner'
+import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, reparseAllMetadata, ensureMetadataFresh } from '../services/outputScanner'
 import { restoreAllFromDb } from '../services/outputManifest'
 import { preloadThumbnailsFromDb } from '../services/outputThumbnail'
 import { hashPath } from '../services/outputManifest'
@@ -14,9 +14,9 @@ import type { OutputFile, OutputMetadata, OutputDir, OutputScanStatus } from '..
 import type { PromptEntry } from '../types'
 import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow } from '../services/outputMetadata'
 import { extractPngTextChunks, injectPngTextChunks } from '../services/pngChunks'
-import { backfillPrompts } from '../services/outputMetadataService'
 import { VirtualScroll, type VirtualScrollItemStyle } from '../components/VirtualScroll'
 import { MasonryVirtualScroll } from '../components/MasonryVirtualScroll'
+import { ensureAllMetadata, countMetadataMissing } from '../services/outputMetadataIndex'
 import { ImageNodeCache } from '../components/ImageNodeCache'
 import { computeMasonryLayout } from '../components/masonry'
 import { initOutputDragSelection, type OutputGridGeometry } from './outputDragSelection'
@@ -157,11 +157,15 @@ export async function initOutputs() {
   window.addEventListener('focus', triggerOutputsIncrementalScan)
   document.addEventListener('visibilitychange', () => { if (!document.hidden) triggerOutputsIncrementalScan() })
 
-  // ── 后台补齐元数据（让筛选器拿到 Model/LoRA 列表）──
-  // 改为「空闲分片 + 可中断」：不再在进入页面时一次性同步读完全部元数据。
-  // 近 4000 张图的元数据一次性灌入会占满首屏主线程（表现为进入页面卡死），
-  // 现在把它切成小片交给浏览器空闲时段，首屏先出图，元数据随后补齐并自动刷新筛选器。
-  scheduleIdleMetadataPreload()
+  // ── 元数据不再在进入页面时全库预载（2026-09-10 改按需）──
+  // 旧实现用「空闲分片」把**全部 3918 条**元数据读了一遍：每条记录都带 workflowJson
+  // （几十~几百 KB），bulkGet 的结构化克隆在主线程上就是数百 MB 的搬运；跑完还有
+  // 第二次全库遍历（scheduleIdleLoraExtraction）再次读盘解析工作流。这就是
+  // 「进 Outputs 要等两三分钟才用得顺」的来源 —— 分片只是把它摊开，并没有减少总量。
+  // 现在三条按需路径取代它：
+  //   ① 可见卡片：loadVisibleMetadata() 随滚动逐屏读单条（含 LoRA 提取，只解析这一张的工作流）；
+  //   ② 单图操作：复制 Prompt / 保存到 Prompt 库 / 复制 LoRA / 下载工作流 → 只读那一张；
+  //   ③ 全局筛选：只有真正用到「基座模型 / LoRA / 标签」筛选时，才触发一次分片补齐（带提示）。
 
   // ── 扫描进度订阅 ──
   let prevScanStatus: OutputScanStatus = 'idle'
@@ -285,12 +289,14 @@ export async function activateOutputs() {
       }
     }
 
-    // 后台补生成缺失的缩略图（非关键，失败不影响主流程）
-    ensureThumbnails(state.dirHandle)
-
-    // 后台批量补齐 metadata（用户主动扫描触发；不再自动跑读文件的 backfill）
-    const { files, metadataCache } = useOutputStore.getState()
-    preloadMetadataBatch(files, metadataCache, { refreshLocal: true })
+    // ── 缩略图 / 元数据都不再做「全库补生成」（2026-09-10 改按需）──
+    // 旧代码在这里调用 ensureThumbnails(dirHandle)：它对所有缺失缩略图的图片
+    // （用户库实测 3782 张）按 **2 张/批串行** 读盘 + 生成 + 写 IndexedDB，一轮就是
+    // 两三分钟的磁盘/主线程占用 —— 与元数据全量预载一起，构成「进页面要等两三分钟」。
+    // 现在两者都只服务可见区：
+    //   · 缩略图：loadImageThumbnail → 内存 → IndexedDB → 只读这一张文件生成并缓存；
+    //   · 元数据：loadVisibleMetadata → 只读这一张（见 store.loadMetadata，带并发去重）。
+    // 滚到哪补到哪，缓存写入 IndexedDB 后长期命中，不存在需要「先跑完一轮」的全局任务。
   } else {
     // 没有目录句柄，提示用户选择
     const empty = document.querySelector('.outputs-empty') as HTMLElement
@@ -837,7 +843,8 @@ function bindOutputsEvents() {
     if (copyPromptBtn) {
       const id = copyPromptBtn.dataset.id
       if (id) {
-        const meta = useOutputStore.getState().metadataCache.get(id)
+        // 按需读取**这一张**的元数据（内存 → 单条 DB 读），不再依赖「进页面时已全量预载」
+        const meta = await useOutputStore.getState().loadMetadata(id)
         if (meta?.prompt) {
           try {
             await navigator.clipboard.writeText(meta.prompt)
@@ -1280,15 +1287,16 @@ function bindOutputsEvents() {
           renderOutputsView()
         }
       },
-      onCopyMetadata: (id) => {
-        const meta = useOutputStore.getState().metadataCache.get(id)
+      onCopyMetadata: async (id) => {
+        // 按需读取这一张（内存未命中就单条回 DB），不再依赖全库预载
+        const meta = await useOutputStore.getState().loadMetadata(id)
         if (meta) {
           copyText(JSON.stringify(meta, null, 2))
           showToast('元数据已复制')
         }
       },
-      onCopyPrompt: (id) => {
-        const meta = useOutputStore.getState().metadataCache.get(id)
+      onCopyPrompt: async (id) => {
+        const meta = await useOutputStore.getState().loadMetadata(id)
         if (meta?.prompt) {
           copyText(meta.prompt)
           showToast('Prompt 已复制')
@@ -1508,6 +1516,7 @@ function bindOutputsEvents() {
         const filePath = img.dataset.filePath
         if (fileId && filePath) {
           loadImageThumbnail(img, fileId, filePath)
+          requestVisibleMetadata(fileId)   // 元数据按需：只读这一张（含 LoRA 提取）
         }
         observer.unobserve(img)
       }
@@ -1556,6 +1565,11 @@ function bindOutputsEvents() {
         else if (cls === 'outputs-filter-date-min') s.setFilterDateMin(val)
         else if (cls === 'outputs-filter-date-max') s.setFilterDateMax(val)
         renderOutputsView()
+        // 基座模型 / LoRA 属于**全库**筛选（applyFilters 会排除元数据未加载的条目）→
+        // 只有用户真正用到它们时才补齐全库元数据，进入页面时不再预载。
+        if (val && (cls === 'outputs-filter-model' || cls === 'outputs-filter-lora')) {
+          ensureMetadataForGlobalFilter()
+        }
       }, 300)
     })
   })
@@ -1675,8 +1689,7 @@ function setupInfiniteScroll() {
         // 渲染新的一批
         renderOutputsView()
         // 批量后台加载 metadata
-        const newState = useOutputStore.getState()
-        preloadMetadataBatch(newState.files, newState.metadataCache)
+        // 元数据不再在这里批量补齐：新渲染出的卡片由可见区观察器按需读（见 requestVisibleMetadata）
       }
     }
   }, { rootMargin: '400px' })
@@ -1685,116 +1698,89 @@ function setupInfiniteScroll() {
   if (grid) (grid as any)._outputsSentinelIO = observer
 }
 
-/** 单次分片：只读这一批缺失的元数据（供空闲调度逐片调用，避免一次性全量读） */
-async function preloadMetadataChunk(ids: string[]): Promise<number> {
-  if (ids.length === 0) return 0
-  try {
-    const metas = await outputsDb.metadata.bulkGet(ids)
-    const valid = metas.filter((m): m is OutputMetadata => !!m)
-    if (valid.length > 0) useOutputStore.getState().putMetadataBatch(valid)
-    return valid.length
-  } catch {
-    return 0
-  }
-}
+// ── 元数据按需加载（2026-09-10：取代「进入页面全库预载」）──
 
-/** 分片大小：每片只喂这么多元数据，留出时间响应交互与绘制 */
-const IDLE_META_SLICE = 200
-let _idleMetaToken = 0
-let _idleMetaPending = false
+/** 可见卡片元数据的并发上限：一屏十几张卡同时进屏时不至于把 IndexedDB 读取扎堆 */
+const VISIBLE_META_CONCURRENCY = 6
+let _visibleMetaRunning = 0
+const _visibleMetaQueue: string[] = []
+/** 已入队/已处理，避免滚动中反复排队 */
+const _metaQueued = new Set<string>()
+
+/** 元数据陆续到位时合并刷新：一屏的卡片只重建一次网格（图片走 ImageNodeCache 复用，不闪） */
+let _metaRefreshTimer: ReturnType<typeof setTimeout> | null = null
+/** 诊断：本屏元数据从首次请求到合并刷新的耗时（按需加载是否真的没有阻塞，看这一行） */
+let _metaRefreshStartedAt = 0
+let _metaRefreshCount = 0
+function scheduleMetaRefresh(): void {
+  if (_metaRefreshStartedAt === 0) _metaRefreshStartedAt = performance.now()
+  _metaRefreshCount++
+  if (_metaRefreshTimer !== null) return
+  _metaRefreshTimer = setTimeout(() => {
+    _metaRefreshTimer = null
+    const cost = Math.round(performance.now() - _metaRefreshStartedAt)
+    const loaded = useOutputStore.getState().metadataCache.size
+    console.log(`[outputs] 元数据按需加载：本屏 ${_metaRefreshCount} 条，${cost}ms（缓存中共 ${loaded} 条；无全库读取）`)
+    _metaRefreshStartedAt = 0
+    _metaRefreshCount = 0
+    updateFilterPanel()
+    renderOutputsView()
+  }, 250)
+}
 
 /**
- * 空闲分片补齐元数据（替代"进入页面即全量读"）。
- * - 每片只处理 IDLE_META_SLICE 条，处理完让出主线程，浏览器空闲时再来下一片；
- * - 令牌机制保证重复进入页面时旧调度自动作废，不会叠加多份循环；
- * - 全部补齐后只做一次 `updateFilterPanel()` + 网格刷新（避免每片都重建）。
+ * 可见卡片进屏时按需读它的元数据（含 LoRA 提取：只解析这一张的工作流）。
+ * 由下方 IntersectionObserver 在图片进屏时调用 —— 「滚到哪读到哪」，
+ * 不再有进入页面时的全库遍历；读到的结果进内存缓存，回滚不再重复读盘。
  */
-function scheduleIdleMetadataPreload(): void {
-  const token = ++_idleMetaToken
-  if (_idleMetaPending) return
-  _idleMetaPending = true
-
-  const schedule = (fn: () => void) => {
-    const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback
-    if (typeof idle === 'function') idle(fn, { timeout: 2000 })
-    else setTimeout(fn, 60)
-  }
-
-  const step = () => {
-    if (token !== _idleMetaToken) { _idleMetaPending = false; return }
-    // ⚠️ 只在 Outputs 可见时做后台维护：面板是本地管理工具，用户去生图/看别的栏目时
-    // 不应继续占 CPU 与 IndexedDB，避免和生图抢资源（下次进入 Outputs 会重新调度）。
-    if (!isOutputsActive()) { _idleMetaPending = false; return }
-    const state = useOutputStore.getState()
-    const cache = state.metadataCache
-    if (state.files.length === 0) { _idleMetaPending = false; return }
-
-    const missing: string[] = []
-    for (const f of state.files) {
-      if (!cache.has(f.id)) missing.push(f.id)
-      if (missing.length >= IDLE_META_SLICE) break
-    }
-    if (missing.length === 0) {
-      _idleMetaPending = false
-      updateFilterPanel()
-      renderOutputsView()   // 元数据就绪后刷新一次，让卡片显示 Model/LoRA 信息
-      scheduleIdleLoraExtraction()   // 元数据齐了 → 接着空闲补齐 LoRA（不占首屏）
-      return
-    }
-    void preloadMetadataChunk(missing).then(() => schedule(step))
-  }
-
-  schedule(step)
+function requestVisibleMetadata(fileId: string): void {
+  if (!fileId) return
+  if (useOutputStore.getState().metadataCache.has(fileId)) return
+  if (_metaQueued.has(fileId)) return
+  _metaQueued.add(fileId)
+  _visibleMetaQueue.push(fileId)
+  void pumpVisibleMetadata()
 }
 
-async function preloadMetadataBatch(files: OutputFile[], cache: Map<string, OutputMetadata>, opts: { backfill?: boolean; refreshLocal?: boolean } = {}) {
-  const ids = files.map(f => f.id)
-  if (ids.length === 0) return
+async function pumpVisibleMetadata(): Promise<void> {
+  while (_visibleMetaRunning < VISIBLE_META_CONCURRENCY && _visibleMetaQueue.length > 0) {
+    const id = _visibleMetaQueue.shift()!
+    _visibleMetaRunning++
+    void useOutputStore.getState().loadMetadata(id, { loras: true })
+      .then(() => { if (useOutputStore.getState().metadataCache.has(id)) scheduleMetaRefresh() })
+      .catch(() => { /* 单条失败不影响其它 */ })
+      .finally(() => {
+        _visibleMetaRunning--
+        _metaQueued.delete(id)
+        if (_visibleMetaQueue.length > 0) void pumpVisibleMetadata()
+      })
+  }
+}
 
-  // 只读缺失部分：切 tab 时内存缓存已完整 → 直接跳过，不再重复全量读 DB
-  const missing = ids.filter(id => !cache.has(id))
-  if (missing.length === 0) return
-
-  // 分批从 IndexedDB 读取，每批 200
-  const BATCH = 200
-  for (let i = 0; i < missing.length; i += BATCH) {
-    const batch = missing.slice(i, i + BATCH)
-    try {
-      const metas = await outputsDb.metadata.bulkGet(batch)
-      const valid = metas.filter((m): m is OutputMetadata => !!m)
-      if (valid.length > 0) {
-        const before = useOutputStore.getState().metadataCache.size
-        useOutputStore.getState().putMetadataBatch(valid)
-        const after = useOutputStore.getState().metadataCache.size
-        // 仅当缓存确实新增了元数据时才重渲染网格，避免每次进入页面都重建导致图片闪烁
-        if (after !== before && (i + BATCH >= missing.length || missing.length <= BATCH)) {
-          renderOutputsView()
-        }
-      }
-    } catch {
-      // 批量读取失败，跳过
-    }
+/**
+ * 只有用户**真正用到全局筛选**时才补齐全库元数据。
+ * 必要性：applyFilters 对「基座模型 / LoRA / 标签」三项会排除元数据未加载的条目 ——
+ * 懒加载后若不补齐，这三项筛选会静默漏结果（是结果错，不是变慢）。
+ */
+let _filterMetaToastShown = false
+function ensureMetadataForGlobalFilter(): void {
+  const missing = countMetadataMissing()
+  if (missing === 0) return
+  if (!_filterMetaToastShown) {
+    _filterMetaToastShown = true
+    showToast(`正在后台读取全部元数据以支持全局筛选（还有 ${missing} 张，可继续浏览）…`)
   }
-  // 元数据加载后刷新筛选面板
-  updateFilterPanel()
-  // 对旧数据补全 prompt：这一步会**真的去读图片文件**，属于重活。
-  // 只允许由用户主动触发的路径传入 backfill: true，不再在进入页面时自动执行。
-  if (opts.backfill) {
-    const fixed = await backfillPrompts(useOutputStore.getState().metadataCache)
-    if (fixed > 0) {
-      renderOutputsView()
-    }
-  }
-  // 刷新本地管理首页：它会动态加载并整体重渲染另一个页面，改为按需（默认不跑）
-  if (opts.refreshLocal) {
-    const { renderLocalView } = await import('./LocalManager')
-    renderLocalView()
-  }
+  void ensureAllMetadata().then(() => {
+    _filterMetaToastShown = false
+    updateFilterPanel()
+    renderOutputsView()
+    showToast('✅ 全部元数据已就绪，筛选/关联结果已刷新')
+  })
 }
 
 /**
  * 从 DB 快速恢复缓存（页面刷新后首屏秒出，跳过全量目录遍历）：
- * files 列表 + 缩略图批量回填内存 + 元数据预载，一次渲染到位；
+ * files 列表 + 缩略图批量回填内存（元数据改为按需），一次渲染到位；
  * 文件系统变化由后续增量扫描（initOutputs/activateOutputs 已有）后台校正。
  */
 /** 首开只喂这么多条：够铺满首屏并留一点缓冲，其余空闲分片追加 */
@@ -1829,59 +1815,6 @@ function scheduleIdleRestoreRest(rest: OutputFile[]): void {
   schedule(step)
 }
 
-/** LoRA 提取分片大小：解析工作流 JSON 很重，所以片要小 */
-const IDLE_LORA_SLICE = 12
-let _idleLoraToken = 0
-/** 已处理过的记录 id：解析结果可能本来就是空数组，靠它避免对同一条反复解析 */
-const _loraExtracted = new Set<string>()
-
-/**
- * 空闲分片补齐 LoRA 信息（首开卡顿修复的第二半）。
- *
- * `slimMeta` 为了首屏不卡，已不再同步解析工作流 JSON；loras 由这里按需补：
- * 从 DB 读回完整记录（`workflowJson` 只在 DB 里）→ 解析 → 批量写回内存缓存。
- * 表现：卡片上的 LoRA 胶囊与筛选下拉的 LoRA 名单会**逐步出现**，而不是打开页面时卡住。
- */
-function scheduleIdleLoraExtraction(): void {
-  const token = ++_idleLoraToken
-  const schedule = (fn: () => void) => {
-    const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback
-    if (typeof idle === 'function') idle(fn, { timeout: 2000 })
-    else setTimeout(fn, 60)
-  }
-  const step = () => {
-    if (token !== _idleLoraToken) return
-    // 同上：只在 Outputs 可见时补 LoRA，别和生图抢资源
-    if (!isOutputsActive()) return
-    const cache = useOutputStore.getState().metadataCache
-    const batch: string[] = []
-    for (const [id, meta] of cache) {
-      if (batch.length >= IDLE_LORA_SLICE) break
-      if (!meta?.hasWorkflow) continue
-      if (_loraExtracted.has(id)) continue
-      batch.push(id)
-    }
-    if (batch.length === 0) return   // 没有待处理的了
-
-    void outputsDb.metadata.bulkGet(batch).then(rows => {
-      if (token !== _idleLoraToken) return
-      const patch: OutputMetadata[] = []
-      for (const m of rows) {
-        const meta = m as OutputMetadata | undefined
-        if (!meta) continue
-        _loraExtracted.add(meta.imageId)
-        try {
-          const loras = extractLorasFromWorkflow(meta.workflowJson || '', meta.rawMetadata)
-          patch.push({ ...meta, loras, workflowJson: '', rawMetadata: {} })
-        } catch { /* 单条解析失败不影响其它 */ }
-      }
-      if (patch.length > 0) useOutputStore.getState().putMetadataBatch(patch)
-      schedule(step)
-    }).catch(() => schedule(step))
-  }
-  schedule(step)
-}
-
 /**
  * 离开 Outputs 时释放"可重建"的内存，把 RAM 让给生图（ComfyUI 需要大块内存/显存）。
  *
@@ -1910,6 +1843,7 @@ function bindOutputsLeaveRelease(): void {
 if (typeof window !== 'undefined') setTimeout(bindOutputsLeaveRelease, 0)
 
 async function restoreOutputsFromDb(): Promise<boolean> {
+  const bootStartedAt = performance.now()
   const restored = await restoreAllFromDb()
   if (restored.length === 0) return false
   // ⚠️ 首开性能关键（2026-09-10 修）：
@@ -1929,12 +1863,9 @@ async function restoreOutputsFromDb(): Promise<boolean> {
   // （几十上百 MB）—— 单次 bulkGet 的结构化克隆在主线程上就是一次长任务，页面上所有
   // 点击都要排队等它跑完，表现为「进入 Outputs 卡死、按钮全点不了、切栏目也没反应」。
   // 现在两种情况都只预载首屏需要的量，其余交给 IntersectionObserver 按需从 IDB 取即可。
-  const [thumbs] = await Promise.all([
-    preloadThumbnailsFromDb(restored.slice(0, 240)),
-    // 元数据不再全量预载：改为空闲分片补齐（与缩略图「限 240 张」的标准对齐）。
-    // 这里不等它完成，首屏立刻可交互；筛选名单由分片补齐后自动刷新。
-    Promise.resolve(scheduleIdleMetadataPreload()),
-  ])
+  // 元数据不再随启动预载：首屏卡片进屏时按需读单条（requestVisibleMetadata），
+  // 启动路径上因此不存在任何「全库」任务。
+  const thumbs = await preloadThumbnailsFromDb(restored.slice(0, 240))
   if (thumbs.size > 0) {
     useOutputStore.setState(state => {
       const merged = new Map(state.thumbMemory)
@@ -1943,6 +1874,10 @@ async function restoreOutputsFromDb(): Promise<boolean> {
     })
   }
   renderOutputsView()
+  // 诊断：这条日志是「进页面要等多久」的唯一判据 —— 它只统计首屏装配 + 首屏缩略图，
+  // 元数据与其余缩略图都不在其内（按需）。若这里远小于几秒，说明启动路径没有全库任务。
+  console.log(`[outputs] 首屏就绪 ${Math.round(performance.now() - bootStartedAt)}ms`
+    + `（files=${head.length}，缩略图 ${thumbs.size} 张，元数据/其余缩略图按需加载）`)
   // 剩余条目空闲追加（首屏已经能看能点，不再阻塞）
   if (restored.length > BOOT_FILES) scheduleIdleRestoreRest(restored.slice(BOOT_FILES))
   return true
@@ -2606,7 +2541,8 @@ async function saveEditedImage() {
     const parts = file.path.split('/')
     const newPath = parts.length > 1 ? parts.slice(0, -1).concat(newName).join('/') : newName
     const newId = hashPath(newPath)
-    const meta = useOutputStore.getState().metadataCache.get(_editFileId)
+    // 按需取源文件元数据（内存未命中就单条回 DB），保证另存副本继承 Prompt/LoRA
+    const meta = await useOutputStore.getState().loadMetadata(_editFileId)
     const newFile: OutputFile = {
       id: newId, path: newPath, filename: newName, extension: ext,
       size: savedBlob.size, mtime: Date.now(), width: cv.width, height: cv.height,

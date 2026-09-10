@@ -102,7 +102,11 @@ interface OutputState {
   batchPin: (ids: string[]) => Promise<void>
   batchUnpin: (ids: string[]) => Promise<void>
 
-  loadMetadata: (id: string) => Promise<OutputMetadata | null>
+  /**
+   * 按需读取**单张**图片的元数据（2026-09-10：不再有全库预载）。
+   * opts.loras = true 时从同一条 DB 记录里顺带提取 LoRA（一次读盘覆盖卡片所有信息）。
+   */
+  loadMetadata: (id: string, opts?: { loras?: boolean }) => Promise<OutputMetadata | null>
   putMetadata: (meta: OutputMetadata) => void
   putMetadataBatch: (metas: OutputMetadata[]) => void
   removeMetadata: (ids: string[]) => void
@@ -146,6 +150,14 @@ function slimMeta(meta: OutputMetadata): OutputMetadata {
   copy.negativePrompt = ''
   return copy
 }
+
+/**
+ * 按需元数据读取的并发去重表：id → 正在进行的 DB 读。
+ * （可见区一次会出现十几张卡同时要元数据，连点「复制 Prompt」也会撞上同一条）
+ */
+const _metaInflight = new Map<string, Promise<OutputMetadata | null>>()
+/** 已从工作流提取过 LoRA 的 id：避免同一张卡重复回 DB 读那条含 workflowJson 的大记录 */
+const _loraExtractedIds = new Set<string>()
 
 export const useOutputStore = create<OutputState>((set, get) => ({
   dirHandle: null,
@@ -368,22 +380,46 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     get().applyFilters()
   },
 
-  loadMetadata: async (id) => {
+  loadMetadata: async (id, opts) => {
     const cached = get().metadataCache.get(id)
-    if (cached) return cached
-    const meta = await outputsDb.metadata.get(id)
-    if (meta) {
-      const slim = slimMeta(meta)
-      set(s => {
-        const next = new Map(s.metadataCache)
-        next.set(id, slim)
-        return { metadataCache: next }
-      })
-    }
-    return meta || null
+    // 内存命中且不追加 LoRA 需求（或该条已提取过）→ 直接返回，绝不回 DB
+    const wantLoras = !!opts?.loras && !!cached?.hasWorkflow && !_loraExtractedIds.has(id)
+    if (cached && !wantLoras) return cached
+    // 并发去重：同一 id 的多个请求（连点、可见区批量加载）共享同一个 Promise
+    const inflight = _metaInflight.get(id)
+    if (inflight) return inflight
+
+    const task = (async () => {
+      try {
+        const meta = await outputsDb.metadata.get(id)
+        if (!meta) return null
+        const slim = slimMeta(meta)
+        if (opts?.loras) {
+          // ⚠️ 只对这一张卡的工作流做 JSON.parse（历史上的做法是全库遍历解析，秒级到分钟级）
+          try {
+            slim.loras = meta.workflowJson ? extractLorasFromWorkflow(meta.workflowJson, meta.rawMetadata) : []
+          } catch {
+            slim.loras = []
+          }
+          _loraExtractedIds.add(id)
+        }
+        set(s => {
+          const next = new Map(s.metadataCache)
+          next.set(id, slim)
+          return { metadataCache: next }
+        })
+        return meta
+      } finally {
+        _metaInflight.delete(id)
+      }
+    })()
+    _metaInflight.set(id, task)
+    return task
   },
 
   putMetadata: (meta) => set(s => {
+    // 新写入的记录 loras 尚未提取（slimMeta 刻意不解析工作流）→ 移出去重表，下次需要时再提
+    _loraExtractedIds.delete(meta.imageId)
     const next = new Map(s.metadataCache)
     next.set(meta.imageId, slimMeta(meta))
     return { metadataCache: next }
@@ -391,14 +427,20 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   putMetadataBatch: (metas) => set(s => {
     if (metas.length === 0) return {}
     const next = new Map(s.metadataCache)
-    for (const m of metas) next.set(m.imageId, slimMeta(m))
+    for (const m of metas) {
+      _loraExtractedIds.delete(m.imageId)
+      next.set(m.imageId, slimMeta(m))
+    }
     return { metadataCache: next }
   }),
   removeMetadata: (ids) => set(s => {
     if (ids.length === 0) return {}
     const next = new Map(s.metadataCache)
     let changed = false
-    for (const id of ids) { if (next.delete(id)) changed = true }
+    for (const id of ids) {
+      _loraExtractedIds.delete(id)
+      if (next.delete(id)) changed = true
+    }
     return changed ? { metadataCache: next } : {}
   }),
   setThumbMemory: (path, dataUrl) => set(s => {
