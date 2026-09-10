@@ -249,7 +249,9 @@ async def _get_session():
             await _refresh_proxy_override()
             if _PROXY_OVERRIDE != prev:
                 # 代理状态变化（开/关/换端口）→ 先替换全局引用，再延迟关闭旧会话：
-                # 消除竞态重建与旧会话泄漏；in-flight 502 风险降低（切换瞬间持旧引用的慢请求仍可能偶发，低频自愈）
+                # 消除竞态重建与旧会话泄漏；切换瞬间持旧引用的 in-flight 请求仍可能失败，
+                # 已由 anima_image 的重试兜住（低频自愈）。
+                print(f"[anima/proxy] 代理切换 {prev or 'none'} → {_PROXY_OVERRIDE or 'none'}", flush=True)
                 old = _PROXY_SESSION
                 _PROXY_SESSION = await _create_proxy_session()
                 if old is not None and not old.closed:
@@ -510,6 +512,10 @@ _IMAGE_CACHE_MAX = 200
 _IMAGE_CACHE_MAX_BYTES = 256 * 1024 * 1024  # 256MB 总预算，超限时从最旧条目开始淘汰
 _IMAGE_CACHE_BYTES = 0
 _IMAGE_CACHE_SKIP_SIZE = 16 * 1024 * 1024  # 单张超过 16MB 不缓存（原图直传，不占预算）
+# 上游图片经本地代理（7890 等）获取：代理节点抖动/切换时，Clash 层面会直接回 502/503/504
+# 或断开连接，这类失败重试几乎必成。不重试的话，网格同时加载几十张图时会表现成"大量 502"。
+_IMAGE_MAX_ATTEMPTS = 3
+_IMAGE_RETRY_DELAY = 0.25  # 秒；第 n 次重试前等待 n * delay
 _IMAGE_ALLOW_PREFIX = "https://image.civitai.com/"
 _IMAGE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
@@ -542,18 +548,34 @@ async def anima_image(request):
         body, ctype = cached
         return web.Response(body=body, content_type=ctype, headers={"Cache-Control": "public, max-age=86400"})
 
-    try:
-        session = await _get_session()
-        async with session.get(url, headers=_IMAGE_HEADERS) as resp:
-            if resp.status != 200:
-                return web.Response(status=502, text=f"upstream http_{resp.status}")
-            body = await resp.read()
-            ctype = resp.headers.get("Content-Type", "image/jpeg")
-    except Exception as e:
-        return web.Response(status=502, text=f"proxy error: {e}")
+    # 重试策略：上游 4xx（403/404/451 = 图已失效/需要登录）是确定性失败，重试无意义；
+    # 5xx 与连接层异常（代理节点抖动）才重试。
+    last_reason = "unknown"
+    for attempt in range(_IMAGE_MAX_ATTEMPTS):
+        try:
+            session = await _get_session()
+            async with session.get(url, headers=_IMAGE_HEADERS) as resp:
+                if resp.status == 200:
+                    body = await resp.read()
+                    ctype = resp.headers.get("Content-Type", "image/jpeg")
+                    _image_cache_store(url, body, ctype)
+                    return web.Response(body=body, content_type=ctype, headers={"Cache-Control": "public, max-age=86400"})
+                last_reason = f"upstream http_{resp.status}"
+                if 400 <= resp.status < 500:
+                    break
+        except Exception as e:
+            last_reason = f"{type(e).__name__}: {e}"
+        if attempt < _IMAGE_MAX_ATTEMPTS - 1:
+            await asyncio.sleep(_IMAGE_RETRY_DELAY * (attempt + 1))
 
-    _image_cache_store(url, body, ctype)
-    return web.Response(body=body, content_type=ctype, headers={"Cache-Control": "public, max-age=86400"})
+    # 只在最终失败时落日志：给出「原因 + 是否走了代理」，下次复发可直接判定是我方代理未生效
+    # 还是上游/代理节点自身异常，而不必再靠猜。
+    print(
+        f"[anima/image] 502 后重试 {_IMAGE_MAX_ATTEMPTS} 次仍失败 | reason={last_reason} | "
+        f"proxy={_PROXY_OVERRIDE or 'none'} | url={url}",
+        flush=True,
+    )
+    return web.Response(status=502, text=f"{last_reason}")
 
 
 @PromptServer.instance.routes.get("/anima/lora/info")

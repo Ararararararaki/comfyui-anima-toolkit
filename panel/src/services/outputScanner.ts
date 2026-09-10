@@ -794,6 +794,11 @@ export async function ensureThumbnails(dirHandle: FileSystemDirectoryHandle | nu
   const missing = files.filter(f => !cachedPaths.has(f.path))
   if (missing.length === 0) return
 
+  // ⚠️ 这里**不要**改成"每次进页面只补 N 张"（2026-09-10 实测踩坑）：
+  // 库里缺 3782 张缩略图时，分批 + 每次进入重跑 = 永远跑不完、每切一次页面就重新开跑，
+  // 用户反馈"原本过会就好，现在会持续的卡"。保持"一次跑完并写入 IndexedDB 缓存"，
+  // 跑完即长期不再触发（`_lastEnsureThumbs` 120s 节流 + 缓存命中）。
+  // 单张开销已由 createImageBitmap 优化（数百毫秒 → 约 1ms），整轮比过去快一个量级。
   console.log(`[outputScanner] 补生成 ${missing.length} 个缩略图...`)
   let done = 0
 

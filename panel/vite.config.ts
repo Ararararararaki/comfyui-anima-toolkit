@@ -9,13 +9,16 @@ const comfyuiUrl = process.env.COMFYUI_URL || 'http://localhost:8188'
 export default defineConfig({
   base: basePath,
   define: {
-    // 面板构建时间戳（界面右上角显示，用于确认是否加载了新版本）。
-    // 用本地时间：toISOString() 是 UTC，会比北京时间慢 8 小时，之前导致"以为没构建成功"的误判。
-    __BUILD_TIME__: JSON.stringify((() => {
-      const d = new Date()
-      const p = (n: number) => String(n).padStart(2, '0')
-      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
-    })()),
+    // 面板构建时间戳（界面右上角显示，用于确认是否加载了新版本）
+    // ⚠️ 必须用本地时间：此前用 toISOString() 输出 UTC，导致"下午 14:54 的构建"显示成
+    // "06:54"，让人误以为面板没更新（2026-09-10 实际踩过这个坑）。
+    __BUILD_TIME__: JSON.stringify(
+      (() => {
+        const d = new Date()
+        const p = (n: number) => String(n).padStart(2, '0')
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+      })()
+    ),
   },
   server: {
     proxy: {

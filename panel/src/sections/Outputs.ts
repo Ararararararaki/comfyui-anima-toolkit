@@ -16,8 +16,9 @@ import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow } from '../servic
 import { extractPngTextChunks, injectPngTextChunks } from '../services/pngChunks'
 import { backfillPrompts } from '../services/outputMetadataService'
 import { VirtualScroll, type VirtualScrollItemStyle } from '../components/VirtualScroll'
+import { MasonryVirtualScroll } from '../components/MasonryVirtualScroll'
 import { ImageNodeCache } from '../components/ImageNodeCache'
-import { computeMasonryLayout, OUTPUTS_INFO_H, MASONRY_CARD_BORDER } from '../components/masonry'
+import { computeMasonryLayout } from '../components/masonry'
 import { initOutputDragSelection, type OutputGridGeometry } from './outputDragSelection'
 import JSZip from 'jszip'
 import { nativeOutputUrl, nativeScanOutputs, nativeListOutputs, probeNativeStorage } from '../services/nativeStorage'
@@ -156,11 +157,11 @@ export async function initOutputs() {
   window.addEventListener('focus', triggerOutputsIncrementalScan)
   document.addEventListener('visibilitychange', () => { if (!document.hidden) triggerOutputsIncrementalScan() })
 
-  // ── 后台预加载元数据（让筛选器拿到 Model/LoRA 列表） ──
-  const { files, metadataCache } = useOutputStore.getState()
-  if (files.length > 0 && metadataCache.size === 0) {
-    preloadMetadataBatch(files, metadataCache)
-  }
+  // ── 后台补齐元数据（让筛选器拿到 Model/LoRA 列表）──
+  // 改为「空闲分片 + 可中断」：不再在进入页面时一次性同步读完全部元数据。
+  // 近 4000 张图的元数据一次性灌入会占满首屏主线程（表现为进入页面卡死），
+  // 现在把它切成小片交给浏览器空闲时段，首屏先出图，元数据随后补齐并自动刷新筛选器。
+  scheduleIdleMetadataPreload()
 
   // ── 扫描进度订阅 ──
   let prevScanStatus: OutputScanStatus = 'idle'
@@ -287,9 +288,9 @@ export async function activateOutputs() {
     // 后台补生成缺失的缩略图（非关键，失败不影响主流程）
     ensureThumbnails(state.dirHandle)
 
-    // 后台批量预加载 metadata
+    // 后台批量补齐 metadata（用户主动扫描触发；不再自动跑读文件的 backfill）
     const { files, metadataCache } = useOutputStore.getState()
-    preloadMetadataBatch(files, metadataCache)
+    preloadMetadataBatch(files, metadataCache, { refreshLocal: true })
   } else {
     // 没有目录句柄，提示用户选择
     const empty = document.querySelector('.outputs-empty') as HTMLElement
@@ -488,7 +489,7 @@ function updateFilterPanel() {
 }
 
 // ── 网格/瀑布流虚拟滚动（Perf-1：全量数据虚拟渲染，DOM 只含可视条目）──
-let _outputsVS: VirtualScroll | null = null
+let _outputsVS: VirtualScroll | MasonryVirtualScroll | null = null
 
 // 已解码缩略图节点缓存：虚拟滚动 update 会重建行容器，但不能再销毁同一路径的 img。
 // dataURL 在内存里并不等于浏览器已完成解码；只有复用原 img 节点才能从根上消除重解码黑帧。
@@ -561,42 +562,56 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
     const geom = outputsGeom(el.clientWidth)
     // 列填充布局：卡高随图片真实宽高比，逐张放入当前最短列；布局带缓存，滚动画框选可复用
     const layout = computeMasonryLayout(files, geom.cols, geom.cardW, geom.gap)
-    const colStep = geom.cardW + geom.gap
 
-    // renderItem 闭包捕获本次 files/layout/geom，每次渲染带最新闭包
+    // renderItem 只负责卡片内容；二维位置由 MasonryVirtualScroll 的 item rect 承担。
+    // 普通 VirtualScroll 会把高度做一维前缀累加，无法表达多列共享 top 的瀑布流。
     const renderItem = (index: number, style: VirtualScrollItemStyle) => {
       const s = useOutputStore.getState()
       const f = files[index]
       if (!f) return ''
       const meta = s.metadataCache.get(f.id)
-      const left = Math.round(layout.colsOf[index] * colStep)
-      const h = layout.heights[index]
-      const imgH = h - OUTPUTS_INFO_H - MASONRY_CARD_BORDER
+      const imgH = layout.imgHeights[index]
       // thumbSrc 同步回填内存缩略图：虚拟滚动滚动时条目会被重建，
       // 若等 IntersectionObserver 异步回填会有几帧黑图闪烁
-      const html = renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined, undefined, s.thumbMemory.get(f.path), imgH)
-      return `<div style="position:absolute;top:0;left:${left}px;width:${geom.cardW}px;height:${h}px">${html}</div>`
+      return renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined, undefined, s.thumbMemory.get(f.path), imgH)
     }
 
-    if (_outputsVS && el.querySelector('.virtual-scroll-inner')) {
-      // getItemHeight 必须一起更新：隐藏期创建的实例可能是退化几何（宽 0），
-      // 只改 totalItems 会导致 padding 沿用旧行高、滚动高度错乱
+    const getItemRect = (index: number) => ({
+      top: layout.tops[index],
+      left: layout.lefts[index],
+      width: layout.widths[index],
+      height: layout.heights[index],
+    })
+
+    // 布局/内容签名：只放会真正改变「卡片内容或几何」的因素。
+    // 刻意不含 thumbMemory —— 缩略图到位时由 loadImageThumbnail 直接改对应 <img>.src，
+    // 不需要重建成百上千个节点；一旦重建，图片就会重新请求，首屏必抖。
+    const vsSignature = [
+      geom.cols, Math.round(geom.cardW), geom.gap,
+      files.length, files[0]?.id ?? '', files[files.length - 1]?.id ?? '',
+      state.selectedIds.size, state.metadataCache.size, Math.round(layout.total),
+    ].join('|')
+
+    if (_outputsVS instanceof MasonryVirtualScroll && el.querySelector('.masonry-virtual-scroll-inner')) {
       el.querySelector('.outputs-empty')?.remove()   // 清掉静态 HTML 占位残留
       _outputsVS.update({
         totalItems: files.length,
+        totalHeight: layout.total,
         renderItem,
-        getItemHeight: i => layout.heights[i] + geom.gap,
+        getItemRect,
+        signature: vsSignature,
       })
     } else {
       destroyOutputsVS()
       removeOutputsSentinel()
       el.innerHTML = ''   // 清空容器（含 index.html 静态 .outputs-empty 占位），VirtualScroll 只 append 不清
-      _outputsVS = new VirtualScroll({
+      _outputsVS = new MasonryVirtualScroll({
         container: el,
-        itemHeight: 220,   // 瀑布流布局走 getItemHeight，此项仅作退化默认
         totalItems: files.length,
+        totalHeight: layout.total,
         renderItem,
-        getItemHeight: i => layout.heights[i] + geom.gap,
+        getItemRect,
+        signature: vsSignature,
         beforeRender: inner => _outputImageNodes.capture(inner),
         afterRender: inner => _outputImageNodes.restore(inner, useOutputStore.getState().thumbMemory),
       })
@@ -1663,7 +1678,69 @@ function setupInfiniteScroll() {
   if (grid) (grid as any)._outputsSentinelIO = observer
 }
 
-async function preloadMetadataBatch(files: OutputFile[], cache: Map<string, OutputMetadata>) {
+/** 单次分片：只读这一批缺失的元数据（供空闲调度逐片调用，避免一次性全量读） */
+async function preloadMetadataChunk(ids: string[]): Promise<number> {
+  if (ids.length === 0) return 0
+  try {
+    const metas = await outputsDb.metadata.bulkGet(ids)
+    const valid = metas.filter((m): m is OutputMetadata => !!m)
+    if (valid.length > 0) useOutputStore.getState().putMetadataBatch(valid)
+    return valid.length
+  } catch {
+    return 0
+  }
+}
+
+/** 分片大小：每片只喂这么多元数据，留出时间响应交互与绘制 */
+const IDLE_META_SLICE = 200
+let _idleMetaToken = 0
+let _idleMetaPending = false
+
+/**
+ * 空闲分片补齐元数据（替代"进入页面即全量读"）。
+ * - 每片只处理 IDLE_META_SLICE 条，处理完让出主线程，浏览器空闲时再来下一片；
+ * - 令牌机制保证重复进入页面时旧调度自动作废，不会叠加多份循环；
+ * - 全部补齐后只做一次 `updateFilterPanel()` + 网格刷新（避免每片都重建）。
+ */
+function scheduleIdleMetadataPreload(): void {
+  const token = ++_idleMetaToken
+  if (_idleMetaPending) return
+  _idleMetaPending = true
+
+  const schedule = (fn: () => void) => {
+    const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback
+    if (typeof idle === 'function') idle(fn, { timeout: 2000 })
+    else setTimeout(fn, 60)
+  }
+
+  const step = () => {
+    if (token !== _idleMetaToken) { _idleMetaPending = false; return }
+    // ⚠️ 只在 Outputs 可见时做后台维护：面板是本地管理工具，用户去生图/看别的栏目时
+    // 不应继续占 CPU 与 IndexedDB，避免和生图抢资源（下次进入 Outputs 会重新调度）。
+    if (!isOutputsActive()) { _idleMetaPending = false; return }
+    const state = useOutputStore.getState()
+    const cache = state.metadataCache
+    if (state.files.length === 0) { _idleMetaPending = false; return }
+
+    const missing: string[] = []
+    for (const f of state.files) {
+      if (!cache.has(f.id)) missing.push(f.id)
+      if (missing.length >= IDLE_META_SLICE) break
+    }
+    if (missing.length === 0) {
+      _idleMetaPending = false
+      updateFilterPanel()
+      renderOutputsView()   // 元数据就绪后刷新一次，让卡片显示 Model/LoRA 信息
+      scheduleIdleLoraExtraction()   // 元数据齐了 → 接着空闲补齐 LoRA（不占首屏）
+      return
+    }
+    void preloadMetadataChunk(missing).then(() => schedule(step))
+  }
+
+  schedule(step)
+}
+
+async function preloadMetadataBatch(files: OutputFile[], cache: Map<string, OutputMetadata>, opts: { backfill?: boolean; refreshLocal?: boolean } = {}) {
   const ids = files.map(f => f.id)
   if (ids.length === 0) return
 
@@ -1693,14 +1770,19 @@ async function preloadMetadataBatch(files: OutputFile[], cache: Map<string, Outp
   }
   // 元数据加载后刷新筛选面板
   updateFilterPanel()
-  // 对旧数据补全 prompt
-  const fixed = await backfillPrompts(useOutputStore.getState().metadataCache)
-  if (fixed > 0) {
-    renderOutputsView()
+  // 对旧数据补全 prompt：这一步会**真的去读图片文件**，属于重活。
+  // 只允许由用户主动触发的路径传入 backfill: true，不再在进入页面时自动执行。
+  if (opts.backfill) {
+    const fixed = await backfillPrompts(useOutputStore.getState().metadataCache)
+    if (fixed > 0) {
+      renderOutputsView()
+    }
   }
-  // 刷新本地管理首页（元数据就绪后更新统计）
-  const { renderLocalView } = await import('./LocalManager')
-  renderLocalView()
+  // 刷新本地管理首页：它会动态加载并整体重渲染另一个页面，改为按需（默认不跑）
+  if (opts.refreshLocal) {
+    const { renderLocalView } = await import('./LocalManager')
+    renderLocalView()
+  }
 }
 
 /**
@@ -1708,18 +1790,143 @@ async function preloadMetadataBatch(files: OutputFile[], cache: Map<string, Outp
  * files 列表 + 缩略图批量回填内存 + 元数据预载，一次渲染到位；
  * 文件系统变化由后续增量扫描（initOutputs/activateOutputs 已有）后台校正。
  */
+/** 首开只喂这么多条：够铺满首屏并留一点缓冲，其余空闲分片追加 */
+const BOOT_FILES = 300
+/** 空闲追加大分片：少几次重建、也少几次 setState */
+const RESTORE_SLICE = 800
+let _idleRestoreToken = 0
+
+/**
+ * 空闲分片追加剩余文件。
+ * 目的：把「一次性装配 3900+ 条 + 首屏布局 + 首屏取图」从进入页面的那一刻挪走。
+ * 首屏先出图、先可交互，剩余条目在浏览器空闲时补齐；每次追加后重建一次网格，
+ * 卡片图片走 thumbMemory / ImageNodeCache 复用，不会重新请求。
+ */
+function scheduleIdleRestoreRest(rest: OutputFile[]): void {
+  const token = ++_idleRestoreToken
+  let cursor = 0
+  const schedule = (fn: () => void) => {
+    const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback
+    if (typeof idle === 'function') idle(fn, { timeout: 1500 })
+    else setTimeout(fn, 40)
+  }
+  const step = () => {
+    if (token !== _idleRestoreToken) return
+    const chunk = rest.slice(cursor, cursor + RESTORE_SLICE)
+    if (chunk.length === 0) return
+    cursor += chunk.length
+    useOutputStore.setState(s => ({ files: s.files.concat(chunk) }))
+    renderOutputsView()
+    if (cursor < rest.length) schedule(step)
+  }
+  schedule(step)
+}
+
+/** LoRA 提取分片大小：解析工作流 JSON 很重，所以片要小 */
+const IDLE_LORA_SLICE = 12
+let _idleLoraToken = 0
+/** 已处理过的记录 id：解析结果可能本来就是空数组，靠它避免对同一条反复解析 */
+const _loraExtracted = new Set<string>()
+
+/**
+ * 空闲分片补齐 LoRA 信息（首开卡顿修复的第二半）。
+ *
+ * `slimMeta` 为了首屏不卡，已不再同步解析工作流 JSON；loras 由这里按需补：
+ * 从 DB 读回完整记录（`workflowJson` 只在 DB 里）→ 解析 → 批量写回内存缓存。
+ * 表现：卡片上的 LoRA 胶囊与筛选下拉的 LoRA 名单会**逐步出现**，而不是打开页面时卡住。
+ */
+function scheduleIdleLoraExtraction(): void {
+  const token = ++_idleLoraToken
+  const schedule = (fn: () => void) => {
+    const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback
+    if (typeof idle === 'function') idle(fn, { timeout: 2000 })
+    else setTimeout(fn, 60)
+  }
+  const step = () => {
+    if (token !== _idleLoraToken) return
+    // 同上：只在 Outputs 可见时补 LoRA，别和生图抢资源
+    if (!isOutputsActive()) return
+    const cache = useOutputStore.getState().metadataCache
+    const batch: string[] = []
+    for (const [id, meta] of cache) {
+      if (batch.length >= IDLE_LORA_SLICE) break
+      if (!meta?.hasWorkflow) continue
+      if (_loraExtracted.has(id)) continue
+      batch.push(id)
+    }
+    if (batch.length === 0) return   // 没有待处理的了
+
+    void outputsDb.metadata.bulkGet(batch).then(rows => {
+      if (token !== _idleLoraToken) return
+      const patch: OutputMetadata[] = []
+      for (const m of rows) {
+        const meta = m as OutputMetadata | undefined
+        if (!meta) continue
+        _loraExtracted.add(meta.imageId)
+        try {
+          const loras = extractLorasFromWorkflow(meta.workflowJson || '', meta.rawMetadata)
+          patch.push({ ...meta, loras, workflowJson: '', rawMetadata: {} })
+        } catch { /* 单条解析失败不影响其它 */ }
+      }
+      if (patch.length > 0) useOutputStore.getState().putMetadataBatch(patch)
+      schedule(step)
+    }).catch(() => schedule(step))
+  }
+  schedule(step)
+}
+
+/**
+ * 离开 Outputs 时释放"可重建"的内存，把 RAM 让给生图（ComfyUI 需要大块内存/显存）。
+ *
+ * 只丢缓存、不丢数据：缩略图回 IndexedDB 取、元数据仍在内存里（几十 MB 级）。
+ * 再进 Outputs 会重新拉取（几百毫秒），换来的是**生图期间面板不常驻解码位图**。
+ */
+function releaseOutputMemory(): void {
+  _outputImageNodes.clear()   // 已解码位图：最大的可释放项（清掉后滚动回来会按需重建）
+  destroyOutputsVS()          // 网格 + 虚拟滚动实例及其 DOM
+  // ⚠️ 刻意**保留** thumbMemory：它是"路径 → 160px dataURL"表（≤500 条、约 15MB），
+  // 但重新填充要读 240 次 IndexedDB。上一版把它一起清了，导致每次切回 Outputs 都要重读，
+  // 用户实测"来回切换页面更卡" —— 释放该释放的，别释放"重建很贵"的。
+}
+
+/** 监听 Outputs 区域被隐藏 → 释放内存。自绑定，无需改动其它栏目代码。 */
+function bindOutputsLeaveRelease(): void {
+  const sec = document.getElementById('sectionOutputs') as (HTMLElement & { _leaveObs?: boolean }) | null
+  if (!sec || sec._leaveObs) return
+  sec._leaveObs = true
+  new MutationObserver(() => {
+    if (sec.classList.contains('section-hidden')) releaseOutputMemory()
+  }).observe(sec, { attributes: true, attributeFilter: ['class'] })
+}
+
+// 模块加载即尝试绑定（sectionOutputs 是 index.html 里的静态区域，不依赖激活时机）
+if (typeof window !== 'undefined') setTimeout(bindOutputsLeaveRelease, 0)
+
 async function restoreOutputsFromDb(): Promise<boolean> {
   const restored = await restoreAllFromDb()
   if (restored.length === 0) return false
-  useOutputStore.getState().setFiles(restored)
+  // ⚠️ 首开性能关键（2026-09-10 修）：
+  // 此前是一次性 `setFiles(restored)`（近 4000 条），于是「全部装配 + 首屏布局 +
+  // 首屏取图」全挤在进入页面的那一刻 —— 用户实测特征正是「首次加载卡、之后不卡、
+  // 功能都正常」。现在首屏只喂 BOOT_FILES 条，其余交给空闲分片追加。
+  const head = restored.slice(0, BOOT_FILES)
+  useOutputStore.getState().setFiles(head)
   // 并行回填：缩略图 → 内存缓存（渲染走同步路径）；元数据 → 只读缺失
-  // 有句柄时限预载前 240 张（其余交给 IntersectionObserver 按需从 IndexedDB 取，
-  // 大图库全量灌内存会造成打开卡顿）；无句柄时保持全量——无句柄回退路径下
-  // loadImageThumbnail 直接 return，内存预载是唯一出图通道
+  // 启动只预载首屏需要的量（两种情况都限 240）：其余缩略图交给 IntersectionObserver
+  // 按需从 IndexedDB 取（loadImageThumbnail 的内存/IDB 分支对"无句柄"同样生效）。
+  // 大图库全量灌内存会造成打开卡顿。
   const hasHandle = !!useOutputStore.getState().dirHandle || !!_nativeOutputs
+  // ⚠️ 无句柄时也必须限量（2026-09-10 修）：
+  // 此前写成 `hasHandle ? 前240 : 全量`，结果「未授权目录」的用户（恰恰是唯一没有其它
+  // 出图通道的场景）会在进入页面时一次性从 IndexedDB 反序列化近 4000 条缩略图 dataURL
+  // （几十上百 MB）—— 单次 bulkGet 的结构化克隆在主线程上就是一次长任务，页面上所有
+  // 点击都要排队等它跑完，表现为「进入 Outputs 卡死、按钮全点不了、切栏目也没反应」。
+  // 现在两种情况都只预载首屏需要的量，其余交给 IntersectionObserver 按需从 IDB 取即可。
   const [thumbs] = await Promise.all([
-    preloadThumbnailsFromDb(hasHandle ? restored.slice(0, 240) : restored),
-    preloadMetadataBatch(restored, useOutputStore.getState().metadataCache),
+    preloadThumbnailsFromDb(restored.slice(0, 240)),
+    // 元数据不再全量预载：改为空闲分片补齐（与缩略图「限 240 张」的标准对齐）。
+    // 这里不等它完成，首屏立刻可交互；筛选名单由分片补齐后自动刷新。
+    Promise.resolve(scheduleIdleMetadataPreload()),
   ])
   if (thumbs.size > 0) {
     useOutputStore.setState(state => {
@@ -1729,6 +1936,8 @@ async function restoreOutputsFromDb(): Promise<boolean> {
     })
   }
   renderOutputsView()
+  // 剩余条目空闲追加（首屏已经能看能点，不再阻塞）
+  if (restored.length > BOOT_FILES) scheduleIdleRestoreRest(restored.slice(BOOT_FILES))
   return true
 }
 
@@ -1776,13 +1985,64 @@ function updateScanProgress(status: OutputScanStatus, progress: { done: number; 
 async function loadImageThumbnail(img: HTMLImageElement, fileId: string, filePath: string) {
   const dh = useOutputStore.getState().dirHandle
   if (_nativeOutputs) {
-    const mem = useOutputStore.getState().thumbMemory.get(filePath)
-    if (mem) img.src = mem
-    else img.src = nativeOutputUrl(filePath)
+    // TK 原生模式：服务端对 /api/tk/output-file 是整文件回传（平均数 MB），
+    // 过去直接把原图 URL 当缩略图用 —— 首屏数十张卡同时按原始尺寸下载 + 解码
+    // （单张解码位图可达 6~25MB），主线程与内存瞬间被压满，表现为「进入 Outputs 卡死」。
+    // 现在复用与目录模式相同的缩略图管线：内存 → IndexedDB → 下载一次并缩到 200px
+    // 后回写缓存（管线内部限流 4 并发），二次进入直接命中缓存。
+    try {
+      const mem = useOutputStore.getState().thumbMemory.get(filePath)
+      if (mem) {
+        if (img.getAttribute('src') !== mem) img.src = mem
+        _outputImageNodes.remember(img)
+        return
+      }
+
+      const thumbMod = await import('../services/outputThumbnail')
+      const cached = await thumbMod.getCachedThumbnail(filePath)
+      if (cached) {
+        useOutputStore.getState().setThumbMemory(filePath, cached)
+        if (img.getAttribute('src') !== cached) img.src = cached
+        _outputImageNodes.remember(img)
+        return
+      }
+
+      const res = await fetch(nativeOutputUrl(filePath))
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const blob = await res.blob()
+      const thumb = await thumbMod.createThumbnailFromBlob(blob, 200)
+      if (thumb?.dataUrl) {
+        useOutputStore.getState().setThumbMemory(filePath, thumb.dataUrl)
+        if (img.getAttribute('src') !== thumb.dataUrl) img.src = thumb.dataUrl
+        _outputImageNodes.remember(img)
+        return
+      }
+    } catch { /* 服务异常/超大图：下面退回原图，不阻塞其它图片 */ }
+    // 兜底：缩略图不可得时退回原图 URL，保证不空着
+    if (!img.getAttribute('src')) img.src = nativeOutputUrl(filePath)
     _outputImageNodes.remember(img)
     return
   }
-  if (!dh) return
+  // 未授权目录（无句柄）时不再直接放弃：内存与 IndexedDB 里已有缓存的缩略图仍可展示，
+  // 只是无法主动生成新的缩略图。补上这条，前面"启动只预载 240 张"才是安全的
+  // ——其余缩略图滚动到就按需取，既不卡启动也不缺图。
+  if (!dh) {
+    try {
+      const mem = useOutputStore.getState().thumbMemory.get(filePath)
+      if (mem) {
+        if (img.getAttribute('src') !== mem) img.src = mem
+        _outputImageNodes.remember(img)
+        return
+      }
+      const cached = await import('../services/outputThumbnail').then(m => m.getCachedThumbnail(filePath))
+      if (cached) {
+        useOutputStore.getState().setThumbMemory(filePath, cached)
+        if (img.getAttribute('src') !== cached) img.src = cached
+        _outputImageNodes.remember(img)
+      }
+    } catch { /* 缓存不可用：保持灰底，不抛错、不影响其它图片 */ }
+    return
+  }
 
   try {
     // 内存缓存（同步）

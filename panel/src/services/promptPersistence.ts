@@ -103,9 +103,7 @@ export async function tombstonePrompts(ids: string[]): Promise<void> {
     const response = await fetch(ENDPOINT + '/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: cleaned }),
-      keepalive: true,
-    })
+      body: JSON.stringify({ ids: cleaned }),    })
     const payload = await response.json().catch(() => ({})) as { ok?: boolean; error?: string }
     if (!response.ok || !payload.ok) throw new Error(payload.error || `HTTP ${response.status}`)
   } catch (error) {
@@ -123,11 +121,15 @@ export async function pushPromptLibrary(): Promise<boolean> {
       showToast('⚠️ Prompt 库体积过大（>60MB），镜像写入已跳过，数据仍保存在浏览器本地')
       return false
     }
+    // ⚠️ 这里**不能**用 keepalive：Chrome 对 keepalive 请求体有 64KB 硬上限，
+    // 超过时请求根本发不出去，直接抛 `TypeError: Failed to fetch`
+    // —— 这正是「Prompt 库镜像写入失败」的真正原因（2026-09-10 用户控制台实测：
+    // 报的是 Failed to fetch 而非任何 HTTP 状态码）。代价是页面关闭瞬间可能丢一次镜像写入，
+    // 可接受：IndexedDB 仍是主库，且下次打开会重新校验并补推。
     const response = await fetch(ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body,
-      keepalive: true,
     })
     const payload = await response.json().catch(() => ({})) as PromptLibraryResponse
     if (!response.ok || !payload.ok) throw new Error(payload.error || `HTTP ${response.status}`)
@@ -182,7 +184,7 @@ export async function restorePromptLibrary(): Promise<void> {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(merged),
-        keepalive: true,
+        // 同样不能用 keepalive（64KB 上限会让请求发不出去 → TypeError: Failed to fetch）
       }).catch(error => console.warn('[Prompt 库] 合并结果回写失败:', error))
     } else if (local.categories.length || local.prompts.length) {
       // First run on an older plugin: seed the server mirror from the local DB.

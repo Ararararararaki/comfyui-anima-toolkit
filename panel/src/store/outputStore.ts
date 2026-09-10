@@ -129,9 +129,16 @@ function matchSearch(file: OutputFile, query: string, metadata: OutputMetadata |
 function slimMeta(meta: OutputMetadata): OutputMetadata {
   const copy: OutputMetadata = { ...meta }
   if (meta.workflowJson) {
-    copy.loras = extractLorasFromWorkflow(meta.workflowJson, meta.rawMetadata)
+    // ⚠️ 这里刻意**不做** LoRA 提取（2026-09-10 修；首开卡顿的真正根因）：
+    // extractLorasFromWorkflow → safeParseJSON 会对**每条记录** JSON.parse 一个
+    // 几百 KB 的工作流 JSON，再跑 <lora:...> 正则。3918 条就是数秒到十几秒的纯解析，
+    // 而且发生在 putMetadataBatch 里（每条路径都要过 slimMeta），全部砸在首屏。
+    // 火焰图实测：单帧自耗时 149ms 集中在解析函数上、并伴随 RegExp 帧。
+    // 现在只做它注释里原本的职责——内存瘦身（剥掉 workflowJson）；
+    // loras 交给空闲分片按需提取，见 Outputs.ts 的 scheduleIdleLoraExtraction()。
     copy.hasWorkflow = true
     copy.workflowJson = ''
+    if (!Array.isArray(copy.loras)) copy.loras = []
   }
   // rawMetadata（原始 PNG chunk 全量，平均 80KB+/张）与 negativePrompt 只在解析/提取/展示时用：
   // 内存版剥离（完整数据从 DB 懒读），渲染/筛选/搜索不需要

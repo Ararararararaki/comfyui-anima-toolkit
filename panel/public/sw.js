@@ -1,4 +1,4 @@
-const CACHE = 'anima-lora-v3'
+const CACHE = 'anima-lora-v2'
 const PRECACHE = ['/', '/index.html']
 
 self.addEventListener('install', (e) => {
@@ -16,6 +16,24 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const { request } = e
   const url = new URL(request.url)
+
+  // 导航（HTML 文档）请求一律网络优先：面板每次部署都会换 bundle 文件名，
+  // 若 index.html 命中旧缓存就会一直指向旧 bundle —— 用户会以为"面板没更新"。
+  // （2026-09-10 实际踩过：缓存优先 + 写死的 CACHE 名导致入口 HTML 长期不刷新）
+  if (request.mode === 'navigate' || request.destination === 'document') {
+    e.respondWith(
+      fetch(request).then((res) => {
+        if (res.ok && request.method === 'GET') {
+          const clone = res.clone()
+          caches.open(CACHE).then((c) => c.put(request, clone))
+        }
+        return res
+      }).catch(() =>
+        caches.match(request).then((c) => c || caches.match('/index.html'))
+      )
+    )
+    return
+  }
 
   if (url.hostname === 'image.civitai.com' || url.hostname === 'civitai.com') {
     e.respondWith(

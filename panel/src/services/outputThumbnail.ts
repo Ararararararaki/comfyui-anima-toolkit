@@ -4,7 +4,13 @@ import type { OutputThumbnail } from '../types/outputs'
 import { outputsDb } from '../db/outputsDb'
 
 const MAX_THUMBNAILS = 2000
-const THUMBNAIL_SIZE = 200
+/**
+ * 缩略图长边像素。
+ * 200 → 160（2026-09-10）：面板定位是"轻量本地管理、不与生图抢资源"，
+ * 解码位图与 dataURL 内存/带宽均随面积下降约 35%。卡片宽度约 250px，160px 略有放大但不影响辨识。
+ * 注意：IndexedDB 缓存键只用路径哈希（不含尺寸），所以旧 200px 缓存仍会被复用、不会失效。
+ */
+const THUMBNAIL_SIZE = 160
 
 // LRU 访问顺序持久化：没有它，刷新页面后顺序清零，2000 张上限形同虚设
 const LRU_KEY = 'anima_outputs_thumb_lru'
@@ -70,6 +76,34 @@ async function _createThumbFromBlob(
   blob: Blob,
   size: number = THUMBNAIL_SIZE
 ): Promise<{ dataUrl: string; width: number; height: number }> {
+  // ── 快路径：createImageBitmap 的 resize 选项在浏览器图像管线里完成解码 + 缩放，
+  //    主线程只把已经缩小的小位图（200px 级）画到画布上，开销从数百毫秒降到 ~1ms。
+  //    旧实现直接把数千像素的原图 drawImage 缩到 200px 并同步 toDataURL：单张可占主线程
+  //    数百毫秒，同时加载数十张就会把主线程堵死——表现为「图片加载期间所有按钮都点不了、
+  //    切换栏目也没反应，要等加载完才能操作」。
+  if (typeof createImageBitmap === 'function') {
+    try {
+      // 超大文件先挡掉（解码峰值保护）；正常图片由解码器直接按目标宽度下采样
+      if (blob.size <= 80 * 1024 * 1024) {
+        const bmp = await createImageBitmap(blob, { resizeWidth: size, resizeQuality: 'low' })
+        const w = bmp.width
+        const h = bmp.height
+        const canvas = document.createElement('canvas')
+        canvas.width = w
+        canvas.height = h
+        const ctx = canvas.getContext('2d')
+        if (ctx) {
+          ctx.drawImage(bmp, 0, 0)
+          bmp.close?.()
+          return { dataUrl: canvas.toDataURL('image/jpeg', 0.8), width: w, height: h }
+        }
+        bmp.close?.()
+      }
+    } catch {
+      /* 个别格式不支持 resize 选项时，回退到下面的 Image 路径 */
+    }
+  }
+
   return new Promise((resolve) => {
     const img = new Image()
     // 创建后必须 revoke，否则每张新缩略图泄漏一个 Blob URL（底层 Blob 无法回收）

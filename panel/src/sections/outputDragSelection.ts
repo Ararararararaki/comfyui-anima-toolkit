@@ -44,12 +44,11 @@ export function initOutputDragSelection(options: OutputDragSelectionOptions): vo
     const files = state.filteredFiles
     if (files.length === 0) return []
     const layout = computeMasonryLayout(files, geom.cols, geom.cardW, geom.gap)
-    const colStep = geom.cardW + geom.gap
     const ids: string[] = []
     for (let i = 0; i < files.length; i++) {
-      const x = layout.colsOf[i] * colStep
+      const x = layout.lefts[i]
       const y = layout.tops[i]
-      const w = geom.cardW
+      const w = layout.widths[i]
       const h = layout.heights[i]
       if (l < x + w && r > x && t < y + h && b > y) ids.push(files[i].id)
     }
