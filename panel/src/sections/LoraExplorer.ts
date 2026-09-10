@@ -241,7 +241,7 @@ export function switchSection(id: 'lora' | 'artist' | 'prompt' | 'clothing' | 'p
     t.setAttribute('aria-selected', String(active))
   })
   if (id === 'artist') renderArtists()
-  if (id === 'lora') renderGrid()
+  if (id === 'lora') { renderGrid(); startLoraDlBar() } else { stopLoraDlBar() }
   if (id === 'prompt') renderPromptLibrary()
   if (id === 'clothing') renderClothingLibrary()
   if (id === 'prompt-freq') activatePromptFreq()
@@ -418,6 +418,80 @@ async function queueLoraDownload(versionId: string | number | undefined, url: st
   } catch (error) {
     showToast(`❌ 加入后台下载失败：${error instanceof Error ? error.message : String(error)}`)
   }
+}
+
+// ── 后台下载浮动条：LoRA 探索内直接可见进度并取消，无需跑去「本地 lora 管理」──
+// 数据源 = /anima/lora/download/list（后端维护的任务表）；只在 lora 栏目激活时轮询（2s）。
+let dlBarTimer: ReturnType<typeof setInterval> | null = null
+let dlBarBusy = false
+let dlBarEl: HTMLElement | null = null
+
+function ensureDlBar(): HTMLElement {
+  if (!dlBarEl || !document.body.contains(dlBarEl)) {
+    dlBarEl = document.createElement('div')
+    dlBarEl.className = 'lora-dl-bar'
+    dlBarEl.style.display = 'none'
+    document.body.appendChild(dlBarEl)
+  }
+  return dlBarEl
+}
+
+async function pollLoraDlBar(): Promise<void> {
+  if (dlBarBusy || !dlBarEl) return
+  dlBarBusy = true
+  try {
+    const res = await fetch('/anima/lora/download/list')
+    const data = await res.json()
+    const jobs = (Array.isArray(data?.jobs) ? data.jobs : []).filter((j: any) => j.status === 'queued' || j.status === 'downloading')
+    const bar = ensureDlBar()
+    if (jobs.length === 0) {
+      if (bar.style.display !== 'none') { bar.style.display = 'none'; bar.replaceChildren() }
+      return
+    }
+    bar.style.display = 'flex'
+    const head = document.createElement('div')
+    head.className = 'ldb-head'
+    head.textContent = `⬇ 后台下载中 ${jobs.length} 个`
+    bar.replaceChildren(head)
+    for (const j of jobs) {
+      const row = document.createElement('div')
+      row.className = 'ldb-row'
+      const label = String(j.label || j.filename || j.url || j.progressId)
+      const name = document.createElement('span')
+      name.className = 'ldb-name'
+      name.textContent = label.slice(0, 28)
+      name.title = label
+      const pct = document.createElement('span')
+      pct.className = 'ldb-pct'
+      const total = Number(j.total) || 0
+      const done = Number(j.done) || 0
+      pct.textContent = total > 0 ? `${Math.min(100, Math.round((done / total) * 100))}%` : (j.status === 'queued' ? '排队中' : '…')
+      const cancel = document.createElement('button')
+      cancel.className = 'ldb-cancel'
+      cancel.textContent = '✕'
+      cancel.title = '取消该下载'
+      cancel.addEventListener('click', () => {
+        void fetch(`/anima/lora/download/cancel?progressId=${encodeURIComponent(String(j.progressId))}`).catch(() => {})
+      })
+      row.append(name, pct, cancel)
+      bar.appendChild(row)
+    }
+  } catch { /* 后端离线：静默，下一轮再试 */ } finally {
+    dlBarBusy = false
+  }
+}
+
+function startLoraDlBar(): void {
+  ensureDlBar()
+  if (!dlBarTimer) {
+    void pollLoraDlBar()
+    dlBarTimer = setInterval(() => { void pollLoraDlBar() }, 2000)
+  }
+}
+
+function stopLoraDlBar(): void {
+  if (dlBarTimer) { clearInterval(dlBarTimer); dlBarTimer = null }
+  if (dlBarEl) dlBarEl.style.display = 'none'
 }
 
 // ── 随机探索：随机「排序×周期×类别」组合 + 只看没看过的 ──
@@ -1702,14 +1776,14 @@ export function setupBindingListeners() {
   // Global gallery click delegation
   document.addEventListener('click', handleGalleryClick)
 
-  // Version dropdown：caret 展开/收起，主按钮本体下载当前版本，option 下载选定版本
+  // Version dropdown：主按钮=展开/收起版本列表（**不直接下载**，2026-09-10 用户反馈
+  // 「点一下就直接下载」误触多次 —— 必须经过「开列表 → 选版本」两步）；option=下载该版本
   document.addEventListener('click', (e) => {
     const target = e.target as HTMLElement
-    // 展开/收起下拉（点 caret）
-    const caret = target.closest('.version-caret') as HTMLElement
-    if (caret) {
+    const btn = target.closest('.version-dropdown-btn') as HTMLElement
+    if (btn) {
       e.stopPropagation()
-      const wrap = caret.closest('.version-dropdown-wrap') as HTMLElement
+      const wrap = btn.closest('.version-dropdown-wrap') as HTMLElement
       if (!wrap) return
       // 关闭其他 dropdown
       document.querySelectorAll('.version-dropdown').forEach(d => { if (d !== wrap.querySelector('.version-dropdown')) (d as HTMLElement).style.display = 'none' })
@@ -1717,17 +1791,6 @@ export function setupBindingListeners() {
       dd.style.display = dd.style.display === 'none' ? 'block' : 'none'
       return
     }
-    // 主按钮本体点击 = 后台下载当前显示的版本
-    const btn = target.closest('.version-dropdown-btn') as HTMLElement
-    if (btn) {
-      e.stopPropagation()
-      const wrap = btn.closest('.version-dropdown-wrap') as HTMLElement
-      if (wrap) {
-        void queueLoraDownload(wrap.dataset.vid || '', wrap.dataset.url || '', wrap.dataset.label || '')
-      }
-      return
-    }
-    // 某个版本 option 点击 = 后台下载该版本
     const opt = target.closest('.version-option') as HTMLElement
     if (opt) {
       e.stopPropagation()
@@ -1735,7 +1798,6 @@ export function setupBindingListeners() {
       const url = opt.dataset.url || ''
       const nm = opt.dataset.nm || ''
       if (url || vid) { void queueLoraDownload(vid, url, nm) }
-      // 下载后收起下拉
       const dd = opt.closest('.version-dropdown') as HTMLElement
       if (dd) dd.style.display = 'none'
       return

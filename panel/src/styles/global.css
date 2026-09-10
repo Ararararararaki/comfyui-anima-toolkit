@@ -5264,3 +5264,20 @@ html[data-theme="drinkit"] .main-tabs .main-tab.active {
   border-color: var(--accent) !important;
   color: var(--accent-foreground) !important;
 }
+
+/* ── LoRA 探索：后台下载浮动条（右下角，进度 + 逐条取消）── */
+.lora-dl-bar {
+  position: fixed; right: 16px; bottom: 16px; z-index: 9998;
+  display: none; flex-direction: column; gap: 6px;
+  min-width: 250px; max-width: 330px; padding: 10px 12px;
+  background: var(--surface, var(--bg2));
+  border: 1px solid var(--border-hover, var(--border));
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .35);
+}
+.lora-dl-bar .ldb-head { font-size: 11px; font-weight: 600; color: var(--text); }
+.lora-dl-bar .ldb-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text); }
+.lora-dl-bar .ldb-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lora-dl-bar .ldb-pct { color: var(--accent); font-variant-numeric: tabular-nums; }
+.lora-dl-bar .ldb-cancel { border: none; background: transparent; color: var(--text3); cursor: pointer; padding: 2px 4px; }
+.lora-dl-bar .ldb-cancel:hover { color: var(--red, #ef4444); }

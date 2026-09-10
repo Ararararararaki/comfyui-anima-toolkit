@@ -277,8 +277,24 @@ export async function initLocalManager() {
   })
 }
 
+/** 激活流程并发守卫：快速反复切页时，上一次激活流程没走完就不再叠加 */
+let _activateBusy = false
+/** 自动扫描（增量检测/后端扫描）节流：5 分钟内只自动跑一次；手动「扫描」按钮不受限 */
+const AUTO_SCAN_THROTTLE_MS = 5 * 60 * 1000
+let _lastAutoScanAt = 0
+
 export async function activateLocalManager() {
   if (!_initDone) return
+  if (_activateBusy) return
+  _activateBusy = true
+  try {
+    await activateLocalManagerInner()
+  } finally {
+    _activateBusy = false
+  }
+}
+
+async function activateLocalManagerInner() {
   // 激活栏目时强制拉取后端快照，保证 TK 节点刚改的分类能立即出现在工具箱。
   useLocalModelStore.getState().loadBackendMeta(true).then(() => {
     renderLocalView()
@@ -289,7 +305,9 @@ export async function activateLocalManager() {
   if (hasCache) {
     const restored = await store.loadDirHandle()
     if (restored) {
-      const newCount = await store.detectNewFiles()
+      const throttled = Date.now() - _lastAutoScanAt < AUTO_SCAN_THROTTLE_MS
+      const newCount = throttled ? 0 : await store.detectNewFiles()
+      _lastAutoScanAt = Date.now()
       if (newCount > 0) {
         // 自动增量扫描：用户痛点——新下载的 LoRA 必须手动重选目录扫描才会出现。
         // 有已授权句柄时直接后台扫描 + 自动匹配，免弹窗。
@@ -301,12 +319,17 @@ export async function activateLocalManager() {
         showToast('🔄 已恢复上次扫描会话')
       }
     } else {
-      // 句柄已失效（页面刷新后的常态）：静默回退后端扫描，全程无需交互、不弹任何对话框
-      showToast('🔄 已恢复缓存数据，后台同步中…')
-      void store.scanIncremental().then(() => renderLocalView())
+      // 句柄已失效（页面刷新后的常态）：静默回退后端扫描，全程无需交互、不弹任何对话框。
+      // ⚠️ 后端扫描是全目录遍历，反复切页不能反复跑 —— 受 5 分钟节流约束。
+      if (Date.now() - _lastAutoScanAt >= AUTO_SCAN_THROTTLE_MS) {
+        _lastAutoScanAt = Date.now()
+        showToast('🔄 已恢复缓存数据，后台同步中…')
+        void store.scanIncremental().then(() => renderLocalView())
+      }
     }
   } else {
     // 首次使用（无缓存）：静默扫一次（预设路径 → 上次路径 → ComfyUI loras 目录）
+    _lastAutoScanAt = Date.now()
     void store.scanIncremental().then(() => renderLocalView())
   }
 }
@@ -1228,8 +1251,10 @@ function bindLocalEvents() {
 
   // 从 C 站链接批量下载模型（提交到 ComfyUI 后台，支持 LoRA/Checkpoint/VAE 等）
   $$('localUrlBtn')?.addEventListener('click', () => {
+    // ⚠️ 不用 backdrop-filter:blur —— 全屏模糊在几千节点的页面上是「点一下卡一帧」的来源；
+    //    半透明纯色遮罩视觉足够（2026-09-10 性能排查）。
     const overlay = document.createElement('div')
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(2,2,3,0.72);z-index:99999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);'
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(2,2,3,0.72);z-index:99999;display:flex;align-items:center;justify-content:center;'
     const modal = document.createElement('div')
     modal.className = 'ld-modal'
     modal.innerHTML = `<h3>🔗 从 C 站链接批量下载模型</h3>

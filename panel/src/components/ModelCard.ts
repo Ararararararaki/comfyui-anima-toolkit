@@ -73,9 +73,9 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
       <div style="display:flex;gap:6px;margin-top:2px;flex-wrap:wrap">
         ${m.versions && m.versions.length > 0
           ? `<div class="version-dropdown-wrap" data-mid="${m.id}" data-vid="${esc(m.versionId ? String(m.versionId) : '')}" data-url="${esc(m.downloadUrl || '')}" data-label="${esc(m.versionName || m.versions[0].name)}">
-              <button class="btn btn-primary version-dropdown-btn" style="flex:1;padding:5px;font-size:10px;min-width:80px">${icon('download', 12)} <span class="version-label">${esc(m.versionName || m.versions[0].name)}</span><span class="version-caret" style="margin-left:4px;cursor:pointer" title="选择版本">▾</span></button>
+              <button class="btn btn-primary version-dropdown-btn" style="flex:1;padding:5px;font-size:10px;min-width:80px" title="展开版本列表，选择要下载的版本">${icon('download', 12)} 选择版本 <span style="margin-left:4px">▾</span></button>
               <div class="version-dropdown" style="display:none">${m.versions.map(v =>
-                `<div class="version-option" data-vid="${esc(String(v.id))}" data-url="${esc(v.files?.[0]?.downloadUrl || '')}" data-nm="${esc(v.name)}">${esc(v.name)}${v.files?.[0]?.name ? '<span class="version-file">' + esc(v.files[0].name) + '</span>' : ''}</div>`
+                `<div class="version-option" data-vid="${esc(String(v.id))}" data-url="${esc(v.files?.[0]?.downloadUrl || '')}" data-nm="${esc(v.name)}">${esc(v.name)}${v.files?.[0]?.name ? '<span class="version-file">' + esc(v.files[0].name) + '</span>' : ''}<span class="version-dl-glyph" title="后台下载此版本">${icon('download', 11)}</span></div>`
               ).join('')}</div>
             </div>`
           : m.downloadUrl ? `<button class="btn btn-primary" style="flex:1;padding:5px;font-size:10px;min-width:80px" onclick="window.open('${esc(m.downloadUrl)}','_blank')">${icon('download', 12)} 下载</button>` : ''}
