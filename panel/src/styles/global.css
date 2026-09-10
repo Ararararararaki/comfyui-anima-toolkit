@@ -4824,6 +4824,19 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 .grid.virtualized .card-body { overflow: hidden; }
 .grid.virtualized .card-body > :last-child { flex-shrink: 0; }
 
+/* ── 卡片按钮尺寸：polish.css 的 .btn min-height:38px 会把 5 个按钮挤成 2~3 排
+   （每排 38px + flex-wrap），是「卡片底部按钮被裁」的第二根因 —— 这里压回紧凑
+   单行高度，并统一 11px 字号（!important 压过按钮上的内联 font-size:10px）。 ── */
+.grid.virtualized .card .btn,
+.grid.virtualized .card .wf-btn {
+  min-height: 28px !important;
+  padding: 4px 8px !important;
+  font-size: 11px !important;
+  line-height: 1.2 !important;
+  opacity: 1 !important;
+}
+.grid.virtualized .card .btn svg { width: 12px; height: 12px; }
+
 /* ── 卡片按钮可读性：浅色/深色主题下都清晰可点 ──
    必须同样 !important 且选择器优先级(.grid.virtualized .card .btn-*)高于 polish.css
    的 .btn / html[data-theme] .btn-* 规则，才能覆盖其 !important 透明背景。 */
@@ -4832,14 +4845,20 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
   color: var(--accent-foreground) !important;
   border-color: var(--accent) !important;
 }
+/* ⚠️ 不能用 --bg4/--bg3：drinkit 主题下它们分别是 5% 透明蓝 / 78% 白 —— 在白卡上
+   实测几乎隐形（「按钮看不清」的根源）。改成「accent 淡底 + accent 边框」：
+   按钮边界明确，白卡/深卡上都是一眼可辨的控件；文字用主题前景色保证对比。 */
 .grid.virtualized .card .btn-ghost {
-  background: var(--bg4) !important;
+  background: color-mix(in srgb, var(--accent) 16%, transparent) !important;
+  border-width: 1.5px !important;
   color: var(--text) !important;
-  border-color: var(--border) !important;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent) !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
 }
 .grid.virtualized .card .btn-ghost:hover {
-  background: var(--bg3) !important;
+  background: var(--bg2) !important;
   color: var(--text) !important;
+  border-color: var(--border-hover, var(--border)) !important;
 }
 .grid.virtualized .card .btn-danger {
   background: var(--red) !important;
@@ -5163,4 +5182,26 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 #promptBatchBar .pbb-count {
   color: var(--accent);
+}
+
+/* ── 顶部主标签激活态：白字配 #1683ff 实测只有 3.7:1（12px 字号下明显看不清）。
+   design-system 用 html[data-theme="drinkit"] .main-tab.active + !important 压住了
+   普通选择器，这里必须用「同一主题前缀 + 多一级 .main-tabs」提高优先级。
+   背景换成更深的 --color-primary-hover（#0874eb ≈ 4.6:1，过 AA），加轻微文字阴影；
+   只作用于 drinkit 主题，其它主题（mono 等黑白主题本来就有 4.5+）不动。 ── */
+html[data-theme="drinkit"] .main-tabs .main-tab.active {
+  background: var(--color-primary-hover, #0874eb) !important;
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .25);
+}
+
+/* ── 顶部主标签激活态：白字配 #1683ff 实测只有 3.7:1（12px 字号下明显看不清）。
+   design-system 用 html[data-theme="drinkit"] .main-tab.active + !important 压住了
+   普通选择器，这里必须用「同一主题前缀 + 多一级 .main-tabs」提高优先级。
+   背景换成更深的 --color-primary-hover（#0874eb ≈ 4.6:1，过 AA），加轻微文字阴影；
+   只作用于 drinkit 主题，其它主题（mono 等黑白主题本来就有 4.5+）不动。 ── */
+html[data-theme="drinkit"] .main-tabs .main-tab.active {
+  background: var(--color-primary-hover, #0874eb) !important;
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .25);
 }

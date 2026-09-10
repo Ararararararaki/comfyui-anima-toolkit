@@ -60,10 +60,9 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
   // ── Recommendations (removed for compactness) ──
   let recHtml = ''
 
-  // ── Workflow prompt ──
-  const wfBtn = m.trainedWords?.length > 0
-    ? `<button class="wf-btn" onclick="event.stopPropagation();window.__copyWorkflowPrompt(${m.id},this)">${icon('zap', 12)} 工作流 Prompt</button>`
-    : ''
+  // 「⚡ 工作流 Prompt」按钮已随触发词一起移除（2026-09-10）：它展示/复制的都是
+  // trainedWords 派生内容，用户明确表示不需要；同时少一个按钮能显著缓解
+  // 按钮行换行导致的卡片底部被裁问题。
 
   // 触发词展示已按用户要求移除（2026-09-10）：卡片上的「🔑 触发词」折叠块不再渲染。
   // 搜索索引与复制工作流仍可用 trainedWords（仅数据层，不出现在卡片 UI）。
@@ -97,11 +96,10 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
           : m.downloadUrl ? `<button class="btn btn-primary" style="flex:1;padding:5px;font-size:10px;min-width:80px" onclick="window.open('${esc(m.downloadUrl)}','_blank')">${icon('download', 12)} 下载</button>` : ''}
         ${(m.versionId || m.downloadUrl) ? `<button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:10px;color:var(--accent)" onclick="event.stopPropagation();window.__queueModelDownload(${m.id})" title="一键后台下载 → ComfyUI models/loras（有下载链接即可，无需版本 ID）">${icon('downloadCloud', 12)}</button>` : ''}
         <button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:10px" onclick="event.stopPropagation();window.__openNotes(${m.id})" title="备注/评分">${icon('star', 12)}</button>
-        ${wfBtn}
         <button class="btn btn-ghost" style="flex:0;padding:5px 8px;font-size:10px" onclick="event.stopPropagation();window.__copyCardInfo(${m.id})" title="复制卡片信息">${icon('copy', 12)}</button>
         ${currentCategory === 'hidden'
           ? '<button class="btn" style="flex:1;padding:5px;font-size:10px;min-width:60px;background:var(--green-dim);color:var(--green)" onclick="event.stopPropagation();window.__restoreCard(' + m.id + ')">' + icon('refresh', 12) + ' 恢复</button>'
-          : '<button class="btn btn-danger" style="flex:0;padding:5px 10px;font-size:10px;opacity:.6" onclick="event.stopPropagation();window.__deleteCard(' + m.id + ')" title="永久删除此 LoRA">' + icon('trash', 12) + '</button>'}
+          : '<button class="btn btn-danger" style="flex:0;padding:5px 10px;font-size:10px" onclick="event.stopPropagation();window.__deleteCard(' + m.id + ')" title="永久删除此 LoRA">' + icon('trash', 12) + '</button>'}
       </div>
     </div>
   </div>`

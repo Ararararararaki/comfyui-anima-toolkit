@@ -87,7 +87,7 @@ let virtualList: any[] = []
 let virtualCols = 1
 const DEFAULT_CARD_W = 300
 const DEFAULT_CARD_GAP = 14
-const BASE_CARD_H = 440
+const BASE_CARD_H = 552
 let gridResizeObserver: ResizeObserver | null = null
 let observedGrid: HTMLElement | null = null
 let observedGridWidth = 0
@@ -810,14 +810,7 @@ function renderSearchHistory() {
     return
   }
   let html = ''
-  // 联想区：当前已加载 LoRA 触发词中的高频词，点击直接远程搜索
-  const suggestions = getTagSuggestions(10)
-  if (suggestions.length > 0) {
-    html += `<div class="sh-title">💡 触发词联想</div>`
-    for (const s of suggestions) {
-      html += `<div class="sh-item" data-action="suggest" data-query="${esc(s.tag)}"><span class="sh-icon">🏷️</span><span class="sh-text">${esc(s.tag)} <span style="color:var(--text3);font-size:9px">×${s.count}</span></span></div>`
-    }
-  }
+  // 「💡 触发词联想」已随触发词一起移除（2026-09-10，用户要求）
   if (searches.length > 0) {
     html += `<div class="sh-title">${icon('search', 11)} 搜索历史 <button type="button" onclick="clearSearches();renderSearchHistory();showToast('已清空搜索历史')">清空</button></div>`
     for (const q of searches) {
@@ -992,14 +985,12 @@ export function setupGlobalHandlers() {
   w.__copyCardInfo = (id: number) => {
     const m = useModelStore.getState().processed.find(p => p.id === id)
     if (!m) return
-    const tw = m.trainedWords?.length > 0 ? m.trainedWords.join(', ') : '无'
     const text = '📦 ' + m.name + '\n' +
       '👤 作者: ' + m.creator + '\n' +
       '⬇ 下载: ' + fmtNum(m.stats.downloadCount) + '\n' +
       '👍 点赞: ' + fmtNum(m.stats.thumbsUpCount) + '\n' +
       '📊 赞比: ' + (m.stats.ratio * 100).toFixed(2) + '%\n' +
       '🏷️ 分类: ' + m.categoryLabel + '\n' +
-      '🔑 触发词: ' + tw + '\n' +
       '🔗 ' + m.url
     copyText(text)
     showToast('📋 信息已复制', 'success')
@@ -1044,7 +1035,6 @@ export function setupGlobalHandlers() {
                   <div style="padding:6px 8px">
                     <div style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escAttr(it.name)}">${esc(it.name)}</div>
                     <div style="font-size:10px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.creator)}</div>
-                    ${it.words?.length ? `<div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">${it.words.slice(0, 2).map(wd => `<code data-copy="${esc(wd)}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)" style="font-size:9px;background:var(--bg3);padding:1px 4px;border-radius:4px;cursor:pointer">${esc(wd)}</code>`).join('')}</div>` : ''}
                     ${it.versionId ? `<button class="eh-dl" data-vid="${it.versionId}" data-url="${escAttr(it.url)}" data-nm="${escAttr(it.name)}" style="margin-top:4px;width:100%;border:none;border-radius:6px;background:var(--accent-soft);color:var(--accent);font-size:10px;padding:3px 0;cursor:pointer">⬇ 后台下载</button>` : ''}
                   </div>
                 </div>`).join('')}
