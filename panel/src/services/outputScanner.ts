@@ -1,5 +1,5 @@
 import type { OutputFile, OutputMetadata, OutputDir } from '../types/outputs'
-import { outputsDb } from '../db/outputsDb'
+import { outputsDb, ensureOutputsDbCompatible } from '../db/outputsDb'
 import { useOutputStore } from '../store/outputStore'
 import { parseOutputMetadata, PARSER_VERSION } from './outputMetadata'
 import { getThumbnail, deleteThumbnails, preloadThumbnailsFromDb } from './outputThumbnail'
@@ -492,6 +492,12 @@ export async function scanOutputDir(dirHandle: FileSystemDirectoryHandle): Promi
   } catch (err) {
     if ((err as Error).name === 'AbortError') {
       useOutputStore.setState({ scanStatus: 'idle', loading: false })
+    } else if ((err as Error).name === 'UpgradeError' && /primary key/i.test((err as Error).message || '')) {
+      // 浏览器数据库主键与当前 schema 不符（历史版本/外部工具残留）：
+      // 启动时的预检自愈应已处理；此处兜底再触发一次修复并指引重扫
+      useOutputStore.setState({ scanStatus: 'error', loading: false })
+      ensureOutputsDbCompatible().catch(() => {})
+      showToast('数据库结构异常，已自动修复，请重新扫描')
     } else {
       useOutputStore.setState({ scanStatus: 'error', loading: false })
       showToast('扫描失败: ' + (err as Error).message)

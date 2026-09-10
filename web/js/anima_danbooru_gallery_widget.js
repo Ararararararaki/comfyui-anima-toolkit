@@ -337,6 +337,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       return `/anima/danbooru/image?url=${encodeURIComponent(source)}`;
     }
 
+    postImageUrl(post) {
+      return post?.large_file_url || post?.file_url || post?.preview_file_url || "";
+    }
+
     loadPreviewImage(image) {
       if (!image || !image.isConnected) return;
       const source = image.dataset.src;
@@ -684,6 +688,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         // 本地排除过滤：排除标签不占 D站 计数槽（查询不含 -tag），拿到结果后按 tag_string 过滤
         const excludeTags = this.settings.excludeTags || [];
         let excludedCount = 0;
+        let visiblePosts = rawPosts;
         if (excludeTags.length) {
           const tagSet = new Set(excludeTags);
           const filtered = [];
@@ -692,10 +697,16 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             if (postTags.some((t) => tagSet.has(t))) excludedCount += 1;
             else filtered.push(post);
           }
-          this.posts = filtered;
-        } else {
-          this.posts = rawPosts;
+          visiblePosts = filtered;
         }
+        // D站 偶尔会返回已删除/失效帖子，只剩元数据而没有任何图片 URL。
+        // 不把它计入“可显示图片”，避免状态写 24 张、DOM 实际只有 23 张。
+        let unavailableCount = 0;
+        this.posts = visiblePosts.filter((post) => {
+          if (this.postImageUrl(post)) return true;
+          unavailableCount += 1;
+          return false;
+        });
         if (!rawPosts.length) {
           this.fetchSuggestions(this.queryWidget?.value || query, true);
           // 精确搜索无结果 → 模糊纠错（把近似标签替换成真实标签）自动重搜一次
@@ -708,6 +719,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const source = data.cached ? "缓存" : "D站";
         const notices = [];
         if (Array.isArray(data.warnings) && data.warnings.length) notices.push(...data.warnings.map(String));
+        if (unavailableCount) notices.push(`${unavailableCount} 张原图已失效，已跳过`);
         if (this._droppedOrder) {
           const limitHint = this.registered
             ? `登录账号当前最多 ${this.tagLimit()} 个计数标签`
@@ -1575,7 +1587,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       }
       for (const post of this.posts) {
         if (this.settings.activeCategory && this.settings.postCategories[String(post.id)] !== this.settings.activeCategory) continue;
-        const imageUrl = post.large_file_url || post.file_url || post.preview_file_url || "";
+        const imageUrl = this.postImageUrl(post);
         if (!imageUrl) continue;
         const card = document.createElement("article");
         card.className = "adg-card";
@@ -1609,7 +1621,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         selectButton.setAttribute("aria-pressed", "false");
         selectButton.title = `选择 #${post.id || ""}`;
         const preview = document.createElement("img");
-        preview.loading = "lazy";
+        // 请求时机已经由本节点的 IntersectionObserver 控制；再叠加浏览器原生
+        // loading=lazy 会让已设置 src 的后半页图片永久停在 pending，形成空卡片。
+        preview.loading = "eager";
         preview.decoding = "async";
         preview.alt = `Danbooru #${post.id || ""}`;
         const previewUrl = post.preview_file_url || imageUrl;
@@ -1620,6 +1634,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           // keeps the masonry placement stable while the image is loading.
           preview.width = imageWidth;
           preview.height = imageHeight;
+          preview.style.aspectRatio = `${imageWidth} / ${imageHeight}`;
         }
         preview.dataset.src = this.imageProxyUrl(previewUrl, post.md5);
         preview.onerror = () => {

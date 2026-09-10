@@ -8,6 +8,7 @@ export interface AppSettings {
   bgOpacity: number
 
   // Layout
+  layoutVersion: number
   density: 'compact' | 'default' | 'comfortable'
   cardSize: number
   localCardSize: number
@@ -43,14 +44,16 @@ export interface AppSettings {
 }
 
 const STORAGE_KEY = 'anima_settings'
+const LAYOUT_VERSION = 2
 
 const DEFAULTS: AppSettings = {
   bgImage: '',
   bgMode: 'cover',
   bgBlur: 0,
   bgOpacity: 1,
+  layoutVersion: LAYOUT_VERSION,
   density: 'default',
-  cardSize: 320,
+  cardSize: 200,
   // Surface strength: lower values reveal more of the background image.
   panelOpacity: 0.72,
   buttonOpacity: 0.30,
@@ -81,7 +84,18 @@ let _settings: AppSettings = { ...DEFAULTS }
 export function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) _settings = { ...DEFAULTS, ...JSON.parse(raw) }
+    if (raw) {
+      const saved = JSON.parse(raw) as Partial<AppSettings>
+      // 旧构建的默认值是 320px + 1480px 定宽。在 8188 与 5173 不同源时，
+      // 旧 localStorage 会让“部署版很挤、dev 正常”。只迁移一次旧布局版本。
+      if ((Number(saved.layoutVersion) || 0) < LAYOUT_VERSION) {
+        if (saved.cardSize === undefined || saved.cardSize === 320) saved.cardSize = DEFAULTS.cardSize
+        if (saved.contentWidth === undefined || saved.contentWidth === 'standard') saved.contentWidth = 'full'
+        saved.layoutVersion = LAYOUT_VERSION
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(saved))
+      }
+      _settings = { ...DEFAULTS, ...saved }
+    }
   } catch { /* ignore */ }
   return { ..._settings }
 }

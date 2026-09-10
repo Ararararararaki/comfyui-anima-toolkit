@@ -10,6 +10,7 @@ import { initLocalManager } from './sections/LocalManager'
 import { bindArtistEvents } from './sections/ArtistSeries'
 import { initSettings, applySettings } from './sections/Settings'
 import { initOutputs } from './sections/Outputs'
+import { ensureOutputsDbCompatible } from './db/outputsDb'
 import { bindPromptFreqEvents } from './sections/PromptFreq'
 import { initClothing } from './sections/ClothingLibrary'
 import { initIconButtons } from './utils'
@@ -60,6 +61,9 @@ function initLayoutVars() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  // 库结构预检（异步）：历史版本/外部工具留下的主键不符库会让 Dexie 升级抛
+  // UpgradeError，这里先探测并自愈，扫描等 DataBase 操作都在其之后触发。
+  ensureOutputsDbCompatible().catch(err => console.warn('[outputsDb] 预检/自愈异常:', err))
   initIconButtons()
   initThemeSwitcher()
   initLayoutVars()

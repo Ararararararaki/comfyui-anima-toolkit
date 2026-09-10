@@ -452,7 +452,7 @@ h1::after { content: '/ LOCAL KIT'; margin-left: 4px; color: var(--accent); font
 .clothing-batch-bar, .batch-bar, .outputs-batch-bar { border-color: var(--accent); background: color-mix(in srgb, var(--surface) 94%, transparent); box-shadow: 0 -10px 30px var(--accent-soft); backdrop-filter: blur(16px); }
 .lock-btn { border-radius: 999px; }
 
-.local-container { height: calc(100vh - var(--header-h, 64px) - 16px); }
+.local-container { height: calc(100vh - var(--header-h, 64px)); height: calc(100dvh - var(--header-h, 64px)); }
 .local-split { border-radius: 24px 17px 22px 19px; }
 .local-sidebar { border-right-color: var(--border); background: var(--bg2); }
 .local-main { background: var(--surface); }
@@ -578,6 +578,19 @@ footer { border-top-color: var(--border); color: var(--text3); }
   .ctrl-group, .quick-fetch-group { padding: 10px; }
   .tabs-wrap { padding-top: 14px; }
   .settings-shell { grid-template-columns: minmax(0, 1fr) 300px; }
+
+  /* “全屏”档在窄桌面窗口也保持真正贴合可用宽度；旧规则的 16px 双侧
+     外边距会让 8188 构建版看起来始终没有铺满。组件自身仍保留内边距。 */
+  html[data-content-width="full"] .ctrl-group,
+  html[data-content-width="full"] .quick-fetch-group,
+  html[data-content-width="full"] .container,
+  html[data-content-width="full"] .tabs-wrap,
+  html[data-content-width="full"] .stats-bar,
+  html[data-content-width="full"] .artist-layout,
+  html[data-content-width="full"] .prompt-layout,
+  html[data-content-width="full"] .clothing-layout,
+  html[data-content-width="full"] .local-container,
+  html[data-content-width="full"] .outputs-layout { margin-right: 0; margin-left: 0; }
 }
 
 @media (max-width: 820px) {

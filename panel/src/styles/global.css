@@ -50,7 +50,7 @@
 
   /* ── Grid density ── */
 
-  --card-min-width: 320px;
+  --card-min-width: 200px;
 
   /* 本地 lora / 服装库网格独立卡宽（Settings「本地卡片宽度」写入，与探索卡宽解耦） */
 
@@ -58,7 +58,7 @@
 
   /* ── Content width（Settings「内容区宽度」档位写入：1480 / 1880 / 100%）── */
 
-  --content-max-width: 1480px;
+  --content-max-width: 100%;
 
   /* ── Header 实际高度（main.ts ResizeObserver 写入；主容器高度自适应用）── */
 
@@ -1588,7 +1588,7 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 
 /* ── LOCAL MANAGER (SD-LoRA-Manager 风格 SplitPane) ── */
 
-.local-container { max-width: var(--content-max-width, 1480px); margin: 0 auto; padding: 12px 20px; height: calc(100vh - var(--header-h, 64px) - 16px); display: flex; flex-direction: column; }
+.local-container { max-width: var(--content-max-width, 100%); margin: 0 auto; padding: 12px 20px; height: calc(100vh - var(--header-h, 64px)); height: calc(100dvh - var(--header-h, 64px)); display: flex; flex-direction: column; }
 
 .local-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; flex-shrink: 0; }
 

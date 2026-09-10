@@ -470,6 +470,7 @@ export function applySettings(s?: AppSettings) {
   root.style.setProperty('--card-min-width-local', `${st.localCardSize}px`)
   const contentMax = { standard: '1480px', wide: '1880px', full: '100%' }[st.contentWidth]
   root.style.setProperty('--content-max-width', contentMax)
+  root.setAttribute('data-content-width', st.contentWidth)
   root.style.setProperty('--ui-panel-opacity', `${Math.round(st.panelOpacity * 100)}%`)
   root.style.setProperty('--ui-button-opacity', `${Math.round(st.buttonOpacity * 100)}%`)
   // 外层可以很透，但承载文字的内层需要一个最低对比度，避免背景图亮部吞掉文字。
@@ -1018,6 +1019,5 @@ function bindImportExportEvents() {
     }
   })
 }
-
 
 

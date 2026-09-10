@@ -16,8 +16,9 @@ import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow } from '../servic
 import { extractPngTextChunks, injectPngTextChunks } from '../services/pngChunks'
 import { backfillPrompts } from '../services/outputMetadataService'
 import { VirtualScroll, type VirtualScrollItemStyle } from '../components/VirtualScroll'
+import { MasonryVirtualScroll } from '../components/MasonryVirtualScroll'
 import { ImageNodeCache } from '../components/ImageNodeCache'
-import { computeMasonryLayout, OUTPUTS_INFO_H, MASONRY_CARD_BORDER } from '../components/masonry'
+import { computeMasonryLayout } from '../components/masonry'
 import { initOutputDragSelection, type OutputGridGeometry } from './outputDragSelection'
 import JSZip from 'jszip'
 import { nativeOutputUrl, nativeScanOutputs, nativeListOutputs, probeNativeStorage } from '../services/nativeStorage'
@@ -488,7 +489,7 @@ function updateFilterPanel() {
 }
 
 // ── 网格/瀑布流虚拟滚动（Perf-1：全量数据虚拟渲染，DOM 只含可视条目）──
-let _outputsVS: VirtualScroll | null = null
+let _outputsVS: VirtualScroll | MasonryVirtualScroll | null = null
 
 // 已解码缩略图节点缓存：虚拟滚动 update 会重建行容器，但不能再销毁同一路径的 img。
 // dataURL 在内存里并不等于浏览器已完成解码；只有复用原 img 节点才能从根上消除重解码黑帧。
@@ -561,42 +562,45 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
     const geom = outputsGeom(el.clientWidth)
     // 列填充布局：卡高随图片真实宽高比，逐张放入当前最短列；布局带缓存，滚动画框选可复用
     const layout = computeMasonryLayout(files, geom.cols, geom.cardW, geom.gap)
-    const colStep = geom.cardW + geom.gap
 
-    // renderItem 闭包捕获本次 files/layout/geom，每次渲染带最新闭包
+    // renderItem 只负责卡片内容；二维位置由 MasonryVirtualScroll 的 item rect 承担。
+    // 普通 VirtualScroll 会把高度做一维前缀累加，无法表达多列共享 top 的瀑布流。
     const renderItem = (index: number, style: VirtualScrollItemStyle) => {
       const s = useOutputStore.getState()
       const f = files[index]
       if (!f) return ''
       const meta = s.metadataCache.get(f.id)
-      const left = Math.round(layout.colsOf[index] * colStep)
-      const h = layout.heights[index]
-      const imgH = h - OUTPUTS_INFO_H - MASONRY_CARD_BORDER
+      const imgH = layout.imgHeights[index]
       // thumbSrc 同步回填内存缩略图：虚拟滚动滚动时条目会被重建，
       // 若等 IntersectionObserver 异步回填会有几帧黑图闪烁
-      const html = renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined, undefined, s.thumbMemory.get(f.path), imgH)
-      return `<div style="position:absolute;top:0;left:${left}px;width:${geom.cardW}px;height:${h}px">${html}</div>`
+      return renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined, undefined, s.thumbMemory.get(f.path), imgH)
     }
 
-    if (_outputsVS && el.querySelector('.virtual-scroll-inner')) {
-      // getItemHeight 必须一起更新：隐藏期创建的实例可能是退化几何（宽 0），
-      // 只改 totalItems 会导致 padding 沿用旧行高、滚动高度错乱
+    const getItemRect = (index: number) => ({
+      top: layout.tops[index],
+      left: layout.lefts[index],
+      width: layout.widths[index],
+      height: layout.heights[index],
+    })
+
+    if (_outputsVS instanceof MasonryVirtualScroll && el.querySelector('.masonry-virtual-scroll-inner')) {
       el.querySelector('.outputs-empty')?.remove()   // 清掉静态 HTML 占位残留
       _outputsVS.update({
         totalItems: files.length,
+        totalHeight: layout.total,
         renderItem,
-        getItemHeight: i => layout.heights[i] + geom.gap,
+        getItemRect,
       })
     } else {
       destroyOutputsVS()
       removeOutputsSentinel()
       el.innerHTML = ''   // 清空容器（含 index.html 静态 .outputs-empty 占位），VirtualScroll 只 append 不清
-      _outputsVS = new VirtualScroll({
+      _outputsVS = new MasonryVirtualScroll({
         container: el,
-        itemHeight: 220,   // 瀑布流布局走 getItemHeight，此项仅作退化默认
         totalItems: files.length,
+        totalHeight: layout.total,
         renderItem,
-        getItemHeight: i => layout.heights[i] + geom.gap,
+        getItemRect,
         beforeRender: inner => _outputImageNodes.capture(inner),
         afterRender: inner => _outputImageNodes.restore(inner, useOutputStore.getState().thumbMemory),
       })
