@@ -15,6 +15,7 @@ import comfy.utils
 from aiohttp import web
 from server import PromptServer
 from . import anima_thumbs
+from . import anima_gallery
 
 # ── In-memory bridge data (shared with __init__.py via HTTP API) ──
 BRIDGE_DATA: dict = {}
@@ -514,6 +515,93 @@ async def anima_thumb(request):
     response = web.FileResponse(out_path)
     response.headers.update(headers)
     return response
+
+
+# ── Gallery 元数据索引（M3，docs/后端图片管线可行性评估-2026-09-11.md）──
+# 按钮所需摘要（prompt/model/seed/loras/hasWorkflow）在后台建索引，前端一次拉取；
+# 完整 workflowJson/raw 仍按需（/anima/gallery/meta），与「点击触发解析」的原则一致。
+
+_GALLERY_STATE = {"building": False, "progress": 0, "total": 0, "index": None, "loaded": False}
+_GALLERY_LOCK = threading.Lock()
+
+
+def _gallery_index_path() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "gallery", "index.json")
+
+
+def _gallery_build_worker(output_root: str) -> None:
+    try:
+        def progress(done, total):
+            with _GALLERY_LOCK:
+                _GALLERY_STATE["progress"] = done
+                _GALLERY_STATE["total"] = total
+        index = anima_gallery.build_index(output_root, _gallery_index_path(), progress)
+        with _GALLERY_LOCK:
+            _GALLERY_STATE["index"] = index
+            _GALLERY_STATE["loaded"] = True
+            _GALLERY_STATE["building"] = False
+    except Exception as exc:
+        print(f"[anima_gallery] 索引构建失败: {exc}")
+        with _GALLERY_LOCK:
+            _GALLERY_STATE["building"] = False
+
+
+@PromptServer.instance.routes.get("/anima/gallery/manifest")
+async def gallery_manifest(request):
+    """全库元数据摘要（按钮/卡片/筛选所需）+ 构建状态。前端一次拉取。"""
+    with _GALLERY_LOCK:
+        if not _GALLERY_STATE["loaded"] and not _GALLERY_STATE["building"]:
+            index = anima_gallery.load_index(_gallery_index_path())
+            _GALLERY_STATE["index"] = index
+            _GALLERY_STATE["loaded"] = index.get("builtAt", 0) > 0
+        index = _GALLERY_STATE["index"]
+        payload = {
+            "building": _GALLERY_STATE["building"],
+            "progress": _GALLERY_STATE["progress"],
+            "total": _GALLERY_STATE["total"],
+            "builtAt": (index or {}).get("builtAt", 0),
+            "total": (index or {}).get("total", 0),
+        }
+        if _GALLERY_STATE["loaded"] and index:
+            payload["entries"] = index.get("entries", {})
+    return web.json_response(payload, dumps=lambda o: json.dumps(o, ensure_ascii=False, separators=(",", ":")))
+
+
+@PromptServer.instance.routes.get("/anima/gallery/rebuild")
+async def gallery_rebuild(request):
+    """启动/重启后台索引构建（幂等）。前端轮询 manifest 观察 building/progress。"""
+    try:
+        root = folder_paths.get_output_directory()
+    except Exception as exc:
+        return web.json_response({"error": f"无法定位 output 目录: {exc}"}, status=500)
+    with _GALLERY_LOCK:
+        if _GALLERY_STATE["building"]:
+            return web.json_response({"started": False, "reason": "构建进行中", "progress": _GALLERY_STATE["progress"], "total": _GALLERY_STATE["total"]})
+        _GALLERY_STATE["building"] = True
+        _GALLERY_STATE["progress"] = 0
+        _GALLERY_STATE["total"] = 0
+    threading.Thread(target=_gallery_build_worker, args=(root,), daemon=True, name="anima-gallery-index").start()
+    return web.json_response({"started": True})
+
+
+@PromptServer.instance.routes.get("/anima/gallery/meta")
+async def gallery_meta(request):
+    """单张完整元数据（含 workflowJson/raw）：复制 Prompt/下载工作流/元数据面板按需取。"""
+    rel = str(request.query.get("path") or "").strip()
+    if not rel:
+        return web.json_response({"error": "缺少 path 参数"}, status=400)
+    try:
+        root = folder_paths.get_output_directory()
+    except Exception as exc:
+        return web.json_response({"error": f"无法定位 output 目录: {exc}"}, status=500)
+    abs_path = await asyncio.to_thread(anima_thumbs.resolve_within_root, root, rel)
+    if not abs_path:
+        return web.json_response({"error": "文件不存在或不在 output 目录内"}, status=404)
+    try:
+        meta = await asyncio.to_thread(anima_gallery.parse_full, abs_path, rel)
+    except Exception as exc:
+        return web.json_response({"error": f"解析失败: {exc}"}, status=500)
+    return web.json_response(meta, dumps=lambda o: json.dumps(o, ensure_ascii=False, separators=(",", ":")))
 
 
 @PromptServer.instance.routes.post("/anima/panel_scan/delete")

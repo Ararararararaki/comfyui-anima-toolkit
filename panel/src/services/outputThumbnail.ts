@@ -261,3 +261,70 @@ export async function probeBackendThumbs(): Promise<boolean> {
   _backendThumbs = false
   return false
 }
+
+// ── Gallery 元数据索引（插件 ≥2.6.0 的 /anima/gallery/*）：列表与按钮摘要一次拉取 ──
+
+export interface GalleryEntry {
+  path: string
+  mtime: number
+  size: number
+  width: number
+  height: number
+  model: string
+  seed: string
+  steps: string
+  cfg: string
+  sampler: string
+  scheduler?: string
+  prompt: string
+  hasPrompt: boolean
+  loras: string[]
+  hasWorkflow: boolean
+}
+
+let _galleryState: 'unknown' | 'ready' | 'no' = 'unknown'
+let _galleryEntries: Map<string, GalleryEntry> | null = null
+
+export function galleryIndexEnabled(): boolean {
+  return _galleryState === 'ready'
+}
+
+export function galleryEntries(): Map<string, GalleryEntry> | null {
+  return _galleryEntries
+}
+
+/** 拉取并探测 gallery 索引。
+ *
+ * 索引从未构建/构建中时：触发后端后台构建（/anima/gallery/rebuild，幂等）并轮询，
+ * 首次建库约 10–15 秒（3571 张实测 12.9s），完成后返回 ready；上限 ~90 秒后放弃走旧管线。
+ */
+export async function probeGalleryIndex(): Promise<boolean> {
+  if (_galleryState !== 'unknown') return _galleryState === 'ready'
+  for (let attempt = 0; attempt < 45; attempt++) {
+    try {
+      const resp = await fetch('/anima/gallery/manifest', { cache: 'no-store' })
+      if (resp.ok) {
+        const data = await resp.json()
+        if (data?.entries && typeof data.entries === 'object' && Object.keys(data.entries).length > 0) {
+          _galleryEntries = new Map(Object.entries(data.entries) as [string, GalleryEntry][])
+          _galleryState = 'ready'
+          return true
+        }
+        // 索引未就绪：请求后端启动后台构建（幂等，已在建则忽略），2 秒后重查
+        await fetch('/anima/gallery/rebuild', { cache: 'no-store' }).catch(() => {})
+      }
+    } catch { /* 后端不可用：走旧管线 */ }
+    await new Promise(r => setTimeout(r, 2000))
+  }
+  _galleryState = 'no'
+  return false
+}
+
+/** 单张完整元数据（含 workflowJson/raw）：gallery 模式按需取，供下载工作流/元数据面板。 */
+export async function fetchGalleryMeta(relPath: string): Promise<Record<string, unknown> | null> {
+  try {
+    const resp = await fetch(`/anima/gallery/meta?path=${encodeURIComponent(relPath)}`, { cache: 'no-store' })
+    if (resp.ok) return (await resp.json()) as Record<string, unknown>
+  } catch { /* 静默：调用方回退 */ }
+  return null
+}

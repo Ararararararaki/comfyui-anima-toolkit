@@ -4,7 +4,7 @@ import { useOutputStore } from '../store/outputStore'
 import { deleteFiles, renameFile, batchFavorite, batchRate } from '../services/outputService'
 import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, reparseAllMetadata, ensureMetadataFresh } from '../services/outputScanner'
 import { restoreAllFromDb } from '../services/outputManifest'
-import { preloadThumbnailsFromDb, probeBackendThumbs, backendThumbsEnabled, animaThumbUrl } from '../services/outputThumbnail'
+import { preloadThumbnailsFromDb, probeBackendThumbs, backendThumbsEnabled, animaThumbUrl, probeGalleryIndex, galleryIndexEnabled, galleryEntries, fetchGalleryMeta } from '../services/outputThumbnail'
 import { hashPath } from '../services/outputManifest'
 import { outputsDb } from '../db/outputsDb'
 import { addPrompt, generatePromptId } from '../store/prompts'
@@ -82,10 +82,28 @@ function renderNativeDirTree(total: number) {
  * 下载工作流 .json（ComfyUI 用 Load 或拖入画布导入最稳妥，替代复制——画布 Ctrl+V 易误导）
  */
 async function downloadOutputWorkflow(meta: OutputMetadata | undefined, baseName: string) {
-  if (!meta?.workflowJson) { showToast('该图片无工作流数据'); return }
+  let workflowJson = meta?.workflowJson || ''
+  // Gallery 索引模式：摘要条目不含 workflowJson，点击时向后端按需取完整元数据
+  if (!workflowJson && meta && galleryIndexEnabled()) {
+    const file = useOutputStore.getState().files.find(f => f.id === meta.imageId)
+    if (file) {
+      const full = await fetchGalleryMeta(file.path)
+      if (full && typeof full.workflowJson === 'string' && full.workflowJson) {
+        workflowJson = full.workflowJson
+        // 回写缓存（保留摘要指纹与已提取 LoRA，避免覆盖丢失）
+        useOutputStore.getState().putMetadata({
+          ...meta, ...(full as object), imageId: meta.imageId,
+          workflowJson: '', rawMetadata: (full.rawMetadata as Record<string, string>) || {},
+          workflowFingerprint: `g:${file.mtime / 1000}:${file.size}`,
+          lorasExtracted: true,
+        } as OutputMetadata)
+      }
+    }
+  }
+  if (!workflowJson) { showToast('该图片无工作流数据'); return }
   try {
     const safeName = (baseName || 'workflow').replace(/\.png$/i, '').replace(/[\\/:*?"<>|]/g, '_')
-    const blob = new Blob([meta.workflowJson], { type: 'application/json' })
+    const blob = new Blob([workflowJson], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -106,6 +124,18 @@ export async function initOutputs() {
   // 后端直供图源探测（插件 ≥2.5.1 的 /anima/thumb）：可用则卡片 <img> 直接引用小图 URL，
   // 浏览器不再自己读盘解码原图。探测一次，失败（旧版插件/后端离线）自动走旧管线。
   await probeBackendThumbs()
+  // Gallery 元数据索引探测（插件 ≥2.6.0 的 /anima/gallery/manifest）：可用则列表与按钮
+  // 摘要全部由后端索引直出（秒出、无需目录授权）；不可用走旧管线。
+  await probeGalleryIndex()
+  if (galleryIndexEnabled() && !_nativeOutputs) {
+    await restoreOutputsFromDb()
+    bindOutputsEvents()
+    bindOutputsSettingsRefresh()
+    startOutputsAutoScan()
+    window.addEventListener('focus', triggerOutputsIncrementalScan)
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) triggerOutputsIncrementalScan() })
+    return
+  }
   if (_nativeOutputs) {
     try {
       await refreshNativeOutputs()
@@ -1919,6 +1949,41 @@ if (typeof window !== 'undefined') setTimeout(bindOutputsLeaveRelease, 0)
 
 async function restoreOutputsFromDb(): Promise<boolean> {
   const bootStartedAt = performance.now()
+  // ── Gallery 索引模式（插件 ≥2.6.0 的 /anima/gallery/manifest）：列表与元数据摘要
+  //    全部由后端索引直出，秒出且无需目录授权；缩略图走 /anima/thumb；不可用则回退旧管线。
+  if (galleryIndexEnabled()) {
+    const entries = galleryEntries()
+    if (entries && entries.size > 0) {
+      const files: OutputFile[] = []
+      const metas: OutputMetadata[] = []
+      for (const [rel, e] of entries) {
+        const id = hashPath(rel)
+        files.push({
+          id, path: rel, filename: rel.split('/').pop() || rel,
+          extension: (rel.split('.').pop() || '').toLowerCase(),
+          size: e.size || 0, mtime: Math.round((e.mtime || 0) * 1000),
+          width: e.width || 0, height: e.height || 0,
+          favorite: false, rating: 0, notes: '', tags: [], category: '', status: '', pinned: false,
+          createdAt: Math.round((e.mtime || 0) * 1000),
+        })
+        metas.push({
+          imageId: id, model: e.model || '', seed: e.seed || '', steps: e.steps || '', cfg: e.cfg || '',
+          sampler: e.sampler || '', scheduler: e.scheduler || '', vae: '', clipSkip: 0,
+          prompt: e.prompt || '', negativePrompt: '', workflowJson: '', rawMetadata: {},
+          loras: e.loras || [], hasWorkflow: !!e.hasWorkflow, lorasExtracted: true,
+          workflowFingerprint: `g:${e.mtime}:${e.size}`,
+        })
+      }
+      useOutputStore.setState({
+        files, metadataCache: new Map(), metadataVersion: useOutputStore.getState().metadataVersion + 1,
+        thumbMemory: new Map(),
+      })
+      useOutputStore.getState().putMetadataBatch(metas)
+      useOutputStore.getState().applyFilters()
+      console.log(`[outputs] Gallery 索引直出：${files.length} 个文件 + ${metas.length} 条元数据摘要（${Math.round(performance.now() - bootStartedAt)}ms）`)
+      return true
+    }
+  }
   const restored = await restoreAllFromDb()
   if (restored.length === 0) return false
   // ⚠️ 首开性能关键（2026-09-10 修）：
