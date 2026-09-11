@@ -4,7 +4,7 @@ import { useOutputStore } from '../store/outputStore'
 import { deleteFiles, renameFile, batchFavorite, batchRate } from '../services/outputService'
 import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, reparseAllMetadata, ensureMetadataFresh } from '../services/outputScanner'
 import { restoreAllFromDb } from '../services/outputManifest'
-import { preloadThumbnailsFromDb } from '../services/outputThumbnail'
+import { preloadThumbnailsFromDb, probeBackendThumbs, backendThumbsEnabled, animaThumbUrl } from '../services/outputThumbnail'
 import { hashPath } from '../services/outputManifest'
 import { outputsDb } from '../db/outputsDb'
 import { addPrompt, generatePromptId } from '../store/prompts'
@@ -103,6 +103,9 @@ export async function initOutputs() {
   _initDone = true
 
   _nativeOutputs = await probeNativeStorage()
+  // 后端直供图源探测（插件 ≥2.5.1 的 /anima/thumb）：可用则卡片 <img> 直接引用小图 URL，
+  // 浏览器不再自己读盘解码原图。探测一次，失败（旧版插件/后端离线）自动走旧管线。
+  await probeBackendThumbs()
   if (_nativeOutputs) {
     try {
       await refreshNativeOutputs()
@@ -589,7 +592,7 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
       const boxAspect = layout.boxAspects[index]
       // thumbSrc 同步回填内存缩略图：虚拟滚动滚动时条目会被重建，
       // 若等 IntersectionObserver 异步回填会有几帧黑图闪烁
-      return renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined, undefined, s.thumbMemory.get(f.path), boxAspect)
+      return renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined, undefined, backendThumbsEnabled() ? animaThumbUrl(f.path, 512) : (s.thumbMemory.get(f.path) || ''), boxAspect)
     }
 
     const getItemRect = (index: number) => ({
@@ -1727,6 +1730,8 @@ const _metaQueued = new Set<string>()
 /** DB 读超时后的重试次数：兜底 IndexedDB 偶发悬挂，保证按钮最终能出现 */
 const _metaRetry = new Map<string, number>()
 const META_MAX_RETRY = 3
+/** /anima/thumb 覆盖不到的路径（非 output 目录的授权扫描）：会话内直接走旧管线 */
+const _thumbUrlBlocked = new Set<string>()
 /** 诊断开关：URL 带 ?metaDbg=1 时打印可见区元数据链路（生产无副作用） */
 const META_DBG = (() => { try { return new URLSearchParams(location.search).has('metaDbg') } catch { return false } })()
 
@@ -1746,8 +1751,28 @@ function scheduleMetaRefresh(): void {
     console.log(`[outputs] 元数据按需加载：本屏 ${_metaRefreshCount} 条，${cost}ms（缓存中共 ${loaded} 条；无全库读取）`)
     _metaRefreshStartedAt = 0
     _metaRefreshCount = 0
+    // ⚠️ 增量同步，不要全量重建（2026-09-11）：
+    // metadataVersion 进签名后，滚动浏览期间每 250ms 就会满足一次「签名变化」→
+    // renderOutputsView → VS 全量重建可见卡片（replaceChildren）→ 主线程被反复占住，
+    // 点击目录树/切换栏目全部排队无响应，点击目标还常落在重建窗口里被销毁（点了没反应）。
+    // 元数据只影响卡片的 model 行与操作按钮 → 用 syncCardMeta 逐卡同步即可，图片节点不动。
+    const state = useOutputStore.getState()
+    if (state.viewMode !== 'grid') {
+      renderOutputsView()   // 列表模式无逐卡同步支持，保持全量重建
+      return
+    }
+    const byId = new Map(state.filteredFiles.map(f => [f.id, f]))
+    let synced = 0
+    document.querySelectorAll<HTMLElement>('.outputs-card[data-id]').forEach(card => {
+      const id = card.dataset.id
+      if (!id) return
+      const file = byId.get(id)
+      if (!file) return
+      syncCardMeta(card, file, state.metadataCache.get(id) ?? null)
+      synced++
+    })
     updateFilterPanel()
-    renderOutputsView()
+    if (synced === 0) renderOutputsView()   // 无可同步卡片（异常态）→ 兜底全量重建
   }, 250)
 }
 
@@ -1915,6 +1940,12 @@ async function restoreOutputsFromDb(): Promise<boolean> {
   // 现在两种情况都只预载首屏需要的量，其余交给 IntersectionObserver 按需从 IDB 取即可。
   // 元数据不再随启动预载：首屏卡片进屏时按需读单条（requestVisibleMetadata），
   // 启动路径上因此不存在任何「全库」任务。
+  // 后端直供图源（≥2.5.1）下 dataURL 预载整段跳过：卡片 <img> 直接引用 /anima/thumb URL，
+  // IndexedDB dataURL 仓库只作为回退保留，不再占内存。
+  if (backendThumbsEnabled()) {
+    renderOutputsView()
+    return true // 文件已恢复；仅跳过 dataURL 预载（图源走 /anima/thumb）
+  }
   const thumbs = await preloadThumbnailsFromDb(restored.slice(0, 240))
   if (thumbs.size > 0) {
     useOutputStore.setState(state => {
@@ -1975,6 +2006,25 @@ function updateScanProgress(status: OutputScanStatus, progress: { done: number; 
 }
 
 async function loadImageThumbnail(img: HTMLImageElement, fileId: string, filePath: string) {
+  // ── 后端直供（插件 ≥2.5.1）：浏览器只解码 512px 小图 ──
+  // 注意：/anima/thumb 只认 ComfyUI output 目录内的文件；用户用目录授权扫过其它目录时
+  // 该端点会 404 —— onerror 后把该路径记入黑名单并回退旧管线（浏览器生成），会话内不再重试 URL。
+  if (backendThumbsEnabled() && !_thumbUrlBlocked.has(filePath)) {
+    const url = animaThumbUrl(filePath, 512)
+    img.onerror = () => {
+      img.onerror = null
+      _thumbUrlBlocked.add(filePath)
+      void legacyThumbLoad(img, fileId, filePath)
+    }
+    if (img.getAttribute('src') !== url) img.src = url
+    _outputImageNodes.remember(img)
+    return
+  }
+  await legacyThumbLoad(img, fileId, filePath)
+}
+
+/** 旧管线：内存 → IndexedDB → 目录授权读原图生成（后端端点不可用/不覆盖该路径时兜底） */
+async function legacyThumbLoad(img: HTMLImageElement, fileId: string, filePath: string) {
   const dh = useOutputStore.getState().dirHandle
   if (_nativeOutputs) {
     // TK 原生模式：服务端对 /api/tk/output-file 是整文件回传（平均数 MB），

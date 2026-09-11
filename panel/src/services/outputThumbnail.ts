@@ -230,3 +230,34 @@ export async function clearThumbnailCache(): Promise<void> {
   accessOrder = []
   try { localStorage.removeItem(LRU_KEY) } catch { /* 忽略 */ }
 }
+
+// ── 后端直供图源（插件 ≥2.5.1 的 /anima/thumb）：浏览器只解码小图，不再自己读盘生成 ──
+
+let _backendThumbs: boolean | null = null
+
+export function animaThumbUrl(relPath: string, width: 512 | 768 = 512): string {
+  return `/anima/thumb?path=${encodeURIComponent(relPath)}&w=${width}`
+}
+
+export function backendThumbsEnabled(): boolean {
+  return _backendThumbs === true
+}
+
+/** 探测后端缩略图端点是否可用。会话内只探测一次，失败走旧管线。
+ *
+ * ⚠️ 2026-09-11 修正：不要按 /anima/version 的版本号判断 —— 运行目录的 py 靠手动同步，
+ * __init__.py 的版本号经常落后于实际能力（本机就出现过 2.4.0 但 /anima/thumb 已上线的组合）。
+ * 改为直接探测端点本身：新版对未知 path 返回 JSON 错误体（application/json），
+ * 旧版没有该路由、返回 aiohttp 默认 404（text/plain/html），用 Content-Type 精确区分。
+ */
+export async function probeBackendThumbs(): Promise<boolean> {
+  if (_backendThumbs !== null) return _backendThumbs
+  try {
+    const resp = await fetch('/anima/thumb?path=__probe__&w=512', { cache: 'no-store' })
+    const contentType = resp.headers.get('content-type') || ''
+    _backendThumbs = contentType.includes('application/json')
+    return _backendThumbs
+  } catch { /* 后端不可用：走旧管线 */ }
+  _backendThumbs = false
+  return false
+}
