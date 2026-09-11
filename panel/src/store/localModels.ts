@@ -86,6 +86,8 @@ const TAG_CACHE_KEY = 'local_tag_freq_v1'
 const CAT_CACHE_KEY = 'local_categories_v1'
 const MANIFEST_CACHE_KEY = 'local_manifest_v1'
 const DISPLAY_MODE_CACHE_KEY = 'local_display_mode_v1'
+const BASE_MODEL_CACHE_KEY = 'local_basemodel_filter_v1'
+const _bmPersist = Cache.load<{ filter?: string; open?: boolean }>(BASE_MODEL_CACHE_KEY, 365 * 24 * 60 * 60 * 1000) || {}
 
 const PREVIEW_DB_NAME = 'anima-local-lora-previews-v1'
 const PREVIEW_STORE_NAME = 'images'
@@ -188,6 +190,10 @@ interface LocalModelState {
   categories: string[]
   modelCategories: Record<string, string[]>
   filterCategory: string | null
+  /** 「按底模」筛选：'' = 全部；'__unmatched__' = 未匹配/未知；否则 = Civitai baseModel 字符串 */
+  filterBaseModel: string
+  /** 左栏「按底模」展开面板是否展开（持久化） */
+  baseModelPanelOpen: boolean
   batchMode: boolean
   batchSelection: string[]
 
@@ -209,6 +215,8 @@ interface LocalModelState {
   categorizeBySubfolders: () => { folders: string[]; createdCategories: number; assignedFiles: number }
   clearModelCategories: (fileName: string) => void
   setFilterCategory: (cat: string | null) => void
+  setFilterBaseModel: (bm: string) => void
+  toggleBaseModelPanel: () => void
   setBatchMode: (b: boolean) => void
   toggleBatchSelection: (name: string) => void
   clearBatchSelection: () => void
@@ -464,6 +472,8 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
   categories: Cache.load<string[]>(CAT_CACHE_KEY, 365 * 24 * 60 * 60 * 1000) || ['人物', '风格', '背景', '姿势'],
   modelCategories: Cache.load<Record<string, string[]>>(CAT_CACHE_KEY + '_mc', 365 * 24 * 60 * 60 * 1000) || {},
   filterCategory: null,
+  filterBaseModel: typeof _bmPersist.filter === 'string' ? _bmPersist.filter : '',
+  baseModelPanelOpen: !!_bmPersist.open,
   batchMode: false,
   batchSelection: [],
   promptWeights: {},
@@ -583,6 +593,15 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     get().syncCategoriesToBackend()
   },
   setFilterCategory: (filterCategory) => set({ filterCategory }),
+  setFilterBaseModel: (filterBaseModel) => {
+    set({ filterBaseModel })
+    Cache.save(BASE_MODEL_CACHE_KEY, { filter: filterBaseModel, open: get().baseModelPanelOpen })
+  },
+  toggleBaseModelPanel: () => set(s => {
+    const baseModelPanelOpen = !s.baseModelPanelOpen
+    Cache.save(BASE_MODEL_CACHE_KEY, { filter: s.filterBaseModel, open: baseModelPanelOpen })
+    return { baseModelPanelOpen }
+  }),
   setBatchMode: (batchMode) => set({ batchMode, batchSelection: [] }),
   toggleBatchSelection: (name) => set(s => {
     const sel = s.batchSelection.includes(name)

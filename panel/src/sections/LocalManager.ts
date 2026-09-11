@@ -541,6 +541,38 @@ function renderGridCategoryRail(state: ReturnType<typeof useLocalModelStore.getS
     <button class="btn btn-ghost btn-sm local-new-cat-btn local-grid-new-category" type="button">${icon('plus', 12)} 新建分类</button>`
 }
 
+/**
+ * 「按底模」展开面板（2026-09-11）：动态汇总已匹配 LoRA 的 Civitai baseModel + 各自数量，
+ * 点击过滤、再点取消；未匹配的归入「未匹配」项。网格/列表两种视图都渲染，与分类筛选叠加。
+ * 计数来源 = 搜索 + 匹配状态筛选后的集合（不受底模/分类筛选影响，各底模分布稳定可点选）。
+ */
+function renderBaseModelPanel(state: ReturnType<typeof useLocalModelStore.getState>, files: LocalLoraFile[]): string {
+  const counts = new Map<string, number>()
+  let unmatched = 0
+  for (const f of files) {
+    const bm = (f.matchData?.baseModel || '').trim()
+    if (bm) counts.set(bm, (counts.get(bm) || 0) + 1)
+    else unmatched++
+  }
+  const rows = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  const row = (value: string, label: string, count: number, iconKey: string) =>
+    `<button class="local-bm-btn ${state.filterBaseModel === value ? 'active' : ''}" data-bm="${escAttr(value)}" type="button">
+      <span class="local-grid-cat-label">${icon(iconKey, 12)}${esc(label)}</span><span class="local-grid-cat-count">${count}</span>
+    </button>`
+  const list = state.baseModelPanelOpen
+    ? `<div class="local-bm-list">
+        ${row('', '全部底模', files.length, 'grid')}
+        ${rows.map(([bm, n]) => row(bm, bm, n, 'tag')).join('')}
+        ${unmatched > 0 ? row('__unmatched__', '未匹配', unmatched, 'alertCircle') : ''}
+      </div>`
+    : ''
+  const activeLabel = state.filterBaseModel === '__unmatched__' ? '未匹配' : state.filterBaseModel
+  return `<button class="local-bm-toggle ${state.filterBaseModel ? 'has-filter' : ''}" type="button" aria-expanded="${state.baseModelPanelOpen}" title="按底模（Civitai 基座）筛选本库 LoRA">
+      <span class="local-grid-cat-label">${icon('layers', 12)}按底模${activeLabel ? `：${esc(activeLabel)}` : ''}</span>
+      <span class="local-bm-chevron ${state.baseModelPanelOpen ? 'open' : ''}">${icon('chevronDown', 12)}</span>
+    </button>${list}`
+}
+
 function readPreviewFile(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     if (!/^image\/(png|jpeg|webp|gif)$/i.test(file.type)) {
@@ -720,6 +752,16 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
   }
   if (state.filterKey === 'matched') files = files.filter(f => f.matched)
   if (state.filterKey === 'unmatched') files = files.filter(f => !f.matched && !f.scanning)
+
+  // ── 「按底模」面板 + 过滤（2026-09-11）：网格/列表都渲染，与分类筛选叠加 ──
+  const baseModelSourceFiles = [...files]
+  const bmPanel = $$('localBaseModelPanel')
+  if (bmPanel) bmPanel.innerHTML = renderBaseModelPanel(state, baseModelSourceFiles)
+  if (state.filterBaseModel) {
+    files = files.filter(f => state.filterBaseModel === '__unmatched__'
+      ? !(f.matched && f.matchData?.baseModel)
+      : f.matchData?.baseModel === state.filterBaseModel)
+  }
 
   const categorySourceFiles = [...files]
   const categoryList = $$('localGridCategoryList')
@@ -1801,6 +1843,22 @@ function bindLocalEvents() {
       s.addCategory(cat.trim())
       s.saveToCache()
       renderSidebarList(s)
+      return
+    }
+
+    const bmToggle = target.closest('.local-bm-toggle') as HTMLElement
+    if (bmToggle) {
+      useLocalModelStore.getState().toggleBaseModelPanel()
+      renderSidebarList(useLocalModelStore.getState())
+      return
+    }
+
+    const bmBtn = target.closest('.local-bm-btn') as HTMLElement
+    if (bmBtn) {
+      const s = useLocalModelStore.getState()
+      const bm = bmBtn.dataset.bm || ''
+      s.setFilterBaseModel(s.filterBaseModel === bm ? '' : bm)
+      renderSidebarList(useLocalModelStore.getState())
       return
     }
 

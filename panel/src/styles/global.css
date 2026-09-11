@@ -1711,6 +1711,19 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 
 .local-grid-new-category { width: 100%; justify-content: flex-start; margin-top: 7px; color: var(--text3); }
 
+/* ── 「按底模」展开筛选面板（2026-09-11）── */
+.local-basemodel-panel { padding: 2px 0 4px; }
+.local-bm-toggle { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 5px; padding: 7px 8px; margin: 4px 0 2px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text2); cursor: pointer; font-family: var(--font); font-size: 11px; text-align: left; }
+.local-bm-toggle:hover { background: var(--bg4); color: var(--text); }
+.local-bm-toggle.has-filter { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
+.local-bm-chevron { display: inline-flex; flex-shrink: 0; transition: transform .15s ease; }
+.local-bm-chevron.open { transform: rotate(180deg); }
+.local-bm-list { display: flex; flex-direction: column; gap: 2px; padding: 4px 0 2px; }
+.local-bm-btn { display: flex; width: 100%; min-width: 0; align-items: center; justify-content: space-between; gap: 5px; padding: 7px 8px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text2); cursor: pointer; font-family: var(--font); font-size: 11px; text-align: left; }
+.local-bm-btn:hover { background: var(--bg4); color: var(--text); }
+.local-bm-btn.active { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
+.local-bm-btn.active .local-grid-cat-count { color: var(--accent); }
+
 .local-grid-card-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card-min-width-local, 180px), 1fr)); gap: var(--grid-gap, 12px); }
 
 .local-grid-card { display: flex; flex-direction: column; align-items: stretch; gap: 0; padding: 0; margin: 0; min-width: 0; overflow: hidden; position: relative; background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; }
