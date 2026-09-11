@@ -49,7 +49,8 @@ export interface OutputMetadata {
 export interface OutputDir {
   path: string
   name: string
-  handle: FileSystemDirectoryHandle
+  /** 目录句柄：文件系统授权构建的树才有；Gallery 索引推导的树没有（仅用于浏览/前缀过滤，不做文件操作） */
+  handle?: FileSystemDirectoryHandle
   children: OutputDir[]
   fileCount: number
 }

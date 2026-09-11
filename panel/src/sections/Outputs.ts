@@ -2,7 +2,7 @@
 
 import { useOutputStore } from '../store/outputStore'
 import { deleteFiles, renameFile, batchFavorite, batchRate } from '../services/outputService'
-import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, reparseAllMetadata, ensureMetadataFresh } from '../services/outputScanner'
+import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, buildDirTreeFromPaths, reparseAllMetadata, ensureMetadataFresh } from '../services/outputScanner'
 import { restoreAllFromDb } from '../services/outputManifest'
 import { preloadThumbnailsFromDb, probeBackendThumbs, backendThumbsEnabled, animaThumbUrl, probeGalleryIndex, galleryIndexEnabled, galleryEntries, fetchGalleryMeta } from '../services/outputThumbnail'
 import { hashPath } from '../services/outputManifest'
@@ -131,6 +131,28 @@ export async function initOutputs() {
     await restoreOutputsFromDb()
     bindOutputsEvents()
     bindOutputsSettingsRefresh()
+    bindScanProgressUI()
+    // ── 2026-09-11 修：gallery 只接管「列表 + 元数据摘要 + 缩略图」；左侧目录树、
+    //    增量扫描、删除等文件系统操作仍依赖目录句柄。此前这里提前 return 跳过了
+    //    句柄恢复 → 左侧树消失、重新选择目录退化为全量重扫（用户实测回归）。
+    //    skipFiles：gallery 直出是列表真源，别让 DB 旧缓存把列表覆盖回去。
+    const loadResult = await loadOutputDirHandle({ skipFiles: true })
+    const dh = useOutputStore.getState().dirHandle
+    // 目录树先用 gallery 路径秒出（纯数据、无需授权）；句柄可用后再换磁盘树（多空目录、真实计数）
+    const ghFiles = useOutputStore.getState().files
+    if (ghFiles.length > 0) {
+      dirTree = buildDirTreeFromPaths(ghFiles.map(f => f.path), 'ComfyUI/output')
+      renderDirTree(dirTree)
+      // ⚠️ 必须补渲染：activateOutputs 在 _initDone 置位后、gallery 数据落地前就可能被
+      // 切页触发（此时 files 还空，渲染了空网格 + 静态 .outputs-empty 占位）。
+      // 数据落地后若没有这次渲染，网格会一直空着（探针实测 gridCards=0）。
+      renderOutputsView()
+    }
+    if (dh && loadResult.permission === 'granted') {
+      void buildDirTree(dh).then(t => { dirTree = t; renderDirTree(t); renderOutputsView() }).catch(() => {})
+    } else if (dh) {
+      showReauthBanner()
+    }
     startOutputsAutoScan()
     window.addEventListener('focus', triggerOutputsIncrementalScan)
     document.addEventListener('visibilitychange', () => { if (!document.hidden) triggerOutputsIncrementalScan() })
@@ -204,6 +226,11 @@ export async function initOutputs() {
   //   ③ 全局筛选：只有真正用到「基座模型 / LoRA / 标签」筛选时，才触发一次分片补齐（带提示）。
 
   // ── 扫描进度订阅 ──
+  bindScanProgressUI()
+}
+
+/** 扫描进度订阅：scanStatus 变化时更新进度条（全量扫描/重解析共用，gallery 分支也注册） */
+function bindScanProgressUI() {
   let prevScanStatus: OutputScanStatus = 'idle'
   useOutputStore.subscribe((state) => {
     if (state.scanStatus !== prevScanStatus || state.scanStatus === 'scanning') {

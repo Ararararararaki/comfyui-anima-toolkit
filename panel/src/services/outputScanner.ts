@@ -684,12 +684,16 @@ export interface LoadDirHandleResult {
   permission: 'granted' | 'prompt' | 'denied' | 'none'
 }
 
-export async function loadOutputDirHandle(): Promise<LoadDirHandleResult> {
+export async function loadOutputDirHandle(opts?: { skipFiles?: boolean }): Promise<LoadDirHandleResult> {
+  // skipFiles（2026-09-11）：Gallery 索引模式下只恢复句柄与权限，**不要**把 IndexedDB 的旧
+  // 文件列表 setState 进去 —— 那会用旧管线缓存覆盖 gallery 直出的新鲜列表。
+  const skipFiles = !!opts?.skipFiles
   const result: LoadDirHandleResult = { restored: false, permission: 'none' }
   try {
     const record = await outputsDb.dirHandles.get('current')
     console.log('🔍 [loadOutputDirHandle] dirHandle 记录:', !!record)
     if (!record) {
+      if (skipFiles) return result
       // 没有保存的句柄但有缓存文件 → 仍然显示缓存内容
       const cached = await outputsDb.files.toArray()
       console.log('🔍 [loadOutputDirHandle] 无 dirHandle，IndexedDB 总文件数:', cached.length)
@@ -729,6 +733,8 @@ export async function loadOutputDirHandle(): Promise<LoadDirHandleResult> {
       result.permission = 'denied'
     }
     console.log('🔍 [loadOutputDirHandle] 句柄权限:', result.permission)
+
+    if (skipFiles) return result
 
     // 从 DB 加载已索引的文件（核心：无论如何都尝试加载）
     const files = await outputsDb.files.toArray()
@@ -782,6 +788,39 @@ export async function buildDirTree(
   }
 
   return dir
+}
+
+/**
+ * 从相对路径列表推导目录树（纯数据，不访问文件系统）。
+ * 用于 Gallery 索引模式：manifest 的 key 就是相对路径，无需目录授权即可渲染左侧树；
+ * 之后若拿到已授权句柄，可用 buildDirTree 的磁盘树替换（还能包含空目录）。
+ * fileCount 语义与 buildDirTree 保持一致 = 该目录**直接**包含的图片数（不含子目录）。
+ */
+export function buildDirTreeFromPaths(paths: string[], rootName = 'output'): OutputDir {
+  const root: OutputDir = { path: '', name: rootName, children: [], fileCount: 0 }
+  const dirMap = new Map<string, OutputDir>([['', root]])
+  for (const p of paths) {
+    const segs = p.split('/')
+    const dirPath = segs.slice(0, -1).join('/')
+    let parent = ''
+    for (const seg of segs.slice(0, -1)) {
+      const acc = parent ? `${parent}/${seg}` : seg
+      let d = dirMap.get(acc)
+      if (!d) {
+        d = { path: acc, name: seg, children: [], fileCount: 0 }
+        dirMap.set(acc, d)
+        dirMap.get(parent)!.children.push(d)
+      }
+      parent = acc
+    }
+    dirMap.get(dirPath)!.fileCount++
+  }
+  const sortRec = (d: OutputDir) => {
+    d.children.sort((a, b) => a.name.localeCompare(b.name))
+    d.children.forEach(sortRec)
+  }
+  sortRec(root)
+  return root
 }
 
 /** 已生成缩略图的文件路径集合（用于避免重复生成） */
