@@ -39,6 +39,16 @@ function apiBase(path: string): string {
   return `${getCivitaiHost()}/api/v1${path}`
 }
 
+/**
+ * 从 Civitai 模型页 URL 提取模型 ID（2026-09-12 修）。
+ * 此前各处写死 `civitai\.com`，用户浏览器走镜像 civitai.red 时粘贴镜像链接直接解析失败。
+ * 现兼容 civitai.com / civitai.red / 任意 civitai 子域与未来镜像域名（含 ?modelVersionId= 等查询参数）。
+ */
+export function parseCivitaiModelId(url: string): string | null {
+  const m = url.match(/(?:[a-z0-9-]+\.)*civitai\.[a-z]{2,}(?:\.[a-z]{2,})?\/models\/(\d+)/i)
+  return m ? m[1] : null
+}
+
 /** 带 HTTP 状态的错误：便于上层按 401/403/429/5xx 区分展示，而不是静默吞掉 */
 export class CivitaiHttpError extends Error {
   status: number

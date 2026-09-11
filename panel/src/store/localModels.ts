@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { LocalLoraFile, LocalLoraMatch, PngMeta, TagFreq, LocalScanStatus } from '../types'
 import { Cache } from './cache'
-import { fetchModelVersionByHash, fetchModelById } from '../api/civitai'
+import { fetchModelVersionByHash, fetchModelById, parseCivitaiModelId } from '../api/civitai'
 import { showToast, stripExt } from '../utils'
 import { collectLoraFiles, groupLoraNamesByTopLevelFolder, isLoraFileName, normalizeRelativeLoraPath, pickerRelativeLoraPath, removeLoraFile } from '../services/localLoraScanner'
 import { hashFileSha256 } from '../services/fileHashWorker'
@@ -625,9 +625,9 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
   }),
 
   matchByUrl: async (name, url) => {
-    const m = url.match(/civitai\.com\/models\/(\d+)/)
-    if (!m) { showToast('URL 格式错误，需要 Civitai 模型链接'); return }
-    const id = parseInt(m[1])
+    const idStr = parseCivitaiModelId(url)
+    if (!idStr) { showToast('URL 格式错误，需要 Civitai 模型链接（civitai.com / civitai.red 均可）'); return }
+    const id = parseInt(idStr)
     const data = await fetchModelById(id)
     if (!data) { showToast('无法获取模型数据'); return }
     const v = data.modelVersions?.[0]

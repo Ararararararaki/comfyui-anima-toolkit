@@ -2,7 +2,7 @@ import { useModelStore } from '../store/models'
 import { renderCard, refreshLocalNames } from '../components/ModelCard'
 import { renderArtists } from './ArtistSeries'
 import { renderClothingLibrary } from './ClothingLibrary'
-import { fetchModels, fetchModelById, fetchModelImages } from '../api/civitai'
+import { fetchModels, fetchModelById, fetchModelImages, parseCivitaiModelId } from '../api/civitai'
 import type { ModelFetchParams } from '../api/civitai'
 import type { PeriodKey, SortKey } from '../types'
 import { Cache } from '../store/cache'
@@ -1581,9 +1581,8 @@ export function setupBindingListeners() {
     if (!url) { if (status) status.textContent = '⚠️ 请输入 Civitai URL'; return }
     if (status) status.textContent = '⏳ 正在获取…'
     try {
-      const parts = url.split('civitai.com/models/')
-      if (parts.length < 2) throw new Error('❌ 无效的 Civitai URL')
-      const idStr = parts[1].split('/')[0].split('?')[0]
+      const idStr = parseCivitaiModelId(url)
+      if (!idStr) throw new Error('❌ 无效的 Civitai URL（civitai.com / civitai.red 均可）')
       const id = parseInt(idStr)
       if (isNaN(id) || id <= 0) throw new Error('❌ 无法从 URL 中提取模型 ID')
       const customList = Cache.load<any[]>('custom_loras', 365 * 24 * 60 * 60 * 1000) || []
