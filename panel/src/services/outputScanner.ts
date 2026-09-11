@@ -315,6 +315,7 @@ export async function ensureMetadataFresh(dirHandle: FileSystemDirectoryHandle |
   await outputsDb.thumbnails.clear()
   useOutputStore.setState({
     metadataCache: new Map(),
+    metadataVersion: useOutputStore.getState().metadataVersion + 1,
     thumbMemory: new Map(),
   })
 

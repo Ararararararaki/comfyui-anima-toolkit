@@ -14,6 +14,7 @@ import comfy.sd
 import comfy.utils
 from aiohttp import web
 from server import PromptServer
+from . import anima_thumbs
 
 # ── In-memory bridge data (shared with __init__.py via HTTP API) ──
 BRIDGE_DATA: dict = {}
@@ -460,6 +461,59 @@ async def panel_scan_hash(request):
     except OSError as exc:
         return web.json_response({"error": str(exc)}, status=500)
     return web.json_response({"sha256": sha, "path": path})
+
+
+# ── On-disk thumbnail service (M1, docs/后端图片管线可行性评估-2026-09-11.md) ──
+# 512（列表）/ 768（详情）两档 WebP 落盘缓存；浏览器侧配强缓存头。
+# Pillow 缺失/生成失败返回 5xx，前端回退旧 IndexedDB 管线（双轨设计）。
+_THUMB_SEMAPHORE = asyncio.Semaphore(2)
+
+
+@PromptServer.instance.routes.get("/anima/thumb")
+async def anima_thumb(request):
+    """Outputs 缩略图直出：path 为相对 ComfyUI output 目录的路径。
+
+    缓存键含源文件 mtime/size，文件一变自动换新键；缓存目录 data/thumbs/<w>/。
+    """
+    rel = str(request.query.get("path") or "").strip()
+    try:
+        width = int(request.query.get("w") or 512)
+    except ValueError:
+        width = 512
+    if width not in anima_thumbs.SUPPORTED_WIDTHS:
+        return web.json_response({"error": f"不支持的尺寸: {width}"}, status=400)
+    if not rel:
+        return web.json_response({"error": "缺少 path 参数"}, status=400)
+    try:
+        root = folder_paths.get_output_directory()
+    except Exception as exc:
+        return web.json_response({"error": f"无法定位 output 目录: {exc}"}, status=500)
+
+    abs_path = await asyncio.to_thread(anima_thumbs.resolve_within_root, root, rel)
+    if not abs_path:
+        return web.json_response({"error": "文件不存在或不在 output 目录内"}, status=404)
+
+    plugin_dir = os.path.dirname(os.path.abspath(__file__))
+    cache_root = anima_thumbs.plugin_cache_root(plugin_dir, width)
+    async with _THUMB_SEMAPHORE:
+        try:
+            out_path, created = await asyncio.to_thread(
+                anima_thumbs.ensure_thumbnail, abs_path, width, cache_root
+            )
+        except Exception as exc:
+            return web.json_response({"error": f"缩略图生成失败: {exc}"}, status=500)
+
+    etag = f'"{os.path.basename(out_path)}"'
+    headers = {
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "ETag": etag,
+        "X-Anima-Thumb": "1" if created else "0",
+    }
+    if request.headers.get("If-None-Match") == etag:
+        return web.Response(status=304, headers=headers)
+    response = web.FileResponse(out_path)
+    response.headers.update(headers)
+    return response
 
 
 @PromptServer.instance.routes.post("/anima/panel_scan/delete")

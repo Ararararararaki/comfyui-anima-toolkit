@@ -37,6 +37,13 @@ export interface OutputMetadata {
   rawMetadata: Record<string, string>
   loras?: string[]              // 内存缓存版：预提取的 LoRA 名列表（瘦身版元数据剥离 workflowJson 后仍可展示/筛选）
   hasWorkflow?: boolean         // 内存缓存版：是否原本有 workflow（剥离后仍可判断"下载工作流"按钮）
+  lorasExtracted?: boolean      // 内存缓存版：LoRA 是否已提取完成。⚠️ 这是「是否已提取」的唯一真源 ——
+                                // 全库元数据补齐（putMetadataBatch）会用 DB 记录覆盖缓存条目，
+                                // 而 DB 不存 loras；靠本标记才能保住已提取结果、并在未提取时允许补提取
+                                // （否则 Outputs 卡片的「复制 LoRA 标签」按钮会消失且不再恢复）
+  workflowFingerprint?: string  // 内存缓存版：工作流内容指纹（长度+首尾片段）。写入新解析结果时
+                                // 用它判断工作流是否真的变了：未变则沿用已提取的 loras，
+                                // 避免扫描/重解析写回把刚提取好的结果清空
 }
 
 export interface OutputDir {

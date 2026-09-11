@@ -602,10 +602,13 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
     // 布局/内容签名：只放会真正改变「卡片内容或几何」的因素。
     // 刻意不含 thumbMemory —— 缩略图到位时由 loadImageThumbnail 直接改对应 <img>.src，
     // 不需要重建成百上千个节点；一旦重建，图片就会重新请求，首屏必抖。
+    // ⚠️ 元数据用 metadataVersion（内容版本号）而不是 metadataCache.size（2026-09-11 修）：
+    // 元数据是同 key 覆盖（size 不变）—— 用 size 会让「按需加载到 LoRA 数据」无法触发重建，
+    // 卡片 DOM 停在无「复制 LoRA 标签」按钮的旧 HTML 上（用户报的按钮消失/时有时无）。
     const vsSignature = [
       geom.cols, Math.round(geom.cardW), geom.gap,
       files.length, files[0]?.id ?? '', files[files.length - 1]?.id ?? '',
-      state.selectedIds.size, state.metadataCache.size, Math.round(layout.total),
+      state.selectedIds.size, state.metadataVersion ?? state.metadataCache.size, Math.round(layout.total),
     ].join('|')
 
     if (_outputsVS instanceof MasonryVirtualScroll && el.querySelector('.masonry-virtual-scroll-inner')) {
@@ -1528,11 +1531,23 @@ function bindOutputsEvents() {
 
   // 观察所有图片
   const observeImages = () => {
-    document.querySelectorAll('.outputs-card img[data-file-id], .outputs-list-card-img img[data-file-id]').forEach(img => {
+    let dbgObserved = 0, dbgDirect = 0
+    document.querySelectorAll<HTMLImageElement>('.outputs-card img[data-file-id], .outputs-list-card-img img[data-file-id]').forEach(img => {
+      const id = img.dataset.fileId
       // renderImageCard 已同步写入 thumbMemory 命中项；不要再观察并重复设置相同 src，
       // 某些 Chromium 版本会因此重新走图片解码管线，造成一次黑帧。
-      if (!(img as HTMLImageElement).getAttribute('src')) observer.observe(img)
+      if (img.getAttribute('src')) {
+        // 缩略图已就绪（thumbMemory 命中）→ 不重复观察，但**元数据仍要按需加载**：
+        // 否则这些卡片拿不到 meta.loras，「复制 LoRA 标签」按钮永不出现（2026-09-11 修）。
+        // requestVisibleMetadata 内部有「已提取/无需提取」早退与排队去重，可安全重复调用。
+        dbgDirect++
+        if (id) requestVisibleMetadata(id)
+        return
+      }
+      dbgObserved++
+      observer.observe(img)
     })
+    if (META_DBG) console.log('[meta-dbg] observeImages', { observed: dbgObserved, direct: dbgDirect })
   }
 
   // 使用 MutationObserver 监听 DOM 变化
@@ -1709,6 +1724,11 @@ let _visibleMetaRunning = 0
 const _visibleMetaQueue: string[] = []
 /** 已入队/已处理，避免滚动中反复排队 */
 const _metaQueued = new Set<string>()
+/** DB 读超时后的重试次数：兜底 IndexedDB 偶发悬挂，保证按钮最终能出现 */
+const _metaRetry = new Map<string, number>()
+const META_MAX_RETRY = 3
+/** 诊断开关：URL 带 ?metaDbg=1 时打印可见区元数据链路（生产无副作用） */
+const META_DBG = (() => { try { return new URLSearchParams(location.search).has('metaDbg') } catch { return false } })()
 
 /** 元数据陆续到位时合并刷新：一屏的卡片只重建一次网格（图片走 ImageNodeCache 复用，不闪） */
 let _metaRefreshTimer: ReturnType<typeof setTimeout> | null = null
@@ -1738,8 +1758,17 @@ function scheduleMetaRefresh(): void {
  */
 function requestVisibleMetadata(fileId: string): void {
   if (!fileId) return
-  if (useOutputStore.getState().metadataCache.has(fileId)) return
+  const cached = useOutputStore.getState().metadataCache.get(fileId)
+  // ⚠️ 早退判据不能只看「有没有缓存」（2026-09-11 修）：条目可能已被全库元数据补齐
+  // （ensureAllMetadata → putMetadataBatch）写成了未提取 LoRA 的瘦身版（loras=[]）。
+  // 只看 has() 会导致这些条目被判为"已加载" → 永不补提取 → 「复制 LoRA 标签」按钮消失后不恢复。
+  // 正确判据：已加载 **且**（无工作流可提 或 LoRA 已提取）。
+  if (cached && (!cached.hasWorkflow || cached.lorasExtracted)) {
+    if (META_DBG) console.log('[meta-dbg] requestVisible skip', fileId, { hasWf: cached.hasWorkflow, extracted: cached.lorasExtracted })
+    return
+  }
   if (_metaQueued.has(fileId)) return
+  if (META_DBG) console.log('[meta-dbg] requestVisible enqueue', fileId, { cached: !!cached, hasWf: cached?.hasWorkflow, extracted: cached?.lorasExtracted })
   _metaQueued.add(fileId)
   _visibleMetaQueue.push(fileId)
   void pumpVisibleMetadata()
@@ -1750,8 +1779,26 @@ async function pumpVisibleMetadata(): Promise<void> {
     const id = _visibleMetaQueue.shift()!
     _visibleMetaRunning++
     void useOutputStore.getState().loadMetadata(id, { loras: true })
-      .then(() => { if (useOutputStore.getState().metadataCache.has(id)) scheduleMetaRefresh() })
-      .catch(() => { /* 单条失败不影响其它 */ })
+      .then(() => {
+        _metaRetry.delete(id)
+        const c = useOutputStore.getState().metadataCache.get(id)
+        if (META_DBG) console.log('[meta-dbg] pumped', id, { loras: c?.loras?.length, extracted: c?.lorasExtracted, hasWf: c?.hasWorkflow })
+        if (useOutputStore.getState().metadataCache.has(id)) scheduleMetaRefresh()
+      })
+      .catch((err) => {
+        if (META_DBG) console.log('[meta-dbg] pump ERROR', id, String(err && (err.stack || err.message || err)).slice(0, 300))
+        // DB 读超时（IndexedDB 偶发悬挂，实测扫描刚结束时最明显）→ 退避重试。
+        // 不重试的话这些卡片永久缺 loras，「复制 LoRA 标签」按钮不会出现。
+        if ((err as Error)?.name === 'MetadataReadTimeoutError') {
+          const n = _metaRetry.get(id) || 0
+          if (n < META_MAX_RETRY) {
+            _metaRetry.set(id, n + 1)
+            setTimeout(() => requestVisibleMetadata(id), 800 * (n + 1))
+          } else if (META_DBG) {
+            console.log('[meta-dbg] pump give up', id, { retries: n })
+          }
+        }
+      })
       .finally(() => {
         _visibleMetaRunning--
         _metaQueued.delete(id)
