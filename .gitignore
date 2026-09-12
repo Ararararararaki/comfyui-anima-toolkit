@@ -33,3 +33,6 @@ tests/verify_danbooru_dropdown.py
 # OS
 .DS_Store
 Thumbs.db
+
+# Vite 临时产物（每次构建堆积，纯噪音）
+panel/vite.config.ts.timestamp-*.mjs
