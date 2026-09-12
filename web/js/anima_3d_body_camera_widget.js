@@ -494,7 +494,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         if (!widget) return;
         widget.hidden = true;
         widget.type = "hidden";
-        widget.options = { ...(widget.options || {}), hidden: true };
+        // 必须「就地」改 options：ComfyUI 新前端的 widgetValueStore 在注册时
+        // 存的是 options 对象的引用，processedWidgets 合并时以 store 侧为准
+        // （{...widget.options, ...storeWidget.options}）。若整体替换 options，
+        // store 里那份旧对象仍无 hidden 字段 → 行照旧渲染，且因 type 被改成
+        // "hidden" 落到遗留 canvas 渲染器上，每个隐藏项留一个 ~0.9MB 的
+        // <canvas> 行（拖动时逐帧参与合成，实测 9 行 ≈ 7MB）。
+        widget.options = widget.options || {};
+        widget.options.hidden = true;
         widget.draw = () => {};
         widget.computeSize = () => [0, -4];
         if (widget.element) widget.element.style.display = "none";

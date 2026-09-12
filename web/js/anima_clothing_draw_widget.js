@@ -815,6 +815,12 @@ import {
     let widget = nativeWidget(node, "selection_data");
     if (!widget) widget = node.addWidget?.("text", "selection_data", "{}", () => {}, { serialize: true });
     if (widget) {
+      // hidden/options.hidden 必须「就地」写入（见 3D 相机同名注释）：只改
+      // type 不够，新前端 widgetValueStore 合并 options 时会覆盖掉隐藏标记，
+      // 行仍会渲染并留下一个整宽的遗留 <canvas>。
+      widget.hidden = true;
+      widget.options = widget.options || {};
+      widget.options.hidden = true;
       widget.computeSize = () => [0, -4];
       widget.draw = () => {};
       widget.type = "hidden";

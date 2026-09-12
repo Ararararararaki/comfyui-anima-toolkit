@@ -872,6 +872,12 @@
   const CARD_GRID_HEIGHT_MIN = 150;
   const CARD_GRID_HEIGHT_MAX = 680;
   const CARD_GRID_HEIGHT_DEFAULT = 300;
+  // 卡片区 DOM 窗口化：整库（实测 984 张）曾一次性渲染 ≈1 万个元素 / 4 千个控件，
+  // 全部落在画布节点的 DOM 子树里 —— 拖动/平移画布时每帧都要参与网格布局、
+  // 样式重算与合成（Tracing 实测：平移帧时 17.7ms → 13.7ms，Layout 1.3→0.65ms，
+  // UpdateLayoutTree 1.2→0.8ms，Layerize 5.5→4.2ms）。只渲染窗口内卡片，滚动补渲染。
+  const CARD_RENDER_WINDOW_INITIAL = 60;
+  const CARD_RENDER_WINDOW_STEP = 60;
   function saveDraft(text) { try { localStorage.setItem(DRAFT_KEY, String(text || "")); } catch (e) {} }
   function loadDraft() { try { return localStorage.getItem(DRAFT_KEY) || ""; } catch (e) { return ""; } }
   function loadTranslateSource() {
@@ -917,6 +923,8 @@
       this.cardCats = [];  // ③ 卡片分类
       this.curCat = "";    // ③ 当前卡片分类 id（"" = 全部）
       this.cardSearch = "";
+      this.cardRenderWindow = CARD_RENDER_WINDOW_INITIAL; // 卡片区已渲染窗口（滚动补渲染）
+      this._cardGrowFrame = 0;
       this.search = "";
       this.promptPieces = null; // ② 当前提示词完整片段；hidden 片段保留在卡片区但不输出
       this.selectedCardIds = new Set(); // Ctrl/Cmd 点击选择，供批量分类使用
@@ -3594,7 +3602,7 @@
             this._flash("分类顺序已调整");
           });
         }
-        tab.addEventListener("click", () => { this.curCat = id; this._renderCatTabs(); this._renderCards(); });
+        tab.addEventListener("click", () => { this.curCat = id; this.cardRenderWindow = CARD_RENDER_WINDOW_INITIAL; this._renderCatTabs(); this._renderCards(); });
         this.catTabsEl.appendChild(tab);
       };
       mk("全部", "", false);
@@ -3649,6 +3657,8 @@
 
     async _updateCardSearch() {
       const query = this.cardSearch;
+      // 过滤条件变了 → 渲染窗口收回首屏大小，避免换分类/搜索后仍一次铺开几百张。
+      this.cardRenderWindow = CARD_RENDER_WINDOW_INITIAL;
       const requestId = ++this._cardSearchRequestId;
       this._cardSearchAbortController?.abort();
       this._cardSearchAbortController = null;
@@ -3675,6 +3685,11 @@
       if (this.curCat) list = list.filter((p) => cardInCat(p, this.curCat));
       if (this.cardSearch) list = list.filter((card) => fuzzyCardMatch(card, this.cardSearch, this._cardSearchDictionaryKeys));
       this._sortCardList(list);
+      // 渲染窗口：列表可短于窗口（就全渲染），超出则只渲染前 N 张并给出加载更多。
+      const windowSize = Math.max(CARD_RENDER_WINDOW_INITIAL, this.cardRenderWindow | 0);
+      const truncated = list.length > windowSize;
+      const visibleCards = truncated ? list.slice(0, windowSize) : list;
+      const prevScrollTop = this.cardGridEl.scrollTop;
       this.cardGridEl.innerHTML = "";
       if (!list.length) {
         this.cardGridEl.innerHTML = this.cardSearch
@@ -3682,7 +3697,7 @@
           : `<div class="tk-cards-empty">暂无卡片 — ②区点片段「存卡」或「一键入卡」，或「浏览 LoRA」批量收藏</div>`;
         return;
       }
-      for (const c of list) {
+      for (const c of visibleCards) {
         const el = document.createElement("div");
          el.className = "tk-cards-card" + (c.isFavorite ? " star" : "") + (this.selectedCardIds.has(c.id) ? " is-selected" : "");
         el.setAttribute("data-id", c.id);
@@ -3846,6 +3861,35 @@
         meta.appendChild(retranslate);
         this.cardGridEl.appendChild(el);
       }
+      if (truncated) {
+        const more = document.createElement("div");
+        more.className = "tk-cards-empty tk-cards-more";
+        more.textContent = `已显示 ${visibleCards.length} / ${list.length} 张 — 向下滚动或点击继续加载`;
+        more.title = "点击或继续向下滚动，加载后续卡片";
+        more.addEventListener("click", () => this._growCardWindow());
+        this.cardGridEl.appendChild(more);
+      }
+      // 重建 DOM 会把 scrollTop 归零；恢复它，滚动补渲染才不会「跳回顶部」。
+      this.cardGridEl.scrollTop = prevScrollTop;
+    }
+
+    // 扩大卡片渲染窗口并重绘（滚动到窗口底部时自动触发）。
+    _growCardWindow() {
+      this.cardRenderWindow = Math.max(CARD_RENDER_WINDOW_INITIAL, this.cardRenderWindow | 0) + CARD_RENDER_WINDOW_STEP;
+      this._renderCards();
+    }
+
+    // 卡片区滚动：接近底部（或还没铺满）时扩大渲染窗口；rAF 节流避免滚动风暴。
+    _onCardGridScroll() {
+      if (this._cardGrowFrame) return;
+      this._cardGrowFrame = requestAnimationFrame(() => {
+        this._cardGrowFrame = 0;
+        const el = this.cardGridEl;
+        if (!el) return;
+        if (el.scrollHeight - el.scrollTop - el.clientHeight > 160) return;
+        if (!el.querySelector(".tk-cards-more")) return; // 已全部渲染
+        this._growCardWindow();
+      });
     }
 
     // 卡片快速分类：▣ 多选弹窗（勾选分类=包含；同一词可属多个分类）
@@ -4801,6 +4845,7 @@
       this.catTabsEl.className = "tk-cards-cats";
       this.cardGridEl = document.createElement("div");
       this.cardGridEl.className = "tk-cards-grid";
+      this.cardGridEl.addEventListener("scroll", () => this._onCardGridScroll(), { passive: true });
       this._applyCardGridHeight(this.uiState.cardGridHeight, false);
       this.cardGridResizeEl = document.createElement("div");
       this.cardGridResizeEl.className = "tk-cards-resize-handle tk-cards-card-grid-resize-handle";
@@ -5021,6 +5066,8 @@
  .tk-cards-cat.on { border-color:var(--tk-accent); background:#34383b; color:var(--tk-accent-strong); font-weight:650; }
  .tk-cards-cat-add { border-style:dashed; color:var(--tk-muted); }
  .tk-cards-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); grid-auto-rows:minmax(112px,auto); gap:7px; height:300px; max-height:680px; overflow:auto; }
+ .tk-cards-more { grid-column:1/-1; padding:6px 4px; text-align:center; cursor:pointer; border-top:1px solid var(--tk-border-soft); }
+ .tk-cards-more:hover { color:var(--tk-text); }
  .tk-cards-card { position:relative; min-height:112px; box-sizing:border-box; padding:32px 8px 8px; border:1px solid var(--tk-border-soft); border-radius:5px; cursor:pointer; background:#151719; display:flex; flex-direction:column; gap:4px; overflow:hidden; transition:border-color .15s ease,background .15s ease; }
  .tk-cards-card:hover, .tk-cards-card:focus-within { border-color:var(--tk-accent); background:#1d2022; }
  .tk-cards-del, .tk-cards-cat-btn, .tk-cards-pin { position:absolute; top:4px; display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; padding:0; border:1px solid transparent; border-radius:4px; background:transparent; cursor:pointer; font-size:11px; line-height:1; }

@@ -8,6 +8,25 @@
 
 用户可在节点工具栏「🔄 更新」检查到新版本。
 
+## [2.9.0] - 2026-09-12
+
+### 新增
+
+- **TK 批量 LoRA 加载器 · 触发词输出改造**：`trigger_words` 输出改为直接输出**本节点已激活（权重非 0）LoRA 的触发词**，且与「是否加载成功」解耦——文件缺失但被激活的 LoRA 也会带出触发词。禁用项由面板以 `<lora:name:0.00>` 写入，既不加载也不取词。
+- **触发词总开关**：节点工具栏新增「输出触发词 k/N」勾选框（对应输入项 `output_trigger_words`，默认开启）。关闭后该输出为空字符串，**LoRA 加载不受任何影响**。
+- **触发词后端持久化**：节点面板把「LoRA → 触发词」推送落盘（`data/lora_trigger_words.json`，端点 `POST /anima/lora_trigger_words`）。执行时按「节点推送的持久表 > 内存 bridge > anima_bridge.json」解析，不再依赖面板是否推送过 bridge，刷新/重启后依然可解析。名称写成全路径 / 去扩展名 / 纯文件名都能命中同一份触发词。
+
+### 修复
+
+- **`_find_lora_path` 模糊匹配分支崩溃（重要）**：该分支调用了从未定义的 `base()` → `NameError`。真实文件名带 ` (1)` 之类后缀时（例如 `ITEFU-KREA-V1 (1).safetensors`）必然走到这里，后果是：`/anima/lora/info` 返回 500（**触发词因此永远提取不到**）、「验证标签」报错，**并且节点执行会直接失败**。已修复并补回归测试 `tests/test_batch_lora_trigger_words.py`（18 项，离线可跑）。
+
+### 性能（画布拖动掉帧专项，两轮）
+
+- **卡片区渲染窗口化**：`TKPromptCards` 原先一次性渲染整库（实测 984 张卡 ≈ 1 万个 DOM 元素 / 4 千个控件，而卡片区仅 300px 高），现改为首屏 60 张 + 滚动补渲染（保留滚动位置、切分类/搜索时收回首屏）。卡片区 DOM 由 ~10052 降到 ~601。
+- **隐藏原生 widget 不再留残影**：改为就地写 `options.hidden`（原先整体替换 options 会让前端判定失效），消除 12 个整宽遗留 `<canvas>` 行：canvas 12 → 1 张、占用 10.4MB → 0.8MB。
+- **新增 `web/js/anima_canvas_perf.js` 节点级渲染裁剪**：为每个节点写入精确的 `content-visibility` + `contain-intrinsic-size`（视口外节点跳过渲染）并做图层提升。Chrome Tracing 实测每帧 `Layerize` 6.8ms → 3.8ms（−44%），平移帧时 −12% ~ −48%（取决于离屏节点比例）。
+- 合计：工作流图容器 DOM 21001 → 12063（−43%），拖动平移帧时最高下降约 48%。不想用时可在控制台执行 `localStorage.setItem('tk_canvas_perf','0')` 后刷新关闭裁剪。
+
 ## [2.8.1] - 2026-09-11
 
 - **URL 下载 · 支持 civitai.red 镜像链接**：粘贴 `civitai.red/models/...` 链接此前报「无法解析」——URL 解析只认 civitai.com。现已统一为共用解析函数，civitai.com / civitai.red 及未来镜像域名均可；「手动匹配」与「添加 LoRA」入口同步修复。报错信息也会显示完整链接便于排查。纯前端改动，刷新浏览器（Ctrl+Shift+R）即可生效。

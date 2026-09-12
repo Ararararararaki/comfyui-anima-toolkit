@@ -128,6 +128,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           if (same) return;
           ui.loras = parsed;
           ui._render(ui.listEl);
+          if (ui._updateTwStatus) ui._updateTwStatus();
+          if (ui._pushTriggerWords) ui._pushTriggerWords();
           if (ui._autoFetchTriggerWords) ui._autoFetchTriggerWords();
         };
         nodeType.prototype.onAdded = function () {
@@ -536,6 +538,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this._lastBridgeTs = 0;   // 上次已应用的 bridge updated_at（避免重复同步）
       this._bridgeTimer = null;
       this.domSizeSync = null;
+      // trigger_words 总开关（后端 output_trigger_words）：节点 widgets 里可能还没有
+      // （旧版后端），此时按「开启」处理并只做前端展示。
+      this.twWidget = node?.widgets?.find((w) => w.name === "output_trigger_words") || null;
+      this._twPushTimer = null;
+      this._twStatusEl = null;
+      this._twCheckEl = null;
     }
 
     // ── 解析 <lora:name:weight>（并合并 node.properties 里保留的禁用项） ──
@@ -667,6 +675,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           .anima-lora-widget .toolbar .btn-clear:hover { background:linear-gradient(135deg,rgba(255,80,80,0.12),rgba(255,80,80,0.06)); color:#ff6b6b; box-shadow:0 0 0 1px rgba(255,80,80,0.2); transform:translateY(-1px); }
           .anima-lora-widget .status { font-size:10px; padding:3px 6px; margin-bottom:4px; min-height:18px; color:#8A8F98; border-radius:4px; background:rgba(255,255,255,0.02); }
           .anima-lora-widget .trigger-box { font-size:10px; padding:6px 8px; margin-top:6px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.05); border-radius:6px; display:none; line-height:1.6; color:#8A8F98; }
+          .anima-lora-widget .tw-toggle { display:inline-flex; align-items:center; gap:5px; padding:3px 7px; border:1px solid rgba(255,255,255,0.08); border-radius:6px; background:rgba(255,255,255,0.03); color:#8A8F98; font-size:10px; white-space:nowrap; cursor:pointer; user-select:none; }
+          .anima-lora-widget .tw-toggle:hover { border-color:rgba(230,223,211,0.28); color:#E6DFD3; }
+          .anima-lora-widget .tw-toggle-check { width:12px; height:12px; margin:0; accent-color:#bcbcbc; cursor:pointer; }
+          .anima-lora-widget .tw-toggle-state.is-partial { color:#c6a76a; }
+          .anima-lora-widget .tw-toggle-state.is-off { color:#cb8585; }
           .anima-lora-widget .empty-msg { font-size:10px; color:#8A8F98; padding:16px 8px; text-align:center; line-height:1.6; }
           .anima-lora-widget .lora-row { display:flex; align-items:center; gap:6px; padding:5px 6px; border-radius:6px; transition:all 0.2s ease-out; background:rgba(255,255,255,0.02); margin-bottom:2px; border:1px solid transparent; }
           .anima-lora-widget .lora-row:hover { background:linear-gradient(135deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02)); border-color:rgba(255,255,255,0.06); box-shadow:0 2px 12px rgba(0,0,0,0.2); }
@@ -866,7 +879,21 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const panelBtn = this._btn("面板", "btn-verify", "打开本地管理面板（TK Toolkit）", "globe");
       const groupsBtn = this._btn("组", "btn-browse", "LoRA 组：保存当前列表 / 切换 / 重命名 / 删除（悬浮组名预览组内 LoRA）", "folder");
       const updateBtn = this._btn("更新", "btn-browse", "检查插件版本更新", "refresh");
-      toolbar.append(verifyBtn, extractBtn, copyAllTwBtn, browseBtn, groupsBtn, clearBtn, panelBtn, updateBtn);
+      // ── trigger_words 总开关（一键关闭本节点全部触发词输出）──
+      const twToggle = document.createElement("label");
+      twToggle.className = "tw-toggle";
+      twToggle.title = "总开关：关闭后本节点 trigger_words 输出为空字符串（LoRA 加载、列表、提取功能都不受影响）";
+      const twCheck = document.createElement("input");
+      twCheck.type = "checkbox";
+      twCheck.className = "tw-toggle-check";
+      twCheck.checked = this._outputTriggerWords();
+      twCheck.addEventListener("change", () => this._setOutputTriggerWords(twCheck.checked));
+      const twState = document.createElement("span");
+      twState.className = "tw-toggle-state";
+      twToggle.append(twCheck, twState);
+      this._twCheckEl = twCheck;
+      this._twStatusEl = twState;
+      toolbar.append(verifyBtn, extractBtn, copyAllTwBtn, browseBtn, groupsBtn, clearBtn, panelBtn, updateBtn, twToggle);
 
       // 更新检查：版本号 + 提交/文件指纹；手动检查强制刷新，页面存续期间每 5 分钟复查。
       let updateInfo = null;
@@ -1006,6 +1033,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       })(this.loraWidget.callback);
 
       const dw = this.node.addDOMWidget("anima_batch_ui", "custom", container, { serialize: false });
+      // 「输出触发词」原生 BOOLEAN 行由工具栏开关承载：就地隐藏，避免节点上多一行空控件
+      this._hideNativeWidget(this.twWidget);
+      this._updateTwStatus();
       this.domSizeSync = installDOMWidgetSizeSync({
         node: this.node,
         domWidget: dw,
@@ -1047,6 +1077,93 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         ui.domSizeSync = null;
         if (typeof origRemoved === "function") return origRemoved.apply(this, arguments);
       };
+    }
+
+    // ── trigger_words 总开关 ──
+    _outputTriggerWords() {
+      return this.twWidget ? this.twWidget.value !== false : true;
+    }
+
+    _setOutputTriggerWords(on) {
+      const value = !!on;
+      if (this.twWidget) {
+        this.twWidget.value = value;
+        try { this.twWidget.callback?.(value); } catch (e) { /* 回调异常不影响开关本身 */ }
+      } else {
+        // 后端还是旧版（没有 output_trigger_words 输入）：开关只能改前端显示
+        showToast("⚠️ 后端未提供「输出触发词」开关，请重启 ComfyUI 后再试");
+      }
+      this.node?.graph?.change();
+      this._updateTwStatus();
+      if (this._twCheckEl) this._twCheckEl.checked = value;
+      showToast(value
+        ? "✅ 已开启触发词输出（trigger_words 将输出已激活 LoRA 的触发词）"
+        : "🚫 已关闭触发词输出（trigger_words 输出空字符串）");
+      if (value) this._autoFetchTriggerWords();
+    }
+
+    // 原生 BOOLEAN 行交给面板里的开关承载：就地隐藏（保持 options 引用，勿整体替换）
+    _hideNativeWidget(widget) {
+      if (!widget) return;
+      widget.hidden = true;
+      widget.options = widget.options || {};
+      widget.options.hidden = true;
+      widget.computeSize = () => [0, -4];
+      widget.draw = () => {};
+      if (widget.element) widget.element.style.display = "none";
+    }
+
+    // 已启用（激活）的 LoRA 中，已知触发词的数量；用于开关旁的状态提示
+    _twCoverage() {
+      const on = this._outputTriggerWords();
+      if (!on) return { active: 0, known: 0, enabled: false };
+      let active = 0;
+      let known = 0;
+      for (const l of this.loras || []) {
+        if (l.disabled) continue;
+        active++;
+        const words = this.triggerWordMap[l.name];
+        if (Array.isArray(words) && words.length) known++;
+      }
+      return { active, known, enabled: true };
+    }
+
+    _updateTwStatus() {
+      const el = this._twStatusEl;
+      if (!el) return;
+      const { active, known, enabled } = this._twCoverage();
+      el.textContent = enabled ? `输出触发词 ${known}/${active}` : "输出触发词（已关闭）";
+      if (this._twCheckEl) this._twCheckEl.checked = enabled;
+      el.classList.toggle("is-off", !enabled);
+      el.classList.toggle("is-partial", enabled && known < active);
+    }
+
+    // ── 触发词持久化：推送 {LoRA 名 → 触发词} 给后端落盘，
+    //    这样执行时（哪怕面板没推送过 bridge / C 站离线）也能解析出触发词 ──
+    _pushTriggerWords() {
+      if (this._twPushTimer) clearTimeout(this._twPushTimer);
+      this._twPushTimer = setTimeout(() => { this._twPushTimer = null; this._pushTriggerWordsNow(); }, 900);
+    }
+
+    async _pushTriggerWordsNow() {
+      const loras = {};
+      for (const [name, words] of Object.entries(this.triggerWordMap || {})) {
+        if (!Array.isArray(words) || !words.length) continue; // null = 查询失败，不回传
+        const clean = words.map((w) => String(w).trim()).filter(Boolean);
+        if (clean.length) loras[name] = clean;
+      }
+      if (!Object.keys(loras).length) return;
+      try {
+        const resp = await fetch("/anima/lora_trigger_words", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ loras }),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      } catch (e) {
+        // 静默失败：推送只是让执行端离线可解析，失败不影响节点本身
+        console.debug("[Anima] 触发词推送失败:", e);
+      }
     }
 
     _btn(text, cls, title, iconName) {
@@ -1103,6 +1220,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         }
       }
       this._render(listEl);
+      this._pushTriggerWords();
+      this._updateTwStatus();
       if (found > 0 && failed === 0) {
         showToast(`✅ 提取完成，${found}/${pending.length} 个 LoRA 有触发词`);
       } else if (found > 0 && failed > 0) {
@@ -1148,6 +1267,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             tags: Array.isArray(data.tags) ? data.tags : [],
           };
           onDone && onDone(tw);
+          this._pushTriggerWords();
+          this._updateTwStatus();
         })
         .catch((e) => {
           // 失败标记为 null，允许重试；不误判为"无触发词"
@@ -1198,6 +1319,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     // ── 渲染 LoRA 卡片 ──
     _render(listEl) {
+      this._updateTwStatus();
       listEl.innerHTML = "";
       if (!this.loras.length) {
         listEl.innerHTML = '<div class="empty-msg">暂无 LoRA，点击「本地 LoRA」添加</div>';
@@ -1526,6 +1648,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             this.triggerWordMap[l.name] = l.trigger_words;
           }
         });
+        this._pushTriggerWords();
+        this._updateTwStatus();
         this._lastBridgeTs = ts;
         if (ts) {
           try { localStorage.setItem(BRIDGE_APPLIED_KEY, String(ts)); } catch (e) {}
@@ -1985,7 +2109,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             }
             const host = img.closest(".bm-card") || img.closest(".bm-li");
             applyInfo(host, info);
-            if (host && info.trainedWords && info.trainedWords.length) this.triggerWordMap[name] = info.trainedWords;
+            if (host && info.trainedWords && info.trainedWords.length) { this.triggerWordMap[name] = info.trainedWords; this._pushTriggerWords(); this._updateTwStatus(); }
           });
         });
       }, { root: listEl, rootMargin: "250px" });

@@ -3260,6 +3260,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this._animaDanbooruGallery = ui;
         const selectionWidget = this.addWidget?.("text", "selection_data", "{}", () => {}, { serialize: true });
         if (selectionWidget) {
+          // hidden/options.hidden 必须「就地」写入（见 3D 相机同名注释），
+          // 否则新前端仍会渲染该行并留一个整宽遗留 <canvas>。
+          selectionWidget.hidden = true;
+          selectionWidget.options = selectionWidget.options || {};
+          selectionWidget.options.hidden = true;
           selectionWidget.computeSize = () => [0, -4];
           selectionWidget.draw = () => {};
           selectionWidget.type = "hidden";

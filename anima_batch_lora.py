@@ -8,6 +8,7 @@ import json
 import os
 import hashlib
 import threading
+import time
 import asyncio
 import folder_paths
 import comfy.sd
@@ -93,8 +94,10 @@ def _find_lora_path(lora_name: str) -> str | None:
     if tokens:
         matches = [filename for filename, normalized in indexed if all(t in _lora_stem(normalized) for t in tokens)]
         # Prefer shorter match (fewer extra chars = closer match)
+        # 注意：这里原先写的是 len(base(f))，而 base() 从未定义 → 任何走到模糊匹配
+        # 分支的名字都会抛 NameError（表现为 /anima/lora/info 500、LoRA 加载报错）。
         if matches:
-            matches.sort(key=lambda f: len(base(f)))
+            matches.sort(key=lambda f: len(os.path.basename(_lora_stem(f))))
             return _best_match(matches)
 
     return None
@@ -141,6 +144,125 @@ def _list_lora_entries() -> list[dict]:
     return entries
 
 
+# ── 触发词持久表 ──
+# 节点侧 widget 把「LoRA → 触发词」推送到这里落盘（data/lora_trigger_words.json），
+# 执行时即可离线解析：不依赖面板是否推送过 bridge、也不依赖 C 站在线。
+TRIGGER_WORDS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "lora_trigger_words.json")
+_TRIGGER_WORDS_LOCK = threading.Lock()
+_TRIGGER_WORDS_CACHE: dict = {"mtime": -1.0, "map": {}}
+
+
+def _load_trigger_words() -> dict:
+    """读取触发词持久表（按 mtime 缓存，避免每次执行都读盘）。"""
+    try:
+        mtime = os.path.getmtime(TRIGGER_WORDS_PATH)
+    except OSError:
+        return {}
+    with _TRIGGER_WORDS_LOCK:
+        if _TRIGGER_WORDS_CACHE["mtime"] == mtime:
+            return dict(_TRIGGER_WORDS_CACHE["map"])
+    store = {}
+    try:
+        with open(TRIGGER_WORDS_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        raw = data.get("loras") if isinstance(data, dict) else None
+        if isinstance(raw, dict):
+            for name, words in raw.items():
+                if not isinstance(words, list):
+                    continue
+                clean = [str(w).strip() for w in words if str(w).strip()]
+                if clean and str(name).strip():
+                    store[str(name)] = clean
+    except Exception as exc:  # noqa: BLE001
+        print(f"[AnimaBatchLoRA] 触发词表读取失败: {exc}")
+        store = {}
+    with _TRIGGER_WORDS_LOCK:
+        _TRIGGER_WORDS_CACHE["mtime"] = mtime
+        _TRIGGER_WORDS_CACHE["map"] = store
+    return dict(store)
+
+
+def _merge_trigger_words(incoming: dict) -> int:
+    """合并写入触发词表（临时文件 + os.replace 原子替换），返回表内总条目数。"""
+    current = _load_trigger_words()
+    changed = False
+    for name, words in (incoming or {}).items():
+        key = str(name or "").strip()
+        if not key or not isinstance(words, (list, tuple)):
+            continue
+        clean = [str(w).strip() for w in words if str(w).strip()]
+        if not clean:
+            continue
+        if current.get(key) != clean:
+            current[key] = clean
+            changed = True
+    if not changed:
+        return len(current)
+    try:
+        os.makedirs(os.path.dirname(TRIGGER_WORDS_PATH), exist_ok=True)
+        tmp_path = TRIGGER_WORDS_PATH + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump({"loras": current, "updatedAt": int(time.time())}, fh, ensure_ascii=False, indent=0)
+        os.replace(tmp_path, TRIGGER_WORDS_PATH)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[AnimaBatchLoRA] 触发词表写入失败: {exc}")
+    return len(current)
+
+
+def _trigger_word_keys(name: str) -> list:
+    """一个 LoRA 名可能被写成多种形态（带扩展名/子目录/纯文件名），统一生成候选键。"""
+    normalized = _normalize_lora_name(name)
+    if not normalized:
+        return []
+    stem = _lora_stem(normalized)
+    raw_keys = [normalized, stem]
+    for base in (os.path.basename(normalized), os.path.basename(stem)):
+        raw_keys.append(base)
+        for extension in _LORA_MODEL_EXTENSIONS:
+            if base.endswith(extension):
+                raw_keys.append(base[:-len(extension)])
+    keys = []
+    for key in raw_keys:
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def _build_trigger_index() -> dict:
+    """合并三个来源的触发词（优先级由低到高）：bridge 文件 → 内存 bridge → 节点推送的持久表。"""
+    pairs = []
+    try:
+        if os.path.exists(BRIDGE_PATH):
+            with open(BRIDGE_PATH, "r", encoding="utf-8") as fh:
+                file_data = json.load(fh)
+            for item in (file_data.get("lora_list") or []):
+                pairs.append((item.get("name", ""), item.get("trigger_words") or []))
+    except Exception:  # noqa: BLE001
+        pass
+    with BRIDGE_LOCK:
+        if BRIDGE_DATA:
+            for item in (BRIDGE_DATA.get("lora_list") or []):
+                pairs.append((item.get("name", ""), item.get("trigger_words") or []))
+    for name, words in _load_trigger_words().items():
+        pairs.append((name, words))
+    index = {}
+    for name, words in pairs:
+        clean = [str(w).strip() for w in (words or []) if str(w).strip()]
+        if not clean:
+            continue
+        for key in _trigger_word_keys(name):
+            index[key] = clean  # 后写入的覆盖先写入的 = 高优先级生效
+    return index
+
+
+def _lookup_trigger_words(index: dict, name: str) -> list:
+    for key in _trigger_word_keys(name):
+        words = index.get(key)
+        if words:
+            return words
+    return []
+
+
 def _parse_lora_syntax(text: str) -> list[dict]:
     """Parse <lora:name:strength> or <lora:name:model_strength:clip_strength>."""
     pattern = r"<lora:([^:>]+):([^:>]+)(?::([^:>]+))?>"
@@ -179,6 +301,11 @@ class AnimaBatchLoRALoader:
             },
             "optional": {
                 "clip": ("CLIP",),
+                "output_trigger_words": ("BOOLEAN", {
+                    "default": True,
+                    "label": "输出触发词",
+                    "tooltip": "总开关：关闭后 trigger_words 输出空字符串（不再输出任何触发词，LoRA 加载不受影响）",
+                }),
             },
         }
 
@@ -186,7 +313,7 @@ class AnimaBatchLoRALoader:
     RETURN_NAMES = ("MODEL", "CLIP", "trigger_words")
     FUNCTION = "load_loras"
 
-    def load_loras(self, model, lora_syntax, clip=None):
+    def load_loras(self, model, lora_syntax, clip=None, output_trigger_words=True):
         # Priority: input lora_syntax > in-memory bridge > bridge file (backward compat)
         text = lora_syntax.strip()
         if not text:
@@ -202,19 +329,18 @@ class AnimaBatchLoRALoader:
                     pass
 
         entries = _parse_lora_syntax(text)
+        # 激活 = 权重非 0 的条目：禁用项由前端以 <lora:name:0.00> 写入，0 权重项不加载也不取触发词
+        activated = [e for e in entries if not (e["model_strength"] == 0 and e["clip_strength"] == 0)]
 
-        # Build trigger word lookup from bridge data
-        with BRIDGE_LOCK:
-            tw_lookup = {
-                _normalize_lora_name(l.get("name", "")): l.get("trigger_words", [])
-                for l in BRIDGE_DATA.get("lora_list", [])
-            } if BRIDGE_DATA else {}
-
+        # 触发词输出：只覆盖本节点「激活」的 LoRA，且与加载成功与否无关
+        # （文件缺失/加载失败但被激活的 LoRA，其触发词同样应带出去）。
         trigger_words = []
-        for entry in entries:
-            # Skip no-op LoRAs (both strengths 0.00) to avoid useless loads
-            if entry["model_strength"] == 0 and entry["clip_strength"] == 0:
-                continue
+        if output_trigger_words:
+            tw_index = _build_trigger_index()
+            for entry in activated:
+                trigger_words.extend(_lookup_trigger_words(tw_index, entry["name"]))
+
+        for entry in activated:
             lora_path = _find_lora_path(entry["name"])
             if lora_path is None:
                 print(f"[Anima] LoRA not found: {entry['name']}")
@@ -227,11 +353,6 @@ class AnimaBatchLoRALoader:
                     entry["model_strength"],
                     entry["clip_strength"],
                 )
-                # Use real trigger words from bridge data when available
-                tws = tw_lookup.get(_normalize_lora_name(entry["name"]), [])
-                if tws:
-                    trigger_words.extend(tws)
-                # Bridge查不到触发词时输出空，不回退到文件名(避免污染提示词)
             except Exception as e:
                 print(f"[Anima] Failed to load {entry['name']}: {e}")
 
@@ -254,6 +375,45 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "TK Batch LoRA Loader": "TK 批量 LoRA 加载器",
 }
+
+
+# ── 触发词持久表端点（节点侧 widget 推送，执行时离线可解析）──
+
+@PromptServer.instance.routes.post("/anima/lora_trigger_words")
+async def save_lora_trigger_words(request):
+    """节点面板把「LoRA → 触发词」推到这里落盘（只增改，不清空）。
+
+    body: {"loras": {"<name>": ["w1", "w2"], ...}}
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    loras = (body or {}).get("loras")
+    if not isinstance(loras, dict):
+        return web.json_response({"error": "缺少 loras 字段"}, status=400)
+    sanitized = {}
+    for name, words in loras.items():
+        key = str(name or "").strip()
+        if not key or not isinstance(words, (list, tuple)):
+            continue
+        clean = [str(w).strip() for w in words if str(w).strip()]
+        if clean:
+            sanitized[key] = clean
+    if not sanitized:
+        return web.json_response({"saved": 0, "total": len(_load_trigger_words())})
+    total = await asyncio.to_thread(_merge_trigger_words, sanitized)
+    return web.json_response({"saved": len(sanitized), "total": total})
+
+
+@PromptServer.instance.routes.get("/anima/lora_trigger_words")
+async def get_lora_trigger_words(request):
+    """读取触发词持久表（排查用：确认执行端能拿到哪些 LoRA 的触发词）。"""
+    store = await asyncio.to_thread(_load_trigger_words)
+    return web.json_response(
+        {"total": len(store), "loras": store, "path": TRIGGER_WORDS_PATH},
+        dumps=lambda o: json.dumps(o, ensure_ascii=False, separators=(",", ":")),
+    )
 
 
 # ── Bridge status endpoint ──
