@@ -87,6 +87,14 @@ git clone https://github.com/Ararararararaki/comfyui-anima-toolkit.git
 
 ![LoRA 加载节点](screenshots/node-lora-loader.png)
 
+点「本地 LoRA」打开可视化浏览窗:递归显示 LoRA 根目录及子目录,直接看 C 站预览图,点图就加入节点,支持分类筛选、排序、批量勾选。
+
+![本地 LoRA 浏览窗](screenshots/node-lora-browse.png)
+
+点「组」把常用组合存起来,一键切换(悬浮组名可预览组内 LoRA)。
+
+![LoRA 组](screenshots/node-lora-groups.png)
+
 批量把 LoRA 挂到节点上,全程可视化操作:
 
 - 直接粘贴标签即可读取:把 `<lora:xxx:0.8>` 标签(触发词组合)复制粘贴进 `lora_syntax` 文本框,立刻解析成列表,不需要在面板里逐个挑选
@@ -114,7 +122,7 @@ git clone https://github.com/Ararararararaki/comfyui-anima-toolkit.git
 
 ### 2. 本地 LoRA 管理(面板)
 
-![网格视图](screenshots/panel-lora-grid.png) · ![详情视图](screenshots/panel-lora-detail.png)
+![本地 LoRA 管理](screenshots/panel-lora-grid.png)
 
 Steam 风格界面,管理全部本地 LoRA:
 
@@ -165,6 +173,12 @@ Steam 风格界面,管理全部本地 LoRA:
 - 保存预设 / 我的预设:常用组合一键复用
 
 ### 7. LoRA 探索(面板)
+
+![LoRA 探索](screenshots/panel-explore.png)
+
+点卡片上的「选择版本」直接展开版本列表,选哪个版本就下载哪个(两步操作,避免误触直接下载)。
+
+![下载展开](screenshots/panel-explore-download.png)
 
 浏览 C 站 LoRA(Anima 生态,下载量 > 250、赞/下载比 > 5%):
 

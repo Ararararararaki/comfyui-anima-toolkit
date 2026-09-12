@@ -1775,6 +1775,75 @@ export function setupBindingListeners() {
   // Global gallery click delegation
   document.addEventListener('click', handleGalleryClick)
 
+  // ── 版本下拉的「脱离裁切」处理 ──
+  // .version-dropdown 是 position:absolute + bottom:100%，而卡片链路上有 3 层
+  // overflow:hidden（.card-body → .card → .vs-card-wrap），浮层会被裁掉大半
+  // （用户反馈「展开的选项被覆盖住一大部分」）。打开时临时解除「浮层 → 滚动容器」
+  // 之间所有祖先的裁剪并把卡片抬到同级之上，关闭时逐级还原；上方放不下则改为向下展开。
+  const DD_OPEN_Z = '40'
+
+  const findScrollParent = (start: HTMLElement | null): HTMLElement | null => {
+    let el = start
+    while (el && el !== document.body) {
+      const oy = getComputedStyle(el).overflowY
+      if (oy === 'auto' || oy === 'scroll') return el
+      el = el.parentElement
+    }
+    return null
+  }
+
+  const releaseDropdownClip = (dd: HTMLElement) => {
+    let el = dd.parentElement
+    while (el && el !== document.body) {
+      const raw = el.dataset.ddClip
+      if (raw) {
+        const prev = JSON.parse(raw) as { o: string; cv: string; z: string }
+        el.style.overflow = prev.o
+        el.style.contentVisibility = prev.cv
+        el.style.zIndex = prev.z
+        delete el.dataset.ddClip
+      }
+      el = el.parentElement
+    }
+  }
+
+  const applyDropdownClip = (dd: HTMLElement) => {
+    // 只解除「浮层自身 → 滚动容器」之间的裁剪；滚动容器本身必须保留，否则整页会跟着滚
+    const scroller = findScrollParent(dd.parentElement)
+    let el = dd.parentElement
+    while (el && el !== document.body && el !== scroller) {
+      const cs = getComputedStyle(el)
+      if (cs.overflow !== 'visible' || cs.contentVisibility === 'auto') {
+        el.dataset.ddClip = JSON.stringify({
+          o: el.style.overflow, cv: el.style.contentVisibility, z: el.style.zIndex,
+        })
+        el.style.overflow = 'visible'
+        if (cs.contentVisibility === 'auto') el.style.contentVisibility = 'visible'
+        el.style.zIndex = DD_OPEN_Z
+      }
+      el = el.parentElement
+    }
+    // 上方放不下 → 翻到向下展开，避免被滚动容器顶边裁掉
+    const ddRect = dd.getBoundingClientRect()
+    const limit = scroller ? scroller.getBoundingClientRect().top : 0
+    if (ddRect.top < limit + 4) {
+      dd.style.bottom = 'auto'; dd.style.top = '100%'
+      dd.style.marginTop = '4px'; dd.style.marginBottom = '0'
+    } else {
+      dd.style.bottom = '100%'; dd.style.top = 'auto'
+      dd.style.marginTop = '0'; dd.style.marginBottom = '4px'
+    }
+  }
+
+  const closeVersionDropdowns = (except?: HTMLElement | null) => {
+    document.querySelectorAll<HTMLElement>('.version-dropdown').forEach((d) => {
+      if (except && d === except) return
+      if (getComputedStyle(d).display === 'none') return
+      d.style.display = 'none'
+      releaseDropdownClip(d)
+    })
+  }
+
   // Version dropdown：主按钮=展开/收起版本列表（**不直接下载**，2026-09-10 用户反馈
   // 「点一下就直接下载」误触多次 —— 必须经过「开列表 → 选版本」两步）；option=下载该版本
   document.addEventListener('click', (e) => {
@@ -1784,10 +1853,15 @@ export function setupBindingListeners() {
       e.stopPropagation()
       const wrap = btn.closest('.version-dropdown-wrap') as HTMLElement
       if (!wrap) return
-      // 关闭其他 dropdown
-      document.querySelectorAll('.version-dropdown').forEach(d => { if (d !== wrap.querySelector('.version-dropdown')) (d as HTMLElement).style.display = 'none' })
       const dd = wrap.querySelector('.version-dropdown') as HTMLElement
-      dd.style.display = dd.style.display === 'none' ? 'block' : 'none'
+      closeVersionDropdowns(dd) // 关闭其他 dropdown
+      if (getComputedStyle(dd).display === 'none') {
+        dd.style.display = 'block'
+        applyDropdownClip(dd)
+      } else {
+        dd.style.display = 'none'
+        releaseDropdownClip(dd)
+      }
       return
     }
     const opt = target.closest('.version-option') as HTMLElement
@@ -1798,12 +1872,12 @@ export function setupBindingListeners() {
       const nm = opt.dataset.nm || ''
       if (url || vid) { void queueLoraDownload(vid, url, nm) }
       const dd = opt.closest('.version-dropdown') as HTMLElement
-      if (dd) dd.style.display = 'none'
+      if (dd) { dd.style.display = 'none'; releaseDropdownClip(dd) }
       return
     }
     // 点击外部关闭所有 dropdown
     if (!target.closest('.version-dropdown-wrap')) {
-      document.querySelectorAll('.version-dropdown').forEach(d => (d as HTMLElement).style.display = 'none')
+      closeVersionDropdowns()
     }
   })
 
