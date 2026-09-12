@@ -72,13 +72,14 @@
     }
 
     normaliseWeightValue(value) {
-      // Number("") is 0, but an empty widget value is a legacy/misaligned
-      // workflow value, not an intentional zero weight.  Keep a real 0
-      // selectable while converting missing/invalid values to the safe default.
+      // 空值 / 非数字 / 0（含负数）一律归一到中性 1.0：
+      // 权重字段是后加的，旧工作流里没有它，ComfyUI 会把新 widget 恢复成 0；
+      // 若原样保留，节点会按 (tag:0) 执行 —— 该分类的 Tag 被静默丢弃。
+      // 滑块下限是 0.05，所以 0 不可能是用户有意设置的值。
       if (value === null || value === undefined || (typeof value === "string" && !value.trim())) return 1;
       const numeric = Number(value);
-      if (!Number.isFinite(numeric)) return 1;
-      const clamped = Math.max(0, Math.min(2, Math.round(numeric / 0.05) * 0.05));
+      if (!Number.isFinite(numeric) || numeric <= 0) return 1;
+      const clamped = Math.max(0.05, Math.min(2, Math.round(numeric / 0.05) * 0.05));
       return Number(clamped.toFixed(2));
     }
 
@@ -91,7 +92,12 @@
       const widget = this.weightWidgetFor(category);
       if (!widget) return 1;
       const next = this.normaliseWeightValue(widget.value);
-      if (widget.value !== next) widget.value = next;
+      if (widget.value !== next) {
+        widget.value = next;
+        // 写回 1.0 并标记工作流已变更，避免节点执行得到 (tag:0)
+        if (typeof widget.callback === "function") widget.callback(next);
+        this.node.graph?.change();
+      }
       return next;
     }
 
