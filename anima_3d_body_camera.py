@@ -202,7 +202,7 @@ class Anima3DBodyCamera:
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("相机提示词", "camera_meta")
     FUNCTION = "execute"
-    DESCRIPTION = "极简低模 FK 素体相机预览：每侧手臂保留肩/肘、腿部保留髋/膝，可拖动关节摆姿势；复用 TK 相机控制的 BSK 提示词算法。"
+    DESCRIPTION = "极简低模 FK 素体相机预览：每侧手臂保留肩/肘、腿部保留髋/膝，可拖动关节摆姿势；复用 CameraControlCore 提示词算法（anima_camera_control 模块）。"
 
     def execute(self, pose_preset, pose, preset, pos_x, pos_y, pos_z, roll, fov, extra_tags, config):
         px, py, pz, rl = (_finite(pos_x), _finite(pos_y), _finite(pos_z), _finite(roll))

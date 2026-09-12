@@ -90,7 +90,7 @@ DIST_RANGES = {
 }
 
 # 可动素体相机使用独立的 UI 顺序：远景 → 中景 → 近景 → 全身 → 特写。
-# 旧 TK Camera Control 不带 category_order，继续使用上面的旧分段。
+# 旧预设数据不带 category_order，继续使用上面的旧分段。
 BODY_DISTANCE_ORDER = ("wide", "medium", "cu", "full", "ecu")
 BODY_DISTANCE_RANGES = {
     "wide":   (-1.0, -0.6),
@@ -170,7 +170,7 @@ def _load_custom_presets() -> dict:
                         }
                     return out
         except Exception as e:
-            print(f"[TK Camera Control] 自定义预设读取失败（按空处理）: {e}")
+            print(f"[CameraControlCore] 自定义预设读取失败（按空处理）: {e}")
     return {}
 
 
@@ -702,13 +702,18 @@ class AnimaCameraControl:
         return (prompt, json.dumps(meta, ensure_ascii=False))
 
 
-NODE_CLASS_MAPPINGS = {
-    AnimaCameraControl.NAME: AnimaCameraControl,
-}
+# ── 节点注册已退役（2026-09-12）──
+# 「TK 相机控制」节点正式下线，由 `TK 可动素体相机`（anima_3d_body_camera.py）取代。
+#
+# ⚠️ 模块本身必须保留：素体相机通过 `CameraControlCore` / `DEFAULT_CONFIG_JSON` /
+#    `CUSTOM_PRESET` / `_preset_entry` / `all_preset_names` 复用本文件的提示词算法与预设。
+#    删掉这个 .py 会直接让素体相机失效（anima_3d_body_camera 顶部 import 本模块）。
+#
+# ⚠️ 破坏性变更：旧工作流里的 `TK Camera Control` 节点会显示为「缺失节点类型」。
+#    这是有意为之，README / CHANGELOG 需告知用户改用素体相机。
+NODE_CLASS_MAPPINGS: dict = {}
 
-NODE_DISPLAY_NAME_MAPPINGS = {
-    AnimaCameraControl.NAME: "TK 相机控制",
-}
+NODE_DISPLAY_NAME_MAPPINGS: dict = {}
 
 
 # ============ 相机预览 API（批量节点注入相机词时用） ============

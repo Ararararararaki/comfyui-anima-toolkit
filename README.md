@@ -71,7 +71,7 @@ git clone https://github.com/Ararararararaki/comfyui-anima-toolkit.git
 所有节点都位于 ComfyUI 的 **TK** 根目录下:
 
 - `TK/loaders`: **TK 批量 LoRA 加载器**、**TK 触发词**。前者批量加载 `<lora:name:weight>` 标签,后者提取和整理触发词。
-- `TK/camera`: **TK 相机控制**、**TK 可动素体相机**。前者保留原有机位控制；后者用极简可动空壳素体作为角度参照。
+- `TK/camera`: **TK 可动素体相机**。用极简可动空壳素体作为角度参照,直接摆姿势出机位词(旧的 `TK 相机控制` 节点已退役)。
 - `TK/batch`: **TK 批量提示词注入**。按提示词文件分组批量出图,支持独立机位和批次控制。
 - `TK/prompt`: **TK Prompt Cards**、**TK Prompt Saver**、**TK 光影提示词**。管理提示词卡片、翻译与保存，并通过单一下拉框输出 Anima Base 光影预设。
 - `TK/image`: **TK 图像选择**。在多路图像输入之间按策略选择并输出来源信息。
@@ -110,13 +110,17 @@ git clone https://github.com/Ararararararaki/comfyui-anima-toolkit.git
 
 ### TK 可动素体相机
 
-这是一个新建的独立相机节点,旧的 **TK 相机控制** 节点和已有工作流不受影响。
+![TK 可动素体相机](screenshots/tk-body-camera.png)
+
+> ⚠️ **破坏性变更(本版)**:旧的 **TK 相机控制** 节点已退役移除,由本节点取代。
+> 旧工作流里的该节点会显示为「缺失节点类型」,请删除后改用 **TK 可动素体相机**
+> (机位参数与输出端口一一对应,`camera_prompt` / `camera_meta` 语义不变)。
 
 - 素体由低面数球体、圆柱和体块程序化组成,没有 GLB、纹理、贴图、衣服或外部模型下载
 - 关节按层级组成基础 FK 骨架,保留头部、颈部、胸腔、腰部、肩、肘、髋、膝等主要控制点,手腕和脚踝只保留为末端轮廓
 - 点击关节后拖拽可修改 X/Y 旋转,也可直接编辑 XYZ;支持 A-Pose、T-Pose、重置、姿势保存和恢复
 - 鼠标拖拽画布环绕观察,滚轮调整距离;支持正面 / 侧面 / 背面 / 俯视 / 仰视快捷机位,并可调整倾斜角与 FOV
-- 输出继续复用 `TK 相机控制` 的 `CameraControlCore` 提示词算法;`camera_meta` 额外带 yaw、pitch、distance、roll、FOV 和完整姿势 JSON
+- 输出复用 `CameraControlCore` 提示词算法(与旧节点同一套预设与权重语义);`camera_meta` 额外带 yaw、pitch、distance、roll、FOV 和完整姿势 JSON
 - 提示词参数面板提供左右方位、上下方位、距离方位、倾斜角四项权重;距离按远景/中景/近景/全身/特写五档识别,档内权重随距离滑块连续变化;支持滑块与数字输入,步进 0.1,当前相机 Prompt 会实时预览
 - 空闲时只在状态变化或尺寸变化后渲染一帧,节点删除时清理 Three.js 几何体、材质、监听器和渲染资源
 
@@ -187,13 +191,12 @@ Steam 风格界面,管理全部本地 LoRA:
 - 分类 tab:全部 / 画师风格 / 人物角色 / 美学优化 / 背景环境 / 其他 / 收藏 / 已隐藏
 - 检测本地是否已有,卡片上直接下载
 
-### 8. TK 节点系列(十二个配合作画节点)
+### 8. TK 节点系列(十一个配合作画节点)
 
-![TK 相机控制(3D 画布)](screenshots/tk-camera-control.png) · ![TK 批量提示词注入](screenshots/tk-prompt-batch.png) · ![TK D站画廊](screenshots/tk-danbooru-gallery.png)
+![TK 可动素体相机](screenshots/tk-body-camera.png) · ![TK 批量提示词注入](screenshots/tk-prompt-batch.png) · ![TK D站画廊](screenshots/tk-danbooru-gallery.png)
 
 十二个配合作画的新节点(批量 LoRA 加载器见上面第 1 节):
 
-- TK 相机控制:3D 画布上直接拖拽机位(相对滑动,可连续绕到背面/俯仰),景别(距离)、倾斜角、最大/最小权重;支持 19 个预设,一键出相机词并联动批量提示词节点
 - TK 批量提示词注入:读取 `input/prompts/` 提示词文件按组批量出图(一组 = 一张图);支持每页一组独立机位(`相机:` 行)、子目录分组、整批统一机位
   - 批任务控制器(2026-08-24):批量由服务端逐条链式执行(不再依赖浏览器劫持队列),每条任务有稳定状态(排队/执行/成功/失败/跳过/中断)与自铸造 `prompt_id` 精确追踪;节点面板实时显示进度,支持暂停 / 继续 / 失败重试 / 跳过单条 / 取消,绿对号直接看到每组产物文件名;批次清单持久化在 `data/batches/`,刷新页面或重启 ComfyUI 后可在节点上恢复未完成批次并重跑中断任务;点 ComfyUI 的 Queue 按钮或节点「开始批次」均可发起
 - TK D站画廊:按标签搜索 Danbooru(Novelu&Danbooru 图库)图片,多选输出 IMAGE + Prompt + metadata_json(结构化元数据:Danbooru ID / 原始标签数组 / Prompt 分组 / 输出设置 / rating / score / 收藏数 / 尺寸 / 文件类型 / 视频标记 / 原图 URL / 失败原因),下游可直接筛选与复现;内置分级/时间/评分/收藏筛选、Prompt 类别/格式控制、双语 tag 预览、下载、入 Prompt 库

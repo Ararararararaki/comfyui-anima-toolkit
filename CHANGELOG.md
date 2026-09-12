@@ -8,6 +8,31 @@
 
 用户可在节点工具栏「🔄 更新」检查到新版本。
 
+## [2.10.0] - 2026-09-12
+
+### ⚠️ 破坏性变更
+
+- **`TK 相机控制` 节点已退役移除**，由 **`TK 可动素体相机`** 取代。旧工作流里的该节点会显示为
+  「缺失节点类型」，请删除后改用素体相机：机位参数（`pos_x` / `pos_y` / `pos_z` / `roll` / `fov`）
+  与输出端口（`camera_prompt` / `camera_meta`）语义一一对应，预设与权重算法同为 `CameraControlCore`，
+  换节点即可，无需重新调参。
+- 前端 `web/js/anima_camera_control_widget.js` 一并删除（节点已不存在）。
+- `anima_camera_control.py` **模块本身保留**：素体相机通过 `CameraControlCore` / `DEFAULT_CONFIG_JSON` /
+  `CUSTOM_PRESET` / `all_preset_names` 复用它，删除该文件会导致素体相机失效。
+
+### 修复
+
+- **LoRA 探索 · 「选择版本」下拉被裁掉大半**：`.version-dropdown` 是 `position:absolute; bottom:100%`
+  （向上弹），而卡片链路上有 3 层 `overflow:hidden`（`.card-body` → `.card` → `.vs-card-wrap`），
+  浮层弹出即被裁切。现于展开时临时解除「浮层 → 滚动容器」之间所有祖先的裁剪（含 `.card` 的
+  `content-visibility:auto`）并把卡片抬到 `z-index:40`，收起时逐级还原；上方空间不足则自动翻转为
+  向下展开。滚动容器自身保留裁剪，避免整页跟着滚动。
+
+### 文档
+
+- README 功能总览配图全面换新（节点浏览窗 / LoRA 组 / 本地 LoRA 管理 / LoRA 探索 / 下载展开 / Outputs），
+  并补上素体相机配图；`TK 节点系列` 由十二个改为十一个。
+
 ## [2.9.0] - 2026-09-12
 
 ### 新增

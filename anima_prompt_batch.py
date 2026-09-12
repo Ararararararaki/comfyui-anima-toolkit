@@ -100,8 +100,8 @@ class AnimaPromptBatch:
                 }),
                 "camera_target": ("STRING", {
                     "default": "",
-                    "placeholder": "TK 相机控制节点 ID（整批统一机位）",
-                    "tooltip": "可选：指定一个 TK Camera Control 节点，注入对应机位词。",
+                    "placeholder": "相机节点 ID（整批统一机位，如 TK 可动素体相机）",
+                    "tooltip": "可选：指定一个相机节点（TK 可动素体相机）注入对应机位词；旧 TK 相机控制节点已退役。",
                 }),
                 "output_subfolder": ("BOOLEAN", {
                     "default": True,
