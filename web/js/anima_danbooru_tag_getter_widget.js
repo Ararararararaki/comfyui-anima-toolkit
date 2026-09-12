@@ -71,10 +71,28 @@
       return this.node.widgets?.find((widget) => widget.name === `${category}_weight`) || null;
     }
 
-    formatWeight(value) {
+    normaliseWeightValue(value) {
+      // Number("") is 0, but an empty widget value is a legacy/misaligned
+      // workflow value, not an intentional zero weight.  Keep a real 0
+      // selectable while converting missing/invalid values to the safe default.
+      if (value === null || value === undefined || (typeof value === "string" && !value.trim())) return 1;
       const numeric = Number(value);
-      if (!Number.isFinite(numeric) || numeric <= 0) return "1.0";
+      if (!Number.isFinite(numeric)) return 1;
+      const clamped = Math.max(0, Math.min(2, Math.round(numeric / 0.05) * 0.05));
+      return Number(clamped.toFixed(2));
+    }
+
+    formatWeight(value) {
+      const numeric = this.normaliseWeightValue(value);
       return numeric.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") || "0";
+    }
+
+    normaliseWeightWidget(category) {
+      const widget = this.weightWidgetFor(category);
+      if (!widget) return 1;
+      const next = this.normaliseWeightValue(widget.value);
+      if (widget.value !== next) widget.value = next;
+      return next;
     }
 
     updateCount() {
@@ -108,9 +126,8 @@
     setWeightValue(category, value) {
       const widget = this.weightWidgetFor(category);
       if (!widget) return;
-      const numeric = Number(value);
-      const next = Number.isFinite(numeric) ? Math.max(0.05, Math.min(2, Math.round(numeric / 0.05) * 0.05)) : 1;
-      widget.value = Number(next.toFixed(2));
+      const next = this.normaliseWeightValue(value);
+      widget.value = next;
       if (typeof widget.callback === "function") widget.callback(widget.value);
       this.node.graph?.change();
       const control = this.weightControls.get(category);
@@ -161,20 +178,21 @@
         const weightWidget = this.weightWidgetFor(category);
         let weightInput = null;
         if (weightWidget) {
+          const normalisedWeight = this.normaliseWeightWidget(category);
           const weightControl = document.createElement("span");
           weightControl.className = "tk-dtb-weight-control";
-          weightControl.title = `${category} Tag 权重（0.05–2.0；1.0 保持原样）`;
+          weightControl.title = `${category} Tag 权重（0.0–2.0；1.0 保持原样）`;
           const prefix = document.createElement("span");
           prefix.className = "tk-dtb-weight-prefix";
           prefix.textContent = "×";
           weightInput = document.createElement("input");
           weightInput.className = "tk-dtb-weight-input";
           weightInput.type = "number";
-          weightInput.min = "0.05";
+          weightInput.min = "0";
           weightInput.max = "2";
           weightInput.step = "0.05";
           weightInput.inputMode = "decimal";
-          weightInput.value = this.formatWeight(weightWidget.value);
+          weightInput.value = this.formatWeight(normalisedWeight);
           weightInput.setAttribute("aria-label", `${category} Tag 权重`);
           weightInput.addEventListener("click", (event) => event.stopPropagation());
           weightInput.addEventListener("mousedown", (event) => event.stopPropagation());
@@ -275,15 +293,8 @@
         const weightWidget = this.weightWidgetFor(category);
         const weightControl = this.weightControls.get(category);
         if (weightWidget && weightControl) {
-          const numeric = Number(weightWidget.value);
-          // 旧工作流没有这些新增权重字段时，ComfyUI 可能恢复成 0；
-          // 写回 1.0 并标记工作流变更，避免节点执行得到 (tag:0)。
-          if (!Number.isFinite(numeric) || numeric <= 0) {
-            weightWidget.value = 1.0;
-            if (typeof weightWidget.callback === "function") weightWidget.callback(1.0);
-            this.node.graph?.change();
-          }
-          weightControl.value = this.formatWeight(weightWidget.value);
+          const normalisedWeight = this.normaliseWeightWidget(category);
+          weightControl.value = this.formatWeight(normalisedWeight);
         }
       }
       for (const name of ["regex_blacklist", "tag_blacklist"]) {
