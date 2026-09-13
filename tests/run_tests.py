@@ -106,9 +106,18 @@ def step_js_tests() -> bool:
         info("  SKIP JS 测试（PATH 里没有 node）")
         return True
     js_dir = TESTS / "js"
-    files = sorted([*js_dir.glob("*.mjs"), *js_dir.glob("*.js")]) if js_dir.is_dir() else []
-    # 兜底：早期 JS 测试散在 tests/ 顶层
-    files += sorted([*TESTS.glob("test_*.mjs"), *TESTS.glob("*.test.js")])
+    files: list[Path] = []
+    if js_dir.is_dir():
+        files += sorted([*js_dir.glob("*.mjs"), *js_dir.glob("*.js")])
+    # 兜底：早期 JS 测试散在 tests/ 顶层。
+    # ⚠️ 用「任意 .js/.mjs」而不是 `test_*.mjs`：后者会漏掉
+    #    test_preset_latent_resolution.js 这种命名（曾经就没被跑到，
+    #    于是里面硬编码绝对路径的问题一直没在 CI 暴露）。
+    for pat in ("test_*.mjs", "test_*.js", "*.test.js"):
+        files += sorted(TESTS.glob(pat))
+    # 去重且保持稳定顺序
+    seen: set[Path] = set()
+    files = [f for f in files if not (f in seen or seen.add(f))]
     if not files:
         info("  SKIP JS 测试（未找到）")
         return True

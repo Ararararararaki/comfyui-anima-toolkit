@@ -1,8 +1,10 @@
 // TK 空 Latent 分辨率快捷操作的纯逻辑回归测试。
 // 只执行真实前端文件中的计算函数，不需要启动 ComfyUI 或浏览器。
 const fs = require("fs");
+const path = require("path");
 
-const file = "E:/claude program/ComfyUI-Anima-Batch-LoRA/web/js/anima_preset_latent_widget.js";
+// ⚠️ 路径相对本文件推导，不要硬编码绝对路径（写死 E:/claude program/... 会让 CI 直接 ENOENT）。
+const file = path.resolve(__dirname, "..", "web", "js", "anima_preset_latent_widget.js");
 const source = fs.readFileSync(file, "utf8");
 const start = source.indexOf("const RESOLUTION_MULTIPLE");
 const end = source.indexOf("function ensureStyles", start);

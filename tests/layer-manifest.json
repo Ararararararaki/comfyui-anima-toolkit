@@ -25,6 +25,7 @@
    "integration/test_danbooru_search_caret.py",
    "test_ci_config.py",
    "test_layer_manifest.py",
+   "test_offline_portability.py",
    "verify_baidu_translation_ui.py",
    "verify_batch_lora_groups_ui.py",
    "verify_batch_lora_input_resize.py",
@@ -139,7 +140,7 @@
    "why": [
     "comfy8188"
    ],
-   "bytes": 4832
+   "bytes": 5057
   },
   {
    "file": "clothing_draw_ui_harness.html",
@@ -457,7 +458,15 @@
    "file": "test_lora_subdir.py",
    "layer": "unit",
    "why": [],
-   "bytes": 5326
+   "bytes": 6376
+  },
+  {
+   "file": "test_offline_portability.py",
+   "layer": "integration",
+   "why": [
+    "browser"
+   ],
+   "bytes": 5310
   },
   {
    "file": "test_parse_groups.py",
@@ -469,7 +478,7 @@
    "file": "test_preset_latent_resolution.js",
    "layer": "js",
    "why": [],
-   "bytes": 1837
+   "bytes": 1992
   },
   {
    "file": "test_prompt_library_persistence.py",

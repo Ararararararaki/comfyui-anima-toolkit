@@ -1,8 +1,12 @@
 // TK Prompt Cards 前端纯逻辑测试（vm 执行 IIFE 后调用导出的调试函数）
 const fs = require('fs');
+const path = require('path');
 const vm = require('vm');
 
-const src = fs.readFileSync('E:/claude program/ComfyUI-Anima-Batch-LoRA/web/js/anima_prompt_cards_widget.js', 'utf-8');
+// ⚠️ 路径必须相对本文件推导，不能硬编码（曾写死
+//    'E:/claude program/ComfyUI-Anima-Batch-LoRA/web/js/...' → CI 上直接 ENOENT）。
+const widgetPath = path.resolve(__dirname, '..', 'web', 'js', 'anima_prompt_cards_widget.js');
+const src = fs.readFileSync(widgetPath, 'utf-8');
 
 const sandbox = {
   localStorage: { getItem: () => null, setItem() {} },
