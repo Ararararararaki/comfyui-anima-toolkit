@@ -994,7 +994,13 @@ h1 small { font-size: 12px; color: var(--text2); font-weight: 400; margin-left: 
 
   transition: opacity .22s var(--ease-out), transform .22s var(--ease-out); z-index: 9999; pointer-events: none;
 
-  background: rgba(10,10,12,.92); border: 1px solid var(--border); color: var(--text);
+  background: rgba(10,10,12,.92); border: 1px solid var(--border);
+  /* 背景是**写死的深色**，所以文字也必须写死浅色。
+     以前这里写的是 var(--text)：在深色主题（mono）下没问题，但 drinkit（默认主题，
+     color-scheme: light）的 --text 是深色 → 变成"黑字黑底"，实测截图里那句
+     「请先选择目录」几乎看不见。mono-light 另有覆盖（浅底深字），保持不动。
+     写死浅色还能顺带覆盖未来新增的浅色主题。 */
+  color: #f2f3f5;
 
   box-shadow: 0 8px 32px rgba(0,0,0,.5); backdrop-filter: blur(12px);
 

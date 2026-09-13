@@ -1,4 +1,4 @@
-# AGENTS.md — Tk Toolkit（ComfyUI-Anima-Batch-LoRA）
+# AGENTS.md — TK Toolkit（ComfyUI-Anima-Batch-LoRA）
 
 > **接手第一步**：读 `docs/HANDOFF-2026-09-13-cards-autocomplete.md`（**当前版本 v2.12.0**：
 > ②区联想的中文角色名支持 —— 数据来源、匹配分级、Anima 括号转义、性能、踩过的坑）。

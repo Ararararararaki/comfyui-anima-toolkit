@@ -19,14 +19,14 @@
 #    2026-09-13 决定：**保留 id 不变**（换 id = 在 registry 建新节点并重新排队审核，
 #    且会在 registry 上留下一个旧的重复节点）。对外显示名走 [tool.comfy].DisplayName。
 name = "anima-toolkit"
-description = "Tk Toolkit (formerly Anima Toolkit) — all-in-one Anima/SD toolkit for ComfyUI: LoRA management (batch apply + Civitai metadata/downloads), Danbooru search & waterfall gallery, bilingual prompt cards with Chinese tag autocomplete, an output gallery over ComfyUI/output, and batch workflow utilities."
-version = "2.12.4"
+description = "TK Toolkit (formerly Anima Toolkit) — all-in-one Anima/SD toolkit for ComfyUI: LoRA management (batch apply + Civitai metadata/downloads), Danbooru search & waterfall gallery, bilingual prompt cards with Chinese tag autocomplete, an output gallery over ComfyUI/output, and batch workflow utilities."
+version = "2.12.5"
 license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.9"
 # 作者署名。**故意不写 email** —— 一旦提交就进了公开仓库历史、无法撤回；
 # 需要公开再补 `email = "..."`（PEP 621 允许 name/email 任填其一）。
-authors = [{ name = "时运Tk" }]
+authors = [{ name = "时运tk" }]
 # 由 requirements.txt 动态提供（registry 的规范要求），避免两处维护依赖列表
 dynamic = ["dependencies"]
 
@@ -46,11 +46,11 @@ dependencies = { file = ["requirements.txt"] }
 # `toki` = 实际在 registry.comfy.org 创建的 publisher（显示名「时运tk」；**创建后不可改**）。
 PublisherId = "toki"
 # DisplayName = registry / ComfyUI-Manager 列表里显示的**项目名**（可改，改了要发新版才生效）。
-# 2026-09-13 从 "Anima Toolkit" 改为 "Tk Toolkit"：原名与训练工具链 AnimaLoraToolkit(66★) 撞脸，
+# 2026-09-13 从 "Anima Toolkit" 改为 "TK Toolkit"：原名与训练工具链 AnimaLoraToolkit(66★) 撞脸，
 # 搜 "anima toolkit comfyui" 时对方排第一，AI 容易把我们归错类。
 # "Anima" 关键词保留在 [project].description 里 —— 实测 registry 搜索**会索引 description**
 # （搜 `danbooru` 能搜到我们，而 "danbooru" 并不在节点名里），所以改名不掉召回。
-DisplayName = "Tk Toolkit"
+DisplayName = "TK Toolkit"
 # Icon 要求：SVG/PNG/JPG/GIF，≤400×400，正方形。
 # 由 tools/make_icon.py 生成（400×400，取自面板自身配色）—— 有图标后 registry / Manager
 # 的列表里才会显示缩略图，直接影响被发现率，所以不要再留空。
