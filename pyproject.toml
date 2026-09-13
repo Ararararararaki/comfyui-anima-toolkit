@@ -17,7 +17,7 @@
 [project]
 name = "anima-toolkit"
 description = "Anima Toolkit for ComfyUI — all-in-one LoRA management (batch apply + Civitai metadata/downloads), Danbooru search & gallery, prompt management, an output gallery over ComfyUI/output, and batch workflow utilities."
-version = "2.11.0"
+version = "2.12.0"
 license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.9"

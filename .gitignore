@@ -16,6 +16,10 @@ data/tag_category_index.cache
 # 要彻底摘掉需要 `git rm --cached data/batches/bworker.json`（会影响已有部署，待确认）。
 data/batches/
 
+# 别名索引的**构建输入**（harvest 下来的原始数据，50MB+）。运行时不读它们，
+# 只有 tools/build_tag_alias_index.py 用；产物 data/danbooru_alias_index.json 才随包发布。
+data/_sources/
+
 # 测试/ pytest 产物
 .pytest_cache/
 tests/shots/

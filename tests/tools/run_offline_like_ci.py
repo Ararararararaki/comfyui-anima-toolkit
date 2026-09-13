@@ -51,9 +51,11 @@ def main() -> int:
         print("\n".join(out.splitlines()[-40:]))
         print(f"\n[CI 模拟] exit={proc.returncode}")
         if proc.returncode != 0:
-            print("\n❌ 上面这些在真实 CI（干净环境）里也会失败 —— 推之前先修掉。")
+            # 不写 emoji：Windows 控制台是 GBK，报告失败时 print 自己会 UnicodeEncodeError，
+            # 把真正的报错盖掉（ai_verify.py 踩过同一个坑）。
+            print("\n[X] 上面这些在真实 CI（干净环境）里也会失败 —— 推之前先修掉。")
         else:
-            print("\n✅ 离线层在「无重依赖」环境下通过，CI 不应再因依赖缺失而红。")
+            print("\n[OK] 离线层在「无重依赖」环境下通过，CI 不应再因依赖缺失而红。")
         return proc.returncode
 
 

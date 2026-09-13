@@ -119,6 +119,7 @@
    "test_lora_resume.py",
    "test_lora_subdir.py",
    "test_parse_groups.py",
+   "test_prompt_cards_autocomplete.py",
    "test_prompt_library_persistence.py",
    "test_prompt_saver.py",
    "test_string_router.py",
@@ -479,6 +480,12 @@
    "layer": "js",
    "why": [],
    "bytes": 1992
+  },
+  {
+   "file": "test_prompt_cards_autocomplete.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 8879
   },
   {
    "file": "test_prompt_library_persistence.py",

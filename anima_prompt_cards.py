@@ -20,6 +20,7 @@ import re
 import csv
 import json
 import time
+import bisect
 import heapq
 import threading
 import asyncio
@@ -62,13 +63,32 @@ CARDS_LOCK = threading.Lock()
 # 文件由发布包随插件提供；现有的 danbooru_tags_zh.json 仅作为缺失译文的兼容补充。
 AUTOCOMPLETE_PATH = os.path.join(os.path.dirname(__file__), "data", "danbooru_tags_with_description_v3_modified.csv")
 AUTOCOMPLETE_ZH_PATH = os.path.join(os.path.dirname(__file__), "data", "danbooru_tags_zh.json")
-AUTOCOMPLETE_LOCK = threading.Lock()
+# 别名索引（角色中文名 / 作品中文名 / 别名），由 tools/build_tag_alias_index.py 生成。
+# 中文查询走这张表，不再扫描 20 万条英文说明 —— 既快又准（说明里的「望远镜」曾把「望」喂给 telescope）。
+ALIAS_INDEX_PATH = os.path.join(os.path.dirname(__file__), "data", "danbooru_alias_index.json")
+# 可重入锁：_build_autocomplete_alias_tables 持锁期间会再调 _load_autocomplete_entries，
+# 普通 Lock 会在这里自死锁（预热线程与首次查询都会卡住）。
+AUTOCOMPLETE_LOCK = threading.RLock()
+_ALIAS_INDEX_LOCK = threading.Lock()
 _AUTOCOMPLETE_CACHE_LOCK = threading.Lock()
 _AUTOCOMPLETE_ENTRIES = None
 _AUTOCOMPLETE_ZH_ENRICHED = False
 _AUTOCOMPLETE_DESCRIPTIONS_INDEXED = False
 _AUTOCOMPLETE_CACHE = {}
 _AUTOCOMPLETE_CACHE_MAX = 128
+_AUTOCOMPLETE_WARM_STARTED = False
+# 别名索引运行时形态（首次使用时构建，随文件 mtime/size 指纹热重载）
+_ALIAS_INDEX = None
+_ALIAS_INDEX_FINGERPRINT = None
+_AUTOCOMPLETE_ZH_BY_TAG = None       # {tag_key: [zh, ...]}（含 CSV/JSON 兜底译名）
+_AUTOCOMPLETE_ZH_EXACT = None        # {zh_key: [tag_key, ...]}
+_AUTOCOMPLETE_ZH_SUFFIX = None       # {尾缀文本: [tag_key, ...]}（1-4 字，命中「望」→「橘望」）
+_AUTOCOMPLETE_ZH_PREFIX = None       # 排序后的 (别名 key, tag_key) 列表，供前缀二分
+_AUTOCOMPLETE_TAG_SORTED = None      # 排序后的 entry 列表，供标签前缀二分
+_AUTOCOMPLETE_SERIES = None          # {series_key: {...}}
+_AUTOCOMPLETE_SERIES_OF_TAG = None   # {tag_key: series_key}
+_AUTOCOMPLETE_TAGS_OF_SERIES = None  # {series_key: [tag_key, ...]}（按帖数降序）
+_AUTOCOMPLETE_SERIES_ZH = None       # {zh_key: [series_key, ...]}
 _AUTOCOMPLETE_CATEGORY_NAMES = {
     "0": "通用",
     "1": "画师",
@@ -101,8 +121,18 @@ def _autocomplete_key(value):
     return "".join(char for char in text if char.isalnum())
 
 
-def _autocomplete_prompt_text(tag):
-    return re.sub(r"\s+", " ", str(tag or "").replace("_", " ")).strip()
+def _autocomplete_prompt_text(tag, escape_brackets=False):
+    """Danbooru tag → 插入提示词的文本。
+
+    下划线转空格是 Anima 官方写法；括号转义是可选项：ComfyUI 把裸括号当权重语法
+    （`(x)` 会加强 x），要拿到字面标签 `nozomi (blue archive)` 必须写 `\\(\\)`。
+    与 D 站画廊「转义括号」选项保持同一套语义。
+    """
+    text = re.sub(r"\s+", " ", str(tag or "").replace("_", " ")).strip()
+    if escape_brackets:
+        text = re.sub(r"\\([()])", r"\1", text)
+        text = text.replace("(", "\\(").replace(")", "\\)")
+    return text
 
 
 def _autocomplete_short_zh(description):
@@ -182,34 +212,169 @@ def _load_autocomplete_entries():
         return _AUTOCOMPLETE_ENTRIES
 
 
-def _ensure_autocomplete_description_index():
+def _load_alias_index():
+    """读取 data/danbooru_alias_index.json（mtime+size 指纹热重载，便于更新词典不重启）。"""
+    global _ALIAS_INDEX, _ALIAS_INDEX_FINGERPRINT
+    with _ALIAS_INDEX_LOCK:
+        try:
+            stat = os.stat(ALIAS_INDEX_PATH)
+            fingerprint = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            _ALIAS_INDEX, _ALIAS_INDEX_FINGERPRINT = {}, None
+            return _ALIAS_INDEX
+        if _ALIAS_INDEX is not None and _ALIAS_INDEX_FINGERPRINT == fingerprint:
+            return _ALIAS_INDEX
+        payload = {}
+        try:
+            with open(ALIAS_INDEX_PATH, "r", encoding="utf-8") as handle:
+                raw = json.load(handle)
+            if isinstance(raw, dict):
+                payload = raw
+        except (OSError, ValueError, TypeError):
+            payload = {}
+        _ALIAS_INDEX = payload
+        _ALIAS_INDEX_FINGERPRINT = fingerprint
+        return _ALIAS_INDEX
+
+
+def _split_alias_text(short):
+    return [part for part in re.split(r"[、,;；/]+", str(short or "")) if part]
+
+
+def _build_autocomplete_alias_tables():
+    """合成中文查询表（只做一次）。
+
+    中文查询不再扫描 20 万条英文说明：说明里的「望远镜」曾让「望」命中 telescope，
+    而且对 20 万条说明做 key() 会让第一次中文查询卡住好几秒。
+    """
+    global _AUTOCOMPLETE_ZH_BY_TAG, _AUTOCOMPLETE_ZH_EXACT, _AUTOCOMPLETE_ZH_SUFFIX
+    global _AUTOCOMPLETE_TAG_SORTED, _AUTOCOMPLETE_SERIES, _AUTOCOMPLETE_SERIES_OF_TAG
+    global _AUTOCOMPLETE_TAGS_OF_SERIES, _AUTOCOMPLETE_SERIES_ZH, _AUTOCOMPLETE_ZH_PREFIX
     global _AUTOCOMPLETE_DESCRIPTIONS_INDEXED
     with AUTOCOMPLETE_LOCK:
-        if _AUTOCOMPLETE_DESCRIPTIONS_INDEXED:
+        if _AUTOCOMPLETE_ZH_BY_TAG is not None:
             return
-        for entry in _AUTOCOMPLETE_ENTRIES or ():
-            description = entry["description"]
-            entry["description_key"] = _autocomplete_key(description) if _autocomplete_has_cjk(description) else ""
-        _AUTOCOMPLETE_DESCRIPTIONS_INDEXED = True
+        entries = _load_autocomplete_entries()
+        index = _load_alias_index()
+        aliases = index.get("aliases") if isinstance(index.get("aliases"), dict) else {}
+        characters = index.get("characters") if isinstance(index.get("characters"), dict) else {}
+        series = index.get("series") if isinstance(index.get("series"), dict) else {}
 
+        by_tag = {}
+        exact = {}
+        suffix = {}
+        # 别名索引已经把旧词典合并进去了；只有在索引缺失时才回退读 17.9MB 的 JSON。
+        fallback_zh = {} if aliases else _load_autocomplete_zh_index()
 
-def _enrich_autocomplete_zh_index():
-    """CSV 无中文命中时，再用旧双向 JSON 补齐缺少短译文的标签。"""
-    global _AUTOCOMPLETE_ZH_ENRICHED
-    with AUTOCOMPLETE_LOCK:
-        if _AUTOCOMPLETE_ZH_ENRICHED:
-            return
-        zh_index = _load_autocomplete_zh_index()
-        entries = _AUTOCOMPLETE_ENTRIES or ()
+        def add(tag_key, text):
+            item = str(text or "").strip()
+            if not item or not _autocomplete_has_cjk(item):
+                return
+            bucket = by_tag.setdefault(tag_key, [])
+            if len(bucket) >= 4 or item in bucket:
+                return
+            bucket.append(item)
+            item_key = _autocomplete_key(item)
+            if not item_key:
+                return
+            exact.setdefault(item_key, {})[tag_key] = None
+            # 用 dict 去重，避免「尾缀相同」的桶里做 O(n) 线性查重（曾因此卡死）
+            for size in (1, 2, 3, 4):
+                tail = item_key[-size:] if len(item_key) >= size else ""
+                if tail:
+                    suffix.setdefault(tail, {})[tag_key] = None
+
+        for tag_key, items in aliases.items():
+            for item in items if isinstance(items, list) else []:
+                add(tag_key, item)
+        for tag_key, zh in fallback_zh.items():
+            add(tag_key, zh)
+
         for entry in entries:
-            if _autocomplete_has_cjk(entry["zh"]):
+            entry["zh_all"] = list(by_tag.get(entry["tag_key"]) or ())
+            entry["zh_keys"] = [_autocomplete_key(x) for x in entry["zh_all"]]
+            entry["series_key"] = ""
+            if entry["zh_all"]:
+                entry["zh"] = entry["zh_all"][0]
+                entry["zh_key"] = entry["zh_keys"][0]
+            else:
+                # 只剩 CSV 说明里的关键词可用时才解析，避免全表 key() 的启动开销
+                short = _autocomplete_short_zh(entry["description"]) if _autocomplete_has_cjk(entry["description"]) else ""
+                extra = [x for x in _split_alias_text(short) if _autocomplete_has_cjk(x)][:2]
+                if extra:
+                    entry["zh_all"] = extra
+                    entry["zh_keys"] = [_autocomplete_key(x) for x in extra]
+                    entry["zh"] = extra[0]
+                    entry["zh_key"] = entry["zh_keys"][0]
+
+        series_of_tag = {}
+        tags_of_series = {}
+        for tag_key, meta in characters.items():
+            if not isinstance(meta, dict):
                 continue
-            zh = zh_index.get(entry["tag_key"], "")
-            if not _autocomplete_has_cjk(zh):
+            series_key = _autocomplete_key(meta.get("s"))
+            if not series_key:
                 continue
-            entry["zh"] = zh
-            entry["zh_key"] = _autocomplete_key(zh)
-        _AUTOCOMPLETE_ZH_ENRICHED = True
+            series_of_tag[tag_key] = series_key
+            tags_of_series.setdefault(series_key, []).append(tag_key)
+        entry_by_tag = {entry["tag_key"]: entry for entry in entries}
+        for tag_key, series_key in series_of_tag.items():
+            entry = entry_by_tag.get(tag_key)
+            if entry is not None:
+                entry["series_key"] = series_key
+        for series_key, tag_keys in tags_of_series.items():
+            tag_keys.sort(key=lambda k: -(entry_by_tag.get(k, {}).get("count") or 0))
+
+        series_zh = {}
+        for series_key, meta in series.items():
+            if not isinstance(meta, dict):
+                continue
+            for item in meta.get("zh") or []:
+                item_key = _autocomplete_key(item)
+                if item_key:
+                    series_zh.setdefault(item_key, {})[series_key] = None
+
+        prefix_pairs = set()
+        for tag_key, items in by_tag.items():
+            for item in items:
+                item_key = _autocomplete_key(item)
+                if item_key:
+                    prefix_pairs.add((item_key, tag_key))
+
+        _AUTOCOMPLETE_ZH_BY_TAG = by_tag
+        _AUTOCOMPLETE_ZH_EXACT = {k: list(v) for k, v in exact.items()}
+        _AUTOCOMPLETE_ZH_SUFFIX = {k: list(v) for k, v in suffix.items()}
+        _AUTOCOMPLETE_ZH_PREFIX = sorted(prefix_pairs)
+        _AUTOCOMPLETE_TAG_SORTED = sorted(entries, key=lambda e: e["tag_key"])
+        _AUTOCOMPLETE_SERIES = series
+        _AUTOCOMPLETE_SERIES_OF_TAG = series_of_tag
+        _AUTOCOMPLETE_TAGS_OF_SERIES = tags_of_series
+        _AUTOCOMPLETE_SERIES_ZH = {k: list(v) for k, v in series_zh.items()}
+        _AUTOCOMPLETE_DESCRIPTIONS_INDEXED = False
+
+
+def _warm_autocomplete_async():
+    """后台预热查询表：插件加载时就开工，等用户打字时已经建好。"""
+    global _AUTOCOMPLETE_WARM_STARTED
+    with _AUTOCOMPLETE_CACHE_LOCK:
+        if _AUTOCOMPLETE_WARM_STARTED:
+            return
+        _AUTOCOMPLETE_WARM_STARTED = True
+
+    def worker():
+        try:
+            _build_autocomplete_alias_tables()
+            print("[TK Prompt Cards] 中文联想索引预热完成：%d 个标签带中文别名" % len(_AUTOCOMPLETE_ZH_BY_TAG or {}))
+        except Exception as error:  # noqa: BLE001
+            print("[TK Prompt Cards] 中文联想索引预热失败（首次查询时会重试）：%s" % error)
+            return
+        try:
+            # 说明兜底索引也要 1 秒多，同样挪到后台，别让首次查询等它
+            _ensure_autocomplete_description_index()
+        except Exception as error:  # noqa: BLE001
+            print("[TK Prompt Cards] 说明兜底索引预热失败（不影响别名查询）：%s" % error)
+
+    threading.Thread(target=worker, name="tk-cards-alias-warmup", daemon=True).start()
 
 
 def _autocomplete_is_subsequence(query, value):
@@ -220,7 +385,49 @@ def _autocomplete_is_subsequence(query, value):
     return cursor == len(query)
 
 
+def _ensure_autocomplete_description_index():
+    """兜底：中文查询在别名表里完全没命中时，才给说明字段建索引（首次约 1-2 秒）。"""
+    global _AUTOCOMPLETE_DESCRIPTIONS_INDEXED
+    with AUTOCOMPLETE_LOCK:
+        if _AUTOCOMPLETE_DESCRIPTIONS_INDEXED:
+            return
+        for entry in _AUTOCOMPLETE_ENTRIES or ():
+            if entry.get("description_key"):
+                continue
+            description = entry["description"]
+            entry["description_key"] = _autocomplete_key(description) if _autocomplete_has_cjk(description) else ""
+        _AUTOCOMPLETE_DESCRIPTIONS_INDEXED = True
+
+
+def _autocomplete_result(entry, series):
+    notes = entry.get("zh") or ""
+    if not notes and _autocomplete_has_cjk(entry["description"]):
+        notes = _autocomplete_short_zh(entry["description"])
+    row = {
+        "tag": entry["tag"],
+        "prompt": entry["prompt"],
+        "notes": notes,
+        "zh": notes,
+        "description": re.sub(r"\s+", " ", entry["description"]).strip()[:160],
+        "count": entry["count"],
+        "category": entry["category"],
+        "source": "dictionary",
+    }
+    if entry.get("zh_all"):
+        row["aliases"] = entry["zh_all"]
+    if series:
+        row["series"] = series.get("n") or entry.get("series_key") or ""
+        row["series_zh"] = (series.get("zh") or [""])[0]
+        row["series_count"] = series.get("c") or 0
+    return row
+
+
 def _search_autocomplete(query, limit=16):
+    """分级匹配。
+
+    中文查询与英文查询的优先级不同：中文命中别名（尤其「尾缀」= 中文名的名而不是姓）
+    是强信号，必须压过英文子串/说明里碰巧出现的同一个字。
+    """
     normalized = _autocomplete_key(query)
     if not normalized:
         return []
@@ -228,54 +435,111 @@ def _search_autocomplete(query, limit=16):
         limit = max(1, min(40, int(limit)))
     except (TypeError, ValueError):
         limit = 16
-    cache_key = (normalized, limit)
+    cjk_query = _autocomplete_has_cjk(query)
+    cache_key = (normalized, limit, cjk_query)
     with _AUTOCOMPLETE_CACHE_LOCK:
         cached = _AUTOCOMPLETE_CACHE.get(cache_key)
         if cached is not None:
             return list(cached)
 
-    if _autocomplete_has_cjk(query):
-        _ensure_autocomplete_description_index()
-    ranked = []
-    for entry in _load_autocomplete_entries():
-        tag_key = entry["tag_key"]
-        zh_key = entry["zh_key"]
-        description_key = entry["description_key"]
-        if tag_key == normalized:
-            score = 0
-        elif tag_key.startswith(normalized):
-            score = 1
-        elif normalized in tag_key:
-            score = 2
-        elif zh_key == normalized:
-            score = 3
-        elif zh_key.startswith(normalized):
-            score = 4
-        elif normalized in zh_key:
-            score = 5
-        elif normalized in description_key:
-            score = 6
-        elif len(normalized) >= 2 and _autocomplete_is_subsequence(normalized, tag_key):
-            score = 7
-        else:
-            continue
-        ranked.append((score, -entry["count"], entry["tag"], entry))
+    _build_autocomplete_alias_tables()
+    entries = _load_autocomplete_entries()
+    entry_by_tag = {entry["tag_key"]: entry for entry in entries}
+    ranked = {}
+
+    def consider(tag_key, score):
+        entry = entry_by_tag.get(tag_key)
+        if entry is None:
+            return
+        candidate = (score, -entry["count"])
+        previous = ranked.get(tag_key)
+        if previous is None or candidate < previous:
+            ranked[tag_key] = candidate
+
+    def expand_series(series_key, score, cap):
+        for tag_key in (_AUTOCOMPLETE_TAGS_OF_SERIES.get(series_key) or ())[:cap]:
+            consider(tag_key, score)
+
+    if cjk_query:
+        for tag_key in _AUTOCOMPLETE_ZH_EXACT.get(normalized, ()):
+            consider(tag_key, 1)
+        if len(normalized) <= 4:
+            for tag_key in _AUTOCOMPLETE_ZH_SUFFIX.get(normalized, ()):
+                consider(tag_key, 2)
+        pairs = _AUTOCOMPLETE_ZH_PREFIX or []
+        start = bisect.bisect_left(pairs, (normalized, ""))
+        for index in range(start, min(start + 3000, len(pairs))):
+            alias_key, tag_key = pairs[index]
+            if not alias_key.startswith(normalized):
+                break
+            consider(tag_key, 3)
+        for series_key in _AUTOCOMPLETE_SERIES_ZH.get(normalized, ()):
+            consider(series_key, 3)
+            expand_series(series_key, 5, limit)
+        if not ranked:
+            # 只有在精确/尾缀/前缀都没命中时才做全表子串扫描（「蓝档」这类中间片段）
+            for entry in entries:
+                tag_key = entry["tag_key"]
+                hit = None
+                for alias_key in entry.get("zh_keys") or ():
+                    if normalized in alias_key:
+                        hit = 5
+                        break
+                if hit is None and normalized in tag_key:
+                    hit = 6
+                elif hit is None and normalized in (entry.get("series_key") or ""):
+                    hit = 7
+                if hit is not None:
+                    consider(tag_key, hit)
+        if not ranked:
+            _ensure_autocomplete_description_index()
+            for entry in entries:
+                if normalized in (entry.get("description_key") or ""):
+                    consider(entry["tag_key"], 8)
+        if not ranked:
+            for entry in entries:
+                if len(normalized) >= 2 and _autocomplete_is_subsequence(normalized, entry["tag_key"]):
+                    consider(entry["tag_key"], 9)
+    else:
+        # 标签扫描（O(n) 的廉价子串判断）先做，别名随后走 O(1)/O(log n) 结构。
+        # 以前把别名判断塞进同一个循环里，每个条目都要比 4 个别名，实测 350ms。
+        for entry in entries:
+            tag_key = entry["tag_key"]
+            if tag_key == normalized:
+                consider(tag_key, 0)
+            elif tag_key.startswith(normalized):
+                consider(tag_key, 1)
+            elif normalized in tag_key:
+                consider(tag_key, 2)
+        for tag_key in _AUTOCOMPLETE_ZH_EXACT.get(normalized, ()):
+            consider(tag_key, 3)
+        pairs = _AUTOCOMPLETE_ZH_PREFIX or []
+        start = bisect.bisect_left(pairs, (normalized, ""))
+        for index in range(start, min(start + 2000, len(pairs))):
+            alias_key, tag_key = pairs[index]
+            if not alias_key.startswith(normalized):
+                break
+            consider(tag_key, 4)
+        if normalized in _AUTOCOMPLETE_TAGS_OF_SERIES:
+            expand_series(normalized, 6, limit)
+        if not ranked:
+            # 贵的兜底路径只在真的没结果时才走
+            for entry in entries:
+                if len(normalized) >= 3 and _autocomplete_is_subsequence(normalized, entry["tag_key"]):
+                    consider(entry["tag_key"], 7)
+        if not ranked:
+            _ensure_autocomplete_description_index()
+            for entry in entries:
+                if normalized in (entry.get("description_key") or ""):
+                    consider(entry["tag_key"], 8)
 
     result = []
-    for _score, _count, _tag, entry in heapq.nsmallest(limit, ranked, key=lambda item: item[:3]):
-        result.append({
-            "tag": entry["tag"],
-            "prompt": entry["prompt"],
-            "notes": entry["zh"] or (_autocomplete_short_zh(entry["description"]) if _autocomplete_has_cjk(entry["description"]) else ""),
-            "zh": entry["zh"] or (_autocomplete_short_zh(entry["description"]) if _autocomplete_has_cjk(entry["description"]) else ""),
-            "description": re.sub(r"\s+", " ", entry["description"]).strip()[:160],
-            "count": entry["count"],
-            "category": entry["category"],
-            "source": "dictionary",
-        })
-    if not result and _autocomplete_has_cjk(query) and not _AUTOCOMPLETE_ZH_ENRICHED:
-        _enrich_autocomplete_zh_index()
-        return _search_autocomplete(query, limit)
+    for tag_key, (_score, _neg_count) in heapq.nsmallest(
+        limit, ranked.items(), key=lambda item: (item[1][0], item[1][1], item[0])
+    ):
+        entry = entry_by_tag[tag_key]
+        series = _AUTOCOMPLETE_SERIES.get(entry.get("series_key") or "")
+        result.append(_autocomplete_result(entry, series))
     with _AUTOCOMPLETE_CACHE_LOCK:
         _AUTOCOMPLETE_CACHE[cache_key] = result
         while len(_AUTOCOMPLETE_CACHE) > _AUTOCOMPLETE_CACHE_MAX:
@@ -1082,3 +1346,9 @@ class TKPromptCards:
 
 NODE_CLASS_MAPPINGS = {"TKPromptCards": TKPromptCards}
 NODE_DISPLAY_NAME_MAPPINGS = {"TKPromptCards": "TK Prompt Cards"}
+
+# 插件加载时后台建中文联想索引（不阻塞 ComfyUI 启动，也不占首次查询的等待时间）
+try:
+    _warm_autocomplete_async()
+except Exception as _warm_error:  # noqa: BLE001
+    print("[TK Prompt Cards] 联想索引预热线程启动失败：%s" % _warm_error)

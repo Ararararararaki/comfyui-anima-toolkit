@@ -807,7 +807,8 @@
   function cardToText(c) {
     const en = String(c.prompt || c.en || "").trim();
     if (!en) return "";
-    return formatWeightedPromptText(en, c.weight);
+    // 先转义括号再套权重，否则 (tag:1.2) 的括号会被一起转义
+    return formatWeightedPromptText(applyPromptFormat(en), c.weight);
   }
 
   // 追加（智能去重）
@@ -856,6 +857,21 @@
     return String(tag || "").replace(/_/g, " ").replace(/\s+/g, " ").trim();
   }
 
+  // ComfyUI 把裸括号当权重语法（"(x)" 会加强 x），所以要拿到字面标签
+  // `nozomi (blue archive)` 必须写成 `nozomi \(blue archive\)`。
+  // 与 D 站画廊的「转义括号」是同一套语义，先反转义再转义，重复调用安全。
+  const promptFormatSettings = { escapeBrackets: true };
+  function escapeAnimaBrackets(text) {
+    return String(text || "")
+      .replace(/\\([()])/g, "$1")
+      .replace(/\(/g, "\\(")
+      .replace(/\)/g, "\\)");
+  }
+  function applyPromptFormat(text) {
+    const value = String(text || "");
+    return promptFormatSettings.escapeBrackets ? escapeAnimaBrackets(value) : value;
+  }
+
   // 草稿
   const DRAFT_KEY = "anima_tk_cards_draft_v1";
   const TRANSLATE_SOURCE_KEY = "anima_tk_cards_translate_source_v1";
@@ -901,9 +917,11 @@
         curTextHeight: Number.isFinite(curTextHeight) ? Math.max(CUR_TEXT_HEIGHT_MIN, Math.min(CUR_TEXT_HEIGHT_MAX, Math.round(curTextHeight))) : CUR_TEXT_HEIGHT_DEFAULT,
         chipsHeight: Number.isFinite(chipsHeight) ? Math.max(CHIPS_HEIGHT_MIN, Math.min(CHIPS_HEIGHT_MAX, Math.round(chipsHeight))) : CHIPS_HEIGHT_DEFAULT,
         cardGridHeight: Number.isFinite(cardGridHeight) ? Math.max(CARD_GRID_HEIGHT_MIN, Math.min(CARD_GRID_HEIGHT_MAX, Math.round(cardGridHeight))) : CARD_GRID_HEIGHT_DEFAULT,
+        // 默认开：裸括号在 ComfyUI 里是权重语法，角色标签必须转义才是字面量
+        escapeBrackets: raw.escapeBrackets !== false,
       };
     } catch (e) {
-      return { collapsed: {}, pane: "lib", libHeight: LIB_HEIGHT_DEFAULT, curTextHeight: CUR_TEXT_HEIGHT_DEFAULT, chipsHeight: CHIPS_HEIGHT_DEFAULT, cardGridHeight: CARD_GRID_HEIGHT_DEFAULT };
+      return { collapsed: {}, pane: "lib", libHeight: LIB_HEIGHT_DEFAULT, curTextHeight: CUR_TEXT_HEIGHT_DEFAULT, chipsHeight: CHIPS_HEIGHT_DEFAULT, cardGridHeight: CARD_GRID_HEIGHT_DEFAULT, escapeBrackets: true };
     }
   }
   function saveUiState(state) {
@@ -968,6 +986,7 @@
       this._cardSearchAbortController = null;
       this._cardSearchDictionaryKeys = new Set();
       this.uiState = loadUiState();
+      promptFormatSettings.escapeBrackets = this.uiState.escapeBrackets !== false;
       this.sectionBodies = {};
       this.libResizeEl = null;
       this.curTextResizeEl = null;
@@ -2202,9 +2221,20 @@
       this._suggestIdx = -1;
     }
 
+    // Anima 输出格式：下划线→空格始终生效；括号转义可开关（默认开）
+    toggleEscapeBrackets() {
+      const next = this.uiState.escapeBrackets === false;
+      this.uiState.escapeBrackets = next;
+      promptFormatSettings.escapeBrackets = next;
+      saveUiState(this.uiState);
+      this.syncEscapeBracketsBtn?.();
+      this._flash(next
+        ? "插入提示词将转义括号：(tag) → \\(tag\\)"
+        : "插入提示词不再转义括号（ComfyUI 会把裸括号当权重语法）");
+    }
+
     // 用选中卡片替换光标所在词
-    _applySuggest(card) {
-      if (!card) return;
+    _applySuggest(card) {      if (!card) return;
       const el = this.curTextEl;
       const t = el.value;
       const caret = el.selectionStart ?? t.length;
@@ -4638,6 +4668,25 @@
       cardsAddBtn.title = "当前所有片段交 LLM 自动判定分类 → 确认清单（可改判）→ 分类入库";
       cardsAddBtn.addEventListener("click", () => this.cardsAddAll());
       curBtns.appendChild(clipboardBtn); curBtns.appendChild(draftBtn); curBtns.appendChild(clearBtn); curBtns.appendChild(savePromptBtn); curBtns.appendChild(cardsAddBtn);
+
+      // 括号转义开关：角色标签如 nozomi (blue archive)，ComfyUI 会把裸括号当权重语法，
+      // 转义成 nozomi \(blue archive\) 才是字面标签。与 D 站画廊同一语义。
+      const escapeBtn = document.createElement("button");
+      escapeBtn.type = "button";
+      escapeBtn.className = "tk-cards-btn";
+      escapeBtn.dataset.a = "escape-brackets";
+      const syncEscapeBtn = () => {
+        const on = this.uiState.escapeBrackets !== false;
+        escapeBtn.textContent = on ? "括号转义 开" : "括号转义 关";
+        escapeBtn.title = on
+          ? "插入提示词时把 ( ) 转义成 \\( \\)（Anima/ComfyUI 字面括号写法）。点击关闭"
+          : "当前输出裸括号，ComfyUI 会当作权重语法。点击开启转义";
+        escapeBtn.classList.toggle("is-on", on);
+      };
+      this.syncEscapeBracketsBtn = syncEscapeBtn;
+      syncEscapeBtn();
+      escapeBtn.addEventListener("click", () => this.toggleEscapeBrackets());
+      curBtns.appendChild(escapeBtn);
       curHead.appendChild(curBtns);
       this.curTextEl = document.createElement("textarea");
       this.curTextEl.className = "tk-cards-textarea";
@@ -4921,6 +4970,7 @@
  .tk-cards-btn { min-height:28px; padding:4px 9px; border:1px solid var(--tk-border); border-radius:4px; background:#202326; color:var(--tk-text); cursor:pointer; font-size:11px; line-height:18px; transition:border-color .15s ease,background .15s ease,color .15s ease,opacity .15s ease; }
  .tk-cards-btn:hover { border-color:var(--tk-accent); background:#2a2d30; color:var(--tk-accent-strong); }
  .tk-cards-btn:focus-visible { outline:2px solid var(--tk-accent); outline-offset:1px; }
+ .tk-cards-btn.is-on { border-color:var(--tk-accent); background:rgba(90,160,255,.16); color:var(--tk-accent-strong); }
  .tk-cards-btn:disabled { opacity:.45; cursor:default; }
  .tk-cards-btn-main { border-color:var(--tk-accent); background:var(--tk-accent); color:#17191b; font-weight:650; }
  .tk-cards-btn-main:hover { border-color:var(--tk-accent-strong); background:var(--tk-accent-strong); color:#111315; }
