@@ -45,7 +45,7 @@ Civitai 那层的提取规则（`tools/harvest_civitai_zh_aliases.py` + `build_t
 - 丢弃已知作品中文名、格式词（风格/泳装/全角色…）、日文专用汉字（竜沢絵嬢獣剣鉄駅）。
 - 单条证据（support=1）只在令牌像名字（2-4 字）时才接受。
 
-产物：**`data/danbooru_alias_index.json`（8.9MB，随包发布）**。
+产物：**`anima_alias_index.json`（8.9MB，随包发布）**。
 
 ## 3. 匹配与排序（`anima_prompt_cards.py`）
 
@@ -117,7 +117,7 @@ python tools/harvest_animadex.py                    # ~20 分钟（1014 页）
 python tools/harvest_civitai_zh_aliases.py --mode both --max-pages 500   # ~25 分钟，可续跑
 python tools/build_tag_alias_index.py --report       # 纯离线合成 + 抽查
 python tests/run_tests.py                            # 必须过
-# 提交 data/danbooru_alias_index.json（_sources/ 已 gitignore）
+# 提交 anima_alias_index.json（_sources/ 已 gitignore）
 ```
 
 - harvest 脚本都**可续跑**（`data/_sources/*state*.json` 记进度）；
@@ -144,6 +144,6 @@ python tests/run_tests.py                            # 必须过
 - 别名词典仍有噪声（「万岁伸展」「味园米卡」「聖園」），**排在可信来源之后，不会抢结果**，
   但会出现在下拉副标题里。要再干净需人工校对表，或接萌娘百科/Bangumi 的中文名
   —— 后者要先把日文名匹配到 danbooru 罗马字，工作量大。
-- `data/danbooru_alias_index.json` 8.9MB。嫌大可改 gzip（~2MB），需同步改
+- `anima_alias_index.json` 8.9MB。嫌大可改 gzip（~2MB），需同步改
   `_load_alias_index()`。
 - 未做：ComfyUI Registry 发布 2.12.0、GitHub Release v2.12.0（v2.10.0/v2.11.0 已有）。

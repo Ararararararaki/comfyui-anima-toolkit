@@ -65,7 +65,14 @@ AUTOCOMPLETE_PATH = os.path.join(os.path.dirname(__file__), "data", "danbooru_ta
 AUTOCOMPLETE_ZH_PATH = os.path.join(os.path.dirname(__file__), "data", "danbooru_tags_zh.json")
 # 别名索引（角色中文名 / 作品中文名 / 别名），由 tools/build_tag_alias_index.py 生成。
 # 中文查询走这张表，不再扫描 20 万条英文说明 —— 既快又准（说明里的「望远镜」曾把「望」喂给 telescope）。
-ALIAS_INDEX_PATH = os.path.join(os.path.dirname(__file__), "data", "danbooru_alias_index.json")
+#
+# ⚠️ 为什么放在**插件根目录**而不是 data/：内置更新链的发布白名单是
+#    `anima_* / services/ / web/ / app/` + 几个根文件，`data/` 被整个排除（保护用户状态）。
+#    放在 data/ 里，老用户点「更新」只会拿到新代码、拿不到新词典 → 联想静默失效。
+#    根目录的 `anima_alias_index.json` 连**旧版更新链**都会下发。
+ALIAS_INDEX_PATH = os.path.join(os.path.dirname(__file__), "anima_alias_index.json")
+# 兼容/兜底：早期构建产物或手动放置的位置
+ALIAS_INDEX_FALLBACK_PATH = os.path.join(os.path.dirname(__file__), "data", "danbooru_alias_index.json")
 # 可重入锁：_build_autocomplete_alias_tables 持锁期间会再调 _load_autocomplete_entries，
 # 普通 Lock 会在这里自死锁（预热线程与首次查询都会卡住）。
 AUTOCOMPLETE_LOCK = threading.RLock()
@@ -213,20 +220,27 @@ def _load_autocomplete_entries():
 
 
 def _load_alias_index():
-    """读取 data/danbooru_alias_index.json（mtime+size 指纹热重载，便于更新词典不重启）。"""
+    """读取别名索引（mtime+size 指纹热重载，便于换词典不重启）。"""
     global _ALIAS_INDEX, _ALIAS_INDEX_FINGERPRINT
     with _ALIAS_INDEX_LOCK:
-        try:
-            stat = os.stat(ALIAS_INDEX_PATH)
+        source = None
+        fingerprint = None
+        for candidate in (ALIAS_INDEX_PATH, ALIAS_INDEX_FALLBACK_PATH):
+            try:
+                stat = os.stat(candidate)
+            except OSError:
+                continue
+            source = candidate
             fingerprint = (stat.st_mtime_ns, stat.st_size)
-        except OSError:
+            break
+        if source is None:
             _ALIAS_INDEX, _ALIAS_INDEX_FINGERPRINT = {}, None
             return _ALIAS_INDEX
         if _ALIAS_INDEX is not None and _ALIAS_INDEX_FINGERPRINT == fingerprint:
             return _ALIAS_INDEX
         payload = {}
         try:
-            with open(ALIAS_INDEX_PATH, "r", encoding="utf-8") as handle:
+            with open(source, "r", encoding="utf-8") as handle:
                 raw = json.load(handle)
             if isinstance(raw, dict):
                 payload = raw

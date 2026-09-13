@@ -40,7 +40,9 @@ CSV_PATH = os.path.join(DATA, "danbooru_tags_with_description_v3_modified.csv")
 ZH_PATH = os.path.join(DATA, "danbooru_tags_zh.json")
 ANIMADEX_PATH = os.path.join(SOURCES, "animadex_characters.json")
 CIVITAI_PATH = os.path.join(SOURCES, "civitai_loras.jsonl")
-OUT_PATH = os.path.join(DATA, "danbooru_alias_index.json")
+# 产物放**插件根目录**：更新链的发布白名单是 anima_*/services_/web_/app_ + 几个根文件，
+# `data/` 被整个排除（保护用户状态），放 data/ 里老用户点更新拿不到新词典。
+OUT_PATH = os.path.join(PLUGIN_ROOT, "anima_alias_index.json")
 
 CJK_RE = re.compile(r"[\u3400-\u9fff]+")
 # Runs that also swallow kana: "竜華キサキ" must be seen as ONE token so it can be

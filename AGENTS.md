@@ -22,7 +22,7 @@
 
 **本轮（2.12.0）= TK 提示词卡片 ②区联想的中文角色名支持**。核心结论：**坏的是数据覆盖与排序，不是匹配逻辑**。
 
-- 中文角色名走 `data/danbooru_alias_index.json`（8.9MB，随包发布）。它是 `tools/build_tag_alias_index.py`
+- 中文角色名走 `anima_alias_index.json`（8.9MB，随包发布）。它是 `tools/build_tag_alias_index.py`
   从三个**可验证**来源合成的：AnimaDex 角色表（`tools/harvest_animadex.py`，36488 角色 / 3702 作品）、
   Civitai LoRA 元数据挖出的中文名↔danbooru 标签配对（`tools/harvest_civitai_zh_aliases.py`，2638 条带证据）、
   以及社区词典 + 原 CSV 的「关键词」字段。**没有任何 LLM 编造的中文名。**
@@ -191,13 +191,14 @@ anima_*.py             各节点后端（gallery / prompt_batch / batch_lora / �
 web/js/*.js            节点侧前端 widget（**无 TS 注解**，见下）
 web/css/*.css          节点侧样式
 panel/src/             Vite + TS 面板源码
-data/                  随包发布的词典（danbooru CSV / 中文词典 / **danbooru_alias_index.json**）
+anima_alias_index.json 中文别名/角色/作品索引（**必须在根目录** —— 只有 anima_* 前缀才会被更新链下发）
+data/                  随包发布的词典（danbooru CSV / 中文词典）+ 用户状态（**更新链只逐文件放行词典**）
 data/_sources/         harvest 原始数据（**已 gitignore**，构建输入，运行时不读）
 tests/                 分层测试（见 tests/README.md）
 tools/                 bump_version.py / registry_setup.py
 tools/harvest_animadex.py            抓 AnimaDex 全量角色表
 tools/harvest_civitai_zh_aliases.py  抓 Civitai LoRA 中文名证据
-tools/build_tag_alias_index.py       合成 data/danbooru_alias_index.json
+tools/build_tag_alias_index.py       合成 anima_alias_index.json
 docs/                  交接与审计文档
 pyproject.toml         ComfyUI Registry 元数据
 requirements*.txt      运行 / 可选 / CI 依赖
@@ -221,5 +222,5 @@ requirements*.txt      运行 / 可选 / CI 依赖
   这类错译，以及 `聖園`（日文汉字形）这类片段。它们排在可信来源之后，**不会抢走正确结果**，
   但会出现在下拉副标题里。要再提升就得引入人工校对表或萌娘百科/Bangumi 的日文名 join
   （工程量大，需先解决日文名→罗马字匹配）。
-- **`data/danbooru_alias_index.json` 有 8.9MB**（已随包发布）。若嫌大，可改存 gzip
+- **`anima_alias_index.json` 有 8.9MB**（已随包发布）。若嫌大，可改存 gzip
   （`json.load(gzip.open(...))`）压到 ~2MB，但要同步改运行时的 `_load_alias_index()`。

@@ -36,6 +36,21 @@ _ARCHIVE_BASE = f"https://github.com/{_REPO}/archive"
 _EXCLUDED_DIRS = {".git", "data", "input", "outputs", "models", "panel", "tests", "node_modules",
                   "__pycache__", ".github", ".venv", "venv"}
 
+# `data/` 里混着两类东西，必须**逐文件**区分，不能整目录放过、也不能整目录挡掉：
+#   · 用户状态（prompt_library.json / batches/ / danbooru_account.json …）→ 永不覆盖
+#   · 随包发布的词典 → 必须随更新一起下发
+# 2026-09-13 的真实缺陷：data/ 整个被排除，于是老用户点「更新」只会拿到新代码、
+# 拿不到新词典 —— 2.12.0 的中文联想在老用户机器上会**静默失效**（代码在、索引不在）。
+# 而且 `check_update` 的 package_match 也看不见这些文件，连"有更新"都判不出来。
+#
+# 同理 `services/` 也必须下发：`__init__.py` 拆分后 `from .services.github_update import …`
+# 是硬依赖，老用户点更新拿到新 `__init__.py` 却拿不到 services/ → **ImportError，插件整个加载不了**。
+_SHIPPED_DATA_FILES = {
+    "data/danbooru_tags_with_description_v3_modified.csv",
+    "data/danbooru_tags_zh.json",
+    "data/danbooru_alias_index.json",
+}
+
 # 检查结果缓存（30 秒）+ 串行化锁；与应用锁分开，避免「检查」把「应用」堵住
 UPDATE_CHECK_CACHE: dict = {"expires": 0.0, "value": None}
 UPDATE_APPLY_LOCK: "object | None" = None  # 由 __init__ 注入 asyncio.Lock（跨版本保持兼容）
@@ -77,11 +92,17 @@ def version_tuple(v: str) -> tuple:
 # ── 发布文件白名单 / 遍历 / git blob sha ─────────────────────────────────────
 def is_release_path(relative_path: str) -> bool:
     path = relative_path.replace("\\", "/").strip("/")
-    if not path or any(part in _EXCLUDED_DIRS for part in path.split("/")):
+    if not path:
+        return False
+    # 白名单要**先于** _EXCLUDED_DIRS 判断：否则 data/ 会先被整目录挡掉
+    if path in _SHIPPED_DATA_FILES:
+        return True
+    if any(part in _EXCLUDED_DIRS for part in path.split("/")):
         return False
     return (
         path in {"__init__.py", "VERSION", "README.md", "CHANGELOG.md", "LICENSE"}
         or path.startswith("anima_")
+        or path.startswith("services/")
         or path.startswith("web/")
         or path.startswith("app/")
     )

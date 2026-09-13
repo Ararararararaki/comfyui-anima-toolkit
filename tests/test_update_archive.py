@@ -121,8 +121,12 @@ def _make_archive(path: Path, *, include_required: bool = True) -> None:
             archive.writestr("comfyui-anima-toolkit-main/VERSION", "9.9.9\n")
         archive.writestr("comfyui-anima-toolkit-main/web/js/update.js", "new js")
         archive.writestr("comfyui-anima-toolkit-main/app/index.html", "new app")
+        # __init__.py 拆分后 services/ 是硬依赖，不下发就是 ImportError
+        archive.writestr("comfyui-anima-toolkit-main/services/github_update.py", "new svc")
         archive.writestr("comfyui-anima-toolkit-main/data/keep-me.json", "must not stage")
         archive.writestr("comfyui-anima-toolkit-main/models/keep-me.safetensors", "must not stage")
+        # 随包发布的词典：必须被下发（老用户点更新才拿得到新词典）
+        archive.writestr("comfyui-anima-toolkit-main/data/danbooru_alias_index.json", '{"version":1}')
 
 
 def _set_update_module_plugin_dir(module, plugin_dir: str) -> None:
@@ -169,8 +173,43 @@ def _assert_guarded_files_unchanged(before: dict[str, bytes]) -> None:
             "说明 _apply_staged_update 的目标目录没有被成功重定向到临时目录。")
 
 
+def test_release_path_whitelist_covers_everything_the_plugin_needs_at_runtime():
+    """内置更新链必须能下发「跑起来需要的一切」，同时绝不下发用户数据。
+
+    这一条是 2026-09-13 两个真实缺陷的护栏：
+      · `services/` 曾被排除 —— 但 `__init__.py` 拆分后硬依赖它，老用户点更新会 ImportError；
+      · `data/` 曾被整目录排除 —— 于是新词典永远下发不到，功能静默失效。
+    """
+    module = _load_plugin_package()
+    upd = module._UPDATE_MODULE
+
+    # 运行时必需：必须下发
+    for path in (
+        "__init__.py", "VERSION", "README.md", "CHANGELOG.md", "LICENSE",
+        "anima_prompt_cards.py",
+        "anima_alias_index.json",          # 中文别名词典（必须放根目录才下发得动）
+        "services/__init__.py",
+        "services/github_update.py",
+        "web/js/anima_prompt_cards_widget.js",
+        "app/index.html",
+        "data/danbooru_tags_with_description_v3_modified.csv",
+        "data/danbooru_tags_zh.json",
+    ):
+        assert upd.is_release_path(path), f"更新链不下发 {path} —— 老用户会拿不到它"
+
+    # 用户状态 / 体积无关物：必须挡住
+    for path in (
+        "data/prompt_library.json", "data/batches/bworker.json", "data/danbooru_account.json",
+        "data/update_state.json", "data/translation_cache.sqlite3",
+        "models/anything.safetensors",
+        "panel/src/main.ts", "tests/test_cards_v2.py", "tools/bump_version.py", ".git/config",
+    ):
+        assert not upd.is_release_path(path), f"更新链不该下发 {path}"
+
+
 def test_update_archive_stages_only_release_paths_and_keeps_user_data():
-    """更新 ZIP 只覆盖发布文件；data/ 与 models/ 必须原样保留；缺必要文件要拒绝。"""
+    """更新 ZIP 只覆盖发布文件；data/ 里仅白名单词典下发，其余用户数据与 models/ 原样保留；
+    缺必要文件要拒绝。"""
     guard = _snapshot_guarded_files()
     module = _load_plugin_package()
     original_plugin_dir = module.PLUGIN_DIR
@@ -187,7 +226,12 @@ def test_update_archive_stages_only_release_paths_and_keeps_user_data():
             staged_rel = {Path(relative).as_posix() for relative, _ in staged}
             staged_names = {relative.replace(os.sep, "/") for relative, _ in staged}
             assert {"__init__.py", "VERSION", "web/js/update.js", "app/index.html"} <= staged_names, staged_names
-            assert not any(n.startswith("data/") or n.startswith("models/") for n in staged_names), staged_names
+            # services/ 必须下发（拆分后 __init__ 硬依赖它）
+            assert "services/github_update.py" in staged_names, staged_names
+            # data/ 里只有**白名单词典**能进更新包；其余用户状态与 models/ 一律不碰
+            assert "data/danbooru_alias_index.json" in staged_names, staged_names
+            assert "data/keep-me.json" not in staged_names, staged_names
+            assert not any(n.startswith("models/") for n in staged_names), staged_names
             assert "__init__.py" in staged_rel and "VERSION" in staged_rel, staged_rel
 
             # 应用阶段：用户数据必须活下来
@@ -204,6 +248,7 @@ def test_update_archive_stages_only_release_paths_and_keeps_user_data():
             assert (plugin_path / "__init__.py").read_text(encoding="utf-8") == "new init"
             assert (plugin_path / "web/js/update.js").read_text(encoding="utf-8") == "new js"
             assert json.loads((plugin_path / "data/keep-me.json").read_text(encoding="utf-8"))["keep"] is True
+            assert (plugin_path / "data/danbooru_alias_index.json").read_text(encoding="utf-8") == '{"version":1}'
 
             # 结构无效的包必须被拒（而不是把插件覆盖坏）
             invalid_archive = temp_path / "invalid.zip"

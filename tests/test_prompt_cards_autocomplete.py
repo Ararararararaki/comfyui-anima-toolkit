@@ -172,6 +172,8 @@ def test_alias_index_ships_and_has_expected_shape(apc):
     assert os.path.exists(apc.ALIAS_INDEX_PATH), (
         "缺少 %s —— 它是随包发布的词典，必须提交到仓库" % apc.ALIAS_INDEX_PATH
     )
+    # 必须放在插件根目录（anima_* 前缀）才会被内置更新链下发；放 data/ 里老用户更新不到
+    assert os.path.basename(apc.ALIAS_INDEX_PATH).startswith("anima_"), apc.ALIAS_INDEX_PATH
     index = apc._load_alias_index()
     for key in ("characters", "series", "aliases"):
         assert isinstance(index.get(key), dict) and index[key], "别名索引缺少 %s" % key
