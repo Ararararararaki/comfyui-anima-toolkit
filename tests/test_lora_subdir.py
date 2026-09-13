@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import sys
 import types
 from pathlib import Path
@@ -92,12 +93,26 @@ def test_lora_syntax_and_subdir_resolution():
 
     without_extension = module._find_lora_path(r"Illustrious\NiffiV1.3-000018")
     with_extension = module._find_lora_path(r"illustrious/NiffiV1.3-000018.safetensors")
-    # ⚠️ 期望值必须跟着**平台**走：`os.path.join` 在 Windows 产出 `C:\models\...`、
-    #    在 Linux 产出 `C:\models/...`（因为 "C:\\models" 整体只是一个普通目录名）。
-    #    原来硬编码反斜杠版本 → 本地绿、CI（ubuntu）红。
-    expected = os.path.join("C:\\models", os.path.join("Illustrious", "NiffiV1.3-000018.safetensors"))
-    assert without_extension == expected, without_extension
-    assert with_extension == expected, with_extension
+    # ⚠️ 断言必须与**平台无关**：
+    #   stub 的 get_full_path 用 os.path.join("C:\\models", <filename>)，而这里传入的
+    #   *文件名* 本身是 Windows 风格（`Illustrious\NiffiV1.3-...`，来自上面的 FILES），
+    #   于是 Linux 上 join 出来的结果混了两种分隔符（`C:\models/Illustrious\...`）。
+    #   这纯粹是测试夹具的产物，不是 _find_lora_path 的行为问题 —— 真实 ComfyUI 的
+    #   filename_list 全用正斜杠，不会出现这种混合。
+    #   所以这里只断言「同一目录 + 同名文件 + 两边解析到同一个结果」，
+    #   不再硬编码分隔符（硬编码反斜杠会让本地绿、CI 红）。
+    def _split_any(p: str) -> tuple[str, str]:
+        parts = re.split(r"[\\/]+", p)
+        return parts[-2], parts[-1]
+
+    assert without_extension is not None, "未解析出 LoRA 路径"
+    assert with_extension is not None, "未解析出 LoRA 路径"
+    assert _split_any(without_extension) == ("Illustrious", "NiffiV1.3-000018.safetensors"), without_extension
+    assert _split_any(with_extension) == ("Illustrious", "NiffiV1.3-000018.safetensors"), with_extension
+    # 两种写法（反斜杠、正斜杠+带扩展名、忽略大小写）必须落到**同一个**文件
+    assert without_extension == with_extension, (without_extension, with_extension)
+    # 目录部分应指向 stub 给出的基目录（允许分隔符差异）
+    assert re.split(r"[\\/]+", without_extension)[-3] == "models", without_extension
 
     assert module._normalize_lora_name(r"./Styles\Detail") == "styles/detail"
 
