@@ -240,57 +240,54 @@ topics:      anima, civitai, comfyui, comfyui-custom-nodes, comfyui-nodes, danbo
 - 节点菜单里有 `TK 可动素体相机`、**没有** `TK 相机控制`；
 - 画廊工具栏有「热门随机 / 优质随机 / 高收藏随机 / 换一批」。
 
-### 6.2 ComfyUI Registry —— 代码侧完成，卡在**账号未登录**（实测已定位到确切原因）
+### 6.2 ComfyUI Registry —— ✅ 已发布成功（版本待审核）
 
-**当前状态**：`pyproject.toml` 已通过 `comfy node validate`（`✓ All validation checks passed`）；
-但**实际 publish 失败**，实测错误是：
+**最终结果**：
 
+| 项 | 值 |
+|---|---|
+| node id | **`anima-toolkit`** |
+| 显示名 | Anima Toolkit |
+| **publisher** | **`toki`**（显示名「时运tk」；**创建后不可改**） |
+| 已发布版本 | **2.11.0**，状态 **`NodeVersionStatusPending`**（等 registry 审核） |
+| 产物 | `https://cdn.comfy.org/toki/anima-toolkit/2.11.0/node.zip` |
+| node 状态 | `NodeStatusActive`（无需鉴权即可公开读到） |
+| 网页 | https://registry.comfy.org/nodes/anima-toolkit |
+
+**发布过程踩到的三个坑（都已修，后两条已加自动校验）**：
+
+1. **PAT 必须是「已登录账号」下生成的** —— 早先那个 PAT 在 registry 里查不到 user，
+   报 `Failed to validate token`。网页登录一次（创建 publisher）后就正常了。
+2. **PublisherId 只能全小写** —— `/publishers/validate?username=Ararararararaki` 实测
+   `400 Must start with a lowercase letter...`。**带大写 publish 时报的错偏偏是含糊的
+   `Failed to validate token`**，极易误判成「PAT 坏了」。
+   已在 `ai_verify.py` + `tests/test_ci_config.py` 各加一条全小写校验（负向验证过）。
+3. **comfy-cli 在中文 Windows 上会因 GBK 解码崩溃** ——
+   `'gbk' codec can't decode byte 0xae`（发生在 `node pack` 遍历中文文件名时）。
+   解法：**用 `python -X utf8` 运行**（或设 `PYTHONUTF8=1`）。
+   ⚠️ 注意这个崩溃发生在**上传之后**，所以会看到「崩溃了但其实已经发布成功」的假象 ——
+   重试时返回 `The node version already exists` 就是已经成功了。
+
+**`Pending` 的含义**：node 记录已 `Active`，但**版本要经 registry 审核**才进入公开检索
+（实测 `GET /nodes?search=anima-toolkit` 暂时查不到，`GET /publishers/toki/nodes` 能查到）。
+审核通过后即可在 registry 网页与 ComfyUI-Manager 里搜到并安装。**无需再做什么**，
+`pyproject.toml` 已固定为 `PublisherId = "toki"`。
+
+**以后发新版本**（改了代码要再发）：
+
+```bash
+cd "E:\claude program\ComfyUI-Anima-Batch-LoRA"
+python tools/bump_version.py 2.12.0      # 一处改五处同步
+python tests/run_tests.py                # 自检（含版本一致性）
+# 补写 CHANGELOG → 推送 → 然后：
+python -X utf8 tools/registry_setup.py --token <PAT>
 ```
-400 {"message":"Failed to validate token"}
-```
 
-**根因已查清（不是配置问题，也不是 PAT 格式问题）**：
+（`-X utf8` 不能省 —— 见上面第 3 条。）
 
-- 该 PAT（`pat-…`）**在 registry 侧没有绑定任何用户**。决定性证据：带它访问
-  `GET /publishers/{任意id}/tokens` 一律返回 `401 {"message":"user not found"}`，
-  而不带 token 时返回的是 `401 missing auth token for path: ...` —— **两种 401 消息不同**，
-  说明 token 本身被认出来了，但服务端查不到它所属的 user。
-- 用同一个 PAT 尝试 `POST /publishers` 建 publisher 也是 `401 {"message":"user not found"}`。
-- 因此 `comfy node publish` 的 `Failed to validate token` 是**这个**原因，
-  **不是** PublisherId 大小写、也不是 `[project] name` 的问题。
-
-**为什么这一步无法用代码替代**：registry 的 user 记录是在
-**网页上用 GitHub OAuth 登录时**创建的。PAT 必须在账号页生成 ——
-所以「没有 user → 无法生成有效 PAT → 无法发布」是个死结，任何 GitHub token 都打不破。
-
-**顺手修正了一处真实配置风险**：registry 的 publisher id **只接受小写**
-（`/publishers/validate?username=Ararararararaki` 实测返回
-`400 Must start with a lowercase letter and can only contain lowercase letters, digits, and hyphens.`）。
-`pyproject.toml` 的 `PublisherId` 已从 `Ararararararaki` 改为 **`ararararararaki`**，
-并在 `ai_verify.py` + `tests/test_ci_config.py` 各加了一条**全小写校验**
-（否则 publish 时只会看到含糊的 "Failed to validate token"，极易误判成 PAT 坏了）。
-两条校验都已负向验证（注入大写 → FAIL，还原 → PASS）。
-
-**你只需做 1 分钟的人工步骤**（我无法代做）：
-
-1. 浏览器打开 **https://registry.comfy.org** → 用 **GitHub 登录**
-   （这一步才会创建 registry 的 user 记录）。
-2. 登录后 **Create Publisher**，id 填 **`ararararararaki`**（小写，创建后不可改）。
-3. 在同一账号页生成 **Publishing API Key**。
-4. 回到终端，一条命令即可（脚本会先把脉再发布）：
-
-   ```bash
-   cd "E:\claude program\ComfyUI-Anima-Batch-LoRA"
-   python tools/registry_setup.py --token <新的 PAT>          # 体检 + 发布
-   python tools/registry_setup.py --token <PAT> --check       # 只体检不发布
-   ```
-
-   新脚本 `tools/registry_setup.py` 会：核对 pyproject 与 `VERSION` 一致 / PublisherId 全小写 /
-   PAT 是否绑定用户（并把上面的死结解释直接打印出来）/ 跑 `node validate` / 执行 `node publish`。
-   PAT 若仍是孤儿，它会明确告诉你「去网页登录」。
-
-**ComfyUI-Manager 收录**一般以 Registry 发布为前提，所以先做 Registry。
-**注意**：node id（`anima-toolkit`）**首次发布后不可更改**，改 id 等于发新节点。
+**ComfyUI-Manager 收录**以 Registry 发布为前提，现已满足；
+Manager 会按 registry 的公开数据展示，无需单独提交。
+**注意**：node id（`anima-toolkit`）首次发布后**不可更改**，改 id 等于发新节点。
 
 ## 7. 本轮最终验证汇总
 

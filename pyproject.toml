@@ -34,10 +34,11 @@ dependencies = { file = ["requirements.txt"] }
 
 [tool.comfy]
 # Publisher id：registry 要求**全小写**（只能小写字母/数字/连字符）。
-# 实测 `Ararararararaki` 被 /publishers/validate 拒（"Must start with a lowercase letter
-# and can only contain lowercase letters, digits, and hyphens."），故用小写形式 ——
-# 与 GitHub 用户名的大小写无关，registry 的 publisher id 本身就是小写。
-PublisherId = "ararararararaki"
+# 实测 `Ararararararaki` 被 /publishers/validate 拒
+# （"Must start with a lowercase letter and can only contain lowercase letters, digits, and hyphens."），
+# 所以必须用小写 —— 与 GitHub 用户名的大小写无关。
+# `toki` = 实际在 registry.comfy.org 创建的 publisher（显示名「时运tk」；**创建后不可改**）。
+PublisherId = "toki"
 DisplayName = "Anima Toolkit"
 # Icon 要求：SVG/PNG/JPG/GIF，≤400×400，正方形。
 # 留空表示先不设图标（比放一个错的 URL 好）。补好后填成可公网访问的直链，例如：
