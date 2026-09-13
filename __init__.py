@@ -131,7 +131,7 @@ WEB_DIRECTORY = "./web"
 # 从根上消掉「两个地方要一起改」这个失败模式；读失败（打包丢文件等）才回落到内置值。
 # 更新链（_is_update_release_path / 更新 ZIP 校验）本来就要求包里带 VERSION，
 # 所以这个文件在真实安装里一定存在。
-_FALLBACK_VERSION = "2.12.5"
+_FALLBACK_VERSION = "2.12.6"
 try:
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"), encoding="utf-8") as _vf:
         __version__ = _vf.read().strip() or _FALLBACK_VERSION

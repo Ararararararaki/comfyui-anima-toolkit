@@ -8,6 +8,22 @@
 
 用户可在节点工具栏「🔄 更新」检查到新版本。
 
+## [2.12.6] - 2026-09-13
+
+### 修复
+
+- **重发 2.12.5：registry 包里的 `app/` 是坏的**。2.12.5 发布时我为了本机验证重建了 `app/`，
+  但 `comfy node pack` **只打包 git-tracked 文件** —— 新构建出来的 hash 文件当时还没被跟踪，
+  于是被跳过，而 `app/index.html` 已经引用它们。打包日志已经点名：
+  `File not found. Not including in zip: app/assets/index-BeUX-0M9.css`。
+  改法：不手工提交 `app/`（按 `AGENTS.md` 由 CI 的 `build-app.yml` 拥有），
+  等 bot 的重建提交 `chore: rebuild panel app` 落地后再发版；本版 `app/` 即 bot 的产物，
+  实测 `index.html` 引用的 `index-Chynkz48.css` 含 `#f2f3f5`，且 `app/` 与 git 完全一致（pack 不再告警）。
+  2.12.5 的 registry 版本作废（仍是 `Pending`，未被安装）。
+
+> 教训（已写进 `AGENTS.md` 坑 9 的语境）：**改了 `panel/` 之后不要在本机 rebuild `app/` 再发版** ——
+> `app/` 是 CI 的产物，本地重建会让「git 跟踪的清单」和「磁盘内容」错位，打包静默漏文件。
+
 ## [2.12.5] - 2026-09-13
 
 ### 修复
