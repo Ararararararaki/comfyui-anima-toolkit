@@ -17,7 +17,7 @@ an output gallery, and batch-workflow utilities.
 
 一个 ComfyUI 自定义节点 + 配套本地管理面板:批量挂 LoRA、可视化管理模型、解析返图参数、整理提示词。
 
-当前发布版本: **2.12.0**。
+当前发布版本: **2.12.1**。
 
 ## 这个项目解决什么（10 秒版）
 
