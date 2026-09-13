@@ -349,7 +349,7 @@
    "file": "test_batch_lora_trigger_words.py",
    "layer": "unit",
    "why": [],
-   "bytes": 11014
+   "bytes": 11763
   },
   {
    "file": "test_camera_presets.py",
@@ -457,7 +457,7 @@
    "file": "test_lora_subdir.py",
    "layer": "unit",
    "why": [],
-   "bytes": 4208
+   "bytes": 5326
   },
   {
    "file": "test_parse_groups.py",

@@ -36,11 +36,21 @@ def _load_module():
     sys.modules["comfy.sd"] = comfy.sd
     sys.modules["comfy.utils"] = comfy.utils
 
-    aiohttp = types.ModuleType("aiohttp")
-    aiohttp.web = types.SimpleNamespace(
-        json_response=lambda *a, **k: None, Response=lambda *a, **k: None)
-    sys.modules["aiohttp"] = aiohttp
-    sys.modules["aiohttp.web"] = aiohttp.web
+    # ⚠️ 只在**真的缺失**时 stub aiohttp，缺失时也要补齐 ClientSession/ClientTimeout。
+    #    原来无条件用空 ModuleType 覆盖 sys.modules["aiohttp"]，且不做还原 ——
+    #    pytest 同 session 里后面的测试（如 test_update_archive）会 import __init__.py，
+    #    而 __init__.py 模块级就写 `_PROXY_SESSION: aiohttp.ClientSession | None = None`
+    #    → AttributeError: module 'aiohttp' has no attribute 'ClientSession'。
+    #    这就是「单独跑绿、整套跑红」的测试间污染。
+    if "aiohttp" not in sys.modules:
+        aiohttp = types.ModuleType("aiohttp")
+        aiohttp.__path__ = []
+        aiohttp.ClientSession = type("ClientSession", (), {})
+        aiohttp.ClientTimeout = type("ClientTimeout", (), {"__init__": lambda self, **k: None})
+        aiohttp.web = types.SimpleNamespace(
+            json_response=lambda *a, **k: None, Response=lambda *a, **k: None)
+        sys.modules["aiohttp"] = aiohttp
+        sys.modules["aiohttp.web"] = aiohttp.web
 
     server = types.ModuleType("server")
     server.PromptServer = types.SimpleNamespace(
@@ -82,7 +92,10 @@ def test_lora_syntax_and_subdir_resolution():
 
     without_extension = module._find_lora_path(r"Illustrious\NiffiV1.3-000018")
     with_extension = module._find_lora_path(r"illustrious/NiffiV1.3-000018.safetensors")
-    expected = r"C:\models\Illustrious\NiffiV1.3-000018.safetensors"
+    # ⚠️ 期望值必须跟着**平台**走：`os.path.join` 在 Windows 产出 `C:\models\...`、
+    #    在 Linux 产出 `C:\models/...`（因为 "C:\\models" 整体只是一个普通目录名）。
+    #    原来硬编码反斜杠版本 → 本地绿、CI（ubuntu）红。
+    expected = os.path.join("C:\\models", os.path.join("Illustrious", "NiffiV1.3-000018.safetensors"))
     assert without_extension == expected, without_extension
     assert with_extension == expected, with_extension
 

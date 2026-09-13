@@ -123,3 +123,35 @@ collect_ignore += [
     str(TESTS_DIR / "js"),
     str(TESTS_DIR / "shots"),
 ]
+
+
+# ── 测试间污染守卫 ────────────────────────────────────────────────────────────
+# 本项目的测试大量用「往 sys.modules 里塞 stub」来顶掉 ComfyUI 运行时。
+# 踩过的坑：某个测试用空 ModuleType 覆盖了**真实的** aiohttp 且不还原，
+# 于是同 session 里后面的测试 import __init__.py 时炸在
+# `aiohttp.ClientSession` 上 —— 表现为「单独跑绿、整套跑红」，
+# 而且只在 CI（ubuntu，aiohttp 是真包）才暴露得明显。
+#
+# 这里给几个关键第三方包在测试前后做身份校验：只要真实包在测试期间被**换掉**且没还回来，
+# 立刻失败并点名是哪个测试干的。
+_PROTECTED = ("aiohttp", "requests", "yaml", "pytest")
+_snapshot: dict[str, object] = {}
+
+
+def pytest_runtest_setup(item):
+    _snapshot.clear()
+    for name in _PROTECTED:
+        mod = sys.modules.get(name)
+        # 只关心「真实安装的包」：有 __file__ 说明是真模块，而不是别的测试造的 stub
+        if mod is not None and getattr(mod, "__file__", None):
+            _snapshot[name] = mod
+
+
+def pytest_runtest_teardown(item, nextitem):
+    for name, original in _snapshot.items():
+        now = sys.modules.get(name)
+        if now is not original:
+            raise AssertionError(
+                f"测试 {item.name} 把真实模块 sys.modules[{name!r}] 换掉且没有还原 —— "
+                f"会污染同 session 的后续测试。请改成「只在缺失时 stub」并在结束时还原，"
+                f"或补齐必要属性（如 aiohttp.ClientSession）。")

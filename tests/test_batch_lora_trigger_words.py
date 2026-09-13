@@ -74,14 +74,24 @@ def build_stubs():
     folder_paths.get_output_directory = lambda: tempfile.gettempdir()
     sys.modules["folder_paths"] = folder_paths
 
-    aiohttp = types.ModuleType("aiohttp")
-    web = types.ModuleType("aiohttp.web")
-    web.json_response = lambda *a, **k: None
-    web.Response = object
-    web.FileResponse = object
-    aiohttp.web = web
-    sys.modules["aiohttp"] = aiohttp
-    sys.modules["aiohttp.web"] = web
+    # ⚠️ 只在**真的缺失**时 stub aiohttp（并补齐 ClientSession 等属性）。
+    #    无条件用空 ModuleType 覆盖 sys.modules["aiohttp"] 且不还原，会污染同 session 的
+    #    后续测试 —— `__init__.py` 模块级就有 `aiohttp.ClientSession` 注解赋值，
+    #    拿到空模块即 AttributeError: module 'aiohttp' has no attribute 'ClientSession'。
+    #    表现为「单独跑绿、整套跑红」，极难定位。
+    if "aiohttp" not in sys.modules:
+        aiohttp = types.ModuleType("aiohttp")
+        aiohttp.__path__ = []
+        aiohttp.ClientSession = type("ClientSession", (), {})
+        aiohttp.ClientTimeout = type("ClientTimeout", (), {"__init__": lambda self, **k: None})
+        web = types.ModuleType("aiohttp.web")
+        web.__path__ = []
+        web.json_response = lambda *a, **k: None
+        web.Response = object
+        web.FileResponse = object
+        aiohttp.web = web
+        sys.modules["aiohttp"] = aiohttp
+        sys.modules["aiohttp.web"] = web
 
     server = types.ModuleType("server")
 
