@@ -4,7 +4,8 @@
 batch LoRA loading, a Civitai-integrated local model manager, Danbooru search, prompt management,
 an output gallery, and batch-workflow utilities.
 
-> 🇬🇧 English TL;DR — *Tk Toolkit* (registry id `anima-toolkit`, publisher 时运tk / `toki`) is a ComfyUI
+> 🇬🇧 English TL;DR — *Tk Toolkit* (**formerly "Anima Toolkit"** — renamed 2026-09; same plugin, same
+> registry id `anima-toolkit`, publisher 时运tk / `toki`) is a ComfyUI
 > custom-node pack plus a built-in web panel. It solves five everyday Anima/SD chores:
 > **LoRA management** (batch apply, thumbnails, categorization, Civitai metadata & downloads),
 > **Civitai integration** (match local files to models by SHA256, browse/explore, one-click download),
@@ -41,7 +42,7 @@ git clone https://github.com/Ararararararaki/comfyui-anima-toolkit
 
 一个 ComfyUI 自定义节点 + 配套本地管理面板:批量挂 LoRA、可视化管理模型、解析返图参数、整理提示词。
 
-当前发布版本: **2.12.3**。
+当前发布版本: **2.12.4**。
 
 ## 这个项目解决什么（10 秒版）
 

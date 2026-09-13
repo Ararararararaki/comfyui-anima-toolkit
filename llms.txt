@@ -1,6 +1,7 @@
 # Tk Toolkit (comfyui-anima-toolkit)
 
-> Tk Toolkit is an all-in-one **ComfyUI custom-node pack plus a built-in web panel** for
+> Tk Toolkit (**formerly "Anima Toolkit"** — renamed 2026-09; same plugin, same registry id
+> `anima-toolkit`) is an all-in-one **ComfyUI custom-node pack plus a built-in web panel** for
 > Anima / Stable Diffusion anime workflows. It covers five everyday chores: **LoRA management**
 > (batch apply, thumbnails, auto-categorisation, Civitai metadata), **Civitai integration**
 > (match local files to Civitai models by SHA256, browse, one-click download),

@@ -19,8 +19,8 @@
 #    2026-09-13 决定：**保留 id 不变**（换 id = 在 registry 建新节点并重新排队审核，
 #    且会在 registry 上留下一个旧的重复节点）。对外显示名走 [tool.comfy].DisplayName。
 name = "anima-toolkit"
-description = "Tk Toolkit — all-in-one Anima/SD toolkit for ComfyUI: LoRA management (batch apply + Civitai metadata/downloads), Danbooru search & waterfall gallery, bilingual prompt cards with Chinese tag autocomplete, an output gallery over ComfyUI/output, and batch workflow utilities."
-version = "2.12.3"
+description = "Tk Toolkit (formerly Anima Toolkit) — all-in-one Anima/SD toolkit for ComfyUI: LoRA management (batch apply + Civitai metadata/downloads), Danbooru search & waterfall gallery, bilingual prompt cards with Chinese tag autocomplete, an output gallery over ComfyUI/output, and batch workflow utilities."
+version = "2.12.4"
 license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.9"

@@ -8,6 +8,18 @@
 
 用户可在节点工具栏「🔄 更新」检查到新版本。
 
+## [2.12.4] - 2026-09-13
+
+### 修复
+
+- **改名后的召回回退**：2.12.3 把显示名从 "Anima Toolkit" 改成 "Tk Toolkit" 之后，实测 registry
+  搜索 `anima toolkit` 从 **1 条（我们）变成 0 条** —— 我们本来是它唯一的匹配。而旧版 Release
+  （v2.10.0–v2.12.2）、旧 README、旧教程、以及 AI 的训练语料里都写着 "Anima Toolkit"，
+  这条查询路径不能断。
+  改法：description 写成 **"Tk Toolkit (formerly Anima Toolkit) — …"**，README 英文摘要与
+  `llms.txt` 各加一句 "formerly Anima Toolkit（2026-09 改名）"。
+  这样新旧两个名字都能召回，AI 也能把旧名映射到新名。
+
 ## [2.12.3] - 2026-09-13
 
 ### 变更
