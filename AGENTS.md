@@ -7,29 +7,35 @@
 > `docs/HANDOFF-2026-09-13-engineering.md`（CI 连红 5 次排查 + Registry 全过程）。
 > 审计结论见 `docs/工程化审计-2026-09-13.md`。
 
-## 0. 当前状态（2026-09-13 · v2.12.0）
+## 0. 当前状态（2026-09-13 · v2.12.1）
 
 | 项 | 值 |
 |---|---|
-| **版本** | **2.12.0**（`VERSION` 唯一真源；`__init__.py` 运行时读它） |
-| 远端 main | `62084905`（本地 == 远端） |
+| **版本** | **2.12.1**（`VERSION` 唯一真源；`__init__.py` 运行时读它） |
+| 远端 main | `ffc5130e`（本地 == 远端） |
 | **CI** | 只读验证 CI，**连续多次全绿**（`.github/workflows/ci.yml`） |
-| GitHub Release | `v2.10.0`、`v2.11.0`（此前仓库 0 release / 0 tag） |
-| **ComfyUI Registry** | ✅ 已发布 **`anima-toolkit` @ `toki`**，version 2.11.0（`Pending` 待审核） |
-| 离线测试 | **128 passed**（v2.12.0 新增 33 条联想回归） |
+| GitHub Release | `v2.10.0`、`v2.11.0`、`v2.12.0`、`v2.12.1` |
+| **ComfyUI Registry** | ✅ **`anima-toolkit` @ `toki`**：2.11.0 / 2.12.0 / **2.12.1** 均已上传待审 |
+| 离线测试 | **129 passed** |
 | `__init__.py` | 2657 → **2448 行**（更新链已拆到 `services/github_update.py`） |
-| ⚠️ **运行目录** | py/js/data 已同步，但 **ComfyUI 未重启**（需用**绘世启动器**重启） |
+| ⚠️ **运行目录** | py/js/data 已同步到 2.12.1，但 **ComfyUI 未重启**（需用**绘世启动器**重启） |
 
-**本轮（2.12.0）= TK 提示词卡片 ②区联想的中文角色名支持**。核心结论：**坏的是数据覆盖与排序，不是匹配逻辑**。
+### 本轮（2.12.0 → 2.12.1）= ②区联想的中文角色名支持 + 更新链漏发修复
 
-- 中文角色名走 `anima_alias_index.json`（8.9MB，随包发布）。它是 `tools/build_tag_alias_index.py`
-  从三个**可验证**来源合成的：AnimaDex 角色表（`tools/harvest_animadex.py`，36488 角色 / 3702 作品）、
-  Civitai LoRA 元数据挖出的中文名↔danbooru 标签配对（`tools/harvest_civitai_zh_aliases.py`，2638 条带证据）、
-  以及社区词典 + 原 CSV 的「关键词」字段。**没有任何 LLM 编造的中文名。**
-- harvest 原始数据在 `data/_sources/`（50MB+，**已 .gitignore**，运行时不读）。刷新词典的顺序：
-  `harvest_animadex.py` → `harvest_civitai_zh_aliases.py` → `build_tag_alias_index.py` → 跑测试 → 提交索引。
-  只改数据不改代码时，插件按 mtime 指纹热重载索引，**不必重启 ComfyUI**。
-- 中文查询**不再扫描 20 万条英文说明**（索引在插件加载时后台线程预热）；英文查询 350ms → 60ms。
+**中文角色名**（2.12.0）。核心结论：**坏的是数据覆盖与排序，不是匹配逻辑**。
+
+- 中文角色名走 **`anima_alias_index.json`（插件根目录，8.9MB，随包发布）**，由
+  `tools/build_tag_alias_index.py` 从三个**可验证**来源合成：AnimaDex 角色表
+  （`tools/harvest_animadex.py`，36488 角色 / 3702 作品）、Civitai LoRA 元数据挖出的
+  中文名↔danbooru 标签配对（`tools/harvest_civitai_zh_aliases.py`，2638 条带证据）、
+  社区词典 + 原 CSV「关键词」字段。**没有任何 LLM 编造的中文名。**
+- harvest 原始数据在 `data/_sources/`（48MB，**已 gitignore**，运行时不读）。刷新词典顺序：
+  `harvest_animadex.py` → `harvest_civitai_zh_aliases.py` → `build_tag_alias_index.py` → 跑测试 → 提交。
+  只换词典不改代码时按 mtime 指纹热重载，**不必重启 ComfyUI**。
+- 中文查询**不再扫描 20 万条英文说明**（插件加载时后台线程预热）；英文查询 350ms → 60ms。
+- **索引必须在插件根目录**，理由见下方坑 7。
+
+**更新链漏发**（2.12.1）：见坑 7 —— 这是"老用户能不能真的用上"的关键。
 
 **运行中的 ComfyUI 仍是旧加载状态**（本轮改了 py，必须重启才会生效）。
 
@@ -95,7 +101,7 @@ python .scratch/api_push_guard.py --allow-delete   # 确认要删才加
 - **提交前 `git add` 之后要排除**：`test_gallery.py`（游离脚本，内含硬编码绝对路径）、
   `data/batches/bworker.json`（运行时状态，改一次就脏）
 
-## 4. ⚠️ 接手必读的七个坑（都踩过，已固化防御）
+## 4. ⚠️ 接手必读的八个坑（都踩过，已固化防御）
 
 1. **`pytest.ini` 必须在 `tests/` 里，不能放仓库根。**
    仓库根**就是** ComfyUI 插件的 `__init__.py`，pytest 会向上找包边界并把它当包导入 →
@@ -139,6 +145,19 @@ python .scratch/api_push_guard.py --allow-delete   # 确认要删才加
    `print("❌ ...")` 会 `UnicodeEncodeError`，**把真正的报错盖掉**（`ai_verify.py`
    和 `tests/tools/run_offline_like_ci.py` 都踩过，都只在"失败时"才炸）。
    脚本输出一律用 `[X]` / `[OK]` / `[!]`。
+
+9. **新增文件前先问一句：内置更新链下不发得下去？** 更新链的发布白名单只看
+   `is_release_path()`（`services/github_update.py`）：`anima_*` 前缀 / `services/` / `web/` / `app/`
+   + 几个根文件；**`data/` 只逐文件放行 `_SHIPPED_DATA_FILES` 里的随包词典**。
+   踩过两次：
+   - 随包词典放进 `data/` → 老用户点「更新」拿到新代码却拿不到词典，功能**静默失效**
+     （不报错、只是查不到）；而且 `check_update` 的 package_match 也看不见它，连"有更新"都判不出来；
+   - `__init__.py` 拆分后没放行 `services/` → 老用户点更新会 ImportError、**插件整个加载不了**。
+   所以：**随包数据一律放根目录并起 `anima_` 前缀**（新词典就是这么放的）；
+   `services/` 已整目录放行，往里加模块不用管。
+   护栏：`tests/test_update_archive.py::test_release_path_whitelist_covers_everything_the_plugin_needs_at_runtime`。
+   发版前可跑一次"老用户模拟"：取旧发布 commit 的 `services/github_update.py`，
+   用它的 `is_release_path` 过滤当前远端 tree，看关键文件是否在列。
 
 ## 5. 版本号纪律（`VERSION` 是唯一真源）
 
