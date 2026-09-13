@@ -1,25 +1,37 @@
 # AGENTS.md — Anima Toolkit（ComfyUI-Anima-Batch-LoRA）
 
-> **接手第一步**：读 `docs/HANDOFF-2026-09-13-2.11.0.md`（当前状态 + 为什么是 2.11 + 常用命令 + 遗留清单）。
+> **接手第一步**：读 `docs/HANDOFF-2026-09-13-cards-autocomplete.md`（**当前版本 v2.12.0**：
+> ②区联想的中文角色名支持 —— 数据来源、匹配分级、Anima 括号转义、性能、踩过的坑）。
+> 上一版状态读 `docs/HANDOFF-2026-09-13-2.11.0.md`（版本谱系「为什么是 2.11 而不是 2.9」）。
 > 需要改动细节时再往下读 `docs/HANDOFF-2026-09-13.md`（画廊/outputs）与
 > `docs/HANDOFF-2026-09-13-engineering.md`（CI 连红 5 次排查 + Registry 全过程）。
 > 审计结论见 `docs/工程化审计-2026-09-13.md`。
 
-## 0. 当前状态（2026-09-13）
+## 0. 当前状态（2026-09-13 · v2.12.0）
 
 | 项 | 值 |
 |---|---|
-| **版本** | **2.11.0**（`VERSION` 唯一真源；`__init__.py` 运行时读它） |
-| 远端 main | `4416564b`（本地 == 远端；守卫脚本 dry-run = 0 差异 0 删除） |
+| **版本** | **2.12.0**（`VERSION` 唯一真源；`__init__.py` 运行时读它） |
+| 远端 main | `62084905`（本地 == 远端） |
 | **CI** | 只读验证 CI，**连续多次全绿**（`.github/workflows/ci.yml`） |
 | GitHub Release | `v2.10.0`、`v2.11.0`（此前仓库 0 release / 0 tag） |
 | **ComfyUI Registry** | ✅ 已发布 **`anima-toolkit` @ `toki`**，version 2.11.0（`Pending` 待审核） |
-| 离线测试 | **94 passed**（覆盖 24 个文件） |
+| 离线测试 | **128 passed**（v2.12.0 新增 33 条联想回归） |
 | `__init__.py` | 2657 → **2448 行**（更新链已拆到 `services/github_update.py`） |
-| ⚠️ **运行目录** | py 已同步，但 **ComfyUI 未重启**（需用**绘世启动器**重启） |
+| ⚠️ **运行目录** | py/js/data 已同步，但 **ComfyUI 未重启**（需用**绘世启动器**重启） |
 
-**运行中的 ComfyUI 仍是旧加载状态** —— 表现为 `/anima/version` 返回 `2.9.0`、
-`/anima/gallery/fresh` 404。这是"未重启"，不是 bug。
+**本轮（2.12.0）= TK 提示词卡片 ②区联想的中文角色名支持**。核心结论：**坏的是数据覆盖与排序，不是匹配逻辑**。
+
+- 中文角色名走 `data/danbooru_alias_index.json`（8.9MB，随包发布）。它是 `tools/build_tag_alias_index.py`
+  从三个**可验证**来源合成的：AnimaDex 角色表（`tools/harvest_animadex.py`，36488 角色 / 3702 作品）、
+  Civitai LoRA 元数据挖出的中文名↔danbooru 标签配对（`tools/harvest_civitai_zh_aliases.py`，2638 条带证据）、
+  以及社区词典 + 原 CSV 的「关键词」字段。**没有任何 LLM 编造的中文名。**
+- harvest 原始数据在 `data/_sources/`（50MB+，**已 .gitignore**，运行时不读）。刷新词典的顺序：
+  `harvest_animadex.py` → `harvest_civitai_zh_aliases.py` → `build_tag_alias_index.py` → 跑测试 → 提交索引。
+  只改数据不改代码时，插件按 mtime 指纹热重载索引，**不必重启 ComfyUI**。
+- 中文查询**不再扫描 20 万条英文说明**（索引在插件加载时后台线程预热）；英文查询 350ms → 60ms。
+
+**运行中的 ComfyUI 仍是旧加载状态**（本轮改了 py，必须重启才会生效）。
 
 ## 1. ⭐ 改完代码先跑这一条
 
@@ -43,7 +55,7 @@ python tests/run_tests.py --integration   # 需要真实浏览器 + ComfyUI(:818
 
 | 层 | 位置 | CI |
 |---|---|---|
-| unit（24） | `tests/*.py` | ✅ |
+| unit（25） | `tests/*.py` | ✅ |
 | js（3） | `tests/js/` + 顶层 `*.mjs`/`*.js` | ✅ |
 | integration（57） | `tests/integration/` | ❌ 要真实浏览器 + ComfyUI |
 | smoke（4） / repro（12） | `tests/smoke_*.py` / `tests/repro/` | ❌ |
@@ -83,7 +95,7 @@ python .scratch/api_push_guard.py --allow-delete   # 确认要删才加
 - **提交前 `git add` 之后要排除**：`test_gallery.py`（游离脚本，内含硬编码绝对路径）、
   `data/batches/bworker.json`（运行时状态，改一次就脏）
 
-## 4. ⚠️ 接手必读的五个坑（都踩过，已固化防御）
+## 4. ⚠️ 接手必读的七个坑（都踩过，已固化防御）
 
 1. **`pytest.ini` 必须在 `tests/` 里，不能放仓库根。**
    仓库根**就是** ComfyUI 插件的 `__init__.py`，pytest 会向上找包边界并把它当包导入 →
@@ -115,6 +127,18 @@ python .scratch/api_push_guard.py --allow-delete   # 确认要删才加
 6. **`web/` 是会被 ComfyUI 服务出去的目录** —— 任何 `.js` 备份都不能放里面，
    否则浏览器把它当第二个扩展加载、`registerExtension` 跑两次（UI 重复注册，表现为按钮成对出现）。
    备份放插件根目录（`.gitignore` 已忽略 `.workbuddy-bak-*/`、`_bak_*/`）。
+
+7. **`AUTOCOMPLETE_LOCK` 必须是 `RLock`，不能是 `Lock`。**
+   `_build_autocomplete_alias_tables()` 持锁期间会再调 `_load_autocomplete_entries()`，
+   而后者也要拿同一把锁 → **同线程自死锁**。症状极具误导性：
+   **不报错、不退出，只是永远卡住**（预热线程和首次查询一起挂），
+   探针看起来像"导入很慢"。凡是"持锁期间调用另一个也加锁的函数"，
+   一律用可重入锁或把内层调用挪到锁外。
+
+8. **别在报告失败的分支里 print emoji。** Windows 控制台是 GBK，
+   `print("❌ ...")` 会 `UnicodeEncodeError`，**把真正的报错盖掉**（`ai_verify.py`
+   和 `tests/tools/run_offline_like_ci.py` 都踩过，都只在"失败时"才炸）。
+   脚本输出一律用 `[X]` / `[OK]` / `[!]`。
 
 ## 5. 版本号纪律（`VERSION` 是唯一真源）
 
@@ -167,8 +191,13 @@ anima_*.py             各节点后端（gallery / prompt_batch / batch_lora / �
 web/js/*.js            节点侧前端 widget（**无 TS 注解**，见下）
 web/css/*.css          节点侧样式
 panel/src/             Vite + TS 面板源码
+data/                  随包发布的词典（danbooru CSV / 中文词典 / **danbooru_alias_index.json**）
+data/_sources/         harvest 原始数据（**已 gitignore**，构建输入，运行时不读）
 tests/                 分层测试（见 tests/README.md）
 tools/                 bump_version.py / registry_setup.py
+tools/harvest_animadex.py            抓 AnimaDex 全量角色表
+tools/harvest_civitai_zh_aliases.py  抓 Civitai LoRA 中文名证据
+tools/build_tag_alias_index.py       合成 data/danbooru_alias_index.json
 docs/                  交接与审计文档
 pyproject.toml         ComfyUI Registry 元数据
 requirements*.txt      运行 / 可选 / CI 依赖
@@ -188,3 +217,9 @@ requirements*.txt      运行 / 可选 / CI 依赖
 - `CONTRIBUTING.md` 缺。
 - 运行目录 `tests/` 只有 7 个文件，**跑不了完整回归**（请用发布仓库）。
 - 待拍板：`git rm --cached data/batches/bworker.json`（会影响已有部署，**需用户确认**）。
+- **中文别名词典仍有噪声**：CSV 的「关键词」字段是机器直译，会产出「万岁伸展」「味园米卡」
+  这类错译，以及 `聖園`（日文汉字形）这类片段。它们排在可信来源之后，**不会抢走正确结果**，
+  但会出现在下拉副标题里。要再提升就得引入人工校对表或萌娘百科/Bangumi 的日文名 join
+  （工程量大，需先解决日文名→罗马字匹配）。
+- **`data/danbooru_alias_index.json` 有 8.9MB**（已随包发布）。若嫌大，可改存 gzip
+  （`json.load(gzip.open(...))`）压到 ~2MB，但要同步改运行时的 `_load_alias_index()`。
