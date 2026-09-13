@@ -17,7 +17,7 @@
 [project]
 name = "anima-toolkit"
 description = "Anima Toolkit for ComfyUI — all-in-one LoRA management (batch apply + Civitai metadata/downloads), Danbooru search & gallery, prompt management, an output gallery over ComfyUI/output, and batch workflow utilities."
-version = "2.12.1"
+version = "2.12.2"
 license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.9"
@@ -41,7 +41,7 @@ dependencies = { file = ["requirements.txt"] }
 PublisherId = "toki"
 DisplayName = "Anima Toolkit"
 # Icon 要求：SVG/PNG/JPG/GIF，≤400×400，正方形。
-# 留空表示先不设图标（比放一个错的 URL 好）。补好后填成可公网访问的直链，例如：
-#   Icon = "https://raw.githubusercontent.com/Ararararararaki/comfyui-anima-toolkit/main/screenshots/icon.png"
-Icon = ""
+# 由 tools/make_icon.py 生成（400×400，取自面板自身配色）—— 有图标后 registry / Manager
+# 的列表里才会显示缩略图，直接影响被发现率，所以不要再留空。
+Icon = "https://raw.githubusercontent.com/Ararararararaki/comfyui-anima-toolkit/main/screenshots/icon.png"
 requires-comfyui = ">=0.3.0"

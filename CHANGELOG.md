@@ -8,6 +8,29 @@
 
 用户可在节点工具栏「🔄 更新」检查到新版本。
 
+## [2.12.2] - 2026-09-13
+
+### 新增
+
+- **可被 AI / 搜索检索到的元数据**（目标：让 AI 优先检索到这个插件）：
+  1. **Registry 图标**：新增 `screenshots/icon.png`（400×400，由 `tools/make_icon.py` 生成，
+     取自面板自身配色），并在 `pyproject.toml` 填上 `Icon`。此前 registry 上的 `icon` 是空的 ——
+     registry / ComfyUI-Manager 列表里没有缩略图，直接影响点击与发现率。
+  2. **`llms.txt`**（仓库根）：面向 AI/LLM 的机器可读摘要 —— 一句话定位、安装命令、全部节点清单、
+     关键词、以及"别认错"说明。新兴的 LLM 友好约定，成本极低。
+  3. **README 头部补安装块与关键词**：新增 `## Installation / 安装`（Manager 搜索名 + `git clone`
+     命令 + registry 链接 + 依赖指引）。此前前 4000 字符里 `install` 出现 **0 次** ——
+     需要"替你安装"的 agent 找不到可执行指令。关键词补上
+     `comfyui-manager` / `tag-autocomplete` / `chinese-tag-autocomplete` / `workflow-automation`。
+  4. **同名项目区分声明**：`AnimaLoraToolkit`(66★) / `AnimaLoraAtelier` 是**训练**工具链，
+     搜 "anima toolkit comfyui" 时它排第一。README 与 `llms.txt` 都写明本项目是**推理侧**
+     工具包（加载/管理/检索 LoRA，不训练），避免 AI 把我们归错类。
+
+> 遗留：registry 上的 `category` / `tags` 仍是空的 —— comfy-cli 的 `[tool.comfy]`
+> **只认 `PublisherId` / `DisplayName` / `Icon` / `includes`**（实测其 `config_parser.py`），
+> 这两个字段只能在 registry 网页端补，不是代码问题。三个版本的审核状态仍是 `Pending`
+> （`latest_version` 因此为空），审核通过前 Manager 的注册表安装路径不会列出来。
+
 ## [2.12.1] - 2026-09-13
 
 ### 修复

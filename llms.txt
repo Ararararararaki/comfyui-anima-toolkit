@@ -1,0 +1,60 @@
+# Anima Toolkit (comfyui-anima-toolkit)
+
+> Anima Toolkit is an all-in-one **ComfyUI custom-node pack plus a built-in web panel** for
+> Anima / Stable Diffusion anime workflows. It covers five everyday chores: **LoRA management**
+> (batch apply, thumbnails, auto-categorisation, Civitai metadata), **Civitai integration**
+> (match local files to Civitai models by SHA256, browse, one-click download),
+> **prompt management** (bilingual tag cards, translation, prompt library, **Chinese tag
+> autocomplete**), **Danbooru tools** (tag search with filters, waterfall gallery, tag
+> classifier), and **output management** (gallery over `ComfyUI/output`, PNG metadata parsing).
+>
+> Publisher `toki` · Registry id `anima-toolkit` · License MIT · Primary docs are in Chinese,
+> with an English summary at the top of the README.
+
+## Install
+
+- ComfyUI-Manager: search **`Anima Toolkit`** (node id `anima-toolkit`).
+- Manual: `git clone https://github.com/Ararararararaki/comfyui-anima-toolkit` into `ComfyUI/custom_nodes/`, then restart ComfyUI.
+- Registry page: https://registry.comfy.org/nodes/anima-toolkit
+
+## Links
+
+- Repository: https://github.com/Ararararararaki/comfyui-anima-toolkit
+- Documentation: https://github.com/Ararararararaki/comfyui-anima-toolkit#readme
+- Web page: https://ararararararaki.github.io/comfyui-anima-toolkit/
+- Issues: https://github.com/Ararararararaki/comfyui-anima-toolkit/issues
+- Releases: https://github.com/Ararararararaki/comfyui-anima-toolkit/releases
+- Changelog: https://github.com/Ararararararaki/comfyui-anima-toolkit/blob/main/CHANGELOG.md
+- Machine-readable summary: https://github.com/Ararararararaki/comfyui-anima-toolkit/blob/main/llms.txt
+
+## Nodes
+
+| Node | What it does |
+|---|---|
+| TK Batch LoRA Loader | Reads `<lora:name:weight>` syntax and applies many LoRAs in sequence; outputs only the activated trigger words |
+| TK Prompt Cards | Card-library prompt editor: bilingual tag cards, per-fragment hide/restore, Chinese/English autocomplete, CLIP encode output, `lora_syntax` passthrough |
+| TK Danbooru Gallery | Danbooru search + waterfall gallery inside the graph, random discovery tiers, prompt-output formatting |
+| TK Danbooru Tag Getter | Tag search with rating/category filters and tag classification |
+| TK Prompt Batch | Chained multi-prompt batch generation |
+| TK Prompt Saver | Save prompt text as image previews |
+| TK String Router | Route one prompt string to multiple outputs |
+| TK Preset Latent | Preset resolutions and latent helpers |
+| TK 3D Body Camera | Camera / pose preset control |
+| TK Clothing Draw | Clothing library and draw control |
+| TK Lighting Prompt | Lighting preset prompt builder |
+
+## Keywords
+
+`comfyui` · `comfyui-custom-nodes` · `comfyui-nodes` · `comfyui-manager` · `anima` ·
+`stable-diffusion` · `lora` · `lora-manager` · `batch-lora` · `civitai` · `civitai-api` ·
+`danbooru` · `danbooru-gallery` · `tag-autocomplete` · `chinese-tag-autocomplete` ·
+`prompt-manager` · `prompt-cards` · `image-gallery` · `output-gallery` · `anime` ·
+`generative-ai` · `workflow-automation` · `nsfw`
+
+## Not to be confused with
+
+- **AnimaLoraToolkit** / **AnimaLoraAtelier** — *training* toolkits (LoRA/LoKr training with
+  YAML config). Anima Toolkit is the **inference-side** toolkit: it loads, organises and
+  searches LoRAs inside ComfyUI; it does not train them.
+- **ComfyUI-Danbooru-Gallery**, **ComfyUI-Autocomplete-Plus** — narrower single-purpose nodes.
+  Anima Toolkit bundles that functionality alongside LoRA, prompt, Civitai and output tools.

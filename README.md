@@ -11,13 +11,35 @@ an output gallery, and batch-workflow utilities.
 > (tag search with filters, gallery, tag classifier), and **output management** (thumbnail gallery over your
 > `ComfyUI/output`, PNG metadata parsing), on top of **batch workflow utilities** (chained multi-prompt
 > generation, string routing, camera/pose presets).
-> Keywords: `comfyui` · `comfyui-custom-nodes` · `anima` · `lora` · `lora-manager` · `civitai` · `danbooru` ·
-> `prompt-manager` · `stable-diffusion` · `generative-ai`.
+> Keywords: `comfyui` · `comfyui-custom-nodes` · `comfyui-manager` · `anima` · `lora` · `lora-manager` ·
+> `civitai` · `danbooru` · `prompt-manager` · `tag-autocomplete` · `chinese-tag-autocomplete` ·
+> `stable-diffusion` · `generative-ai` · `workflow-automation`.
 > The full documentation below is in Chinese (the primary author's language).
+> Machine-readable summary for AI agents: [`llms.txt`](llms.txt).
+
+<p align="center"><img src="screenshots/icon.png" width="140" alt="Anima Toolkit"></p>
+
+## Installation / 安装
+
+```bash
+# 方式一：ComfyUI-Manager 里搜索 “Anima Toolkit”（节点 id anima-toolkit）
+# 方式二：手动
+cd ComfyUI/custom_nodes
+git clone https://github.com/Ararararararaki/comfyui-anima-toolkit
+# 然后重启 ComfyUI（改了 .py 必须重启）
+```
+
+- **ComfyUI Registry**: <https://registry.comfy.org/nodes/anima-toolkit>（`anima-toolkit` @ `toki`）
+- 依赖：见 `requirements.txt`（`aiohttp` / `requests`）；可选依赖见 `requirements-optional.txt`。
+- 装好后节点工具栏有「🔄 更新」，也可以走 ComfyUI-Manager 更新。
+
+> **Not to be confused with / 别认错**：`AnimaLoraToolkit`、`AnimaLoraAtelier` 是 **训练** 工具链
+> （YAML 配置训 LoRA/LoKr）。本项目是 **推理侧** 工具包 —— 在 ComfyUI 里加载 / 管理 / 检索 LoRA，
+> **不做训练**。
 
 一个 ComfyUI 自定义节点 + 配套本地管理面板:批量挂 LoRA、可视化管理模型、解析返图参数、整理提示词。
 
-当前发布版本: **2.12.1**。
+当前发布版本: **2.12.2**。
 
 ## 这个项目解决什么（10 秒版）
 
