@@ -1,6 +1,6 @@
-# Anima Toolkit (comfyui-anima-toolkit)
+# Tk Toolkit (comfyui-anima-toolkit)
 
-> Anima Toolkit is an all-in-one **ComfyUI custom-node pack plus a built-in web panel** for
+> Tk Toolkit is an all-in-one **ComfyUI custom-node pack plus a built-in web panel** for
 > Anima / Stable Diffusion anime workflows. It covers five everyday chores: **LoRA management**
 > (batch apply, thumbnails, auto-categorisation, Civitai metadata), **Civitai integration**
 > (match local files to Civitai models by SHA256, browse, one-click download),
@@ -13,7 +13,7 @@
 
 ## Install
 
-- ComfyUI-Manager: search **`Anima Toolkit`** (node id `anima-toolkit`).
+- ComfyUI-Manager: search **`Tk Toolkit`** (node id `anima-toolkit`).
 - Manual: `git clone https://github.com/Ararararararaki/comfyui-anima-toolkit` into `ComfyUI/custom_nodes/`, then restart ComfyUI.
 - Registry page: https://registry.comfy.org/nodes/anima-toolkit
 
@@ -54,7 +54,7 @@
 ## Not to be confused with
 
 - **AnimaLoraToolkit** / **AnimaLoraAtelier** — *training* toolkits (LoRA/LoKr training with
-  YAML config). Anima Toolkit is the **inference-side** toolkit: it loads, organises and
+  YAML config). **Tk Toolkit** is the **inference-side** toolkit: it loads, organises and
   searches LoRAs inside ComfyUI; it does not train them.
 - **ComfyUI-Danbooru-Gallery**, **ComfyUI-Autocomplete-Plus** — narrower single-purpose nodes.
-  Anima Toolkit bundles that functionality alongside LoRA, prompt, Civitai and output tools.
+  **Tk Toolkit** bundles that functionality alongside LoRA, prompt, Civitai and output tools.
