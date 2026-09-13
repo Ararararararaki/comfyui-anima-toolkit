@@ -77,6 +77,21 @@ def step_offline_pytest() -> bool:
     return ok
 
 
+def step_ci_env_simulation() -> bool:
+    """在「无 torch/numpy/PIL/psutil/playwright」的模拟干净环境里再跑一遍离线层。
+
+    为什么值得多花这几秒：本机有 ComfyUI 带的这些重依赖，CI 没有 ——
+    任何真实 import 它们、又没自己 stub 的测试都会「本地绿、CI 红」。
+    这个模拟把 CI 才能暴露的失败提前到本地（首次 CI 就因此红过一次：
+    test_danbooru_meta.py 顶层真的 `import PIL`）。
+    """
+    ok, out = run([sys.executable, str(TESTS / "tools" / "run_offline_like_ci.py")],
+                  label="pytest (模拟 CI 干净环境)")
+    if ok:
+        info("       " + (out.strip().splitlines() or [""])[-1])
+    return ok
+
+
 def step_ai_verify() -> bool:
     ok, out = run([sys.executable, str(TESTS / "tools" / "ai_verify.py"), "-q"],
                   label="ai_verify (节点注册/README/版本一致性)")
@@ -155,6 +170,7 @@ def main() -> int:
     else:
         results.append(("Python 编译", step_py_compile()))
         results.append(("离线 pytest", step_offline_pytest()))
+        results.append(("离线 pytest（模拟 CI 干净环境）", step_ci_env_simulation()))
         results.append(("ai_verify", step_ai_verify()))
         results.append(("JS 测试", step_js_tests()))
         if not a.no_panel:

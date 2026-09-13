@@ -8,15 +8,29 @@ import json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ── stub 重依赖（_selection_meta / 空选择分支不触碰张量与网络）──
-for mod in ("numpy", "PIL", "PIL.Image"):
-    m = types.ModuleType(mod)
-    sys.modules[mod] = m
-_torch = types.ModuleType("torch")
+# ⚠️ 这些模块必须 stub 成**看着像包**的样子（`__path__ = []`），否则
+# `import PIL` / `from PIL import Image` 会在 import 机制里报 ModuleNotFoundError。
+# 原实现只造了空 ModuleType，本地靠 ComfyUI 真装了 PIL/numpy 蒙混过关，
+# CI（净环境）上收集期就炸 —— 属于「本地绿、CI 红」的典型。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _fake_package(name: str) -> types.ModuleType:
+    m = types.ModuleType(name)
+    m.__path__ = []          # 让 import 机制把它当包，子模块查找才不报错
+    m.__package__ = name
+    sys.modules[name] = m
+    return m
+
+
+_fake_package("numpy")
+_pil = _fake_package("PIL")
+_pil_image = _fake_package("PIL.Image")
+# 让 `from PIL import Image` 能取到
+_pil.Image = _pil_image
+_torch = _fake_package("torch")
+# 空选择分支会走到 torch.zeros(...)（只为返回一个 IMAGE 占位），给个最小可用实现
 _torch.zeros = lambda *a, **k: "tensor"
-sys.modules["torch"] = _torch
-import numpy as _  # noqa
-import PIL  # noqa
-sys.modules["PIL.Image"] = types.ModuleType("PIL.Image")
 
 _reqs = types.ModuleType("requests")
 class _AnyCallable:

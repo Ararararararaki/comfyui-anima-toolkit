@@ -128,6 +128,7 @@
    "tools/classify_tests.py",
    "tools/fix_script_style_tests.py",
    "tools/list_path_exprs.py",
+   "tools/run_offline_like_ci.py",
    "tools/update_handoff.py"
   ]
  },
@@ -405,7 +406,7 @@
    "file": "test_danbooru_meta.py",
    "layer": "unit",
    "why": [],
-   "bytes": 9075
+   "bytes": 9788
   },
   {
    "file": "test_danbooru_tag_getter.py",
@@ -527,6 +528,15 @@
     "dev-tool"
    ],
    "bytes": 1170
+  },
+  {
+   "file": "tools/run_offline_like_ci.py",
+   "layer": "tools",
+   "why": [
+    "browser",
+    "dev-tool"
+   ],
+   "bytes": 2378
   },
   {
    "file": "tools/update_handoff.py",
