@@ -20,7 +20,7 @@
 #    且会在 registry 上留下一个旧的重复节点）。对外显示名走 [tool.comfy].DisplayName。
 name = "anima-toolkit"
 description = "TK Toolkit (formerly Anima Toolkit) — all-in-one Anima/SD toolkit for ComfyUI: LoRA management (batch apply + Civitai metadata/downloads), Danbooru search & waterfall gallery, bilingual prompt cards with Chinese tag autocomplete, an output gallery over ComfyUI/output, and batch workflow utilities."
-version = "2.12.6"
+version = "2.12.7"
 license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.9"

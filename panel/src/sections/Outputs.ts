@@ -154,6 +154,7 @@ export async function initOutputs() {
       showReauthBanner()
     }
     startOutputsAutoScan()
+    bindOutputsExecutionEvents()
     window.addEventListener('focus', triggerOutputsIncrementalScan)
     document.addEventListener('visibilitychange', () => { if (!document.hidden) triggerOutputsIncrementalScan() })
     return
@@ -171,6 +172,7 @@ export async function initOutputs() {
     bindOutputsEvents()
     bindOutputsSettingsRefresh()
     startOutputsAutoScan()
+    bindOutputsExecutionEvents()
     window.addEventListener('focus', triggerOutputsIncrementalScan)
     document.addEventListener('visibilitychange', () => { if (!document.hidden) triggerOutputsIncrementalScan() })
     return
@@ -212,6 +214,7 @@ export async function initOutputs() {
 
   // ── 自动检测新图：窗口获得焦点 / 页面重新可见 / 60s 轮询 ──
   startOutputsAutoScan()
+  bindOutputsExecutionEvents()
   window.addEventListener('focus', triggerOutputsIncrementalScan)
   document.addEventListener('visibilitychange', () => { if (!document.hidden) triggerOutputsIncrementalScan() })
 
@@ -295,8 +298,20 @@ function startOutputsAutoScan() {
 async function triggerOutputsIncrementalScan() {
   const s = useOutputStore.getState()
   if (_nativeOutputs) {
-    if (!isOutputsActive() || s.scanStatus === 'scanning') return
-    try { await refreshNativeOutputs(); renderOutputsView() } catch { /* 静默 */ }
+    // gallery 索引模式：先问后端的「有没有新图」轻量探测，只有真的新增才拉全量 manifest。
+    // 这样即使停留在别的栏目（甚至页面被切走）也能把新图准备好，切回来立即可见。
+    if (galleryIndexEnabled()) {
+      const grew = await probeOutputsGrew()
+      if (grew) await refreshOutputsFromGallery()
+      if (isOutputsActive()) renderOutputsView()
+      return
+    }
+    // TK SQLite 模式：scan 是幂等的增量扫描，隐藏时也跑，数据先就位
+    if (s.scanStatus === 'scanning') return
+    try {
+      await refreshNativeOutputs()
+      if (isOutputsActive()) renderOutputsView()
+    } catch { /* 静默 */ }
     return
   }
   if (s.dirHandle && s.files.length > 0 && isOutputsActive() && s.scanStatus !== 'scanning') {
@@ -305,6 +320,70 @@ async function triggerOutputsIncrementalScan() {
       if (count > 0) { renderOutputsView(); updateFilterPanel() }
     } catch { /* 静默 */ }
   }
+}
+
+// ── 生成完成就后台更新（2026-09-13）──
+// 用户反馈：不在 outputs 页面时生成的图不会自动出现，切进来还是旧的。
+// 两条触发链：
+//   ① ComfyUI 执行事件（executed / execution_success）→ 说明刚刚写了新图，稍等一下再探测；
+//   ② 已有的 60s 轮询 + 窗口获焦/可见性变化 → 兜底（比如用 API 或别的客户端出的图）。
+// 关键改动：**隐藏时也做探测/扫描**（旧代码在这里 return，正是「不进页面不更新」的原因），
+// 但只在不显示时才重渲染，避免干扰用户当前操作。
+let _outputsExecProbeTimer: number | null = null
+
+function scheduleOutputsProbeAfterExecution(delayMs = 2500) {
+  if (_outputsExecProbeTimer !== null) clearTimeout(_outputsExecProbeTimer)
+  _outputsExecProbeTimer = window.setTimeout(() => {
+    _outputsExecProbeTimer = null
+    void triggerOutputsIncrementalScan()
+  }, delayMs)
+}
+
+function bindOutputsExecutionEvents() {
+  const comfyApp = (window as any).comfyAPI?.app?.app || (window as any).app
+  const api = (window as any).comfyAPI?.api
+    || (window as any).api
+    || (comfyApp && (comfyApp.api || comfyApp.apiImpl))
+  if (!api?.addEventListener) return
+  const onDone = () => scheduleOutputsProbeAfterExecution()
+  // executed：单个输出节点写盘完成；execution_success：整轮结束（批量出图时最后兜一次）
+  for (const name of ['executed', 'execution_success', 'execution_cached']) {
+    try { api.addEventListener(name, onDone) } catch { /* 旧前端没有该事件 */ }
+  }
+}
+
+/**
+ * gallery 索引模式下的「有没有新图」探测。
+ * 用后端 /anima/gallery/fresh（只 stat 文件名，不解析 PNG、不传 16.5MB 索引）；
+ * 后端不可用（老插件）时返回 false，静默退回「只靠切页刷新」的旧行为。
+ */
+let _outputsFreshMisses = 0
+async function probeOutputsGrew(): Promise<boolean> {
+  // 老版后端没有该端点：连续失败 3 次后就别再打了（避免每轮轮询都吃一个 404）
+  if (_outputsFreshMisses >= 3) return false
+  try {
+    const resp = await fetch('/anima/gallery/fresh', { cache: 'no-store' })
+    if (!resp.ok) throw new Error(String(resp.status))
+    const data = await resp.json()
+    _outputsFreshMisses = 0
+    if (!data?.changed) return false
+    await probeGalleryIndex()      // 索引已重建完则重新载入 entries
+    return true
+  } catch {
+    _outputsFreshMisses += 1
+    if (_outputsFreshMisses === 3) {
+      console.info('[Outputs] /anima/gallery/fresh 不可用，退回「切换页面/窗口获焦」刷新')
+    }
+    return false
+  }
+}
+
+/** gallery 模式下重新拉全量 manifest 并重渲染（新图就位） */
+async function refreshOutputsFromGallery() {
+  const ok = await probeGalleryIndex()
+  if (!ok) return
+  await restoreOutputsFromDb()
+  if (isOutputsActive()) { renderOutputsView(); updateFilterPanel() }
 }
 
 let _lastIncrementalScan = 0

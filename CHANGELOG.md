@@ -8,6 +8,34 @@
 
 用户可在节点工具栏「🔄 更新」检查到新版本。
 
+## [2.12.7] - 2026-09-13
+
+### 修复
+
+- **补回「Outputs 生成完后台更新」的前端部分 —— 发布版一直缺这个功能**。
+  该功能的后端路由 `/anima/gallery/fresh` 在 2.11.0 已经发了（`anima_batch_lora.py` 里确实有），
+  但**前端调用只写在 dev 目录 `civitai/src/sections/Outputs.ts`，从未镜像到 `panel/src`**。
+  后果：`app/`、registry 包、ComfyUI-Manager 安装的用户全都拿不到 ——
+  **后端有路由、前端从不调用，功能静默失效**；而 `AGENTS.md` / `HANDOFF` 里写着 2.11.0 已包含它，
+  **文档与代码不一致**。
+  判据（可复现）：在构建产物里 grep **字符串字面量** `gallery/fresh` / `execution_success`
+  —— minify 不会改字面量，所以产物里查得到才算真发布。修复前：dev `src` 有、`panel/src` 没有、
+  `app/assets` 没有。
+
+- **双向漂移合并**：`LoraExplorer.ts` 的「版本下拉脱离裁切」修复（`applyDropdownClip` /
+  `releaseDropdownClip`）只存在于 panel 侧 —— 2026-09-12 是**直接在发布仓库改的**，dev 目录没有。
+  已回写 dev，否则以后从 dev 构建会把这个修复静默回退。
+  合并方式：逐文件用 `difflib` 看「少数派」差异块，确认哪边是超集再整份覆盖
+  （`Outputs.ts` 无 panel 独有改动 → dev→panel；`LoraExplorer.ts` 的 dev 侧只是被重构掉的旧写法
+  → panel→dev）。合并后 `sync_panel_src.py --dry-run` 全部 `same`。
+
+### 说明
+
+- **dev ↔ panel 的漂移可能是双向的，不能跑 `sync_panel_src.py` 全量镜像** ——
+  那会把 panel 侧独有（在发布仓库直接做的）改动回退掉，而且**没有任何报错**。
+- 判断「功能到底发布了没」要用**字符串字面量**做 grep，**不能**用函数名：
+  minify 会重命名函数，用函数名查产物会得到假阴性（本次就先被这个坑误导了一次）。
+
 ## [2.12.6] - 2026-09-13
 
 ### 修复

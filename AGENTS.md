@@ -101,7 +101,7 @@ python .scratch/api_push_guard.py --allow-delete   # 确认要删才加
 - **提交前 `git add` 之后要排除**：`test_gallery.py`（游离脚本，内含硬编码绝对路径）、
   `data/batches/bworker.json`（运行时状态，改一次就脏）
 
-## 4. ⚠️ 接手必读的十个坑（都踩过，已固化防御）
+## 4. ⚠️ 接手必读的十一个坑（都踩过，已固化防御）
 
 1. **`pytest.ini` 必须在 `tests/` 里，不能放仓库根。**
    仓库根**就是** ComfyUI 插件的 `__init__.py`，pytest 会向上找包边界并把它当包导入 →
@@ -167,6 +167,23 @@ python .scratch/api_push_guard.py --allow-delete   # 确认要删才加
     规矩：① 改文件一律用 `edit` 工具（精确整串匹配，逐个改）；
     ② 非要用脚本，也必须是"每条 `(old,new)` 显式配对"，并**先 `Copy-Item` 备份**；
     ③ 批量改完立刻 `python -m py_compile` + `git diff --stat` 核对，别等到跑测试才发现。
+
+11. **dev(`civitai/src`) ↔ panel(`panel/src`) 的漂移可能是「双向」的，禁止无脑全量镜像。**
+    2026-09-13 实测：`Outputs.ts` 是 **dev 领先** 81 行（「Outputs 生成完后台更新」），
+    而 `LoraExplorer.ts` 是 **panel 领先** 74 行（「版本下拉脱离裁切」修复，2026-09-12 直接在发布仓库改的）。
+    跑 `sync_panel_src.py` 全量镜像会把 panel 侧独有改动**静默回退**（无报错）。
+    正确流程：
+    ① 用 `difflib` 逐文件比对，打印**「少数派」差异块**（哪边行数少的那一侧就是可能被覆盖的独有改动）；
+    ② 确认某一侧是**严格超集**后再整份覆盖，方向按超集走（本次 `Outputs.ts` dev→panel、
+       `LoraExplorer.ts` panel→dev）；
+    ③ 合并后必须复检 `sync_panel_src.py --dry-run` 应**全部 `same`**；
+    ④ 备份**不能放在 `src/` 里** —— 那会被 sync 当成新文件推过去。
+    **连带教训（更严重）**：功能可能**只写在 dev、从没镜像到 panel** → 发布版静默缺功能。
+    本次 `Outputs.ts` 就是这样：后端 `/anima/gallery/fresh` 路由在 2.11.0 发了，
+    前端调用没进 panel，于是 `app/`、registry 包、Manager 安装的用户全都用不上，
+    而 `HANDOFF` 里却写着 2.11.0 已包含它。
+    **验证「功能到底发布了没」要用字符串字面量 grep（如 `gallery/fresh`），不能用函数名** ——
+    minify 会重命名函数，用函数名查产物是假阴性（本次先被这个坑误导过一次）。
 
 ## 5. 版本号纪律（`VERSION` 是唯一真源）
 
