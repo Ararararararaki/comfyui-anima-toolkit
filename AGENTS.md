@@ -200,12 +200,14 @@ python tools/bump_version.py 2.12.0     # VERSION / __init__ / README / pyprojec
 
 | 口径 | 当前值 | 说明 |
 |---|---|---|
-| 仓库版本 | **2.11.0** | `VERSION` 唯一真源 |
-| GitHub tag/Release | `v2.10.0`、`v2.11.0` | **2.9 及更早从未打 tag**（v2.10.0 是 2026-09-13 补建） |
-| Registry 版本 | 2.11.0 | `Pending` 待审核 |
+| 仓库版本 | **2.12.7** | `VERSION` 唯一真源 |
+| GitHub tag/Release | `v2.10.0` ~ `v2.12.7` | **2.9 及更早从未打 tag**（v2.10.0 是 2026-09-13 补建） |
+| Registry 版本 | 2.12.7 | `Pending` 待审核（2.11.0 起全部 Pending，故 `latest_version` 为空） |
 
 版本谱系：2.4.0 → 2.5.x → 2.6.0 → 2.7.x → 2.8.x → **2.9.0**（`357bf1e`）→
-**2.10.0**（`6d9ec25`，破坏性：相机控制退役）→ **2.11.0**（`2e071ba`）。
+**2.10.0**（`6d9ec25`，破坏性：相机控制退役）→ 2.11.0（`2e071ba`）→ 2.12.0（②区中文联想）→
+2.12.1（更新链漏发修复）→ 2.12.2（可发现性元数据）→ 2.12.3/2.12.4（改名 `TK Toolkit` + 旧名召回）
+→ 2.12.5/2.12.6（toast 对比度 + 重发损坏的包）→ **2.12.7**（补回 Outputs 后台更新前端）。
 > 注意：2.10.0 那次升级了 `VERSION` 却漏改 README，造成过真实漂移 —— 所以现在有强制校验。
 
 ## 6. 发布到 ComfyUI Registry
@@ -215,11 +217,21 @@ python -X utf8 tools/registry_setup.py --token <PAT>          # 体检 + 发布
 python -X utf8 tools/registry_setup.py --token <PAT> --check   # 只体检
 ```
 
-- node id **`anima-toolkit`**、publisher **`toki`**（**均创建后不可改**）
+- node id **`anima-toolkit`**、publisher **`toki`**（**均创建后不可改**）；**显示名是 `TK Toolkit`**
+  （`[tool.comfy].DisplayName`，可改，改了要发新版才生效）
 - `PublisherId` 必须**全小写**（`ai_verify` + `test_ci_config` 已强制）
 - `requirements.txt` 只放**必需**依赖；`playwright` / `llama-cpp-python` 在 `requirements-optional.txt`；
   **不要**声明 `torch` / `numpy` / `PIL`（ComfyUI 自带，重复声明会版本冲突）
 - Registry 与 Manager 收录以此为准，**无需**单独提交 Manager
+- **comfy-cli 的 `[tool.comfy]` 只认 `PublisherId` / `DisplayName` / `Icon` / `includes`
+  （外加 `Banner` / `web` / `Models`）** —— 实测其 `registry/config_parser.py`。
+  所以 registry 上的 `tags`（`category` 已被官方 deprecate，改用 `tags`）**填不了**，只能网页端补。
+- ⚠️ **查询 registry 元数据有缓存陷阱**：`/nodes/{nodeId}` 与 `/nodes/search` 走 CDN，
+  **同一时刻不同边缘副本会返回不同代的值**（实测连查 3 次：第 1 次旧名、第 2/3 次新名，
+  曾据此误判"改动被回退"）。**判断节点元数据要用 `/publishers/{publisherId}/nodes`**（更实时）。
+- 搜索召回实测（2026-09-13）：`tk toolkit` / `anima toolkit` / `anima-toolkit` 均第 1，
+  `danbooru` 第 3（共 29），`anima` 第 18（共 163）。
+  旧名 `anima toolkit` 仍能召回，是因为 description 里保留了 `(formerly Anima Toolkit)`。
 
 ## 7. UI 规范
 
