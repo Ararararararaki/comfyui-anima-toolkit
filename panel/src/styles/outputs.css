@@ -792,18 +792,18 @@
   color: var(--text);
 }
 
-/* 状态栏 */
+/* 状态栏 —— 已并入顶部工具栏的同一行（原先在网格下方独占一条带背景的卡片，
+   白占竖向空间；用户反馈「单独占底栏，浪费空间」）。现在是行内紧凑文本。 */
 .outputs-stats {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  margin-top: 16px;
-  background: var(--bg2);
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  font-size: 13px;
+  gap: 8px;
+  margin-left: auto;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1.2;
   color: var(--text2);
+  white-space: nowrap;
 }
 
 .outputs-stats-selected {

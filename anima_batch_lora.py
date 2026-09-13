@@ -757,8 +757,17 @@ async def gallery_fresh(request):
     # 用 total 而不是 len(entries)：索引对象有 16.5MB，别为了数个数把它整个读进来。
     index = _GALLERY_STATE["index"]
     known = int((index or {}).get("total", 0) or 0)
+    built_at = float((index or {}).get("builtAt", 0) or 0)
+    # 判据①：磁盘文件数比索引里的 total 多（原有语义）。
+    # 判据②：磁盘上有**比索引构建时刻更新**的文件（latest > builtAt）。
+    #   只判①会漏两种情况，实测表现为「输出图不自动更新、必须手动点刷新」：
+    #   · 索引 total 偏大（含已删文件等）时，新增的图也算不出"变多"；
+    #   · 索引一旦重建完成，① 必然变回 False —— 前端据此就再也不来拉新索引了。
+    #   所以这里把已经算好的 latest（最新 mtime）用起来，并把 builtAt 一并返回，
+    #   让前端能判断"索引换代了没有"（见 panel 的 probeOutputsGrew）。
+    stale = bool(built_at) and latest > built_at + 1.0
     with _GALLERY_LOCK:
-        changed = count > known
+        changed = count > known or stale
         building = bool(_GALLERY_STATE["building"])
         if changed and not building:
             _GALLERY_STATE["building"] = True
@@ -770,6 +779,7 @@ async def gallery_fresh(request):
         "latest": round(latest, 3),
         "count": count,
         "known": known,
+        "builtAt": round(built_at, 3),
         "changed": changed,
         "building": building,
     })

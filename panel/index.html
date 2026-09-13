@@ -503,6 +503,9 @@ try {
           <button class="outputs-toolbar-btn outputs-filter-btn" data-filter="rated" data-icon="thumbsUp"><span>评分</span></button>
         </div>
         <button class="outputs-toolbar-btn outputs-shortcuts-btn" data-icon="keyboard" title="快捷键"></button>
+        <!-- 统计信息并入工具栏同一行（原先在网格下方独占一条带背景的状态栏，白占竖向空间；
+             内容由 Outputs.ts 的 renderStats() 填充） -->
+        <div class="outputs-stats"></div>
       </div>
 
       <div class="outputs-batch-bar" id="outputsBatchBar" style="display:none">
@@ -526,10 +529,6 @@ try {
           <p>选择 ComfyUI 输出目录开始管理图片</p>
           <button class="btn btn-primary outputs-select-btn" data-icon="folder"><span>选择目录</span></button>
         </div>
-      </div>
-
-      <div class="outputs-stats">
-        <span>共 0 张图片</span>
       </div>
 
       <button class="btn btn-ghost outputs-load-more" style="display:none;margin:16px auto">加载更多</button>

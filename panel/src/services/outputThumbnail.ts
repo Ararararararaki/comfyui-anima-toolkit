@@ -284,6 +284,9 @@ export interface GalleryEntry {
 
 let _galleryState: 'unknown' | 'ready' | 'no' = 'unknown'
 let _galleryEntries: Map<string, GalleryEntry> | null = null
+// 当前内存里这份 entries 对应的索引构建时刻（来自 /anima/gallery/manifest 的 builtAt）。
+// 调用方用它判断"索引换代了没有"，避免为了比对而重复拉一次 16.5MB 的 manifest。
+let _galleryBuiltAt = 0
 
 export function galleryIndexEnabled(): boolean {
   return _galleryState === 'ready'
@@ -293,30 +296,47 @@ export function galleryEntries(): Map<string, GalleryEntry> | null {
   return _galleryEntries
 }
 
+/** 当前已载入的索引构建时刻（0 = 未知）。 */
+export function galleryIndexBuiltAt(): number {
+  return _galleryBuiltAt
+}
+
 /** 拉取并探测 gallery 索引。
  *
  * 索引从未构建/构建中时：触发后端后台构建（/anima/gallery/rebuild，幂等）并轮询，
  * 首次建库约 10–15 秒（3571 张实测 12.9s），完成后返回 ready；上限 ~90 秒后放弃走旧管线。
+ *
+ * ⚠️ `force=true` 必须**真的重新拉 manifest**：此前没有这个参数，函数开头
+ *    `if (_galleryState !== 'unknown') return ...` 一旦首次探测成功就永久短路，
+ *    于是 `_galleryEntries` 永远停在首屏那一版 —— 正是用户反馈的
+ *    「重启后只显示很早之前的索引快照、新图不自动出现、必须手动点刷新」的根因。
+ *    （调用处那句 `await probeGalleryIndex() // 索引已重建完则重新载入 entries`
+ *     注释写的是"重新载入"，但实现根本没重新载入。）
+ *    force 模式只拉一次、不触发 rebuild 轮询：要不要重建由调用方按后端 /fresh 的判据决定。
  */
-export async function probeGalleryIndex(): Promise<boolean> {
-  if (_galleryState !== 'unknown') return _galleryState === 'ready'
-  for (let attempt = 0; attempt < 45; attempt++) {
+export async function probeGalleryIndex(force = false): Promise<boolean> {
+  if (!force && _galleryState !== 'unknown') return _galleryState === 'ready'
+  const maxAttempts = force ? 1 : 45
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       const resp = await fetch('/anima/gallery/manifest', { cache: 'no-store' })
       if (resp.ok) {
         const data = await resp.json()
         if (data?.entries && typeof data.entries === 'object' && Object.keys(data.entries).length > 0) {
           _galleryEntries = new Map(Object.entries(data.entries) as [string, GalleryEntry][])
+          _galleryBuiltAt = Number(data.builtAt || 0)
           _galleryState = 'ready'
           return true
         }
-        // 索引未就绪：请求后端启动后台构建（幂等，已在建则忽略），2 秒后重查
+        // 索引未就绪：强制模式下不自己拉起构建（交给调用方的判据），普通模式请求后端启动
+        if (force) return false
         await fetch('/anima/gallery/rebuild', { cache: 'no-store' }).catch(() => {})
       }
     } catch { /* 后端不可用：走旧管线 */ }
+    if (force) return false
     await new Promise(r => setTimeout(r, 2000))
   }
-  _galleryState = 'no'
+  if (!force) _galleryState = 'no'
   return false
 }
 

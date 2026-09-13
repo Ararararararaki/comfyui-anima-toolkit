@@ -4,7 +4,7 @@ import { useOutputStore } from '../store/outputStore'
 import { deleteFiles, renameFile, batchFavorite, batchRate } from '../services/outputService'
 import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, buildDirTreeFromPaths, reparseAllMetadata, ensureMetadataFresh } from '../services/outputScanner'
 import { restoreAllFromDb } from '../services/outputManifest'
-import { preloadThumbnailsFromDb, probeBackendThumbs, backendThumbsEnabled, animaThumbUrl, probeGalleryIndex, galleryIndexEnabled, galleryEntries, fetchGalleryMeta } from '../services/outputThumbnail'
+import { preloadThumbnailsFromDb, probeBackendThumbs, backendThumbsEnabled, animaThumbUrl, probeGalleryIndex, galleryIndexEnabled, galleryEntries, galleryIndexBuiltAt, fetchGalleryMeta } from '../services/outputThumbnail'
 import { hashPath } from '../services/outputManifest'
 import { outputsDb } from '../db/outputsDb'
 import { addPrompt, generatePromptId } from '../store/prompts'
@@ -356,8 +356,17 @@ function bindOutputsExecutionEvents() {
  * gallery 索引模式下的「有没有新图」探测。
  * 用后端 /anima/gallery/fresh（只 stat 文件名，不解析 PNG、不传 16.5MB 索引）；
  * 后端不可用（老插件）时返回 false，静默退回「只靠切页刷新」的旧行为。
+ *
+ * ⚠️ 判据不能只看 changed（磁盘文件数 > 索引里的 total）：
+ *   ① 后端重建索引是**后台线程**，探测到 changed 的那一刻索引往往还没建完，
+ *      此时拉 manifest 拿到的仍是旧索引；
+ *   ② 等它建完后 count 已经追平，changed 又变回 false —— 于是**再也不会来拉**，
+ *      新图永远不出现（用户实测：必须手动点刷新）。这就是「没有自动加载」的根因。
+ *   所以这里额外比对后端返回的 `builtAt`（索引构建时刻）：只要索引换代了就重拉，
+ *   与 changed 无关；`building` 期间则跳过，等下一轮 builtAt 变了再拉。
  */
 let _outputsFreshMisses = 0
+let _renderedIndexBuiltAt = 0
 async function probeOutputsGrew(): Promise<boolean> {
   // 老版后端没有该端点：连续失败 3 次后就别再打了（避免每轮轮询都吃一个 404）
   if (_outputsFreshMisses >= 3) return false
@@ -366,8 +375,16 @@ async function probeOutputsGrew(): Promise<boolean> {
     if (!resp.ok) throw new Error(String(resp.status))
     const data = await resp.json()
     _outputsFreshMisses = 0
-    if (!data?.changed) return false
-    await probeGalleryIndex()      // 索引已重建完则重新载入 entries
+    // 正在后台重建：此刻拉只会拿到旧索引，跳过（下一轮 builtAt 会变，那时再拉）
+    if (data?.building) return false
+    const builtAt = Number(data?.builtAt || 0)
+    // 首屏那次 probeGalleryIndex() 已经载入了一份索引，它的 builtAt 由 service 记着；
+    // 用它做基准，避免启动后第一次探测就为"比对版本"白拉一次 16.5MB manifest。
+    const knownBuiltAt = _renderedIndexBuiltAt || galleryIndexBuiltAt()
+    const indexRotated = builtAt > 0 && builtAt !== knownBuiltAt
+    if (!data?.changed && !indexRotated) return false
+    await probeGalleryIndex(true)   // 强制重拉 manifest（false 会被首次探测后的短路挡住）
+    _renderedIndexBuiltAt = builtAt
     return true
   } catch {
     _outputsFreshMisses += 1
@@ -380,7 +397,8 @@ async function probeOutputsGrew(): Promise<boolean> {
 
 /** gallery 模式下重新拉全量 manifest 并重渲染（新图就位） */
 async function refreshOutputsFromGallery() {
-  const ok = await probeGalleryIndex()
+  // 必须 force：否则 probeGalleryIndex 首次成功后永久短路，这里等于什么都没拉
+  const ok = await probeGalleryIndex(true)
   if (!ok) return
   await restoreOutputsFromDb()
   if (isOutputsActive()) { renderOutputsView(); updateFilterPanel() }

@@ -374,6 +374,27 @@ html[data-theme="drinkit"] .theme-dot[data-theme="drinkit"] {
   box-shadow: 0 0 0 3px rgba(22, 131, 255, .16);
 }
 
+/* ── 主题切换按钮：三个点必须各自可辨（用户实测反馈「蓝色主题的切换按钮不明显」）──
+   原因：三个点里只有 [data-theme="mono"] / [data-theme="mono-light"] 定义了背景色，
+   drinkit 那个点没有背景 → 在浅色主题下只剩 1px 的 --border 淡边，几乎看不见，
+   整个控件就"消失"了。这里给每个点填上**它所代表的主题色**，并统一加描边。
+   本文件在 main.ts 里最后 import，优先级足够压过 global.css / polish.css。 */
+.theme-dot {
+  width: 14px;
+  height: 14px;
+  border: 1px solid rgba(127, 127, 127, .55);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .22);
+}
+.theme-dot[data-theme="drinkit"] { background: var(--color-primary); }
+.theme-dot[data-theme="mono"] { background: #171717; }
+.theme-dot[data-theme="mono-light"] { background: #fff; }
+/* 选中态：外圈「底色 + 主题色」双层环，比单纯描边更容易看出当前是哪个主题 */
+.theme-dot.active {
+  transform: scale(1.12);
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--color-primary);
+}
+.theme-dot:hover { transform: scale(1.24); }
+
 /* Keep the dense tool UI usable on smaller screens. */
 @media (max-width: 680px) {
   html[data-theme="drinkit"] .btn-primary { min-height: 46px; }

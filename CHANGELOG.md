@@ -8,6 +8,39 @@
 
 用户可在节点工具栏「🔄 更新」检查到新版本。
 
+## [2.12.8] - 2026-09-13
+
+### 修复
+
+- **Outputs 重启后只显示很早之前的索引快照、新图不自动出现（必须手动点刷新）**。
+  根因是两处配合出来的死锁，都已修：
+  1. **`probeGalleryIndex()` 首次探测成功后永久短路** —— `outputThumbnail.ts` 里
+     `if (_galleryState !== 'unknown') return _galleryState === 'ready'` 让后续所有调用
+     直接 return，于是 `_galleryEntries` **永远停在首屏那一版**。
+     `refreshOutputsFromGallery()` 那句注释写着"索引已重建完则重新载入 entries"，
+     但实现根本没重新载入。现在加了 `force` 参数才会真的重拉 manifest。
+  2. **探测判据看不出"索引换代"** —— `probeOutputsGrew()` 只看后端 `changed`
+     （磁盘文件数 > 索引里的 `total`）。而后端重建索引是**后台线程**：探测到 changed 那一刻
+     索引往往还没建完，此时拉的仍是旧索引；等它建完后 `count` 已追平、`changed` 又变回
+     `false` —— **前端据此就再也不来拉了**，新图永远不出现。
+     现在同时比对后端返回的 `builtAt`（索引构建时刻）：只要索引换代就重拉，与 `changed` 无关；
+     `building` 期间跳过，等下一轮。首屏已载入的 `builtAt` 由 service 记着，不会为此白拉一次 manifest。
+  3. **后端 `/anima/gallery/fresh` 的判据漏了 `latest`** —— `changed = count > known` 只判"变多"，
+     而**已经算好的 `latest`（最新 mtime）根本没用**。索引 `total` 偏大（含已删文件等）时，
+     新增的图也算不出"变多"。补上 `stale = latest > builtAt + 1`，并把 `builtAt` 一并返回给前端。
+
+- **主题切换按钮在浅色主题下几乎看不见**（用户截图反馈）。
+  三个点里只有 `[data-theme="mono"]` / `[data-theme="mono-light"]` 定义了背景色，
+  **drinkit 那个点没有背景** → 在浅色主题下只剩 1px 的 `--border` 淡边，整个控件等于消失。
+  现在每个点填上**它所代表的主题色**（drinkit 用 `--color-primary`），统一加描边；
+  选中态改成"底色 + 主题色"双层环，比单纯描边更容易看出当前是哪个主题。写在本文件最后
+  import 的 `design-system.css`，优先级足以压过 `global.css` / `polish.css`。
+
+- **Outputs 底部「共 N 张图片」独占一整条状态栏（浪费竖向空间）**（用户截图反馈）。
+  已把 `.outputs-stats` 从网格下方的独立卡片**移进顶部工具栏同一行**，
+  CSS 从"带背景/边框/padding 的卡片"改为行内紧凑文本（`margin-left:auto` 推到最右）。
+  顺带说明：张数在工具栏的「全部图片 (N)」里本来就有，这条属于冗余信息，现在不再占一整行。
+
 ## [2.12.7] - 2026-09-13
 
 ### 修复
