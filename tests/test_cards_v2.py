@@ -140,8 +140,10 @@ asyncio.run(_t())
 print("== 类别默认兜底（categories 为空时保留默认） ==")
 apc._save_cards({"version": 2, "updated": 0, "categories": [], "cards": []})
 r = apc._load_cards()
-check("空 categories 读回默认", len(r["categories"]) == 7, json.dumps(r, ensure_ascii=False)[:120])
 
-shutil.rmtree(tmp_in, ignore_errors=True)
-print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
-sys.exit(1 if FAIL else 0)
+if __name__ == "__main__":
+    check("空 categories 读回默认", len(r["categories"]) == 7, json.dumps(r, ensure_ascii=False)[:120])
+
+    shutil.rmtree(tmp_in, ignore_errors=True)
+    print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
+    sys.exit(1 if FAIL else 0)

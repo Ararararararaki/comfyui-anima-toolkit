@@ -27,10 +27,22 @@ PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(PLUGIN_DIR, "data")
 PROMPT_LIBRARY_PATH = os.path.join(DATA_DIR, "prompt_library.json")
 PROMPT_LIBRARY_BACKUP_COUNT = 5
-PROMPT_LIBRARY_BACKUP_PATHS = [
-    f"{PROMPT_LIBRARY_PATH}.bak.{index}" for index in range(1, PROMPT_LIBRARY_BACKUP_COUNT + 1)
-]
-PROMPT_LIBRARY_LEGACY_BACKUP_PATH = PROMPT_LIBRARY_PATH + ".bak"
+# ⚠️ 这些**派生**路径必须是「按当前 PROMPT_LIBRARY_PATH 现算」的，不能在导入时固化成常量：
+#   固化后一旦 DATA_DIR / PROMPT_LIBRARY_PATH 被改（测试隔离必做），主文件写去新位置、
+#   备份却仍写在**导入时**的旧位置 —— 实测会把测试数据写进仓库/安装目录的 data/，
+#   而 load_snapshot 又去新位置找备份，等于备份链整体失效。
+# 下面两个常量保留只为兼容旧引用（值是导入时快照），内部逻辑一律走函数。
+def _backup_paths(primary_path: str | None = None) -> list[str]:
+    base = primary_path or PROMPT_LIBRARY_PATH
+    return [f"{base}.bak.{index}" for index in range(1, PROMPT_LIBRARY_BACKUP_COUNT + 1)]
+
+
+def _legacy_backup_path(primary_path: str | None = None) -> str:
+    return (primary_path or PROMPT_LIBRARY_PATH) + ".bak"
+
+
+PROMPT_LIBRARY_BACKUP_PATHS = _backup_paths()
+PROMPT_LIBRARY_LEGACY_BACKUP_PATH = _legacy_backup_path()
 PROMPT_LIBRARY_LOCK = threading.RLock()
 PROMPT_LIBRARY_SCHEMA_VERSION = 1
 MAX_PROMPT_LIBRARY_BYTES = 64 * 1024 * 1024
@@ -161,7 +173,7 @@ def load_snapshot() -> tuple[dict[str, Any] | None, bool]:
         if primary is not None:
             return primary, False
         # .bak.1 是最近一代备份，依次回退；最后再试旧版单文件 .bak。
-        for path in (*PROMPT_LIBRARY_BACKUP_PATHS, PROMPT_LIBRARY_LEGACY_BACKUP_PATH):
+        for path in (*_backup_paths(), _legacy_backup_path()):
             backup = _read_file(path)
             if backup is not None:
                 return backup, True
@@ -170,20 +182,21 @@ def load_snapshot() -> tuple[dict[str, Any] | None, bool]:
 
 def _rotate_backups() -> None:
     """Shift .bak.1~.bak.5 by one generation and drop the oldest copy."""
-    oldest = PROMPT_LIBRARY_BACKUP_PATHS[-1]
+    paths = _backup_paths()
+    oldest = paths[-1]
     if os.path.exists(oldest):
         try:
             os.remove(oldest)
         except OSError:
             pass
     for index in range(PROMPT_LIBRARY_BACKUP_COUNT - 1, 0, -1):
-        if os.path.exists(PROMPT_LIBRARY_BACKUP_PATHS[index - 1]):
+        if os.path.exists(paths[index - 1]):
             try:
-                os.replace(PROMPT_LIBRARY_BACKUP_PATHS[index - 1], PROMPT_LIBRARY_BACKUP_PATHS[index])
+                os.replace(paths[index - 1], paths[index])
             except OSError:
                 pass
     try:
-        shutil.copy2(PROMPT_LIBRARY_PATH, PROMPT_LIBRARY_BACKUP_PATHS[0])
+        shutil.copy2(PROMPT_LIBRARY_PATH, paths[0])
     except OSError:
         pass
 

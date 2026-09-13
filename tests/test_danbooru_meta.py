@@ -176,5 +176,7 @@ try:
 except RuntimeError:
     check("全失败 raise（保留硬停语义）", True)
 
-print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
-sys.exit(1 if FAIL else 0)
+
+if __name__ == "__main__":
+    print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
+    sys.exit(1 if FAIL else 0)

@@ -1,0 +1,44 @@
+# ComfyUI Registry / ComfyUI-Manager 元数据。
+#
+# 发布规范（2026-09 实测于 https://docs.comfy.org/registry/specifications）：
+#   · [project] name / description / version / license 为必填
+#   · [tool.comfy] PublisherId 必填（= registry.comfy.org 账号名，创建后不可改）
+#   · dependencies 必须动态读 requirements.txt（Node ID 的 URL 用 name）
+#
+# ⚠️ 发布前必须核对：本文件的 version 必须等于仓库根 VERSION 文件。
+#    这条由 tests/test_ci_config.py::test_registry_version_matches_version_file 强制，
+#    漂移即 CI FAIL（与 README/CHANGELOG 一个待遇）。
+#
+# 发布命令（需人工，见 README「发布到 ComfyUI Registry」）：
+#   pip install comfy-cli
+#   comfy --skip-prompt set-default <ComfyUI 目录>
+#   comfy node publish
+
+[project]
+name = "anima-toolkit"
+description = "Anima Toolkit for ComfyUI — all-in-one LoRA management (batch apply + Civitai metadata/downloads), Danbooru search & gallery, prompt management, an output gallery over ComfyUI/output, and batch workflow utilities."
+version = "2.11.0"
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.9"
+# 由 requirements.txt 动态提供（registry 的规范要求），避免两处维护依赖列表
+dynamic = ["dependencies"]
+
+[project.urls]
+Repository = "https://github.com/Ararararararaki/comfyui-anima-toolkit"
+Documentation = "https://github.com/Ararararararaki/comfyui-anima-toolkit#readme"
+"Bug Tracker" = "https://github.com/Ararararararaki/comfyui-anima-toolkit/issues"
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.comfy]
+# ⚠️ 需人工核准：必须与你在 https://registry.comfy.org 创建 publisher 时的 id 完全一致
+#    （通常等于 GitHub 用户名；创建后不可更改）
+PublisherId = "Ararararararaki"
+DisplayName = "Anima Toolkit"
+# Icon 要求：SVG/PNG/JPG/GIF，≤400×400，正方形。
+# 留空表示先不设图标（比放一个错的 URL 好）。补好后填成可公网访问的直链，例如：
+#   Icon = "https://raw.githubusercontent.com/Ararararararaki/comfyui-anima-toolkit/main/screenshots/icon.png"
+Icon = ""
+requires-comfyui = ">=0.3.0"

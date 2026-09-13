@@ -29,7 +29,22 @@ import subprocess
 import sys
 import types
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 插件根目录：**按特征向上查找**，不用固定的 parents[N]。
+# 本文件可以在 tests/ 顶层或 tests/tools/（甚至别处）而不失效 ——
+# 之前用 parents[1]，把文件从 tests/ 移到 tests/tools/ 就会指向 tests/ 并全盘报错。
+def _find_plugin_root(start: str) -> str:
+    cur = os.path.dirname(os.path.abspath(start))
+    for _ in range(6):
+        if os.path.isfile(os.path.join(cur, "__init__.py")) and os.path.isfile(os.path.join(cur, "VERSION")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    return os.path.dirname(os.path.dirname(os.path.abspath(start)))  # 兜底
+
+
+ROOT = _find_plugin_root(__file__)
 REPO = "Ararararararaki/comfyui-anima-toolkit"
 CRED = r"C:\Users\Toki\.my-credentials"
 
@@ -69,9 +84,9 @@ def check_merge_integrity() -> None:
     unused = sorted(imported - merged)
     detail = f"合并 {len(merged)} 张表"
     if missing:
-        detail += f"；❌ 未导入却被合并: {missing}"
+        detail += f"；[X] 未导入却被合并: {missing}"
     if unused:
-        detail += f"；⚠️ 导入未用: {unused}"
+        detail += f"；[!] 导入未用: {unused}"
     check("__init__.py 映射表导入完整性", not missing, detail)
 
 
@@ -237,7 +252,7 @@ def check_readme_images() -> None:
     if unused:
         info(f"    ℹ️ 未被 README 引用的截图: {unused}")
     check("README 截图引用全部存在", not missing,
-          f"{len(refs)} 个引用" + (f"；❌ 缺失: {missing}" if missing else ""))
+          f"{len(refs)} 个引用" + (f"；[X] 缺失: {missing}" if missing else ""))
 
 
 # ────────────────── 5. README 站内链接存在性 ──────────────────
@@ -246,26 +261,162 @@ def check_readme_links() -> None:
     links = sorted(set(re.findall(r"\]\((?!https?:|#|screenshots/)([^)#]+)\)", body)))
     missing = [l for l in links if not os.path.exists(os.path.join(ROOT, l.split("#")[0]))]
     check("README 站内链接存在", not missing,
-          f"{len(links)} 个链接" + (f"；❌ 缺失: {missing}" if missing else ""))
+          f"{len(links)} 个链接" + (f"；[X] 缺失: {missing}" if missing else ""))
 
 
-# ────────────────── 6. 版本一致性 ──────────────────
-def check_version() -> None:
+# ────────────────── 6. 版本一致性（唯一真源 = 根 VERSION 文件）──────────────────
+def _read_version_sources() -> dict:
+    """收集所有「代表本插件当前版本」的位置。**只读、不猜**：
+
+    每个字段都说明它为什么算/不算版本真源，避免以后有人拿全局替换一改了事。
+    """
+    out: dict = {}
+
     vf = os.path.join(ROOT, "VERSION")
-    if not os.path.exists(vf):
-        check("VERSION 与 __version__ 一致", False, "VERSION 文件不存在")
-        return
-    v = io.open(vf, encoding="utf-8").read().strip()
+    out["VERSION"] = io.open(vf, encoding="utf-8").read().strip() if os.path.exists(vf) else None
+
     src = io.open(os.path.join(ROOT, "__init__.py"), encoding="utf-8").read()
-    m = re.search(r'__version__\s*=\s*"([^"]+)"', src)
-    iv = m.group(1) if m else None
-    ok = iv == v
-    detail = f"VERSION={v} / __version__={iv}"
-    if not ok:
-        cl = os.path.join(ROOT, "CHANGELOG.md")
-        if os.path.exists(cl) and f"[{v}]" not in io.open(cl, encoding="utf-8").read():
-            detail += "；❌ CHANGELOG 缺少该版本条目"
-    check("VERSION 与 __init__.__version__ 一致", ok, detail)
+    # 真源化之后 __version__ 由运行时读 VERSION 得到，形如：
+    #     try:
+    #         with open(... "VERSION") as _vf:
+    #             __version__ = _vf.read().strip() or _FALLBACK_VERSION
+    # 因此这里的「内置版本」取注释里声明的那句 / 或 _FALLBACK_VERSION 常量值，
+    # 用来交叉验证 VERSION 文件与代码里写的兜底值是否也被一起更新了。
+    m = re.search(r'^__version__\s*=\s*"([^"]+)"', src, re.M)
+    if m:
+        out["__init__.__version__"] = m.group(1)
+    else:
+        m2 = re.search(r'^_FALLBACK_VERSION\s*=\s*"([^"]+)"', src, re.M)
+        out["__init__.__version__"] = m2.group(1) if m2 else None
+    out["__init__ 运行时读 VERSION"] = bool(
+        # 路径里含嵌套括号（os.path.dirname(os.path.abspath(__file__))），用 [^)]* 会在第一个
+        # ')' 处截断从而永远匹配不到 VERSION —— 这里只要求「同一行里 open(...) 且出现 VERSION」，
+        # 再用 __version__ = _vf.read... 这条赋值确认真的把读到的值赋给了版本号。
+        re.search(r"open\(.*VERSION.*\)", src) and re.search(r"__version__\s*=\s*_vf\.read", src)
+    )
+
+    rm = os.path.join(ROOT, "README.md")
+    if os.path.exists(rm):
+        body = io.open(rm, encoding="utf-8").read()
+        m = re.search(r"当前发布版本[:：]\s*\*\*([0-9]+\.[0-9]+\.[0-9]+)\*\*", body)
+        out["README 当前发布版本"] = m.group(1) if m else None
+    else:
+        out["README 当前发布版本"] = None
+
+    cm = os.path.join(ROOT, "CHANGELOG.md")
+    if os.path.exists(cm):
+        body = io.open(cm, encoding="utf-8").read()
+        vs = re.findall(r"^##\s*\[([0-9]+\.[0-9]+\.[0-9]+)\]", body, re.M)
+        out["CHANGELOG 最新条目"] = vs[0] if vs else None
+        out["CHANGELOG 全部版本"] = vs
+    else:
+        out["CHANGELOG 最新条目"] = None
+        out["CHANGELOG 全部版本"] = []
+
+    return out
+
+
+def check_version() -> None:
+    s = _read_version_sources()
+    v = s["VERSION"]
+    if not v:
+        check("版本一致性（VERSION / __version__ / README / CHANGELOG）", False, "VERSION 文件不存在")
+        return
+
+    problems: list[str] = []
+
+    iv = s["__init__.__version__"]
+    if iv != v:
+        problems.append(f"__init__.__version__={iv} ≠ VERSION={v}")
+    if not s["__init__ 运行时读 VERSION"]:
+        problems.append("__init__.py 未在运行时读取 VERSION（仍有硬编码版本，迟早漂移）")
+
+    rv = s["README 当前发布版本"]
+    if rv is None:
+        problems.append("README 里找不到「当前发布版本: **X.Y.Z**」（格式被改动？）")
+    elif rv != v:
+        problems.append(f"README={rv} ≠ VERSION={v}")
+
+    cv = s["CHANGELOG 最新条目"]
+    if cv is None:
+        problems.append("CHANGELOG 没有 `## [X.Y.Z]` 形式的版本条目")
+    elif cv != v:
+        problems.append(f"CHANGELOG 最新条目={cv} ≠ VERSION={v}")
+
+    detail = f"VERSION={v} / __version__={iv} / README={rv} / CHANGELOG={cv}"
+    if problems:
+        detail += "  << " + " ; ".join(problems)
+    check("版本一致性（VERSION / __version__ / README / CHANGELOG）", not problems, detail)
+
+
+def check_version_references() -> None:
+    """扫描用户可见文档里「写死的旧版本号」，防止 README/FEATURES 停在老版本。"""
+    v = _read_version_sources()["VERSION"]
+    if not v:
+        check("文档内版本引用无过期", False, "VERSION 文件不存在")
+        return
+    # 只扫「面向用户的说明文档」；CHANGELOG/HANDOFF/ADR 里的历史版本号是**正确**的，不能算过期。
+    targets = ["README.md", "docs/FEATURES.md"]
+    stale: list[str] = []
+    for rel in targets:
+        p = os.path.join(ROOT, rel)
+        if not os.path.exists(p):
+            continue
+        for i, line in enumerate(io.open(p, encoding="utf-8"), 1):
+            if v in line:
+                continue
+            # 只在「当前版本」语义的句子里报警，历史版本段落一律放过
+            if re.search(r"当前(发布)?版本|最新版本|版本[:：]\s*v?[0-9]", line):
+                found = re.findall(r"v?([0-9]+\.[0-9]+\.[0-9]+)", line)
+                if found:
+                    stale.append(f"{rel}:{i} 提到 {found} 而当前是 {v}")
+    check("文档内版本引用无过期", not stale, "；".join(stale) if stale else f"当前 {v}，无过期引用")
+
+
+def check_registry_metadata() -> None:
+    """ComfyUI Registry 元数据（pyproject.toml）必须存在且版本与 VERSION 一致。
+
+    为什么单独一项：pyproject.toml 的 `[project].version` 是**发布给 Registry 的版本号**，
+    它不会自己跟着 VERSION 走。一旦漂移，用户从 ComfyUI-Manager 装到的版本号就是错的
+    （而且 registry 一旦发布过某版本号就不能重发）。所以必须与 README/CHANGELOG 同等待遇。
+    """
+    pp = os.path.join(ROOT, "pyproject.toml")
+    if not os.path.exists(pp):
+        check("Registry 元数据（pyproject.toml）", False, "缺少 pyproject.toml")
+        return
+    body = io.open(pp, encoding="utf-8").read()
+    problems: list[str] = []
+
+    # 不用 tomllib 也能校验关键字段（Python 3.9 没有 tomllib，本脚本要在旧环境也能跑）
+    m = re.search(r'(?m)^version\s*=\s*"([^"]+)"', body)
+    pv = m.group(1) if m else None
+    v = _read_version_sources()["VERSION"]
+    if pv is None:
+        problems.append("缺少 [project].version")
+    elif pv != v:
+        problems.append(f"pyproject version={pv} != VERSION={v}")
+
+    for field in ("name", "description", "license"):
+        if not re.search(rf"(?m)^{field}\s*=", body):
+            problems.append(f"缺少 [project].{field}")
+
+    if "[tool.comfy]" not in body:
+        problems.append("缺少 [tool.comfy] 段（Registry 必需）")
+    pm = re.search(r'(?m)^PublisherId\s*=\s*"([^"]*)"', body)
+    if pm is None:
+        problems.append("缺少 [tool.comfy].PublisherId")
+    elif not pm.group(1).strip():
+        problems.append("PublisherId 为空（需在 registry.comfy.org 创建 publisher 后填入）")
+
+    if not os.path.exists(os.path.join(ROOT, "requirements.txt")):
+        problems.append("缺少 requirements.txt（Registry 依赖从这里读）")
+
+    detail = f"version={pv} / PublisherId={pm.group(1) if pm else None}"
+    if problems:
+        detail += "  << " + " ; ".join(problems)
+    # PublisherId 是否已填属于「人工步骤」，这里只作为提示；版本与结构问题一律 FAIL
+    hard = [p for p in problems if "PublisherId 为空" not in p]
+    check("Registry 元数据（pyproject.toml）", not hard, detail)
 
 
 # ────────────────── 7. 工作区噪音（会让 AI 误判的未跟踪文件）──────────────────
@@ -326,7 +477,7 @@ def check_remote() -> None:
     same_content = _same_tree(sha, H)
     info(f"    远端 head={sha} ({msg}) / 本地 head={local}")
     check("远端 head 已核对", True,
-          f"远端 {sha} / 本地 {local}" + ("（内容一致）" if same_content else "（⚠️ 内容有差异，推送前先 dry-run）"))
+          f"远端 {sha} / 本地 {local}" + ("（内容一致）" if same_content else "（[!] 内容有差异，推送前先 dry-run）"))
 
 
 def _same_tree(remote_sha: str, H: dict) -> bool:
@@ -364,6 +515,8 @@ def main() -> int:
     check_readme_images()
     check_readme_links()
     check_version()
+    check_version_references()
+    check_registry_metadata()
     check_workspace_noise()
     if a.remote:
         check_remote()

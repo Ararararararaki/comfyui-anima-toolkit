@@ -1,10 +1,52 @@
 # Anima Toolkit · ComfyUI-Anima-Batch-LoRA
 
+**An all-in-one toolkit for [Anima](https://huggingface.co/circlestone-labs/Anima) workflows in ComfyUI** —
+batch LoRA loading, a Civitai-integrated local model manager, Danbooru search, prompt management,
+an output gallery, and batch-workflow utilities.
+
+> 🇬🇧 English TL;DR — *Anima Toolkit* is a ComfyUI custom-node pack plus a built-in web panel. It solves five
+> everyday Anima/SD chores: **LoRA management** (batch apply, thumbnails, categorization, Civitai metadata &
+> downloads), **Civitai integration** (match local files to models by SHA256, browse/explore, one-click
+> download), **prompt management** (bilingual tag cards, translation, prompt library), **Danbooru tools**
+> (tag search with filters, gallery, tag classifier), and **output management** (thumbnail gallery over your
+> `ComfyUI/output`, PNG metadata parsing), on top of **batch workflow utilities** (chained multi-prompt
+> generation, string routing, camera/pose presets).
+> Keywords: `comfyui` · `comfyui-custom-nodes` · `anima` · `lora` · `lora-manager` · `civitai` · `danbooru` ·
+> `prompt-manager` · `stable-diffusion` · `generative-ai`.
+> The full documentation below is in Chinese (the primary author's language).
+
 一个 ComfyUI 自定义节点 + 配套本地管理面板:批量挂 LoRA、可视化管理模型、解析返图参数、整理提示词。
 
-当前发布版本: **2.9.0**。画布拖动性能专项优化（节点级渲染裁剪，DOM −43%）+ 批量 LoRA 触发词输出改造（含一个会让节点执行失败的崩溃修复）。
+当前发布版本: **2.11.0**。
 
-## 最近更新（2026-09-12 · 2.9.0）
+## 这个项目解决什么（10 秒版）
+
+| 你常遇到的麻烦 | 本项目的解法 |
+|---|---|
+| 一次挂十几个 LoRA，手动改权重 | **TK 批量 LoRA 加载器**：面板挑/批量启用、权重 scrubbing、触发词自动输出 |
+| 本地一堆 `.safetensors` 不知道是什么、缺预览图 | **本地 LoRA 管理**：扫描 + SHA256 匹配 C 站，补预览图/作者/版本/下载，按底模与分类筛选 |
+| 想找参考图、找画师风格 | **TK D站画廊**：Danbooru 标签搜索 + 分级/时间/评分/收藏筛选 + 瀑布流 + 随机发现 |
+| 提示词散落各处、中英对照费劲 | **Prompt 卡片库 / Prompt 库**：中英对照卡片、翻译与校准为 D站规范标签、一键入库复用 |
+| 出图后不知道参数、找不到历史图 | **Outputs 图片管理**：后端缩略图直出、PNG 参数索引、一键复制 Prompt / LoRA 标签 |
+| 想一次跑一批不同提示词 | **TK 批量提示词**：多组提示词串行出图 + 每组独立机位 |
+
+**安装**见 [部署与更新](#部署与更新)；节点清单见 [TK 节点目录](#tk-节点目录)。
+
+## 最近更新（2026-09-13）
+
+- **TK D站画廊 · 真瀑布流 + 自适应张数 + 随机发现**：① 布局从「CSS Grid 行跨」换成**列填充 + 超宽图跨 2~3 列**，实测 48 张卡在 1298px 宽网格里右侧只余 3px、底部只余 9px（旧实现底部空 106px 且行间有洞）；② 「每页图片数」新增**自适应**档（默认），按节点宽高算出「刚好填满一屏」的张数，拖动节点改变大小会自动重算，整页铺不满时自动收掉底部空白；③ 工具栏新增**随机发现**三档（热门/优质/高收藏）——`order:random` 配质量地板，只出有人贴过的高分图，支持「换一批」并避开已看过的（池子见底会明确提示）。
+- **修复 · 排序不占计数槽（长期潜伏 bug）**：`order` 被错误地算作免费 metatag，导致「计数标签超限时自动移除排序」的分支与提示条**变成死代码**（对应回归测试自 2026-09-07 起一直失败）。现已修正为占 1 槽，并顺带修掉「搜索框残留的 `rating:`/`-filetype:` 与筛选面板重复拼词、白占计数槽」的问题。
+- **修复 · 画布上出现两个画廊导致按钮重复**：运行目录 `web/` 里放过备份文件，会被 ComfyUI 当扩展一起加载、重复注册。已把备份移出 `web/`，并在交接文档里立规矩。
+- **Outputs · 生成完就自动更新**：新增后端轻量探测 `/anima/gallery/fresh`（只 stat 文件名，不解析 PNG、不传 16.5MB 索引），并监听 ComfyUI 的 `executed` / `execution_success` 事件；**不在 outputs 页面时也会在后台把新图准备好**，切回来立即可见（旧实现只在窗口获焦/切页时扫描，隐藏时直接 return）。
+- **版本漂移修复**：`__init__.py` 的 `__version__` 现在**运行时直接读根目录 `VERSION`**，从根上消除「两处一起改」的漂移；`tests/tools/ai_verify.py` 新增版本一致性检查（VERSION / `__version__` / README / CHANGELOG 任一不一致即 FAIL）。
+- **工程化 · CI 与测试分层**：新增**只读验证 CI**（`.github/workflows/ci.yml`，`contents: read`、不写仓库、与提交 `app/` 的 `build-app.yml` 完全分开）：Python 编译 → `ai_verify` → 离线 pytest → JS 测试 → panel `tsc` → panel 构建，每个环节独立 step。`tests/` 已按「正式回归 / 需要真实环境 / 一次性脚本 / 工具」分层，并新增一键入口 **`python tests/run_tests.py`**（本地跑的等于 CI 跑的那一套）。分层规则与踩坑见 `tests/README.md`。
+
+## 历史更新（2026-09-12 · 2.10.0）
+
+- **⚠️ 破坏性变更**：`TK 相机控制` 节点已退役，由 **`TK 可动素体相机`** 取代。旧工作流中的该节点会显示「缺失节点类型」，删除后改用素体相机即可（机位参数与输出端口语义一一对应，预设与权重算法同一套 `CameraControlCore`，无需重新调参）。
+- **LoRA 探索 · 「选择版本」下拉被裁掉大半**：卡片链路上有 3 层 `overflow:hidden`，浮层弹出即被裁切；现于展开时临时解除「浮层 → 滚动容器」之间所有祖先的裁剪，上方空间不足则自动翻转为向下展开。
+
+## 历史更新（2026-09-12 · 2.9.0）
 
 - **TK 批量 LoRA 加载器 · 触发词输出改造**：`trigger_words` 现在**直接输出本节点已激活（权重非 0）LoRA 的触发词**，文件缺失但被激活的 LoRA 也会带出；新增**总开关**「输出触发词」（工具栏勾选框），一键关闭后该输出为空字符串、LoRA 加载不受影响。触发词改由后端持久化解析（节点面板推送落盘），不再依赖面板是否推送过 bridge。
 - **修复 · 模糊匹配崩溃（重要）**：LoRA 名需要模糊匹配时（如真实文件名带 ` (1)` 后缀）会抛 `NameError`——表现为 `/anima/lora/info` 500（触发词永远取不到）、「验证标签」报错，**并会让节点执行直接失败**。已修复 + 补离线回归测试。
@@ -191,11 +233,13 @@ Steam 风格界面,管理全部本地 LoRA:
 - 分类 tab:全部 / 画师风格 / 人物角色 / 美学优化 / 背景环境 / 其他 / 收藏 / 已隐藏
 - 检测本地是否已有,卡片上直接下载
 
-### 8. TK 节点系列(十一个配合作画节点)
+### 8. TK 节点系列(配合作画的节点)
 
 ![TK 可动素体相机](screenshots/tk-body-camera.png) · ![TK 批量提示词注入](screenshots/tk-prompt-batch.png) · ![TK D站画廊](screenshots/tk-danbooru-gallery.png)
 
-十二个配合作画的新节点(批量 LoRA 加载器见上面第 1 节):
+本节列出配合作画的新节点(批量 LoRA 加载器见上面第 1 节)。
+> 具体数量以实际注册为准（`python tests/tools/ai_verify.py` 会打印真实节点清单）——
+> **这里不写死数字**：历史上删掉「TK 相机控制」后就出现过标题写"十一"、正文写"十二"的不一致。
 
 - TK 批量提示词注入:读取 `input/prompts/` 提示词文件按组批量出图(一组 = 一张图);支持每页一组独立机位(`相机:` 行)、子目录分组、整批统一机位
   - 批任务控制器(2026-08-24):批量由服务端逐条链式执行(不再依赖浏览器劫持队列),每条任务有稳定状态(排队/执行/成功/失败/跳过/中断)与自铸造 `prompt_id` 精确追踪;节点面板实时显示进度,支持暂停 / 继续 / 失败重试 / 跳过单条 / 取消,绿对号直接看到每组产物文件名;批次清单持久化在 `data/batches/`,刷新页面或重启 ComfyUI 后可在节点上恢复未完成批次并重跑中断任务;点 ComfyUI 的 Queue 按钮或节点「开始批次」均可发起

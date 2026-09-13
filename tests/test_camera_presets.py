@@ -96,8 +96,10 @@ check("meta.pos 结构", set(m.get("pos", {}).keys()) == {"x", "y", "z", "roll"}
 check("meta.extras_enabled 齐全", set(m.get("extras_enabled", {}).keys()) == {"lens", "dof", "movement", "composition", "style"}, str(m)[:150])
 prompt2, meta2 = acc.AnimaCameraControl().execute("足控仰视V2", "", 0.0, 0.0, 0.0, 0.0, "", acc.DEFAULT_CONFIG_JSON)
 m2 = _json.loads(meta2)
-check("自定义预设生效模式", m2.get("mode") == "preset" and m2.get("preset") == "足控仰视V2", meta2[:150])
 
-shutil.rmtree(tmp, ignore_errors=True)
-print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
-sys.exit(1 if FAIL else 0)
+if __name__ == "__main__":
+    check("自定义预设生效模式", m2.get("mode") == "preset" and m2.get("preset") == "足控仰视V2", meta2[:150])
+
+    shutil.rmtree(tmp, ignore_errors=True)
+    print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
+    sys.exit(1 if FAIL else 0)

@@ -11,6 +11,14 @@ data/translation_providers.json
 data/prompt_library.json
 data/prompt_library.json.bak
 data/tag_category_index.cache
+# 批处理运行时状态（含 state/updated 时间戳）：任何跑过一次批处理的机器都会把它改脏。
+# 注意：它**当前仍被 git 跟踪**，所以这条 ignore 只防新增文件被误提交；
+# 要彻底摘掉需要 `git rm --cached data/batches/bworker.json`（会影响已有部署，待确认）。
+data/batches/
+
+# 测试/ pytest 产物
+.pytest_cache/
+tests/shots/
 
 # Panel (frontend) — build artifacts & local config
 panel/node_modules/
@@ -24,6 +32,10 @@ panel/src/skills-lock.json
 CLAUDE.md
 .reasonix/
 .scratch/
+
+# 本地备份目录（放仓库根，**绝不能放 web/ 里** —— web/ 会被 ComfyUI 当扩展一起加载）
+.workbuddy-bak-*/
+_bak_*/
 
 # 内部工作文档/环境专用脚本：仅本地保留，不发布
 docs/HANDOFF.md

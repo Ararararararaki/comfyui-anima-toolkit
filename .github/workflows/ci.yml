@@ -1,0 +1,88 @@
+# 只读验证 CI —— 与 build-app.yml（会提交 app/）**完全分开**。
+#
+# 设计约束（都是踩过的坑，别改）：
+#   1) permissions 只有 contents: read —— 结构上不可能写仓库，因此不可能触发自己形成循环。
+#   2) 不碰 app/、不做任何提交；app/ 的提交只由 build-app.yml 负责。
+#   3) 每个环节一个 step，step 名即失败环节，一眼看出是哪一层挂了。
+#   4) 依赖缓存：pip + npm 都开 cache，避免每次重复安装。
+#   5) PR 与 push 到 main 都跑；忽略纯产物改动以减少无意义跑动。
+#
+# ⚠️ 本 workflow **故意不跑 integration 层**（tests/integration/、tests/repro/）：
+#    那些脚本需要**真实浏览器**（playwright + 本机 Chrome/Edge 的绝对路径）
+#    与**真实运行中的 ComfyUI**（http://127.0.0.1:8188），GitHub runner 上不可能满足，
+#    硬跑只会得到假红，然后 CI 整体被忽略 —— 那 CI 就白设了。
+#    它们只能在本机跑：`python tests/run_tests.py --integration`
+#    分层规则与原因见 tests/README.md。
+#
+# 本地等价命令：`python tests/run_tests.py`（= 本文件 verify job 的全部步骤）
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'app/**'          # CI 构建产物（由 build-app.yml 提交），不参与校验
+      - 'screenshots/**'
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的旧跑动自动取消，省 runner、也让结论更干净
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify (read-only)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Python 环境：只装测试/校验真正需要的依赖 ──────────────────────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # ── Node 环境（供 JS 测试与 panel 类型检查/构建）──────────────────
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: panel/package-lock.json
+
+      # ── 逐层验证：每步独立，失败环节一眼可见 ─────────────────────────
+      - name: 'ci: python-compile'
+        run: python -m py_compile __init__.py anima_*.py
+
+      - name: 'ci: ai-verify (节点注册 / README 图片与链接 / 版本一致性)'
+        run: python tests/tools/ai_verify.py
+
+      - name: 'ci: pytest (离线层：单元 + 静态回归)'
+        run: python -m pytest tests -q
+
+      - name: 'ci: js-tests (Node)'
+        run: python tests/run_tests.py --js
+
+      - name: 'ci: panel-typecheck (tsc --noEmit)'
+        run: |
+          cd panel
+          npm ci --no-audit --no-fund
+          npx tsc --noEmit -p tsconfig.json
+
+      - name: 'ci: panel-build (确认 app/ 可构建，产物不提交)'
+        run: |
+          cd panel
+          npm run build:comfyui:ci

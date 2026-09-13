@@ -37,7 +37,20 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
   const MAX_TAGS = 8; // 搜索框最多保留 8 个标签（后端 MAX_SEARCH_TAGS=12；Member 上限 2、Gold 6，足够覆盖）
   const FREE_METATAGS = new Set(["rating", "status", "is", "age", "date", "id", "limit", "score", "downvotes", "favcount", "width", "height", "ratio", "mpixels", "filesize", "filetype", "duration", "md5", "pixiv_id", "pixiv", "parent", "child", "upvote", "embedded", "tagcount", "order"]);
+  // ⚠️ order 是 metatag（不该被当成标签记进预设备注），但它**占一个 D站 计数槽**
+  // （与后端 count_restricted_search_tags 一致：order 不在后端 FREE_METATAGS 里）。
+  // 历史上这两件事共用一个 Set，导致 countedSearchTerms 把 order 当免费 → 计数永不超限
+  // →「自动移除排序」分支与其提示条变成死代码（tests/test_danbooru_gallery_interactions.py 长期红）。
+  const FREE_METATAGS_THAT_STILL_COUNT = new Set(["order"]);
   const DANBOORU_TAG_LIMIT = 2;
+  /**
+   * 筛选面板独占管理的 token 前缀（顺序即用户可能手打的形态）。
+   * 「筛选面板是这些 token 的唯一 owner」——搜索框里如果还留着同一份（历史写入的
+   * `rating:g` / `-filetype:mp4`），拼查询词时会出现两份，白占计数槽、还会让
+   * 「重试/退化」逻辑拿到一模一样的查询（实测随机发现退化重试失效的真因）。
+   * order 早就有同样的规矩（normalizeTags 会丢弃搜索框里的 order:）。
+   */
+  const FILTER_OWNED_PREFIXES = ["rating", "age", "score", "favcount", "mpixels", "ratio", "filetype", "order", "limit", "status", "is", "date", "id"];
   const ORDER_LABELS = { score: "评分", favcount: "收藏", random: "随机", rank: "综合" };
   // 这些控件为了脱离 LiteGraph 的裁剪层而挂在 body 上；命中它们时，不能再把同一坐标
   // 下的节点按钮当成“丢失的点击”补发，否则联想项/筛选菜单/弹窗会同时点到下面的按钮。
@@ -210,6 +223,21 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     return tokens.join(" ");
   }
 
+  /**
+   * 清掉搜索框里由筛选面板管理的 token（rating/age/score/filetype/... 含 `-` 否定前缀）。
+   * 筛选面板是这些 token 的唯一 owner：搜索框里残留的那份会被 currentQuery 再拼一次，
+   * 既多占计数槽，又会让「退化重试」拿到与上次完全相同的查询而形同没重试。
+   */
+  function stripFilterOwnedTokens(rawValue) {
+    const tokens = String(rawValue ?? "").trim().split(/\s+/).filter(Boolean);
+    return tokens.filter((token) => {
+      const body = token.replace(/^[-~]+/, "").toLowerCase();
+      const colon = body.indexOf(":");
+      if (colon < 0) return true;
+      return !FILTER_OWNED_PREFIXES.includes(body.slice(0, colon));
+    }).join(" ");
+  }
+
   function formatCount(value) {
     const count = Number(value);
     if (!Number.isFinite(count) || count <= 0) return "";
@@ -223,14 +251,85 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const token = rawToken.replace(/^[-~]+/, "").toLowerCase();
       if (token === "or" || token === "(" || token === ")") return false;
       const colon = token.indexOf(":");
-      return colon < 0 || !FREE_METATAGS.has(token.slice(0, colon));
+      if (colon < 0) return true;
+      const prefix = token.slice(0, colon);
+      // order 虽然是 metatag，但在 D站 侧照样占一个计数槽（见 FREE_METATAGS_THAT_STILL_COUNT 注释）。
+      if (FREE_METATAGS_THAT_STILL_COUNT.has(prefix)) return true;
+      return !FREE_METATAGS.has(prefix);
     }).length;
+  }
+
+  // ---------- 真·瀑布流布局（列填充 + 超宽图跨列），移植自面板 Outputs 的 masonry 算法 ----------
+  // 与旧实现的区别：旧实现靠 CSS Grid 的 grid-row-end:span，卡片宽度恒等于列宽、
+  // 且同一行里各卡高度不一致会留下成片空白；这里改为**逐张放进当前最矮的列**，
+  // 并允许超宽图横跨 2~3 列（盒子更宽同时更矮），横向留白与竖向缝隙都被吃掉。
+  const DG_GAP = 7;
+  /** 列宽上下限（pt）：下限保证小节点仍能看清缩略图，上限避免大节点出现巨图 */
+  const DG_MIN_PT = 116;
+  const DG_MAX_PT = 330;
+  /** 竖图盒比上限（h/w）：超过按上限截断，渲染层用 object-fit:contain 完整嵌入 */
+  const DG_CLAMP_MAX_ASPECT = 2.2;
+  /** 盒比（h/w）≤ 此值 → 跨 2 列；≤ 再下一档 → 跨 3 列 */
+  const DG_SPAN2_MAX_ASPECT = 0.45;
+  const DG_SPAN3_MAX_ASPECT = 0.25;
+  /** 无宽高数据的旧记录按 3:4 竖图兜底（N站/D站绝大多数是竖图） */
+  const DG_FALLBACK_ASPECT = 0.75;
+  /** 单次 D站 请求上限（后端 MAX_PAGE_SIZE=48） */
+  const DG_MAX_PER_REQUEST = 48;
+  /** 自适应模式的显示张数下限（节点很小时也不要只剩两三张） */
+  const DG_MIN_AUTO_COUNT = 12;
+  /** 每卡「最小屏幕高」分档：卡片不要太扁也不要太高 */
+  const DG_MIN_CARD_H = 96;
+
+  // ---------- 随机发现（产品向）----------
+  // 裸 order:random 是「全库随机」，实测返回的多是无人点赞的冷门帖（score 个位数、有没有人贴都不知道），
+  // 正是用户说的「不要冷门没贴的」。这里给随机加**质量地板**：随机池 = 满足分数/收藏门槛的帖子。
+  // ⚠️ 刻意**不加时间窗**（age:<Ndays）：实测 `miku_day score:>100 age:<30days order:random` = 0 结果，
+  // 而 `miku_day score:>100 order:random` = 31 结果 —— 时间窗会把随机池掐死。
+  // 后端本来就有兜底：慢排序在全库超时时自动降级附加 age:<1week 重试并回报 warning。
+  const RANDOM_QUALITY_TIERS = Object.freeze([
+    { id: "hot", label: "热门随机", hint: "评分 ≥100 · 随机", minScore: "100", minFavs: "" },
+    { id: "good", label: "优质随机", hint: "评分 ≥50 · 随机", minScore: "50", minFavs: "" },
+    { id: "popular", label: "高收藏随机", hint: "收藏 ≥30 · 随机", minScore: "", minFavs: "30" },
+  ]);
+  const RANDOM_HISTORY_MAX = 240;
+
+  /** 一张卡要跨几列（受总列数限制） */
+  function dgSpanFor(aspect, cols) {
+    if (cols < 2) return 1;
+    if (aspect <= DG_SPAN3_MAX_ASPECT && cols >= 3) return 3;
+    if (aspect <= DG_SPAN2_MAX_ASPECT) return 2;
+    return 1;
+  }
+
+  /** 新增结果里是否含计数标签（用于给卡片加类别色条；失败时静默返回空串） */
+  function dgCardCategoryClass(post) {
+    const raw = String(post?.tag_string_category || "");
+    if (!raw) return "";
+    for (const part of raw.split(" ")) {
+      const name = part.split(":")[0];
+      if (PROMPT_CATEGORY_ORDER.includes(name) && name !== "meta") return `is-${name}`;
+    }
+    return "";
+  }
+
+  /** 自适应模式：由容器几何算出「刚好填满」的图片数量（cols/usable 由调用方一次算好传入） */
+  function dgComputeAutoCount(grid, metrics) {
+    if (!grid) return 24;
+    const rect = grid.getBoundingClientRect();
+    const height = grid.clientHeight || rect.height || 620;
+    const { cols, cardWidth } = metrics || { cols: 3, cardWidth: 240 };
+    const cardH = Math.max(DG_MIN_CARD_H, cardWidth / DG_FALLBACK_ASPECT);
+    const rows = Math.max(2, Math.ceil((height + DG_GAP) / (cardH + DG_GAP)));
+    const count = Math.round(cols * (rows + 1));
+    return Math.max(DG_MIN_AUTO_COUNT, Math.min(DG_MAX_PER_REQUEST, count));
   }
 
   function normalizeGallerySettings(saved) {
     const source = saved && typeof saved === "object" ? saved : {};
     return {
-      limit: [12, 24, 48].includes(source.limit) ? source.limit : 24,
+      // limit: 0 = 自适应（按节点尺寸算该显示几张，恰好填满不留空白）；12/24/48 = 固定张数
+      limit: [0, 12, 24, 48].includes(source.limit) ? source.limit : 0,
       rating: normalizeRatings(source.rating),
       gridHeight: Number.isFinite(source.gridHeight) ? Math.max(360, Math.min(1200, source.gridHeight)) : 620,
       categories: Array.isArray(source.categories) ? source.categories : [],
@@ -242,6 +341,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       promptOutput: normalizePromptOutputSettings(source.promptOutput),
       promptOutputEnabled: source.promptOutputEnabled !== false,
       promptExcludePattern: typeof source.promptExcludePattern === "string" ? source.promptExcludePattern.slice(0, 500) : "",
+      // 随机发现档位（""=未启用；hot/good/fresh 见 RANDOM_QUALITY_TIERS）
+      randomQuality: RANDOM_QUALITY_TIERS.some((t) => t.id === source.randomQuality) ? source.randomQuality : "",
       lastQuery: typeof source.lastQuery === "string" ? source.lastQuery : "",
     };
   }
@@ -313,6 +414,17 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.imageLoadObserver = null;
       this.gridResizeObserver = null;
       this.masonryLayoutFrame = null;
+      this.lastCols = 0;            // 上次布局的列数（列数变化 → 自适应模式重取一页）
+      this.lastColStep = 0;         // 上次布局的列步长（列宽+间距），用于抵消滚动条造成的宽度抖动
+      this.resizeSearchTimer = null;
+      this._layoutTotal = 0;
+      this._layoutPosts = null;
+      this.failedImageCount = 0;
+      this.renderedPostCount = 0;
+      this._randomTrimmed = false;
+      this._randomPoolExhausted = false;
+      this.randomTierButtons = null; // 由工具条注入：随机档位按钮的状态刷新回调
+      this.randomHistory = new Map(); // query → 已看过的 post id（随机发现去重，避免翻来覆去同几张）
       this.registered = false; // 是否已登录 Danbooru
       this.tagLimitValue = 2;  // 计数标签上限（后端按账号等级动态：Member=2 / Gold+=6，随 /account 刷新）
       this.accountReady = null; // 首次搜索必须等待登录状态/标签上限同步完成
@@ -363,25 +475,238 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       });
     }
 
+    /**
+     * 网格几何。列数优先由「上次布局算出的列步长」反推 —— 垂直滚动条出现后 clientWidth
+     * 会比 layout 时小十几像素，直接除会让卡片宽出容器、产生横向滚动条（实测 rightEdge 1295 > 1283）。
+     */
+    gridMetrics() {
+      if (!this.grid) return { width: 780, cols: 3, cardWidth: 240, usable: 756 };
+      const width = this.grid.clientWidth || 780;
+      const style = getComputedStyle(this.grid);
+      const padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      const usable = Math.max(DG_MIN_PT, width - padX);
+      const cols = this.lastColStep > DG_GAP
+        ? Math.max(1, Math.round((usable + DG_GAP) / this.lastColStep))
+        : Math.max(1, Math.floor((usable + DG_GAP) / (DG_MIN_PT + DG_GAP)));
+      const cardWidth = Math.max(1, (usable - DG_GAP * (cols - 1)) / cols);
+      return { width, cols, cardWidth, usable };
+    }
+
+    /** 每张卡盒子实际使用的宽高比（宽/高）：超高图按上限截断，其余保留真实比例（零裁切） */
+    cardAspect(post) {
+      const w = Number(post?.image_width);
+      const h = Number(post?.image_height);
+      if (!(w > 0) || !(h > 0)) return DG_FALLBACK_ASPECT;
+      return Math.min(Math.max(h / w, 1e-6), DG_CLAMP_MAX_ASPECT);
+    }
+
+    /**
+     * 真·瀑布流：逐张放进当前最矮的列，超宽图整组列对齐到同一 top。
+     * 卡片改用绝对定位（不是 grid-row-end:span）——这样才能让「跨列宽盒」与
+     * 「真实盒比」同时成立，并彻底消除旧实现同一行里高矮不一留下的成片空白。
+     */
     applyMasonryLayout() {
       if (!this.grid) return;
-      const style = getComputedStyle(this.grid);
-      const rowHeight = parseFloat(style.gridAutoRows) || 10;
-      const rowGap = parseFloat(style.rowGap || style.gridRowGap) || 7;
-      for (const card of this.grid.querySelectorAll(".adg-card")) {
-        // scrollHeight is the card's content height and does not include the
-        // grid area created by the current span, so it remains safe to reuse
-        // on every resize and after an image finishes decoding.
-        const contentHeight = Math.max(1, card.scrollHeight);
-        const span = Math.max(1, Math.ceil((contentHeight + rowGap) / (rowHeight + rowGap)));
-        card.style.gridRowEnd = `span ${span}`;
+      const cards = [...this.grid.querySelectorAll(".adg-card")];
+      if (!cards.length) {
+        this.grid.style.minHeight = "";
+        return;
       }
+      const { usable, cols } = this.gridMetrics();
+      const gridStyle = getComputedStyle(this.grid);
+      const padTop = parseFloat(gridStyle.paddingTop) || 0;
+      const colStep = (usable - DG_GAP * (cols - 1)) / cols + DG_GAP;
+      const cardWidth = (usable - DG_GAP * (cols - 1)) / cols;
+      this.lastColStep = colStep;
+      // 左内边距每次都要重读：横向滚动条/样式变更都会改它
+      const padLeft = parseFloat(gridStyle.paddingLeft) || 0;
+      const colHeights = new Array(cols).fill(0);
+
+      // 数据侧只读一次：卡片下标必须与 renderPosts 记录的「实际渲染列表」一致
+      const posts = this._layoutPosts || this.posts || [];
+      for (let i = 0; i < cards.length; i++) {
+        const card = cards[i];
+        const post = posts[i];
+        const aspect = this.cardAspect(post);
+        const span = dgSpanFor(aspect, cols);
+        const boxW = cardWidth * span + DG_GAP * (span - 1);
+        const boxH = boxW / (1 / aspect);
+        let start = 0;
+        let top = Infinity;
+        for (let c = 0; c + span <= cols; c++) {
+          let maxH = 0;
+          for (let k = c; k < c + span; k++) if (colHeights[k] > maxH) maxH = colHeights[k];
+          if (maxH < top) { top = maxH; start = c; }
+        }
+        const drop = top + boxH + DG_GAP;
+        for (let k = start; k < start + span; k++) colHeights[k] = drop;
+        card.style.position = "absolute";
+        card.style.left = `${Math.round(padLeft + start * colStep)}px`;
+        card.style.top = `${Math.round(padTop + top)}px`;
+        card.style.width = `${Math.round(boxW)}px`;
+        card.style.height = `${Math.round(boxH)}px`;
+        // 供 CSS/探针读的盒比（图片渲染由 .adg-card img 的宽高 100% + object-fit 承接）
+        card.dataset.adgSpan = String(span);
+      }
+      let total = 0;
+      for (const ch of colHeights) total = Math.max(total, ch);
+      total = Math.max(0, total - DG_GAP);
+      this._layoutTotal = total;
+      this.grid.style.minHeight = `${Math.ceil(total + 8)}px`;
+      if (this.lastCols !== cols) this.lastCols = cols;
+      this.shrinkGridToContent(total);
+    }
+
+    /**
+     * 整页铺不满时收掉底部空白：把画廊高度收到「内容实际高度」，
+     * 而不是让用户对着半屏空网格（页面填满时不动，保留用户设定的高度）。
+     * 只缩不放，且带 24px 迟滞，避免与 domSizeSync 来回抖动。
+     */
+    shrinkGridToContent(total) {
+      const root = this.root;
+      if (!root || !(total > 0)) return;
+      const current = root.clientHeight || 0;
+      if (!(current > 0)) return;
+      const target = Math.max(360, Math.min(1200, Math.ceil(total + 8)));
+      if (target >= current - 24) return;
+      if (Math.abs((this.settings.gridHeight || 0) - target) < 2) return;
+      this.settings.gridHeight = target;
+      if (this.domSizeSync) this.domSizeSync.setContentHeight(target);
+      else {
+        root.style.height = `${target}px`;
+        this.node?.setSize?.([Math.max(360, this.node.size?.[0] || 780), target + 95]);
+        this.node?.graph?.setDirtyCanvas?.(true, true);
+      }
+    }
+
+    /** 节点/网格尺寸变化后：列数变了就重新取图（张数自适应），否则只重排 */
+    handleGridResize() {
+      if (!this.grid) return;
+      const { cols } = this.gridMetrics();
+      const changed = this.lastCols && cols !== this.lastCols;
+      this.scheduleMasonryLayout();
+      if (!changed || this.disposed) return;
+      // 列数变化 ⇒ 同一屏能放的张数变了。自适应模式下重取一页，固定模式只重排。
+      if (this.autoLimit()) {
+        if (this.resizeSearchTimer) clearTimeout(this.resizeSearchTimer);
+        // 防抖：拖动节点缩放时不要每帧都打 D站
+        this.resizeSearchTimer = setTimeout(() => {
+          this.resizeSearchTimer = null;
+          if (!this.disposed && this.posts.length) this.search({ resetPage: true });
+        }, 450);
+      }
+    }
+
+    /** 当前是否为「自适应张数」模式 */
+    autoLimit() {
+      return !this.settings.limit;
+    }
+
+    /** 随机发现的去重键 = 去掉筛选 token 后的查询主体（筛选变化不该重置「已看过」） */
+    randomHistoryKey() {
+      return normalizeTags(stripFilterOwnedTokens(this.queryWidget?.value || ""));
+    }
+
+    rememberRandomResults(query) {
+      // 空结果不记历史：否则自动退化重试那一轮会把「空集」当成一批存进去
+      if (!this.settings.randomQuality || !this.posts.length) return;
+      const key = this.randomHistoryKey();
+      const seen = this.randomHistory.get(key) || [];
+      const seenSet = new Set(seen);
+      for (const post of this.posts) {
+        const id = String(post?.id || "");
+        if (id && !seenSet.has(id)) { seenSet.add(id); seen.push(id); }
+      }
+      // 只保留最近 N 个：够避开「翻来覆去同几张」，又不至于把随机池抽干
+      this.randomHistory.set(key, seen.slice(-RANDOM_HISTORY_MAX));
+    }
+
+    /**
+     * 一键随机发现：order:random + 质量地板（分数/时间窗），可选「换一批」避开已看过的。
+     * 产品意图：用户要的是「有灵感的高质量惊喜」，不是「全库随手捞一张没人贴过的冷门图」。
+     */
+    async discoverRandom(tierId = null, { reshuffle = false } = {}) {
+      const tier = RANDOM_QUALITY_TIERS.find((t) => t.id === tierId)
+        || RANDOM_QUALITY_TIERS.find((t) => t.id === this.settings.randomQuality)
+        || RANDOM_QUALITY_TIERS[1];
+      const prevQuality = this.settings.randomQuality;
+      const prevFilters = this.settings.filters;
+      const historyKey = this.randomHistoryKey();
+      // 「换一批」：先记住换之前池子里已经看过哪些，用来判断这次是不是真的换出了新图
+      const seenBefore = reshuffle ? new Set(this.randomHistory.get(historyKey) || []) : null;
+      this.settings.randomQuality = tier.id;
+      this.settings.filters = normalizeFilters({
+        ...this.settings.filters,
+        order: "random",
+        minScore: tier.minScore,
+        minFavs: tier.minFavs,
+        // 时间窗会把随机池掐死（实测 miku_day + score:>100 从 31 结果掉到 0），这里显式清空；
+        // 真需要时间范围由后端慢排序兜底的 age:<1week 负责。
+        age: "",
+        ageDays: "",
+      });
+      if (reshuffle) {
+        // 「换一批」：清掉随机历史，让同一档位能给出新的一批
+        this.randomHistory.delete(this.randomHistoryKey());
+      }
+      this.saveSettings();
+      this.filterControls?.refresh();
+      this.randomTierButtons?.();
+      this.setStatus(`随机发现：${tier.label}（${tier.hint}）…`);
+      // force：随机排序若命中后端 30s 缓存会给出完全相同的一批，失去「随机」的意义
+      await this.search({ resetPage: true, force: true });
+      // 内容标签 ∩ 随机池 可能是空集（实测 miku_day + score:>100 + 近 30 天 = 0 结果，
+      // miku_day 是「星期几」标签、几乎不会有高分帖）。随机发现的语义是「探索」，
+      // 这时自动退化为「纯质量地板随机」并明确告知，而不是给用户一个空网格。
+      if (!this.posts.length && normalizeTags(stripFilterOwnedTokens(this.queryWidget?.value || ""))) {
+        this._randomTrimmed = true;
+        this.setStatus(`随机发现：${tier.label} —— 当前标签在该质量档下没有结果，已忽略标签只看随机…`);
+        await this.search({ resetPage: true, force: true });
+      }
+      if (!this.posts.length && (this.settings.randomQuality !== prevQuality)) {
+        // 连纯随机也空（档位太苛刻）→ 回滚设置，避免用户卡在空网格里
+        this.settings.randomQuality = prevQuality;
+        this.settings.filters = prevFilters;
+        this.saveSettings();
+        this.filterControls?.refresh();
+        this.randomTierButtons?.();
+        this.setStatus(`随机发现失败：${tier.label} 没有返回结果，可换一档或检查代理（D站 可能被 Cloudflare 风控）`, "error");
+        return;
+      }
+      // 「换一批」把池子取光了：这一页跟上一页完全是同一批（如 miku_day + score:>100 全站仅 31 张，
+      // 一页 48 就把池子拿完）。与其假装换过，不如明说并建议换档/加标签。
+      if (reshuffle && seenBefore && this.posts.length) {
+        const fresh = this.posts.filter((p) => !seenBefore.has(String(p.id || ""))).length;
+        if (!fresh) {
+          this._randomPoolExhausted = true;
+          this.setStatus(`「${tier.label}」这一档能给的都看过了（本页 ${this.posts.length} 张全部重复）——换个档位、加个标签，或用筛选面板缩小范围`);
+        }
+      }
+    }
+
+    /** 退出随机发现（回到普通搜索） */
+    async exitRandom() {
+      if (!this.settings.randomQuality) return;
+      this.settings.randomQuality = "";
+      this.settings.filters = normalizeFilters({ ...this.settings.filters, order: "" });
+      this.saveSettings();
+      this.filterControls?.refresh();
+      this.randomTierButtons?.();
+      await this.search({ resetPage: true });
+    }
+
+    /** 本次请求实际要几张 */
+    resolveLimit() {
+      if (this.autoLimit()) return dgComputeAutoCount(this.grid, this.gridMetrics());
+      return this.settings.limit;
     }
 
     setupImageLoading() {
       if (!this.grid) return;
       this.imageLoadObserver?.disconnect();
       this.imageLoadObserver = null;
+      // 节点内滚动时按视口裁剪请求：只加载「网格可视区 ± 一屏」内的图，
+      // 避免一次性把整页 48 张的代理请求全推给后端（后端并发只有 3）。
       if (typeof IntersectionObserver === "function") {
         this.imageLoadObserver = new IntersectionObserver((entries) => {
           for (const entry of entries) {
@@ -389,12 +714,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             this.imageLoadObserver?.unobserve(entry.target);
             this.loadPreviewImage(entry.target);
           }
-        }, { root: this.grid, rootMargin: "260px 0px", threshold: 0.01 });
+        }, { root: this.grid, rootMargin: "320px 0px", threshold: 0.01 });
       }
       this.gridResizeObserver?.disconnect();
       this.gridResizeObserver = null;
       if (typeof ResizeObserver === "function") {
-        this.gridResizeObserver = new ResizeObserver(() => this.scheduleMasonryLayout());
+        this.gridResizeObserver = new ResizeObserver(() => this.handleGridResize());
         this.gridResizeObserver.observe(this.grid);
       }
     }
@@ -565,7 +890,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const RATIO_TOKENS = { wide: "ratio:>1", tall: "ratio:<1", square: "ratio:>=0.9 ratio:<=1.1", ultrawide: "ratio:>=1.5" };
       const FILETYPE_TOKENS = { static: "-filetype:gif -filetype:mp4 -filetype:webm", gif: "filetype:gif", video: "filetype:mp4" };
       const parts = [
-        normalizeTags(raw),
+        normalizeTags(stripFilterOwnedTokens(raw)),
         this.settings.rating.length ? `rating:${this.settings.rating.join(",")}` : "",
         ageToken,
         f.minScore ? `score:>${f.minScore}` : "",
@@ -577,7 +902,18 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       ];
       // 排除标签不拼进查询词（D站 把 -tag 当普通标签计数，会占搜索槽位）：
       // 改为拿到结果后本地过滤（见 search()），槽位零占用、可任意添加。
-      return parts.filter(Boolean).join(" ");
+      // 去重（不区分大小写）：用户可能把 rating:g / -filetype:mp4 也手打进搜索框，
+      // 与筛选面板产生的同名 token 撞车 → 查询词里出现两份，白白多占计数槽。
+      const seen = new Set();
+      const deduped = [];
+      for (const part of parts) {
+        if (!part) continue;
+        const key = String(part).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        deduped.push(part);
+      }
+      return deduped.join(" ");
     }
 
     tagLimit() {
@@ -616,6 +952,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       }
       this._searchSnapshot = null; // 新搜索后 posts 即将被覆盖，分类快照失效
       this._droppedOrder = false;
+      this._randomTrimmed = false;
       // 工作流恢复/外部修改时，确保输入框与序列化 widget 一致（widget 是权威值）
       if (this.queryInput && this.queryWidget && String(this.queryInput.value) !== String(this.queryWidget.value ?? "")) {
         this.queryInput.value = this.queryWidget.value ?? "";
@@ -628,6 +965,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         return;
       }
       let counted = countedSearchTerms(query);
+      // 计数槽超限时的取舍：**随机发现模式下保留 order:random**（用户点的就是它），
+      // 改为丢弃内容标签；普通模式下优先保内容标签、自动降级排序（旧行为）。
+      if (counted > this.tagLimit() && this.settings.randomQuality) {
+        this._randomTrimmed = true;
+        query = query.split(/\s+/).filter((t) => /^order:/.test(t) || /^(rating|age|score|favcount|mpixels|ratio|filetype):/.test(t)).join(" ");
+        counted = countedSearchTerms(query);
+      }
       if (counted > this.tagLimit() && this.settings.filters.order) {
         // 匿名搜索最多 2 个计数标签，而排序会占 1 个；内容标签/分级/筛选才是用户意图，
         // 因此超限时优先保留这些、只自动降级排序（改用默认最新）而不是死路报错。
@@ -664,7 +1008,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const parameters = new URLSearchParams({
           tags: query,
           page: String(this.page),
-          limit: String(this.settings.limit),
+          // 自适应模式：按节点尺寸算出「刚好填满」的张数（上限=后端 MAX_PAGE_SIZE=48）
+          limit: String(this.resolveLimit()),
           force: force ? "1" : "0",
         });
         const timer = setTimeout(() => { timedOut = true; requestController.abort(); }, 45000);
@@ -716,6 +1061,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         }
         this.renderPosts();
         this.renderPagination();
+        this.rememberRandomResults(query);
         const source = data.cached ? "缓存" : "D站";
         const notices = [];
         if (Array.isArray(data.warnings) && data.warnings.length) notices.push(...data.warnings.map(String));
@@ -727,7 +1073,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           notices.push(`已自动移除「${ORDER_LABELS[this._droppedOrder] || this._droppedOrder}」排序，按最新显示（${limitHint}）`);
         }
         const exclNotice = excludeTags.length ? `已排除 ${excludeTags.map(displayExcludeTag).join("、")} ${excludedCount} 张` : "";
+        const tier = this.settings.randomQuality ? RANDOM_QUALITY_TIERS.find((t) => t.id === this.settings.randomQuality) : null;
+        if (tier) notices.push(`${tier.label}（${tier.hint}）`);
+        if (this._randomTrimmed) notices.push("为保住随机排序已忽略内容标签");
         this.setStatus(`${source}：${this.posts.length} 张 · 第 ${this.page} 页` + (exclNotice ? `（${exclNotice}）` : "") + (notices.length ? `（${notices.join("；")}）` : ""));
+        // 换一批把池子取光了：search 的常规状态文案刚写上去，这里覆盖成明确提示
+        if (this._randomPoolExhausted) {
+          this._randomPoolExhausted = false;
+          this.setStatus(`这一档能给的都看过了（本页 ${this.posts.length} 张全部重复）——换个档位、加个标签，或用筛选面板缩小范围`);
+        }
       } catch (error) {
         if (timedOut) {
           this.posts = [];
@@ -1574,10 +1928,24 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       return editor;
     }
 
+    /** 网格内错误格：把失败原因渲染成可见的一格，而不是只写状态栏 */
+    appendGridNotice(message) {
+      if (!this.grid || !message) return;
+      const cell = document.createElement("div");
+      cell.className = "adg-grid-notice";
+      cell.textContent = message;
+      this.grid.append(cell);
+    }
+
     renderPosts() {
       if (!this.grid) return;
       this.imageLoadObserver?.disconnect();
       this.grid.replaceChildren();
+      this.grid.style.minHeight = "";
+      this.lastCols = 0;
+      this.lastColStep = 0;
+      this.failedImageCount = 0;
+      this.renderedPostCount = 0;
       if (!this.posts.length) {
         const empty = document.createElement("div");
         empty.className = "adg-empty";
@@ -1585,12 +1953,19 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.grid.append(empty);
         return;
       }
+      // 布局按「本页实际渲染的卡片」下标对齐（见 applyMasonryLayout 读 this._layoutPosts），
+      // 因此这里必须把过滤后真正渲染的 post 记下来，不能直接用 this.posts 下标。
+      const rendered = [];
       for (const post of this.posts) {
         if (this.settings.activeCategory && this.settings.postCategories[String(post.id)] !== this.settings.activeCategory) continue;
         const imageUrl = this.postImageUrl(post);
         if (!imageUrl) continue;
+        rendered.push(post);
         const card = document.createElement("article");
         card.className = "adg-card";
+        // 类别色条：D站 帖子的主类别（artist/copyright/character/general），一眼分得出这页的构图来源
+        const categoryClass = dgCardCategoryClass(post);
+        if (categoryClass) card.classList.add(categoryClass);
         const postId = String(post.id || "");
         const isFavorite = this.favorites.has(postId);
         card.classList.toggle("is-favorite", isFavorite);
@@ -1638,8 +2013,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         }
         preview.dataset.src = this.imageProxyUrl(previewUrl, post.md5);
         preview.onerror = () => {
-          preview.replaceWith(Object.assign(document.createElement("span"), { className: "adg-image-error", textContent: "预览加载失败" }));
-          this.scheduleMasonryLayout();
+          // 单张失败不再整卡塌陷成一行文字（会打乱瀑布流）：保留占位并标红
+          preview.classList.add("is-failed");
+          preview.removeAttribute("src");
+          card.classList.add("is-image-failed");
+          this.failedImageCount = (this.failedImageCount || 0) + 1;
         };
         preview.onload = () => this.scheduleMasonryLayout();
         const caption = document.createElement("span");
@@ -1651,7 +2029,6 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           const badge = document.createElement("span");
           badge.className = "adg-video-badge";
           badge.textContent = "视频";
-          badge.style.cssText = "position:absolute;top:6px;left:6px;z-index:3;background:rgba(0,0,0,.72);color:#fbbf24;font-size:10px;line-height:1.4;padding:1px 6px;border-radius:4px;pointer-events:none;";
           selectButton.prepend(badge);
         }
         selectButton.addEventListener("click", (event) => {
@@ -1721,7 +2098,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.grid.append(card);
         this.observePreviewImage(preview);
       }
-      this.scheduleMasonryLayout();
+      this._layoutPosts = rendered;
+      this.renderedPostCount = rendered.length;
+      // 布局按下标与 _layoutPosts 对齐，因此在途的懒加载图完成后不需要重排
+      //（盒子尺寸在摆放时就已按真实盒比定死，图片解码不会改变布局）。
+      this.applyMasonryLayout();
+      // 图片全部失败时给一格可见说明，别只在状态栏写一行小字
+      if (rendered.length && this.failedImageCount >= rendered.length) {
+        this.appendGridNotice(`本页 ${this.failedImageCount} 张预览全部加载失败 —— 检查 Clash 代理，或点工具条「刷新」绕过缓存重试`);
+      }
     }
 
     pageWindow() {
@@ -2849,7 +3234,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       pageLabel.className = "adg-field";
       pageLabel.textContent = "每页图片数";
       const select = document.createElement("select");
+      // 0 = 自适应：按节点尺寸算出「刚好填满一屏」的张数（列数 × 可视行数），
+      // 节点越宽越高，自动显示越多，不再固定 24/48 让大节点半屏空白。
+      select.add(new Option("自适应（按节点大小）", "0", false, !this.settings.limit));
       [12, 24, 48].forEach((limit) => select.add(new Option(String(limit), String(limit), false, limit === this.settings.limit)));
+      select.title = "自适应 = 按节点宽高算出刚好填满的图片数量；拖动节点改变大小后会自动重算";
       pageLabel.append(select);
       const heightLabel = document.createElement("label");
       heightLabel.className = "adg-field";
@@ -3076,6 +3465,32 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         return button;
       };
       addAction("搜索", "按上方标签搜索", () => this.search({ resetPage: true }), mainGroup);
+      // ── 随机发现：order:random + 质量地板。三档质量让用户挑口味，而不是给一个
+      //    「随机」开关把没人贴过的冷门图倒进来（见 RANDOM_QUALITY_TIERS 注释）。
+      {
+        const tierButtons = [];
+        for (const tier of RANDOM_QUALITY_TIERS) {
+          const btn = addAction(tier.label, `随机发现：${tier.hint}（再点一次退出随机）`, () => {
+            if (this.settings.randomQuality === tier.id) void this.exitRandom();
+            else void this.discoverRandom(tier.id);
+          }, mainGroup);
+          btn.className = "adg-random-btn";
+          btn.dataset.tier = tier.id;
+          tierButtons.push(btn);
+        }
+        const reshuffleBtn = addAction("换一批", "重新随机一次，并避开本档已看过的图", () => {
+          void this.discoverRandom(this.settings.randomQuality || "good", { reshuffle: true });
+        }, mainGroup);        reshuffleBtn.className = "adg-random-reshuffle";
+        this.randomTierButtons = () => {
+          for (const btn of tierButtons) btn.classList.toggle("active", this.settings.randomQuality === btn.dataset.tier);
+          const on = Boolean(this.settings.randomQuality);
+          // 工具栏按钮的禁用样式由 .is-disabled 承载（CSS 里没有 :disabled 规则）
+          reshuffleBtn.disabled = !on;
+          reshuffleBtn.classList.toggle("is-disabled", !on);
+          reshuffleBtn.title = on ? "重新随机一次，并避开本档已看过的图" : "先选一个随机档位";
+        };
+        this.randomTierButtons();
+      }
       addAction("设置", "设置画廊显示、排除标签和 Danbooru 登录", () => this.openSettings(), mainGroup);
       addAction("Prompt设置", "控制 Prompt 输出类别与格式", () => this.openPromptSettings(), mainGroup);
       this.promptOutputBtn = addAction("", "", () => {
@@ -3226,6 +3641,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         cancelAnimationFrame(this.masonryLayoutFrame);
         this.masonryLayoutFrame = null;
       }
+      if (this.resizeSearchTimer) {
+        clearTimeout(this.resizeSearchTimer);
+        this.resizeSearchTimer = null;
+      }
+      if (this.grid) this.grid.style.minHeight = "";
       window.removeEventListener("resize", this.positionSuggestionsHandler);
       document.removeEventListener("scroll", this.positionSuggestionsHandler, true);
       if (this.pointerRecoveryHandler) {

@@ -1,0 +1,12 @@
+# ComfyUI-Anima-Batch-LoRA 的**必需**运行依赖。
+#
+# 这里只放「插件在正常使用路径上真的会 import，且缺失就会报错」的包。
+# ComfyUI-Manager / Registry 会按本文件自动安装，所以**每多一项都在给所有用户加负担**。
+#
+# 光依赖（不是必需的，见 requirements-optional.txt）：
+#   · torch / numpy / PIL  → 由 ComfyUI 自带，不要在这里重复声明（会引发版本冲突）
+#   · playwright           → 仅 D站 Cloudflare 风控自救网关用到，缺失时优雅降级
+#   · llama_cpp            → 仅「本地 LLM 翻译」开关用到，缺失时不加载该 provider
+
+aiohttp>=3.9
+requests>=2.31

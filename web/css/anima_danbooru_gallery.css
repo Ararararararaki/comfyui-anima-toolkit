@@ -301,19 +301,33 @@
 .adg-batch-job-interrupted span { color: #ffadad; }
 .adg-suggestions { display: flex; flex-wrap: wrap; gap: 4px; color: #9ea1ae; }
 .adg-suggestions button { padding: 2px 6px; border: 1px solid #4e4e60; border-radius: 4px; color: #c7bfff; background: #2a2934; cursor: pointer; }
-.adg-grid { display: grid; flex: 1 1 auto; min-width: 0; min-height: 0; grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr)); grid-auto-rows: 10px; align-content: start; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; column-gap: 7px; row-gap: 7px; padding-right: 3px; }
-.adg-card { position: relative; min-width: 0; align-self: start; grid-row-end: span 1; margin: 0; overflow: hidden; padding: 3px; border: 2px solid rgba(255,255,255,.1); border-radius: 7px; background: #16161d; transition: border-color .15s, box-shadow .15s, transform .15s; }
-.adg-card:hover { border-color: #7668d8; transform: translateY(-1px); }
+/* 瀑布流容器：卡片由 JS 绝对定位（列填充 + 超宽跨列），容器只负责滚动与高度。
+   min-height 由 applyMasonryLayout 按内容总高写入，滚动条才会正确出现。 */
+.adg-grid { position: relative; display: block; flex: 1 1 auto; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 0 3px 0 0; }
+.adg-card { position: absolute; top: 0; left: 0; box-sizing: border-box; margin: 0; overflow: hidden; padding: 0; border: 2px solid rgba(255,255,255,.1); border-radius: 7px; background: #16161d; transition: border-color .15s, box-shadow .15s; contain: layout paint style; }
+.adg-card:hover { border-color: #7668d8; }
 .adg-card.is-favorite { border-color: rgba(245, 190, 74, .62); }
 .adg-card.is-selected { border-color: #b49cff; background: rgba(109,86,210,.24); box-shadow: 0 0 0 2px rgba(180,156,255,.45), 0 0 22px rgba(125,92,255,.72); }
 .adg-card.is-selected::after { content: "已选"; position: absolute; top: 8px; left: 8px; z-index: 2; padding: 3px 7px; border-radius: 999px; color: #fff; background: #765ee8; box-shadow: 0 2px 8px rgba(0,0,0,.45); font-size: 10px; font-weight: 700; }
-.adg-card-select { display: flex; width: 100%; flex-direction: column; gap: 4px; border: 0; padding: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
+/* 类别色条：D站 帖子主类别（画师/版权/角色/通用），整屏扫读时一眼分得出构图来源 */
+.adg-card.is-artist { border-left-color: #f0a63c; }
+.adg-card.is-copyright { border-left-color: #4fb0f0; }
+.adg-card.is-character { border-left-color: #6ede8a; }
+.adg-card.is-general { border-left-color: #8b8798; }
+.adg-card-select { display: flex; height: 100%; width: 100%; flex-direction: column; gap: 3px; border: 0; padding: 3px; box-sizing: border-box; color: inherit; background: transparent; text-align: left; cursor: pointer; }
 .adg-card-select:focus-visible { outline: 2px solid #a895ff; outline-offset: 1px; }
-.adg-card img { display: block; width: 100%; height: auto; aspect-ratio: auto; object-fit: contain; background: #292934; }
-.adg-caption { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #aeb1bd; font-size: 10px; }
+/* 图片区吃掉卡片剩余高度；cover 让图片完整铺满盒子（盒子比例已按真实盒比算出，裁切可忽略） */
+.adg-card img { display: block; flex: 1 1 auto; width: 100%; min-height: 0; aspect-ratio: auto; object-fit: cover; background: #292934; }
+.adg-card.is-image-failed img { background: repeating-linear-gradient(45deg, #2b2230, #2b2230 6px, #241d29 6px, #241d29 12px); }
+.adg-caption { flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #aeb1bd; font-size: 10px; }
 .adg-image-error,
 .adg-empty { display: grid; min-height: 90px; place-items: center; color: #ff9f9f; background: #292934; }
-.adg-empty { grid-column: 1 / -1; column-span: all; color: #9296a5; }
+.adg-empty { position: static; color: #9296a5; }
+/* 网格内错误格：与卡片同宽的一格说明，而不是只写状态栏小字 */
+.adg-grid-notice { position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; padding: 7px 10px; border: 1px solid rgba(248,113,113,.5); border-radius: 7px; color: #ffb4b4; background: rgba(60,20,24,.92); font-size: 11px; line-height: 1.45; }
+/* 随机发现档位按钮 */
+.adg-random-btn.active { border-color: #a895ff; background: #6758c9; }
+.adg-random-reshuffle.is-disabled { opacity: .45; cursor: not-allowed; }
 .adg-card-actions { position: absolute; top: 7px; left: 7px; right: 7px; z-index: 4; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 3px; max-width: calc(100% - 14px); opacity: 0; transform: translateY(-3px); transition: opacity .15s, transform .15s; }
 .adg-card:hover .adg-card-actions,
 .adg-card:focus-within .adg-card-actions { opacity: 1; transform: translateY(0); }

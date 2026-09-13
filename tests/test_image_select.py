@@ -87,7 +87,9 @@ k4 = ais.AnimaImageSelect.IS_CHANGED(mode="轮询", priority="image1", index=1, 
 import time
 time.sleep(0.001)
 k5 = ais.AnimaImageSelect.IS_CHANGED(mode="轮询", priority="image1", index=1, seed=0, image1=T["image1"])
-check("轮询模式每次键变化", k4 != k5)
 
-print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
-sys.exit(1 if FAIL else 0)
+if __name__ == "__main__":
+    check("轮询模式每次键变化", k4 != k5)
+
+    print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
+    sys.exit(1 if FAIL else 0)

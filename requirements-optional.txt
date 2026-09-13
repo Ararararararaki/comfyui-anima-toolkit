@@ -1,0 +1,13 @@
+# **可选**依赖 —— 不装也能正常用，只影响个别功能。故意与 requirements.txt 分开，
+# 这样 ComfyUI-Manager / Registry 安装插件时不会强制拉这些体积大/编译型的包。
+#
+# 按需安装：
+#   pip install -r requirements-optional.txt
+
+# D站画廊的 Cloudflare 风控自救网关（用真实浏览器渲染引擎绕过人机校验）。
+# 缺失时：搜索/下载仍走 requests 路径，被风控时才会提示需要它。
+playwright>=1.40
+
+# 「本地 LLM 翻译」provider（anima_local_llm）用到的 GGUF 推理后端。
+# 缺失时：该 provider 不加载，其余翻译源（本地词典 / DeepLX / 百度 / 通义等）不受影响。
+llama-cpp-python>=0.2.0

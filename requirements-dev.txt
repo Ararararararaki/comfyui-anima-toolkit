@@ -1,0 +1,13 @@
+# CI / 本地测试所需的最小依赖（**不是** ComfyUI 运行依赖）。
+#
+# 为什么单独一份：插件的运行依赖由 ComfyUI 环境提供（torch / folder_paths 等），
+# 而 CI 只需要能跑「离线层测试 + 自检工具」。分开写避免 CI 去装 torch 这种几百 MB 的东西。
+#
+# 本地安装： pip install -r requirements-dev.txt
+# 运行：     python tests/run_tests.py
+
+pytest>=8.0
+
+# 插件模块级真实 import 的第三方库（离线测试会真的执行这些 import）
+aiohttp>=3.9
+requests>=2.31

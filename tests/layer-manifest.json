@@ -1,0 +1,1007 @@
+{
+ "generated_by": "tools/classify_tests.py",
+ "layers": [
+  "unit",
+  "js",
+  "integration",
+  "smoke",
+  "repro",
+  "tools",
+  "fixture"
+ ],
+ "buckets": {
+  "js": [
+   "cards_widget_logic.test.js",
+   "test_dom_widget_size_sync.mjs",
+   "test_preset_latent_resolution.js"
+  ],
+  "fixture": [
+   "clothing_draw_ui_harness.html"
+  ],
+  "integration": [
+   "integration/test_3d_body_camera.py",
+   "integration/test_danbooru_favcount_sort.py",
+   "integration/test_danbooru_gallery_interactions.py",
+   "integration/test_danbooru_search_caret.py",
+   "test_ci_config.py",
+   "test_layer_manifest.py",
+   "verify_baidu_translation_ui.py",
+   "verify_batch_lora_groups_ui.py",
+   "verify_batch_lora_input_resize.py",
+   "verify_batch_lora_layout.py",
+   "verify_batch_lora_search.py",
+   "verify_bridge_once_delivery.py",
+   "verify_cards_node.py",
+   "verify_cards_v10.py",
+   "verify_cards_v11.py",
+   "verify_cards_v12.py",
+   "verify_cards_v13.py",
+   "verify_cards_v14.py",
+   "verify_cards_v15.py",
+   "verify_cards_v16.py",
+   "verify_cards_v2.py",
+   "verify_cards_v3.py",
+   "verify_cards_v4.py",
+   "verify_cards_v5.py",
+   "verify_cards_v6.py",
+   "verify_cards_v7.py",
+   "verify_cards_v8.py",
+   "verify_cards_v9.py",
+   "verify_category_view.py",
+   "verify_civitai_download_targets.py",
+   "verify_clothing_draw_pointer_events.py",
+   "verify_clothing_draw_ui.py",
+   "verify_clothing_library_actions.py",
+   "verify_danbooru_filter_pointer.py",
+   "verify_danbooru_gallery_batch.py",
+   "verify_danbooru_search_bilingual.py",
+   "verify_danbooru_tag_getter_ui.py",
+   "verify_local_download_targets.py",
+   "verify_local_llm_ui.py",
+   "verify_local_manager_grid_ui.py",
+   "verify_preset_latent_ui.py",
+   "verify_prompt_cards_edit_modal.py",
+   "verify_prompt_cards_group_format.py",
+   "verify_prompt_cards_hidden_persistence.py",
+   "verify_prompt_cards_refresh_persistence.py",
+   "verify_prompt_cards_toolbox_append.py",
+   "verify_prompt_cards_ui_compact.py",
+   "verify_prompt_cards_visibility_translation.py",
+   "verify_prompt_emotion_seed.py",
+   "verify_prompt_saver_ui.py",
+   "verify_prompt_translation_resolve.py",
+   "verify_runtime_compat_guard.py",
+   "verify_string_router_ui.py",
+   "verify_tk_3d_body_camera.py",
+   "verify_tk_prompt_output.py",
+   "verify_toolbox_icon_ui.py",
+   "verify_translation_sources.py",
+   "verify_update_button.py"
+  ],
+  "repro": [
+   "repro/compare_llm_cats.py",
+   "repro/diag_classify_req.py",
+   "repro/probe2_cards.py",
+   "repro/probe3_cards.py",
+   "repro/probe_cards.py",
+   "repro/repro_bracket_escape.py",
+   "repro/repro_clothing_draw_step2.py",
+   "repro/repro_danbooru_gallery_persistence.py",
+   "repro/repro_danbooru_initial_load.py",
+   "repro/repro_prompt_cards_idb_closing.test.js",
+   "repro/restore_llm_key.py",
+   "repro/setup_llm.py"
+  ],
+  "smoke": [
+   "smoke_batch_controller.py",
+   "smoke_batch_preview_events.py",
+   "smoke_batch_worker.py",
+   "smoke_cards_api.py"
+  ],
+  "unit": [
+   "test_baidu_translation.py",
+   "test_batch_controller_logic.py",
+   "test_batch_lora_sorting.py",
+   "test_batch_lora_trigger_words.py",
+   "test_camera_presets.py",
+   "test_camera_weight_mapping.py",
+   "test_cards_v2.py",
+   "test_clothing_draw.py",
+   "test_danbooru_gallery_image_efficiency.py",
+   "test_danbooru_gallery_prompt_tooltip.py",
+   "test_danbooru_gallery_settings_scope.py",
+   "test_danbooru_meta.py",
+   "test_danbooru_tag_getter.py",
+   "test_extension_asset_urls.py",
+   "test_image_select.py",
+   "test_lighting_prompt.py",
+   "test_lora_resume.py",
+   "test_lora_subdir.py",
+   "test_parse_groups.py",
+   "test_prompt_library_persistence.py",
+   "test_prompt_saver.py",
+   "test_string_router.py",
+   "test_update_archive.py"
+  ],
+  "tools": [
+   "tools/ai_verify.py",
+   "tools/classify_tests.py",
+   "tools/fix_script_style_tests.py",
+   "tools/list_path_exprs.py",
+   "tools/update_handoff.py"
+  ]
+ },
+ "rows": [
+  {
+   "file": "cards_widget_logic.test.js",
+   "layer": "js",
+   "why": [
+    "comfy8188"
+   ],
+   "bytes": 4832
+  },
+  {
+   "file": "clothing_draw_ui_harness.html",
+   "layer": "fixture",
+   "why": [
+    "shared-fixture"
+   ],
+   "bytes": 4278
+  },
+  {
+   "file": "integration/test_3d_body_camera.py",
+   "layer": "integration",
+   "why": [],
+   "bytes": 5398
+  },
+  {
+   "file": "integration/test_danbooru_favcount_sort.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 1144
+  },
+  {
+   "file": "integration/test_danbooru_gallery_interactions.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 11978
+  },
+  {
+   "file": "integration/test_danbooru_search_caret.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 4115
+  },
+  {
+   "file": "repro/compare_llm_cats.py",
+   "layer": "repro",
+   "why": [
+    "one-shot"
+   ],
+   "bytes": 3688
+  },
+  {
+   "file": "repro/diag_classify_req.py",
+   "layer": "repro",
+   "why": [
+    "browser",
+    "comfy8188",
+    "one-shot"
+   ],
+   "bytes": 1157
+  },
+  {
+   "file": "repro/probe2_cards.py",
+   "layer": "repro",
+   "why": [
+    "browser",
+    "comfy8188",
+    "one-shot"
+   ],
+   "bytes": 1246
+  },
+  {
+   "file": "repro/probe3_cards.py",
+   "layer": "repro",
+   "why": [
+    "browser",
+    "comfy8188",
+    "one-shot"
+   ],
+   "bytes": 1184
+  },
+  {
+   "file": "repro/probe_cards.py",
+   "layer": "repro",
+   "why": [
+    "browser",
+    "comfy8188",
+    "one-shot"
+   ],
+   "bytes": 2591
+  },
+  {
+   "file": "repro/repro_bracket_escape.py",
+   "layer": "repro",
+   "why": [
+    "browser",
+    "comfy8188",
+    "one-shot"
+   ],
+   "bytes": 2906
+  },
+  {
+   "file": "repro/repro_clothing_draw_step2.py",
+   "layer": "repro",
+   "why": [
+    "browser",
+    "comfy8188",
+    "one-shot"
+   ],
+   "bytes": 4292
+  },
+  {
+   "file": "repro/repro_danbooru_gallery_persistence.py",
+   "layer": "repro",
+   "why": [
+    "browser",
+    "comfy8188",
+    "one-shot"
+   ],
+   "bytes": 3538
+  },
+  {
+   "file": "repro/repro_danbooru_initial_load.py",
+   "layer": "repro",
+   "why": [
+    "browser",
+    "comfy8188",
+    "one-shot"
+   ],
+   "bytes": 5351
+  },
+  {
+   "file": "repro/repro_prompt_cards_idb_closing.test.js",
+   "layer": "repro",
+   "why": [
+    "comfy8188",
+    "one-shot"
+   ],
+   "bytes": 3468
+  },
+  {
+   "file": "repro/restore_llm_key.py",
+   "layer": "repro",
+   "why": [
+    "one-shot"
+   ],
+   "bytes": 893
+  },
+  {
+   "file": "repro/setup_llm.py",
+   "layer": "repro",
+   "why": [
+    "one-shot"
+   ],
+   "bytes": 3361
+  },
+  {
+   "file": "smoke_batch_controller.py",
+   "layer": "smoke",
+   "why": [
+    "comfy8188"
+   ],
+   "bytes": 7704
+  },
+  {
+   "file": "smoke_batch_preview_events.py",
+   "layer": "smoke",
+   "why": [
+    "comfy8188"
+   ],
+   "bytes": 6164
+  },
+  {
+   "file": "smoke_batch_worker.py",
+   "layer": "smoke",
+   "why": [
+    "comfy8188"
+   ],
+   "bytes": 3061
+  },
+  {
+   "file": "smoke_cards_api.py",
+   "layer": "smoke",
+   "why": [
+    "comfy8188"
+   ],
+   "bytes": 3550
+  },
+  {
+   "file": "test_baidu_translation.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 3352
+  },
+  {
+   "file": "test_batch_controller_logic.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 11780
+  },
+  {
+   "file": "test_batch_lora_sorting.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 1512
+  },
+  {
+   "file": "test_batch_lora_trigger_words.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 9850
+  },
+  {
+   "file": "test_camera_presets.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 4448
+  },
+  {
+   "file": "test_camera_weight_mapping.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 2112
+  },
+  {
+   "file": "test_cards_v2.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 6126
+  },
+  {
+   "file": "test_ci_config.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 4132
+  },
+  {
+   "file": "test_clothing_draw.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 3153
+  },
+  {
+   "file": "test_danbooru_gallery_image_efficiency.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 5904
+  },
+  {
+   "file": "test_danbooru_gallery_prompt_tooltip.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 1492
+  },
+  {
+   "file": "test_danbooru_gallery_settings_scope.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 1653
+  },
+  {
+   "file": "test_danbooru_meta.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 8204
+  },
+  {
+   "file": "test_danbooru_tag_getter.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 14335
+  },
+  {
+   "file": "test_dom_widget_size_sync.mjs",
+   "layer": "js",
+   "why": [],
+   "bytes": 2323
+  },
+  {
+   "file": "test_extension_asset_urls.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 942
+  },
+  {
+   "file": "test_image_select.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 3598
+  },
+  {
+   "file": "test_layer_manifest.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 4085
+  },
+  {
+   "file": "test_lighting_prompt.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 5017
+  },
+  {
+   "file": "test_lora_resume.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 5077
+  },
+  {
+   "file": "test_lora_subdir.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 4208
+  },
+  {
+   "file": "test_parse_groups.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 2558
+  },
+  {
+   "file": "test_preset_latent_resolution.js",
+   "layer": "js",
+   "why": [],
+   "bytes": 1837
+  },
+  {
+   "file": "test_prompt_library_persistence.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 4613
+  },
+  {
+   "file": "test_prompt_saver.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 4501
+  },
+  {
+   "file": "test_string_router.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 3676
+  },
+  {
+   "file": "test_update_archive.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 4562
+  },
+  {
+   "file": "tools/ai_verify.py",
+   "layer": "tools",
+   "why": [
+    "dev-tool"
+   ],
+   "bytes": 21183
+  },
+  {
+   "file": "tools/classify_tests.py",
+   "layer": "tools",
+   "why": [
+    "browser",
+    "comfy8188",
+    "dev-tool"
+   ],
+   "bytes": 4561
+  },
+  {
+   "file": "tools/fix_script_style_tests.py",
+   "layer": "tools",
+   "why": [
+    "dev-tool"
+   ],
+   "bytes": 3636
+  },
+  {
+   "file": "tools/list_path_exprs.py",
+   "layer": "tools",
+   "why": [
+    "dev-tool"
+   ],
+   "bytes": 1170
+  },
+  {
+   "file": "tools/update_handoff.py",
+   "layer": "tools",
+   "why": [
+    "browser",
+    "dev-tool"
+   ],
+   "bytes": 4183
+  },
+  {
+   "file": "verify_baidu_translation_ui.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 2543
+  },
+  {
+   "file": "verify_batch_lora_groups_ui.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 4345
+  },
+  {
+   "file": "verify_batch_lora_input_resize.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 7035
+  },
+  {
+   "file": "verify_batch_lora_layout.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 6690
+  },
+  {
+   "file": "verify_batch_lora_search.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 6209
+  },
+  {
+   "file": "verify_bridge_once_delivery.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 5294
+  },
+  {
+   "file": "verify_cards_node.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 8859
+  },
+  {
+   "file": "verify_cards_v10.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 5144
+  },
+  {
+   "file": "verify_cards_v11.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 4032
+  },
+  {
+   "file": "verify_cards_v12.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 2952
+  },
+  {
+   "file": "verify_cards_v13.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 4637
+  },
+  {
+   "file": "verify_cards_v14.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 4161
+  },
+  {
+   "file": "verify_cards_v15.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 6406
+  },
+  {
+   "file": "verify_cards_v16.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 4697
+  },
+  {
+   "file": "verify_cards_v2.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 6701
+  },
+  {
+   "file": "verify_cards_v3.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 5308
+  },
+  {
+   "file": "verify_cards_v4.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 2915
+  },
+  {
+   "file": "verify_cards_v5.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 5002
+  },
+  {
+   "file": "verify_cards_v6.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 7251
+  },
+  {
+   "file": "verify_cards_v7.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 5341
+  },
+  {
+   "file": "verify_cards_v8.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 3640
+  },
+  {
+   "file": "verify_cards_v9.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 1990
+  },
+  {
+   "file": "verify_category_view.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 10394
+  },
+  {
+   "file": "verify_civitai_download_targets.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 5538
+  },
+  {
+   "file": "verify_clothing_draw_pointer_events.py",
+   "layer": "integration",
+   "why": [
+    "browser"
+   ],
+   "bytes": 2259
+  },
+  {
+   "file": "verify_clothing_draw_ui.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 3528
+  },
+  {
+   "file": "verify_clothing_library_actions.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 3490
+  },
+  {
+   "file": "verify_danbooru_filter_pointer.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 5470
+  },
+  {
+   "file": "verify_danbooru_gallery_batch.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 8938
+  },
+  {
+   "file": "verify_danbooru_search_bilingual.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 5955
+  },
+  {
+   "file": "verify_danbooru_tag_getter_ui.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 8526
+  },
+  {
+   "file": "verify_local_download_targets.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 4354
+  },
+  {
+   "file": "verify_local_llm_ui.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 3532
+  },
+  {
+   "file": "verify_local_manager_grid_ui.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 8049
+  },
+  {
+   "file": "verify_preset_latent_ui.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 8771
+  },
+  {
+   "file": "verify_prompt_cards_edit_modal.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 10391
+  },
+  {
+   "file": "verify_prompt_cards_group_format.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 3229
+  },
+  {
+   "file": "verify_prompt_cards_hidden_persistence.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 4793
+  },
+  {
+   "file": "verify_prompt_cards_refresh_persistence.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 2756
+  },
+  {
+   "file": "verify_prompt_cards_toolbox_append.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 4109
+  },
+  {
+   "file": "verify_prompt_cards_ui_compact.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 7218
+  },
+  {
+   "file": "verify_prompt_cards_visibility_translation.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 5846
+  },
+  {
+   "file": "verify_prompt_emotion_seed.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 10572
+  },
+  {
+   "file": "verify_prompt_saver_ui.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 8332
+  },
+  {
+   "file": "verify_prompt_translation_resolve.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 9900
+  },
+  {
+   "file": "verify_runtime_compat_guard.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 3094
+  },
+  {
+   "file": "verify_string_router_ui.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 6988
+  },
+  {
+   "file": "verify_tk_3d_body_camera.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 20419
+  },
+  {
+   "file": "verify_tk_prompt_output.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 42503
+  },
+  {
+   "file": "verify_toolbox_icon_ui.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 3118
+  },
+  {
+   "file": "verify_translation_sources.py",
+   "layer": "integration",
+   "why": [
+    "comfy8188"
+   ],
+   "bytes": 3045
+  },
+  {
+   "file": "verify_update_button.py",
+   "layer": "integration",
+   "why": [
+    "browser",
+    "comfy8188"
+   ],
+   "bytes": 4696
+  }
+ ]
+}

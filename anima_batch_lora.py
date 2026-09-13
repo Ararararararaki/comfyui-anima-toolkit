@@ -727,6 +727,54 @@ async def gallery_manifest(request):
     return web.json_response(payload, dumps=lambda o: json.dumps(o, ensure_ascii=False, separators=(",", ":")))
 
 
+@PromptServer.instance.routes.get("/anima/gallery/fresh")
+async def gallery_fresh(request):
+    """轻量「有没有新图」探测：只遍历输出目录文件名并 stat，不解析任何 PNG、不返回 16.5MB 索引。
+
+    动机（2026-09-13 用户反馈）：面板 outputs 不进页面就不会自动更新 —— 老实现只在窗口获焦/
+    切页时扫描，隐藏时直接 return。要让「生成完就自动更新」成立，需要一个**便宜**的轮询信号：
+    这里只返回文件总数（与索引里的 total 比对），前端据此决定要不要拉全量 manifest。
+    发现新文件且当前没在建索引时，顺手触发一次后台增量建索引（幂等）。
+    """
+    try:
+        root = folder_paths.get_output_directory()
+    except Exception as exc:
+        return web.json_response({"error": f"取输出目录失败: {exc}"}, status=500)
+
+    def _probe():
+        latest, count = 0.0, 0
+        for _rel, _full, mtime, _size in anima_gallery.scan_output_files(root):
+            count += 1
+            if mtime > latest:
+                latest = mtime
+        return latest, count
+
+    try:
+        latest, count = await asyncio.to_thread(_probe)
+    except Exception as exc:
+        return web.json_response({"error": f"扫描输出目录失败: {exc}"}, status=500)
+
+    # 用 total 而不是 len(entries)：索引对象有 16.5MB，别为了数个数把它整个读进来。
+    index = _GALLERY_STATE["index"]
+    known = int((index or {}).get("total", 0) or 0)
+    with _GALLERY_LOCK:
+        changed = count > known
+        building = bool(_GALLERY_STATE["building"])
+        if changed and not building:
+            _GALLERY_STATE["building"] = True
+            _GALLERY_STATE["progress"] = 0
+            _GALLERY_STATE["total"] = count
+            threading.Thread(target=_gallery_build_worker, args=(root,), daemon=True).start()
+            building = True
+    return web.json_response({
+        "latest": round(latest, 3),
+        "count": count,
+        "known": known,
+        "changed": changed,
+        "building": building,
+    })
+
+
 @PromptServer.instance.routes.get("/anima/gallery/rebuild")
 async def gallery_rebuild(request):
     """启动/重启后台索引构建（幂等）。前端轮询 manifest 观察 building/progress。"""
