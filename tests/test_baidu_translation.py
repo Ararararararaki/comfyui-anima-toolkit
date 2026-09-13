@@ -74,10 +74,31 @@ with tempfile.TemporaryDirectory(prefix="tk-baidu-config-") as temp:
     }
     assert "secret-test" not in repr(snapshot)
 
-assert module._baidu_language("zh-CN", "en") == "zh"
-assert module._baidu_language("auto", "en") == "auto"
-assert module._baidu_error_code("54001") == "authentication_error"
-assert module._baidu_error_code("54003") == "upstream_rate_limit"
-assert module._baidu_error_code("54004") == "quota_exhausted"
-assert "baidu" in module._TRANSLATE_ORDER
-print("PASS 百度翻译 provider 配置、隐私快照、语言和错误码映射")
+def _test_baidu_translation_script_regression():
+    """原顶层自检段（逐行搬入，未改内容）。"""
+    assert module._baidu_language("zh-CN", "en") == "zh"
+    assert module._baidu_language("auto", "en") == "auto"
+    assert module._baidu_error_code("54001") == "authentication_error"
+    assert module._baidu_error_code("54003") == "upstream_rate_limit"
+    assert module._baidu_error_code("54004") == "quota_exhausted"
+    assert "baidu" in module._TRANSLATE_ORDER
+    print("PASS 百度翻译 provider 配置、隐私快照、语言和错误码映射")
+
+if __name__ == "__main__":
+    _test_baidu_translation_script_regression()
+
+
+def test_test_baidu_translation_script_regression():
+    """把本文件的脚本自检接进 pytest。
+
+    这些断言原本只在 `python test_baidu_translation.py` 时执行，而 pytest 不跑 `__main__`，
+    等于长期不在 CI 覆盖里。包装与直跑调用的是**同一个** `_test_baidu_translation_script_regression()`，
+    不会出现两套逻辑。
+    """
+    try:
+        _test_baidu_translation_script_regression()
+    except SystemExit as exc:
+        # 这类脚本用 sys.exit(0) 表示成功（自建 PASS/FAIL 计数器），
+        # pytest 会把 SystemExit 当失败 —— 必须捕获并检查退出码。
+        assert exc.code in (None, 0), f"脚本自检失败（exit={exc.code}）"
+

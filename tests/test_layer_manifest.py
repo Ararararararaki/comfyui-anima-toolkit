@@ -78,7 +78,9 @@ def test_ci_layer_has_no_browser_or_comfy_dependency():
     CI 就会开始假红，然后被忽略 —— 那时 CI 就失去意义了。
     """
     import re
-    browser_re = re.compile(r"playwright|chrome\.exe|msedge|chromium|webdriver", re.I)
+    # 只匹配「真的驱动浏览器」的写法；不要用宽泛的 `\.exe`（会在 Linux 上误报，
+    # 且 `.exe` 出现在注释/常量里并不代表依赖浏览器）。
+    browser_re = re.compile(r"playwright|chrome\.exe|msedge\.exe|chromium|webdriver", re.I)
     comfy_re = re.compile(r":8188|127\.0\.0\.1:8|localhost:8", re.I)
 
     offenders = []

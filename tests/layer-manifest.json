@@ -330,13 +330,13 @@
    "file": "test_baidu_translation.py",
    "layer": "unit",
    "why": [],
-   "bytes": 3352
+   "bytes": 4215
   },
   {
    "file": "test_batch_controller_logic.py",
    "layer": "unit",
    "why": [],
-   "bytes": 11780
+   "bytes": 12705
   },
   {
    "file": "test_batch_lora_sorting.py",
@@ -348,25 +348,25 @@
    "file": "test_batch_lora_trigger_words.py",
    "layer": "unit",
    "why": [],
-   "bytes": 9850
+   "bytes": 11014
   },
   {
    "file": "test_camera_presets.py",
    "layer": "unit",
    "why": [],
-   "bytes": 4448
+   "bytes": 5326
   },
   {
    "file": "test_camera_weight_mapping.py",
    "layer": "unit",
    "why": [],
-   "bytes": 2112
+   "bytes": 2965
   },
   {
    "file": "test_cards_v2.py",
    "layer": "unit",
    "why": [],
-   "bytes": 6126
+   "bytes": 6968
   },
   {
    "file": "test_ci_config.py",
@@ -375,7 +375,7 @@
     "browser",
     "comfy8188"
    ],
-   "bytes": 4132
+   "bytes": 6616
   },
   {
    "file": "test_clothing_draw.py",
@@ -405,7 +405,7 @@
    "file": "test_danbooru_meta.py",
    "layer": "unit",
    "why": [],
-   "bytes": 8204
+   "bytes": 9075
   },
   {
    "file": "test_danbooru_tag_getter.py",
@@ -429,7 +429,7 @@
    "file": "test_image_select.py",
    "layer": "unit",
    "why": [],
-   "bytes": 3598
+   "bytes": 4464
   },
   {
    "file": "test_layer_manifest.py",
@@ -438,7 +438,7 @@
     "browser",
     "comfy8188"
    ],
-   "bytes": 4085
+   "bytes": 4275
   },
   {
    "file": "test_lighting_prompt.py",
@@ -450,7 +450,7 @@
    "file": "test_lora_resume.py",
    "layer": "unit",
    "why": [],
-   "bytes": 5077
+   "bytes": 5832
   },
   {
    "file": "test_lora_subdir.py",
@@ -492,7 +492,7 @@
    "file": "test_update_archive.py",
    "layer": "unit",
    "why": [],
-   "bytes": 4562
+   "bytes": 11280
   },
   {
    "file": "tools/ai_verify.py",
@@ -500,7 +500,7 @@
    "why": [
     "dev-tool"
    ],
-   "bytes": 21183
+   "bytes": 23454
   },
   {
    "file": "tools/classify_tests.py",

@@ -131,5 +131,26 @@ with tempfile.TemporaryDirectory(prefix="tk-lora-resume-") as temp:
     assert session.calls[0]["headers"]["Range"] == "bytes=3-"
     assert result["done"] == 6 and result["total"] == 6
 
-assert module._download_part_path("C:/models", "12345", "") == os.path.join("C:/models", ".anima-download-12345.part")
-print("PASS LoRA 断点续传 Range 追加、断线重试和忽略 Range 安全回退")
+def _test_lora_resume_script_regression():
+    """原顶层自检段（逐行搬入，未改内容）。"""
+    assert module._download_part_path("C:/models", "12345", "") == os.path.join("C:/models", ".anima-download-12345.part")
+    print("PASS LoRA 断点续传 Range 追加、断线重试和忽略 Range 安全回退")
+
+if __name__ == "__main__":
+    _test_lora_resume_script_regression()
+
+
+def test_test_lora_resume_script_regression():
+    """把本文件的脚本自检接进 pytest。
+
+    这些断言原本只在 `python test_lora_resume.py` 时执行，而 pytest 不跑 `__main__`，
+    等于长期不在 CI 覆盖里。包装与直跑调用的是**同一个** `_test_lora_resume_script_regression()`，
+    不会出现两套逻辑。
+    """
+    try:
+        _test_lora_resume_script_regression()
+    except SystemExit as exc:
+        # 这类脚本用 sys.exit(0) 表示成功（自建 PASS/FAIL 计数器），
+        # pytest 会把 SystemExit 当失败 —— 必须捕获并检查退出码。
+        assert exc.code in (None, 0), f"脚本自检失败（exit={exc.code}）"
+

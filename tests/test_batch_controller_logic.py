@@ -282,6 +282,26 @@ finally:
         _PS.instance.prompt_queue = old_queue
 
 
-if __name__ == "__main__":
+def _test_batch_controller_logic_script_regression():
+    """原 __main__ 自检体（逐行搬入，未改内容）。"""
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
+
+if __name__ == "__main__":
+    _test_batch_controller_logic_script_regression()
+
+
+def test_test_batch_controller_logic_script_regression():
+    """把本文件的脚本自检接进 pytest。
+
+    这些断言原本只在 `python test_batch_controller_logic.py` 时执行，而 pytest 不跑 `__main__`，
+    等于长期不在 CI 覆盖里。包装与直跑调用的是**同一个** `_test_batch_controller_logic_script_regression()`，
+    不会出现两套逻辑。
+    """
+    try:
+        _test_batch_controller_logic_script_regression()
+    except SystemExit as exc:
+        # 这类脚本用 sys.exit(0) 表示成功（自建 PASS/FAIL 计数器），
+        # pytest 会把 SystemExit 当失败 —— 必须捕获并检查退出码。
+        assert exc.code in (None, 0), f"脚本自检失败（exit={exc.code}）"
+

@@ -97,9 +97,29 @@ check("meta.extras_enabled 齐全", set(m.get("extras_enabled", {}).keys()) == {
 prompt2, meta2 = acc.AnimaCameraControl().execute("足控仰视V2", "", 0.0, 0.0, 0.0, 0.0, "", acc.DEFAULT_CONFIG_JSON)
 m2 = _json.loads(meta2)
 
-if __name__ == "__main__":
+def _test_camera_presets_script_regression():
+    """原 __main__ 自检体（逐行搬入，未改内容）。"""
     check("自定义预设生效模式", m2.get("mode") == "preset" and m2.get("preset") == "足控仰视V2", meta2[:150])
 
     shutil.rmtree(tmp, ignore_errors=True)
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
+
+if __name__ == "__main__":
+    _test_camera_presets_script_regression()
+
+
+def test_test_camera_presets_script_regression():
+    """把本文件的脚本自检接进 pytest。
+
+    这些断言原本只在 `python test_camera_presets.py` 时执行，而 pytest 不跑 `__main__`，
+    等于长期不在 CI 覆盖里。包装与直跑调用的是**同一个** `_test_camera_presets_script_regression()`，
+    不会出现两套逻辑。
+    """
+    try:
+        _test_camera_presets_script_regression()
+    except SystemExit as exc:
+        # 这类脚本用 sys.exit(0) 表示成功（自建 PASS/FAIL 计数器），
+        # pytest 会把 SystemExit 当失败 —— 必须捕获并检查退出码。
+        assert exc.code in (None, 0), f"脚本自检失败（exit={exc.code}）"
+
