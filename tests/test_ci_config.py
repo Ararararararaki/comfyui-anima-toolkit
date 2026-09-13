@@ -125,6 +125,23 @@ def test_registry_requirements_are_minimal():
     opt = ROOT / "requirements-optional.txt"
     assert opt.is_file(), "可选依赖应集中写在 requirements-optional.txt"
 
+def test_registry_publisher_id_is_lowercase():
+    """`[tool.comfy].PublisherId` 必须全小写。
+
+    registry 的校验规则是「只能小写字母/数字/连字符」，而且 /publishers/validate 实测会把
+    `Ararararararaki` 直接拒掉（"Must start with a lowercase letter"）。
+    更坑的是：**publish 时**如果 id 里带大写，报错是含糊的
+    `Failed to validate token`，很容易误判成「PAT 坏了」而浪费半天。
+    """
+    body = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    m = re.search(r'(?m)^PublisherId\s*=\s*"([^"]*)"', body)
+    assert m, "pyproject.toml 缺少 [tool.comfy].PublisherId"
+    pid = m.group(1)
+    assert pid, "PublisherId 不能为空"
+    assert pid == pid.lower(), f"PublisherId={pid!r} 含大写，registry 只接受小写"
+    assert re.fullmatch(r"[a-z0-9][a-z0-9-]*", pid), f"PublisherId={pid!r} 含非法字符"
+
+
 def test_ci_dev_requirements_exist_and_are_minimal():
     """CI 依赖清单必须存在，且不能把 ComfyUI 运行时重量依赖塞进来。"""
     req = ROOT / "requirements-dev.txt"

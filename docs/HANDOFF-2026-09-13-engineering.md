@@ -240,31 +240,57 @@ topics:      anima, civitai, comfyui, comfyui-custom-nodes, comfyui-nodes, danbo
 - 节点菜单里有 `TK 可动素体相机`、**没有** `TK 相机控制`；
 - 画廊工具栏有「热门随机 / 优质随机 / 高收藏随机 / 换一批」。
 
-### 6.2 ComfyUI Registry —— 只剩 2 步人工（必须账号）
+### 6.2 ComfyUI Registry —— 代码侧完成，卡在**账号未登录**（实测已定位到确切原因）
 
-**我无法代做**：`publisher` 必须在网页上用 GitHub OAuth 登录创建，
-任何 GitHub token 都不能代替（`comfy node publish` 的 `--token` 是 Registry 自己发的 PAT）。
-所需 token 也**得先有账号才能生成** —— 这是个先有鸡还是先有蛋的问题。
+**当前状态**：`pyproject.toml` 已通过 `comfy node validate`（`✓ All validation checks passed`）；
+但**实际 publish 失败**，实测错误是：
 
-请你做：
+```
+400 {"message":"Failed to validate token"}
+```
 
-1. 打开 **https://registry.comfy.org** → 用 GitHub 登录 → **Create Publisher**。
-   Publisher id **核对为 `Ararararararaki`**（创建后不可改）。
-   若你选了别的 id，改 `pyproject.toml` 的 `[tool.comfy] PublisherId`。
-2. 在账号页生成 **Registry Publishing API Key**，然后：
+**根因已查清（不是配置问题，也不是 PAT 格式问题）**：
+
+- 该 PAT（`pat-…`）**在 registry 侧没有绑定任何用户**。决定性证据：带它访问
+  `GET /publishers/{任意id}/tokens` 一律返回 `401 {"message":"user not found"}`，
+  而不带 token 时返回的是 `401 missing auth token for path: ...` —— **两种 401 消息不同**，
+  说明 token 本身被认出来了，但服务端查不到它所属的 user。
+- 用同一个 PAT 尝试 `POST /publishers` 建 publisher 也是 `401 {"message":"user not found"}`。
+- 因此 `comfy node publish` 的 `Failed to validate token` 是**这个**原因，
+  **不是** PublisherId 大小写、也不是 `[project] name` 的问题。
+
+**为什么这一步无法用代码替代**：registry 的 user 记录是在
+**网页上用 GitHub OAuth 登录时**创建的。PAT 必须在账号页生成 ——
+所以「没有 user → 无法生成有效 PAT → 无法发布」是个死结，任何 GitHub token 都打不破。
+
+**顺手修正了一处真实配置风险**：registry 的 publisher id **只接受小写**
+（`/publishers/validate?username=Ararararararaki` 实测返回
+`400 Must start with a lowercase letter and can only contain lowercase letters, digits, and hyphens.`）。
+`pyproject.toml` 的 `PublisherId` 已从 `Ararararararaki` 改为 **`ararararararaki`**，
+并在 `ai_verify.py` + `tests/test_ci_config.py` 各加了一条**全小写校验**
+（否则 publish 时只会看到含糊的 "Failed to validate token"，极易误判成 PAT 坏了）。
+两条校验都已负向验证（注入大写 → FAIL，还原 → PASS）。
+
+**你只需做 1 分钟的人工步骤**（我无法代做）：
+
+1. 浏览器打开 **https://registry.comfy.org** → 用 **GitHub 登录**
+   （这一步才会创建 registry 的 user 记录）。
+2. 登录后 **Create Publisher**，id 填 **`ararararararaki`**（小写，创建后不可改）。
+3. 在同一账号页生成 **Publishing API Key**。
+4. 回到终端，一条命令即可（脚本会先把脉再发布）：
 
    ```bash
-   pip install -U comfy-cli
    cd "E:\claude program\ComfyUI-Anima-Batch-LoRA"
-   python -m comfy_cli node validate        # 应输出 ✓ All validation checks passed
-   python -m comfy_cli node publish --token <你的 PAT>
+   python tools/registry_setup.py --token <新的 PAT>          # 体检 + 发布
+   python tools/registry_setup.py --token <PAT> --check       # 只体检不发布
    ```
 
-   （可选）补一个方形 ≤400×400 的图标后，把 `pyproject.toml` 的 `Icon` 填成可公网访问的直链。
+   新脚本 `tools/registry_setup.py` 会：核对 pyproject 与 `VERSION` 一致 / PublisherId 全小写 /
+   PAT 是否绑定用户（并把上面的死结解释直接打印出来）/ 跑 `node validate` / 执行 `node publish`。
+   PAT 若仍是孤儿，它会明确告诉你「去网页登录」。
 
-**代码侧我已全部就绪**：`pyproject.toml` 通过 `comfy node validate`、
-`requirements.txt` 只含必需依赖、版本号与 `VERSION` 由 `ai_verify` 强制一致。
 **ComfyUI-Manager 收录**一般以 Registry 发布为前提，所以先做 Registry。
+**注意**：node id（`anima-toolkit`）**首次发布后不可更改**，改 id 等于发新节点。
 
 ## 7. 本轮最终验证汇总
 

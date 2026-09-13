@@ -407,6 +407,11 @@ def check_registry_metadata() -> None:
         problems.append("缺少 [tool.comfy].PublisherId")
     elif not pm.group(1).strip():
         problems.append("PublisherId 为空（需在 registry.comfy.org 创建 publisher 后填入）")
+    elif pm.group(1) != pm.group(1).lower():
+        # registry 只接受小写字母/数字/连字符；实测 `Ararararararaki` 会被
+        # /publishers/validate 直接拒绝（"Must start with a lowercase letter"）。
+        problems.append(
+            f"PublisherId={pm.group(1)!r} 含大写 —— registry 要求全小写（只能小写字母/数字/连字符）")
 
     if not os.path.exists(os.path.join(ROOT, "requirements.txt")):
         problems.append("缺少 requirements.txt（Registry 依赖从这里读）")

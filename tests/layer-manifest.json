@@ -377,7 +377,7 @@
     "browser",
     "comfy8188"
    ],
-   "bytes": 6616
+   "bytes": 7523
   },
   {
    "file": "test_clothing_draw.py",
@@ -510,7 +510,7 @@
    "why": [
     "dev-tool"
    ],
-   "bytes": 23454
+   "bytes": 23832
   },
   {
    "file": "tools/classify_tests.py",
