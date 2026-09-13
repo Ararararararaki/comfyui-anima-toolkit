@@ -1,4 +1,4 @@
-# Anima Toolkit - on-disk thumbnail cache (M1)
+# Tk Toolkit - on-disk thumbnail cache (M1)
 # Pure-function module: no ComfyUI/server imports here, so the logic can be
 # unit-tested standalone. Route registration lives in anima_batch_lora.py.
 #

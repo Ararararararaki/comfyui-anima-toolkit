@@ -1,4 +1,4 @@
-# AGENTS.md — Anima Toolkit（ComfyUI-Anima-Batch-LoRA）
+# AGENTS.md — Tk Toolkit（ComfyUI-Anima-Batch-LoRA）
 
 > **接手第一步**：读 `docs/HANDOFF-2026-09-13-cards-autocomplete.md`（**当前版本 v2.12.0**：
 > ②区联想的中文角色名支持 —— 数据来源、匹配分级、Anima 括号转义、性能、踩过的坑）。
@@ -101,7 +101,7 @@ python .scratch/api_push_guard.py --allow-delete   # 确认要删才加
 - **提交前 `git add` 之后要排除**：`test_gallery.py`（游离脚本，内含硬编码绝对路径）、
   `data/batches/bworker.json`（运行时状态，改一次就脏）
 
-## 4. ⚠️ 接手必读的八个坑（都踩过，已固化防御）
+## 4. ⚠️ 接手必读的十个坑（都踩过，已固化防御）
 
 1. **`pytest.ini` 必须在 `tests/` 里，不能放仓库根。**
    仓库根**就是** ComfyUI 插件的 `__init__.py`，pytest 会向上找包边界并把它当包导入 →
@@ -158,6 +158,15 @@ python .scratch/api_push_guard.py --allow-delete   # 确认要删才加
    护栏：`tests/test_update_archive.py::test_release_path_whitelist_covers_everything_the_plugin_needs_at_runtime`。
    发版前可跑一次"老用户模拟"：取旧发布 commit 的 `services/github_update.py`，
    用它的 `is_release_path` 过滤当前远端 tree，看关键文件是否在列。
+
+10. **别在 PowerShell 里用"数组套数组"做多文件字符串替换。** 实测踩过一次真事故：
+    用 `@{file = @(@("old","new"))}` 的哈希表遍历时，**单元素数组会被 PowerShell 展平成字符串**，
+    于是 `$pair[0]` 变成了**单个字符**（而不是整条字符串），`String.Replace(char, char)` 把
+    **所有**该字符替换掉 —— `#` 全变成空格，`AGENTS.md` 的标题、`anima_gallery.py`/`anima_thumbs.py`
+    的注释全毁，**Python 直接语法错误**；`CLAUDE.md` 是 gitignore 的，**git 都救不回来**。
+    规矩：① 改文件一律用 `edit` 工具（精确整串匹配，逐个改）；
+    ② 非要用脚本，也必须是"每条 `(old,new)` 显式配对"，并**先 `Copy-Item` 备份**；
+    ③ 批量改完立刻 `python -m py_compile` + `git diff --stat` 核对，别等到跑测试才发现。
 
 ## 5. 版本号纪律（`VERSION` 是唯一真源）
 

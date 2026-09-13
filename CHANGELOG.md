@@ -8,6 +8,31 @@
 
 用户可在节点工具栏「🔄 更新」检查到新版本。
 
+## [2.12.3] - 2026-09-13
+
+### 变更
+
+- **项目改名为 `Tk Toolkit`**（作者「时运Tk」的品牌）。原显示名 "Anima Toolkit" 与**训练**工具链
+  `AnimaLoraToolkit`(66★) 撞脸 —— 搜 "anima toolkit comfyui" 时对方排第一，AI 容易把我们归错类；
+  另有一个同名 fork `bfftp0502/comfyui-anima-toolkit`。
+
+  **改名范围刻意只动"对外身份"层**（零风险，老用户完全不受影响）：
+
+  | 改了 | 没改（改了会出事的） |
+  |---|---|
+  | Registry `DisplayName` → `Tk Toolkit` | **Registry 节点 id** 仍是 `anima-toolkit`（换 id = 建新节点、重新排队审核，还会在 registry 留一个重复节点） |
+  | README 标题 / 英文摘要 / 安装块 / 图标 alt | **GitHub 仓库地址**不变（老用户更新链硬编码了旧仓库名；且旧名释放后有被抢注的供应链风险） |
+  | `pyproject` description + `authors` | **`NODE_CLASS_MAPPINGS` 类名**（已保存的工作流 JSON 存的就是这些字符串） |
+  | `llms.txt` / `AGENTS.md` / `CLAUDE.md` / 两个模块头注释 | **`anima_` 文件与模块前缀**（更新链白名单就是 `path.startswith("anima_")`，改了等于重踩漏发 bug） |
+  | | **节点显示名**保持 `TK xxx`（38 处代码 + 34 处测试断言，纯 churn 且无检索收益） |
+
+  **召回不掉**：`Anima` 关键词保留在 `description` 里 —— 实测 registry 搜索**会索引 description**
+  （搜 `danbooru` 能搜到我们，而 "danbooru" 并不在节点名里），所以从 "Anima Toolkit" 改成 "Tk Toolkit"
+  不会丢掉 `anima` 这个查询词。
+
+- **作者署名**：`[project].authors = [{ name = "时运Tk" }]`。**刻意没写 email** —— 一提交就进公开仓库
+  历史、无法撤回；要公开再补 `email = "..."`（PEP 621 允许只填 name）。
+
 ## [2.12.2] - 2026-09-13
 
 ### 新增

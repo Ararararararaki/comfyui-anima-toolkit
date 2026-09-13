@@ -1,4 +1,4 @@
-# Anima Toolkit - gallery metadata index (M3)
+# Tk Toolkit - gallery metadata index (M3)
 # Pure-function module (no ComfyUI/server imports): PNG text-chunk parsing,
 # ComfyUI UI/API workflow field extraction, LoRA extraction, incremental index.
 # 与前端 src/services/outputMetadata.ts 的语义对齐（摘要级：按钮/卡片/筛选所需字段）。
