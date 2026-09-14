@@ -3593,9 +3593,16 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           .map((element) => element.closest?.("button, input, select, textarea, [role='button']"))
           .find((element) => element && this.root.contains(element));
         if (!candidate || event.target === candidate || candidate.contains(event.target)) return;
-        const topNode = stack.find((element) => element.matches?.("[data-node-id]"))?.dataset.nodeId;
         const candidateNode = candidate.closest?.("[data-node-id]")?.dataset.nodeId;
-        if (topNode && candidateNode && topNode !== candidateNode) return;
+        // ⚠️ 判据必须是「事件真正的目标属于哪个节点」，不能用“栈里第一个带 data-node-id 的元素”。
+        //    点 ComfyUI 自己的按钮（画布工具栏 / 顶部菜单）时，那个按钮不属于任何节点，
+        //    旧写法会一路往下找到**下面的画廊节点本身**，于是判定为“同一个节点”而放行 →
+        //    补发点击 → 穿透到同坐标下的卡片，参考图被换成用户没想选的图。
+        //    现在要求目标本身落在本节点内（含节点激活面罩），否则一律不补发。
+        const targetNode = (event.target instanceof Element
+          ? event.target.closest?.("[data-node-id]")?.dataset.nodeId
+          : undefined) ?? null;
+        if (!targetNode || (candidateNode && targetNode !== candidateNode)) return;
         event.preventDefault();
         event.stopImmediatePropagation();
         requestAnimationFrame(() => {

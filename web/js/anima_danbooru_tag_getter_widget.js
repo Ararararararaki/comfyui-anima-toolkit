@@ -29,25 +29,13 @@
   // 新增分类里默认**关闭**的两类（负面词类）。与后端 DEFAULT_OFF_CATEGORIES 一致，
   // 一致性由 tests/test_danbooru_tag_getter.py 的 fallback 锁保证。
   const DEFAULT_OFF_CATEGORIES = ["审查遮挡词", "文字水印词"];
-  // 与后端 AnimaTKDanbooruTagGetter.PRESETS 对应：前端负责即时视觉反馈（开关同步切换），
-  // 后端负责最终正确性（即使前端没展开也按预设展开）。两处都展开，结果等价。
+  // ⚠️ 内置场景预设已按用户要求（2026-09-14）**全部移除**：预设只留"不用预设"，
+  // 其余一律走后端自定义预设库（data/tag_presets.json），由 refreshPresetOptions()
+  // 拉进下拉、applyPreset() 从缓存还原开关与权重，面板上可存可删。
+  // 原来那 6 条 off/only 规则的原文备份在
+  // docs/HANDOFF-2026-09-14-二采CN升级与ACN接入.md。
   const PRESETS = {
     [PRESET_NONE]: {},
-    "换角色（剥离身份/版权/画师）": {
-      off: ["角色身份词", "作品版权词", "画师词"],
-    },
-    "保特征换角色（留发色瞳色/亚人特征）": {
-      off: ["角色身份词", "作品版权词", "画师词", "角色部位词", "性征部位词"],
-    },
-    "换装（再剥离服饰）": {
-      off: ["角色身份词", "作品版权词", "画师词", "服饰词"],
-    },
-    "仅保留骨架（动作/表情/镜头/背景）": {
-      only: ["人物对象词", "动作词", "角色表情词", "镜头词", "背景词"],
-    },
-    "清除干扰（审查/水印/质量元）": {
-      off: ["审查遮挡词", "文字水印词", "质量元词"],
-    },
   };
 
 
@@ -102,6 +90,24 @@
       .tk-dtb-preset-name:focus { border-color:#999; }
       .tk-dtb-preset-name::placeholder { color:#777; }
       .tk-dtb-preset-hint { margin-top:3px; min-height:0; color:#8a8a8a; font-size:10px; line-height:1.35; }
+      /* 过滤诊断底栏：把"哪些词被保留、哪些因为什么被丢"摆出来，避免过滤黑箱 */
+      .tk-dtb-report { margin-top:5px; padding-top:4px; border-top:1px solid rgba(255,255,255,.10); }
+      .tk-dtb-report-head { display:flex; align-items:baseline; gap:6px; }
+      .tk-dtb-report-title { color:#bdbdbd; font-size:11px; }
+      .tk-dtb-report-hint { color:#7d7d7d; font-size:10px; }
+      .tk-dtb-report-body { margin-top:3px; max-height:150px; overflow-y:auto; scrollbar-width:thin; }
+      .tk-dtb-report-empty { color:#7d7d7d; font-size:10px; line-height:1.4; }
+      .tk-dtb-report-warn { margin:2px 0; padding:2px 4px; color:#e0b070; background:rgba(224,176,112,.10); border-radius:2px; font-size:10px; line-height:1.4; }
+      .tk-dtb-report-section { margin-top:4px; color:#8f8f8f; font-size:10px; }
+      .tk-dtb-report-section.is-kept { color:#7fae86; }
+      .tk-dtb-report-section.is-dropped { color:#c98a8a; }
+      .tk-dtb-report-section.is-unknown { color:#c0a86a; }
+      .tk-dtb-report-row { display:flex; gap:5px; padding:1px 0; font-size:10px; line-height:1.35; }
+      .tk-dtb-report-cat { flex:0 0 auto; max-width:46%; color:#9a9a9a; cursor:pointer; text-decoration:underline dotted; }
+      .tk-dtb-report-cat:hover { color:#e1e1e1; }
+      .tk-dtb-report-row.is-kept .tk-dtb-report-cat { color:#8fbf95; }
+      .tk-dtb-report-row.is-dropped .tk-dtb-report-cat { color:#d09a9a; }
+      .tk-dtb-report-words { flex:1 1 auto; min-width:0; color:#a8a8a8; word-break:break-word; }
       .tk-dtb-preset-hint:empty { display:none; }
       /* 主题剔除 chips */
       .tk-dtb-section { margin-top:6px; padding-top:6px; border-top:1px solid rgba(255,255,255,.10); }
@@ -132,6 +138,9 @@
       this.presetNameInput = null;
       this.presetStatus = null;
       this.presetHint = null;
+      // 后端 data/tag_presets.json 里的自定义预设 {名称: {flags, weights}}，
+      // 由 refreshPresetOptions() 拉取缓存 —— applyPreset 靠它还原开关（内置表里没有）。
+      this.customPresets = {};
     }
 
     widgetFor(category) {
@@ -448,8 +457,10 @@
       this.hideNativeWidget(this.widgetFor("exclude_groups"));
       this.hideNativeWidget(this.widgetFor("exclude_groups_custom"));
 
-      panel.append(header, presetRow, presetManage, presetStatus, presetHint, grid, filters);
+      panel.append(header, presetRow, presetManage, presetStatus, presetHint, grid, filters,
+                   this.buildFilterReportBar());
       this.refreshPresetOptions();
+      this.watchFilterReport();
       this.updateCount();
       return panel;
     }
@@ -477,13 +488,29 @@
     // ── 场景预设 ──
 
     applyPreset(name) {
-      const spec = PRESETS[name] || {};
-      CATEGORY_NAMES.forEach((category) => {
-        let next = Boolean(this.widgetFor(category)?.value);
-        if (spec.only) next = spec.only.includes(category);
-        if (spec.off && spec.off.includes(category)) next = false;
-        this.setWidgetValue(category, next);
-      });
+      const spec = PRESETS[name];
+      // 自定义预设（后端 data/tag_presets.json）存的是**完整开关快照 + 权重**，
+      // 不在前端这张内置表里 —— 只查 PRESETS 会给自定义预设拿到空 spec，
+      // 结果 20 个开关一个都不动（"选了没反应"）。
+      const custom = spec ? null : (this.customPresets || {})[name];
+      if (spec) {
+        CATEGORY_NAMES.forEach((category) => {
+          let next = Boolean(this.widgetFor(category)?.value);
+          if (spec.only) next = spec.only.includes(category);
+          if (spec.off && spec.off.includes(category)) next = false;
+          this.setWidgetValue(category, next);
+        });
+      } else if (custom) {
+        const flags = custom.flags || {};
+        CATEGORY_NAMES.forEach((category) => {
+          if (category in flags) this.setWidgetValue(category, Boolean(flags[category]));
+        });
+        Object.entries(custom.weights || {}).forEach(([category, value]) => {
+          if (typeof value === "number" && Number.isFinite(value)) {
+            this.setWeightValue(category, value);
+          }
+        });
+      }
       const widget = this.widgetFor("preset");
       if (widget) {
         widget.value = name;
@@ -496,11 +523,13 @@
 
     updatePresetHint(name) {
       if (!this.presetHint) return;
-      const spec = PRESETS[name] || {};
-      if (spec.only) {
+      const spec = PRESETS[name];
+      if (spec?.only) {
         this.presetHint.textContent = `只开：${spec.only.join("、")}；其余全部关闭`;
-      } else if (spec.off && spec.off.length) {
+      } else if (spec?.off && spec.off.length) {
         this.presetHint.textContent = `已关闭：${spec.off.join("、")}`;
+      } else if (!spec && (this.customPresets || {})[name]) {
+        this.presetHint.textContent = "自定义预设：已还原保存时的开关与权重";
       } else {
         this.presetHint.textContent = "";
       }
@@ -536,6 +565,8 @@
       try {
         const response = await fetch("/anima/tag_presets");
         const data = await response.json();
+        // 缓存整份快照：applyPreset 需要用它还原自定义预设的开关与权重
+        this.customPresets = (data && typeof data.presets === "object" && data.presets) || {};
         (data?.names || []).forEach((name) => this.appendPresetOption(name));
       } catch (error) {
         /* 拉不到就只少自定义那部分 */
@@ -576,6 +607,10 @@
         this.setPresetStatus(data.message || (data.ok ? "已保存" : "保存失败"));
         if (data.ok) {
           this.appendPresetOption(name);
+          // 立刻进缓存，免得"刚保存就切换"要等下一次 refresh 才生效
+          this.customPresets[name] = {
+            flags: this.currentFlags(), weights: this.currentWeights(),
+          };
           if (this.presetNameInput) this.presetNameInput.value = "";
         }
       } catch (error) {
@@ -585,14 +620,15 @@
 
     async deletePreset() {
       const name = String(this.presetSelect?.value || "");
-      if (!name || name === PRESET_NONE || PRESETS[name]) {
-        this.setPresetStatus("只能删除自己保存的预设");
+      if (!name || name === PRESET_NONE) {
+        this.setPresetStatus("「自定义（不用预设）」不能删");
         return;
       }
       try {
         const data = await this.presetRequest({ action: "delete", name });
         this.setPresetStatus(data.message || (data.ok ? "已删除" : "删除失败"));
         if (data.ok) {
+          delete this.customPresets[name];
           [...(this.presetSelect?.options || [])]
             .filter((option) => option.value === name)
             .forEach((option) => option.remove());
@@ -600,6 +636,176 @@
         }
       } catch (error) {
         this.setPresetStatus(`删除失败：${error}`);
+      }
+    }
+
+    // ── 过滤诊断底栏 ──
+    //
+    // 数据来源：后端 get_tags 通过 ComfyUI 的 ui 通道回传 tk_filter_report
+    // （保留 / 各类别被丢 / 黑名单丢 / 正则丢 / 未归类）。前端在 executed 事件里
+    // 取到它渲染成底栏 —— 之前过滤是黑箱：关错类别看不到丢了什么，只能靠猜。
+    // 点类别名可直接开关该类，并就地重算，不必等下一次执行。
+
+    buildFilterReportBar() {
+      const wrap = document.createElement("div");
+      wrap.className = "tk-dtb-report";
+      const head = document.createElement("div");
+      head.className = "tk-dtb-report-head";
+      const title = document.createElement("span");
+      title.className = "tk-dtb-report-title";
+      title.textContent = "过滤诊断";
+      const hint = document.createElement("span");
+      hint.className = "tk-dtb-report-hint";
+      hint.textContent = "跑一次图后显示 · 点类别名可直接开关";
+      head.append(title, hint);
+      const body = document.createElement("div");
+      body.className = "tk-dtb-report-body";
+      const placeholder = document.createElement("div");
+      placeholder.className = "tk-dtb-report-empty";
+      placeholder.textContent = "尚未执行。执行一次工作流后，这里显示保留了哪些词、哪些词因为什么被丢掉。";
+      body.append(placeholder);
+      wrap.append(head, body);
+      this.reportBody = body;
+      this.reportData = null;
+      return wrap;
+    }
+
+    async watchFilterReport() {
+      if (this.reportListener) return;
+      let api = globalThis.comfyAPI?.api?.api || globalThis.comfyAPI?.api || null;
+      if (!api?.addEventListener) {
+        try {
+          api = (await import("/scripts/api.js")).api;      // IIFE 里只能用动态 import
+        } catch (error) {
+          console.warn("[TK Tag Getter] 拿不到 ComfyUI api，过滤底栏不可用：", error);
+          return;
+        }
+      }
+      if (!api?.addEventListener) return;
+      this.reportListener = ({ detail }) => {
+        const nodeId = String(this.node?.id ?? "");
+        if (!nodeId || String(detail?.node ?? "") !== nodeId) return;
+        const report = detail?.output?.tk_filter_report;
+        if (!report) return;                                  // 不是本节点的执行结果
+        this.reportData = report;
+        this.renderFilterReport(report);
+      };
+      api.addEventListener("executed", this.reportListener);
+    }
+
+    /** 点底栏里的类别名 = 切换该类别开关，然后就地重算报告。 */
+    toggleCategoryFromReport(category) {
+      const widget = this.widgetFor(category);
+      if (!widget) return;
+      this.setWidgetValue(category, !Boolean(widget.value));
+      this.node.graph?.change();
+      this.updateCount();
+      if (this.reportData) {
+        this.rescaleReport(this.reportData);
+      }
+    }
+
+    /**
+     * 切换开关后**就地重算**已有报告（不重跑工作流）：
+     * 只搬动"类别开关"这一层的词（保留 ↔ 类别关闭），黑名单/正则/未归类与开关无关。
+     */
+    rescaleReport(report) {
+      const kept = report.kept || (report.kept = {});
+      const dropped = report.dropped_by_category || (report.dropped_by_category = {});
+      for (const category of CATEGORY_NAMES) {
+        const open = Boolean(this.widgetFor(category)?.value);
+        if (open && dropped[category]?.length) {
+          kept[category] = (kept[category] || []).concat(dropped[category]);
+          delete dropped[category];
+        } else if (!open && kept[category]?.length) {
+          dropped[category] = (dropped[category] || []).concat(kept[category]);
+          delete kept[category];
+        }
+      }
+      const sum = (object) => Object.values(object || {})
+        .reduce((total, list) => total + (list?.length || 0), 0);
+      report.counts = {
+        kept: sum(kept),
+        dropped: sum(dropped) + (report.dropped_by_blacklist?.length || 0)
+          + (report.dropped_by_regex?.length || 0),
+        unclassified: report.unclassified?.length || 0,
+      };
+      this.renderFilterReport(report);
+    }
+
+    renderFilterReport(report) {
+      if (!this.reportBody) return;
+      this.reportBody.textContent = "";
+      const section = (text, className) => {
+        const bar = document.createElement("div");
+        bar.className = `tk-dtb-report-section ${className || ""}`.trim();
+        bar.textContent = text;
+        return bar;
+      };
+      const makeRow = (label, tags, className, toggleTarget) => {
+        if (!Array.isArray(tags) || !tags.length) return null;
+        const row = document.createElement("div");
+        row.className = `tk-dtb-report-row ${className || ""}`.trim();
+        const name = document.createElement("span");
+        name.className = "tk-dtb-report-cat";
+        name.textContent = label;
+        if (toggleTarget) {
+          name.title = `点击开/关「${toggleTarget}」这一类`;
+          name.addEventListener("click", (event) => {
+            event.stopPropagation();
+            this.toggleCategoryFromReport(toggleTarget);
+          });
+        }
+        const words = document.createElement("span");
+        words.className = "tk-dtb-report-words";
+        words.textContent = tags.join(", ");
+        row.append(name, words);
+        return row;
+      };
+
+      if (report.auto_classify === false) {
+        const warn = document.createElement("div");
+        warn.className = "tk-dtb-report-warn";
+        warn.textContent = "⚠️ 未启用自动分类：旧 12 类全关时整段原样输出，不会过滤任何词。至少要留一个旧类开着。";
+        this.reportBody.append(warn);
+      }
+
+      const keptEntries = Object.entries(report.kept || {}).filter(([, v]) => v?.length);
+      if (keptEntries.length) {
+        this.reportBody.append(section(`✅ 保留 ${report.counts?.kept ?? ""}`, "is-kept"));
+        for (const [category, tags] of keptEntries) {
+          const row = makeRow(category, tags, "is-kept", category);
+          if (row) this.reportBody.append(row);
+        }
+      }
+
+      const droppedEntries = Object.entries(report.dropped_by_category || {})
+        .filter(([, v]) => v?.length);
+      const otherDropped = (report.dropped_by_blacklist?.length || 0)
+        || (report.dropped_by_regex?.length || 0);
+      if (droppedEntries.length || otherDropped) {
+        this.reportBody.append(section(`❌ 被排除 ${report.counts?.dropped ?? ""}`, "is-dropped"));
+        for (const [category, tags] of droppedEntries) {
+          const row = makeRow(`${category}（类别关闭）`, tags, "is-dropped", category);
+          if (row) this.reportBody.append(row);
+        }
+        const black = makeRow("tag_blacklist 命中", report.dropped_by_blacklist, "is-dropped");
+        if (black) this.reportBody.append(black);
+        const regex = makeRow("regex_blacklist 命中", report.dropped_by_regex, "is-dropped");
+        if (regex) this.reportBody.append(regex);
+      }
+
+      if (report.unclassified?.length) {
+        this.reportBody.append(section(`⚠️ 未归类 ${report.counts?.unclassified ?? ""}`, "is-unknown"));
+        const row = makeRow("原样进自然语言", report.unclassified, "is-unknown");
+        if (row) this.reportBody.append(row);
+      }
+
+      if (!this.reportBody.childNodes.length) {
+        const empty = document.createElement("div");
+        empty.className = "tk-dtb-report-empty";
+        empty.textContent = "本次执行没有被过滤或未归类的词。";
+        this.reportBody.append(empty);
       }
     }
 

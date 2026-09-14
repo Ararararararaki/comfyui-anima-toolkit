@@ -73,23 +73,20 @@ class AnimaTKDanbooruTagGetter:
     # 约定：``off`` 列出要关闭的分类，``only`` 表示"只开这些，其余全关"。
     # 预设只改开关状态，不引入任何隐藏状态（工作流保存后即固化为普通开关值）。
     PRESET_NONE = "自定义（不用预设）"
+    # ⚠️ 内置场景预设已按用户要求（2026-09-14）**全部移除**：用户要的是
+    # "预设都归我自己管、默认预设也要能删"。现在 PRESETS 只剩"不用预设"，
+    # 其余一律走自定义预设库（data/tag_presets.json，面板上可保存 / 可删除）。
+    #
+    # 旧工作流里 widgets_values 可能还存着已删除的内置预设名（例如"换装（再剥离服饰）"）：
+    # preset 控件是 STRING 而不是 COMBO，所以不会报 "Value not in list"；
+    # _apply_preset 查内置查不到、查自定义也查不到 → spec 为空 → 不覆盖任何开关，
+    # 等价于"不用预设"，安全。
+    #
+    # 被移除的 6 条规则原文备份在
+    # docs/HANDOFF-2026-09-14-二采CN升级与ACN接入.md（要恢复的话从那里抄回来，
+    # 或者直接在面板上用自己的开关状态存一个自定义预设）。
     PRESETS = {
         PRESET_NONE: {},
-        "换角色（剥离身份/版权/画师）": {
-            "off": ("角色身份词", "作品版权词", "画师词"),
-        },
-        "保特征换角色（留发色瞳色/亚人特征）": {
-            "off": ("角色身份词", "作品版权词", "画师词", "角色部位词", "性征部位词"),
-        },
-        "换装（再剥离服饰）": {
-            "off": ("角色身份词", "作品版权词", "画师词", "服饰词"),
-        },
-        "仅保留骨架（动作/表情/镜头/背景）": {
-            "only": ("人物对象词", "动作词", "角色表情词", "镜头词", "背景词"),
-        },
-        "清除干扰（审查/水印/质量元）": {
-            "off": ("审查遮挡词", "文字水印词", "质量元词"),
-        },
     }
 
 
@@ -531,7 +528,14 @@ class AnimaTKDanbooruTagGetter:
     # 后端也不再读它们的值 —— 与 `natural_mode` 那三个遗留控件同一种处理方式。
 
     @classmethod
-    def _classify_prompt(cls, value, category_flags, regex_pattern, exact_blacklist):
+    def _classify_prompt(cls, value, category_flags, regex_pattern, exact_blacklist,
+                         report=None):
+        """把提示词分类成 20 个桶。
+
+        ``report`` 是**可选的诊断输出**（前端底栏用）：传入一个 dict 时，会在每个丢弃点
+        记下"哪个词因为什么被丢掉"—— 类别开关关闭 / tag_blacklist 命中 / 正则命中 /
+        未归类。不传就完全是原来的行为，零开销、零行为变化。
+        """
         """将单一 Prompt 拆成已知 Tag 分类和未知自然语言，保持段落结构。"""
         # 仅勾选“未归类词”时沿用旧工作流语义：整段输入都视为自然语言，
         # 避免升级后旧节点突然丢掉已知 Tag；勾选任一具体分类才启用自动分类。
@@ -545,10 +549,16 @@ class AnimaTKDanbooruTagGetter:
             name for name in cls.CATEGORY_NAMES[:LEGACY_CATEGORY_COUNT]
             if name != "未归类词"
         ]
-        if not any(category_flags.get(name, False) for name in legacy_active):
+        auto_classify = any(category_flags.get(name, False) for name in legacy_active)
+        if report is not None:
+            report["auto_classify"] = auto_classify
+        if not auto_classify:
             # 自然语言一律原样保留（用户 2026-09-13 要求去掉「保留 / 过滤」这套选择）：
             # 旧版的过滤会拿标签用的 regex_blacklist 去删自然语言句子，句子含
             # hair / background 就整段消失，是「下游提示词为空」的根因。
+            #
+            # ⚠️ 这个分支同时意味着：**把旧 12 类全关掉时不会做任何分类**，整段原样输出。
+            # 用户实测反馈过这个反直觉点（"全关 = 全过滤"是误解），底栏会显式提示。
             return [], str(value or "").strip()
         buckets = {category: [] for category in cls.CATEGORY_NAMES}
         natural_paragraphs = []
@@ -564,15 +574,26 @@ class AnimaTKDanbooruTagGetter:
                         # 它们是结构标记而非内容，不应成为自然语言输出。
                         continue
                     lookup_keys = cls._prompt_tag_keys(piece)
-                    if any(key in exact_blacklist for key in lookup_keys) or (regex_pattern is not None and regex_pattern.search(piece)):
+                    # 诊断留痕：拆开原来的合并判断，才能区分"被黑名单丢"与"被正则丢"
+                    if any(key in exact_blacklist for key in lookup_keys):
+                        if report is not None:
+                            report["dropped_by_blacklist"].append(piece)
+                        continue
+                    if regex_pattern is not None and regex_pattern.search(piece):
+                        if report is not None:
+                            report["dropped_by_regex"].append(piece)
                         continue
                     # 分类查表只做一次（主题剔除移除后不再需要同时取语义组）
                     category = cls._lookup_tag(piece)[0]
                     if category in CATEGORY_NAME_SET:
                         if category_flags.get(category, False):
                             buckets[category].append(piece)
+                        elif report is not None:
+                            report["dropped_by_category"].setdefault(category, []).append(piece)
                     else:
                         unknown.append(piece)
+                        if report is not None:
+                            report["unclassified"].append(piece)
                 if unknown:
                     unknown_lines.append(", ".join(unknown))
             if unknown_lines:
@@ -586,8 +607,56 @@ class AnimaTKDanbooruTagGetter:
                 if key not in seen:
                     seen.add(key)
                     selected.append(cls._apply_category_weight(tag, category, category_flags))
+        if report is not None:
+            # 保留的词按类别记一份（底栏"✅ 保留"栏直接用它，不必再解析输出文本）
+            report["kept"] = {category: tags for category, tags in buckets.items() if tags}
         natural = "\n\n".join(natural_paragraphs)
         return selected, natural
+
+    # ── 过滤诊断报告（前端底栏用）──
+
+    @classmethod
+    def _new_report(cls):
+        """底栏报告的骨架：每个丢弃点一个桶，键名与前端渲染一一对应。"""
+        return {
+            "auto_classify": True,
+            "kept": {},                  # {类别: [词]}
+            "dropped_by_category": {},   # {类别: [词]} —— 类别开关关闭
+            "dropped_by_blacklist": [],  # tag_blacklist 精确命中
+            "dropped_by_regex": [],      # regex_blacklist 正则命中
+            "dropped_by_dedup": [],      # 重复词
+            "unclassified": [],          # 索引里查不到 → 原样进自然语言
+            "natural_language": "",      # 最终原样输出的自然语言段
+        }
+
+    #: 报告里每个列表最多带这么多词，避免 ui 数据把执行历史撑大
+    REPORT_ITEM_LIMIT = 40
+
+    @classmethod
+    def _finalise_report(cls, report):
+        """裁剪长度并补统计数字，供前端底栏直接渲染。"""
+        def clip(items):
+            return list(items or [])[:cls.REPORT_ITEM_LIMIT]
+
+        trimmed = {
+            "auto_classify": bool(report.get("auto_classify", True)),
+            "kept": {k: clip(v) for k, v in (report.get("kept") or {}).items()},
+            "dropped_by_category": {k: clip(v) for k, v in
+                                    (report.get("dropped_by_category") or {}).items()},
+            "dropped_by_blacklist": clip(report.get("dropped_by_blacklist")),
+            "dropped_by_regex": clip(report.get("dropped_by_regex")),
+            "dropped_by_dedup": clip(report.get("dropped_by_dedup")),
+            "unclassified": clip(report.get("unclassified")),
+            "natural_language": str(report.get("natural_language") or "")[:2000],
+        }
+        trimmed["counts"] = {
+            "kept": sum(len(v) for v in trimmed["kept"].values()),
+            "dropped": (sum(len(v) for v in trimmed["dropped_by_category"].values())
+                        + len(trimmed["dropped_by_blacklist"])
+                        + len(trimmed["dropped_by_regex"])),
+            "unclassified": len(trimmed["unclassified"]),
+        }
+        return trimmed
 
     @staticmethod
     @functools.lru_cache(maxsize=64)
@@ -692,6 +761,7 @@ class AnimaTKDanbooruTagGetter:
         category_flags = self._apply_preset(preset or self.PRESET_NONE, category_flags)
         selected_tags = []
         bundle_tags = []
+        report = self._new_report()
         if not isinstance(tag_bundle, dict):
             # 单输入模式：没有结构化分类包时，直接把 Prompt 中的已知 Danbooru
             # Tag 重新分类，未识别段落作为自然语言原样输出。
@@ -700,11 +770,14 @@ class AnimaTKDanbooruTagGetter:
                 category_flags,
                 regex_pattern,
                 exact_blacklist,
+                report,
             )
             tag_text = ", ".join(selected_tags)
             if natural:
                 tag_text = f"{tag_text}\n\n{natural}" if tag_text else natural
-            return (tag_text,)
+            report["natural_language"] = natural
+            return {"ui": {"tk_filter_report": self._finalise_report(report)},
+                    "result": (tag_text,)}
         else:
             result = []
             seen = set()
@@ -714,16 +787,21 @@ class AnimaTKDanbooruTagGetter:
                 for tag in self._iter_category_tags(category_value) or ():
                     bundle_tags.append(tag)
                     if not category_flags.get(category, False):
+                        report["dropped_by_category"].setdefault(category, []).append(tag)
                         continue
                     if tag.casefold() in exact_blacklist:
+                        report["dropped_by_blacklist"].append(tag)
                         continue
                     if regex_pattern is not None and regex_pattern.search(tag):
+                        report["dropped_by_regex"].append(tag)
                         continue
                     dedupe_key = tag.casefold()
                     if dedupe_key in seen:
+                        report["dropped_by_dedup"].append(tag)
                         continue
                     seen.add(dedupe_key)
                     result.append((tag, category))
+                    report["kept"].setdefault(category, []).append(tag)
             # 保留未加权原文给双输入去重逻辑使用，避免权重包裹后无法识别 ALL_TAGS 中的前置 Tag。
             selected_tags = [tag for tag, _category in result]
             tag_text = ", ".join(

@@ -25,7 +25,9 @@ SCREENSHOT = Path(r"C:\Users\Toki\AppData\Local\Temp\tk-danbooru-getter-ui.png")
 WIDGET = Path(__file__).resolve().parents[2] / "web" / "js" / "anima_danbooru_tag_getter_widget.js"
 
 CATEGORY_COUNT = 20
-PRESET_OPTIONS = 6          # 自定义 + 5 个场景预设
+# 内置场景预设已按用户要求（2026-09-14）全部移除 → 下拉只剩「自定义（不用预设）」。
+# 用户自己保存的预设由 /anima/tag_presets 动态补进下拉，不在这条静态计数里。
+PRESET_OPTIONS = 1
 FILTER_FIELDS = 3           # 正则排除 / 精准排除 / 自定义剔除
 BATCH_ACTIONS = ["全开", "全关", "反选", "权重归 1"]
 NODE_TYPE = "AnimaTKDanbooruTagGetter"

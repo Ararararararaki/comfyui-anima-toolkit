@@ -12,6 +12,23 @@ from anima_danbooru_tag_getter import AnimaTKDanbooruTagGetter  # noqa: E402
 from anima_tag_taxonomy import LEGACY_CATEGORY_COUNT  # noqa: E402
 
 
+# `get_tags` 现在返回 ``{"ui": {"tk_filter_report": …}, "result": (text,)}`` —— ui 通道是
+# ComfyUI 把数据回传前端（Tag Getter 的「过滤诊断」底栏）的**唯一**方式。
+# 本文件的断言关注的是**过滤行为**而非返回容器，所以在测试侧统一退回 ``(text,)`` 形状；
+# 新形状由 `test_get_tags_exposes_ui_filter_report` 单独锁定。
+_RAW_GET_TAGS = AnimaTKDanbooruTagGetter.get_tags
+
+
+def _get_tags_as_tuple(self, *args, **kwargs):
+    result = _RAW_GET_TAGS(self, *args, **kwargs)
+    if isinstance(result, dict):
+        return tuple(result.get("result", ("",)))
+    return result
+
+
+AnimaTKDanbooruTagGetter.get_tags = _get_tags_as_tuple
+
+
 class FakeTaxonomy:
     """测试替身：只提供 {键: 分类名} 查表，避免单测加载 9.4MB 真实索引。"""
 
@@ -379,11 +396,18 @@ def test_invalid_bundle_and_non_string_category_do_not_raise():
 # ────────────── 场景预设（新增） ──────────────
 
 
-def test_preset_off_turns_off_named_categories_only():
-    preset = "换角色（剥离身份/版权/画师）"
+def test_preset_off_turns_off_named_categories_only(monkeypatch):
+    """off 规则：只关点名的分类，其余不动。
+
+    内置场景预设已按用户要求（2026-09-14）全部移除，所以这里用 monkeypatch
+    临时注入一条规则型预设 —— ``_apply_preset`` 的 off/only 展开仍是通用能力，
+    以后若恢复规则型预设，这条锁依然有效。
+    """
+    monkeypatch.setitem(AnimaTKDanbooruTagGetter.PRESETS, "临时换角色",
+                        {"off": ("角色身份词", "作品版权词", "画师词")})
     flags = AnimaTKDanbooruTagGetter._apply_preset(
-        preset, {"人物对象词": True, "角色身份词": True, "作品版权词": True,
-                 "画师词": True, "服饰词": True})
+        "临时换角色", {"人物对象词": True, "角色身份词": True, "作品版权词": True,
+                     "画师词": True, "服饰词": True})
     assert flags["角色身份词"] is False
     assert flags["作品版权词"] is False
     assert flags["画师词"] is False
@@ -391,18 +415,22 @@ def test_preset_off_turns_off_named_categories_only():
     assert flags["人物对象词"] is True
 
 
-def test_preset_only_turns_everything_else_off():
+def test_preset_only_turns_everything_else_off(monkeypatch):
+    monkeypatch.setitem(AnimaTKDanbooruTagGetter.PRESETS, "临时只留骨架",
+                        {"only": ("人物对象词", "动作词", "角色表情词", "镜头词", "背景词")})
     flags = AnimaTKDanbooruTagGetter._apply_preset(
-        "仅保留骨架（动作/表情/镜头/背景）",
+        "临时只留骨架",
         {category: True for category in AnimaTKDanbooruTagGetter.CATEGORY_NAMES})
     kept = {name for name, value in flags.items() if value is True}
     assert kept == {"人物对象词", "动作词", "角色表情词", "镜头词", "背景词"}
 
 
-def test_preset_keeps_weight_keys_intact():
+def test_preset_keeps_weight_keys_intact(monkeypatch):
     """预设展开时不能丢掉 `<分类>_weight`，否则所有分类权重会静默失效。"""
+    monkeypatch.setitem(AnimaTKDanbooruTagGetter.PRESETS, "临时清干扰",
+                        {"off": ("审查遮挡词", "文字水印词", "质量元词")})
     flags = AnimaTKDanbooruTagGetter._apply_preset(
-        "清除干扰（审查/水印/质量元）",
+        "临时清干扰",
         {"服饰词": True, "服饰词_weight": 1.35, "背景词_weight": 0.5})
     assert flags["服饰词_weight"] == 1.35
     assert flags["背景词_weight"] == 0.5
@@ -479,13 +507,39 @@ def test_custom_preset_rejects_builtin_and_blank_names(monkeypatch, tmp_path):
     preset_file = tmp_path / "tag_presets.json"
     monkeypatch.setattr(AnimaTKDanbooruTagGetter, "_preset_path",
                         classmethod(lambda cls: str(preset_file)))
+    # 内置预设已清空，用一条临时内置来锁住"不许与内置重名"这条规则
+    monkeypatch.setitem(AnimaTKDanbooruTagGetter.PRESETS, "某个内置预设", {"off": ()})
     node = AnimaTKDanbooruTagGetter
 
     assert node.save_custom_preset("", {})[0] is False
     assert node.save_custom_preset(node.PRESET_NONE, {})[0] is False
-    assert node.save_custom_preset("换角色（剥离身份/版权/画师）", {})[0] is False
+    assert node.save_custom_preset("某个内置预设", {})[0] is False
     assert node.save_custom_preset("x" * 200, {})[0] is False
     assert node.custom_preset_names() == []
+
+
+def test_builtin_presets_are_gone_by_user_request():
+    """用户要求（2026-09-14）：「默认预设也要可删除，都删了算了」。
+
+    现在预设只留 PRESET_NONE，其余全部由自定义预设库（data/tag_presets.json）承担 ——
+    面板上可保存、可删除。被移除的 6 条规则原文备份在
+    docs/HANDOFF-2026-09-14-二采CN升级与ACN接入.md。
+    """
+    assert set(AnimaTKDanbooruTagGetter.PRESETS) == {AnimaTKDanbooruTagGetter.PRESET_NONE}
+
+
+def test_legacy_builtin_preset_name_is_now_a_safe_noop(monkeypatch, tmp_path):
+    """旧工作流的 widgets_values 里可能还存着已删除的内置预设名（真实回归点）。
+
+    preset 控件是 STRING 而不是 COMBO，所以不会报 ``Value not in list``；
+    展开时内置/自定义都查不到 → 等价于"不用预设"，既不报错也不误改开关。
+    """
+    monkeypatch.setattr(AnimaTKDanbooruTagGetter, "_preset_path",
+                        classmethod(lambda cls: str(tmp_path / "tag_presets.json")))
+    flags = AnimaTKDanbooruTagGetter._apply_preset(
+        "换装（再剥离服饰）", {"角色身份词": True, "服饰词": True})
+    assert flags["角色身份词"] is True
+    assert flags["服饰词"] is True
 
 
 def test_unknown_preset_name_is_still_a_noop(monkeypatch, tmp_path):
@@ -764,6 +818,55 @@ def test_frontend_widget_fallback_tables_stay_in_sync_with_backend():
     assert "hideNativeWidget" in source, "自绘面板必须继续隐藏被替代的原生控件"
     assert "savePreset" in source and "/anima/tag_presets" in source, \
         "前端必须保留自定义预设的保存/删除入口"
+    # 回归锁（用户 2026-09-14 实报："保存的预设没有过滤效果"）：
+    # applyPreset 过去只查前端内置 PRESETS，自定义预设拿到空 spec → 20 个开关一个都不动。
+    assert "customPresets" in source, \
+        "前端 applyPreset 必须能从缓存还原自定义预设的开关与权重"
+    assert re.search(r"this\.customPresets\s*=", source), \
+        "前端必须缓存后端返回的自定义预设快照（refreshPresetOptions）"
+
+
+def test_get_tags_exposes_ui_filter_report():
+    """返回形状锁：``ui.tk_filter_report`` 必须存在 —— 前端「过滤诊断」底栏依赖它。
+
+    形状从 ``(text,)`` 变成 ``{"ui": …, "result": (text,)}`` 是**有意的**：
+    ui 通道是 ComfyUI 把执行期数据回传前端的唯一方式。本文件其余断言用薄壳退回
+    tuple 形状（见文件头 `_get_tags_as_tuple`），形状本身由这条锁住。
+    """
+    result = _RAW_GET_TAGS(
+        AnimaTKDanbooruTagGetter(),
+        "1girl, made_up_tag_xyz",
+        **{"人物对象词": True},
+    )
+    assert isinstance(result, dict), "get_tags 必须返回 dict 才能带 ui 通道"
+    assert isinstance(result["result"], tuple), "result 仍必须是 tuple 形状"
+    report = result["ui"]["tk_filter_report"]
+    for key in ("auto_classify", "kept", "dropped_by_category", "dropped_by_blacklist",
+                "dropped_by_regex", "dropped_by_dedup", "unclassified", "counts"):
+        assert key in report, f"诊断报告缺字段：{key}"
+    # 只锁容器类型，不断言具体词 —— 本文件多数测试用 FakeTaxonomy 替身，
+    # 这里刻意不依赖真实索引（9.4MB）的加载结果。
+    assert isinstance(report["unclassified"], list)
+    assert isinstance(report["dropped_by_blacklist"], list)
+    assert isinstance(report["kept"], dict)
+    assert isinstance(report["counts"], dict)
+
+
+def test_auto_classify_off_when_all_legacy_switches_are_off():
+    """回归锁：旧 12 类全关时**不启用自动分类**，底栏据此显示警告。
+
+    这是用户实测踩过的反直觉点：「全关」不等于「全过滤」。
+    """
+    result = _RAW_GET_TAGS(
+        AnimaTKDanbooruTagGetter(),
+        "1girl, made_up_xyz",
+        **{"画师词": False, "背景词": False, "人物对象词": False, "角色特征词": False,
+           "角色五官词": False, "角色部位词": False, "性征部位词": False, "服饰词": False,
+           "动作词": False, "角色表情词": False, "镜头词": False},
+    )
+    report = result["ui"]["tk_filter_report"]
+    assert report["auto_classify"] is False, "全关时必须报告未启用自动分类"
+    assert report["kept"] == {}, "未启用自动分类时不应保留任何分类词"
 
 
 if __name__ == "__main__":
