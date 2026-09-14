@@ -245,6 +245,31 @@ class AnimaTKAnimaFormatter:
         return split_prompt(value)
 
     @staticmethod
+    def _looks_like_tag_series(text):
+        """判断「空行之后的段」其实是不是**另一批标签**，而不是 LLM 写的句子。
+
+        共享契约（`anima_tag_taxonomy.split_prompt`）是「空行之前是标签、之后整段算自然语言」，
+        而自然语言**不参与 dedupe**。但用户常把两批不同来源的标签直接粘在一起
+        （两段都用逗号分隔），于是第二段整段不去重 —— 用户报「去重没效果」就是这个。
+
+        判据刻意保守（宁可把标签当自然语言，也不要把句子拆成标签）：
+          · 含句末标点（`. ! ? 。 ！ ？`）→ 判为自然语言；
+          · 出现「长片段」（>24 字符且含 ≥4 个空格）→ 判为自然语言；
+          · 其余情况且片段数 ≥3 → 判为标签串。
+        """
+        raw = str(text or "").strip()
+        if not raw:
+            return False
+        if re.search(r"[.!?。！？]", raw):
+            return False
+        parts = [part.strip() for part in re.split(r"[,，\n]", raw) if part.strip()]
+        if len(parts) < 3:
+            return False
+        if any(len(part) > 24 and part.count(" ") >= 4 for part in parts):
+            return False
+        return True
+
+    @staticmethod
     def _apply_natural_separator(text, mode):
         """把自然语言段的标点规范成逗号。
 
@@ -273,6 +298,16 @@ class AnimaTKAnimaFormatter:
                       max_lines="不限制", keep_natural_language=True, trailing_comma=False,
                       force_lowercase=True, natural_separator="", merge_natural=False):
         pieces, paragraphs = cls._split_segments(prompt)
+        # 空行之后若其实是「另一批标签」（用户常把两批标签直接粘一起），也并进 pieces
+        # 一起参与去重与重排；真正的自然语言段落保持原样（见 _looks_like_tag_series）。
+        natural_blocks = []
+        for block in paragraphs:
+            if cls._looks_like_tag_series(block):
+                pieces.extend(part.strip() for part in re.split(r"[,，\n]", block)
+                              if part.strip())
+            else:
+                natural_blocks.append(block)
+        paragraphs = natural_blocks
 
         buckets = {name: [] for name in cls.SECTION_ORDER + cls.GENERAL_ORDER}
         extras = []          # 索引未收录、也没有分类的片段
