@@ -15,7 +15,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _fake_package(name: str) -> types.ModuleType:
+def _fake_package(name: str, only_if_missing: bool = False) -> types.ModuleType:
+    """造一个「看着像包」的占位。
+
+    ``only_if_missing=True`` 时**真包已在就复用它** —— 这类 stub 只是为了「CI 净环境里
+    能 import」，本机装了真 torch/numpy/PIL 时顶掉它们纯属污染（同 session 里
+    需要真张量的测试会拿到假包而失败）。
+    """
+    existing = sys.modules.get(name)
+    if only_if_missing and existing is not None and getattr(existing, "__file__", None):
+        return existing
     m = types.ModuleType(name)
     m.__path__ = []          # 让 import 机制把它当包，子模块查找才不报错
     m.__package__ = name
@@ -23,14 +32,31 @@ def _fake_package(name: str) -> types.ModuleType:
     return m
 
 
-_fake_package("numpy")
-_pil = _fake_package("PIL")
-_pil_image = _fake_package("PIL.Image")
-# 让 `from PIL import Image` 能取到
-_pil.Image = _pil_image
-_torch = _fake_package("torch")
-# 空选择分支会走到 torch.zeros(...)（只为返回一个 IMAGE 占位），给个最小可用实现
-_torch.zeros = lambda *a, **k: "tensor"
+#: 本模块会顶掉这些模块名；跑完必须还回去，否则同 session 后面的测试会拿到假 torch/numpy。
+#: （踩过：`test_latent_switch` 需要真 torch 算张量，被这里的假 torch 顶掉后整片失败。）
+_STUBBED = ("numpy", "PIL", "PIL.Image", "torch", "requests", "server")
+_SAVED = {name: sys.modules.get(name) for name in _STUBBED}
+
+
+def teardown_module(module):  # noqa: ARG001  （pytest 钩子）
+    """还原被替换的模块，避免污染同 session 的其它测试。"""
+    for name, original in _SAVED.items():
+        if original is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = original
+
+
+_fake_package("numpy", only_if_missing=True)
+_pil = _fake_package("PIL", only_if_missing=True)
+if getattr(_pil, "__file__", None) is None:          # 只在确实是占位时挂子模块
+    _pil_image = _fake_package("PIL.Image")
+    # 让 `from PIL import Image` 能取到
+    _pil.Image = _pil_image
+_torch = _fake_package("torch", only_if_missing=True)
+if getattr(_torch, "__file__", None) is None:
+    # 空选择分支会走到 torch.zeros(...)（只为返回一个 IMAGE 占位），给个最小可用实现
+    _torch.zeros = lambda *a, **k: "tensor"
 
 _reqs = types.ModuleType("requests")
 class _AnyCallable:

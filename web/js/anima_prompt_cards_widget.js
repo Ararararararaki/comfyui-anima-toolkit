@@ -619,6 +619,72 @@
     return r;
   }
 
+  // ── 英文 tag → 中文：三级词典（都不联网）──
+  //   ① /anima/cards/zh_lookup —— 卡片联想用的中文别名表（十几万条，正向「标签 → 中文」，最全）
+  //   ② /anima/danbooru/translate —— 画廊词典 data/danbooru_tags_zh.json（40 万条，方向混合，补漏）
+  //   ③ 调用方再决定要不要机翻（/api/translate）
+  // 之前只有 ③，所以「画廊里明明有中文」的标签在卡片里翻不出来、必须先手动存进 prompt 库。
+  const ZH_LOOKUP_CACHE = new Map();
+
+  async function lookupZhDictionary(tags) {
+    const wanted = [];
+    const hit = {};
+    for (const raw of tags || []) {
+      const key = String(raw || "").trim().toLowerCase();
+      if (!key) continue;
+      if (ZH_LOOKUP_CACHE.has(key)) {
+        const cached = ZH_LOOKUP_CACHE.get(key);
+        if (cached) hit[key] = cached;
+        continue;
+      }
+      if (!wanted.includes(key)) wanted.push(key);
+    }
+    for (let i = 0; i < wanted.length; i += 160) {     // 两个后端都是 160 条/次上限
+      const chunk = wanted.slice(i, i + 160);
+      try {
+        const r = await postJson("/anima/cards/zh_lookup", { tags: chunk }, 30000);
+        const map = (r && r.translations) || {};
+        chunk.forEach((key) => {
+          const zh = String(map[key] || "").trim();
+          if (zh) hit[key] = zh;
+        });
+      } catch (error) {
+        /* 失败就靠第 ② 级 */
+      }
+      const missing = chunk.filter((key) => !hit[key]);
+      if (missing.length) {
+        try {
+          const r = await postJson("/anima/danbooru/translate", { tags: missing }, 30000);
+          const map = (r && r.translations) || {};
+          missing.forEach((key) => {
+            const zh = String(map[key] || "").trim();
+            if (zh) hit[key] = zh;
+          });
+        } catch (error) {
+          /* 两级都没命中 → 缓存空串，交给机翻档 */
+        }
+      }
+      chunk.forEach((key) => ZH_LOOKUP_CACHE.set(key, hit[key] || ""));
+    }
+    return hit;
+  }
+
+  /** 英文 tag → 中文：先查两级词典，都没有才机翻（返回 {zh, from}）。 */
+  async function translateEnToZhPreferred(text) {
+    const tag = String(text || "").trim();
+    if (!tag) return { zh: "", from: "none" };
+    const dict = await lookupZhDictionary([tag]);
+    const fromDict = dict[tag.toLowerCase()];
+    if (fromDict) return { zh: fromDict, from: "dictionary" };
+    try {
+      const zh = await translateAuto(tag);
+      if (zh && zh !== tag) return { zh, from: "machine" };
+    } catch (error) {
+      /* 机翻不可用就返回空，由调用方提示 */
+    }
+    return { zh: "", from: "none" };
+  }
+
   async function translateChineseToEnglish(text, source = "auto") {
     const result = await translateDetailed(text, source);
     const translated = result.translatedText || "";
@@ -4332,16 +4398,41 @@
       if (!card || !String(card.prompt || "").trim()) { this._flash("这张卡片没有可翻译的英文 tag"); return; }
       this._flash(`正在重译：${String(card.prompt).slice(0, 28)}…`, 30000);
       try {
-        const zh = await translateAuto(card.prompt);
-        if (!zh || zh === card.prompt) { this._flash("翻译服务没有返回新的中文注释"); return; }
+        const { zh, from } = await translateEnToZhPreferred(card.prompt);
+        if (!zh) { this._flash("词典没有该标签，机翻也没返回结果"); return; }
         card.notes = zh;
         card.updatedAt = Date.now();
         await this.putCard(card);
         this._renderCards();
-        this._flash("单卡重译完成");
+        this._flash(from === "dictionary" ? "重译完成（来自 D 站词典）" : "重译完成（机翻）");
       } catch (e) {
         this._flash("单卡重译失败：" + (e.message || e), 5000);
       }
+    }
+
+    /**
+     * 只用 D 站词典补中文（不机翻）：整批一次请求，秒完成。
+     * 这是「卡片中文自动跟画廊一致」的主入口。
+     */
+    async fillZhFromDictionary(scope = "missing") {
+      const all = this.cards.filter((p) => String(p.prompt || "").trim());
+      const todo = scope === "all" ? all : all.filter((p) => !String(p.notes || "").trim());
+      if (!todo.length) { this._flash("没有需要补中文的卡片"); return; }
+      this._flash(`正在从词典补全中文：${todo.length} 张…`, 60000);
+      const dict = await lookupZhDictionary(todo.map((p) => p.prompt));
+      let okN = 0;
+      for (const card of todo) {
+        const zh = dict[String(card.prompt || "").trim().toLowerCase()];
+        if (!zh || zh === card.notes) continue;
+        card.notes = zh;
+        card.updatedAt = Date.now();
+        await this.putCard(card);
+        okN++;
+      }
+      this._renderCards();
+      this._flash(okN
+        ? `词典补全完成：${okN} / ${todo.length} 张命中${okN < todo.length ? "（其余词典没收录，可改用机翻那档）" : ""}`
+        : `词典里没有这 ${todo.length} 张的中文（可改用机翻那档）`);
     }
 
     showBatchTranslateDialog() {
@@ -4352,8 +4443,8 @@
       overlay.className = "tk-cards-overlay";
       overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-batch-translate-box">
         <div class="tk-cards-overlay-head"><b>批量重译卡片</b><button type="button" class="tk-cards-btn" data-a="close">关闭</button></div>
-        <div class="tk-cards-settings-note">重译会覆盖现有中文注释。可只处理还没有注释的卡片。</div>
-        <label class="tk-cards-field"><span>处理范围</span><select data-f="scope"><option value="all">全部卡片（${all.length} 张，覆盖已有注释）</option><option value="missing">仅未翻译（${missing.length} 张）</option></select></label>
+        <div class="tk-cards-settings-note">中文优先取 <b>D 站词典</b>（画廊用的那份，秒回、不联网）；词典没收录的才走机翻（DeepLX → DashScope）。</div>
+        <label class="tk-cards-field"><span>处理范围</span><select data-f="scope"><option value="all">全部卡片（${all.length} 张，覆盖已有注释）</option><option value="missing">仅未翻译（${missing.length} 张）</option><option value="dictionary">只用 D 站词典（${missing.length} 张，秒完成、不机翻）</option></select></label>
         <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="start">开始重译</button></div>
       </div>`;
       document.body.appendChild(overlay);
@@ -4370,17 +4461,41 @@
     }
 
     async batchTranslate(scope = "all") {
+      if (scope === "dictionary") {           // 纯词典档：不碰机翻
+        await this.fillZhFromDictionary("missing");
+        return;
+      }
       const all = this.cards.filter((p) => String(p.prompt || "").trim());
       const todo = scope === "missing" ? all.filter((p) => !String(p.notes || "").trim()) : all;
       if (!todo.length) { this._flash("该范围没有可翻译的卡片"); return; }
       const total = todo.length;
       let cursor = 0, okN = 0, failN = 0;
-      this._flash(`批量重译中：0 / ${total}（DeepLX → DashScope 回退）`, 120000);
+
+      // 第一步：整批查 D 站词典（一次请求最多 160 条）—— 命中的直接用，不再送机翻
+      this._flash(`批量重译中：${total} 张，先查词典…`, 120000);
+      const dict = await lookupZhDictionary(todo.map((p) => p.prompt));
+      const remaining = [];
+      for (const card of todo) {
+        const zh = dict[String(card.prompt || "").trim().toLowerCase()];
+        if (zh) {
+          if (zh !== card.notes) {
+            card.notes = zh;
+            card.updatedAt = Date.now();
+            await this.putCard(card);
+          }
+          okN++;
+        } else {
+          remaining.push(card);
+        }
+      }
+      const dictHit = okN;
+
+      // 第二步：词典没收录的才机翻（原来的 3 并发逻辑保留）
       const workers = Array.from({ length: 3 }, async () => {
         while (true) {
           const index = cursor++;
-          if (index >= todo.length) return;
-          const card = todo[index];
+          if (index >= remaining.length) return;
+          const card = remaining[index];
           try {
             const zh = await translateAuto(card.prompt);
             if (!zh || zh === card.prompt) { failN++; continue; }
@@ -4388,13 +4503,14 @@
             card.updatedAt = Date.now();
             await this.putCard(card);
             okN++;
-            this._flash(`批量重译中：${okN + failN} / ${total}`, 120000);
+            this._flash(`批量重译中：词典 ${dictHit} + 机翻 ${okN - dictHit} / ${total}`, 120000);
           } catch (e) { failN++; }
         }
       });
       await Promise.all(workers);
       this._renderCards();
-      this._flash(`批量重译完成：成功 ${okN} / ${total}${failN ? `，失败或无新译文 ${failN}` : ""}`);
+      this._flash(`批量重译完成：词典命中 ${dictHit}，机翻成功 ${okN - dictHit}`
+        + `${failN ? `，未获得 ${failN}` : ""}（共 ${total} 张）`);
     }
 
     async exportCards() {

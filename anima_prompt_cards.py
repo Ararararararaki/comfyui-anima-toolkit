@@ -840,6 +840,85 @@ async def cards_autocomplete(request):
     return web.json_response({"results": results, "source": "dictionary"})
 
 
+_ZH_FALLBACK_INDEX = None      # {规范化英文 tag: 中文}，来自画廊那份 danbooru_tags_zh.json
+_ZH_FALLBACK_LOCK = threading.Lock()
+
+
+def _zh_fallback_index():
+    """画廊词典里「英文 tag → 中文」那一半的规范化索引（懒加载 + 缓存）。
+
+    为什么需要：`danbooru_tags_zh.json` 是**双向混合**的 40 万条，键既有中文也有英文；
+    而且英文键常写成下划线形式（`white_shirt`），画廊那个接口是拿原样字符串直接查的，
+    所以「white shirt」这种带空格的写法会漏掉 —— 这里统一规范化（下划线转空格）后再建索引。
+    """
+    global _ZH_FALLBACK_INDEX
+    with _ZH_FALLBACK_LOCK:
+        if _ZH_FALLBACK_INDEX is None:
+            index = {}
+            path = os.path.join(os.path.dirname(__file__), "data", "danbooru_tags_zh.json")
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    data = json.load(handle)
+                if isinstance(data, dict):
+                    for key, value in data.items():
+                        key_s, value_s = str(key), str(value or "")
+                        # 只收「英文键 → 中文值」方向；中文键那条是给反向搜索用的
+                        if not key_s.isascii() or not value_s or value_s.isascii():
+                            continue
+                        norm_key = _autocomplete_key(key_s)
+                        if norm_key and norm_key not in index:
+                            index[norm_key] = value_s
+            except (OSError, ValueError, TypeError) as error:
+                print(f"[TK Prompt Cards] 中文兜底词典加载失败：{error}")
+                index = {}
+            _ZH_FALLBACK_INDEX = index
+        return _ZH_FALLBACK_INDEX
+
+
+@PromptServer.instance.routes.post("/anima/cards/zh_lookup")
+async def cards_zh_lookup(request):
+    """英文 tag → 中文（批量）：查卡片联想用的中文别名表 + 画廊词典兜底。
+
+    两级都在后端做**规范化**匹配（小写、下划线转空格），O(1) 查表：
+      ① `_AUTOCOMPLETE_ZH_BY_TAG`（`anima_alias_index.json`，13 万条正向「标签 → 中文」）
+      ② `data/danbooru_tags_zh.json` 的英文→中文那一半（24 万条，补别名表没有的）
+    两级都没有的，由前端退回机翻 —— 这样「画廊里明明有中文」的标签不必先手动存进 prompt 库。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+    tags = body.get("tags") if isinstance(body, dict) else None
+    if not isinstance(tags, list):
+        return web.json_response({"error": "tags 必须是数组"}, status=400)
+
+    try:
+        # 幂等：预热线程没跑完时这里建一次（有缓存，重复调用不重建）
+        await asyncio.get_running_loop().run_in_executor(
+            None, _build_autocomplete_alias_tables)
+    except Exception as error:  # noqa: BLE001
+        print(f"[TK Prompt Cards] 中文别名表构建失败：{error}")
+
+    table = _AUTOCOMPLETE_ZH_BY_TAG or {}
+    fallback = {}
+    out = {}
+    for raw in tags[:400]:
+        key = _autocomplete_key(raw)
+        if not key:
+            continue
+        names = table.get(key)
+        if names:
+            out[str(raw)] = str(names[0])
+            continue
+        if not fallback:
+            fallback = _zh_fallback_index()
+        zh = fallback.get(key)
+        if zh:
+            out[str(raw)] = zh
+    return web.json_response({"translations": out, "count": len(out),
+                              "sources": {"alias": len(table)}})
+
+
 @PromptServer.instance.routes.post("/anima/cards")
 async def cards_save(request):
     """全量保存（v2 信封为唯一持久化格式；兼容旧格式 body 输入）。

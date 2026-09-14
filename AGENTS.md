@@ -1,7 +1,41 @@
 # AGENTS.md — TK Toolkit（ComfyUI-Anima-Batch-LoRA）
 
-> **接手第一步**：读 `docs/HANDOFF-2026-09-13-cards-autocomplete.md`（**当前版本 v2.12.0**：
-> ②区联想的中文角色名支持 —— 数据来源、匹配分级、Anima 括号转义、性能、踩过的坑）。
+## 📌 最新交接（先读这个）
+
+**`docs/HANDOFF-2026-09-13-会话交接-CN模块与MCP修复.md`** —— 2026-09-13 深夜会话交接，含：
+Anima **姿态控制（CN Pose）**实测结论与完整工作流、Tag Getter 自然语言模块移除、前后端冗余收敛与面板重做、
+MCP 抓取排障（DSH 注入的 `NO_PROXY` 打死 httpx）、自建 uia-mcp、LLM system prompt 更新版。
+
+⚠️ 该轮改动已随 **2.13.0** 一起发布（2026-09-14）；Tag Getter 的后续改造（自定义预设 / 默认关闭
+负面词类 / 移除主题剔除）与 **TK Latent 选择/合成**、Prompt Cards 词典优先见
+`docs/HANDOFF-2026-09-13-2.13.0-过滤与扩写.md` 的 §12–§16。
+
+## ⛔ 加任何节点控件之前，先跑这两条（2026-09-13 血泪教训）
+
+```bash
+python -X utf8 .scratch/exhaustive_compat_check.py   # 读用户全部工作流，模拟 ComfyUI 填充规则
+python -X utf8 .scratch/check_widget_safety.py       # 检查 COMBO / FLOAT 的空值安全性
+```
+
+10 秒跑完，能拦住两类会让**用户重启后直接报错**的错误：
+
+1. **ComfyUI 给旧工作流缺的控件补的是空字符串 `''`，不是 `default`。**
+   - `COMBO` → `''` 不在选项列表 → `Value not in list` / "部分输入值不适用于该节点"，
+     整个节点 `Output will be ignored`
+   - `FLOAT`/`INT` → `float('')` 抛异常 → 同样报错
+   - `BOOLEAN` → 退化成 `false`（"新增分类默认开"的设计会静默失效）
+   - **对策**：COMBO 的选项元组必须以 `""` 开头，或干脆用 STRING；
+     FLOAT 靠前端 `load()` 把空值补成默认值。
+2. **新增控件只能追加在 INPUT_TYPES 的最末尾。**
+   顺序就是 `widgets_values` 的位置契约，插在中间会让**它后面所有控件**整体错位、
+   旧值张冠李戴（实例：`natural_mode` 插错位置 → 10 个工作流实例同时
+   `AttributeError: 'int' object has no attribute 'startswith'`）。
+
+**在把东西交给用户之前，先跑一遍能跑的所有验证。用户不是测试机。**
+
+> **接手第一步**：读 `docs/HANDOFF-2026-09-13-2.13.0-过滤与扩写.md`（**最新**：自建标签索引
+> 脱离 Packer、20 分类 + 20 语义组、Anima 格式化、零 LLM 扩写、以及 5 个坑的完整记录）。
+> 上一版读 `docs/HANDOFF-2026-09-13-cards-autocomplete.md`（v2.12.0 ②区联想中文角色名）。
 > 上一版状态读 `docs/HANDOFF-2026-09-13-2.11.0.md`（版本谱系「为什么是 2.11 而不是 2.9」）。
 > 需要改动细节时再往下读 `docs/HANDOFF-2026-09-13.md`（画廊/outputs）与
 > `docs/HANDOFF-2026-09-13-engineering.md`（CI 连红 5 次排查 + Registry 全过程）。
@@ -238,6 +272,25 @@ python -X utf8 tools/registry_setup.py --token <PAT> --check   # 只体检
 按钮/面板图标一律用 `src/utils/icon.ts` 的 `icon('name', size, cls)` 内联 SVG
 （24×24、`stroke=currentColor`），**禁 emoji**；缺图标从 lucide 官方 path 补进 `PATHS`
 （保持 24×24），不引入新依赖。此规范适用于面板 `panel/src/`。
+
+### 7.1 前端设计参考（2026-09-13 用户指定）
+
+**<https://21st.dev/>** —— 用户指定的前端视觉参考站（现代 Web UI 组件 / 区块集合，
+shadcn 生态，每个组件带真实预览与动效）。
+
+做节点面板或 `panel/` 界面时**先看这里的同类组件**：它怎么排版、怎么留白、控件多密、
+hover / 选中 / 禁用怎么给反馈。**借的是设计判断，不是代码** —— 本项目面板是 Vite + TS，
+节点侧 widget 是原生 DOM + 内联 CSS，不引入 Tailwind / React。
+
+配套教训（2026-09-13 TK Danbooru Tag Getter 面板重做）：
+
+- **"能用"不等于"好看"**。控件能点、值能存，不代表面板不失焦 —— 20 个原生 checkbox
+  加 20 个数字输入框就是典型的"功能齐全但噪音爆炸"。
+- 自绘控件的颜色**必须跟随 ComfyUI 主题变量**（`--fg-color` / `--descrip-text` /
+  `--border-color` / `--comfy-input-bg` / `--p-primary-color`）；硬编码灰阶在浅色主题下不可读。
+- 减少"永远可见的强控件"：次要输入（如分类权重）平时压到低透明度，hover / 选中才完全显形。
+- 数据一律来自后端元数据（`INPUT_TYPES` 的 options 会原样经 `/object_info` 到达前端），
+  前端不要再抄一份表 —— 详见 `docs/HANDOFF-2026-09-13-2.13.0-过滤与扩写.md` §11。
 
 ## 8. 结构速查
 

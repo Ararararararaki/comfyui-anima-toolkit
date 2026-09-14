@@ -1,0 +1,233 @@
+{
+  "version": 1,
+  "note": "TK Toolkit 内置语义标签组：用于按『主题』剔除标签（与分类维度正交）。tags 精确匹配（下划线形式，大小写不敏感）；rules 是对下划线形式 tag 的正则。可自由增删改，也可以在 ComfyUI 节点里追加自定义组。",
+  "groups": [
+    {
+      "id": "furry",
+      "label": "兽人 / Furry",
+      "short": "兽人",
+      "desc": "拟人兽类角色。不含轻度兽耳娘（animal_ears 等归『亚人特征词』分类，不在本组）",
+      "tags": [
+        "furry", "anthro", "anthrofied", "kemono", "animal_humanoid", "scalie",
+        "feral", "taur", "semi-anthro", "humanoid", "beast", "beastman",
+        "monster_girl", "dragon", "dragon_girl", "werewolf", "lizardman"
+      ],
+      "rules": ["^[a-z_]+_humanoid$", "^[a-z_]+_taur$"]
+    },
+    {
+      "id": "big_breasts",
+      "label": "巨乳",
+      "short": "巨乳",
+      "desc": "夸张胸围及其衍生",
+      "tags": [
+        "large_breasts", "huge_breasts", "gigantic_breasts", "hyper_breasts",
+        "breast_expansion", "big_breasts", "breasts_out", "huge_nipples"
+      ],
+      "rules": ["^(large|huge|gigantic|hyper|massive)_breasts$"]
+    },
+    {
+      "id": "flat_chest",
+      "label": "贫乳 / 平胸",
+      "short": "贫乳",
+      "desc": "小胸围一类",
+      "tags": ["flat_chest", "small_breasts", "petite", "no_breasts"],
+      "rules": []
+    },
+    {
+      "id": "loli",
+      "label": "幼态 / 未成年体型",
+      "short": "幼态",
+      "desc": "幼态体型与年龄下修",
+      "tags": [
+        "loli", "child", "children", "toddler", "baby", "infant",
+        "aged_down", "underage", "young_girl", "little_girl", "chibi"
+      ],
+      "rules": []
+    },
+    {
+      "id": "guro",
+      "label": "猎奇 / 血腥",
+      "short": "猎奇",
+      "desc": "暴力、血腥、身体损毁",
+      "tags": [
+        "guro", "gore", "blood", "blood_on_face", "blood_on_clothes",
+        "amputation", "dismemberment", "necrophilia", "body_horror",
+        "death", "corpse", "injury", "wound", "bruise", "stab_wound",
+        "impaled", "torture", "cannibalism", "vore"
+      ],
+      "rules": ["^blood_on_[a-z_]+$"]
+    },
+    {
+      "id": "scat",
+      "label": "排泄 / 污物",
+      "short": "排泄",
+      "desc": "排泄物及相关",
+      "tags": [
+        "scat", "defecation", "feces", "urine", "urination", "peeing",
+        "fart", "vomit", "vomiting", "diaper", "enema", "golden_shower"
+      ],
+      "rules": []
+    },
+    {
+      "id": "ntr",
+      "label": "NTR / 寝取",
+      "short": "NTR",
+      "desc": "夺爱、出轨语境",
+      "tags": [
+        "netorare", "ntr", "cheating", "adultery", "cuckold", "netori",
+        "netorase", "infidelity", "affair"
+      ],
+      "rules": []
+    },
+    {
+      "id": "yaoi",
+      "label": "男同 / 男性向",
+      "short": "男同",
+      "desc": "男性角色为主的性爱内容",
+      "tags": [
+        "yaoi", "bara", "male_x_male", "2boys", "1boy", "male_focus",
+        "male_on_male", "shota", "futanari_on_male"
+      ],
+      "rules": []
+    },
+    {
+      "id": "yuri",
+      "label": "百合 / 女性向",
+      "short": "百合",
+      "desc": "女性角色之间的性爱内容",
+      "tags": ["yuri", "female_x_female", "2girls", "girl_on_girl", "tribadism"],
+      "rules": []
+    },
+    {
+      "id": "real_photo",
+      "label": "真人 / 写实",
+      "short": "真人",
+      "desc": "照片、写实渲染、cosplay 照",
+      "tags": [
+        "photo_(medium)", "realistic", "photorealistic", "real_life",
+        "cosplay", "3d", "3d_(artwork)", "render", "photograph",
+        "real_world_location"
+      ],
+      "rules": ["^photo_\\(.*\\)$", "^.*_\\(photograph\\)$"]
+    },
+    {
+      "id": "tentacles",
+      "label": "触手 / 异种",
+      "short": "触手",
+      "desc": "触手、怪物、异种交",
+      "tags": [
+        "tentacles", "tentacle_sex", "tentacle_pit", "monster",
+        "monster_sex", "orc", "orc_sex", "insect", "insect_sex",
+        "alien", "alien_sex", "bestiality", "zoophilia"
+      ],
+      "rules": ["^tentacle_[a-z_]+$"]
+    },
+    {
+      "id": "glasses",
+      "label": "眼镜 / 眼部遮挡",
+      "short": "眼镜",
+      "desc": "眼镜及相关眼部覆盖物",
+      "tags": [
+        "glasses", "eyewear", "sunglasses", "monocle", "goggles",
+        "eyepatch", "blindfold", "visor", "safety_glasses"
+      ],
+      "rules": ["^[a-z-]+-framed_eyewear$", "^[a-z-]+-tinted_eyewear$"]
+    },
+    {
+      "id": "tattoo",
+      "label": "纹身 / 穿孔",
+      "short": "纹身",
+      "desc": "纹身、身体穿孔、指甲彩绘",
+      "tags": [
+        "tattoo", "tattoos", "body_piercing", "piercing", "ear_piercing",
+        "navel_piercing", "nipple_piercing", "tongue_piercing",
+        "nail_polish", "fake_nails", "scar", "scars", "branding"
+      ],
+      "rules": ["^[a-z_]+_piercing$", "^[a-z_]+_tattoo$", "^tattoo_on_[a-z_]+$"]
+    },
+    {
+      "id": "muscular",
+      "label": "肌肉 / 壮硕",
+      "short": "肌肉",
+      "desc": "明显肌肉线条",
+      "tags": [
+        "muscular", "muscular_female", "muscular_male", "abs", "toned",
+        "six-pack", "bara", "buff", "ripped", "veiny"
+      ],
+      "rules": ["^muscular_[a-z_]+$"]
+    },
+    {
+      "id": "animal",
+      "label": "动物 / 宠物",
+      "short": "动物",
+      "desc": "画面中的真实动物",
+      "tags": [
+        "animal", "animal_focus", "cat", "dog", "bird", "fish",
+        "horse", "rabbit", "mouse", "bear", "wolf", "fox", "snake",
+        "pet", "cat_(animal)", "dog_(animal)"
+      ],
+      "rules": ["^[a-z_]+_\\(animal\\)$"]
+    },
+    {
+      "id": "weapon",
+      "label": "武器 / 手持道具",
+      "short": "武器",
+      "desc": "武器与显著手持物件",
+      "tags": [
+        "weapon", "sword", "knife", "gun", "handgun", "rifle", "spear",
+        "bow_(weapon)", "axe", "staff", "wand", "shield", "dagger",
+        "katana", "holding_sword", "holding_gun", "holding_weapon"
+      ],
+      "rules": ["^holding_(sword|gun|knife|weapon|spear|axe)$"]
+    },
+    {
+      "id": "multiple",
+      "label": "多人",
+      "short": "多人",
+      "desc": "画面中出现多个角色",
+      "tags": [
+        "2girls", "3girls", "4girls", "5girls", "6+girls",
+        "2boys", "3boys", "multiple_girls", "multiple_boys",
+        "multiple_others", "group", "crowd", "threesome", "foursome",
+        "orgy", "gangbang"
+      ],
+      "rules": ["^\\d+\\+?(girls|boys|others)$"]
+    },
+    {
+      "id": "faceless",
+      "label": "无脸 / 遮挡面部",
+      "short": "无脸",
+      "desc": "面部不可见或被打码",
+      "tags": [
+        "faceless", "faceless_male", "faceless_female", "head_out_of_frame",
+        "cropped_head", "no_face", "censored_face", "face_covered"
+      ],
+      "rules": ["^faceless_[a-z_]+$"]
+    },
+    {
+      "id": "complex_background",
+      "label": "复杂背景 / 场景",
+      "short": "复杂背景",
+      "desc": "带完整场景描写的背景（想要纯色/透明背景时剔除）",
+      "tags": [
+        "detailed_background", "scenery", "landscape", "cityscape",
+        "building", "outdoors", "indoors", "sky", "cloud", "tree",
+        "forest", "ocean", "mountain", "street", "room"
+      ],
+      "rules": ["^[a-z_]+_background$"]
+    },
+    {
+      "id": "text_censor",
+      "label": "文字 / 审查遮挡",
+      "short": "文字审查",
+      "desc": "与「文字水印词」「审查遮挡词」两个分类同源，做成组便于一键剔除",
+      "tags": [
+        "watermark", "signature", "artist_name", "english_text",
+        "japanese_text", "chinese_text", "speech_bubble", "thought_bubble",
+        "commentary", "censored", "mosaic_censoring", "bar_censor",
+        "convenient_censoring", "pixelated", "logo"
+      ],
+      "rules": ["^[a-z_]+_text$", "^[a-z_]+_logo$", "^censored_[a-z_]+$"]
+    }
+  ]
+}

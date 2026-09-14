@@ -1,6 +1,7 @@
-// TK Danbooru Tag Getter：用 ComfyUI 原生风格整理 12 个分类开关与独立权重。
+// TK Danbooru Tag Getter：用 ComfyUI 原生风格整理分类开关、场景预设与主题剔除。
 (function () {
   const NODE_NAME = "AnimaTKDanbooruTagGetter";
+  // 前 12 项 = 旧行为基线；后 8 项为新增，顺序必须与后端 CATEGORY_NAMES 一致。
   const CATEGORY_NAMES = [
     "画师词",
     "背景词",
@@ -14,7 +15,41 @@
     "角色表情词",
     "镜头词",
     "未归类词",
+    "角色身份词",
+    "作品版权词",
+    "发色发型词",
+    "亚人特征词",
+    "审查遮挡词",
+    "文字水印词",
+    "质量元词",
+    "物件道具词",
   ];
+  const LEGACY_CATEGORY_COUNT = 12;
+  const PRESET_NONE = "自定义（不用预设）";
+  // 新增分类里默认**关闭**的两类（负面词类）。与后端 DEFAULT_OFF_CATEGORIES 一致，
+  // 一致性由 tests/test_danbooru_tag_getter.py 的 fallback 锁保证。
+  const DEFAULT_OFF_CATEGORIES = ["审查遮挡词", "文字水印词"];
+  // 与后端 AnimaTKDanbooruTagGetter.PRESETS 对应：前端负责即时视觉反馈（开关同步切换），
+  // 后端负责最终正确性（即使前端没展开也按预设展开）。两处都展开，结果等价。
+  const PRESETS = {
+    [PRESET_NONE]: {},
+    "换角色（剥离身份/版权/画师）": {
+      off: ["角色身份词", "作品版权词", "画师词"],
+    },
+    "保特征换角色（留发色瞳色/亚人特征）": {
+      off: ["角色身份词", "作品版权词", "画师词", "角色部位词", "性征部位词"],
+    },
+    "换装（再剥离服饰）": {
+      off: ["角色身份词", "作品版权词", "画师词", "服饰词"],
+    },
+    "仅保留骨架（动作/表情/镜头/背景）": {
+      only: ["人物对象词", "动作词", "角色表情词", "镜头词", "背景词"],
+    },
+    "清除干扰（审查/水印/质量元）": {
+      off: ["审查遮挡词", "文字水印词", "质量元词"],
+    },
+  };
+
 
   function injectStyles() {
     const styleId = "tk-danbooru-tag-getter-style";
@@ -22,33 +57,65 @@
     const style = document.createElement("style");
     style.id = styleId;
     style.textContent = `
-      .tk-dtb-panel { box-sizing:border-box; width:100%; padding:3px 5px 4px; color:#b8b8b8; font:12px/1.25 Arial, sans-serif; }
+      .tk-dtb-panel { box-sizing:border-box; width:100%; max-height:100%; overflow-y:auto; padding:3px 5px 4px; color:#b8b8b8; font:12px/1.25 Arial, sans-serif; scrollbar-width:thin; }
       .tk-dtb-panel * { box-sizing:border-box; }
-      .tk-dtb-header { display:flex; align-items:center; justify-content:space-between; min-height:22px; padding:0 1px 3px; border-bottom:1px solid rgba(255,255,255,.10); }
+      .tk-dtb-header { display:flex; align-items:center; gap:8px; min-height:22px; padding:0 1px 3px; border-bottom:1px solid rgba(255,255,255,.10); }
       .tk-dtb-title { color:#bdbdbd; font-weight:normal; }
-      .tk-dtb-count { color:#858585; font-size:11px; font-variant-numeric:tabular-nums; }
+      .tk-dtb-count { margin-left:auto; color:#858585; font-size:11px; font-variant-numeric:tabular-nums; }
+      /* 批量操作：20 个开关手点太累，压成一行低对比文字按钮，hover 才显形 */
+      .tk-dtb-actions { display:flex; align-items:center; gap:2px; }
+      .tk-dtb-action { padding:1px 4px; color:#7d7d7d; font-size:10px; line-height:14px; border-radius:2px; cursor:pointer; user-select:none; white-space:nowrap; }
+      .tk-dtb-action:hover { color:#e1e1e1; background:rgba(255,255,255,.08); }
+      .tk-dtb-action:active { background:rgba(255,255,255,.15); }
       .tk-dtb-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:2px 5px; padding-top:4px; }
-      .tk-dtb-row { display:flex; align-items:center; min-width:0; min-height:22px; padding:2px 4px; border:1px solid transparent; border-radius:2px; background:rgba(0,0,0,.13); cursor:pointer; }
+      /* 三列固定：开关 / 分类名 / 权重。权重列定宽，20 行的权重框才右对齐成一列 */
+      .tk-dtb-row { display:grid; grid-template-columns:13px minmax(0,1fr) 40px; align-items:center; gap:5px; min-width:0; min-height:22px; padding:2px 4px; border:1px solid transparent; border-radius:2px; background:rgba(0,0,0,.13); cursor:pointer; }
       .tk-dtb-row:hover { background:rgba(255,255,255,.055); }
+      .tk-dtb-row:active { background:rgba(255,255,255,.10); }
       .tk-dtb-row.is-selected { color:#e1e1e1; border-color:rgba(255,255,255,.13); background:rgba(255,255,255,.08); }
-      .tk-dtb-toggle { width:12px; height:12px; margin:0 5px 0 0; flex:0 0 auto; accent-color:#bcbcbc; cursor:pointer; }
+      .tk-dtb-toggle { width:12px; height:12px; margin:0; accent-color:#bcbcbc; cursor:pointer; }
       .tk-dtb-label { min-width:0; overflow:hidden; color:#9f9f9f; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
       .tk-dtb-row.is-selected .tk-dtb-label { color:#dedede; }
-      .tk-dtb-weight-control { display:flex; align-items:center; gap:2px; flex:0 0 auto; margin-left:3px; color:#777; cursor:default; }
+      .tk-dtb-weight-control { display:flex; align-items:center; justify-content:flex-end; gap:2px; color:#777; cursor:default; }
       .tk-dtb-weight-prefix { font-size:10px; line-height:16px; }
-      .tk-dtb-weight-input { box-sizing:border-box; width:36px; height:17px; padding:1px 2px; color:#d7d7d7; background:#292929; border:1px solid #4a4a4a; border-radius:2px; outline:none; font:10px/1 Arial,sans-serif; text-align:right; }
+      .tk-dtb-weight-input { box-sizing:border-box; width:36px; height:17px; padding:1px 2px; color:#d7d7d7; background:#292929; border:1px solid #4a4a4a; border-radius:2px; outline:none; font:10px/1 Arial,sans-serif; text-align:right; font-variant-numeric:tabular-nums; }
       .tk-dtb-weight-input:focus { border-color:#999; }
+      /* 键盘可达性：上面把 outline 清掉了，这里给键盘焦点补回来 */
+      .tk-dtb-panel input:focus-visible, .tk-dtb-panel select:focus-visible, .tk-dtb-panel textarea:focus-visible { outline:1px solid #9a9a9a; outline-offset:0; }
       .tk-dtb-filters { margin-top:5px; padding-top:5px; border-top:1px solid rgba(255,255,255,.10); }
       .tk-dtb-filter-title { color:#bdbdbd; font-size:11px; }
       .tk-dtb-filter-row { display:flex; align-items:flex-start; gap:5px; margin-top:4px; }
+      .tk-dtb-filter-row .tk-dtb-action { margin-top:3px; }
       .tk-dtb-filter-label { flex:0 0 52px; padding-top:4px; color:#929292; font-size:10px; white-space:nowrap; }
       .tk-dtb-filter-input { min-width:0; width:100%; flex:1; padding:4px 5px; color:#dedede; background:#343434; border:1px solid #505050; border-radius:2px; outline:none; font:11px/1.35 Arial,sans-serif; resize:vertical; }
       .tk-dtb-filter-input:focus { border-color:#999; }
       .tk-dtb-filter-input::placeholder { color:#777; }
       textarea.tk-dtb-filter-input { min-height:39px; max-height:82px; }
-      .tk-dtb-natural-hint { margin-top:5px; padding-top:5px; border-top:1px solid rgba(255,255,255,.10); color:#858585; font-size:10px; }
-      .tk-dtb-natural-toggle { display:flex; align-items:center; gap:5px; margin-top:4px; color:#a5a5a5; font-size:10px; cursor:pointer; }
-      .tk-dtb-natural-toggle input { width:12px; height:12px; margin:0; accent-color:#bcbcbc; cursor:pointer; }
+      /* 场景预设 */
+      .tk-dtb-preset-row { display:flex; align-items:center; gap:5px; margin-top:5px; }
+      .tk-dtb-preset-label { flex:0 0 auto; color:#929292; font-size:10px; white-space:nowrap; }
+      .tk-dtb-preset { box-sizing:border-box; min-width:0; flex:1; height:20px; padding:0 4px; color:#d7d7d7; background:#292929; border:1px solid #4a4a4a; border-radius:2px; outline:none; font:11px/1 Arial,sans-serif; }
+      .tk-dtb-preset:focus { border-color:#999; }
+      /* 预设管理：命名输入 + 保存 / 删除 */
+      .tk-dtb-preset-manage { display:flex; align-items:center; gap:4px; margin-top:3px; }
+      .tk-dtb-preset-name { min-width:0; flex:1; height:20px; padding:0 5px; color:#d7d7d7; background:#292929; border:1px solid #4a4a4a; border-radius:2px; outline:none; font:11px/1 Arial,sans-serif; }
+      .tk-dtb-preset-name:focus { border-color:#999; }
+      .tk-dtb-preset-name::placeholder { color:#777; }
+      .tk-dtb-preset-hint { margin-top:3px; min-height:0; color:#8a8a8a; font-size:10px; line-height:1.35; }
+      .tk-dtb-preset-hint:empty { display:none; }
+      /* 主题剔除 chips */
+      .tk-dtb-section { margin-top:6px; padding-top:6px; border-top:1px solid rgba(255,255,255,.10); }
+      .tk-dtb-section-head { display:flex; align-items:center; gap:6px; margin-bottom:4px; }
+      .tk-dtb-section-title { color:#bdbdbd; font-size:11px; }
+      .tk-dtb-section-hint { margin-left:auto; color:#7d7d7d; font-size:10px; }
+      .tk-dtb-chips { display:flex; flex-wrap:wrap; gap:3px; }
+      .tk-dtb-chip { padding:2px 6px; color:#9f9f9f; background:rgba(0,0,0,.18); border:1px solid rgba(255,255,255,.10); border-radius:9px; font-size:10px; line-height:14px; cursor:pointer; user-select:none; white-space:nowrap; }
+      .tk-dtb-chip:hover { color:#dedede; background:rgba(255,255,255,.06); }
+      .tk-dtb-chip.is-on { color:#f2d2d2; background:rgba(186,72,72,.24); border-color:rgba(220,112,112,.48); }
+      .tk-dtb-chip.is-more { color:#8a8a8a; border-style:dashed; }
+      /* 新增分类与旧分类做视觉区分，避免误以为节点突然变复杂 */
+      .tk-dtb-row.is-new { background:rgba(255,255,255,.04); }
+      .tk-dtb-divider { grid-column:1 / -1; margin:3px 0 1px; padding-top:3px; border-top:1px solid rgba(255,255,255,.10); color:#7d7d7d; font-size:10px; }
     `;
     document.head.appendChild(style);
   }
@@ -61,6 +128,10 @@
       this.controls = new Map();
       this.filterControls = new Map();
       this.weightControls = new Map();
+      this.presetSelect = null;
+      this.presetNameInput = null;
+      this.presetStatus = null;
+      this.presetHint = null;
     }
 
     widgetFor(category) {
@@ -117,8 +188,11 @@
       if (typeof widget.callback === "function") widget.callback(widget.value);
       this.node.graph?.change();
       this.updateCount();
-      const row = this.controls.get(category)?.row;
-      row?.classList.toggle("is-selected", widget.value);
+      const control = this.controls.get(category);
+      // ⚠️ 必须同时同步复选框本身 —— 旧代码只改了整行样式，
+      // 于是"选了预设之后底下的开关看起来一个都没变"（值其实变了）。
+      if (control && control.toggle) control.toggle.checked = widget.value;
+      if (control && control.row) control.row.classList.toggle("is-selected", widget.value);
     }
 
     setFilterValue(name, value) {
@@ -160,18 +234,42 @@
       header.className = "tk-dtb-header";
       const title = document.createElement("span");
       title.className = "tk-dtb-title";
-      title.textContent = "选择分类";
+      title.textContent = "分类";
+      // 批量开关：20 个分类手点一遍太累，常用动作压成一行文字按钮
+      const actions = document.createElement("div");
+      actions.className = "tk-dtb-actions";
+      const makeAction = (labelText, hintText, handler) => {
+        const button = document.createElement("span");
+        button.className = "tk-dtb-action";
+        button.textContent = labelText;
+        button.title = hintText;
+        button.addEventListener("click", handler);
+        return button;
+      };
+      actions.append(
+        makeAction("全开", `打开全部 ${CATEGORY_NAMES.length} 个分类`, () => this.setAllCategories(true)),
+        makeAction("全关", `关闭全部 ${CATEGORY_NAMES.length} 个分类`, () => this.setAllCategories(false)),
+        makeAction("反选", "已开的关掉、未开的打开", () => this.invertCategories()),
+        makeAction("权重归 1", "把所有分类权重恢复成中性 1.0", () => this.resetWeights())
+      );
       this.count = document.createElement("span");
       this.count.className = "tk-dtb-count";
-      header.append(title, this.count);
+      header.append(title, actions, this.count);
 
       const grid = document.createElement("div");
       grid.className = "tk-dtb-grid";
-      CATEGORY_NAMES.forEach((category) => {
+      CATEGORY_NAMES.forEach((category, index) => {
         const widget = this.widgetFor(category);
         if (!widget) return;
+        if (index === LEGACY_CATEGORY_COUNT) {
+          // 视觉上把「新增 8 类」与旧 12 类分开，避免用户误以为节点逻辑变了
+          const divider = document.createElement("div");
+          divider.className = "tk-dtb-divider";
+          divider.textContent = "扩展分类（新增 · 默认开启）";
+          grid.appendChild(divider);
+        }
         const row = document.createElement("div");
-        row.className = "tk-dtb-row";
+        row.className = index >= LEGACY_CATEGORY_COUNT ? "tk-dtb-row is-new" : "tk-dtb-row";
         const toggle = document.createElement("input");
         toggle.className = "tk-dtb-toggle";
         toggle.type = "checkbox";
@@ -203,6 +301,12 @@
           weightInput.addEventListener("click", (event) => event.stopPropagation());
           weightInput.addEventListener("mousedown", (event) => event.stopPropagation());
           weightInput.addEventListener("change", () => this.setWeightValue(category, weightInput.value));
+          // 双击归 1.0：改过权重后想恢复中性值，不用手输
+          weightInput.addEventListener("dblclick", (event) => {
+            event.stopPropagation();
+            weightInput.value = "1";
+            this.setWeightValue(category, 1);
+          });
           weightInput.addEventListener("keydown", (event) => {
             if (event.key === "Enter") { event.preventDefault(); weightInput.blur(); }
           });
@@ -249,47 +353,283 @@
           field.spellcheck = false;
         }
         field.addEventListener("input", () => this.setFilterValue(name, field.value));
-        row.append(label, field);
+        const clear = document.createElement("span");
+        clear.className = "tk-dtb-action";
+        clear.textContent = "清空";
+        clear.title = `清空「${labelText}」`;
+        clear.addEventListener("click", (event) => {
+          event.stopPropagation();
+          field.value = "";
+          this.setFilterValue(name, "");
+        });
+        row.append(label, field, clear);
         filters.appendChild(row);
         this.hideNativeWidget(widget);
         this.filterControls.set(name, field);
       };
       makeFilter("regex_blacklist", "正则排除", "censor|watermark", false);
       makeFilter("tag_blacklist", "精准排除", "每行一个 Tag，也可用逗号分隔", true);
-      const makeNaturalToggle = (name, labelText) => {
-        const widget = this.widgetFor(name);
-        if (!widget) return;
-        const label = document.createElement("label");
-        label.className = "tk-dtb-natural-toggle";
-        const toggle = document.createElement("input");
-        toggle.type = "checkbox";
-        toggle.checked = widget.value !== false;
-        toggle.setAttribute("aria-label", labelText);
-        toggle.addEventListener("change", () => this.setWidgetValue(name, toggle.checked));
-        const text = document.createElement("span");
-        text.textContent = labelText;
-        label.append(toggle, text);
-        filters.appendChild(label);
-        this.hideNativeWidget(widget);
-        this.filterControls.set(name, toggle);
-      };
-      const naturalWidget = this.widgetFor("natural_language");
-      if (naturalWidget) {
-        this.hideNativeWidget(naturalWidget);
-        const hint = document.createElement("div");
-        hint.className = "tk-dtb-natural-hint";
-        hint.textContent = "统一输入：普通 Prompt / Packer ALL_TAGS → natural_language；勾选具体分类后自动识别已知 Tag，未知句子由“保留自然语言”控制。tag_bundle 仅用于兼容已分类包。";
-        filters.appendChild(hint);
-      }
-      makeNaturalToggle("include_natural_language", "保留自然语言");
-      makeNaturalToggle("filter_natural_language", "过滤自然语言");
 
-      panel.append(header, grid, filters);
+      // 自然语言：**整块 UI 已按用户要求移除**（2026-09-13）。
+      // 历史包袱：原先「保留自然语言 / 过滤自然语言」两个开关语义互相打架
+      // （都开会拿标签用的 regex_blacklist 去删自然语言句子，句子含 hair /
+      // background 就整段消失 → 下游提示词为空），随后又叠了一个下拉来"收敛"，
+      // 等于同一件事摆三个控件。现在后端固定为「保留（不过滤）」。
+      // 这三个控件仍在 INPUT_TYPES 里占位（删掉会让旧工作流 widgets_values
+      // 错位/超长，部分前端版本会直接抛异常），所以必须把它们藏起来，
+      // 否则会以原生控件形态冒出来。
+      for (const name of ["natural_mode", "include_natural_language", "filter_natural_language"]) {
+        this.hideNativeWidget(this.widgetFor(name));
+      }
+
+      // 场景预设放在最上面：一键切换整套开关，改动后各开关会同步显示，不会"黑箱"
+      const presetRow = document.createElement("div");
+      presetRow.className = "tk-dtb-preset-row";
+      const presetLabel = document.createElement("span");
+      presetLabel.className = "tk-dtb-preset-label";
+      presetLabel.textContent = "场景预设";
+      const presetSelect = document.createElement("select");
+      presetSelect.className = "tk-dtb-preset";
+      const presetWidget = this.widgetFor("preset");
+      if (presetWidget) {
+        const values = Array.isArray(presetWidget.options?.values)
+          ? presetWidget.options.values
+          : Object.keys(PRESETS);
+        values.forEach((item) => {
+          const option = document.createElement("option");
+          option.value = String(item);
+          option.textContent = String(item);
+          presetSelect.appendChild(option);
+        });
+        presetSelect.value = String(presetWidget.value || PRESET_NONE);
+        presetSelect.addEventListener("change", () => this.applyPreset(presetSelect.value));
+        this.hideNativeWidget(presetWidget);
+        this.presetSelect = presetSelect;
+      }
+      presetRow.append(presetLabel, presetSelect);
+
+      // 预设管理：保存当前开关快照为命名预设 / 删除自定义预设（存在后端 data/tag_presets.json）
+      const presetManage = document.createElement("div");
+      presetManage.className = "tk-dtb-preset-manage";
+      const presetNameInput = document.createElement("input");
+      presetNameInput.className = "tk-dtb-preset-name";
+      presetNameInput.type = "text";
+      presetNameInput.placeholder = "预设名…";
+      presetNameInput.spellcheck = false;
+      presetNameInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") { event.preventDefault(); this.savePreset(); }
+        event.stopPropagation();
+      });
+      this.presetNameInput = presetNameInput;
+      const saveButton = document.createElement("span");
+      saveButton.className = "tk-dtb-action";
+      saveButton.textContent = "保存";
+      saveButton.title = "把当前 20 个开关 + 权重存成一个命名预设";
+      saveButton.addEventListener("click", () => this.savePreset());
+      const deleteButton = document.createElement("span");
+      deleteButton.className = "tk-dtb-action";
+      deleteButton.textContent = "删除";
+      deleteButton.title = "删除下拉里当前选中的自定义预设";
+      deleteButton.addEventListener("click", () => this.deletePreset());
+      presetManage.append(presetNameInput, saveButton, deleteButton);
+
+      const presetStatus = document.createElement("div");
+      presetStatus.className = "tk-dtb-preset-hint";
+      this.presetStatus = presetStatus;
+
+      // 预设影响说明：选了预设后直接告诉用户它动了哪些分类，不用去逐个比对开关
+      const presetHint = document.createElement("div");
+      presetHint.className = "tk-dtb-preset-hint";
+      this.presetHint = presetHint;
+
+      // 主题剔除：**整块已按用户要求移除**（2026-09-14）。
+      // 两个控件（exclude_groups / exclude_groups_custom）仍在 INPUT_TYPES 里占位
+      // （删掉会让旧工作流 widgets_values 错位），所以必须藏起来，否则会冒出来。
+      this.hideNativeWidget(this.widgetFor("exclude_groups"));
+      this.hideNativeWidget(this.widgetFor("exclude_groups_custom"));
+
+      panel.append(header, presetRow, presetManage, presetStatus, presetHint, grid, filters);
+      this.refreshPresetOptions();
       this.updateCount();
       return panel;
     }
 
+    // ── 批量操作（面板顶栏那四个文字按钮） ──
+
+    setAllCategories(value) {
+      CATEGORY_NAMES.forEach((category) => this.setWidgetValue(category, value));
+      this.node.graph?.change();
+    }
+
+    invertCategories() {
+      CATEGORY_NAMES.forEach((category) => {
+        this.setWidgetValue(category, !this.widgetFor(category)?.value);
+      });
+      this.node.graph?.change();
+    }
+
+    resetWeights() {
+      CATEGORY_NAMES.forEach((category) => {
+        if (this.weightWidgetFor(category)) this.setWeightValue(category, 1);
+      });
+    }
+
+    // ── 场景预设 ──
+
+    applyPreset(name) {
+      const spec = PRESETS[name] || {};
+      CATEGORY_NAMES.forEach((category) => {
+        let next = Boolean(this.widgetFor(category)?.value);
+        if (spec.only) next = spec.only.includes(category);
+        if (spec.off && spec.off.includes(category)) next = false;
+        this.setWidgetValue(category, next);
+      });
+      const widget = this.widgetFor("preset");
+      if (widget) {
+        widget.value = name;
+        if (typeof widget.callback === "function") widget.callback(name);
+      }
+      this.node.graph?.change();
+      this.updateCount();
+      this.updatePresetHint(name);
+    }
+
+    updatePresetHint(name) {
+      if (!this.presetHint) return;
+      const spec = PRESETS[name] || {};
+      if (spec.only) {
+        this.presetHint.textContent = `只开：${spec.only.join("、")}；其余全部关闭`;
+      } else if (spec.off && spec.off.length) {
+        this.presetHint.textContent = `已关闭：${spec.off.join("、")}`;
+      } else {
+        this.presetHint.textContent = "";
+      }
+    }
+
+    // ── 自定义预设（保存 / 删除当前开关快照）──
+
+    /** 当前 20 类的开关状态（保存预设用）。 */
+    currentFlags() {
+      const flags = {};
+      CATEGORY_NAMES.forEach((category) => {
+        flags[category] = Boolean(this.widgetFor(category)?.value);
+      });
+      return flags;
+    }
+
+    /** 当前 20 类的权重（保存预设用）。 */
+    currentWeights() {
+      const weights = {};
+      CATEGORY_NAMES.forEach((category) => {
+        const widget = this.weightWidgetFor(category);
+        if (widget) weights[category] = this.normaliseWeightValue(widget.value);
+      });
+      return weights;
+    }
+
+    setPresetStatus(text) {
+      if (this.presetStatus) this.presetStatus.textContent = text || "";
+    }
+
+    /** 拉一次自定义预设库，把名字补进下拉（失败静默：内置预设照常用）。 */
+    async refreshPresetOptions() {
+      try {
+        const response = await fetch("/anima/tag_presets");
+        const data = await response.json();
+        (data?.names || []).forEach((name) => this.appendPresetOption(name));
+      } catch (error) {
+        /* 拉不到就只少自定义那部分 */
+      }
+    }
+
+    /** 把自定义预设名加进下拉（已存在则不动）。 */
+    appendPresetOption(name) {
+      if (!this.presetSelect) return;
+      const exists = [...this.presetSelect.options].some((option) => option.value === name);
+      if (exists) return;
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      this.presetSelect.appendChild(option);
+    }
+
+    async presetRequest(payload) {
+      const response = await fetch("/anima/tag_presets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({}));
+      return data || {};
+    }
+
+    async savePreset() {
+      const name = String(this.presetNameInput?.value || "").trim();
+      if (!name) {
+        this.setPresetStatus("先填预设名");
+        return;
+      }
+      try {
+        const data = await this.presetRequest({
+          action: "save", name, flags: this.currentFlags(), weights: this.currentWeights(),
+        });
+        this.setPresetStatus(data.message || (data.ok ? "已保存" : "保存失败"));
+        if (data.ok) {
+          this.appendPresetOption(name);
+          if (this.presetNameInput) this.presetNameInput.value = "";
+        }
+      } catch (error) {
+        this.setPresetStatus(`保存失败：${error}`);
+      }
+    }
+
+    async deletePreset() {
+      const name = String(this.presetSelect?.value || "");
+      if (!name || name === PRESET_NONE || PRESETS[name]) {
+        this.setPresetStatus("只能删除自己保存的预设");
+        return;
+      }
+      try {
+        const data = await this.presetRequest({ action: "delete", name });
+        this.setPresetStatus(data.message || (data.ok ? "已删除" : "删除失败"));
+        if (data.ok) {
+          [...(this.presetSelect?.options || [])]
+            .filter((option) => option.value === name)
+            .forEach((option) => option.remove());
+          if (this.presetSelect) this.presetSelect.value = PRESET_NONE;
+        }
+      } catch (error) {
+        this.setPresetStatus(`删除失败：${error}`);
+      }
+    }
+
     load() {
+      // 旧工作流没有「扩展分类」这些控件，ComfyUI 会用空字符串补足缺失的
+      // widgets_values。对 BOOLEAN 来说 "" 会退化成 false，让"新增分类默认开启"
+      // 的设计失效（角色名/版权词会静默消失）—— 这里把空值显式修正回**该分类的默认值**。
+      // 例外：审查遮挡词 / 文字水印词默认关闭（负面词类），空值补 false。
+      const defaultOff = new Set(DEFAULT_OFF_CATEGORIES);
+      CATEGORY_NAMES.slice(LEGACY_CATEGORY_COUNT).forEach((category) => {
+        const widget = this.widgetFor(category);
+        if (widget && (widget.value === "" || widget.value === null || widget.value === undefined)) {
+          const next = !defaultOff.has(category);
+          widget.value = next;
+          if (typeof widget.callback === "function") widget.callback(next);
+        }
+      });
+      // 新增的权重是 FLOAT，而 float("") 校验必然失败 —— 这正是节点报
+      // "部分输入值不适用于该节点" 的第二个来源（第一个是 COMBO 的空值）。
+      // 空值/非数值一律补回中性 1.0。
+      CATEGORY_NAMES.slice(LEGACY_CATEGORY_COUNT).forEach((category) => {
+        const widget = this.weightWidgetFor(category);
+        if (!widget) return;
+        const numeric = Number(widget.value);
+        if (widget.value === "" || widget.value === null || widget.value === undefined
+            || !Number.isFinite(numeric)) {
+          widget.value = 1.0;
+          if (typeof widget.callback === "function") widget.callback(1.0);
+        }
+      });
       for (const category of CATEGORY_NAMES) {
         const control = this.controls.get(category);
         const widget = this.widgetFor(category);
@@ -308,11 +648,13 @@
         const field = this.filterControls.get(name);
         if (widget && field && field.value !== String(widget.value || "")) field.value = String(widget.value || "");
       }
-      for (const name of ["include_natural_language", "filter_natural_language"]) {
-        const widget = this.widgetFor(name);
-        const control = this.filterControls.get(name);
-        if (widget && control) control.checked = widget.value !== false;
+      // 预设下拉（工作流加载后必须反映已保存的状态）
+      const presetWidget = this.widgetFor("preset");
+      if (presetWidget && this.presetSelect) {
+        this.appendPresetOption(String(presetWidget.value || ""));
+        this.presetSelect.value = String(presetWidget.value || PRESET_NONE);
       }
+      this.updatePresetHint(String(presetWidget?.value || PRESET_NONE));
       this.updateCount();
     }
   }
@@ -334,15 +676,17 @@
           const unifiedInput = this.inputs?.find((input) => input.name === "natural_language");
           if (unifiedInput) {
             unifiedInput.label = "统一 Prompt";
-            unifiedInput.tooltip = "普通 Prompt 或 Packer ALL_TAGS；已知 Danbooru Tag 自动分类，未知段落可选择保留";
+            unifiedInput.tooltip = "普通 Prompt 或 Packer ALL_TAGS；已知 Danbooru Tag 自动分类，未知段落原样保留";
           }
           const legacyInput = this.inputs?.find((input) => input.name === "tag_bundle");
           if (legacyInput) legacyInput.label = "兼容·分类包";
           const element = ui.build();
           const domWidget = this.addDOMWidget?.("tk_danbooru_tag_getter", "custom", element, { serialize: false, hideOnZoom: false });
           if (domWidget) {
-            domWidget.computeSize = () => [0, 270];
-            this.setSize?.([Math.max(300, this.size?.[0] || 300), 335]);
+            // 20 个分类（两列 10 行）+ 预设行 + 主题 chips（折叠后约 4 行）+ 排除区
+            // （自然语言区块已移除，高度比原来少约 60px）
+            domWidget.computeSize = () => [0, 500];
+            this.setSize?.([Math.max(340, this.size?.[0] || 340), 560]);
           }
           return result;
         };

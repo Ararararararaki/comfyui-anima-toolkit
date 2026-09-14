@@ -102,6 +102,10 @@ def install_comfy_runtime_stubs() -> None:
         server.PromptServer = _PromptServer
         _PromptServer.instance = _PromptServer()
 
+    # nodes：部分节点模块在**导入期**就依赖它（anima_preset_latent 的 MAX_RESOLUTION、
+    # anima_latent_switch 复用 nodes.LatentComposite 做合成）。缺了它这些模块根本导不进来。
+    _permissive("nodes")
+
     # torch 只被少数节点用到，CI 里没装也不能让根 __init__ 导入失败
     for optional in ("torch", "numpy", "psutil", "PIL"):
         try:

@@ -11,6 +11,10 @@ data/translation_providers.json
 data/prompt_library.json
 data/prompt_library.json.bak
 data/tag_category_index.cache
+# 自建分类索引的 pickle 缓存（运行时生成；索引本体 data/tag_taxonomy.tsv.gz 才随包发布）
+data/tag_taxonomy.cache
+# 用户自己保存的 Tag Getter 预设快照（运行时生成，跟着机器走，不发布）
+data/tag_presets.json
 # 批处理运行时状态（含 state/updated 时间戳）：任何跑过一次批处理的机器都会把它改脏。
 # 注意：它**当前仍被 git 跟踪**，所以这条 ignore 只防新增文件被误提交；
 # 要彻底摘掉需要 `git rm --cached data/batches/bworker.json`（会影响已有部署，待确认）。
@@ -43,6 +47,8 @@ _bak_*/
 
 # 内部工作文档/环境专用脚本：仅本地保留，不发布
 docs/HANDOFF.md
+# 内部会话交接（含本机路径/用户习惯等，不适合随包发布）
+docs/HANDOFF-*.md
 docs/aegis/
 tests/verify_danbooru_dropdown.py
 
