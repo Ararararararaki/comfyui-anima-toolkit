@@ -63,8 +63,48 @@ class _AnyCallable:
     def __call__(self, *a, **k):
         raise RuntimeError("test stub: 无网络")
 class _FakeSession(_AnyCallable):
+    """`requests.Session` 的桩。
+
+    ⚠️ 这个类在**模块级**被塞进 `sys.modules["requests"]`，所以它活得比本文件久 ——
+    任何"真实调用方本来能读到的属性"缺失，都会在**别的测试文件**里炸。
+    2026-09-15 实测第三种表现：`anima_gallery_pixiv` 的 diag 读 `session.proxies`
+    → `AttributeError: '_FakeSession' object has no attribute 'proxies'`，
+    且**只在全量跑时复现**（单跑 pixiv 测试时桩还没生效）。所以这里把
+    Session 常用的那几个属性都补上，别让它比真 Session 瘦。
+    """
+
     def __init__(self, *a, **k):
         self.headers = {}
+        self.proxies = {}
+        self.verify = True
+        self.trust_env = True
+        self.cookies = {}
+
+    def mount(self, *a, **k):
+        return None
+
+    def close(self):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+# ⚠️ 在覆盖之前，把**真 requests 已有的公开属性全部搬进桩**，再只替换要 stub 的那几个。
+# 这段是模块级代码（导入本文件时就执行），而它替换的是 `sys.modules["requests"]` ——
+# 光秃秃的桩会让整个 pytest session 里的 `requests.ConnectionError` / `requests.Request`
+# 等属性消失。2026-09-15 实测：tests/test_gallery_pixiv.py 的 3 条用例在**全量**跑时
+# 报 `module 'requests' has no attribute ...`、单跑却 52/52 全绿，根因就是这里。
+_real_requests = sys.modules.get("requests")
+if _real_requests is not None and getattr(_real_requests, "__file__", None):
+    for _name in dir(_real_requests):
+        if _name.startswith("__"):
+            continue
+        try:
+            setattr(_reqs, _name, getattr(_real_requests, _name))
+        except Exception:  # 少数惰性属性取不到就跳过，不影响 stub 语义
+            pass
 _reqs.Session = _FakeSession
 _reqs.get = _AnyCallable()
 _reqs.post = _AnyCallable()

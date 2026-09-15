@@ -115,6 +115,9 @@
    "test_danbooru_meta.py",
    "test_danbooru_tag_getter.py",
    "test_extension_asset_urls.py",
+   "test_gallery_multisource_ui.py",
+   "test_gallery_pixiv.py",
+   "test_gallery_sources_contract.py",
    "test_image_select.py",
    "test_latent_switch.py",
    "test_lighting_prompt.py",
@@ -122,6 +125,7 @@
    "test_lora_subdir.py",
    "test_parse_groups.py",
    "test_prompt_cards_autocomplete.py",
+   "test_prompt_cards_suggest_keys.py",
    "test_prompt_library_persistence.py",
    "test_prompt_saver.py",
    "test_string_router.py",
@@ -193,7 +197,7 @@
     "browser",
     "comfy8188"
    ],
-   "bytes": 8014
+   "bytes": 8197
   },
   {
    "file": "repro/compare_llm_cats.py",
@@ -344,7 +348,7 @@
    "file": "test_anima_format_and_expand.py",
    "layer": "unit",
    "why": [],
-   "bytes": 19273
+   "bytes": 21977
   },
   {
    "file": "test_baidu_translation.py",
@@ -368,7 +372,7 @@
    "file": "test_batch_lora_trigger_words.py",
    "layer": "unit",
    "why": [],
-   "bytes": 11763
+   "bytes": 12470
   },
   {
    "file": "test_camera_presets.py",
@@ -413,7 +417,7 @@
    "file": "test_danbooru_gallery_prompt_tooltip.py",
    "layer": "unit",
    "why": [],
-   "bytes": 1492
+   "bytes": 4798
   },
   {
    "file": "test_danbooru_gallery_settings_scope.py",
@@ -425,13 +429,13 @@
    "file": "test_danbooru_meta.py",
    "layer": "unit",
    "why": [],
-   "bytes": 9788
+   "bytes": 13044
   },
   {
    "file": "test_danbooru_tag_getter.py",
    "layer": "unit",
    "why": [],
-   "bytes": 35045
+   "bytes": 46408
   },
   {
    "file": "test_dom_widget_size_sync.mjs",
@@ -446,6 +450,24 @@
    "bytes": 942
   },
   {
+   "file": "test_gallery_multisource_ui.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 22731
+  },
+  {
+   "file": "test_gallery_pixiv.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 45049
+  },
+  {
+   "file": "test_gallery_sources_contract.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 39794
+  },
+  {
    "file": "test_image_select.py",
    "layer": "unit",
    "why": [],
@@ -455,7 +477,7 @@
    "file": "test_latent_switch.py",
    "layer": "unit",
    "why": [],
-   "bytes": 8648
+   "bytes": 8885
   },
   {
    "file": "test_layer_manifest.py",
@@ -509,6 +531,12 @@
    "layer": "unit",
    "why": [],
    "bytes": 9093
+  },
+  {
+   "file": "test_prompt_cards_suggest_keys.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 2647
   },
   {
    "file": "test_prompt_library_persistence.py",

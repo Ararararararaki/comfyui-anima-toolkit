@@ -1063,6 +1063,74 @@ def _is_allowed_danbooru_url(url: str) -> bool:
     return parsed.scheme == "https" and (host == "donmai.us" or host.endswith(DANBOORU_ALLOWED_SUFFIX))
 
 
+# ---------- 多源画廊：D站 之外的新图源（C站/P站…）也要能取到字节 ----------
+# 背景（PLAN §5.7）：节点下载路径原来只认 donmai.us，于是 C站/P站 的图被一律拒掉，
+# 「images 输出端口能直接给出可用于反推的图」这条就断了。这里**只新增**一条分支：
+# URL 属于协议层认识的图源时，借道 D站 既有的会话/代理探测/重试/网关机制取字节，
+# 并附加该源声明的必需请求头（P站 的 Referer 缺了 i.pximg.net 直接 403）。
+_gallery_header_lock = threading.Lock()
+
+
+def _gallery_image_headers(url: str) -> dict[str, str] | None:
+    """问协议层：这个 URL 属于哪个已装配图源、取图要带什么头。
+
+    容错到极致：协议层不存在 / 导入失败 / 抛异常 / 返回怪东西 → `None`，
+    调用方就维持加多源之前的行为（D站 URL 照旧、非 D站 URL 照旧拒绝）。
+    返回 `{}` 表示「认识这个图源、只是不需要额外请求头」（C站）。
+    """
+    import importlib
+
+    # 与 D站 闸门同一要求：只取 https（http 有被中间人换图的余地）
+    if not str(url or "").strip().lower().startswith("https://"):
+        return None
+    try:
+        if __package__:
+            protocol = importlib.import_module(".anima_gallery_sources", __package__)
+        else:
+            protocol = importlib.import_module("anima_gallery_sources")
+    except Exception:  # noqa: BLE001 —— 协议层缺失：回退原行为，绝不打断 D站 下载
+        return None
+    getter = getattr(protocol, "image_headers_for_url", None)
+    if not callable(getter):
+        return None
+    try:
+        headers = getter(url)
+    except Exception:  # noqa: BLE001 —— 协议层内部出错也按「不认识」处理
+        return None
+    if headers is None:
+        return None
+    if not isinstance(headers, dict):
+        return {}
+    return {str(key): str(value) for key, value in headers.items() if key and value is not None}
+
+
+def _gallery_get_image(image_url: str, headers: dict[str, str] | None = None) -> tuple[bytes, str]:
+    """取第三方图源图片：代理探测/换路重试/浏览器网关兜底**全部沿用 D站那一套**。
+
+    做法是把额外请求头临时挂到同一个 `_danbooru_session` 上，借道 `_danbooru_get_image()`
+    跑完既有流程再还原 —— 因此 `_danbooru_get_image()` 与 `_apply_danbooru_proxy()` 一行都不用改。
+    锁把「改头 → 取图 → 还原」串起来，避免并发请求读到别人的头（窗口最长 = 一次取图超时）。
+    """
+    extra = {str(key): str(value) for key, value in (headers or {}).items() if key and value is not None}
+    # 非 D站 CDN（Cloudflare 系）对非浏览器 UA 不友好；本分支统一用浏览器 UA，
+    # D站 自己的 UA 不受影响（只在这次取图的窗口内生效，用完还原）。
+    extra.setdefault(
+        "User-Agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    )
+    with _gallery_header_lock:
+        previous = {name: _danbooru_session.headers.get(name) for name in extra}
+        _danbooru_session.headers.update(extra)
+        try:
+            return _danbooru_get_image(image_url)
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    _danbooru_session.headers.pop(name, None)
+                else:
+                    _danbooru_session.headers[name] = value
+
+
 def _load_translations() -> dict[str, str]:
     global _translations
     with _translation_lock:
@@ -1475,10 +1543,16 @@ class DanbooruGallery:
 
     @staticmethod
     def _download_image(image_url: str) -> torch.Tensor:
-        if not _is_allowed_danbooru_url(image_url):
-            raise ValueError("不允许的 Danbooru 图片 URL")
-        # requests 优先，被风控时自动切内置浏览器网关（见 _danbooru_get_image）
-        image_bytes, content_type = _danbooru_get_image(image_url)
+        if _is_allowed_danbooru_url(image_url):
+            # requests 优先，被风控时自动切内置浏览器网关（见 _danbooru_get_image）
+            image_bytes, content_type = _danbooru_get_image(image_url)
+        else:
+            # 多源画廊（C站/P站…）：协议层认这个 URL 才走新分支；不认识则维持原拒绝语义
+            gallery_headers = _gallery_image_headers(image_url)
+            if gallery_headers is None:
+                raise ValueError("不允许的图片 URL：既不是 D站（donmai.us），也不属于任何已装配图源")
+            # ⚠️ 必须附加该源的 images_headers()：P站 i.pximg.net 缺 Referer 直接 403
+            image_bytes, content_type = _gallery_get_image(image_url, gallery_headers)
         # D站 动画帖是 mp4：PIL 打不开 → 用 ffmpeg 抽首帧当图，避免"下载失败/黑图"
         if _looks_like_video(image_url, content_type, image_bytes):
             image_bytes = _extract_video_frame(image_bytes)

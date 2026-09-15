@@ -503,6 +503,57 @@ def test_existing_tags_override_controls_instruction():
     assert "smile" not in vlm_prompt
 
 
+# ────────────── 空行之后的「第二批标签」（2.13.3） ──────────────
+
+
+def test_looks_like_tag_series_judgement_is_conservative():
+    """判据锁：三个文本节点共用这一份，且必须**保守**（宁可漏拆也不误拆）。"""
+    from anima_tag_taxonomy import looks_like_tag_series
+
+    assert looks_like_tag_series("1girl, smile, long hair") is True
+    assert looks_like_tag_series("smile, long_hair, classroom, hat") is True
+    # 句末标点 → 是句子，不是标签批
+    assert looks_like_tag_series("A girl smiles, standing near a window.") is False
+    # 长片段（>24 字符且 ≥4 个空格）→ 是句子，不是标签批
+    assert looks_like_tag_series("she is standing near a window, soft light, morning") is False
+    # 片段太少不足以判定成标签批
+    assert looks_like_tag_series("1girl, smile") is False
+    assert looks_like_tag_series("") is False
+
+
+def test_expander_absorbs_second_tag_batch_after_blank_line():
+    """空行之后若其实是**另一批标签**，必须参与解析 / 扩写 / 去重。
+
+    共享契约把「空行之后」整段算自然语言，而自然语言不参与分类与句式扩写 ——
+    用户把两批来源不同的标签直接粘在一起时，第二批就整段贴在输出尾部。
+    """
+    original = _use_fake(AnimaTKPromptExpander)
+    try:
+        tags, natural, _vlm = AnimaTKPromptExpander().expand(
+            "1girl, smile\n\nsmile, long_hair, classroom", write_natural=False)
+        _t2, natural_with_template, _v2 = AnimaTKPromptExpander().expand(
+            "1girl, smile\n\nsmile, long_hair, classroom")
+    finally:
+        AnimaTKPromptExpander._TAXONOMY_OVERRIDE = original
+    assert tags == "1girl, smile, long hair, classroom", "第二批要进标签串，且跨批去重"
+    assert natural == "", "第二批不是自然语言，不该留在 natural"
+    # 参与句式扩写：第二批的 hair / 背景词要出现在生成的句子里
+    assert "long hair" in natural_with_template
+
+
+def test_expander_keeps_real_sentence_after_blank_line():
+    """反向锁：真正的句子不能被拆成标签（判据保守性的行为面）。"""
+    original = _use_fake(AnimaTKPromptExpander)
+    try:
+        tags, natural, _vlm = AnimaTKPromptExpander().expand(
+            "1girl, smile\n\nShe is standing near a window in the morning, soft light falls on her face.",
+            write_natural=False)
+    finally:
+        AnimaTKPromptExpander._TAXONOMY_OVERRIDE = original
+    assert tags == "1girl, smile"
+    assert natural == "She is standing near a window in the morning, soft light falls on her face."
+
+
 if __name__ == "__main__":
     import traceback
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]

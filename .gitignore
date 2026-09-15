@@ -15,6 +15,9 @@ data/tag_category_index.cache
 data/tag_taxonomy.cache
 # 用户自己保存的 Tag Getter 预设快照（运行时生成，跟着机器走，不发布）
 data/tag_presets.json
+# 图源密钥：C站 API key / P站 OAuth token。只存本机 —— **绝不进仓库、不打日志、界面只回掩码**。
+data/civitai_key.json
+data/pixiv_token.json
 # 批处理运行时状态（含 state/updated 时间戳）：任何跑过一次批处理的机器都会把它改脏。
 # 注意：它**当前仍被 git 跟踪**，所以这条 ignore 只防新增文件被误提交；
 # 要彻底摘掉需要 `git rm --cached data/batches/bworker.json`（会影响已有部署，待确认）。

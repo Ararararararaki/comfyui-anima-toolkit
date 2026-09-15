@@ -247,10 +247,20 @@ def test_test_batch_lora_trigger_words_script_regression():
     等于长期不在 CI 覆盖里。包装与直跑调用的是**同一个** `_test_batch_lora_trigger_words_script_regression()`，
     不会出现两套逻辑。
     """
+    # ⚠️ main() 的 HTTP 契约段会把**真实模块对象**上的 `aiohttp.web.json_response`
+    # 换成返回 dict 的假实现，而旧代码从不还原 → 同进程后续任何用 json_response 的测试
+    # 都会炸 `'dict' object has no attribute 'body'`。2026-09-15 实测：这一次污染让
+    # tests/test_gallery_pixiv.py 的 11 条用例在**全量**跑时失败、单跑却 52/52 全绿。
+    # 清理放在入口层：不管 main() 成功、断言失败还是抛异常，都保证还原。
+    _web = sys.modules["aiohttp.web"]
+    _original_json_response = _web.json_response
     try:
-        _test_batch_lora_trigger_words_script_regression()
-    except SystemExit as exc:
-        # 这类脚本用 sys.exit(0) 表示成功（自建 PASS/FAIL 计数器），
-        # pytest 会把 SystemExit 当失败 —— 必须捕获并检查退出码。
-        assert exc.code in (None, 0), f"脚本自检失败（exit={exc.code}）"
+        try:
+            _test_batch_lora_trigger_words_script_regression()
+        except SystemExit as exc:
+            # 这类脚本用 sys.exit(0) 表示成功（自建 PASS/FAIL 计数器），
+            # pytest 会把 SystemExit 当失败 —— 必须捕获并检查退出码。
+            assert exc.code in (None, 0), f"脚本自检失败（exit={exc.code}）"
+    finally:
+        _web.json_response = _original_json_response
 

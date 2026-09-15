@@ -2019,7 +2019,10 @@
         return;
       }
       this._suggestList = list;
-      this._suggestIdx = 0;
+      // 默认**不高亮**任何一项（-1）。这是 Enter 能不能换行的开关：
+      // 高亮着第一项时 Enter 必须被补全吃掉，列表一冒出来就没法在多行提示词里换行。
+      // 想要「一键选第一个」用 Tab（见 _suggestKeyDown）；按过 ↑/↓ 之后 Enter 才接管确认。
+      this._suggestIdx = -1;
       this.suggestEl.style.maxHeight = "min(320px, 42vh)";
       this.suggestEl.style.overflowX = "hidden";
       this.suggestEl.style.overflowY = "auto";
@@ -2045,11 +2048,19 @@
         return c.source === "card" ? `${notes} · ${description}` : description;
       };
       this.suggestEl.style.display = "";
+      // 不再预先把第一项标成 .sel：视觉高亮必须与 _suggestIdx（-1 = 未选择）一致，
+      // 否则用户以为 Enter 会选它、实际 Enter 是换行。
       this.suggestEl.innerHTML = list.map((c, i) =>
-        `<div class="tk-cards-suggest-item ${i === 0 ? "sel" : ""}" data-i="${i}">
+        `<div class="tk-cards-suggest-item" data-i="${i}">
           <div class="tk-cards-suggest-top"><span class="s-en">${esc(c.prompt || c.tag || "")}</span><span class="s-cat">${esc(catName(c) + countText(c))}</span></div>
           ${detailText(c) ? `<div class="s-desc">${esc(detailText(c))}</div>` : ""}</div>`).join("");
       this.suggestEl.querySelectorAll(".tk-cards-suggest-item").forEach((it) => {
+        // 鼠标悬停必须与键盘高亮**同步**：否则出现"鼠标指着 A、键盘停在 B"，
+        // 此时按 Enter / Tab 插入的是 B —— 用户根本看不出自己会选到哪一个。
+        it.addEventListener("mouseenter", () => {
+          this._suggestIdx = parseInt(it.getAttribute("data-i"), 10);
+          this._markSuggestSel();
+        });
         it.addEventListener("mousedown", (ev) => {
           ev.preventDefault();
           this._applySuggest(list[parseInt(it.getAttribute("data-i"), 10)]);
@@ -2144,7 +2155,8 @@
         return;
       }
       this._translateSuggestList = list;
-      this._translateSuggestIdx = 0;
+      // 与 ① 区同一约定：默认不高亮（Enter 留给输入），Tab 一键选第一项
+      this._translateSuggestIdx = -1;
       this.translateSuggestEl.style.maxHeight = "min(320px, 42vh)";
       this.translateSuggestEl.style.overflowX = "hidden";
       this.translateSuggestEl.style.overflowY = "auto";
@@ -2162,10 +2174,15 @@
       };
       this.translateSuggestEl.style.display = "";
       this.translateSuggestEl.innerHTML = list.map((card, i) =>
-        `<div class="tk-cards-suggest-item ${i === 0 ? "sel" : ""}" data-i="${i}">
+        `<div class="tk-cards-suggest-item" data-i="${i}">
           <div class="tk-cards-suggest-top"><span class="s-zh">${esc(card.notes || card.zh || "")}</span><span class="s-en">${esc(card.prompt || card.tag || "")}</span>${Number(card.count) > 0 ? `<span class="s-cat">${esc(Number(card.count).toLocaleString())}</span>` : ""}</div>
           ${detailText(card) ? `<div class="s-desc">${esc(detailText(card))}</div>` : ""}</div>`).join("");
       this.translateSuggestEl.querySelectorAll(".tk-cards-suggest-item").forEach((item) => {
+        // 与 ① 区一致：悬停同步高亮，避免"看着 A 却插入 B"
+        item.addEventListener("mouseenter", () => {
+          this._translateSuggestIdx = parseInt(item.getAttribute("data-i"), 10);
+          this._markTranslateSuggestSel();
+        });
         item.addEventListener("mousedown", (event) => {
           event.preventDefault();
           this._applyTranslateSuggest(list[parseInt(item.getAttribute("data-i"), 10)]);
@@ -2258,18 +2275,29 @@
 
     _translateSuggestKeyDown(event) {
       if (!this._translateSuggestList.length || this.translateSuggestEl?.style.display === "none") return;
-      if (event.key === "ArrowDown") {
+      // 与 ① 区同一套约定（Tab 接受 / Enter 仅在高亮后确认 / 组字期间不拦截）
+      if (event.isComposing || event.keyCode === 229) return;
+      const total = this._translateSuggestList.length;
+      const chosen = () => this._translateSuggestList[this._translateSuggestIdx]
+        || this._translateSuggestList[0];
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
-        this._translateSuggestIdx = (this._translateSuggestIdx + 1) % this._translateSuggestList.length;
+        if (event.key === "ArrowDown") {
+          this._translateSuggestIdx = this._translateSuggestIdx < 0
+            ? 0 : (this._translateSuggestIdx + 1) % total;
+        } else {
+          this._translateSuggestIdx = this._translateSuggestIdx < 0
+            ? total - 1 : (this._translateSuggestIdx - 1 + total) % total;
+        }
         this._markTranslateSuggestSel();
-      } else if (event.key === "ArrowUp") {
+      } else if (event.key === "Tab" && !event.shiftKey) {
         event.preventDefault();
-        this._translateSuggestIdx = (this._translateSuggestIdx - 1 + this._translateSuggestList.length) % this._translateSuggestList.length;
-        this._markTranslateSuggestSel();
-      } else if (event.key === "Enter") {
+        this._applyTranslateSuggest(chosen());
+      } else if (event.key === "Enter" && !event.shiftKey && this._translateSuggestIdx >= 0) {
         event.preventDefault();
-        this._applyTranslateSuggest(this._translateSuggestList[this._translateSuggestIdx] || this._translateSuggestList[0]);
+        this._applyTranslateSuggest(chosen());
       } else if (event.key === "Escape") {
+        event.preventDefault();
         this._hideTranslateSuggest();
       }
     }
@@ -2316,20 +2344,40 @@
       el.focus();
     }
 
+    /**
+     * 联想候选项的键盘交互。约定（2026-09-15 按用户要求重排）：
+     *   Tab        —— **接受当前高亮项**；没有高亮时用第一项。这就是「一键选第一个」。
+     *   ↑ / ↓      —— 上下选择（从"未选择"进入时分别落在第一项 / 最后一项，越界回绕）
+     *   Enter      —— **只在按过 ↑/↓ 之后**才确认所选；否则放行（正常换行）
+     *   Shift+Enter—— 永远换行
+     *   Esc        —— 关掉列表，不动文本
+     *
+     * 为什么把「一键选第一个」从 Enter 挪到 Tab：Enter 是输入框里唯一顺手的换行键，
+     * 只要候选列表开着就被补全吃掉的话，多行提示词根本没法编辑（列表随时都可能冒出来）。
+     */
     _suggestKeyDown(e) {
       if (!this._suggestList.length || this.suggestEl.style.display === "none") return;
-      if (e.key === "ArrowDown") {
+      // 中文/日文输入法组字期间（keyCode 229）一律不拦截：那一下 Enter 是"上屏"，
+      // 抢过来会吃掉候选字，甚至把半截拼音当成 tag 插进去。
+      if (e.isComposing || e.keyCode === 229) return;
+      const total = this._suggestList.length;
+      const chosen = () => this._suggestList[this._suggestIdx] || this._suggestList[0];
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
-        this._suggestIdx = (this._suggestIdx + 1) % this._suggestList.length;
+        if (e.key === "ArrowDown") {
+          this._suggestIdx = this._suggestIdx < 0 ? 0 : (this._suggestIdx + 1) % total;
+        } else {
+          this._suggestIdx = this._suggestIdx < 0 ? total - 1 : (this._suggestIdx - 1 + total) % total;
+        }
         this._markSuggestSel();
-      } else if (e.key === "ArrowUp") {
+      } else if (e.key === "Tab" && !e.shiftKey) {
         e.preventDefault();
-        this._suggestIdx = (this._suggestIdx - 1 + this._suggestList.length) % this._suggestList.length;
-        this._markSuggestSel();
-      } else if (e.key === "Enter") {
+        this._applySuggest(chosen());
+      } else if (e.key === "Enter" && !e.shiftKey && this._suggestIdx >= 0) {
         e.preventDefault();
-        this._applySuggest(this._suggestList[this._suggestIdx] || this._suggestList[0]);
+        this._applySuggest(chosen());
       } else if (e.key === "Escape") {
+        e.preventDefault();
         this._hideSuggest();
       }
     }

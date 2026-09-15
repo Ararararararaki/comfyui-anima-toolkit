@@ -356,3 +356,39 @@ def split_prompt(value):
     pieces = [part.strip() for part in re.split(r"[,，\n]", head) if part.strip()]
     paragraphs = [block.strip() for block in re.split(r"\n\s*\n", tail) if block.strip()]
     return pieces, paragraphs
+
+
+#: 句末标点：出现即判为「语言模型写的句子」而不是标签串
+SENTENCE_END_RE = re.compile(r"[.!?。！？]")
+#: 标签分隔符（中英逗号 / 换行）
+TAG_SEPARATOR_RE = re.compile(r"[,，\n]")
+
+
+def looks_like_tag_series(text):
+    """判断「空行之后的段」其实是不是**另一批标签**，而不是语言模型写的句子。
+
+    背景：``split_prompt`` 的契约是「空行之前是标签、之后整段算自然语言」，
+    而自然语言不参与分类 / 去重 / 扩写。用户却常把**两批不同来源的标签**
+    直接粘在一起（两段都是逗号分隔），于是第二段整段被当成自然语言 ——
+    症状就是「第二批标签不去重 / 不过滤 / 不参与扩写」。
+
+    判据刻意保守（**宁可把标签当自然语言，也不要把句子拆成标签**）：
+      · 含句末标点（``. ! ? 。 ！ ？``）→ 判为自然语言；
+      · 出现「长片段」（>24 字符且含 ≥4 个空格）→ 判为自然语言；
+      · 其余情况且逗号片段数 ≥3 → 判为标签串。
+
+    注意这是**判据**，不是那条契约本身：``split_prompt`` 仍是三个文本节点共用的
+    唯一拆分实现。本函数只供调用方决定「要不要把某个空行段落并回标签」——
+    三个节点（Tag Getter / Anima 格式化 / 提示词扩写）共用这一份，避免各写一份正则后漂移。
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    if SENTENCE_END_RE.search(raw):
+        return False
+    parts = [part.strip() for part in TAG_SEPARATOR_RE.split(raw) if part.strip()]
+    if len(parts) < 3:
+        return False
+    if any(len(part) > 24 and part.count(" ") >= 4 for part in parts):
+        return False
+    return True

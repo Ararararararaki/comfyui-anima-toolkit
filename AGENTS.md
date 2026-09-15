@@ -2,13 +2,39 @@
 
 ## 📌 最新交接（先读这个）
 
-**`docs/HANDOFF-2026-09-13-会话交接-CN模块与MCP修复.md`** —— 2026-09-13 深夜会话交接，含：
-Anima **姿态控制（CN Pose）**实测结论与完整工作流、Tag Getter 自然语言模块移除、前后端冗余收敛与面板重做、
-MCP 抓取排障（DSH 注入的 `NO_PROXY` 打死 httpx）、自建 uia-mcp、LLM system prompt 更新版。
+**`docs/HANDOFF-2026-09-15-多源画廊接入.md`** —— **最新**（2026-09-15）：把「TK D站画廊」扩成**多源画廊**（D站 / C站 / P站）。
 
-⚠️ 该轮改动已随 **2.13.0** 一起发布（2026-09-14）；Tag Getter 的后续改造（自定义预设 / 默认关闭
-负面词类 / 移除主题剔除）与 **TK Latent 选择/合成**、Prompt Cards 词典优先见
-`docs/HANDOFF-2026-09-13-2.13.0-过滤与扩写.md` 的 §12–§16。
+- **架构**：一个节点 + 图源下拉；`anima_gallery_sources.py`（协议层：统一 item schema 13 键 + 图源注册表 + 容错加载）
+  + `anima_gallery_civitai.py` + `anima_gallery_pixiv.py`；前端由 `/anima/gallery/sources` 的 **capabilities 驱动控件显隐**。
+- **C站**：cursor 分页、**`withMeta=true` 必带**（否则 `meta` 恒为 null，拿不到 prompt）；
+  ⚠️ **图片端点不支持关键词检索**（只能按 排序/NSFW/时间窗/作者/模型 浏览，关键词只在当页本地过滤）；
+  ⚠️ **API key 对 images 端点毫无影响**，只用于账号校验（`GET /api/v1/me`）。
+- **P站**：OAuth 2.0 + PKCE；取图必须带 `Referer: https://www.pixiv.net/`（否则 `i.pximg.net` 403）；
+  **无 prompt** —— 它的定位是**素材**：选中 → `images` 输出 → 送 WD14 反推。
+- **做法**：契约先行 → 3 个 agent 后台并行（各占各的文件）+ 1 个独立评审 agent → 协调者收口。
+- **真机联调挖出的三个 bug**（单测全绿也抓不到的类型，详见该文档 §8/§9）：
+  ① **同步工具漏了插件入口 `__init__.py`**（不匹配任何 glob）⇒ 新模块永不 import ⇒ **新路由全 404 而老路由正常**；
+  ② **`_load_token()` 缓存只判 `is None`** ⇒ 进程活着就只读一次盘 ⇒ 外部换 token 永远读不到；
+  ③ **契约把 `/auth/url` 回包钉成 `verifier_hint: null`** ⇒ verifier 没交给前端 ⇒ 服务端只能"取最近一个暂存" ⇒
+  配错后回 `invalid_request`，**而 7 个参数逐字全对**。
+
+同日的另外三份：`docs/HANDOFF-2026-09-15-D站画廊操作条误触.md`（隐形按钮吃点击、悬停浮层翻转定位、
+节点"自缩"正反馈）、`docs/HANDOFF-2026-09-15-PromptCards联想键盘.md`（**Tab 接受补全、Enter 还给换行**、
+输入法组字保护）、`docs/HANDOFF-2026-09-15-第二批标签统一处理.md`（空行后第二批标签在三个节点的统一判据）。
+
+⚠️ 本轮改了 4 个 py（含 3 个新模块）+ js + css → **必须重启 ComfyUI（绘世启动器）** + **Ctrl+F5**。
+C站需在「设置 → 图源密钥」填 API key；P站需走一次 OAuth 授权（步骤见该交接 §0）。
+
+上一份（同日下午：二采 CN 升级 / 小范围重绘 / 工作流排版与子图）：
+**`docs/HANDOFF-2026-09-14-二采CN升级与ACN接入.md`** —— 含 **ACN vace-depth 接入与它的实测边界**、
+`#307` 选路对调、**ComfyUI 子图（subgraph）JSON 格式**、link id 号段与 `No link found` 的因果、
+20 模块重排版、6 条内置预设的规则原文备份（§8.3）。
+
+更早的两份（细节都在里面）：`docs/HANDOFF-2026-09-13-2.13.0-过滤与扩写.md`（Tag Getter 面板/查询/预设
+的逐条依据）、`docs/HANDOFF-2026-09-13-会话交接-CN模块与MCP修复.md`（CN Pose 实测 + MCP 排障）。
+
+> 说明：`docs/HANDOFF-*.md` 是**内部交接**，已在 `.gitignore` 里（不随包发布）——
+> 所以下面提到的路径只在本地仓库可见。
 
 ## ⛔ 加任何节点控件之前，先跑这两条（2026-09-13 血泪教训）
 

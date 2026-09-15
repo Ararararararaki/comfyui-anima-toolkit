@@ -79,6 +79,128 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     { id: "cat_fav", name: "常用", icon: "", sortOrder: 6 },
   ]);
 
+  // ── 多源画廊（D站 / C站 / P站）──────────────────────────────────────────────
+  // 契约唯一事实源：docs/PLAN-2026-09-15-P站C站画廊接入.md §5.2 item schema / §5.3 路由 +
+  // capabilities / §5.5 密钥 / §5.7 P站用途。前端**只按契约里的路由名 fetch**，不猜后端实现。
+  // D站 继续走老路由 /anima/danbooru/posts（page 分页），一个字节都不改。
+  const DANBOORU_SOURCE_ID = "danbooru";
+  const GALLERY_SOURCE_ORDER = Object.freeze([DANBOORU_SOURCE_ID, "civitai", "pixiv"]);
+  /**
+   * /anima/gallery/sources 未就绪或请求失败时的兜底（另两个 agent 并行实现后端）。
+   * 数值与 PLAN §5.3 钉死的 capabilities 一致：C站 tags=false / prompt=true / nsfw=true；
+   * P站 tags=true / prompt=false / login=true。
+   * `query` 是 2026-09-15 协调者拍板新增的第 5 键（C站 实测**上游不支持关键词检索**：
+   * /api/v1/images 忽略 query/q/search/text/prompt/tag/keyword 七个参数名，
+   * 后端只在已取回的那一页内做本地过滤并用 warnings 说明）→ C站 query=false。
+   * **capabilities 是隐藏/禁用/提示文案的唯一依据**，不按源名硬编码判断。
+   */
+  const GALLERY_SOURCE_FALLBACK = Object.freeze({
+    [DANBOORU_SOURCE_ID]: { id: DANBOORU_SOURCE_ID, label: "D站", capabilities: { tags: true, prompt: false, nsfw: false, login: false, query: true } },
+    civitai: { id: "civitai", label: "C站", capabilities: { tags: false, prompt: true, nsfw: true, login: false, query: false } },
+    pixiv: { id: "pixiv", label: "P站", capabilities: { tags: true, prompt: false, nsfw: false, login: true, query: true } },
+  });
+  const GALLERY_SOURCE_PLACEHOLDERS = Object.freeze({
+    [DANBOORU_SOURCE_ID]: "标签（多个用空格分隔，回车直接搜）如：1girl long hair…",
+    civitai: "关键词（C站仅支持按排序 / 分级浏览，关键词只在已取回的当页内过滤）",
+    pixiv: "关键词（日文 / 英文均可；P站无匿名搜索，先在设置里完成授权）",
+  });
+  /** capabilities.query=false 的源要显式说明"搜了为什么没变"，不能静默（协调者 2026-09-15 要求）。 */
+  const GALLERY_LOCAL_QUERY_HINT = "上游接口不支持关键词检索：这里的关键词只在已取回的当页内过滤，排序 / 分级才是真正的浏览条件。";
+  /** 工具栏里的短版（完整说明挂 title，别让一行提示把工具条撑成两行） */
+  const GALLERY_LOCAL_QUERY_HINT_SHORT = "关键词只在当页内过滤";
+  /** 同上，搜索框占位文案 —— 按能力分支，**不按源名硬编码** */
+  const GALLERY_LOCAL_QUERY_PLACEHOLDER = "关键词（上游不支持检索：只在已取回的当页内过滤）";
+  /** C站 search 的参数值域（契约：查询参数由各源自定义，前端按源给控件） */
+  const CIVITAI_NSFW_OPTIONS = Object.freeze([
+    ["", "不限"],
+    ["None", "None（安全）"],
+    ["Soft", "Soft"],
+    ["Mature", "Mature"],
+    ["X", "X"],
+  ]);
+  /**
+   * C站 sort 的合法值**只有**这六个（PLAN §6 实测：`Relevance`/`Most Recent` 之类会 400
+   * ZodError；后端也会先本地校验再回中文 400）—— 前端下拉不能给出非法值。
+   */
+  const CIVITAI_SORT_OPTIONS = Object.freeze([
+    ["Newest", "最新"],
+    ["Oldest", "最早"],
+    ["Most Reactions", "点赞最多"],
+    ["Most Comments", "评论最多"],
+    ["Most Collected", "收藏最多"],
+    ["Random", "随机"],
+  ]);
+  const PIXIV_TARGET_OPTIONS = Object.freeze([
+    ["partial_match_for_tags", "标签部分匹配"],
+    ["exact_match_for_tags", "标签精确匹配"],
+    ["title_and_caption", "标题与说明"],
+  ]);
+  const PIXIV_SORT_OPTIONS = Object.freeze([
+    ["date_desc", "最新"],
+    ["date_asc", "最早"],
+    ["popular_desc", "人气顺（需 Pixiv 会员）"],
+  ]);
+
+  function normalizeSourceFilters(saved) {
+    const source = saved && typeof saved === "object" ? saved : {};
+    const civitai = source.civitai && typeof source.civitai === "object" ? source.civitai : {};
+    const pixiv = source.pixiv && typeof source.pixiv === "object" ? source.pixiv : {};
+    const pick = (options, value, fallback) => (options.some(([id]) => id === String(value)) ? String(value) : fallback);
+    return {
+      civitai: {
+        nsfw: pick(CIVITAI_NSFW_OPTIONS, civitai.nsfw, ""),
+        sort: pick(CIVITAI_SORT_OPTIONS, civitai.sort, "Newest"),
+      },
+      pixiv: {
+        target: pick(PIXIV_TARGET_OPTIONS, pixiv.target, "partial_match_for_tags"),
+        sort: pick(PIXIV_SORT_OPTIONS, pixiv.sort, "date_desc"),
+      },
+    };
+  }
+
+  /** 每个图源各自的搜索框内容 —— D站 标签语法与 C站/P站 关键词不该互相污染 */
+  function normalizeSourceQueries(saved) {
+    const source = saved && typeof saved === "object" ? saved : {};
+    const out = {};
+    for (const id of GALLERY_SOURCE_ORDER) out[id] = typeof source[id] === "string" ? source[id] : "";
+    return out;
+  }
+
+  /** 内联 SVG 图标（项目 UI 规范：禁 emoji；24×24、stroke=currentColor） */
+  const GALLERY_ICON_PATHS = Object.freeze({
+    image: ["M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z", "M11 9a2 2 0 1 1-4 0 2 2 0 0 1 4 0z", "m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"],
+    key: ["M2.6 17.4A2 2 0 0 0 2 18.8V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.2a2 2 0 0 0 1.4-.6l.8-.8a6.5 6.5 0 1 0-4-4z", "M16.5 7.5h.01"],
+    link: ["M15 3h6v6", "M10 14 21 3", "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"],
+    check: ["M20 6 9 17l-5-5"],
+  });
+
+  function galleryIcon(name, size = 14, className = "adg-icon") {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", String(size));
+    svg.setAttribute("height", String(size));
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.8");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("class", className);
+    for (const d of GALLERY_ICON_PATHS[name] || []) {
+      const path = document.createElementNS(ns, "path");
+      path.setAttribute("d", d);
+      svg.append(path);
+    }
+    return svg;
+  }
+
+  /** 文件名/扩展名：P站 original 多为 .jpg/.png，C站是 .jpeg；拿不到就退回 jpg */
+  function galleryFileExt(url, fallback = "jpg") {
+    const match = /\.([a-z0-9]{2,5})(?:[?#]|$)/i.exec(String(url || "").split("?")[0]);
+    return match ? match[1].toLowerCase() : fallback;
+  }
+
   function normalizePromptOutputSettings(value) {
     const source = value && typeof value === "object" ? value : {};
     const categories = Array.isArray(source.categories)
@@ -280,6 +402,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   const DG_MIN_AUTO_COUNT = 12;
   /** 每卡「最小屏幕高」分档：卡片不要太扁也不要太高 */
   const DG_MIN_CARD_H = 96;
+  /**
+   * 「这批填不满可视区」的判据（内容总高 < 视口高 × 此比例）。
+   * 2026-09-15 用户真机反馈：「画廊底部拖拽但是没有加载新的图片挤进来」
+   * —— 纵向拉大不改变列数，旧的 handleGridResize 只在列数变化时重取，所以永远不补图。
+   */
+  const DG_UNDERFILL_RATIO = 0.9;
+  /** 「高度显著增大」的阈值：至少 +120px 且 ≥15%，与 450ms 防抖一起挡住拖拽抖动 */
+  const DG_TALLER_MIN_DELTA = 120;
+  const DG_TALLER_MIN_RATIO = 1.15;
 
   // ---------- 随机发现（产品向）----------
   // 裸 order:random 是「全库随机」，实测返回的多是无人点赞的冷门帖（score 个位数、有没有人贴都不知道），
@@ -344,6 +475,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 随机发现档位（""=未启用；hot/good/fresh 见 RANDOM_QUALITY_TIERS）
       randomQuality: RANDOM_QUALITY_TIERS.some((t) => t.id === source.randomQuality) ? source.randomQuality : "",
       lastQuery: typeof source.lastQuery === "string" ? source.lastQuery : "",
+      // 多源画廊：当前图源 + 各源自己的筛选 + 各源各自的搜索框内容。
+      // 注意 D站 的筛选仍住在 filters/rating 里（老工作流恢复后不变），这里只放新源的东西。
+      source: GALLERY_SOURCE_ORDER.includes(source.source) ? source.source : DANBOORU_SOURCE_ID,
+      sourceFilters: normalizeSourceFilters(source.sourceFilters),
+      sourceQueries: normalizeSourceQueries(source.sourceQueries),
     };
   }
 
@@ -417,6 +553,16 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.lastCols = 0;            // 上次布局的列数（列数变化 → 自适应模式重取一页）
       this.lastColStep = 0;         // 上次布局的列步长（列宽+间距），用于抵消滚动条造成的宽度抖动
       this.resizeSearchTimer = null;
+      // 纵向拉大 → 补图（2026-09-15 用户："画廊底部拖拽但是没有加载新的图片挤进来"）
+      this.lastVisibleHeight = 0;   // 上次网格可视高度（判「高度显著增大」）
+      this.fillMoreBusy = false;    // 补图请求在途：同一时刻只允许一次
+      this.fillMoreExhausted = false; // 到底了（末页/末批/全是重复）→ 不再打接口
+      // 尺寸收缩防护（2026-09-15）：自动收缩会与「滚动条出现/消失 → 列数变化 → 卡片高度变化」
+      // 互相触发，一轮轮把节点缩小（用户："老是自己慢慢变小"）；而用户手动放大后又会立刻被
+      // 缩回去（用户："放回大小后就不填充满"）。用两个时间戳断开这个循环。
+      this.programmaticResizeAt = 0;   // 我们自己改尺寸的时刻
+      this.userResizedAt = 0;          // 用户手动调过尺寸的时刻（本次结果集内不再自动收缩）
+      this.shrunkTotal = null;         // 已为哪个内容高度缩过（同一内容不重复缩）
       this._layoutTotal = 0;
       this._layoutPosts = null;
       this.failedImageCount = 0;
@@ -439,14 +585,464 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.galleryBatchBusy = false;
       this.galleryBatchBtn = null;
       this.galleryBatchPanel = null;
+      // ── 多源画廊 ──
+      this.gallerySources = null;      // /anima/gallery/sources 覆盖兜底表后的结果
+      this.gallerySourcesReady = null; // 首次拉取能力的 Promise（搜索/渲染等它一次）
+      this.cursorStack = [""];         // C站/P站 cursor 分页：栈顶 = 当前批次（""=首批）
+      this.nextCursor = null;          // 回包 next_cursor（null = 没有下一批）
+      this.sourceSelect = null;
+      this.sourcePicker = null;
+      this.queryRow = null;
+      this.sourceFilterHost = null;    // 源专属筛选容器（不是 .adg-toolbar-group，别动分组计数）
+      this.sourceFilterControls = null;
+      this.filterGroup = null;
+      this.categoryGroup = null;
+      this.randomTierButtonList = null;
+      this.randomReshuffleBtn = null;
+      this.promptSettingsBtn = null;
+      this.gallerySecretState = null;
     }
 
-    imageProxyUrl(imageUrl, version = "") {
+    // ──────────────────────────── 多源画廊（D站 / C站 / P站）────────────────────────────
+    // 契约见 PLAN §5.3。**D站 的取数/分页/筛选全部走下面的老实现**，这里只服务新图源。
+
+    isDanbooruSource() {
+      return this.activeSourceId() === DANBOORU_SOURCE_ID;
+    }
+
+    activeSourceId() {
+      const id = String(this.settings?.source || "");
+      return GALLERY_SOURCE_ORDER.includes(id) ? id : DANBOORU_SOURCE_ID;
+    }
+
+    sourceEntry(sourceId = null) {
+      const id = String(sourceId || this.activeSourceId());
+      const fromBackend = this.gallerySources?.get?.(id);
+      return fromBackend || GALLERY_SOURCE_FALLBACK[id] || GALLERY_SOURCE_FALLBACK[DANBOORU_SOURCE_ID];
+    }
+
+    sourceLabel(sourceId = null) {
+      return String(this.sourceEntry(sourceId)?.label || sourceId || "");
+    }
+
+    /** capabilities 是隐藏/禁用控件的**唯一依据**（PLAN §5.3 + `query` 第 5 键）；缺字段一律按 false 处理 */
+    sourceCapabilities(sourceId = null) {
+      const caps = this.sourceEntry(sourceId)?.capabilities || {};
+      return {
+        tags: caps.tags === true,
+        prompt: caps.prompt === true,
+        nsfw: caps.nsfw === true,
+        login: caps.login === true,
+        // query 缺省按 true：搜索框是主要输入，后端没声明时不该因为缺字段就退回"本页过滤"文案
+        query: caps.query !== false,
+      };
+    }
+
+    /**
+     * 读 /anima/gallery/sources（能力表）。后端未就绪 / 请求失败 → 保留兜底表，
+     * 界面照常可用（D站 一定在，新源按契约的固定值显示）。
+     */
+    async loadGallerySources() {
+      if (this.gallerySourcesReady) return this.gallerySourcesReady;
+      const task = (async () => {
+        try {
+          const response = await fetch("/anima/gallery/sources");
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const data = await response.json();
+          const list = Array.isArray(data?.sources) ? data.sources : [];
+          const map = new Map();
+          for (const id of GALLERY_SOURCE_ORDER) map.set(id, GALLERY_SOURCE_FALLBACK[id]);
+          for (const row of list) {
+            const id = String(row?.id || "").trim();
+            if (!GALLERY_SOURCE_ORDER.includes(id)) continue;
+            map.set(id, {
+              id,
+              label: String(row?.label || GALLERY_SOURCE_FALLBACK[id].label),
+              capabilities: { ...GALLERY_SOURCE_FALLBACK[id].capabilities, ...(row?.capabilities || {}) },
+            });
+          }
+          this.gallerySources = map;
+        } catch {
+          this.gallerySources = this.gallerySources || null;
+        }
+        return this.gallerySources;
+      })();
+      this.gallerySourcesReady = task;
+      return task;
+    }
+
+    /** 画廊源的搜索词：原样透传用户输入（不做 D站 的 normalizeTags/截断/小写化） */
+    gallerySourceQuery() {
+      return String(this.queryWidget?.value ?? this.settings.lastQuery ?? "").trim();
+    }
+
+    gallerySourceFilters(sourceId = null) {
+      const id = String(sourceId || this.activeSourceId());
+      const all = this.settings.sourceFilters || (this.settings.sourceFilters = normalizeSourceFilters({}));
+      if (!all[id]) all[id] = normalizeSourceFilters({})[id] || {};
+      return all[id];
+    }
+
+    /**
+     * C站/P站 的查询参数。分页**只用 cursor**（契约钉死：参数名 cursor、回包字段 next_cursor）。
+     * ⚠️ 查询参数名契约里写的是"由各源自定义"，PLAN §3 阶段1/2 分别写了 `query=` 与 `word=`，
+     *    这里按文档发主名，同时附带 `query` 作为别名（FastAPI 会忽略未声明的查询参数），
+     *    以免两边命名分歧导致"点了搜索没反应"。
+     */
+    gallerySearchParams(sourceId, query) {
+      const params = new URLSearchParams();
+      params.set("cursor", String(this.cursorStack[this.cursorStack.length - 1] ?? ""));
+      params.set("limit", String(this.resolveLimit()));
+      if (sourceId === "pixiv") {
+        params.set("word", query);
+        params.set("query", query);
+        const f = this.gallerySourceFilters(sourceId);
+        params.set("target", String(f.target || "partial_match_for_tags"));
+        params.set("sort", String(f.sort || "date_desc"));
+      } else {
+        params.set("query", query);
+        const f = this.gallerySourceFilters(sourceId);
+        if (f.nsfw) params.set("nsfw", String(f.nsfw));
+        params.set("sort", String(f.sort || "Newest"));
+      }
+      return params;
+    }
+
+    readGalleryResponse(response) {
+      return response.json().catch(() => null);
+    }
+
+    resetGalleryCursor() {
+      this.cursorStack = [""];
+      this.nextCursor = null;
+    }
+
+    /** 统一 item schema（PLAN §5.2）→ 内部 post 形状（渲染/预览/下载链路一条都不用分叉） */
+    galleryItemToPost(item, sourceId) {
+      const id = item?.id == null ? "" : String(item.id);
+      const full = String(item?.full_url || item?.preview_url || "");
+      const preview = String(item?.preview_url || full || "");
+      const tags = Array.isArray(item?.tags) ? item.tags.map((tag) => String(tag || "").trim()).filter(Boolean) : [];
+      const width = Number(item?.width);
+      const height = Number(item?.height);
+      return {
+        id,
+        source: sourceId,
+        // D站 帖子字段名复用：renderPosts / buildPromptForPost / selectionFromCard 都不必知道图源
+        preview_file_url: preview,
+        large_file_url: full,
+        file_url: full,
+        full_url: full,
+        preview_url: preview,
+        image_width: Number.isFinite(width) && width > 0 ? width : 0,
+        image_height: Number.isFinite(height) && height > 0 ? height : 0,
+        file_ext: galleryFileExt(full || preview),
+        rating: item?.rating == null ? "" : String(item.rating),
+        score: item?.score == null ? null : Number(item.score),
+        fav_count: item?.meta?.fav_count ?? item?.meta?.bookmarks ?? null,
+        tag_string: tags.join(" "),
+        tags,
+        prompt: item?.prompt == null ? "" : String(item.prompt),
+        negative_prompt: item?.negative_prompt == null ? "" : String(item.negative_prompt),
+        source_url: item?.source_url == null ? "" : String(item.source_url),
+        meta: item?.meta && typeof item.meta === "object" ? item.meta : {},
+      };
+    }
+
+    /**
+     * C站 / P站 搜索。与 D站 的差别只有三处：路由（/anima/gallery/{source}/search）、
+     * 分页（cursor + next_cursor）、以及没有 D站 的计数标签上限。
+     */
+    async searchGallerySource({ resetPage = false, retryCount = 0 } = {}) {
+      const sourceId = this.activeSourceId();
+      const caps = this.sourceCapabilities(sourceId);
+      const query = this.gallerySourceQuery();
+      if (this.settings.activeCategory) {
+        this.settings.activeCategory = "";
+        this.saveSettings();
+        this.filterControls?.refresh();
+      }
+      if (resetPage) this.resetGalleryCursor();
+      // 新一批搜索（cursor 归零）＝ 新结果集 → 重新允许「拉大补图」
+      if (resetPage) this.fillMoreExhausted = false;
+      this.settings.sourceQueries[sourceId] = query;
+      this.settings.lastQuery = query;
+      this.saveSettings();
+      this.setQuery(query);
+      if (!query && sourceId === "pixiv") {
+        // Pixiv 搜索必须有词（契约只有 search/illust，没有匿名兜底列表）→ 明确提示，
+        // 而不是发一个必然失败的请求。
+        this.posts = [];
+        this.renderPosts();
+        this.renderPagination();
+        this.setStatus("P站：请输入关键词后回车搜索（日文 / 英文均可）");
+        return;
+      }
+      this.controller?.abort();
+      this.controller = new AbortController();
+      const requestController = this.controller;
+      const currentRequest = ++this.requestId;
+      let timedOut = false;
+      this.setStatus(`正在搜索：${query || "（最新）"} · ${this.sourceLabel(sourceId)}`);
+      if (this.grid) this.grid.setAttribute("aria-busy", "true");
+      try {
+        const parameters = this.gallerySearchParams(sourceId, query);
+        const timer = setTimeout(() => { timedOut = true; requestController.abort(); }, 45000);
+        let response, data;
+        try {
+          response = await fetch(`/anima/gallery/${encodeURIComponent(sourceId)}/search?${parameters}`, { signal: requestController.signal });
+          data = await this.readGalleryResponse(response);
+        } finally {
+          clearTimeout(timer);
+        }
+        if (currentRequest !== this.requestId) return;
+        if (!response.ok) {
+          const error = new Error(data?.error || `HTTP ${response.status}`);
+          error.name = "GallerySearchHTTPError";
+          error.httpStatus = response.status;
+          throw error;
+        }
+        const items = Array.isArray(data?.items) ? data.items : [];
+        this.nextCursor = data?.next_cursor == null || data.next_cursor === "" ? null : String(data.next_cursor);
+        this.posts = items
+          .map((item) => this.galleryItemToPost(item, sourceId))
+          .filter((post) => post.preview_file_url || post.large_file_url);
+        // 排除标签是本地按 Danbooru tag_string 过滤的（无标签体系时没有意义，控件在设置里已禁用）
+        const excludeTags = caps.tags ? (this.settings.excludeTags || []) : [];
+        let excludedCount = 0;
+        if (excludeTags.length) {
+          const tagSet = new Set(excludeTags);
+          const before = this.posts.length;
+          this.posts = this.posts.filter((post) => !String(post.tag_string || "").split(" ").some((tag) => tagSet.has(tag)));
+          excludedCount = before - this.posts.length;
+        }
+        this.renderPosts();
+        this.renderPagination();
+        const batch = this.cursorStack.length;
+        // 后端的 warnings（契约允许的可选键）**必须让用户看见** —— 例如 C站 不支持关键词检索时
+        // 后端会在这一页内本地过滤并回报"关键词未生效"；不说的话用户以为搜了却没反应（静默错误）。
+        const warnings = Array.isArray(data?.warnings) ? data.warnings.map((w) => String(w || "").trim()).filter(Boolean) : [];
+        const notices = [...warnings];
+        if (excludedCount) notices.push(`已排除 ${excludedCount} 张（${excludeTags.join("、")}）`);
+        if (items.length > this.posts.length + excludedCount) notices.push(`${items.length - this.posts.length - excludedCount} 张缺图已跳过`);
+        if (!this.nextCursor) notices.push("已到末页");
+        if (caps.login && sourceId === "pixiv") notices.push("P站标签与 Danbooru 词库不通用");
+        if (caps.prompt === false && sourceId === "pixiv") notices.push("P站无提示词，可下载原图喂 WD14 反推");
+        this.setStatus(`${this.sourceLabel(sourceId)}：${this.posts.length} 张 · 第 ${batch} 批` + (notices.length ? `（${notices.join("；")}）` : ""));
+        // 空结果 + 有警告时，网格里也写一格：状态栏那一行很容易被忽略
+        if (!this.posts.length && warnings.length) this.appendGridNotice(warnings.join("；"));
+      } catch (error) {
+        if (timedOut) {
+          this.posts = [];
+          this.renderPosts();
+          this.setStatus("搜索超时（45 秒）：图源或代理网络不稳定，请检查 Clash 节点后重试", "error");
+          return;
+        }
+        if (error?.name === "AbortError") return;
+        if (currentRequest !== this.requestId) return;
+        const retryable = error?.name === "TypeError" || [502, 503, 504].includes(Number(error?.httpStatus));
+        if (retryable && retryCount < 2) {
+          const attempt = retryCount + 1;
+          this.setStatus(`首次搜索响应异常，正在自动重试（${attempt}/2）…`);
+          await new Promise((resolve) => setTimeout(resolve, 250 + retryCount * 500));
+          if (currentRequest !== this.requestId) return;
+          return this.searchGallerySource({ resetPage: false, retryCount: attempt });
+        }
+        this.posts = [];
+        this.renderPosts();
+        this.renderPagination();
+        this.setStatus(`${this.sourceLabel(sourceId)} 搜索失败：${error?.message || "未知错误"}`, "error");
+      } finally {
+        if (currentRequest === this.requestId && this.grid) this.grid.removeAttribute("aria-busy");
+      }
+    }
+
+    /** cursor 分页：前进压栈（next_cursor），后退弹栈后重查 —— 契约只有 next_cursor，没有 prev */
+    async stepGalleryCursor(delta) {
+      if (delta > 0) {
+        if (!this.nextCursor) return;
+        this.cursorStack.push(this.nextCursor);
+      } else {
+        if (this.cursorStack.length <= 1) return;
+        this.cursorStack.pop();
+      }
+      await this.searchGallerySource({ resetPage: false });
+    }
+
+    async switchGallerySource(nextId) {
+      const id = String(nextId || "");
+      if (!GALLERY_SOURCE_ORDER.includes(id) || id === this.activeSourceId()) return;
+      const previous = this.activeSourceId();
+      this.settings.sourceQueries[previous] = this.gallerySourceQuery();
+      this.settings.source = id;
+      // 本地分类浏览是 D站 的实现（按 id: 回查 D站 帖子），换源时退出该模式，
+      // 否则新源会带着一个永远匹配不上的分类过滤。
+      this.settings.activeCategory = "";
+      this.saveSettings();
+      this.resetGalleryCursor();
+      this.page = 1;
+      this.posts = [];
+      this.hidePromptTooltip();
+      this.hideSuggestions();
+      this.applySourceCapabilities();
+      this.filterControls?.refresh();
+      const restored = String(this.settings.sourceQueries[id] || "");
+      this.setQuery(restored);
+      this.renderPosts();
+      this.renderPagination();
+      this.setStatus(`已切换到${this.sourceLabel(id)}${this.sourceCapabilities(id).login ? "（需要授权，见设置→图源密钥）" : ""}`);
+      // P站 后端模块没装时不发这个必然失败的请求（状态来自 /anima/gallery/secrets 的 pixiv.available）
+      if (id === "pixiv" && this.gallerySecretState?.pixiv?.available === false) {
+        this.setStatus("P站 后端模块未安装（anima_gallery_pixiv.py）—— 该图源不可用，请用 C站 或 D站", "error");
+        return;
+      }
+      await this.search({ resetPage: true });
+    }
+
+    /**
+     * 用 capabilities 驱动界面：**不适用的控件直接隐藏/禁用**，不留"点了没反应"的开关
+     * （项目 UI 规范：控件噪音也是失败）。D站 全功能，所以下面每条对 D站 都是空操作。
+     */
+    applySourceCapabilities() {
+      const sourceId = this.activeSourceId();
+      const caps = this.sourceCapabilities(sourceId);
+      const isDanbooru = sourceId === DANBOORU_SOURCE_ID;
+      if (this.sourceSelect && this.sourceSelect.value !== sourceId) this.sourceSelect.value = sourceId;
+      if (this.queryInput) {
+        // 搜索框文案按 capabilities.query 走（不按源名硬编码）：
+        // C站 实测上游 /api/v1/images 忽略全部关键词参数，只能"本页过滤"→ 必须说清楚。
+        this.queryInput.placeholder = caps.query
+          ? (GALLERY_SOURCE_PLACEHOLDERS[sourceId] || GALLERY_SOURCE_PLACEHOLDERS[DANBOORU_SOURCE_ID])
+          : GALLERY_LOCAL_QUERY_PLACEHOLDER;
+        this.queryInput.title = caps.query ? "" : GALLERY_LOCAL_QUERY_HINT;
+        this.queryInput.dataset.queryMode = caps.query ? "server" : "local";
+      }
+      if (this.queryRow) this.queryRow.dataset.queryMode = caps.query ? "server" : "local";
+      if (this.sourcePicker) this.sourcePicker.dataset.source = sourceId;
+      // ① D站 的「分级 / 筛选」全是 Danbooru metatag（rating:/score:/age:/favcount:…），
+      //    只有 D站 能消费它们 —— capabilities.tags 说的是"这个源有没有标签体系"，
+      //    而 P站 的 tags=true 是**日文**标签，照样吃不下 rating:/score:，
+      //    所以这里判的是 isDanbooru（否则 P站 会留着两个点了没反应的筛选下拉）。
+      const tagFiltersApplicable = isDanbooru && caps.tags;
+      if (this.filterControls) {
+        this.filterControls.ratingDropdown.element.hidden = !tagFiltersApplicable;
+        this.filterControls.filterDropdown.element.hidden = !tagFiltersApplicable;
+        // ② 分类浏览器按 `id:` 回查 D站 帖子 → 只有 D站 有意义（本地归类按钮仍可用）
+        this.filterControls.categoryDropdown.element.hidden = !isDanbooru;
+      }
+      // ③ 随机发现是 order:random + D站 评分地板，纯 D站 语义
+      for (const button of this.randomTierButtonList || []) button.hidden = !isDanbooru;
+      if (this.randomReshuffleBtn) this.randomReshuffleBtn.hidden = !isDanbooru;
+      // ④ 提示词相关控件跟着 capabilities.prompt（P站 prompt=false → 隐藏，不留死按钮）
+      const promptApplicable = caps.prompt || isDanbooru;
+      if (this.promptSettingsBtn) this.promptSettingsBtn.hidden = !promptApplicable;
+      if (this.promptOutputBtn) this.promptOutputBtn.hidden = !promptApplicable;
+      if (this.sourceFilterHost) {
+        this.sourceFilterHost.hidden = isDanbooru;
+        this.syncSourceFilterControls();
+      }
+    }
+
+    /** 源专属筛选控件（C站：nsfw/排序；P站：匹配方式/排序） */
+    buildSourceFilterControls() {
+      const host = document.createElement("div");
+      host.className = "adg-source-filters";
+      host.setAttribute("role", "group");
+      host.setAttribute("aria-label", "图源筛选");
+      host.hidden = true;
+      const makeSelect = (label, options) => {
+        const wrap = document.createElement("label");
+        wrap.className = "adg-source-field";
+        const text = document.createElement("span");
+        text.textContent = label;
+        const select = document.createElement("select");
+        select.setAttribute("aria-label", label);
+        for (const [value, name] of options) select.append(new Option(name, value));
+        wrap.append(text, select);
+        host.append(wrap);
+        return select;
+      };
+      const civitaiNsfw = makeSelect("分级", CIVITAI_NSFW_OPTIONS);
+      const civitaiSort = makeSelect("排序", CIVITAI_SORT_OPTIONS);
+      const pixivTarget = makeSelect("匹配", PIXIV_TARGET_OPTIONS);
+      const pixivSort = makeSelect("排序", PIXIV_SORT_OPTIONS);
+      const apply = () => {
+        const id = this.activeSourceId();
+        if (id === "civitai") {
+          const f = this.gallerySourceFilters(id);
+          f.nsfw = civitaiNsfw.value;
+          f.sort = civitaiSort.value;
+        } else if (id === "pixiv") {
+          const f = this.gallerySourceFilters(id);
+          f.target = pixivTarget.value;
+          f.sort = pixivSort.value;
+        } else {
+          return;
+        }
+        this.saveSettings();
+        this.search({ resetPage: true });
+      };
+      for (const select of [civitaiNsfw, civitaiSort, pixivTarget, pixivSort]) select.onchange = apply;
+      // capabilities.query=false（C站）时在筛选条尾部挂一行说明：控件没坏，是上游不支持关键词
+      const hint = document.createElement("span");
+      hint.className = "adg-source-hint";
+      hint.hidden = true;
+      host.append(hint);
+      this.sourceFilterControls = { civitaiNsfw, civitaiSort, pixivTarget, pixivSort, hint };
+      return host;
+    }
+
+    syncSourceFilterControls() {
+      if (!this.sourceFilterControls) return;
+      const id = this.activeSourceId();
+      const caps = this.sourceCapabilities(id);
+      const f = this.gallerySourceFilters(id);
+      const { civitaiNsfw, civitaiSort, pixivTarget, pixivSort, hint } = this.sourceFilterControls;
+      const show = (element, on) => { element.parentElement.hidden = !on; };
+      civitaiNsfw.value = f.nsfw || "";
+      civitaiSort.value = f.sort || "Newest";
+      pixivTarget.value = f.target || "partial_match_for_tags";
+      pixivSort.value = f.sort || "date_desc";
+      show(civitaiNsfw, id === "civitai");
+      show(civitaiSort, id === "civitai");
+      show(pixivTarget, id === "pixiv");
+      show(pixivSort, id === "pixiv");
+      if (hint) {
+        hint.hidden = caps.query;
+        hint.textContent = caps.query ? "" : GALLERY_LOCAL_QUERY_HINT_SHORT;
+        hint.title = caps.query ? "" : GALLERY_LOCAL_QUERY_HINT;
+        hint.dataset.queryMode = caps.query ? "server" : "local";
+      }
+      if (this.sourceFilterHost) {
+        this.sourceFilterHost.title = id === "civitai"
+          ? "C站筛选：分级（None/Soft/Mature/X，匿名也可读）与排序（上游只认 Newest/Oldest/Most */Random）"
+          : "P站筛选：匹配方式与排序（标签与 Danbooru 词库不通用）";
+      }
+    }
+
+    imageProxyUrl(imageUrl, version = "", sourceId = null) {
+      // 多源：图片一律经后端代理（PLAN §5.4，前端不许 <img src="第三方 CDN">）。
+      // D站 保持原样往下走；非 D站 走 /anima/gallery/{source}/image（P站 的 Referer 由
+      // 后端按 images_headers() 附加，前端不参与）。
+      const active = String(sourceId || this.activeSourceId() || DANBOORU_SOURCE_ID);
+      if (active !== DANBOORU_SOURCE_ID) {
+        let gallerySource = String(imageUrl || "");
+        if (version && !/[?&]v=/.test(gallerySource)) {
+          gallerySource += `${gallerySource.includes("?") ? "&" : "?"}v=${encodeURIComponent(String(version))}`;
+        }
+        return `/anima/gallery/${encodeURIComponent(active)}/image?url=${encodeURIComponent(gallerySource)}`;
+      }
       let source = String(imageUrl || "");
       if (version && !/[?&]v=/.test(source)) {
         source += `${source.includes("?") ? "&" : "?"}v=${encodeURIComponent(String(version))}`;
       }
       return `/anima/danbooru/image?url=${encodeURIComponent(source)}`;
+    }
+
+    /** 某张帖子自己的图源（画廊 item 自带 source；D站 帖子没有 → 用当前源） */
+    postSourceId(post) {
+      const id = String(post?.source || "");
+      return GALLERY_SOURCE_ORDER.includes(id) ? id : this.activeSourceId();
     }
 
     postImageUrl(post) {
@@ -565,35 +1161,153 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     shrinkGridToContent(total) {
       const root = this.root;
       if (!root || !(total > 0)) return;
+      // ① 用户手动调过尺寸 → 本次结果集内**不再自动收缩**。否则「放回大小」会被下一帧
+      //    缩回去，用户看到的就是「手动放大也不填满」。
+      if (this.userResizedAt) return;
+      // ② 同一个内容高度只缩一次。否则「缩 → 竖向滚动条消失 → 内容区变宽 → 列数 +1
+      //    → 卡片变矮 → 内容总高变小 → 再缩」会一轮轮互相触发，节点就"慢慢变小"。
+      if (this.shrunkTotal !== null && Math.abs(this.shrunkTotal - total) < 8) return;
       const current = root.clientHeight || 0;
       if (!(current > 0)) return;
       const target = Math.max(360, Math.min(1200, Math.ceil(total + 8)));
       if (target >= current - 24) return;
+      // ③ 只收「**明显**填不满」的情况：内容不到可视高度的 60% 才收。
+      //    否则用户「拉大节点想看更多图」会被立刻缩回去 —— 用户原话：
+      //    「应该是图片适配节点，而不是节点适配图片」（2026-09-15 真机反馈）。
+      if (target > current * 0.6) return;
       if (Math.abs((this.settings.gridHeight || 0) - target) < 2) return;
       this.settings.gridHeight = target;
-      if (this.domSizeSync) this.domSizeSync.setContentHeight(target);
-      else {
-        root.style.height = `${target}px`;
-        this.node?.setSize?.([Math.max(360, this.node.size?.[0] || 780), target + 95]);
-        this.node?.graph?.setDirtyCanvas?.(true, true);
-      }
+      this.shrunkTotal = target;
+      this.setGridHeight(target);
     }
 
-    /** 节点/网格尺寸变化后：列数变了就重新取图（张数自适应），否则只重排 */
+    /**
+     * 把网格高度应用到节点。**所有程序化改尺寸都必须走这里** ——
+     * 记下时刻，供 noteExternalResize() 区分「用户拖动」与「我们自己改的」。
+     */
+    setGridHeight(height) {
+      this.programmaticResizeAt = Date.now();
+      if (this.domSizeSync) {
+        this.domSizeSync.setContentHeight(height);
+        return;
+      }
+      if (this.root) {
+        this.root.style.height = `${height}px`;
+        this.root.style.minHeight = "0px";
+        this.root.style.maxHeight = "none";
+      }
+      this.node?.setSize?.([Math.max(360, this.node.size?.[0] || 780), height + 95]);
+      this.node?.graph?.setDirtyCanvas?.(true, true);
+    }
+
+    /** 节点尺寸被外部改变时调用：距上次程序化改尺寸足够久 ⇒ 判定为用户手动拖动。 */
+    noteExternalResize() {
+      if (Date.now() - this.programmaticResizeAt > 350) this.userResizedAt = Date.now();
+    }
+
+    /**
+     * 节点/网格尺寸变化后：列数变了 → 重取一页；**纵向显著拉大且这批填不满** → 再补一批。
+     *
+     * 2026-09-15 用户真机反馈：「画廊底部拖拽但是没有加载新的图片挤进来」。
+     * 根因：纵向拉大不改变列数，而旧实现只有 `cols !== lastCols` 才重取 ⇒ 拉高永远不补图。
+     * 与「自动收缩」方向相反但同样要克制：只在自适应张数模式、只在明显填不满、450ms 防抖、末批不再取。
+     */
     handleGridResize() {
       if (!this.grid) return;
       const { cols } = this.gridMetrics();
       const changed = this.lastCols && cols !== this.lastCols;
+      // 「高度显著增大」必须在 scheduleMasonryLayout() 之前读：布局是下一帧才跑的，
+      // 这里比较的是「用户拉大后的可视高」与「上一次记录的可视高」。
+      const grewTaller = this.noteTallerResize();
       this.scheduleMasonryLayout();
-      if (!changed || this.disposed) return;
-      // 列数变化 ⇒ 同一屏能放的张数变了。自适应模式下重取一页，固定模式只重排。
-      if (this.autoLimit()) {
-        if (this.resizeSearchTimer) clearTimeout(this.resizeSearchTimer);
-        // 防抖：拖动节点缩放时不要每帧都打 D站
-        this.resizeSearchTimer = setTimeout(() => {
-          this.resizeSearchTimer = null;
-          if (!this.disposed && this.posts.length) this.search({ resetPage: true });
-        }, 450);
+      if (this.disposed) return;
+      if (!changed && !grewTaller) return;
+      // 固定张数模式：用户已显式指定每页几张，只重排、不擅自取数
+      if (!this.autoLimit()) return;
+      if (this.resizeSearchTimer) clearTimeout(this.resizeSearchTimer);
+      // 防抖：拖动节点缩放时不要每帧都打上游接口
+      this.resizeSearchTimer = setTimeout(() => {
+        this.resizeSearchTimer = null;
+        if (this.disposed || !this.posts.length) return;
+        if (changed) {
+          // 列数变化 ⇒ 同一屏能放的张数变了（原有行为：重取一页）
+          this.search({ resetPage: true });
+          return;
+        }
+        // 纵向拉大 ⇒ 补图填满（追加，不重置用户已翻到的位置）
+        void this.fillMoreForHeight();
+      }, 450);
+    }
+
+    /** 记录网格可视高度；返回本次是否为「显著增大」（用户纵向拖大节点） */
+    noteTallerResize() {
+      const visible = Number(this.grid?.clientHeight) || 0;
+      const previous = Number(this.lastVisibleHeight) || 0;
+      this.lastVisibleHeight = visible;
+      if (!(visible > 0) || !(previous > 0)) return false;
+      return visible - previous >= DG_TALLER_MIN_DELTA && visible >= previous * DG_TALLER_MIN_RATIO;
+    }
+
+    /**
+     * 当前这批是否明显填不满可视区。
+     * ⚠️ 分母用 **grid.clientHeight**（网格自己的视口），不是 `root.clientHeight`
+     * —— root 还包含搜索框/工具条/分页/状态栏等固定 chrome（实测 ~130–150px），
+     * 拿它当可视高会让「明明填满了」也恒判填不满，一拉大就无限补图。
+     */
+    gridUnderfilled() {
+      const total = Number(this._layoutTotal) || 0;
+      const visible = Number(this.grid?.clientHeight) || 0;
+      if (!(total > 0) || !(visible > 0)) return false;
+      return total < visible * DG_UNDERFILL_RATIO;
+    }
+
+    /**
+     * 纵向拉大后「取更多图挤进来」：D站 走 page+1、C站/P站 走 next_cursor 前进
+     * （都复用现有取数路径，D站 路由/参数一个字节没改），结果**追加**在已显示的图后面。
+     * 末批（无更多）与「取回来的全是重复」都记进 fillMoreExhausted，之后不再打接口。
+     */
+    async fillMoreForHeight() {
+      if (this.disposed || this.fillMoreBusy || this.fillMoreExhausted) return;
+      if (!this.autoLimit()) return;
+      if (!this.posts.length) return;
+      if (!this.gridUnderfilled()) return;
+      // C站/P站：契约只有 next_cursor，没有它就到底了
+      if (!this.isDanbooruSource() && !this.nextCursor) {
+        this.fillMoreExhausted = true;
+        return;
+      }
+      const before = this.posts.slice();
+      const seen = new Set(before.map((post) => String(post.id)));
+      this.fillMoreBusy = true;
+      try {
+        if (this.isDanbooruSource()) {
+          // D站：page 分页（老路由/老参数不变），取下一页
+          this.page += 1;
+          await this.search();
+        } else {
+          // C站/P站：cursor 栈前进一批
+          await this.stepGalleryCursor(1);
+        }
+        const fetched = this.posts.slice();
+        const merged = [...before, ...fetched.filter((post) => !seen.has(String(post.id)))];
+        if (!fetched.length || merged.length <= before.length) {
+          // 空页 / 全是重复 ⇒ 池子取光了，别再打接口
+          this.fillMoreExhausted = true;
+          this.posts = before;
+        } else {
+          this.posts = merged;
+          this.setStatus(`${this.sourceLabel()}：已补到 ${merged.length} 张（填满本屏）`);
+        }
+        this.renderPosts();
+        this.renderPagination();
+      } catch (error) {
+        // 补图失败不该打断用户：恢复原结果集，把原因写在状态栏
+        this.posts = before;
+        this.renderPosts();
+        this.renderPagination();
+        this.setStatus(`补图失败：${error?.message || "未知错误"}`, "error");
+      } finally {
+        this.fillMoreBusy = false;
       }
     }
 
@@ -750,6 +1464,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       void this.hydratePresetNotes();
       this.updatePromptOutputButton();
       this.applyGridHeight();
+      // 工作流里保存的图源要恢复成对应的控件可见性（P站 隐藏提示词类控件等）
+      this.applySourceCapabilities();
     }
 
     loadWorkflowSettings() {
@@ -793,17 +1509,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     applyGridHeight() {
       const height = Math.max(360, Math.min(1200, Number(this.settings.gridHeight) || 620));
       this.settings.gridHeight = height;
-      if (this.domSizeSync) {
-        this.domSizeSync.setContentHeight(height);
-        return;
-      }
-      if (this.root) {
-        this.root.style.height = `${height}px`;
-        this.root.style.minHeight = "0px";
-        this.root.style.maxHeight = "none";
-      }
-      this.node.setSize?.([Math.max(360, this.node.size?.[0] || 780), height + 95]);
-      this.node.graph?.setDirtyCanvas?.(true, true);
+      // 用户在设置面板里指定高度 = 明确意图 → 本次结果集内不要再自动收缩
+      this.userResizedAt = Date.now();
+      this.setGridHeight(height);
     }
 
     loadFavorites() {
@@ -858,6 +1566,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     scheduleSuggestions(value) {
+      // 联想走的是 D站 /anima/danbooru/suggest（Danbooru tag 词典）：非 D站 图源没有这套词典，
+      // 弹出来的候选一定插不进去 —— 直接不弹（capabilities.tags=false 的 C站 尤其如此）。
+      if (!this.isDanbooruSource()) {
+        this.hideSuggestions();
+        return;
+      }
       if (this.suggestionTimer) clearTimeout(this.suggestionTimer);
       const query = String(value ?? "");
       if (!query.trim()) {
@@ -939,6 +1653,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     async search({ resetPage = false, force = false, skipFuzzy = false, retryCount = 0 } = {}) {
+      // 多源画廊：非 D站 走统一画廊协议 /anima/gallery/{source}/search（cursor 分页）。
+      // ⚠️ D站 分支（下面这一整段）保持原样：路由 /anima/danbooru/posts、page 分页、
+      //    计数标签上限、模糊纠错、排除标签本地过滤全部不动。
+      if (!this.isDanbooruSource()) return this.searchGallerySource({ resetPage, retryCount });
       // build() 中的初次搜索与 refreshAccount 并发时，不能先按默认匿名上限移除排序。
       // 等待一次账号状态后，后续搜索只会 await 一个已完成的 Promise，不增加网络请求。
       if (this.accountReady) {
@@ -991,6 +1709,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         return;
       }
       if (resetPage) this.page = 1;
+      // 新一轮搜索（点搜索/换筛选/列数变化）＝ 新结果集 → 重新允许「拉大补图」
+      if (resetPage) this.fillMoreExhausted = false;
       this.settings.lastQuery = normalizeTags(this.queryWidget?.value || "");
       this.saveSettings();
       this.setQuery(this.settings.lastQuery);
@@ -1633,6 +2353,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         groups[category].push(clean);
         seen.add(clean);
       };
+      // C站（capabilities.prompt=true、tags=false）：回包里带的是别人写好的**整段提示词**
+      // （PLAN §5.2 的 item.prompt）。这里把它拆成词条喂进现有的分组链路，
+      // 于是既有的悬停浮层 / Prompt 编辑器 / 入库弹窗都能直接复用，不必新造一套 UI。
+      // ⚠️ D站 帖子没有 post.prompt，这条分支对 D站 永远不成立。
+      const galleryPrompt = String(post?.prompt || "").trim();
+      if (galleryPrompt && !String(post?.tag_string || "").trim()) {
+        for (const part of splitPromptParts(galleryPrompt)) add("general", part);
+        return groups;
+      }
       for (const category of PROMPT_CATEGORY_ORDER) {
         for (const tag of String(post?.[`tag_string_${category}`] || "").split(" ")) add(category, tag);
       }
@@ -1945,6 +2674,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.lastCols = 0;
       this.lastColStep = 0;
       this.failedImageCount = 0;
+      // 新一批结果 → 允许重新评估一次自动收缩。
+      this.shrunkTotal = null;
+      // ⚠️ **不要**在这里重置 userResizedAt：用户手动调过的节点尺寸是**跨批次**的意图。
+      // 之前在这里重置它 ⇒「拉大节点 → 点下一批 → 节点又缩回内容高度」，
+      // 用户看到的是「节点适配图片」而不是「图片适配节点」（2026-09-15 真机反馈）。
       this.renderedPostCount = 0;
       if (!this.posts.length) {
         const empty = document.createElement("div");
@@ -1981,6 +2715,16 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         card.dataset.promptTranslations = JSON.stringify(promptEdit?.translations || {});
         card.dataset.promptGroups = JSON.stringify(promptResult.groups);
         card.dataset.postId = String(post.id || "");
+        // 图源标记：卡片自己的来源（画廊 item 自带 source；D站 为空 = 当前源 D站）
+        const postSourceId = this.postSourceId(post);
+        const isGallerySource = postSourceId !== DANBOORU_SOURCE_ID;
+        const postCaps = this.sourceCapabilities(postSourceId);
+        card.dataset.source = isGallerySource ? postSourceId : "";
+        if (isGallerySource) {
+          // C站 的负面提示词 + 采样参数、P站 的日文标签/作者：同一浮层里展示，不另造弹窗
+          card.dataset.negativePrompt = String(post.negative_prompt || "");
+          card.dataset.galleryMeta = JSON.stringify(post.meta || {});
+        }
         // 结构化元数据（2026-08-24：metadata_json 输出数据源）
         card.dataset.rating = String(post.rating || "");
         card.dataset.score = String(post.score ?? "");
@@ -2000,7 +2744,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         // loading=lazy 会让已设置 src 的后半页图片永久停在 pending，形成空卡片。
         preview.loading = "eager";
         preview.decoding = "async";
-        preview.alt = `Danbooru #${post.id || ""}`;
+        preview.alt = `${isGallerySource ? this.sourceLabel(postSourceId) : "Danbooru"} #${post.id || ""}`;
         const previewUrl = post.preview_file_url || imageUrl;
         const imageWidth = Number(post.image_width);
         const imageHeight = Number(post.image_height);
@@ -2011,7 +2755,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           preview.height = imageHeight;
           preview.style.aspectRatio = `${imageWidth} / ${imageHeight}`;
         }
-        preview.dataset.src = this.imageProxyUrl(previewUrl, post.md5);
+        preview.dataset.src = this.imageProxyUrl(previewUrl, post.md5, postSourceId);
         preview.onerror = () => {
           // 单张失败不再整卡塌陷成一行文字（会打乱瀑布流）：保留占位并标红
           preview.classList.add("is-failed");
@@ -2023,7 +2767,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const caption = document.createElement("span");
         caption.className = "adg-caption";
         const isVid = this.isVideoPost(post);
-        caption.textContent = `#${post.id || "?"} · ${post.image_width || "?"}×${post.image_height || "?"}${isVid ? " · MP4" : ""}`;
+        caption.textContent = `#${post.id || "?"} · ${post.image_width || "?"}×${post.image_height || "?"}${isVid ? " · MP4" : ""}${isGallerySource ? ` · ${this.sourceLabel(postSourceId)}` : ""}`;
         selectButton.append(preview, caption);
         if (isVid) {
           const badge = document.createElement("span");
@@ -2063,9 +2807,17 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           return button;
         };
         addAction("预览", "预览图片", () => this.openImagePreview(post));
-        addAction("Prompt", "查看、编辑和复制 Prompt", () => this.openPromptEditor(card, post));
-        addAction("分类/入库", "在同一弹窗中分别选择本地分类和 Prompt 入库，可只执行其中一项", () => this.saveToPromptLibrary(post, { includeLocalCategory: true }));
-        addAction("下载", "下载原图", () => this.downloadPost(post));
+        // capabilities.prompt=false 的图源（P站）没有提示词可看/可入库 → 不收这两个按钮，
+        // 否则点下去只会得到空内容（项目 UI 规范：不要留点了没反应的控件）。
+        const promptActionsApplicable = postCaps.prompt || !isGallerySource;
+        const promptAction = addAction("Prompt", "查看、编辑和复制 Prompt", () => this.openPromptEditor(card, post));
+        const libraryAction = addAction("入库", "分类 / 入库：在同一弹窗中分别选择本地分类和 Prompt 入库，可只执行其中一项", () => this.saveToPromptLibrary(post, { includeLocalCategory: true }));
+        if (!promptActionsApplicable) {
+          promptAction.hidden = true;
+          libraryAction.hidden = true;
+        }
+        // 「下载原图」对 P站 是主用途（下载后喂 WD14 反推）→ 走 full_url（original 优先，见 downloadPost）
+        addAction("下载", "下载原图（原图优先 full_url）", () => this.downloadPost(post));
         const favoriteButton = addAction(isFavorite ? "★" : "☆", isFavorite ? "取消收藏" : "收藏", () => {
           const next = this.toggleFavorite(post.id);
           card.classList.toggle("is-favorite", next);
@@ -2123,6 +2875,31 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         badge.textContent = "本地分类浏览";
         badge.title = "当前为该分类全部已归类图片；搜索或翻页即返回普通搜索";
         this.pagination.append(badge);
+        return;
+      }
+      // C站 / P站：契约只有 cursor + next_cursor（没有页码语义），所以只给「上一批 / 下一批」。
+      // 不摆页码输入框 —— 那会变成一个"输了没反应"的控件（见 PLAN §5.3 分页一节）。
+      if (!this.isDanbooruSource()) {
+        const batch = this.cursorStack.length;
+        const previous = document.createElement("button");
+        previous.type = "button";
+        previous.className = "adg-cursor-step"; // 页码按钮是固定 24px 宽，"下一批 ›" 会被挤成竖排
+        previous.textContent = "‹ 上一批";
+        previous.disabled = batch <= 1;
+        previous.title = previous.disabled ? "已经是第一批" : "回到上一批（cursor 栈回退）";
+        previous.onclick = () => { void this.stepGalleryCursor(-1); };
+        const label = document.createElement("span");
+        label.className = "adg-cursor-batch";
+        label.textContent = `第 ${batch} 批`;
+        label.title = "C站 / P站 用游标分页：只能顺序前进，没有跳页";
+        const next = document.createElement("button");
+        next.type = "button";
+        next.className = "adg-cursor-step";
+        next.textContent = "下一批 ›";
+        next.disabled = !this.nextCursor;
+        next.title = this.nextCursor ? "按后端返回的 next_cursor 取下一批" : "没有更多了";
+        next.onclick = () => { void this.stepGalleryCursor(1); };
+        this.pagination.append(previous, label, next);
         return;
       }
       for (const page of this.pageWindow()) {
@@ -2551,7 +3328,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       }
       this.setStatus(`正在保存 #${post.id || ""} 到 Prompt 库…`);
       try {
-        const imageResponse = await fetch(`/anima/danbooru/image?url=${encodeURIComponent(imageUrl)}`);
+        const imageResponse = await fetch(this.imageProxyUrl(imageUrl, "", this.postSourceId(post)));
         if (!imageResponse.ok) throw new Error(`预览图 HTTP ${imageResponse.status}`);
         const imageBlob = await imageResponse.blob();
         const imageDataUrl = await new Promise((resolve, reject) => {
@@ -2669,16 +3446,106 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         }));
         return section;
       }));
+      // 占位文案 → 真面板会让尺寸跳变（标签多时尤其明显），必须用同一个锚点重算位置，
+      // 否则按"正在加载"的小尺寸定位出来的坐标，会被大面板直接撑到画廊上并溢出视口。
+      this.positionTooltip();
+      // 画廊源（C站/P站）的补充信息（负面提示词 / 采样参数 / 作者·收藏）追加在**同一个浮层**里。
+      const galleryExtra = this.buildGalleryTooltipExtra(card);
+      if (galleryExtra && this.tooltip === tooltip) {
+        tooltip.append(galleryExtra);
+        this.positionTooltip(); // 又长高了，同一个锚点再算一次
+      }
+    }
+
+    /**
+     * C站：负面提示词 + 采样参数（PLAN §5.2 item.meta）；P站：作者 / 收藏 / 标签体系提示。
+     * 复用浮层现有的 section / line 类，不新增浮层、不新增控件。
+     */
+    buildGalleryTooltipExtra(card) {
+      const sourceId = String(card?.dataset?.source || "");
+      if (!sourceId || sourceId === DANBOORU_SOURCE_ID) return null;
+      let meta = {};
+      try { meta = JSON.parse(card.dataset.galleryMeta || "{}"); } catch { meta = {}; }
+      const negative = String(card.dataset.negativePrompt || "").trim();
+      const rows = [];
+      const push = (label, value) => {
+        const text = String(value ?? "").trim();
+        if (text) rows.push([label, text]);
+      };
+      if (negative) push("负面", negative);
+      if (sourceId === "civitai") {
+        push("采样", [meta.sampler, meta.steps ? `${meta.steps} 步` : "", meta.cfgScale ? `CFG ${meta.cfgScale}` : ""].filter(Boolean).join(" · "));
+        push("种子", meta.seed);
+        // PLAN §6：meta.Model 不存在（那是模型版本端点的字段）→ 只用条目级 baseModel
+        push("底模", meta.baseModel || meta.model);
+      } else if (sourceId === "pixiv") {
+        push("作者", meta.user_name || meta.author || meta.user);
+        push("收藏", meta.bookmarks ?? meta.fav_count);
+      }
+      const hasPrompt = this.sourceCapabilities(sourceId).prompt;
+      const extras = [];
+      if (rows.length) {
+        const section = document.createElement("section");
+        section.className = "adg-prompt-tooltip-section";
+        const heading = document.createElement("div");
+        heading.className = "adg-prompt-tooltip-category";
+        heading.textContent = sourceId === "civitai" ? "C站生成参数" : "P站信息";
+        section.append(heading, ...rows.map(([label, value]) => {
+          const line = document.createElement("div");
+          line.className = "adg-prompt-tooltip-line";
+          const name = document.createElement("span");
+          name.textContent = label;
+          const text = document.createElement("small");
+          text.textContent = value;
+          line.append(name, text);
+          return line;
+        }));
+        extras.push(section);
+      }
+      if (!hasPrompt || sourceId === "pixiv") {
+        const note = document.createElement("div");
+        note.className = "adg-prompt-tooltip-note";
+        note.textContent = sourceId === "pixiv"
+          ? "P站标签为日文体系，与 Danbooru 词库不通用；用途是下载原图后交给 WD14 反推"
+          : "C站无标签体系，这里显示的是原作者写的提示词与采样参数";
+        extras.push(note);
+      }
+      if (!extras.length) return null;
+      const wrap = document.createElement("div");
+      wrap.className = "adg-prompt-tooltip-extra";
+      wrap.append(...extras);
+      return wrap;
     }
 
     positionTooltip(event) {
       if (!this.tooltip) return;
-      const padding = 14;
+      // 记住锚点：内容异步加载完（"正在加载双语 Prompt…" → 真面板）尺寸会变，
+      // 那时必须用**同一个锚点**重新定位，否则会以小尺寸算出的位置承载大尺寸内容，
+      // 直接盖住画廊并溢出视口。
+      if (event && typeof event.clientX === "number") {
+        this.tooltipAnchor = { x: event.clientX, y: event.clientY };
+      }
+      const anchor = this.tooltipAnchor;
+      if (!anchor) return;
+      const padding = 12;
+      const gap = 14;
       const rect = this.tooltip.getBoundingClientRect();
-      const left = Math.min(window.innerWidth - rect.width - padding, event.clientX + padding);
-      const top = Math.min(window.innerHeight - rect.height - padding, event.clientY + padding);
-      this.tooltip.style.left = `${Math.max(padding, left)}px`;
-      this.tooltip.style.top = `${Math.max(padding, top)}px`;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      // 先试右侧 / 下方；放不下就**翻到反侧**（而不是贴边硬塞 —— 那正是用户说的
+      // "被浏览器边框挤着硬显示"）。两侧都放不下时才退回贴边钳制。
+      let left = anchor.x + gap;
+      if (left + rect.width + padding > vw) {
+        const flipped = anchor.x - gap - rect.width;
+        left = flipped >= padding ? flipped : Math.max(padding, vw - rect.width - padding);
+      }
+      let top = anchor.y + gap;
+      if (top + rect.height + padding > vh) {
+        const flipped = anchor.y - gap - rect.height;
+        top = flipped >= padding ? flipped : Math.max(padding, vh - rect.height - padding);
+      }
+      this.tooltip.style.left = `${Math.round(left)}px`;
+      this.tooltip.style.top = `${Math.round(top)}px`;
     }
 
     hidePromptTooltip() {
@@ -2687,21 +3554,29 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     async downloadPost(post) {
-      const imageUrl = post.large_file_url || post.file_url || post.preview_file_url;
+      const sourceId = this.postSourceId(post);
+      const isGallerySource = sourceId !== DANBOORU_SOURCE_ID;
+      // P站 的用途是「下载原图 → WD14 反推」（PLAN §5.7），所以画廊源一律原图优先：
+      // full_url 就是契约里的 original（各源适配器保证 original 优先、退回 large）。
+      const imageUrl = isGallerySource
+        ? (post.full_url || post.large_file_url || post.file_url || post.preview_url || post.preview_file_url)
+        : (post.large_file_url || post.file_url || post.preview_file_url);
       if (!imageUrl) return;
       this.setStatus(`正在下载 #${post.id || ""}…`);
       try {
-        const response = await fetch(`/anima/danbooru/image?url=${encodeURIComponent(imageUrl)}`);
+        // 一律走后端代理（P站 的 Referer 由后端按 images_headers() 附加）
+        const response = await fetch(this.imageProxyUrl(imageUrl, "", sourceId));
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const objectUrl = URL.createObjectURL(await response.blob());
         const link = document.createElement("a");
         link.href = objectUrl;
-        link.download = `danbooru_${post.id || "image"}.${post.file_ext || "jpg"}`;
+        const prefix = isGallerySource ? sourceId : "danbooru";
+        link.download = `${prefix}_${post.id || "image"}.${post.file_ext || "jpg"}`;
         document.body.append(link);
         link.click();
         link.remove();
         setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-        this.setStatus(`已开始下载 #${post.id || ""}`);
+        this.setStatus(`已开始下载 #${post.id || ""}${isGallerySource ? `（${this.sourceLabel(sourceId)} 原图）` : ""}`);
       } catch (error) {
         this.setStatus(`下载失败：${error?.message || "未知错误"}`, "error");
       }
@@ -2714,10 +3589,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     openImagePreview(post) {
       const isVid = this.isVideoPost(post);
+      const sourceId = this.postSourceId(post);
       // 视频帖没有可显示的"大图"（large 是 mp4）→ 用封面 jpg 兜底
       const imageUrl = isVid
-        ? (post.preview_file_url || post.large_file_url || "")
-        : (post.large_file_url || post.file_url || post.preview_file_url);
+        ? (post.preview_file_url || post.preview_url || post.large_file_url || "")
+        : (post.large_file_url || post.full_url || post.file_url || post.preview_file_url || post.preview_url);
       if (!imageUrl) return;
       this.removeDialog();
       const overlay = document.createElement("div");
@@ -2725,8 +3601,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       overlay.className = "adg-dialog-overlay adg-image-preview-overlay";
       const image = document.createElement("img");
       image.className = "adg-image-preview";
-      image.alt = `Danbooru #${post.id || ""}`;
-      image.src = `/anima/danbooru/image?url=${encodeURIComponent(imageUrl)}`;
+      image.alt = `${this.sourceLabel(sourceId)} #${post.id || ""}`;
+      // 预览同样走后端代理（第三方 CDN 直连会踩防盗链：i.pximg.net 无 Referer 一律 403）
+      image.src = this.imageProxyUrl(imageUrl, "", sourceId);
       overlay.append(image);
       if (isVid) {
         const hint = document.createElement("div");
@@ -3220,6 +4097,338 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       document.body.append(overlay);
     }
 
+    /**
+     * 读密钥状态（PLAN §5.5）。C站 走 /anima/gallery/secrets（**只回掩码，绝不回明文**）；
+     * P站 走 /anima/gallery/pixiv/auth/status。两处分别读，互不依赖。
+     */
+    async refreshGallerySecretState() {
+      const state = {
+        civitai: { configured: false, masked: "", error: "" },
+        pixiv: { logged_in: false, available: true, error: "" },
+      };
+      try {
+        const response = await fetch("/anima/gallery/secrets");
+        const data = await response.json().catch(() => null);
+        if (response.ok) {
+          state.civitai.configured = Boolean(data?.civitai?.configured);
+          // 后端只给 `前4…后4` 掩码；前端**不得**把它当明文用，也不得回显用户刚输入的 key
+          state.civitai.masked = String(data?.civitai?.masked || "");
+        } else {
+          state.civitai.error = String(data?.error || `HTTP ${response.status}`);
+        }
+        // P站：available=false = 后端模块没装；true+logged_in=false = 装了没登录。
+        // 两种状态文案必须分开（协调者 2026-09-15：否则用户会去点"去授权"点不动）。
+        if (data?.pixiv && typeof data.pixiv === "object") {
+          state.pixiv.available = data.pixiv.available !== false;
+          state.pixiv.logged_in = Boolean(data.pixiv.logged_in);
+        }
+      } catch (error) {
+        state.civitai.error = error?.message || "请求失败";
+      }
+      try {
+        const response = await fetch("/anima/gallery/pixiv/auth/status");
+        const data = await response.json().catch(() => null);
+        if (response.ok) {
+          state.pixiv.logged_in = Boolean(data?.logged_in);
+          if (data?.available === false) state.pixiv.available = false;
+        } else {
+          state.pixiv.error = String(data?.error || `HTTP ${response.status}`);
+        }
+      } catch (error) {
+        state.pixiv.error = error?.message || "请求失败";
+      }
+      this.gallerySecretState = state;
+      return state;
+    }
+
+    /** P站 三种状态的文案：没装 / 装了没登录 / 已授权（不能混成两种） */
+    pixivStatusText(info = {}) {
+      if (info.error) return `读取失败：${info.error}`;
+      if (info.available === false) return "后端未安装 P站 模块（anima_gallery_pixiv.py）—— 该图源不可用";
+      if (info.logged_in) return "已授权（refresh_token 已存 data/pixiv_token.json）";
+      return "未授权：P站 没有匿名搜索，必须先授权一次";
+    }
+
+    /**
+     * C站 诊断入口（GET /anima/gallery/civitai/diag，仿 D站 /anima/danbooru/diag）。
+     * ⚠️ 只渲染**白名单标量字段**：任何形如 token/secret/verifier 的键一律不显示，
+     *    key 只显示后端给的掩码字段（`masked`），避免把诊断面板变成明文泄露面。
+     */
+    async renderCivitaiDiag(target) {
+      if (!target) return;
+      target.textContent = "正在读取诊断信息…";
+      try {
+        const response = await fetch("/anima/gallery/civitai/diag");
+        const data = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+        const blocked = /token|secret|verifier|password/i;
+        const lines = [];
+        const walk = (value, prefix = "") => {
+          if (value == null || lines.length >= 12) return;
+          if (typeof value === "object") {
+            for (const [key, child] of Object.entries(value)) {
+              if (blocked.test(key)) continue;
+              walk(child, prefix ? `${prefix}.${key}` : key);
+              if (lines.length >= 12) return;
+            }
+            return;
+          }
+          const name = prefix.toLowerCase();
+          const text = String(value);
+          // 兜底：形如 api_key 的字段若没带掩码省略号（=> 可能是真明文），一律不显示原值
+          const looksLikeRawKey = /(^|[._])key$/.test(name) && text.length > 12 && !text.includes("…");
+          lines.push(`${prefix || "值"}：${looksLikeRawKey ? "（已隐藏：只允许显示掩码）" : text}`);
+        };
+        walk(data);
+        target.textContent = lines.length ? lines.join("\n") : "诊断返回空";
+      } catch (error) {
+        target.textContent = `诊断失败：${error?.message || "未知错误"}`;
+      }
+    }
+
+    /** 状态点 + 一行说明（颜色走主题变量，不用 emoji） */
+    makeSecretStatusRow(label) {
+      const row = document.createElement("div");
+      row.className = "adg-secret-status";
+      const dot = document.createElement("span");
+      dot.className = "adg-secret-dot";
+      dot.setAttribute("aria-hidden", "true");
+      const name = document.createElement("span");
+      name.className = "adg-secret-name";
+      name.textContent = label;
+      const text = document.createElement("span");
+      text.className = "adg-secret-text";
+      row.append(dot, name, text);
+      return { row, dot, text };
+    }
+
+    /**
+     * 「图源密钥」一节（PLAN §5.5）。C站：key 输入 + 测试 + 状态点；P站：登录状态 + 去授权 + 粘 code。
+     * ⚠️ 明文 key 只存在于用户当前输入的那个 input 里，保存后立刻清空并重新读掩码 —— 不落 dataset、
+     *    不写日志、不进 title/aria-label。
+     */
+    buildSourceSecretsSection() {
+      const section = document.createElement("section");
+      section.className = "adg-settings-section adg-source-secrets";
+      const title = document.createElement("div");
+      title.className = "adg-settings-title";
+      title.textContent = "图源密钥";
+      const help = document.createElement("div");
+      help.className = "adg-settings-help";
+      // PLAN §6 实测修正：key 对 /api/v1/images **没有可见影响**（无 key / 真 key / 假 key 回包逐字节相同，
+      // 连 nsfw=X 都匿名可读）→ key 的价值是**账号校验**（GET /api/v1/me），不是 NSFW 开关。
+      help.textContent = "C站 key 仅用于账号校验（/api/v1/me）；图片端点匿名即可读，含 Mature / X —— key 不会改变 /images 回包。两个源的凭证都只存本机 data/（不进 git），界面只显示掩码。";
+      section.append(title, help);
+
+      // ── C站 ──
+      const civitai = this.makeSecretStatusRow("C站 API Key");
+      const civitaiMask = document.createElement("code");
+      civitaiMask.className = "adg-secret-mask";
+      civitaiMask.title = "只显示掩码，明文不会回显";
+      const civitaiRow = document.createElement("div");
+      civitaiRow.className = "adg-settings-inline-row";
+      const civitaiInput = document.createElement("input");
+      civitaiInput.type = "password";
+      civitaiInput.className = "adg-settings-input";
+      civitaiInput.autocomplete = "off";
+      civitaiInput.placeholder = "粘贴新的 API Key（保存后只显示掩码）";
+      const civitaiSave = document.createElement("button");
+      civitaiSave.type = "button";
+      civitaiSave.className = "primary adg-settings-inline-button";
+      civitaiSave.textContent = "保存";
+      const civitaiTest = document.createElement("button");
+      civitaiTest.type = "button";
+      civitaiTest.className = "adg-settings-inline-button";
+      civitaiTest.textContent = "测试";
+      const civitaiClear = document.createElement("button");
+      civitaiClear.type = "button";
+      civitaiClear.className = "adg-settings-inline-button";
+      civitaiClear.textContent = "清除";
+      civitaiRow.append(civitaiInput, civitaiSave, civitaiTest, civitaiClear);
+      civitai.row.append(civitaiMask);
+      const civitaiDiagBtn = document.createElement("button");
+      civitaiDiagBtn.type = "button";
+      civitaiDiagBtn.className = "adg-settings-inline-button";
+      civitaiDiagBtn.textContent = "诊断";
+      civitaiDiagBtn.title = "读取 /anima/gallery/civitai/diag（注册状态 / 代理 / key 掩码），不显示任何明文";
+      const civitaiDiag = document.createElement("pre");
+      civitaiDiag.className = "adg-diag-output";
+      civitaiDiag.hidden = true;
+      civitaiDiagBtn.onclick = async () => {
+        civitaiDiag.hidden = false;
+        await this.renderCivitaiDiag(civitaiDiag);
+      };
+      civitaiRow.append(civitaiDiagBtn);
+      section.append(civitai.row, civitaiRow, civitaiDiag);
+
+      const syncCivitai = (state = this.gallerySecretState) => {
+        const info = state?.civitai || {};
+        civitai.dot.classList.toggle("is-on", Boolean(info.configured));
+        civitai.dot.classList.toggle("is-off", !info.configured);
+        civitai.text.textContent = info.error
+          ? `读取失败：${info.error}`
+          : (info.configured ? `已配置（${info.masked || "掩码不可用"}）` : "未配置");
+        civitaiMask.textContent = info.configured ? String(info.masked || "••••") : "—";
+        civitaiClear.disabled = !info.configured;
+      };
+      const postCivitaiSecret = async (key) => {
+        const response = await fetch("/anima/gallery/secrets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source: "civitai", key: String(key || "") }),
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+        return data;
+      };
+      civitaiSave.onclick = async () => {
+        const value = civitaiInput.value.trim();
+        if (!value) { civitaiInput.focus(); return; }
+        civitaiSave.disabled = true;
+        try {
+          await postCivitaiSecret(value);
+          civitaiInput.value = ""; // 明文立刻丢弃：只保留后端回的掩码
+          const state = await this.refreshGallerySecretState();
+          syncCivitai(state);
+          this.setStatus("C站 API Key 已保存（明文不回显，界面只显示掩码）", "success");
+        } catch (error) {
+          this.setStatus(`保存 C站 Key 失败：${error?.message || "未知错误"}`, "error");
+        }
+        civitaiSave.disabled = false;
+      };
+      civitaiClear.onclick = async () => {
+        civitaiClear.disabled = true;
+        try {
+          await postCivitaiSecret("");
+          const state = await this.refreshGallerySecretState();
+          syncCivitai(state);
+          this.setStatus("已清除 C站 API Key");
+        } catch (error) {
+          this.setStatus(`清除失败：${error?.message || "未知错误"}`, "error");
+        }
+        civitaiClear.disabled = false;
+      };
+      civitaiTest.onclick = async () => {
+        civitaiTest.disabled = true;
+        civitaiTest.textContent = "测试中…";
+        try {
+          const response = await fetch("/anima/gallery/secrets/test", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source: "civitai" }),
+          });
+          const data = await response.json().catch(() => null);
+          const ok = response.ok && data?.ok !== false;
+          civitai.dot.classList.toggle("is-on", ok);
+          civitai.dot.classList.toggle("is-off", !ok);
+          civitai.text.textContent = String(data?.message || (ok ? "连接正常" : `HTTP ${response.status}`));
+          this.setStatus(`C站 Key 测试：${data?.message || (ok ? "连接正常" : "失败")}`, ok ? "success" : "error");
+        } catch (error) {
+          civitai.text.textContent = `测试失败：${error?.message || "未知错误"}`;
+          this.setStatus(`C站 Key 测试失败：${error?.message || "未知错误"}`, "error");
+        }
+        civitaiTest.disabled = false;
+        civitaiTest.textContent = "测试";
+      };
+
+      // ── P站（OAuth 2.0 + PKCE：拿授权 URL → 用户粘 code 回来）──
+      const pixiv = this.makeSecretStatusRow("P站 登录");
+      const pixivRow = document.createElement("div");
+      pixivRow.className = "adg-settings-inline-row";
+      const pixivAuth = document.createElement("button");
+      pixivAuth.type = "button";
+      pixivAuth.className = "primary adg-settings-inline-button";
+      pixivAuth.textContent = "去授权";
+      pixivAuth.title = "在新标签页打开 Pixiv 授权页；授权后把回调地址里的 code 粘回下面的输入框";
+      const pixivCode = document.createElement("input");
+      pixivCode.className = "adg-settings-input";
+      pixivCode.autocomplete = "off";
+      pixivCode.placeholder = "粘贴授权后拿到的 code（或完整回调地址）";
+      const pixivSubmit = document.createElement("button");
+      pixivSubmit.type = "button";
+      pixivSubmit.className = "adg-settings-inline-button";
+      pixivSubmit.textContent = "完成授权";
+      const pixivLink = document.createElement("span");
+      pixivLink.className = "adg-settings-help";
+      pixivRow.append(pixivAuth, pixivCode, pixivSubmit);
+      section.append(pixiv.row, pixivRow, pixivLink);
+
+      const syncPixiv = (state = this.gallerySecretState) => {
+        const info = state?.pixiv || {};
+        const available = info.available !== false;
+        pixiv.dot.classList.toggle("is-on", Boolean(info.logged_in));
+        pixiv.dot.classList.toggle("is-off", !info.logged_in);
+        pixiv.text.textContent = this.pixivStatusText(info);
+        // 模块没装 → 授权按钮没有意义，禁用而不是让人点了报错
+        pixivAuth.disabled = !available;
+        pixivSubmit.disabled = !available;
+        pixivCode.disabled = !available;
+        pixivAuth.title = available
+          ? "在新标签页打开 Pixiv 授权页；授权后把回调地址里的 code 粘回下面的输入框"
+          : "后端没有 anima_gallery_pixiv.py，P站 图源不可用";
+        if (this.sourceSelect) {
+          const option = [...this.sourceSelect.options].find((o) => o.value === "pixiv");
+          if (option) option.title = available ? "" : "后端未安装 P站 模块";
+        }
+      };
+      this.pixivVerifier = "";
+      pixivAuth.onclick = async () => {
+        pixivAuth.disabled = true;
+        try {
+          const response = await fetch("/anima/gallery/pixiv/auth/url");
+          const data = await response.json().catch(() => null);
+          if (!response.ok || !data?.url) throw new Error(data?.error || `HTTP ${response.status}`);
+          // PKCE verifier 由后端持有也行；若它回传了就带回去（契约字段 verifier_hint）
+          this.pixivVerifier = String(data?.verifier || data?.verifier_hint || "");
+          window.open(String(data.url), "_blank", "noopener,noreferrer");
+          pixivLink.textContent = "已打开授权页：登录 Pixiv 后把地址栏里的 code（或回调整条 URL）粘到上面输入框，点「完成授权」。";
+          pixivCode.focus();
+        } catch (error) {
+          pixivLink.textContent = `获取授权地址失败：${error?.message || "未知错误"}`;
+          this.setStatus(`P站 授权失败：${error?.message || "未知错误"}`, "error");
+        }
+        pixivAuth.disabled = false;
+      };
+      pixivSubmit.onclick = async () => {
+        const raw = pixivCode.value.trim();
+        if (!raw) { pixivCode.focus(); return; }
+        // 用户可能整条回调 URL 粘进来 → 取出 code 参数
+        let code = raw;
+        try {
+          const parsed = new URL(raw);
+          code = parsed.searchParams.get("code") || raw;
+        } catch { /* 不是 URL，就当 code 用 */ }
+        pixivSubmit.disabled = true;
+        pixivSubmit.textContent = "授权中…";
+        try {
+          const response = await fetch("/anima/gallery/pixiv/auth/code", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code, verifier: this.pixivVerifier || "" }),
+          });
+          const data = await response.json().catch(() => null);
+          if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+          pixivCode.value = "";
+          const state = await this.refreshGallerySecretState();
+          syncPixiv(state);
+          const ok = data?.ok !== false && state.pixiv.logged_in;
+          this.setStatus(`P站 授权：${data?.message || (ok ? "成功" : "未确认登录状态")}`, ok ? "success" : "error");
+        } catch (error) {
+          this.setStatus(`P站 授权失败：${error?.message || "未知错误"}`, "error");
+        }
+        pixivSubmit.disabled = false;
+        pixivSubmit.textContent = "完成授权";
+      };
+
+      syncCivitai();
+      syncPixiv();
+      void this.refreshGallerySecretState().then((state) => {
+        syncCivitai(state);
+        syncPixiv(state);
+      });
+      return section;
+    }
+
     openSettings() {
       const content = document.createElement("div");
       content.className = "adg-settings-fields adg-settings-dialog";
@@ -3317,7 +4526,17 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       exclRow.append(exclInput, exclAdd);
       renderExcl();
       excludeSection.append(exclTitle, exclTip, exclRow, exclList);
+      // 排除标签是**按 Danbooru 标签**本地过滤的（见 search 里的 tag_string 过滤），
+      // 因此只在 D站 有意义：C站 无标签体系、P站 是日文标签，控件禁用而不是留个"填了没用"的输入框。
+      const excludeApplicable = this.isDanbooruSource();
+      if (!excludeApplicable) {
+        exclInput.disabled = true;
+        exclAdd.disabled = true;
+        exclTip.textContent = `排除标签按 Danbooru 标签本地过滤，只在 D站 生效；当前图源是${this.sourceLabel()}。`;
+      }
       content.append(excludeSection);
+      // ── 图源密钥（C站 API Key / P站 OAuth）：PLAN §5.5 ──
+      content.append(this.buildSourceSecretsSection());
 
       // ── D站 账号（上限按等级：Member=2、Gold=6、Platinum+=不限；登录后限流更宽）──
       const accountSection = document.createElement("section");
@@ -3349,7 +4568,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       keyLabel.append(keyInput);
       const tip = document.createElement("div");
       tip.className = "adg-settings-help";
-      tip.textContent = "凭证仅存本机插件目录，不上传。清空保存 = 退出登录。";
+      tip.textContent = "凭证仅存本机插件目录，不上传。清空保存 = 退出登录。只影响 D站 图源（C站/P站 的凭证见上一节「图源密钥」）。";
       accountSection.append(accTitle, userLabel, keyLabel, tip);
       const accBtn = document.createElement("button");
       accBtn.type = "button";
@@ -3437,6 +4656,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       };
       queryRow.append(queryInput);
       this.queryInput = queryInput;
+      this.queryRow = queryRow;
       _danQueryFocusTargets.add(this);
       const toolbar = document.createElement("div");
       toolbar.className = "adg-toolbar";
@@ -3452,6 +4672,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const filterGroup = makeToolbarGroup("筛选操作", "adg-toolbar-filters");
       const categoryGroup = makeToolbarGroup("分类操作", "adg-toolbar-categories");
       const presetGroup = makeToolbarGroup("搜索预设", "adg-toolbar-presets");
+      this.filterGroup = filterGroup;
+      this.categoryGroup = categoryGroup;
       const addAction = (label, title, action, group = toolbar) => {
         const button = document.createElement("button");
         button.type = "button";
@@ -3464,7 +4686,28 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         group.append(button);
         return button;
       };
-      addAction("搜索", "按上方标签搜索", () => this.search({ resetPage: true }), mainGroup);
+      // ── 图源下拉（D站 / C站 / P站）──
+      // 注意：这个容器用**新类名** adg-source-picker，不占 .adg-toolbar-group ——
+      // tests/verify_tk_prompt_output.py 断言分组数恰为 4，新增分组会把它弄红。
+      {
+        const picker = document.createElement("label");
+        picker.className = "adg-source-picker";
+        picker.title = "切换图源：D站 / C站 / P站（切换后筛选控件按该源的能力自动收放）";
+        const icon = galleryIcon("image", 13, "adg-icon adg-source-icon");
+        const select = document.createElement("select");
+        select.className = "adg-source-select";
+        select.setAttribute("aria-label", "图源");
+        for (const id of GALLERY_SOURCE_ORDER) {
+          select.append(new Option(GALLERY_SOURCE_FALLBACK[id].label, id));
+        }
+        select.value = this.activeSourceId();
+        select.onchange = () => { void this.switchGallerySource(select.value); };
+        picker.append(icon, select);
+        this.sourcePicker = picker;
+        this.sourceSelect = select;
+        mainGroup.append(picker);
+      }
+      addAction("搜索", "按上方标签搜索", () => this.search({ resetPage: true }), mainGroup).className = "adg-primary-action";
       // ── 随机发现：order:random + 质量地板。三档质量让用户挑口味，而不是给一个
       //    「随机」开关把没人贴过的冷门图倒进来（见 RANDOM_QUALITY_TIERS 注释）。
       {
@@ -3490,9 +4733,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           reshuffleBtn.title = on ? "重新随机一次，并避开本档已看过的图" : "先选一个随机档位";
         };
         this.randomTierButtons();
+        // 随机发现是 order:random + D站 评分地板：换源时整组隐藏（capabilities 驱动）
+        this.randomTierButtonList = tierButtons;
+        this.randomReshuffleBtn = reshuffleBtn;
       }
       addAction("设置", "设置画廊显示、排除标签和 Danbooru 登录", () => this.openSettings(), mainGroup);
-      addAction("Prompt设置", "控制 Prompt 输出类别与格式", () => this.openPromptSettings(), mainGroup);
+      this.promptSettingsBtn = addAction("Prompt设置", "控制 Prompt 输出类别与格式", () => this.openPromptSettings(), mainGroup);
       this.promptOutputBtn = addAction("", "", () => {
         const enabled = this.setPromptOutputEnabled(this.settings.promptOutputEnabled === false);
         this.setStatus(enabled ? "Prompt 输出已开启" : "Prompt 输出已关闭：下游将收到空 Prompt", "success");
@@ -3518,6 +4764,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         },
       });
       this.filterControls.mountFilters(filterGroup);
+      // 源专属筛选（C站 分级/排序、P站 匹配/排序）：容器用新类名 adg-source-filters，
+      // **不占** .adg-toolbar-group（E2E 断言分组数恰为 4，新分组会把它弄红）。
+      this.sourceFilterHost = this.buildSourceFilterControls();
+      mainGroup.after(this.sourceFilterHost);
       addAction("刷新", "绕过缓存重新搜索", () => this.search({ force: true }), filterGroup);
       this.filterControls.mountCategory(categoryGroup);
       // 批量归类：选中 ≥2 张后可用（点选分类菜单，替代逐张 prompt）
@@ -3616,6 +4866,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.setStatus("正在自动加载图片…");
       this.renderPosts();
       this.renderPagination();
+      // 图源能力（capabilities）驱动控件可见性；/anima/gallery/sources 是异步补全，
+      // 拿不到就用契约兜底表，界面不会因为后端没就绪而缺控件或报错。
+      this.applySourceCapabilities();
+      void this.loadGallerySources().then(() => {
+        if (!this.disposed && this.root) this.applySourceCapabilities();
+      });
+      // 密钥/授权状态也预热一次：换源到 P站 时要立刻知道"模块没装"还是"没登录"（见 switchGallerySource）
+      void this.refreshGallerySecretState();
       this.accountReady = this.refreshAccount();
       this.initialSearchTimer = setTimeout(async () => {
         this.initialSearchTimer = null;
@@ -3716,6 +4974,16 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             if (commit) ui.saveSettings();
           },
         });
+        // installDOMWidgetSizeSync 已经包了一层 node.onResize；这里**再包一层**（链式调用，
+        // 不影响它）。目的是把「用户拖动节点尺寸」与「程序化 setSize」区分开：前者一经发生，
+        // 本次结果集内的自动收缩就此停手 —— 否则用户手动放大的尺寸会被下一帧缩回去，
+        // 表现就是"放回大小后不填充满"。
+        const sizeSyncOnResize = this.onResize;
+        this.onResize = function (...args) {
+          const result = sizeSyncOnResize?.apply(this, args);
+          this._animaDanbooruGallery?.noteExternalResize?.();
+          return result;
+        };
         const originalRemoved = this.onRemoved;
         this.onRemoved = function () {
           this._animaDanbooruGallery?.dispose();

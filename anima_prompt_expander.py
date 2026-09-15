@@ -34,6 +34,7 @@ import re
 try:
     from .anima_tag_taxonomy import (
         category_of,
+        looks_like_tag_series,
         normalise,
         normalise_spaces,
         split_prompt,
@@ -42,6 +43,7 @@ try:
 except ImportError:  # 允许脱离包直接导入（单测）
     from anima_tag_taxonomy import (
         category_of,
+        looks_like_tag_series,
         normalise,
         normalise_spaces,
         split_prompt,
@@ -223,6 +225,37 @@ class AnimaTKPromptExpander:
     def _split_input(value):
         """标签串 → (标签片段, 自然语言段落)，共用 split_prompt 的空行契约。"""
         return split_prompt(value)
+
+    @staticmethod
+    def _absorb_tag_series(tags, paragraphs):
+        """把「看起来是另一批标签」的空行段落并进 ``tags``，返回剩下的自然语言段落。
+
+        共享契约 ``split_prompt`` 把空行之后整段当自然语言，而自然语言不参与
+        分类 / 扩写 / 去重。用户把**两批标签直接粘在一起**时，第二批会被整段当成
+        LLM 写的句子 —— 症状就是「第二批标签不参与解析与扩写」。
+
+        判据与 TK Anima 格式化 / Tag Getter 共用（``anima_tag_taxonomy.looks_like_tag_series``），
+        依然**刻意保守**：真正的句子一律留在自然语言里。
+
+        并入时**与已有标签跨批去重**（按 ``normalise`` 比较）：本节点不做全局去重，
+        重复词会让句式直接读成 ``wearing hat and hat`` / ``In blue sky and blue sky``。
+        """
+        seen = {normalise(tag) for tag in tags}
+        natural = []
+        for block in paragraphs:
+            if not looks_like_tag_series(block):
+                natural.append(block)
+                continue
+            for part in re.split(r"[,，\n]", block):
+                tag = part.strip()
+                if not tag:
+                    continue
+                key = normalise(tag)
+                if key in seen:
+                    continue
+                seen.add(key)
+                tags.append(tag)
+        return natural
 
     @classmethod
     def _collect(cls, tags):
@@ -481,6 +514,9 @@ class AnimaTKPromptExpander:
                existing_tags_override=""):
         style = style or self.STYLE_CHOICES[1]
         tags, paragraphs = self._split_input(prompt)
+        # 空行之后若其实是「另一批标签」（用户常把两批标签直接粘在一起），并入 tags
+        # 一起参与解析 / 扩写 / 去重；真正的自然语言段落原样保留（见 _absorb_tag_series）。
+        paragraphs = self._absorb_tag_series(tags, paragraphs)
         if normalise_output:
             tags = [self._normalise_tag(tag) for tag in tags if self._normalise_tag(tag)]
         # 分析与输出统一走规范化形式，保证下游拿到的是 Anima 形态
@@ -488,7 +524,9 @@ class AnimaTKPromptExpander:
 
         # ① 给 VLM/LLM 的指令：内嵌【现有标签】，让模型只补差集
         #    （用户工作流里就是这么接的：WD14 标签 → llama_cpp_instruct_adv 当上下文）
-        override_tags, _ = self._split_input(existing_tags_override)
+        override_tags, override_paragraphs = self._split_input(existing_tags_override)
+        # 同一判据：override 里粘着的第二批标签也算「现有标签」，否则模型会当成缺失再补一遍。
+        self._absorb_tag_series(override_tags, override_paragraphs)
         instruction_source = override_tags if existing_tags_override.strip() else tags
         vlm_prompt = self.build_vlm_instruction(instruction_source)
 

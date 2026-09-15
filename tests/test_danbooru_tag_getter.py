@@ -869,6 +869,48 @@ def test_auto_classify_off_when_all_legacy_switches_are_off():
     assert report["kept"] == {}, "未启用自动分类时不应保留任何分类词"
 
 
+def test_bundle_input_filters_second_tag_batch_after_blank_line():
+    """空行之后若其实是**另一批标签**，接了 TAG_BUNDLE 也要参与分类过滤。
+
+    从前它整段走「自然语言原样输出」，于是类别开关、tag_blacklist、正则全都绕过了它。
+    单输入模式本来就把每段一视同仁地分类，所以这条锁针对的是**双输入**路径。
+    """
+    original = AnimaTKDanbooruTagGetter._TAXONOMY_OVERRIDE
+    AnimaTKDanbooruTagGetter._TAXONOMY_OVERRIDE = FakeTaxonomy({
+        "1girl": "人物对象词",
+        "smile": "角色表情词",
+        "hat": "服饰词",
+        "suitcase": "物件道具词",
+    })
+    try:
+        result = AnimaTKDanbooruTagGetter().get_tags(
+            {"人物对象词": "1girl, "},
+            **{
+                "人物对象词": True,
+                "角色表情词": True,
+                "服饰词": False,       # 类别开关关闭 → 第二批里的 hat 要被丢掉
+                "物件道具词": True,
+                "未归类词": True,
+                "tag_blacklist": "suitcase",
+                "natural_language": "1girl, smile, solo\n\nsmile, hat, suitcase, city print",
+            },
+        )
+    finally:
+        AnimaTKDanbooruTagGetter._TAXONOMY_OVERRIDE = original
+    assert result == ("1girl, smile\n\ncity print",)
+
+
+def test_filter_report_lists_each_kept_word_once():
+    """底栏「✅ 保留」不该把同一个词列两遍（两批标签各含一次时）。"""
+    result = _RAW_GET_TAGS(
+        AnimaTKDanbooruTagGetter(),
+        natural_language="1girl, smile\n\nsmile, 1girl",
+        **{"人物对象词": True, "角色表情词": True},
+    )
+    report = result["ui"]["tk_filter_report"]
+    assert report["kept"] == {"人物对象词": ["1girl"], "角色表情词": ["smile"]}
+
+
 if __name__ == "__main__":
     tests = [
         test_schema_exposes_bundle_and_all_twelve_native_switches,
@@ -907,6 +949,8 @@ if __name__ == "__main__":
         test_custom_preset_rejects_builtin_and_blank_names,
         test_unknown_preset_name_is_still_a_noop,
         test_default_off_categories_are_disabled_and_reported,
+        test_bundle_input_filters_second_tag_batch_after_blank_line,
+        test_filter_report_lists_each_kept_word_once,
     ]
     for test in tests:
         test()

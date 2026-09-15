@@ -7,17 +7,41 @@
   max-height: 620px;
   height: 620px;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
   overflow: hidden;
   padding: 8px;
-  border: 1px solid rgba(255, 255, 255, .1);
+  border: 1px solid var(--adg-line, rgba(255, 255, 255, .1));
   border-radius: 8px;
-  color: #d9d9de;
+  color: var(--adg-fg, #d9d9de);
   background: rgba(20, 20, 26, .78);
   font: 12px/1.35 system-ui, sans-serif;
+  /* ── 2026-09-15 视觉基线（用户要求：现代、平滑、去 AI 感、**不发光**）──
+     ① 自绘控件颜色一律桥接到宿主主题变量（浅色主题下硬编码灰阶不可读）；
+     ② 层次靠 1px 边框 + 极浅底色差，不靠阴影；模糊半径 >0 的阴影只保留浮层的一档中性投影；
+     ③ 过渡统一 150ms + 同一条缓动；hover 只做 ≤2px 位移或底色微亮。
+     变量名刻意避开弹层主题块已有的 --adg-text/--adg-muted/--adg-accent，防止互相污染。 */
+  --adg-fg: var(--fg-color, #d9d9de);
+  --adg-fg-soft: var(--descrip-text, #9b9a95);
+  --adg-line: var(--border-color, rgba(255, 255, 255, .12));
+  --adg-input-bg: var(--comfy-input-bg, #17171d);
+  --adg-go: var(--p-primary-color, #d0c9bb);
+  --adg-tint: rgba(128, 128, 128, .08);
+  --adg-tint-strong: rgba(128, 128, 128, .16);
+  --adg-r: 8px;
+  --adg-r-sm: 6px;
+  --adg-ease: cubic-bezier(.2, .7, .3, 1);
+  --adg-dur: 150ms;
+  --adg-shadow-float: 0 10px 24px rgba(0, 0, 0, .34);
 }
 
-.adg-toolbar { display: flex; min-width: 0; max-width: 100%; flex-wrap: wrap; gap: 5px; align-items: center; padding: 2px 0; }
+.adg-toolbar { display: flex; min-width: 0; max-width: 100%; flex-wrap: wrap; gap: 8px; align-items: center; padding: 2px 0; }
+/* ⚠️ 2026-09-15 浏览器实测踩到：`.adg-dropdown-trigger { display: inline-flex }`（类选择器）
+   会盖掉 UA 样式表的 `[hidden] { display: none }`（属性选择器）—— 于是换源时**被隐藏的
+   D站 分级/筛选下拉照样显示在工具条上**（JS 里 el.hidden === true，视觉上却还在）。
+   这条守卫让 hidden 真的等于不显示；capabilities 驱动的隐藏全靠它。 */
+.adg-toolbar [hidden],
+.adg-source-filters [hidden],
+.adg-source-picker [hidden] { display: none; }
 .adg-toolbar-group {
   display: inline-flex;
   flex: 0 0 auto;
@@ -27,36 +51,76 @@
   gap: 4px;
   align-items: center;
   padding: 2px;
-  border: 1px solid rgba(255, 255, 255, .07);
-  border-radius: 8px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, .065), rgba(255, 255, 255, .025));
-  box-shadow: inset 0 1px rgba(255, 255, 255, .05), 0 4px 14px rgba(0, 0, 0, .16);
+  border: 1px solid var(--adg-line, rgba(255, 255, 255, .07));
+  border-radius: var(--adg-r, 8px);
+  /* 极浅底色差（不是阴影、更不是发光）：层次只由 1px 边框 + 这层 tint 承担 */
+  background: rgba(255, 255, 255, .03);
+  background: color-mix(in srgb, var(--adg-fg, #d9d9de) 5%, transparent);
 }
-.adg-toolbar-group:focus-within { border-color: rgba(168, 149, 255, .42); box-shadow: 0 0 0 2px rgba(139, 92, 246, .12); }
+.adg-toolbar-group:focus-within { border-color: var(--adg-go, #a895ff); }
 .adg-toolbar button,
 .adg-toolbar select {
   min-width: 0;
   min-height: 27px;
   padding: 4px 9px;
-  border: 1px solid rgba(255, 255, 255, .11);
-  border-radius: 6px;
-  color: #EDEDEF;
-  background: linear-gradient(180deg, rgba(255, 255, 255, .075), rgba(255, 255, 255, .035));
-  box-shadow: inset 0 1px rgba(255, 255, 255, .08);
+  border: 1px solid var(--adg-line, rgba(255, 255, 255, .11));
+  border-radius: var(--adg-r-sm, 6px);
+  color: var(--adg-fg, #EDEDEF);
+  background: var(--adg-tint, rgba(255, 255, 255, .05));
   font-size: 11px;
   cursor: pointer;
-  transition: border-color .18s ease-out, background .18s ease-out, box-shadow .18s ease-out, transform .18s ease-out;
+  transition: border-color var(--adg-dur, 150ms) var(--adg-ease, ease-out),
+              background var(--adg-dur, 150ms) var(--adg-ease, ease-out),
+              transform var(--adg-dur, 150ms) var(--adg-ease, ease-out);
 }
 .adg-toolbar button:hover,
-.adg-toolbar button:hover { border-color: rgba(168, 149, 255, .72); background: rgba(139, 92, 246, .22); box-shadow: 0 0 0 1px rgba(139, 92, 246, .12), 0 4px 12px rgba(0, 0, 0, .2); }
+.adg-toolbar select:hover {
+  /* hover 只做底色微亮 + 1px 上移（无彩色光晕、无投影） */
+  border-color: var(--adg-go, #a895ff);
+  background: var(--adg-tint-strong, rgba(255, 255, 255, .1));
+  transform: translateY(-1px);
+}
 .adg-toolbar button.is-disabled { border-color: rgba(248, 113, 113, .55); color: #ffb4b4; background: rgba(220, 38, 38, .12); }
 .adg-toolbar button.is-disabled:hover { border-color: #f87171; color: #fff; background: rgba(220, 38, 38, .22); }
 .adg-toolbar button:active { transform: translateY(1px) scale(.985); }
-.adg-toolbar button.active { border-color: #a895ff; background: #6758c9; }
+.adg-toolbar button.active { border-color: var(--adg-go, #a895ff); background: var(--adg-tint-strong, #6758c9); }
 .adg-toolbar button:focus-visible,
-.adg-toolbar select:focus-visible { outline: 2px solid rgba(168, 149, 255, .75); outline-offset: 1px; }
-.adg-toolbar-main button:first-child { border-color: rgba(168, 149, 255, .5); background: rgba(139, 92, 246, .16); }
+.adg-toolbar select:focus-visible { outline: 2px solid var(--adg-go, #a895ff); outline-offset: 1px; }
+/* 主操作（搜索）：原来靠 .adg-toolbar-main button:first-child —— 图源下拉插进来之后
+   它不再是 first-child，因此改挂一个显式的新类（只加类，不动原选择器）。 */
+.adg-toolbar .adg-primary-action { border-color: var(--adg-go, #a895ff); background: var(--adg-tint-strong, rgba(255, 255, 255, .1)); font-weight: 650; }
 .adg-toolbar-presets select { min-width: 140px; max-width: 220px; }
+
+/* ── 图源下拉（D站 / C站 / P站）──
+   刻意**不用** .adg-toolbar-group：tests/verify_tk_prompt_output.py 断言分组数恰为 4。 */
+.adg-source-picker { display: inline-flex; flex: 0 0 auto; min-width: 0; align-items: center; gap: 2px; padding-left: 4px; color: var(--adg-fg-soft, #9b9a95); }
+.adg-source-picker .adg-source-icon { flex: 0 0 auto; opacity: .8; }
+.adg-source-select { max-width: 96px; font-weight: 650; }
+.adg-source-picker[data-source="civitai"] .adg-source-icon,
+.adg-source-picker[data-source="pixiv"] .adg-source-icon { color: var(--adg-go, #a895ff); opacity: 1; }
+
+/* ── 源专属筛选（C站：分级/排序；P站：匹配/排序）── 与 toolbar-group 同一套 chrome */
+.adg-source-filters {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 2px 6px;
+  border: 1px solid var(--adg-line, rgba(255, 255, 255, .08));
+  border-radius: var(--adg-r, 8px);
+  background: rgba(255, 255, 255, .03);
+  background: color-mix(in srgb, var(--adg-fg, #d9d9de) 5%, transparent);
+}
+.adg-source-filters[hidden] { display: none; }
+.adg-source-field { display: inline-flex; align-items: center; gap: 4px; color: var(--adg-fg-soft, #9b9a95); font-size: 10px; }
+.adg-source-field[hidden] { display: none; }
+.adg-source-field select { min-height: 24px; padding: 2px 6px; font-size: 11px; }
+/* capabilities.query=false（C站）：说明"关键词只在当页过滤"，不是控件坏了 */
+.adg-source-hint { max-width: 320px; color: var(--adg-fg-soft, #9b9a95); font-size: 10px; line-height: 1.4; }
+.adg-source-hint[hidden] { display: none; }
 
 .adg-dropdown-trigger { display: inline-flex; min-height: 24px; align-items: center; gap: 5px; }
 .adg-dropdown-trigger.is-open,
@@ -87,11 +151,11 @@
   max-height: min(520px, calc(100vh - 16px));
   overflow: visible;
   padding: 7px;
-  border: 1px solid rgba(180, 166, 255, .3);
-  border-radius: 10px;
-  color: #ececf2;
+  border: 1px solid var(--adg-border, rgba(180, 166, 255, .3));
+  border-radius: 8px;
+  color: var(--adg-text, #ececf2);
   background: linear-gradient(180deg, #292934, #202028);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, .035), 0 16px 38px rgba(0, 0, 0, .58), 0 0 32px rgba(94, 106, 210, .08), inset 0 1px rgba(255, 255, 255, .07);
+  box-shadow: var(--adg-shadow-float, 0 10px 24px rgba(0, 0, 0, .34));
   font: 11px/1.35 system-ui, sans-serif;
 }
 .adg-menu-section { display: flex; flex-direction: column; gap: 2px; }
@@ -140,7 +204,7 @@
   border: 1px solid rgba(180, 166, 255, .34);
   border-radius: 8px;
   background: #25252f;
-  box-shadow: 0 14px 34px rgba(0, 0, 0, .58);
+  box-shadow: var(--adg-shadow-float, 0 10px 24px rgba(0, 0, 0, .34));
 }
 .adg-cascade-row.is-open > .adg-submenu { display: block; }
 .adg-filter-menu-content { min-width: 330px; }
@@ -273,15 +337,20 @@
 .adg-batch-cat:disabled { opacity: .4; cursor: not-allowed; }
 
 .adg-pagination-row { display: flex; min-width: 0; justify-content: flex-end; }
-.adg-pagination { display: flex; min-width: 0; max-width: 100%; gap: 3px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.adg-pagination { display: flex; min-width: 0; max-width: 100%; gap: 4px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .adg-pagination button { width: 24px; padding: 4px 0; }
-.adg-pagination input { width: 42px; padding: 4px; border: 1px solid #55566a; border-radius: 5px; color: #eee; background: #1b1b22; font-size: 11px; }
+.adg-pagination input { width: 42px; padding: 4px; border: 1px solid var(--adg-line, #55566a); border-radius: var(--adg-r-sm, 6px); color: var(--adg-fg, #eee); background: var(--adg-input-bg, #1b1b22); font-size: 11px; }
 .adg-pagination button:disabled { opacity: .35; cursor: not-allowed; }
-.adg-cat-mode-badge { font-size: 11px; color: #8b5cf6; border: 1px dashed #8b5cf6aa; border-radius: 6px; padding: 2px 8px; white-space: nowrap; }
-.adg-info { color: #aeb1bd; }
-.adg-status { min-height: 17px; color: #8e94a7; }
+/* C站 / P站 的游标分页：只有「上一批 / 下一批」，没有页码输入框。
+   ⚠️ 必须覆盖 .adg-pagination button 的固定 24px 宽 —— 否则「下一批 ›」会被挤成竖排文字
+   （2026-09-15 浏览器实测，截图里三个字竖着排）。 */
+.adg-pagination button.adg-cursor-step { width: auto; min-width: 0; padding: 4px 10px; white-space: nowrap; }
+.adg-cursor-batch { padding: 2px 8px; border: 1px solid var(--adg-line, rgba(255,255,255,.12)); border-radius: 999px; color: var(--adg-fg-soft, #9b9a95); font-size: 11px; white-space: nowrap; }
+.adg-cat-mode-badge { font-size: 11px; color: var(--adg-go, #8b5cf6); border: 1px dashed var(--adg-go, #8b5cf6); border-radius: 6px; padding: 2px 8px; white-space: nowrap; }
+.adg-info { color: var(--adg-fg-soft, #aeb1bd); }
+.adg-status { min-height: 17px; color: var(--adg-fg-soft, #8e94a7); }
 .adg-status[data-tone="error"] { color: #ff8b8b; }
-.adg-batch-panel { display: flex; min-width: 0; flex: 0 0 auto; flex-direction: column; gap: 4px; max-height: 132px; overflow: auto; padding: 5px 6px; border: 1px solid rgba(168, 149, 255, .3); border-radius: 7px; color: #cfc9e8; background: rgba(91, 71, 170, .12); }
+.adg-batch-panel { display: flex; min-width: 0; flex: 0 0 auto; flex-direction: column; gap: 4px; max-height: 132px; overflow: auto; padding: 6px; border: 1px solid var(--adg-line, rgba(168, 149, 255, .3)); border-radius: var(--adg-r, 8px); color: var(--adg-fg, #cfc9e8); background: var(--adg-tint, rgba(91, 71, 170, .12)); }
 .adg-batch-panel[hidden] { display: none; }
 .adg-batch-message,
 .adg-batch-statusline { color: #cfc9e8; font-size: 11px; }
@@ -304,11 +373,15 @@
 /* 瀑布流容器：卡片由 JS 绝对定位（列填充 + 超宽跨列），容器只负责滚动与高度。
    min-height 由 applyMasonryLayout 按内容总高写入，滚动条才会正确出现。 */
 .adg-grid { position: relative; display: block; flex: 1 1 auto; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 0 3px 0 0; }
-.adg-card { position: absolute; top: 0; left: 0; box-sizing: border-box; margin: 0; overflow: hidden; padding: 0; border: 2px solid rgba(255,255,255,.1); border-radius: 7px; background: #16161d; transition: border-color .15s, box-shadow .15s; contain: layout paint style; }
-.adg-card:hover { border-color: #7668d8; }
+.adg-card { position: absolute; top: 0; left: 0; box-sizing: border-box; margin: 0; overflow: hidden; padding: 0; border: 1px solid var(--adg-line, rgba(255,255,255,.1)); border-radius: 8px; background: var(--adg-input-bg, #16161d); transition: border-color 150ms var(--adg-ease, ease-out), background 150ms var(--adg-ease, ease-out); contain: layout paint style; }
+.adg-card:hover { border-color: var(--adg-go, #7668d8); }
 .adg-card.is-favorite { border-color: rgba(245, 190, 74, .62); }
-.adg-card.is-selected { border-color: #b49cff; background: rgba(109,86,210,.24); box-shadow: 0 0 0 2px rgba(180,156,255,.45), 0 0 22px rgba(125,92,255,.72); }
-.adg-card.is-selected::after { content: "已选"; position: absolute; top: 8px; left: 8px; z-index: 2; padding: 3px 7px; border-radius: 999px; color: #fff; background: #765ee8; box-shadow: 0 2px 8px rgba(0,0,0,.45); font-size: 10px; font-weight: 700; }
+/* ⚠️ 选中态**不许发光**（用户 2026-09-15 原话："现代、平滑质感、去 AI 感、不发光"）。
+   干掉的就是这一条：`box-shadow: 0 0 0 2px rgba(180,156,255,.45), 0 0 22px rgba(125,92,255,.72)`
+   —— 22px 模糊的紫色光晕。现在改为**实边框加粗（1px → 2px）+ 底色加深**，box-shadow 显式 none。 */
+.adg-card.is-selected { border-color: var(--adg-go, #b49cff); border-width: 2px; background: rgba(109,86,210,.18); background: color-mix(in srgb, var(--adg-go, #b49cff) 14%, var(--adg-input-bg, #16161d)); box-shadow: none; }
+/* 「已选」角标同样去阴影：底色 + 1px 边框 + 同样跟随主题（浅色主题下也不会白字白底） */
+.adg-card.is-selected::after { content: "已选"; position: absolute; top: 8px; left: 8px; z-index: 2; padding: 3px 7px; border: 1px solid var(--adg-go, #c2b7ff); border-radius: 999px; color: var(--adg-go, #c2b7ff); background: var(--adg-input-bg, #16161d); font-size: 10px; font-weight: 700; }
 /* 类别色条：D站 帖子主类别（画师/版权/角色/通用），整屏扫读时一眼分得出构图来源 */
 .adg-card.is-artist { border-left-color: #f0a63c; }
 .adg-card.is-copyright { border-left-color: #4fb0f0; }
@@ -317,9 +390,9 @@
 .adg-card-select { display: flex; height: 100%; width: 100%; flex-direction: column; gap: 3px; border: 0; padding: 3px; box-sizing: border-box; color: inherit; background: transparent; text-align: left; cursor: pointer; }
 .adg-card-select:focus-visible { outline: 2px solid #a895ff; outline-offset: 1px; }
 /* 图片区吃掉卡片剩余高度；cover 让图片完整铺满盒子（盒子比例已按真实盒比算出，裁切可忽略） */
-.adg-card img { display: block; flex: 1 1 auto; width: 100%; min-height: 0; aspect-ratio: auto; object-fit: cover; background: #292934; }
+.adg-card img { display: block; flex: 1 1 auto; width: 100%; min-height: 0; aspect-ratio: auto; object-fit: cover; background: var(--adg-tint-strong, #292934); }
 .adg-card.is-image-failed img { background: repeating-linear-gradient(45deg, #2b2230, #2b2230 6px, #241d29 6px, #241d29 12px); }
-.adg-caption { flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #aeb1bd; font-size: 10px; }
+.adg-caption { flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--adg-fg-soft, #aeb1bd); font-size: 10px; }
 .adg-image-error,
 .adg-empty { display: grid; min-height: 90px; place-items: center; color: #ff9f9f; background: #292934; }
 .adg-empty { position: static; color: #9296a5; }
@@ -328,30 +401,57 @@
 /* 随机发现档位按钮 */
 .adg-random-btn.active { border-color: #a895ff; background: #6758c9; }
 .adg-random-reshuffle.is-disabled { opacity: .45; cursor: not-allowed; }
-.adg-card-actions { position: absolute; top: 7px; left: 7px; right: 7px; z-index: 4; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 3px; max-width: calc(100% - 14px); opacity: 0; transform: translateY(-3px); transition: opacity .15s, transform .15s; }
+/* 悬浮操作条：视觉隐藏（opacity:0）时**必须同时禁用命中**，否则卡片顶部一整条看不见的
+   按钮仍然吃点击 —— 2026-09-15 实测：opacity 0 时 elementFromPoint 在卡片顶部命中
+   BUTTON「预览」「分类/入库」，用户点图片上半部就误触（"按钮太大"的真身）。
+   同时不再用 left+right 撑满整卡宽度，改为靠右收成一撮（内容宽度）。
+   ⚠️ flex-wrap / max-width 必须保留：窄卡片上按钮要能换行，否则会被裁掉，
+   tests/test_danbooru_gallery_prompt_tooltip.py 锁着这两条。 */
+/* 悬浮操作条 —— 两条硬约束，动之前先读完：
+   ① 视觉隐藏时必须 pointer-events: none，否则隐形按钮照吃点击（误触，见
+      docs/HANDOFF-2026-09-15-D站画廊操作条误触.md 的实测数据）；
+   ② **锚在卡片底部、压在 caption 行上**，不是压在图片上 —— 用户实测"占了图的四分之三"，
+      根因就是它盖在图上、且按钮换行成三行。按钮按 17px 高设计，正好吃掉 caption 那一行
+      （hover 时 caption 淡出让位），所以图片区域完全不被遮挡。
+   ⚠️ flex-wrap / max-width 必须保留（窄卡片上按钮要能换行，否则被裁），
+   tests/test_danbooru_gallery_prompt_tooltip.py 锁着这两条。 */
+.adg-card-actions { position: absolute; top: auto; right: 3px; bottom: 3px; left: auto; z-index: 6; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 2px; max-width: calc(100% - 6px); opacity: 0; pointer-events: none; transform: translateY(3px); transition: opacity 150ms var(--adg-ease, ease-out), transform 150ms var(--adg-ease, ease-out); }
 .adg-card:hover .adg-card-actions,
-.adg-card:focus-within .adg-card-actions { opacity: 1; transform: translateY(0); }
-.adg-card-actions button { flex: 0 0 auto; min-width: 24px; padding: 3px 5px; border: 1px solid rgba(255,255,255,.2); border-radius: 4px; color: #fff; background: rgba(0,0,0,.76); font-size: 9px; cursor: pointer; }
+.adg-card:focus-within .adg-card-actions { opacity: 1; pointer-events: auto; transform: translateY(0); }
+.adg-card:hover .adg-caption,
+.adg-card:focus-within .adg-caption { opacity: .2; }
+.adg-card-actions button { flex: 0 0 auto; padding: 0 5px; border: 1px solid rgba(255,255,255,.22); border-radius: 6px; color: #fff; background: rgba(0,0,0,.74); font-size: 9px; line-height: 15px; white-space: nowrap; cursor: pointer; transition: border-color var(--adg-dur, 150ms) var(--adg-ease, ease-out), background var(--adg-dur, 150ms) var(--adg-ease, ease-out); }
 .adg-card-actions button:hover,
-.adg-card-actions button.is-favorite { border-color: #9988ff; background: #6758c9; }
-.adg-prompt-tooltip { position: fixed; z-index: 100001; display: flex; flex-direction: column; max-width: min(620px,70vw); max-height: 55vh; gap: 8px; overflow: auto; padding: 9px; border: 1px solid rgba(180,156,255,.7); border-radius: 7px; color: #ecebff; background: rgba(19,18,28,.96); box-shadow: 0 10px 28px rgba(0,0,0,.55); font: 11px/1.35 system-ui,sans-serif; pointer-events: none; }
-.adg-prompt-tooltip-section { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 5px; }
-.adg-prompt-tooltip-category { flex: 0 0 100%; padding: 2px 4px; border-bottom: 1px solid rgba(180,156,255,.35); color: #c7bfff; font-weight: 700; }
-.adg-prompt-tooltip-line { display: inline-flex; max-width: 100%; flex: 0 0 auto; gap: 5px; align-items: baseline; padding: 3px 6px; border: 1px solid rgba(255,255,255,.1); border-radius: 4px; background: rgba(255,255,255,.045); }
+.adg-card-actions button.is-favorite { border-color: var(--adg-go, #9988ff); background: rgba(0,0,0,.88); }
+/* 无 hover 能力的设备（触摸屏 / 触控板外接屏）：没有"悬停才出现"这回事，
+   隐藏就等于永远点不到 —— 改为常显可点，否则误触防住了、按钮却彻底不可用。 */
+@media (hover: none) {
+  .adg-card-actions { opacity: 1; pointer-events: auto; transform: none; }
+}
+/* 悬停 Prompt 浮层：尺寸刻意收小 —— 原 620px/55vh 太大，一 hover 就盖掉大半个画廊，
+   而且撑到视口边缘时会被定位逻辑"贴边硬塞"（见 positionTooltip 的翻转逻辑）。
+   宽度跟着内容走，超过上限才滚动。 */
+.adg-prompt-tooltip { position: fixed; z-index: 100001; display: flex; flex-direction: column; max-width: min(360px,44vw); max-height: min(46vh,420px); gap: 6px; overflow: auto; overscroll-behavior: contain; padding: 8px 9px; border: 1px solid var(--adg-line, rgba(180,156,255,.7)); border-radius: 8px; color: var(--adg-fg, #ecebff); background: rgba(19,18,28,.96); box-shadow: var(--adg-shadow-float, 0 10px 24px rgba(0,0,0,.34)); font: 11px/1.35 system-ui,sans-serif; pointer-events: none; }
+.adg-prompt-tooltip-section { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
+.adg-prompt-tooltip-category { flex: 0 0 100%; padding: 2px 4px; border-bottom: 1px solid var(--adg-line, rgba(180,156,255,.35)); color: var(--adg-fg-soft, #c7bfff); font-weight: 700; }
+.adg-prompt-tooltip-line { display: inline-flex; max-width: 100%; flex: 0 0 auto; gap: 5px; align-items: baseline; padding: 3px 6px; border: 1px solid var(--adg-line, rgba(255,255,255,.1)); border-radius: 6px; background: var(--adg-tint, rgba(255,255,255,.045)); }
 .adg-prompt-tooltip-line span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.adg-prompt-tooltip-line small { color: #bcaeff; white-space: nowrap; }
-.adg-prompt-tooltip::-webkit-scrollbar { width: 12px; height: 12px; }
-.adg-prompt-tooltip::-webkit-scrollbar-track { border-radius: 8px; background: #171521; }
-.adg-prompt-tooltip::-webkit-scrollbar-thumb { min-height: 42px; border: 3px solid #171521; border-radius: 8px; background: #9d8cff; }
-.adg-prompt-tooltip::-webkit-scrollbar-thumb:hover { background: #c0b4ff; }
+.adg-prompt-tooltip-line small { color: var(--adg-fg-soft, #bcaeff); white-space: nowrap; }
+/* 画廊源（C站 生成参数 / P站 作者·收藏 + 标签体系提示）：同一浮层内的补充区，不新造弹窗 */
+.adg-prompt-tooltip-extra { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; padding-top: 6px; border-top: 1px solid var(--adg-line, rgba(255,255,255,.12)); }
+.adg-prompt-tooltip-note { padding: 4px 6px; border: 1px solid var(--adg-line, rgba(255,255,255,.12)); border-radius: 6px; color: var(--adg-fg-soft, #9b9a95); background: var(--adg-tint, rgba(255,255,255,.04)); font-size: 10px; line-height: 1.45; }
+.adg-prompt-tooltip::-webkit-scrollbar { width: 10px; height: 10px; }
+.adg-prompt-tooltip::-webkit-scrollbar-track { border-radius: 8px; background: transparent; }
+.adg-prompt-tooltip::-webkit-scrollbar-thumb { min-height: 42px; border: 2px solid transparent; border-radius: 8px; background: var(--adg-tint-strong, #6b6b76); background-clip: padding-box; }
+.adg-prompt-tooltip::-webkit-scrollbar-thumb:hover { background: var(--adg-fg-soft, #8f899e); background-clip: padding-box; }
 .adg-dialog-overlay { position: fixed; inset: 0; z-index: 100000; display: grid; place-items: center; padding: 16px; background: rgba(0,0,0,.64); backdrop-filter: blur(2px); }
-.adg-dialog { display: flex; min-width: 300px; max-width: min(620px, 94vw); max-height: min(760px, calc(100vh - 32px)); flex-direction: column; overflow: auto; padding: 16px; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; color: #eee; background: linear-gradient(180deg, #292934, #22222b); box-shadow: 0 0 0 1px rgba(255,255,255,.035), 0 20px 50px rgba(0,0,0,.58), 0 0 46px rgba(94,106,210,.08), inset 0 1px rgba(255,255,255,.07); }
-.adg-dialog h3 { margin: 0 0 12px; color: #EDEDEF; font-size: 15px; letter-spacing: -.01em; }
-.adg-dialog-intro { color: #aaa6bc; font-size: 11px; line-height: 1.45; }
-.adg-settings-fields { display: flex; flex-direction: column; gap: 10px; }
-.adg-settings-section { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid rgba(255,255,255,.08); border-radius: 9px; background: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.018)); box-shadow: inset 0 1px rgba(255,255,255,.04); }
-.adg-settings-title { color: #c8beff; font-size: 11px; font-weight: 700; letter-spacing: .03em; }
-.adg-settings-help { color: #8f899e; font-size: 10px; line-height: 1.45; }
+.adg-dialog { display: flex; min-width: 300px; max-width: min(620px, 94vw); max-height: min(760px, calc(100vh - 32px)); flex-direction: column; overflow: auto; padding: 16px; border: 1px solid var(--adg-border, rgba(255,255,255,.12)); border-radius: 8px; color: var(--adg-text, #eee); background: linear-gradient(180deg, #292934, #22222b); box-shadow: var(--adg-shadow-float, 0 10px 24px rgba(0,0,0,.34)); }
+.adg-dialog h3 { margin: 0 0 12px; color: var(--adg-accent-strong, #EDEDEF); font-size: 15px; letter-spacing: -.01em; }
+.adg-dialog-intro { color: var(--adg-muted, #aaa6bc); font-size: 11px; line-height: 1.45; }
+.adg-settings-fields { display: flex; flex-direction: column; gap: 12px; }
+.adg-settings-section { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--adg-border-soft, rgba(255,255,255,.08)); border-radius: 8px; background: var(--adg-tint, rgba(255,255,255,.03)); }
+.adg-settings-title { color: var(--adg-accent-strong, #c8beff); font-size: 11px; font-weight: 700; letter-spacing: .03em; }
+.adg-settings-help { color: var(--adg-muted, #8f899e); font-size: 10px; line-height: 1.45; }
 .adg-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .adg-prompt-settings { display: flex; min-width: min(420px, 78vw); flex-direction: column; gap: 9px; }
 .adg-prompt-settings-tip { max-width: 460px; color: #aaa6bc; font-size: 11px; line-height: 1.45; }
@@ -380,11 +480,11 @@
 .adg-field { display: flex; flex-direction: column; gap: 5px; color: #bfc2ce; font-size: 11px; }
 .adg-field select,
 .adg-field input,
-.adg-settings-input { box-sizing: border-box; min-width: 0; width: 100%; padding: 7px 8px; border: 1px solid rgba(255,255,255,.12); border-radius: 6px; color: #eee; background: #17171d; box-shadow: inset 0 1px rgba(255,255,255,.04); font: inherit; }
+.adg-settings-input { box-sizing: border-box; min-width: 0; width: 100%; padding: 7px 8px; border: 1px solid rgba(255,255,255,.12); border-radius: 6px; color: #eee; background: #17171d; font: inherit; }
 .adg-field select:focus,
 .adg-field input:focus,
 .adg-settings-input:focus,
-.adg-preset-name-input:focus { outline: none; border-color: #8f86ed; box-shadow: 0 0 0 2px rgba(139,92,246,.18); }
+.adg-preset-name-input:focus { outline: none; border-color: #8f86ed; box-shadow: 0 0 0 2px rgba(139,92,246,.14); }
 .adg-settings-inline-row { display: flex; gap: 6px; align-items: center; }
 .adg-settings-inline-button,
 .adg-settings-save-button { flex: 0 0 auto; padding: 6px 10px; border: 1px solid rgba(168,149,255,.45); border-radius: 6px; color: #fff; background: #6657c9; cursor: pointer; font-size: 11px; }
@@ -472,8 +572,30 @@
 @media (prefers-reduced-motion: reduce) {
   .adg-dropdown-chevron,
   .adg-card,
-  .adg-card-actions { transition: none; }
+  .adg-card-actions,
+  .adg-toolbar button,
+  .adg-toolbar select,
+  .adg-card-actions button { transition: none; }
+  .adg-toolbar button:hover { transform: none; }
 }
+
+/* ── 图源密钥（设置弹窗内，PLAN §5.5）── 状态点用 1px 边框 + 实心/空心区分，不用 emoji、不发光 */
+.adg-source-secrets .adg-secret-status { display: flex; min-width: 0; align-items: center; gap: 6px; font-size: 11px; }
+.adg-secret-dot { flex: 0 0 auto; width: 8px; height: 8px; border: 1px solid var(--adg-muted, #9b9a95); border-radius: 999px; background: transparent; }
+.adg-secret-dot.is-on { border-color: var(--adg-info, #9bb2b6); background: var(--adg-info, #9bb2b6); }
+.adg-secret-dot.is-off { border-color: var(--adg-danger, #cb8585); }
+.adg-secret-name { flex: 0 0 auto; color: var(--adg-text, #e7e4de); font-weight: 650; }
+.adg-secret-text { min-width: 0; overflow: hidden; color: var(--adg-muted, #9b9a95); text-overflow: ellipsis; white-space: nowrap; }
+.adg-secret-mask { padding: 1px 6px; border: 1px solid var(--adg-border, #34383c); border-radius: 6px; color: var(--adg-accent-strong, #f0ece4); background: rgba(0,0,0,.25); font: 11px/1.5 ui-monospace, monospace; }
+.adg-source-secrets .adg-settings-inline-row { flex-wrap: wrap; }
+.adg-source-secrets .adg-settings-input { flex: 1 1 200px; }
+/* C站 诊断输出：等宽小字、可滚动，不抢弹窗高度 */
+.adg-diag-output { max-height: 160px; margin: 0; overflow: auto; padding: 8px; border: 1px solid var(--adg-border, #34383c); border-radius: 6px; color: var(--adg-muted, #9b9a95); background: rgba(0,0,0,.25); font: 10px/1.5 ui-monospace, monospace; white-space: pre-wrap; }
+.adg-diag-output[hidden] { display: none; }
+.adg-source-secrets .adg-secret-status[hidden] { display: none; }
+
+/* 内联 SVG 图标（禁 emoji）：尺寸由 JS 给 width/height，这里只管对齐与颜色继承 */
+.adg-icon { flex: 0 0 auto; vertical-align: middle; }
 
 /* 顶部搜索框（DOM 输入，回车直接搜索） */
 .adg-queryrow { flex: none; display: flex; }
@@ -485,16 +607,16 @@
   flex: 1;
   min-width: 0;
   padding: 7px 10px;
-  border: 1px solid #55566a;
-  border-radius: 6px;
-  color: #ededf2;
-  background: #23232c;
+  border: 1px solid var(--adg-line, #55566a);
+  border-radius: var(--adg-r-sm, 6px);
+  color: var(--adg-fg, #ededf2);
+  background: var(--adg-input-bg, #23232c);
   font-size: 12px;
   outline: none;
-  transition: border-color .15s ease, box-shadow .15s ease;
+  transition: border-color var(--adg-dur, 150ms) var(--adg-ease, ease-out), background var(--adg-dur, 150ms) var(--adg-ease, ease-out);
 }
-.adg-query::placeholder { color: #7b7b8d; }
-.adg-query:focus { border-color: #a895ff; box-shadow: 0 0 0 2px rgba(168, 149, 255, .18); }
+.adg-query::placeholder { color: var(--adg-fg-soft, #7b7b8d); }
+.adg-query:focus { border-color: var(--adg-go, #a895ff); }
 
 /* ── TK 新风格：弹出菜单与设置弹窗统一为灰黑 / 米白色调 ── */
 .adg-portal-menu,
@@ -510,12 +632,14 @@
   --adg-accent-strong: #f0ece4;
   --adg-info: #9bb2b6;
   --adg-danger: #cb8585;
+  /* 浮层只有一档中性投影（弹层要有层次，但**不许**彩色光晕 / 大面积 inset 高光） */
+  --adg-shadow-float: 0 10px 24px rgba(0, 0, 0, .34);
 }
 .adg-portal-menu {
   border-color: var(--adg-border);
   color: var(--adg-text);
   background: linear-gradient(180deg, var(--adg-surface-2), var(--adg-bg));
-  box-shadow: 0 0 0 1px rgba(255,255,255,.035), 0 18px 42px rgba(0,0,0,.62), inset 0 1px rgba(255,255,255,.05);
+  box-shadow: var(--adg-shadow-float, 0 10px 24px rgba(0,0,0,.34));
 }
 .adg-menu-title { color: var(--adg-accent-strong); }
 .adg-menu-choice,
@@ -529,7 +653,7 @@
 .adg-menu-choice.is-selected .adg-menu-choice-text { color: var(--adg-accent-strong); }
 .adg-menu-current { color: var(--adg-muted); }
 .adg-menu-arrow { color: var(--adg-info); }
-.adg-submenu { border-color: var(--adg-border); background: var(--adg-surface); box-shadow: 0 16px 36px rgba(0,0,0,.62); }
+.adg-submenu { border-color: var(--adg-border); background: var(--adg-surface); box-shadow: var(--adg-shadow-float, 0 10px 24px rgba(0,0,0,.34)); }
 .adg-menu-divider { background: var(--adg-border-soft); }
 .adg-menu-actions { border-color: var(--adg-border-soft); background: linear-gradient(180deg, rgba(23,25,27,.82), var(--adg-surface) 35%); }
 .adg-menu-actions button { border-color: var(--adg-border); color: var(--adg-text); background: #202326; }
@@ -591,7 +715,7 @@
 .adg-settings-save-button:hover,
 .adg-preset-save-row button:hover { border-color: var(--adg-accent-strong); background: var(--adg-accent-strong); }
 .adg-dialog-overlay { background: rgba(2,3,4,.72); backdrop-filter: blur(4px); }
-.adg-dialog { border-color: var(--adg-border); color: var(--adg-text); background: linear-gradient(180deg, var(--adg-surface-2), var(--adg-surface)); box-shadow: 0 0 0 1px rgba(255,255,255,.035), 0 22px 58px rgba(0,0,0,.68), inset 0 1px rgba(255,255,255,.05); }
+.adg-dialog { border-color: var(--adg-border); color: var(--adg-text); background: linear-gradient(180deg, var(--adg-surface-2), var(--adg-surface)); box-shadow: var(--adg-shadow-float, 0 10px 24px rgba(0,0,0,.34)); }
 .adg-dialog h3 { color: var(--adg-accent-strong); }
 .adg-settings-section { border-color: var(--adg-border-soft); background: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.018)); }
 .adg-settings-title { color: var(--adg-accent-strong); }

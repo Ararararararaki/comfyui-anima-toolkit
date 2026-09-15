@@ -24,6 +24,7 @@ try:
         LEGACY_CATEGORY_COUNT,
         PLUGIN_DIR,
         WEIGHT_RE,
+        looks_like_tag_series,
         normalise,
         tag_lookup_keys,
         taxonomy_for,
@@ -35,6 +36,7 @@ except ImportError:  # 允许脱离包直接导入（单测时把插件根目录
         LEGACY_CATEGORY_COUNT,
         PLUGIN_DIR,
         WEIGHT_RE,
+        looks_like_tag_series,
         normalise,
         tag_lookup_keys,
         taxonomy_for,
@@ -528,6 +530,21 @@ class AnimaTKDanbooruTagGetter:
     # 后端也不再读它们的值 —— 与 `natural_mode` 那三个遗留控件同一种处理方式。
 
     @classmethod
+    def _auto_classify_active(cls, category_flags):
+        """是否启用自动分类 —— **只看旧 12 类**（排除"未归类词"），不看新增的 8 类。
+
+        新增分类默认开启是为了"不丢标签"，若让它参与本判断，那些只勾了
+        「未归类词」的旧工作流会突然开始自动分类，未被勾选的分类词（如 1girl）
+        会被丢弃 —— 那是真实的破坏性变更。让新增分类保持默认值不影响本判断，
+        自动分类不启用时它们的内容会整段作为自然语言原样输出，同样不丢。
+        """
+        return any(
+            category_flags.get(name, False)
+            for name in cls.CATEGORY_NAMES[:LEGACY_CATEGORY_COUNT]
+            if name != "未归类词"
+        )
+
+    @classmethod
     def _classify_prompt(cls, value, category_flags, regex_pattern, exact_blacklist,
                          report=None):
         """把提示词分类成 20 个桶。
@@ -539,17 +556,8 @@ class AnimaTKDanbooruTagGetter:
         """将单一 Prompt 拆成已知 Tag 分类和未知自然语言，保持段落结构。"""
         # 仅勾选“未归类词”时沿用旧工作流语义：整段输入都视为自然语言，
         # 避免升级后旧节点突然丢掉已知 Tag；勾选任一具体分类才启用自动分类。
-        #
-        # ⚠️ 这个判断**只看旧 12 类**（排除未归类词），不看新增的 8 类：
-        # 新增分类默认开启是为了"不丢标签"，若让它参与本判断，那些只勾了
-        # 「未归类词」的旧工作流会突然开始自动分类，未被勾选的分类词（如 1girl）
-        # 会被丢弃 —— 那是真实的破坏性变更。让新增分类保持默认值不影响本判断，
-        # 自动分类不启用时它们的内容会整段作为自然语言原样输出，同样不丢。
-        legacy_active = [
-            name for name in cls.CATEGORY_NAMES[:LEGACY_CATEGORY_COUNT]
-            if name != "未归类词"
-        ]
-        auto_classify = any(category_flags.get(name, False) for name in legacy_active)
+        # （为什么只看旧 12 类，见 `_auto_classify_active` 的文档串。）
+        auto_classify = cls._auto_classify_active(category_flags)
         if report is not None:
             report["auto_classify"] = auto_classify
         if not auto_classify:
@@ -608,8 +616,13 @@ class AnimaTKDanbooruTagGetter:
                     seen.add(key)
                     selected.append(cls._apply_category_weight(tag, category, category_flags))
         if report is not None:
-            # 保留的词按类别记一份（底栏"✅ 保留"栏直接用它，不必再解析输出文本）
-            report["kept"] = {category: tags for category, tags in buckets.items() if tags}
+            # 保留的词按类别记一份（底栏"✅ 保留"栏直接用它，不必再解析输出文本）。
+            # **合并**而不是覆盖：双输入模式下分类包的保留词已经写进 report，
+            # 空行之后若还有第二批标签，它也会从这条链路补进来。
+            kept = report.setdefault("kept", {})
+            for category, tags in buckets.items():
+                if tags:
+                    kept.setdefault(category, []).extend(tags)
         natural = "\n\n".join(natural_paragraphs)
         return selected, natural
 
@@ -638,9 +651,22 @@ class AnimaTKDanbooruTagGetter:
         def clip(items):
             return list(items or [])[:cls.REPORT_ITEM_LIMIT]
 
+        def clip_unique(items):
+            # 同一个词可能从两条链路分别入账（分类包 + 空行后的第二批标签），
+            # 底栏不该把 `blue sky` 列两遍 —— 保序去重后再裁剪。
+            seen = set()
+            unique = []
+            for item in items or []:
+                key = str(item).casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique.append(item)
+            return unique[:cls.REPORT_ITEM_LIMIT]
+
         trimmed = {
             "auto_classify": bool(report.get("auto_classify", True)),
-            "kept": {k: clip(v) for k, v in (report.get("kept") or {}).items()},
+            "kept": {k: clip_unique(v) for k, v in (report.get("kept") or {}).items()},
             "dropped_by_category": {k: clip(v) for k, v in
                                     (report.get("dropped_by_category") or {}).items()},
             "dropped_by_blacklist": clip(report.get("dropped_by_blacklist")),
@@ -715,6 +741,25 @@ class AnimaTKDanbooruTagGetter:
         if matched >= 1 and short_parts / len(prefix_parts) >= 0.6 and tail.strip():
             return tail.strip()
         return raw
+
+    @staticmethod
+    def _split_off_tag_series(text):
+        """挑出「看起来是另一批标签」的空行段落，返回 ``(标签批文本, 剩余自然语言)``。
+
+        共享契约 ``split_prompt`` 把空行之后整段当自然语言，而这里的自然语言是
+        **原样输出**、既不过滤也不分类。用户常把两批不同来源的标签直接粘在一起，
+        于是第二批整段被当成句子吐出去 —— 症状就是「第二批标签不过滤、不分类」。
+
+        判据与 TK Anima 格式化 / 提示词扩写共用（``anima_tag_taxonomy.looks_like_tag_series``）。
+        本节点的输入直接接画廊 / Packer / 反推的输出，所以判据**必须保守**：
+        宁可漏拆一批标签（原样输出，一个词都不丢），也不能把真正的句子拆成标签。
+        """
+        batch, natural = [], []
+        for block in re.split(r"\n\s*\n", str(text or "").strip()):
+            if not block.strip():
+                continue
+            (batch if looks_like_tag_series(block) else natural).append(block.strip())
+        return ", ".join(batch), "\n\n".join(natural)
 
     @classmethod
     def _remove_bundle_tags(cls, value, bundle_tags):
@@ -811,6 +856,28 @@ class AnimaTKDanbooruTagGetter:
 
         raw_natural_language = self._natural_language_tail(natural_language, selected_tags)
         raw_natural_language = self._remove_bundle_tags(raw_natural_language, bundle_tags)
+        # 空行之后若其实是「另一批标签」（用户常把两批标签粘在一起），也参与分类过滤，
+        # 而不是整段当自然语言原样吐出去。真正的句子照旧原样保留（见 _split_off_tag_series）。
+        # 单输入模式不走这里 —— `_classify_prompt` 本来就逐段分类；
+        # 未启用自动分类时也整段跳过，保持「一个词都不动」的旧语义。
+        if self._auto_classify_active(category_flags):
+            batch_text, raw_natural_language = self._split_off_tag_series(raw_natural_language)
+            if batch_text:
+                batch_tags, batch_natural = self._classify_prompt(
+                    batch_text, category_flags, regex_pattern, exact_blacklist, report)
+                # 与分类包里已选标签**跨去重**：同一个词不该在输出里出现两次。
+                existing = {self._normalise_tag(tag).casefold() for tag in selected_tags}
+                for tag in batch_tags:
+                    key = self._normalise_tag(tag).casefold()
+                    if key in existing:
+                        continue
+                    existing.add(key)
+                    tag_text = f"{tag_text}, {tag}" if tag_text else tag
+                if batch_natural:
+                    raw_natural_language = (
+                        f"{raw_natural_language}\n\n{batch_natural}"
+                        if raw_natural_language else batch_natural
+                    )
         # 自然语言沿用外部 Sorter 的语义，归入“未归类词”；不额外制造第 13 类。
         # 当没有 TAG_BUNDLE 时，它就是节点唯一的数据源，不能因为旧工作流
         # 没有保存分类布尔值而被静默丢弃；有分类包时仍由“未归类词”控制。

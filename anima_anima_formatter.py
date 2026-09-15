@@ -34,6 +34,7 @@ try:
     from .anima_tag_taxonomy import (
         WEIGHT_RE,
         category_of,
+        looks_like_tag_series,
         normalise,
         normalise_spaces,
         split_prompt,
@@ -43,6 +44,7 @@ except ImportError:  # 允许脱离包直接导入（单测）
     from anima_tag_taxonomy import (
         WEIGHT_RE,
         category_of,
+        looks_like_tag_series,
         normalise,
         normalise_spaces,
         split_prompt,
@@ -252,22 +254,11 @@ class AnimaTKAnimaFormatter:
         而自然语言**不参与 dedupe**。但用户常把两批不同来源的标签直接粘在一起
         （两段都用逗号分隔），于是第二段整段不去重 —— 用户报「去重没效果」就是这个。
 
-        判据刻意保守（宁可把标签当自然语言，也不要把句子拆成标签）：
-          · 含句末标点（`. ! ? 。 ！ ？`）→ 判为自然语言；
-          · 出现「长片段」（>24 字符且含 ≥4 个空格）→ 判为自然语言；
-          · 其余情况且片段数 ≥3 → 判为标签串。
+        判据实现在 ``anima_tag_taxonomy.looks_like_tag_series``：三个文本节点
+        （Tag Getter / Anima 格式化 / 提示词扩写）共用同一份，避免各写一份正则后漂移。
+        这里保留同名薄委托，调用点与文档串不变。
         """
-        raw = str(text or "").strip()
-        if not raw:
-            return False
-        if re.search(r"[.!?。！？]", raw):
-            return False
-        parts = [part.strip() for part in re.split(r"[,，\n]", raw) if part.strip()]
-        if len(parts) < 3:
-            return False
-        if any(len(part) > 24 and part.count(" ") >= 4 for part in parts):
-            return False
-        return True
+        return looks_like_tag_series(text)
 
     @staticmethod
     def _apply_natural_separator(text, mode):
