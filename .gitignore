@@ -76,4 +76,6 @@ panel/vite.config.ts.timestamp-*.mjs
 !/docs/FEATURES.md
 # 游离脚本（内含硬编码本机绝对路径）
 /test_gallery.py
+# 竞品拆解报告（开发调研材料，不是用户文档）
+/Danbooru-Gallery-竞品拆解报告.md
 
