@@ -61,3 +61,19 @@ Thumbs.db
 
 # Vite 临时产物（每次构建堆积，纯噪音）
 panel/vite.config.ts.timestamp-*.mjs
+
+# ── 开发内容：只在本地保留，不随仓库发布 ─────────────────────────────────
+# 用户要求（2026-09-16）：远端只呈现「用户装来用的东西」——
+# 插件本体（anima_*.py / services / web / app）+ 用户文档（README / CHANGELOG /
+# docs/FEATURES.md）+ panel/（app 的构建源码，CI 重建 app 需要它）+ .github（CI）。
+# 下面这些都已 `git rm --cached`，本地文件仍在，只是不再跟踪。
+/tests/
+/tools/
+/AGENTS.md
+/requirements-dev.txt
+# docs/ 下只发布 FEATURES.md（README 的「功能详解文档」链接指向它）
+/docs/*.md
+!/docs/FEATURES.md
+# 游离脚本（内含硬编码本机绝对路径）
+/test_gallery.py
+

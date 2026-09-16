@@ -42,20 +42,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Python 环境：只装测试/校验真正需要的依赖 ──────────────────────
+      # ── Python 环境：只做语法编译，不需要第三方依赖 ──────────────────
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: pip
-          cache-dependency-path: requirements-dev.txt
 
-      - name: Install Python deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
-
-      # ── Node 环境（供 JS 测试与 panel 类型检查/构建）──────────────────
+      # ── Node 环境（供 panel 类型检查与构建）──────────────────────────
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -66,15 +59,6 @@ jobs:
       # ── 逐层验证：每步独立，失败环节一眼可见 ─────────────────────────
       - name: 'ci: python-compile'
         run: python -m py_compile __init__.py anima_*.py
-
-      - name: 'ci: ai-verify (节点注册 / README 图片与链接 / 版本一致性)'
-        run: python tests/tools/ai_verify.py
-
-      - name: 'ci: pytest (离线层：单元 + 静态回归)'
-        run: python -m pytest tests -q
-
-      - name: 'ci: js-tests (Node)'
-        run: python tests/run_tests.py --js
 
       - name: 'ci: panel-typecheck (tsc --noEmit)'
         run: |
