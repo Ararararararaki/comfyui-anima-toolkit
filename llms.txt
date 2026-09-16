@@ -6,8 +6,9 @@
 > (batch apply, thumbnails, auto-categorisation, Civitai metadata), **Civitai integration**
 > (match local files to Civitai models by SHA256, browse, one-click download),
 > **prompt management** (bilingual tag cards, translation, prompt library, **Chinese tag
-> autocomplete**), **Danbooru tools** (tag search with filters, waterfall gallery, tag
-> classifier), and **output management** (gallery over `ComfyUI/output`, PNG metadata parsing).
+> autocomplete**), **multi-source gallery** (Danbooru / Civitai / Pixiv search in one node,
+> with filters, waterfall layout and random discovery), **Danbooru tools** (tag classifier),
+> and **output management** (gallery over `ComfyUI/output`, PNG metadata parsing).
 >
 > Publisher `toki` · Registry id `anima-toolkit` · License MIT · Primary docs are in Chinese,
 > with an English summary at the top of the README.
@@ -34,7 +35,7 @@
 |---|---|
 | TK Batch LoRA Loader | Reads `<lora:name:weight>` syntax and applies many LoRAs in sequence; outputs only the activated trigger words |
 | TK Prompt Cards | Card-library prompt editor: bilingual tag cards, per-fragment hide/restore, Chinese/English autocomplete, CLIP encode output, `lora_syntax` passthrough |
-| TK Danbooru Gallery | Danbooru search + waterfall gallery inside the graph, random discovery tiers, prompt-output formatting |
+| TK Danbooru Gallery | Multi-source gallery inside the graph — **Danbooru / Civitai / Pixiv** behind one source dropdown; waterfall layout, random discovery tiers, prompt-output formatting |
 | TK Danbooru Tag Getter | Tag search with rating/category filters and tag classification |
 | TK Prompt Batch | Chained multi-prompt batch generation |
 | TK Prompt Saver | Save prompt text as image previews |
@@ -48,7 +49,7 @@
 
 `comfyui` · `comfyui-custom-nodes` · `comfyui-nodes` · `comfyui-manager` · `anima` ·
 `stable-diffusion` · `lora` · `lora-manager` · `batch-lora` · `civitai` · `civitai-api` ·
-`danbooru` · `danbooru-gallery` · `tag-autocomplete` · `chinese-tag-autocomplete` ·
+`danbooru` · `danbooru-gallery` · `civitai-gallery` · `pixiv` · `multi-source-gallery` · `tag-autocomplete` · `chinese-tag-autocomplete` ·
 `prompt-manager` · `prompt-cards` · `image-gallery` · `output-gallery` · `anime` ·
 `generative-ai` · `workflow-automation` · `nsfw`
 

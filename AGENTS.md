@@ -67,20 +67,54 @@ python -X utf8 .scratch/check_widget_safety.py       # 检查 COMBO / FLOAT 的�
 > `docs/HANDOFF-2026-09-13-engineering.md`（CI 连红 5 次排查 + Registry 全过程）。
 > 审计结论见 `docs/工程化审计-2026-09-13.md`。
 
-## 0. 当前状态（2026-09-13 · v2.12.1）
+## 0. 当前状态（2026-09-16 · v2.14.0）
 
 | 项 | 值 |
 |---|---|
-| **版本** | **2.12.1**（`VERSION` 唯一真源；`__init__.py` 运行时读它） |
-| 远端 main | `ffc5130e`（本地 == 远端） |
-| **CI** | 只读验证 CI，**连续多次全绿**（`.github/workflows/ci.yml`） |
-| GitHub Release | `v2.10.0`、`v2.11.0`、`v2.12.0`、`v2.12.1` |
-| **ComfyUI Registry** | ✅ **`anima-toolkit` @ `toki`**：2.11.0 / 2.12.0 / **2.12.1** 均已上传待审 |
-| 离线测试 | **129 passed** |
+| **版本** | **2.14.0**（`VERSION` 唯一真源；`__init__.py` 运行时读它） |
+| 远端 main | `19cc45c2`（本地 == 远端；推送前记得先 commit，见 §3） |
+| **CI** | ⚠️ **2026-09-14 起连续 4 次红**（含 2.14.0 发布提交），根因已定位并修复（见下），**修复推送后才会转绿** |
+| GitHub Release | `v2.10.0` ~ `v2.14.0`（**2.9 及更早从未打 tag**） |
+| **ComfyUI Registry** | ✅ **`anima-toolkit` @ `toki`**，最新 2.14.0（`Pending` 待审） |
+| 离线测试 | **335 passed**；`python tests/run_tests.py` = **6/6** |
 | `__init__.py` | 2657 → **2448 行**（更新链已拆到 `services/github_update.py`） |
-| ⚠️ **运行目录** | py/js/data 已同步到 2.12.1，但 **ComfyUI 未重启**（需用**绘世启动器**重启） |
+| ⚠️ **运行目录** | py/js/data 已同步到 2.14.0（含 3 个新图源模块 + 入口注册），但 **ComfyUI 未重启**（用**绘世启动器**；2026-09-16 查时 8188 无进程） |
 
-### 本轮（2.12.0 → 2.12.1）= ②区联想的中文角色名支持 + 更新链漏发修复
+### 2026-09-14 ~ 09-16：CI 为什么红了 4 次，以及怎么修的
+
+**症状**：CI 自 2026-09-14 起连续 4 次 `failure`（`00b4e530` / `800f7e4a` / `e5e1e66c` / `19cc45c2`），
+四次是同一条断言：
+
+```
+FAILED tests/test_layer_manifest.py::test_layer_manifest_matches_disk
+E   新增未登记 1: ['verify_danbooru_tag_getter_ui.py']
+1 failed, 313 passed, 2 skipped
+```
+
+pytest 一红，后面 `js-tests` / `panel tsc` / `panel build` 全部 skipped —— 前端与面板校验那几天**实际没跑过**。
+
+**根因**：`tests/verify_danbooru_tag_getter_ui.py` 是 2.13.0 面板改版**之前**的旧脚本
+（`tests/integration/test_danbooru_tag_getter_ui.py` 是它的重写替代，旧断言「12 分类 + 2 个自然语言开关」
+按该文件自己的说明「2.13.0 之后早已不成立」）。发布时工作区已删它、`classify_tests.py` 也按"不存在"
+重新生成了 manifest，但 `git add` 用的是**白名单**，删除没进白名单 →
+**HEAD 里文件还在、manifest 里已经没了**，两边一交叉，CI 必红。
+
+**修法**：把删除提交上去（`api_push_guard.py --allow-delete`）。
+⚠️ **不要在本地"恢复"它** —— 2026-09-16 实测：恢复 → `test_layer_manifest.py` 立刻 FAIL；删回 → 2 passed。
+
+**教训（值得固化成习惯）**：**白名单式 `git add` 不会带上删除**。
+发布前扫一眼 `git status --short`，有 ` D` 行就说明这个删除会被漏掉，CI 会在下一次跑红。
+
+### 2026-09-16：README 补多源画廊
+
+`README.md` 与 `llms.txt` 此前**完全没提** 2.14.0 的多源画廊 —— `ai_verify` 只校验 README 的图片/链接与版本号
+一致性，不校验内容完整性，所以它不会变红，但 GitHub 访客看不到新功能。
+现已补：新增「最近更新（2026-09-16 · 2.14.0）」节、`TK 节点目录` 的 `TK/Danbooru` 行、
+第 8 节 D站画廊条目下的多源子项（含 **C站不能关键词检索** / **API key 对取图无影响** / **P站是素材定位**
+三条实测事实），并修掉「更新日志」节里"最近的 **2.3.0** 推送"这句陈旧引用。
+**仍缺**：多源画廊的实拍截图（`screenshots/tk-danbooru-gallery.png` 还是旧 UI），需重启 ComfyUI 后补。
+
+### 历史（2.12.0 → 2.12.1）：②区联想的中文角色名支持 + 更新链漏发修复
 
 **中文角色名**（2.12.0）。核心结论：**坏的是数据覆盖与排序，不是匹配逻辑**。
 
@@ -260,14 +294,15 @@ python tools/bump_version.py 2.12.0     # VERSION / __init__ / README / pyprojec
 
 | 口径 | 当前值 | 说明 |
 |---|---|---|
-| 仓库版本 | **2.12.7** | `VERSION` 唯一真源 |
-| GitHub tag/Release | `v2.10.0` ~ `v2.12.7` | **2.9 及更早从未打 tag**（v2.10.0 是 2026-09-13 补建） |
-| Registry 版本 | 2.12.7 | `Pending` 待审核（2.11.0 起全部 Pending，故 `latest_version` 为空） |
+| 仓库版本 | **2.14.0** | `VERSION` 唯一真源 |
+| GitHub tag/Release | `v2.10.0` ~ `v2.14.0` | **2.9 及更早从未打 tag**（v2.10.0 是 2026-09-13 补建） |
+| Registry 版本 | 2.14.0 | `Pending` 待审核（2.11.0 起全部 Pending，故 `latest_version` 为空） |
 
 版本谱系：2.4.0 → 2.5.x → 2.6.0 → 2.7.x → 2.8.x → **2.9.0**（`357bf1e`）→
 **2.10.0**（`6d9ec25`，破坏性：相机控制退役）→ 2.11.0（`2e071ba`）→ 2.12.0（②区中文联想）→
 2.12.1（更新链漏发修复）→ 2.12.2（可发现性元数据）→ 2.12.3/2.12.4（改名 `TK Toolkit` + 旧名召回）
-→ 2.12.5/2.12.6（toast 对比度 + 重发损坏的包）→ **2.12.7**（补回 Outputs 后台更新前端）。
+→ 2.12.5/2.12.6（toast 对比度 + 重发损坏的包）→ **2.12.7**（补回 Outputs 后台更新前端）→
+2.13.0+（Tag Getter 面板与查询/预设、CN 模块接入）→ **2.14.0**（**多源画廊：D站 / C站 / P站**）。
 > 注意：2.10.0 那次升级了 `VERSION` 却漏改 README，造成过真实漂移 —— 所以现在有强制校验。
 
 ## 6. 发布到 ComfyUI Registry
