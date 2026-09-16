@@ -527,6 +527,33 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   // 属性值转义（双引号上下文；esc 已覆盖引号，此处为语义别名）
   const escAttr = (s) => esc(s);
 
+  // ── /anima/meta 持久化契约（后端：键级合并 merged = {**current, **incoming}）──
+  // 空值（[]/{}）不覆盖非空，除非 body 带 __replace（字符串数组）显式声明该键允许被清空；
+  // 回包 { ok, skipped, saved }，__replace 只用于判定、不落库。
+  // 这里集中收口读写工具，避免以后再有散落的"空对象直接 POST"把后端元数据整体清空。
+  const META_MIRROR_KEY = "tk_lora_meta_mirror";
+  const META_KEYS = ["categories", "loraMeta", "loraGroups"];
+
+  // 空壳判定：三个键都为空/缺失。拿空壳去 POST 会把后端 LoRA 组 / 分类 / 偏好一起清掉
+  const metaIsEmptyShell = (meta) => {
+    if (!meta || typeof meta !== "object") return true;
+    const cats = Array.isArray(meta.categories) ? meta.categories.length : Object.keys(meta.categories || {}).length;
+    const loraMetaCount = meta.loraMeta && typeof meta.loraMeta === "object" ? Object.keys(meta.loraMeta).length : 0;
+    const groups = Array.isArray(meta.loraGroups) ? meta.loraGroups.length : 0;
+    return !cats && !loraMetaCount && !groups;
+  };
+
+  // 本地镜像：写入成功后存一份，后端读取失败时兜底恢复（永久化保存的最后一道防线）
+  const saveMetaMirror = (meta) => {
+    try { localStorage.setItem(META_MIRROR_KEY, JSON.stringify(meta)); } catch { /* 忽略配额/隐私模式异常 */ }
+  };
+  const loadMetaMirror = () => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(META_MIRROR_KEY) || "null");
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch { return null; }
+  };
+
   // ── UI 状态 ──
   class WidgetUI {
     constructor(node, loraWidget) {
@@ -535,6 +562,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.loras = this._parse(loraWidget.value || "");
       this.triggerWordMap = {};
       this.loraInfoMap = {}; // name -> {previewUrl, modelName, creator}（悬停预览用）
+      // this.meta 是否已是从后端完整读到的快照：只有快照才能安全提交 loraMeta 单键
+      // （后端按键级合并，loraMeta 值非空会整键替换 → 残缺基线会把后端其他偏好覆盖掉）
+      this._metaLoaded = false;
       this._lastBridgeTs = 0;   // 上次已应用的 bridge updated_at（避免重复同步）
       this._bridgeTimer = null;
       this.domSizeSync = null;
@@ -622,15 +652,113 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const hasContent = this.meta && (this.meta.categories?.length || Object.keys(this.meta.loraMeta || {}).length || (this.meta.loraGroups || []).length);
       if (hasContent) return;
       this.meta = { categories: [], loraMeta: {}, loraGroups: [] };
-      fetch("/anima/meta")
-        .then((r) => r.json())
-        .then((d) => {
-          // 仅在后端确有数据时替换；失败/空结果保留现有引用，避免后续 toggle 把空 meta 整体覆盖到后端
-          if (d && (d.categories?.length || Object.keys(d.loraMeta || {}).length || (d.loraGroups || []).length)) {
-            this.meta = d;
-          }
-        })
-        .catch(() => {});
+      this._fetchMeta().then((data) => {
+        // 仅在后端确有数据时替换；失败/空结果保留现有引用，避免后续 toggle 把空 meta 整体覆盖到后端
+        if (data && (data.categories?.length || Object.keys(data.loraMeta || {}).length || (data.loraGroups || []).length)) {
+          this.meta = data;
+          this._metaLoaded = true; // 后端完整快照，可安全提交单键
+          return;
+        }
+        // 读取失败（data === null）→ 用本地镜像兜底恢复，绝不拿空壳当起点
+        if (data === null) this._restoreMetaFromMirror();
+      }).catch(() => {});
+    }
+
+    // 后端读取失败时用 localStorage 镜像恢复 this.meta（只恢复展示，不自动写回后端）
+    _restoreMetaFromMirror() {
+      const mirror = loadMetaMirror();
+      if (!mirror || metaIsEmptyShell(mirror)) return false;
+      this.meta = {
+        categories: Array.isArray(mirror.categories) ? mirror.categories : [],
+        loraMeta: mirror.loraMeta && typeof mirror.loraMeta === "object" ? mirror.loraMeta : {},
+        loraGroups: Array.isArray(mirror.loraGroups) ? mirror.loraGroups : [],
+      };
+      showToast("已用本地备份恢复（后端读取失败）");
+      return true;
+    }
+
+    // 读后端 meta：网络异常 / 非 2xx / 非法 JSON 一律返回 null，调用方必须据此中止本次操作。
+    // 绝不返回 {} 或 { loraGroups: [] } —— 空对象一旦被继续 POST，后端元数据会被整体覆盖清空。
+    async _fetchMeta() {
+      try {
+        const response = await fetch("/anima/meta");
+        if (!response.ok) return null;
+        const data = await response.json();
+        if (!data || typeof data !== "object") return null;
+        // 读到后端数据时刷新本地镜像；后端返回空壳时不覆盖镜像（别把还能用的备份抹成空）
+        if (!metaIsEmptyShell(data)) saveMetaMirror(data);
+        return data;
+      } catch { return null; }
+    }
+
+    // 统一写入入口：所有 POST /anima/meta 都走这里
+    //   - 空壳保护：待发对象三键全空且没显式授权清空 → 拒发（预加载失败时手里正是空对象）
+    //   - replace：字符串数组，声明"这些键允许被清空"（后端 __replace 语义，仅用于判定）
+    //     删除/重命名组等可能让数组变短的合法操作必须传它，否则后端护栏会拦掉"删到空"
+    //   返回 { ok, skipped, saved, error }
+    async _postMeta(meta, { replace = [] } = {}) {
+      if (!meta || typeof meta !== "object") return { ok: false, error: "meta 无效" };
+      const replaceKeys = Array.isArray(replace) ? replace : [];
+      // 只提交契约内的三个键，其余键（含后端未来的新键）交由后端合并保留
+      const body = {};
+      for (const key of META_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(meta, key)) body[key] = meta[key];
+      }
+      if (!Object.keys(body).length) return { ok: false, error: "empty-payload" };
+      if (metaIsEmptyShell(body) && !replaceKeys.length) {
+        showToast("本地数据为空，已阻止本次写入（避免清空后端 LoRA 组）");
+        return { ok: false, error: "empty-shell" };
+      }
+      if (replaceKeys.length) body.__replace = replaceKeys;
+      try {
+        const response = await fetch("/anima/meta", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) {
+          showToast(`保存失败（HTTP ${response.status}），本次未写入后端，请重试`);
+          return { ok: false, error: `HTTP ${response.status}` };
+        }
+        const data = await response.json().catch(() => null);
+        // 写入成功 → 按"键级合并"语义叠加进镜像，部分键提交不会把镜像变成残缺对象
+        const mirror = loadMetaMirror() || {};
+        const nextMirror = { ...mirror };
+        for (const key of META_KEYS) {
+          if (Object.prototype.hasOwnProperty.call(body, key)) nextMirror[key] = body[key];
+        }
+        saveMetaMirror(nextMirror);
+        return { ok: true, skipped: (data && data.skipped) || [], saved: (data && data.saved) || [] };
+      } catch (error) {
+        showToast("保存失败，本次未写入后端，请重试");
+        return { ok: false, error: error && error.message ? error.message : String(error) };
+      }
+    }
+
+    // 保存单个 LoRA 的「通常隐藏」偏好到后端 loraMeta。
+    // 只提交 loraMeta 这一个键（依赖后端键级合并），不再整体 POST this.meta —— 原实现
+    // 在预加载失败时会把空壳整体写回，直接把后端分类/组/偏好清空。
+    async _saveLoraPref(name, disabled) {
+      // 手里不是后端完整快照时先补读一次；读不到就中止本次写入并提示用户，绝不拿残缺基线覆盖后端
+      if (!this._metaLoaded) {
+        const remote = await this._fetchMeta();
+        if (!remote) {
+          showToast("读取后端数据失败，本次未保存，请重试");
+          return false;
+        }
+        this.meta = {
+          categories: Array.isArray(remote.categories) ? remote.categories : [],
+          loraMeta: remote.loraMeta && typeof remote.loraMeta === "object" ? remote.loraMeta : {},
+          loraGroups: Array.isArray(remote.loraGroups) ? remote.loraGroups : [],
+        };
+        this._metaLoaded = true;
+      }
+      if (!this.meta) this.meta = { categories: [], loraMeta: {}, loraGroups: [] };
+      const mm = this.meta.loraMeta || (this.meta.loraMeta = {});
+      if (!mm[name]) mm[name] = { categories: [], favorite: false, pinned: false, count: 0 };
+      mm[name].disabled = !!disabled;
+      const res = await this._postMeta({ loraMeta: mm });
+      return res.ok;
     }
 
     _commit() {
@@ -1345,12 +1473,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         toggle.onclick = (e) => {
           e.stopPropagation();
           l.disabled = !l.disabled;
-          // 同步"通常隐藏"偏好到后端 loraMeta：跨工作流 / 移除后再加 / 粘贴时都能恢复关闭状态
-          this._ensureMeta();
-          const mm = this.meta.loraMeta;
-          if (!mm[l.name]) mm[l.name] = { categories: [], favorite: false, pinned: false, count: 0 };
-          mm[l.name].disabled = !!l.disabled;
-          fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(this.meta) }).catch(() => {});
+          // 同步"通常隐藏"偏好到后端 loraMeta：跨工作流 / 移除后再加 / 粘贴时都能恢复关闭状态。
+          // 只提交 loraMeta 单键；读取不到后端快照时 _saveLoraPref 会中止写入并提示，绝不清空后端 meta
+          this._saveLoraPref(l.name, l.disabled);
           this._commit();
           this._render(listEl);
         };
@@ -1739,9 +1864,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     // ── LoRA 组管理（保存 / 一键切换 / 重命名 / 删除 / 悬浮预览） ──
     _groupsModal(listEl) {
-      fetch("/anima/meta").then((r) => r.json()).catch(() => ({ loraGroups: [] }))
+      this._fetchMeta()
         .then((metaData) => {
-          const groups = metaData.loraGroups || [];
+          // 读取失败（null）→ 直接中止本次操作并提示；绝不拿 { loraGroups: [] } 当起点去 POST，
+          // 否则一次保存/删除就会把后端已有的组、分类、偏好整体覆盖清空
+          if (!metaData) { showToast("读取后端数据失败，本次未保存，请重试"); return; }
+          const groups = Array.isArray(metaData.loraGroups) ? metaData.loraGroups : [];
+          this._metaLoaded = true; // 此刻拿到的是后端完整快照
           const overlay = document.createElement("div");
           overlay.className = "modal-overlay anima-group-overlay";
           overlay.style.cssText = "position:fixed;inset:0;background:rgba(10,10,15,0.85);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);";
@@ -1768,12 +1897,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             const doSave = async () => {
               const name = nameInput.value.trim();
               if (!name) { showToast("请输入组名"); return; }
-              const meta = await fetch("/anima/meta").then((r) => r.json()).catch(() => ({ loraGroups: [] }));
-              const gs = meta.loraGroups || [];
+              const meta = await this._fetchMeta();
+              // 读取失败 → 中止并提示，绝不用空对象当基线（那会把后端 LoRA 组整体清掉）
+              if (!meta) { showToast("读取后端数据失败，本次未保存，请重试"); return; }
+              const gs = Array.isArray(meta.loraGroups) ? meta.loraGroups : [];
               if (gs.some((g) => g.name === name)) { showToast(`已存在同名组「${name}」`); return; }
               gs.push({ name, loras: active.map((l) => ({ name: l.name, weight: l.weight })) });
-              meta.loraGroups = gs;
-              await fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(meta) }).catch(() => {});
+              // 只提交 loraGroups 单键（依赖后端键级合并），不再整体覆盖后端 meta
+              const res = await this._postMeta({ loraGroups: gs });
+              if (!res.ok) return; // 失败提示已在 _postMeta 内给出，保留弹窗让用户重试
               showToast(`已保存组「${name}」（${active.length} 个 LoRA）`);
               overlay.remove();
               this._groupsModal(listEl);
@@ -1837,20 +1969,24 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
               input.select();
               let done = false;
               const reopen = () => { if (done) return; done = true; overlay.remove(); this._groupsModal(listEl); };
+              const reload = () => { overlay.remove(); this._groupsModal(listEl); };
               const commit = async () => {
                 if (done) return; done = true;
                 const next = input.value.trim();
-                if (!next || next === prev) { overlay.remove(); this._groupsModal(listEl); return; }
-                const meta = await fetch("/anima/meta").then((r) => r.json()).catch(() => ({ loraGroups: [] }));
-                const gs = meta.loraGroups || [];
-                if (gs.some((x) => x.name === next)) { showToast(`已存在同名组「${next}」`); overlay.remove(); this._groupsModal(listEl); return; }
+                if (!next || next === prev) { reload(); return; }
+                const meta = await this._fetchMeta();
+                if (!meta) { showToast("读取后端数据失败，本次未保存，请重试"); reload(); return; }
+                const gs = Array.isArray(meta.loraGroups) ? meta.loraGroups : [];
+                if (gs.some((x) => x.name === next)) { showToast(`已存在同名组「${next}」`); reload(); return; }
                 const target = gs.find((x) => x.name === prev);
-                if (target) target.name = next;
-                meta.loraGroups = gs;
-                await fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(meta) }).catch(() => {});
+                if (!target) { showToast(`组「${prev}」已不存在，请重新打开`); reload(); return; }
+                target.name = next;
+                // 改名属于"数组可能变短"的一类操作：显式声明 loraGroups 允许被覆盖，
+                // 否则后端"空值不覆盖非空"的护栏会把合法改动当成清空拦掉
+                const res = await this._postMeta({ loraGroups: gs }, { replace: ["loraGroups"] });
+                if (!res.ok) { reload(); return; } // 失败提示已在 _postMeta 内给出
                 showToast(`组已重命名：${prev} → ${next}`);
-                overlay.remove();
-                this._groupsModal(listEl);
+                reload();
               };
               input.onkeydown = (e) => {
                 if (e.key === "Enter") commit();
@@ -1879,8 +2015,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             delBtn.onclick = async () => {
               dotClosePopover();
               if (!window.confirm(`删除组「${g.name}」？`)) return;
-              metaData.loraGroups = metaData.loraGroups.filter((x) => x.name !== g.name);
-              await fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(metaData) }).catch(() => {});
+              const next = (Array.isArray(metaData.loraGroups) ? metaData.loraGroups : []).filter((x) => x.name !== g.name);
+              metaData.loraGroups = next;
+              // 删除会让数组变短（甚至删到空）：必须带 __replace 显式授权清空该键，
+              // 否则后端护栏会把"删掉最后一组"这个合法操作整个拦掉（用户表现为删不掉）
+              const res = await this._postMeta({ loraGroups: next }, { replace: ["loraGroups"] });
+              if (!res.ok) return; // 失败提示已在 _postMeta 内给出，保留弹窗让用户重试
               overlay.remove();
               this._groupsModal(listEl);
             };
@@ -1976,9 +2116,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       let metaSaveQueue = Promise.resolve();
       const saveMeta = () => {
         // 分类点击可能连续发生；按顺序写入，避免旧请求后返回覆盖最新分类快照。
+        // 统一走 _postMeta：空壳不落库、失败有提示，不再有"整体覆盖后端 meta"的写法
         metaSaveQueue = metaSaveQueue.catch(() => {}).then(async () => {
-          const response = await fetch("/anima/meta", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(meta) });
-          if (!response.ok) throw new Error(`分类同步失败（HTTP ${response.status}）`);
+          const res = await this._postMeta(meta);
+          if (res.ok) return;
+          if (res.error === "empty-shell" || res.error === "empty-payload") {
+            console.warn("[Anima] 本地 meta 为空壳，已跳过写入（保护后端数据）");
+            return;
+          }
+          throw new Error(`分类同步失败（${res.error}）`);
         }).catch((error) => console.warn("[Anima] 分类同步失败:", error));
         return metaSaveQueue;
       };
@@ -2524,7 +2670,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // ── 加载数据 ──
       Promise.all([
         fetch("/anima/loras").then((r) => r.json()).catch(() => ({ loras: [] })),
-        fetch("/anima/meta").then((r) => r.json()).catch(() => null),
+        this._fetchMeta(),
       ]).then(([lData, mData]) => {
         allLoras = (lData.loras || []).map((l) => ({ ...l }));
         // 只有后端确有数据时才整体替换；失败/空结果保留当前 this.meta（含之前加载的旧值），防止空 meta 覆盖后端
@@ -2535,6 +2681,18 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         );
         if (hasBackendMeta) {
           meta = this.meta = { categories: mData.categories || [], loraMeta: mData.loraMeta || {}, loraGroups: mData.loraGroups || [] };
+          this._metaLoaded = true;
+        } else if (mData === null) {
+          // 后端读取失败 → 本地镜像兜底恢复，避免后续 saveMeta 拿空壳把后端 meta 覆盖清空
+          const mirror = loadMetaMirror();
+          if (mirror && !metaIsEmptyShell(mirror) && metaIsEmptyShell(meta)) {
+            meta = this.meta = {
+              categories: Array.isArray(mirror.categories) ? mirror.categories : [],
+              loraMeta: mirror.loraMeta && typeof mirror.loraMeta === "object" ? mirror.loraMeta : {},
+              loraGroups: Array.isArray(mirror.loraGroups) ? mirror.loraGroups : [],
+            };
+            showToast("已用本地备份恢复（后端读取失败）");
+          }
         }
         totalEl.textContent = `共 ${allLoras.length} 个`;
         renderSidebar();

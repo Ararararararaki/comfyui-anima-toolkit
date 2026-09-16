@@ -123,6 +123,7 @@
    "test_lighting_prompt.py",
    "test_lora_resume.py",
    "test_lora_subdir.py",
+   "test_meta_persistence.py",
    "test_parse_groups.py",
    "test_prompt_cards_autocomplete.py",
    "test_prompt_cards_suggest_keys.py",
@@ -411,7 +412,7 @@
    "file": "test_danbooru_gallery_image_efficiency.py",
    "layer": "unit",
    "why": [],
-   "bytes": 5904
+   "bytes": 7623
   },
   {
    "file": "test_danbooru_gallery_prompt_tooltip.py",
@@ -453,13 +454,13 @@
    "file": "test_gallery_multisource_ui.py",
    "layer": "unit",
    "why": [],
-   "bytes": 22731
+   "bytes": 30741
   },
   {
    "file": "test_gallery_pixiv.py",
    "layer": "unit",
    "why": [],
-   "bytes": 45049
+   "bytes": 51553
   },
   {
    "file": "test_gallery_sources_contract.py",
@@ -505,6 +506,12 @@
    "layer": "unit",
    "why": [],
    "bytes": 6376
+  },
+  {
+   "file": "test_meta_persistence.py",
+   "layer": "unit",
+   "why": [],
+   "bytes": 28057
   },
   {
    "file": "test_offline_portability.py",
@@ -560,7 +567,7 @@
    "file": "test_update_archive.py",
    "layer": "unit",
    "why": [],
-   "bytes": 13826
+   "bytes": 15397
   },
   {
    "file": "tools/ai_verify.py",

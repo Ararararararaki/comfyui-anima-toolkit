@@ -121,7 +121,8 @@
       .tk-dtb-chip.is-more { color:#8a8a8a; border-style:dashed; }
       /* 新增分类与旧分类做视觉区分，避免误以为节点突然变复杂 */
       .tk-dtb-row.is-new { background:rgba(255,255,255,.04); }
-      .tk-dtb-divider { grid-column:1 / -1; margin:3px 0 1px; padding-top:3px; border-top:1px solid rgba(255,255,255,.10); color:#7d7d7d; font-size:10px; }
+      .tk-dtb-divider { grid-column:1 / -1; margin:3px 0 1px; padding-top:3px; border-top:1px solid rgba(255,255,255,.10); color:#7d7d7d; font-size:10px; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+      .tk-dtb-divider-actions { display:flex; align-items:center; gap:2px; }
     `;
     document.head.appendChild(style);
   }
@@ -274,7 +275,18 @@
           // 视觉上把「新增 8 类」与旧 12 类分开，避免用户误以为节点逻辑变了
           const divider = document.createElement("div");
           divider.className = "tk-dtb-divider";
-          divider.textContent = "扩展分类（新增 · 默认开启）";
+          const dividerLabel = document.createElement("span");
+          dividerLabel.textContent = "扩展分类（新增 · 默认开启）";
+          // 2026-09-16 用户真机反馈：旧工作流里这几类存的是**旧版默认 true**，
+          // 后来代码改成「负面词类（审查遮挡词/文字水印词）默认关」也盖不过已保存的值 ⇒
+          // 每次加载又是勾选的。顶栏「全关」会把旧 12 类一起关掉，所以这里单独给一对按钮。
+          const dividerActions = document.createElement("span");
+          dividerActions.className = "tk-dtb-divider-actions";
+          dividerActions.append(
+            makeAction("全开", `打开全部 ${CATEGORY_NAMES.length - LEGACY_CATEGORY_COUNT} 个扩展分类`, () => this.setNewCategories(true)),
+            makeAction("全关", `关闭全部 ${CATEGORY_NAMES.length - LEGACY_CATEGORY_COUNT} 个扩展分类（旧 12 类不动）`, () => this.setNewCategories(false))
+          );
+          divider.append(dividerLabel, dividerActions);
           grid.appendChild(divider);
         }
         const row = document.createElement("div");
@@ -469,6 +481,17 @@
 
     setAllCategories(value) {
       CATEGORY_NAMES.forEach((category) => this.setWidgetValue(category, value));
+      this.node.graph?.change();
+    }
+
+    /**
+     * 只作用于「扩展分类」那 8 类。
+     * 2026-09-16 用户真机反馈：旧工作流里这些分类存的是**旧版默认 true**，
+     * 后来代码把它们改成「负面词类默认关」也盖不过已保存的值 ⇒ 每次加载又是勾选的，
+     * 而顶栏的「全关」会把旧 12 类一起关掉（粒度太粗，用户要重开 12 次）。
+     */
+    setNewCategories(value) {
+      CATEGORY_NAMES.slice(LEGACY_CATEGORY_COUNT).forEach((category) => this.setWidgetValue(category, value));
       this.node.graph?.change();
     }
 

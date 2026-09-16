@@ -267,7 +267,35 @@ def test_update_archive_stages_only_release_paths_and_keeps_user_data():
         _assert_guarded_files_unchanged(guard)
 
 
+def test_user_data_files_are_excluded_from_the_release_whitelist():
+    """2026-09-16 加固：用户数据不得被判为发布路径（否则「一键更新」会覆盖用户数据）。
+
+    事故面：LoRA 组存在根目录 `anima_meta.json`，它会命中 is_release_path() 的
+    `path.startswith("anima_")` 分支。目前靠 .gitignore 幸免（仓库里没有 → 更新包里没有），
+    但一旦被误提交，老用户更新一次就会丢掉全部 LoRA 组 / 分类 / 面板偏好。
+    用户要求：「项目自定义存储永久化保存，决不能丢失」。
+    """
+    spec = importlib.util.spec_from_file_location(
+        "tk_gh_update_whitelist_test", ROOT / "services" / "github_update.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    # 用户数据：永不随包下发
+    for name in ("anima_meta.json", "anima_bridge.json"):
+        assert module.is_release_path(name) is False, f"{name} 是用户数据，绝不能进更新包"
+
+    # 但「随包词典」必须仍然放行 —— 否则老用户更新后中文联想会静默失效（2.12.0 的真实事故）
+    assert module.is_release_path("anima_alias_index.json") is True
+    assert module.is_release_path("data/danbooru_alias_index.json") is True
+    # data/ 下的用户状态依然不放行
+    assert module.is_release_path("data/user-thing.json") is False
+
+
 if __name__ == "__main__":
     test_update_archive_stages_only_release_paths_and_keeps_user_data()
     print("PASS 更新 ZIP 只覆盖发布文件并保留 data/models")
     print("PASS 更新 ZIP 缺少必要文件时拒绝")
+    test_user_data_files_are_excluded_from_the_release_whitelist()
+    print("PASS 用户数据不在发布白名单里")

@@ -36,6 +36,16 @@ _ARCHIVE_BASE = f"https://github.com/{_REPO}/archive"
 _EXCLUDED_DIRS = {".git", "data", "input", "outputs", "models", "panel", "tests", "node_modules",
                   "__pycache__", ".github", ".venv", "venv"}
 
+# 用户数据（**绝不**随包下发）。它们的 `anima_` 前缀只是历史命名巧合，会命中下面
+# `is_release_path()` 的 `path.startswith("anima_")` 分支。目前靠 `.gitignore` 让它们
+# 进不了更新包，但只要哪天被误提交，老用户点一次「一键更新」就会被仓库版覆盖掉
+# 全部 LoRA 组 / 分类 / 面板偏好 —— 用户明确要求「项目自定义存储永久化保存，决不能丢失」。
+# 2026-09-16 加固：这份黑名单必须**最先**判断，先于前缀白名单。
+_USER_DATA_FILES = {
+    "anima_meta.json",    # LoRA 组 / 分类 / loraMeta / 面板偏好（已迁往 data/，此处兜底）
+    "anima_bridge.json",  # 节点间桥接状态（运行时产物）
+}
+
 # `data/` 里混着两类东西，必须**逐文件**区分，不能整目录放过、也不能整目录挡掉：
 #   · 用户状态（prompt_library.json / batches/ / danbooru_account.json …）→ 永不覆盖
 #   · 随包发布的词典 → 必须随更新一起下发
@@ -93,6 +103,10 @@ def version_tuple(v: str) -> tuple:
 def is_release_path(relative_path: str) -> bool:
     path = relative_path.replace("\\", "/").strip("/")
     if not path:
+        return False
+    # ⚠️ 用户数据黑名单**最先**判断（见 _USER_DATA_FILES 的注释）：它们的 anima_ 前缀
+    #    会命中下面的前缀白名单，一旦误提交进仓库就会覆盖所有用户的 LoRA 组。
+    if path in _USER_DATA_FILES:
         return False
     # 白名单要**先于** _EXCLUDED_DIRS 判断：否则 data/ 会先被整目录挡掉
     if path in _SHIPPED_DATA_FILES:

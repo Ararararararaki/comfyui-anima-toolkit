@@ -499,6 +499,170 @@ def build_index(output_root: str, index_path: str, progress_cb=None) -> dict:
     return new_index
 
 
+# ── 增量更新（供「生成完后台预热」调用，2026-09-15）──
+# 动机：面板要在**打开切到 Outputs 之前**就把新图备好。全量 build_index() 实测 3571 张 ≈ 12.9s，
+# 每次新图都全量重扫会把机器吃满；这里只解析「新增 + mtime/size 变化」的文件，其余条目原样复用。
+
+_INCREMENTAL_LOCK = threading.RLock()  # 只序列化本函数的读-改-写；不覆盖 build_index（两者并发时靠 _save_index 的原子写兜底）
+# 用 RLock 而非 Lock：万一 progress_cb 里又回调了本函数，宁可重入多做一轮，也绝不把
+# ComfyUI 的请求/后台线程挂死（锁只保护本函数，重入不会破坏一致性）
+
+
+def _entry_unchanged(old, mtime: float, size: int) -> bool:
+    """索引条目是否与磁盘现状一致（判据与 build_index 逐字一致：mtime 容差 0.001s + size 相等）。"""
+    if not isinstance(old, dict):
+        return False
+    try:
+        return abs(float(old.get("mtime") or 0.0) - mtime) < 0.001 and int(old.get("size") or 0) == int(size)
+    except (TypeError, ValueError):
+        return False
+
+
+def _resolve_entry(full: str, rel: str, mtime: float, size: int, old) -> dict:
+    """解析单张图 → 索引条目；解析失败绝不打断整轮更新（坏图只坏它自己）。"""
+    try:
+        return build_entry(full, rel)
+    except Exception:
+        # 回退：沿用旧解析结果（若有）并**打上本次磁盘 mtime/size**。
+        # 打新值是为了不让「静态坏图」每轮都被重新解析一遍（否则 updated 恒 >0，预热器会
+        # 误判"索引变了"而反复通知前端）；若是写入中的半截文件，其 mtime/size 稍后还会变，
+        # 下一轮自然重新解析。
+        base = dict(old) if isinstance(old, dict) else {
+            "width": 0, "height": 0, "model": "", "seed": "", "steps": "", "cfg": "",
+            "sampler": "", "scheduler": "", "prompt": "", "hasPrompt": False,
+            "loras": [], "hasWorkflow": False,
+        }
+        base["path"] = rel.replace("\\", "/")
+        base["mtime"] = round(mtime, 3)
+        base["size"] = size
+        return base
+
+
+def update_index_incremental(output_root: str, index_path: str, progress_cb=None) -> dict:
+    """增量更新已有索引：只解析「新增」与「mtime/size 变化」的文件，移除已消失的条目。
+
+    与 build_index() 的差别（为什么需要它）：
+      · 复用判定相同（rel 路径为键，mtime 容差 0.001s + size 相等即原样复用旧解析结果）；
+      · 但**多了一道安全护栏**：scan 到 0 个文件而索引非空时视为异常（挂载点掉了/权限问题），
+        不清空索引、**不写盘**，返回 skipped 结果；
+      · 无任何变化时不重写索引文件（索引 3000+ 张约 16.5MB，白写一次还会让前端 builtAt
+        换代 → 整份 manifest 重拉）。
+
+    返回统计字典（键名固定，预热器依赖）：
+      {"added": int, "updated": int, "removed": int, "total": int, "scanned": int,
+       "builtAt": int, "durationMs": int, "reused": int}
+      · builtAt   = **毫秒整数**（`int(time.time() * 1000)`），与索引对象 / `/anima/gallery/manifest`
+                    / `/anima/gallery/fresh` 里的 builtAt **同一单位**，调用方可以直接拿它跟
+                    已知的 builtAt 比对判断"索引换代了没有"。
+                    ⚠️ 语义 = **当前索引对象的 builtAt**，不是"本轮结束时刻"：只有当本轮真的
+                    写盘换代时它才是新值；无变化（不写盘）或护栏跳过时它保持旧值不变 —— 否则
+                    前端 `builtAt !== knownBuiltAt` 会把每轮轮询都当成换代，反复重拉 16.5MB manifest。
+      · durationMs = 本轮耗时（毫秒，时间差，不受上面单位约定影响）。
+      · scanned   = 本次扫到的磁盘文件数；reused = 直接复用旧解析结果的条目数。
+      · added/updated/removed = 新增 / 重新解析 / 移除的条目数（added+updated+reused == scanned）。
+
+    异常护栏返回（此时**未写盘**，索引原样保留）：
+      {"skipped": True, "reason": str, ...} —— 除 skipped/reason 外仍带上上面全部统计键，
+      取其保守值：added=updated=removed=reused=0、scanned=0、total=现有索引条目数、
+      builtAt=现有索引的 builtAt（未换代）。
+      调用方判 `res.get("skipped")` 即可；直接读 res["added"] 也不会 KeyError。
+
+    首建场景：索引文件不存在/为空/损坏时，退化为一次全量 build_index()（reused=0，
+    added=scanned=total=全量条目数）。此时不会走 0 文件护栏（没有既有索引可保护）。
+
+    progress_cb(done, total)：可选，按**扫描**进度回调（与 build_index 同约定，
+    total 为磁盘文件数）；回调抛异常一律吞掉，绝不影响索引更新。
+
+    向后兼容：build_index() / load_index() / parse_full() 的签名与返回结构未改动；
+    本函数写出的索引对象保留原有顶层键（version/parserVersion/builtAt/total/entries），
+    与 load_index 期望的格式一致。
+    """
+    started = time.time()
+
+    with _INCREMENTAL_LOCK:
+        existing = load_index(index_path)
+        old_entries = existing.get("entries") if isinstance(existing.get("entries"), dict) else {}
+        # 索引对象的 builtAt（毫秒）；本轮没换代时原样透传给调用方（见 docstring）
+        try:
+            existing_built_at = int(existing.get("builtAt", 0) or 0)
+        except (TypeError, ValueError):
+            existing_built_at = 0
+
+        # ① 首建（索引文件不存在 / 条目为空 / 文件损坏读不出来）→ 一次全量。
+        #    注意：build_index 内部自己会 load_index，这里只借用它的全量语义。
+        if not os.path.isfile(index_path) or not old_entries:
+            index = build_index(output_root, index_path, progress_cb)
+            total = int(index.get("total", 0) or 0)
+            return {"added": total, "updated": 0, "removed": 0, "total": total, "scanned": total,
+                    "builtAt": int(index.get("builtAt", 0) or 0),
+                    "durationMs": int((time.time() - started) * 1000), "reused": 0}
+
+        # ② 扫盘（异常不升级为"清空索引"）
+        try:
+            files = scan_output_files(output_root)
+        except Exception as exc:
+            return _incremental_skip(f"扫描输出目录失败: {exc}", existing_built_at,
+                                     len(old_entries), started)
+
+        # ③ 安全护栏：一个文件都没扫到、而索引里还有条目 —— 多半是 output 目录暂时不可读
+        #    （挂载点掉了 / 权限被拒 / 路径传错）。宁可这一轮什么都不做，也不拿空结果覆盖。
+        if not files:
+            return _incremental_skip(
+                "扫描到 0 个文件而现有索引非空（疑似输出目录不可读/挂载点丢失），已保留索引且未写盘",
+                existing_built_at, len(old_entries), started)
+
+        # ④ 逐文件复用或重解析（顺序沿用 scan_output_files 的 mtime 倒序，新图在前）
+        entries: dict = {}
+        added = updated = reused = 0
+        total_files = len(files)
+        for i, (rel, full, mtime, size) in enumerate(files):
+            old = old_entries.get(rel)
+            if _entry_unchanged(old, mtime, size):
+                entries[rel] = old
+                reused += 1
+            else:
+                entries[rel] = _resolve_entry(full, rel, mtime, size, old)
+                if isinstance(old, dict):
+                    updated += 1
+                else:
+                    added += 1
+            if progress_cb:
+                try:
+                    progress_cb(i + 1, total_files)
+                except Exception:
+                    pass
+
+        # ⑤ 移除已消失文件的条目（磁盘上没有 = 用户删了/被清理了）
+        removed = 0
+        for rel in old_entries:
+            if rel not in entries:
+                removed += 1
+
+        changed = bool(added or updated or removed)
+        new_built_at = existing_built_at
+        if changed:
+            new_built_at = int(time.time() * 1000)
+            new_index = {"version": INDEX_VERSION, "parserVersion": PARSER_VERSION,
+                         "builtAt": new_built_at, "total": len(entries), "entries": entries}
+            _save_index(index_path, new_index)
+
+        return {"added": added, "updated": updated, "removed": removed,
+                "total": len(entries), "scanned": total_files,
+                "builtAt": new_built_at, "durationMs": int((time.time() - started) * 1000),
+                "reused": reused}
+
+
+def _incremental_skip(reason: str, built_at: int, existing_total: int, started: float) -> dict:
+    """护栏命中时的保守返回：带全部统计键（取保守值）+ skipped/reason，且**不写盘**。
+
+    builtAt 原样回传现有索引的值（本轮没换代），调用方的「是否换代」判断因此保持正确。
+    """
+    return {"skipped": True, "reason": reason,
+            "added": 0, "updated": 0, "removed": 0, "reused": 0, "scanned": 0,
+            "total": int(existing_total or 0), "builtAt": int(built_at or 0),
+            "durationMs": int((time.time() - started) * 1000)}
+
+
 def load_index(index_path: str) -> dict:
     try:
         with open(index_path, "r", encoding="utf-8") as fh:
@@ -511,6 +675,11 @@ def load_index(index_path: str) -> dict:
 
 
 def _save_index(index_path: str, index: dict) -> None:
+    """写索引：**原子写** —— 先写同目录临时文件 `index.json.tmp`，再 `os.replace()` 覆盖。
+
+    保证任何时刻磁盘上的 index.json 要么是旧的完整版、要么是新的完整版，绝无半截 JSON
+    （索引 3000+ 张时约 16.5MB，直接覆写期间被读取方读到会整份解析失败）。
+    """
     os.makedirs(os.path.dirname(index_path), exist_ok=True)
     tmp = index_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:

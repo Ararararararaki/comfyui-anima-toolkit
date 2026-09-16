@@ -377,18 +377,95 @@ def test_taller_resize_fetches_more_only_when_underfilled_and_more_exists():
     assert "await this.stepGalleryCursor(1);" in fill, "C站/P站：cursor 前进"
     assert "const merged = [...before, ...fetched.filter" in fill, "结果追加，不重置用户翻到的位置"
 
-    under = js[js.index("gridUnderfilled() {"):js.index("async fillMoreForHeight() {")]
+    under = js[js.index("gridUnderfilled(targetHeight = 0) {"):js.index("async fillMoreForHeight() {")]
     assert "this._layoutTotal" in under and "this.grid?.clientHeight" in under
     assert "DG_UNDERFILL_RATIO" in under
     # 分母必须是网格自己的视口，不能是 root（root 还含 toolbar/status 等固定 chrome，会恒判填不满）
     assert "root.clientHeight" not in under
     assert "const DG_UNDERFILL_RATIO = 0.9;" in js
 
-    taller = js[js.index("noteTallerResize() {"):js.index("gridUnderfilled() {")]
+    taller = js[js.index("noteTallerResize() {"):js.index("gridUnderfilled(targetHeight = 0) {")]
     assert "DG_TALLER_MIN_DELTA" in taller and "DG_TALLER_MIN_RATIO" in taller
     assert "this.lastVisibleHeight = visible;" in taller
-    # 新结果集要重新允许补图（否则上次到底会把后续搜索也锁死）
-    assert js.count("if (resetPage) this.fillMoreExhausted = false;") == 2, "D站 与画廊源两条搜索入口都要重置"
+    # 新结果集要重新允许补图与自动补满（否则上次到底会把后续搜索也锁死）
+    assert js.count("this.autoFillRounds = 0;\n        this._autoFillTarget = 0;") == 2, (
+        "D站 与画廊源两条搜索入口都要重置补图状态"
+    )
+
+
+def test_render_schedules_autofill_until_grid_is_filled():
+    """2026-09-16 用户真机反馈：「还是填充不满节点，用一半以上的空位」。
+
+    根因：补图原先只在 handleGridResize（列数变化 / 纵向拉大）里触发，首屏与翻页后
+    即便明显没填满也无人过问。现在 renderPosts 收尾会调度一次自动补满，并链式补到
+    填满 / 取空 / 达到轮次上限；「填满」的判据改用**最矮列**（只看最高列会掩盖列间参差）。
+    """
+    js = _js()
+    render = js[js.index("renderPosts() {"):js.index("pageWindow() {")]
+    assert "this.scheduleAutoFill();" in render, "渲染完必须检查一次填满没有"
+
+    auto = js[js.index("scheduleAutoFill() {"):js.index("autoLimit() {")]
+    assert "}, 80);" in auto, "等一拍再判：applyMasonryLayout 由 rAF 调度"
+    assert "async autoFillIfUnderfilled() {" in auto
+    assert "if (!this.autoLimit() || !this.posts.length) return;" in auto
+    assert "if (this.autoFillRounds >= DG_AUTO_FILL_MAX_ROUNDS) return;" in auto, (
+        "轮次上限：图池取不空时也不能无限打接口"
+    )
+    assert "if (!this.gridUnderfilled(target)) return;" in auto, "填满了就不补（判据用锁定的目标高度）"
+    assert "await this.fillMoreForHeight();" in auto, "复用既有补图路径（D站 page+1 / C站P站 cursor 前进）"
+    assert "const DG_AUTO_FILL_MAX_ROUNDS = 1;" in js, "渲染后最多补一批，杜绝「一直扩充」"
+    # 防「无限变大、一直扩充」（2026-09-16 用户真机实测）：
+    # 目标高度锁死（不用会被内容拉扯的 clientHeight）+ 时间窗限流（不受重置影响）+ 补完钉回尺寸
+    assert "autoFillTargetHeight() {" in js
+    assert "const target = this.autoFillTargetHeight();" in auto
+    assert "if (this._autoFillWindowCount >= DG_AUTO_FILL_MAX_PER_WINDOW) return;" in auto
+    # ⚠️ 补图**绝不能**用 setSize 把尺寸钉回去：那会和用户的拖动打架
+    #    （2026-09-16 实测："我一要缩小节点，就放大多次"）
+    assert "this.setGridHeight(target)" not in auto
+    assert "if (this.userResizedAt && now - this.userResizedAt < DG_USER_RESIZE_GRACE_MS) return;" in auto, (
+        "用户刚动过尺寸时要静默，不抢尺寸"
+    )
+
+    resize = js[js.index("handleGridResize() {"):js.index("noteTallerResize() {")]
+    assert "const keepRounds = this.autoFillRounds;" in resize, (
+        "列数变化是尺寸引起的，不能借它重置补图预算（否则「撑大→列数变→重置→再补」死循环）"
+    )
+
+    note = js[js.index("noteExternalResize() {"):js.index("handleGridResize() {")]
+    assert "this._autoFillTarget = 0;" in note, "用户改尺寸 = 新目标，要解锁（否则缩小后又被钉回旧尺寸）"
+
+    under = js[js.index("gridUnderfilled(targetHeight = 0) {"):js.index("async fillMoreForHeight() {")]
+    assert "this._layoutMinCol" in under, "判据取最矮列，不是最高列"
+    assert "Math.min(total, minCol)" in under
+
+    layout = js[js.index("applyMasonryLayout() {"):js.index("shrinkGridToContent(total) {")]
+    assert "this._layoutMinCol = " in layout and "this._measuredAvgCardH = " in layout
+
+    shrink = js[js.index("shrinkGridToContent(total) {"):js.index("setGridHeight(height) {")]
+    assert "if (this.autoLimit() && !this.fillMoreExhausted" in shrink, (
+        "自适应模式下还能补图时，不要用缩小节点来消灭空白 —— 要先补满（用户要的是图片适配节点）"
+    )
+
+    dispose = js[js.index("dispose() {"):]
+    assert "clearTimeout(this.autoFillTimer);" in dispose, "销毁后不能再排补图请求"
+
+
+def test_source_without_prompt_never_falls_back_to_tags():
+    """2026-09-16 用户真机反馈：「这个 p 站会输出 prompt，而不是不输出，会输出这些标签」。
+
+    P站 的 item.prompt 是 None（后端 capabilities.prompt=false），但前端 rawPromptGroups
+    会回退到 tag_string 拼 general ⇒ 把 Pixiv 用户自由打的**日文/多语言标签**
+    （实测同一张图同时有 初音ミク / 初音未来 / hatsunemiku）当提示词吐给下游。
+    UI 早就按 capabilities 隐藏了 Prompt/入库 按钮，输出端口也必须短路。
+    """
+    js = _js()
+    assert "postHasPrompt(post) {" in js
+    # 用「明确声明 false 才禁用」的语义：capabilities 未拉到时不能误伤 C站（prompt=true）
+    assert "return this.sourceCapabilities(sourceId)?.prompt !== false;" in js
+
+    build = js[js.index('buildPromptForPost(post, promptOutput = null, excludePattern = "") {'):js.index("postTags(post) {")]
+    assert "if (!this.postHasPrompt(post)) {" in build, "没有提示词的图源必须短路，不能回退到 tags"
+    assert 'prompt: "",' in build and "tags: []," in build
 
 
 if __name__ == "__main__":

@@ -370,9 +370,12 @@
 .adg-batch-job-interrupted span { color: #ffadad; }
 .adg-suggestions { display: flex; flex-wrap: wrap; gap: 4px; color: #9ea1ae; }
 .adg-suggestions button { padding: 2px 6px; border: 1px solid #4e4e60; border-radius: 4px; color: #c7bfff; background: #2a2934; cursor: pointer; }
-/* 瀑布流容器：卡片由 JS 绝对定位（列填充 + 超宽跨列），容器只负责滚动与高度。
-   min-height 由 applyMasonryLayout 按内容总高写入，滚动条才会正确出现。 */
-.adg-grid { position: relative; display: block; flex: 1 1 auto; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 0 3px 0 0; }
+/* 瀑布流容器：卡片由 JS 绝对定位（列填充 + 超宽跨列），容器只负责滚动。
+   ⚠️ 高度**完全由节点空间决定**（flex-basis:0 + height:0 + overflow-y:auto），绝不按内容长高。
+   用户要求（2026-09-16）：「节点大小完全限制于我的设定，不要因为图像而改变」。
+   历史上这里是 `flex: 1 1 auto`，且 JS 会写入「内容总高」的 min-height ——
+   两者叠加把 DOM 面板顶高，前端布局器随即把节点从 900 撑到 1994（实测 grid 661px→1708px）。 */
+.adg-grid { position: relative; display: block; flex: 1 1 0%; min-width: 0; min-height: 0; height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 0 3px 0 0; }
 .adg-card { position: absolute; top: 0; left: 0; box-sizing: border-box; margin: 0; overflow: hidden; padding: 0; border: 1px solid var(--adg-line, rgba(255,255,255,.1)); border-radius: 8px; background: var(--adg-input-bg, #16161d); transition: border-color 150ms var(--adg-ease, ease-out), background 150ms var(--adg-ease, ease-out); contain: layout paint style; }
 .adg-card:hover { border-color: var(--adg-go, #7668d8); }
 .adg-card.is-favorite { border-color: rgba(245, 190, 74, .62); }

@@ -26,8 +26,8 @@ export function installDOMWidgetSizeSync({
 } = {}) {
   if (!node || !element) return null;
 
-  const min = Math.max(120, finiteNumber(minHeight, 180));
-  const max = Math.max(min, finiteNumber(maxHeight, 1600));
+  let min = Math.max(120, finiteNumber(minHeight, 180));
+  let max = Math.max(min, finiteNumber(maxHeight, 1600));
   const chrome = Math.max(0, finiteNumber(nodeChromeHeight, 0));
   let disposed = false;
   let frame = 0;
@@ -120,10 +120,27 @@ export function installDOMWidgetSizeSync({
   ensureElementFillsWidgetRow();
   scheduleSync();
 
+  /**
+   * 把 DOM 面板的高度区间钉成 [h, h]：新前端布局器就没有「按内容重新分配节点高度」的余地了。
+   * 用于尺寸**完全由用户决定**的面板（画廊）—— 图片变多不该把节点顶大。
+   * 用户原话（2026-09-16）：「节点大小完全限制于我的设定，不要因为图像而改变，也不要自主变大变小」。
+   */
+  const setBounds = (nextMin, nextMax = nextMin) => {
+    min = Math.max(120, finiteNumber(nextMin, min));
+    max = Math.max(min, finiteNumber(nextMax, min));
+    if (domWidget && usesNativeLayoutSizing) {
+      element.style.setProperty("--comfy-widget-min-height", `${min}px`);
+      element.style.setProperty("--comfy-widget-max-height", `${max}px`);
+    }
+    ensureElementFillsWidgetRow();
+    return { min, max };
+  };
+
   return {
     getContentHeight: contentHeightFromNode,
     getChromeHeight: () => chrome,
     setContentHeight,
+    setBounds,
     sync: scheduleSync,
     dispose: () => {
       if (disposed) return;

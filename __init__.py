@@ -110,6 +110,39 @@ try:
 except Exception as _gallery_sources_error:  # noqa: BLE001
     print(f"[多源画廊] 协议层加载失败（其它节点与 D站画廊不受影响）：{_gallery_sources_error}")
 
+# 画廊预热器（services/gallery_warmup.py）：插件一加载就挂上后台心跳 —— 后端自己盯着 output 目录
+# 做**增量**索引更新，于是「生完图 → 打开面板 → 切到 Outputs」时新图已经在那儿了，
+# 不再依赖「浏览器先轮询」甚至「用户先点到 Outputs」才开始加载（2026-09-15 用户需求，后端侧）。
+#
+# ⚠️ 三条纪律（与上面多源画廊是同一套写法）：
+#   ① 整体 try/except：预热器属于**增量交付**的新文件 —— 老用户走更新链可能只下发一部分文件，
+#      缺它 / 它抛错 / 它签名对不上，都只等于「这次没有预热」（前端会退回按需触发），
+#      **绝不能**把插件加载连带拖崩。
+#   ② 只传 getter、不在别处另造路径：output 目录要在用到时才问 folder_paths（启动早期可能还没就绪），
+#      索引路径必须复用 anima_batch_lora._gallery_index_path()，否则会和 /anima/gallery/* 分叉成两份索引。
+#   ③ 只 install，不在这里扫盘：首次热身交给预热器自己的心跳 + debounce 决定。
+try:
+    from .services import gallery_warmup as _gallery_warmup
+    # ⚠️ 索引路径的**唯一真源**在 anima_batch_lora（/anima/gallery/* 那几个端点同源读写它）
+    from .anima_batch_lora import _gallery_index_path as _gallery_index_path_getter
+
+    def _gallery_output_root_getter() -> str:
+        """output 目录 getter（folder_paths 在配置损坏/早期加载时会抛，兜底成空串）。"""
+        try:
+            return folder_paths.get_output_directory()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    _GALLERY_WARMUP_INFO = _gallery_warmup.install_gallery_warmup(
+        output_root_getter=_gallery_output_root_getter,
+        index_path_getter=_gallery_index_path_getter,
+        interval_sec=20,
+        debounce_sec=1.5,
+    )
+    print(f"[画廊预热] 后台预热已挂载：{_GALLERY_WARMUP_INFO}")
+except Exception as _gallery_warmup_error:  # noqa: BLE001
+    print(f"[画廊预热] 预热器不可用（画廊/面板不受影响，退回按需触发）：{_gallery_warmup_error}")
+
 # 合并所有节点的注册表（ComfyUI 通过 __init__.py 顶层这两个变量发现所有节点）
 NODE_CLASS_MAPPINGS = {
     **NODE_CLASS_MAPPINGS,
@@ -2334,7 +2367,16 @@ async def proxy_translate(request):
 
 # ─── LoRA metadata persistence (categories / favorite / pinned) ───
 
-META_PATH = os.path.join(PLUGIN_DIR, "anima_meta.json")
+# 存储位置：权威文件在 **data/anima_meta.json**。
+# 为什么不放插件根目录：`services/github_update.py::is_release_path()` 有
+# `path.startswith("anima_")` 分支，根目录的 anima_meta.json 会被判成「发布文件」——
+# 只要哪天被误提交，老用户点一次「一键更新」就会被仓库版覆盖掉全部 LoRA 组/分类/偏好。
+# 而 `data` 在 `_EXCLUDED_DIRS` 里，**永远不会**进更新包、也不会被更新链覆盖。
+META_PATH = os.path.join(PLUGIN_DIR, "data", "anima_meta.json")
+# 旧位置（只读兜底）：老用户首次迁移时从这里读，写完新位置后**不删除**，留作最后一道保险。
+META_LEGACY_PATH = os.path.join(PLUGIN_DIR, "anima_meta.json")
+# 备份与正式文件同目录（写前覆盖式保留 1 份）
+META_BAK_PATH = META_PATH + ".bak"
 META_LOCK = threading.RLock()
 
 
@@ -2380,11 +2422,30 @@ def _strip_model_ext(name: str) -> str:
     return name
 
 
+def _meta_read_path() -> str:
+    """读路径：优先新位置 data/anima_meta.json；不存在则回退旧位置（老用户平滑迁移）。"""
+    if os.path.exists(META_PATH):
+        return META_PATH
+    if os.path.exists(META_LEGACY_PATH):
+        return META_LEGACY_PATH
+    return META_PATH
+
+
+def _is_empty_meta_value(value) -> bool:
+    """判定「空值」：None / [] / {} / ""（0 与 False 不算空，它们可能是有效值）。"""
+    if value is None:
+        return True
+    if isinstance(value, (str, list, dict, tuple, set)):
+        return len(value) == 0
+    return False
+
+
 def _load_meta() -> dict:
     with META_LOCK:
         try:
-            if os.path.exists(META_PATH):
-                with open(META_PATH, "r", encoding="utf-8") as f:
+            path = _meta_read_path()
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     if isinstance(data, dict):
                         _normalize_meta_keys(data)
@@ -2395,14 +2456,29 @@ def _load_meta() -> dict:
 
 
 def _save_meta(data: dict):
+    """落盘：先备份旧内容 → 临时文件 + os.replace 原子替换。
+
+    失败时**必须**保持原文件不变并向上抛异常（端点回 500）——
+    绝不留下半写完的 anima_meta.json。
+    """
     with META_LOCK:
+        parent = os.path.dirname(META_PATH)
+        os.makedirs(parent, exist_ok=True)
+        # 备份「写入前的有效内容」：新位置优先；迁移场景下就是旧位置那一份。
+        try:
+            src = _meta_read_path()
+            if os.path.exists(src):
+                shutil.copy2(src, META_BAK_PATH)
+        except OSError as e:
+            # 备份只是第二道保险，失败不阻断保存（原子写才是主保险）
+            print(f"[anima] 警告：meta 备份失败 {META_BAK_PATH}: {e}")
         # 先写同目录临时文件并原子替换，避免 ComfyUI 意外退出时留下半截 JSON。
         temp_path = None
         try:
             with tempfile.NamedTemporaryFile(
                 mode="w",
                 encoding="utf-8",
-                dir=os.path.dirname(META_PATH),
+                dir=parent,
                 prefix=".anima_meta_",
                 suffix=".tmp",
                 delete=False,
@@ -2429,47 +2505,68 @@ async def get_meta(request):
 
 @PromptServer.instance.routes.post("/anima/meta")
 async def set_meta(request):
-    """Persist LoRA metadata (categories / favorite / pinned).
+    """Persist LoRA metadata (categories / favorite / pinned) —— 键级合并 + 空值护栏。
 
-    合并式写入（面板与节点双向同步枢纽）：
-    - categories：以 body 为准（面板/节点都维护全量列表，增删分类可靠）
-    - loraMeta：按文件字段级合并——body 中文件的字段覆盖旧值，
-      不在 body 中的后端文件保留；避免面板写 categories 时冲掉节点的
-      favorite/pinned/count/disabled，反之亦然
-    - loraGroups：body 有该键则用 body（节点可能清空组），否则保留旧值
+    背景（用户投诉的「LoRA 组丢失」根因）：前端多处把**整份** meta POST 上来
+    （web/js/anima_batch_lora_widget.js: JSON.stringify(this.meta) / JSON.stringify(metaData)），
+    而其中一处拉取失败时手里是 `.catch(() => ({ loraGroups: [] }))` 的空对象，接着就 POST。
+    旧实现按「categories 以 body 为准 / loraGroups 有键就用 body」处理 → 空数组把后端
+    的 LoRA 组、分类、loraMeta 一起清空。用户明确要求：自定义存储的永久化保存，决不能丢失。
+
+    现在的语义：
+    - 键级合并：merged = {**current, **incoming}
+      （前端 POST 的都是从 GET 拿回的整份对象，所以键级合并不会丢字段）
+    - 空值护栏：incoming 某键为空（[] / {} / "" / None）且 current 该键**非空** → 跳过该键、
+      保留 current 的值，并把键名记入回包 skipped；body 里的 __replace（字符串数组）
+      显式列出的键允许被清空。__replace 只用于判定，**绝不写进存储文件**。
+    - 回包：{"ok": true, "skipped": [...], "saved": [...]}，saved = 真正被更新的键。
     """
+    # ① 请求体解析容错：非 JSON / 空 body / 非对象一律 400，且完全不触碰磁盘
     try:
         body = await request.json()
-        if not isinstance(body, dict):
-            raise ValueError("body must be an object")
-        # 读-改-写必须持有同一把锁；否则面板和节点的并发 POST 会互相覆盖。
-        with META_LOCK:
-            old = _load_meta()
-            # categories：以 body 为准（全量列表）
-            raw_cats = body.get("categories", old.get("categories", []) or [])
-            cats = [str(cat).strip() for cat in raw_cats if str(cat).strip()] if isinstance(raw_cats, list) else list(old.get("categories", []) or [])
-            # loraMeta：按文件字段级合并
-            old_meta = old.get("loraMeta", {}) or {}
-            new_meta = {}
-            for name, entry in (body.get("loraMeta", {}) or {}).items():
-                if not isinstance(entry, dict):
-                    continue
-                merged = dict(old_meta.get(name, {}) or {})
-                merged.update(entry)
-                new_meta[name] = merged
-            # body 未涉及的后端文件记录保留原样
-            for name, entry in old_meta.items():
-                if name not in new_meta:
-                    new_meta[name] = entry
-            # loraGroups：body 有键则用 body（允许清空），否则保留旧值
-            old_groups = old.get("loraGroups", []) or []
-            groups = body.get("loraGroups", old_groups) if "loraGroups" in body else old_groups
-            meta = {
-                "categories": cats,
-                "loraMeta": new_meta,
-                "loraGroups": groups,
-            }
-            _save_meta(meta)
-        return web.json_response({"ok": True})
     except Exception as e:
-        return web.json_response({"ok": False, "error": str(e)}, status=400)
+        return web.json_response({"ok": False, "error": f"请求体不是合法 JSON: {e}"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"ok": False, "error": "请求体必须是 JSON 对象"}, status=400)
+
+    # ② __replace 先从 body 摘掉（只用于判定，绝不落盘）
+    replace_keys = set()
+    raw_replace = body.pop("__replace", None)
+    if isinstance(raw_replace, (list, tuple)):
+        for item in raw_replace:
+            if isinstance(item, str) and item.strip():
+                replace_keys.add(item.strip())
+
+    incoming = dict(body)
+    # categories 沿用既有清洗（去空白、丢空项）；清洗后若为空，同样受下面的护栏保护
+    if isinstance(incoming.get("categories"), list):
+        incoming["categories"] = [str(c).strip() for c in incoming["categories"] if str(c).strip()]
+
+    # 读-改-写必须持有同一把锁；否则面板和节点的并发 POST 会互相覆盖。
+    with META_LOCK:
+        current = _load_meta()
+        merged = {**current, **incoming}
+        skipped = []
+        # ③ 空值护栏：空的 incoming 不许覆盖非空的 current
+        for key, value in incoming.items():
+            if not _is_empty_meta_value(value):
+                continue
+            if _is_empty_meta_value(current.get(key)):
+                continue  # 旧值本来也是空（或不存在），照常写入
+            if key in replace_keys:
+                continue  # __replace 显式声明允许清空
+            merged[key] = current[key]
+            skipped.append(key)
+        merged.pop("__replace", None)
+        # 落盘前归一化（与读路径同一函数、幂等；旧数据的带扩展名 key 在保存时被清理）
+        _normalize_meta_keys(merged)
+        # saved：值确实变了的键（被护栏跳过的键值不变，自然不入列）
+        saved = [k for k in incoming if k not in current or current[k] != merged.get(k)]
+
+        try:
+            _save_meta(merged)
+        except Exception as e:
+            # 写入失败：原文件保持不变（见 _save_meta），端点回 500 —— 绝不允许半写完的文件
+            return web.json_response({"ok": False, "error": f"meta 写入失败: {e}"}, status=500)
+
+    return web.json_response({"ok": True, "skipped": sorted(skipped), "saved": sorted(saved)})

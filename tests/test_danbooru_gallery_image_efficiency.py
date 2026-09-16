@@ -28,8 +28,9 @@ def test_gallery_uses_column_filling_waterfall_that_fills_the_grid():
     assert "colHeights" in js
     assert 'card.style.left = ' in js
     assert "this.lastColStep = colStep" in js
-    # 自适应张数（0 = 按节点尺寸算该显示几张）
-    assert "function dgComputeAutoCount(grid, metrics)" in js
+    # 自适应张数（0 = 按节点尺寸算该显示几张）；2026-09-16 起第三个参数传入
+    # 「上一次实测的平均卡高」，避免按 fallback 比例猜出来的卡高偏大导致首屏就填不满
+    assert "function dgComputeAutoCount(grid, metrics, measuredCardH = 0)" in js
     assert "resolveLimit()" in js
     # 铺不满时收掉底部空白
     assert "shrinkGridToContent(total)" in js
@@ -40,6 +41,58 @@ def test_gallery_uses_column_filling_waterfall_that_fills_the_grid():
     assert "preview.dataset.src" in js
     assert "preview.width = imageWidth" in js
     assert "this.applyMasonryLayout()" in js
+
+
+def test_gallery_node_size_is_owned_by_user_not_content():
+    """2026-09-16 用户要求：「节点大小完全限制于我的设定，不要因为图像而改变，也不要自主变大变小」。
+
+    历史根因（真机实测）：applyMasonryLayout 把**内容总高**写进 .adg-grid 的 min-height
+    （grid 661px → 1708px），叠加 CSS 的 `flex: 1 1 auto`（basis:auto ⇒ 按内容长高），
+    DOM 面板被顶高，前端布局器随即把节点从 900 撑到 1994 —— 表现为"一直扩充、卡死"。
+    """
+    js = SOURCE.read_text(encoding="utf-8")
+    css = STYLES.read_text(encoding="utf-8")
+
+    # 网格不得按内容长高：min-height 归零 + flex-basis 0 + height 0（内容多了走 overflow-y）
+    assert 'this.grid.style.minHeight = "0";' in js, "不得把内容总高写进网格 min-height"
+    assert 'this.grid.style.minHeight = `${Math.ceil(total + 8)}px`;' not in js, "内容总高不得再回写 DOM"
+    assert "flex: 1 1 0%;" in css and "height: 0;" in css and "overflow-y: auto;" in css
+
+    # 用户尺寸要给布局器钉成固定区间（setBounds），且拖动时立即跟随
+    assert "setBounds(nextMin, nextMax = nextMin) {" in js or "setBounds" in js
+    assert "uiRef.domSizeSync?.setBounds?.(nowHeight, nowHeight);" in js, "拖动中必须实时跟随，否则拖不动"
+
+    # 自动收缩（"自主变小"）不再被调用；方法保留供回退/测试
+    assert "this.shrinkGridToContent(total);" not in js, "不得再自动收缩节点"
+
+
+def test_span_never_exceeds_columns_and_top_is_finite():
+    """2026-09-16 用户实测「图片在抖动，要我手动改变一次节点大小才恢复正常」的真根因。
+
+    `dgSpanFor()` 的 span-2 分支原先**不检查列数**：首次布局时容器宽度可能还没稳定
+    （clientWidth=0 → usable=DG_MIN_PT → cols=1），横图返回 span=2 →
+    下面「找起点」循环 `for (c = 0; c + 2 <= 1; c++)` 一次都不执行 → `top` 停在 Infinity
+    → 卡片被甩出可视区，而且**不会自我恢复**（只有 resize 触发重排才回来）。
+    """
+    js = SOURCE.read_text(encoding="utf-8")
+    css = STYLES.read_text(encoding="utf-8")
+    assert "if (aspect <= DG_SPAN2_MAX_ASPECT) return Math.min(2, cols);" in js, (
+        "span 必须夹到 cols，否则 cols=1 时横图会算出 span=2"
+    )
+    assert "if (span > cols) span = 1;" in js, "布局侧要有兜底"
+    assert "if (!Number.isFinite(top)) { top = 0; start = 0; }" in js, (
+        "绝不把 Infinity 写进 card.style.top（那会让卡片彻底消失且无法自愈）"
+    )
+    # 跨列基准值不应被顺手改动（它们决定哪些图跨 2/3 列）
+    assert "const DG_SPAN2_MAX_ASPECT = 0.45;" in js
+    assert "const DG_SPAN3_MAX_ASPECT = 0.25;" in js
+
+    # 宽度大改时丢掉 lastColStep 反推基准（否则会收敛到错误列数：实测 1743px 下 14 列被推成 10 列）
+    assert "const rawUsable = Math.max(DG_MIN_PT, (this.grid.clientWidth || 780) - padX);" in js
+    assert "if (previousUsable > 0 && (rawUsable > previousUsable * 1.25 || rawUsable < previousUsable * 0.8)) {" in js
+    assert "this._lastLayoutUsable = rawUsable;" in js
+    # 抗滚动条造成的宽度抖动（CSS 兜底）
+    assert "scrollbar-gutter: stable" in css
 
 
 def test_gallery_masonry_has_no_overlap_and_fills_width():

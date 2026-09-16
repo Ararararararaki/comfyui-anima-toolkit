@@ -408,6 +408,24 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
    * —— 纵向拉大不改变列数，旧的 handleGridResize 只在列数变化时重取，所以永远不补图。
    */
   const DG_UNDERFILL_RATIO = 0.9;
+  // 渲染后「补到填满」的连续轮次上限：图源池子取空时会自然停（fillMoreExhausted），
+  // 这个上限是第二道闸，防的是「判据始终差一点」导致的无限打接口。
+  // 2026-09-16 从 6 收到 3：用户实测「会莫名放大特别多」—— 补图轮次越多，越容易
+  // 把节点撑大（见 autoFillIfUnderfilled 里关于正反馈的注释）。
+  // 渲染后「补到填满」的连续轮次上限。
+  // 2026-09-16 用户实测「在无限变大，扩充完图片之后又触发扩充，一直扩充」→ 定为 **1**：
+  // 渲染后最多自动补一批（够补上首屏差的那点），再多必须由用户主动拉大节点触发。
+  // 配合下面的时间窗限流，即使还有未预料的触发路径也滚不起来。
+  const DG_AUTO_FILL_MAX_ROUNDS = 1;
+  // ③ 时间窗限流（**不受任何重置影响**的最后一道闸，见 autoFillIfUnderfilled）：
+  //    列数变化会走 handleGridResize → search(resetPage) → autoFillRounds 归零，
+  //    单靠轮次上限拦不住「补图撑大节点 → 列数变化 → 重置 → 再补」的无限循环。
+  const DG_AUTO_FILL_WINDOW_MS = 30000;
+  const DG_AUTO_FILL_MAX_PER_WINDOW = 4;
+  // 用户刚动过节点尺寸后的「冷静期」：这段时间内一律不补图。
+  // 否则补图会和用户的手对着干 —— 拖动过程里判定"不满"就补，补完又改尺寸，
+  // 用户看到的就是「一缩小就放大多次」（2026-09-16 真机实测）。
+  const DG_USER_RESIZE_GRACE_MS = 1500;
   /** 「高度显著增大」的阈值：至少 +120px 且 ≥15%，与 450ms 防抖一起挡住拖拽抖动 */
   const DG_TALLER_MIN_DELTA = 120;
   const DG_TALLER_MIN_RATIO = 1.15;
@@ -429,7 +447,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   function dgSpanFor(aspect, cols) {
     if (cols < 2) return 1;
     if (aspect <= DG_SPAN3_MAX_ASPECT && cols >= 3) return 3;
-    if (aspect <= DG_SPAN2_MAX_ASPECT) return 2;
+    // ⚠️ 必须夹到 cols：首次布局时容器宽度可能还没稳定（clientWidth=0 → usable=DG_MIN_PT
+    // → cols=1），此时横图若返回 2，下面的「找起点」循环一次都不执行、top 停在 Infinity，
+    // 卡片被甩到看不见的地方且**不会自我恢复**（只有 resize 重排才回来）
+    // —— 用户 2026-09-16 实测："图片在抖动，要我手动改变一次节点大小才恢复正常"。
+    if (aspect <= DG_SPAN2_MAX_ASPECT) return Math.min(2, cols);
     return 1;
   }
 
@@ -445,12 +467,16 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   }
 
   /** 自适应模式：由容器几何算出「刚好填满」的图片数量（cols/usable 由调用方一次算好传入） */
-  function dgComputeAutoCount(grid, metrics) {
+  function dgComputeAutoCount(grid, metrics, measuredCardH = 0) {
     if (!grid) return 24;
     const rect = grid.getBoundingClientRect();
     const height = grid.clientHeight || rect.height || 620;
     const { cols, cardWidth } = metrics || { cols: 3, cardWidth: 240 };
-    const cardH = Math.max(DG_MIN_CARD_H, cardWidth / DG_FALLBACK_ASPECT);
+    // 优先用「上一次实际渲染出来的平均卡高」：混排里横图占多数时，按 DG_FALLBACK_ASPECT
+    // (0.75，偏竖图) 猜出来的卡高会明显偏大 → 行数算少 → 张数算少 → 首屏就填不满。
+    const cardH = measuredCardH > 0
+      ? Math.max(DG_MIN_CARD_H, measuredCardH + DG_GAP)
+      : Math.max(DG_MIN_CARD_H, cardWidth / DG_FALLBACK_ASPECT);
     const rows = Math.max(2, Math.ceil((height + DG_GAP) / (cardH + DG_GAP)));
     const count = Math.round(cols * (rows + 1));
     return Math.max(DG_MIN_AUTO_COUNT, Math.min(DG_MAX_PER_REQUEST, count));
@@ -557,6 +583,19 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.lastVisibleHeight = 0;   // 上次网格可视高度（判「高度显著增大」）
       this.fillMoreBusy = false;    // 补图请求在途：同一时刻只允许一次
       this.fillMoreExhausted = false; // 到底了（末页/末批/全是重复）→ 不再打接口
+      // 渲染后自动补满（2026-09-16 用户真机反馈："还是填充不满节点，用一半以上的空位"）：
+      // 首屏 / 翻页 / 换源 渲染完就先检查一次「填满没有」，不再只等用户纵向拉大节点。
+      this.autoFillTimer = null;
+      this.autoFillRounds = 0;       // 本轮结果集内已自动补了几次（上限 DG_AUTO_FILL_MAX_ROUNDS）
+      // 补图的目标可视高：**一经确定就在本轮结果集内锁死**。
+      // 为什么不每轮重读 grid.clientHeight：新前端布局器会按 DOM 内容把节点撑高，
+      // 于是「补图 → 内容变高 → 节点变高 → 视口更大 → 更显不满 → 再补」成正反馈
+      // （用户 2026-09-16 真机反馈："会莫名放大特别多，而且缩小节点还会自己变回去"）。
+      this._autoFillTarget = 0;
+      this._autoFillWindowAt = 0;    // 限流窗口起点
+      this._autoFillWindowCount = 0; // 本窗口内已补几次
+      this._layoutMinCol = 0;        // 最矮列高度：判「填满」用它，比最高列更贴近肉眼
+      this._measuredAvgCardH = 0;    // 实测平均卡高：下次估算张数用，替代按 fallback 比例猜
       // 尺寸收缩防护（2026-09-15）：自动收缩会与「滚动条出现/消失 → 列数变化 → 卡片高度变化」
       // 互相触发，一轮轮把节点缩小（用户："老是自己慢慢变小"）；而用户手动放大后又会立刻被
       // 缩回去（用户："放回大小后就不填充满"）。用两个时间戳断开这个循环。
@@ -763,8 +802,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.filterControls?.refresh();
       }
       if (resetPage) this.resetGalleryCursor();
-      // 新一批搜索（cursor 归零）＝ 新结果集 → 重新允许「拉大补图」
-      if (resetPage) this.fillMoreExhausted = false;
+      // 新一批搜索（cursor 归零）＝ 新结果集 → 重新允许「拉大补图」与「自动补满」
+      if (resetPage) {
+        this.fillMoreExhausted = false;
+        this.autoFillRounds = 0;
+        this._autoFillTarget = 0;   // 新结果集 = 新目标，重新按当前尺寸评估
+      }
       this.settings.sourceQueries[sourceId] = query;
       this.settings.lastQuery = query;
       this.saveSettings();
@@ -1108,8 +1151,20 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.grid.style.minHeight = "";
         return;
       }
-      const { usable, cols } = this.gridMetrics();
+      // ⚠️ 宽度**大改**（拖动节点 / 缩放画布）必须丢掉 lastColStep 反推基准：
+      //    反推本来只为抗「滚动条出现/消失造成的那十几像素」，但宽度大改后继续反推会
+      //    **收敛到错误列数** —— 实测 1743px 宽：正确 14 列被反推成 10 列（卡片宽 124.8 → 174.7），
+      //    用户看到的就是"图片在抖动/错位"。CSS 已加 scrollbar-gutter:stable 从源头稳住宽度，
+      //    这里再加一道：宽度相对上次变化超过阈值就直接用真实宽度重算。
       const gridStyle = getComputedStyle(this.grid);
+      const padX = (parseFloat(gridStyle.paddingLeft) || 0) + (parseFloat(gridStyle.paddingRight) || 0);
+      const rawUsable = Math.max(DG_MIN_PT, (this.grid.clientWidth || 780) - padX);
+      const previousUsable = Number(this._lastLayoutUsable) || 0;
+      if (previousUsable > 0 && (rawUsable > previousUsable * 1.25 || rawUsable < previousUsable * 0.8)) {
+        this.lastColStep = 0;
+      }
+      this._lastLayoutUsable = rawUsable;
+      const { usable, cols } = this.gridMetrics();
       const padTop = parseFloat(gridStyle.paddingTop) || 0;
       const colStep = (usable - DG_GAP * (cols - 1)) / cols + DG_GAP;
       const cardWidth = (usable - DG_GAP * (cols - 1)) / cols;
@@ -1124,7 +1179,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const card = cards[i];
         const post = posts[i];
         const aspect = this.cardAspect(post);
-        const span = dgSpanFor(aspect, cols);
+        let span = dgSpanFor(aspect, cols);
+        // 兜底：span 任何情况下都不得超出列数，否则下面「找起点」循环一次都不执行，
+        // top 会停在 Infinity（卡片被甩出可视区，且不自愈）。
+        if (span > cols) span = 1;
         const boxW = cardWidth * span + DG_GAP * (span - 1);
         const boxH = boxW / (1 / aspect);
         let start = 0;
@@ -1134,6 +1192,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           for (let k = c; k < c + span; k++) if (colHeights[k] > maxH) maxH = colHeights[k];
           if (maxH < top) { top = maxH; start = c; }
         }
+        // 最后一道闸：绝不把 Infinity 写进 style（那会让卡片彻底消失且无法自愈）
+        if (!Number.isFinite(top)) { top = 0; start = 0; }
         const drop = top + boxH + DG_GAP;
         for (let k = start; k < start + span; k++) colHeights[k] = drop;
         card.style.position = "absolute";
@@ -1145,12 +1205,49 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         card.dataset.adgSpan = String(span);
       }
       let total = 0;
-      for (const ch of colHeights) total = Math.max(total, ch);
+      let minCol = Infinity;
+      for (const ch of colHeights) {
+        if (ch > total) total = ch;
+        if (ch < minCol) minCol = ch;
+      }
       total = Math.max(0, total - DG_GAP);
       this._layoutTotal = total;
-      this.grid.style.minHeight = `${Math.ceil(total + 8)}px`;
+      // 最矮列：用户眼里的「填满」由最短的那一列决定 —— 最长列会掩盖参差（见 gridUnderfilled）
+      this._layoutMinCol = Number.isFinite(minCol) ? Math.max(0, minCol - DG_GAP) : total;
+      // 实测平均卡高（每列张数 ≈ 卡片数 / 列数）→ 下一次算张数别再用 fallback 比例猜
+      const perCol = Math.max(1, Math.ceil(cards.length / Math.max(1, cols)));
+      this._measuredAvgCardH = Math.max(DG_MIN_CARD_H, (total + DG_GAP) / perCol - DG_GAP);
+      // ── 布局自愈（2026-09-16 用户实测："图片在抖动，要我手动改变一次节点大小才恢复正常"）──
+      // 症状的本质是「算错一次就一直错下去」：gridMetrics() 用上一次的 lastColStep 反推列数
+      // （这是为了不受滚动条出现/消失影响），但首次布局时容器尺寸可能还没稳定；一旦基准被算歪，
+      // 后续每次都沿用脏基准，卡片就会错位/被裁 —— 只有 resize 触发列数重算才能恢复。
+      // 这里做一次廉价校验：最右卡片的右边缘若超出内容区，就丢掉脏基准并立刻重排一次。
+      if (!this._layoutSelfHeal && this.lastColStep > DG_GAP) {
+        let rightEdge = 0;
+        for (const card of cards) {
+          const right = (parseFloat(card.style.left) || 0) + (parseFloat(card.style.width) || 0);
+          if (right > rightEdge) rightEdge = right;
+        }
+        if (rightEdge > usable + padLeft + 2) {
+          this.lastColStep = 0;   // 逼 gridMetrics() 用真实宽度重新估算列数
+          this.lastCols = 0;
+          this._layoutSelfHeal = true;
+          try {
+            this.applyMasonryLayout();
+          } finally {
+            this._layoutSelfHeal = false;
+          }
+          return;                 // 本轮作废：重排那次已经写好布局与统计
+        }
+      }
+      // ⚠️ 不把内容总高写进 min-height，也不再自动收缩 ——
+      //    用户要求（2026-09-16）：「节点大小完全限制于我的设定，不要因为图像而改变，
+      //    也不要自主变大变小」。实测把内容高写进 min-height 后（grid 661px→1708px），
+      //    前端布局器会把节点从 900 顶到 1994；CSS 的 flex-basis:auto 是另一半原因。
+      //    现在网格高度完全交给节点空间（CSS: flex:1 1 0% + height:0 + overflow-y:auto），
+      //    内容多了就滚动，绝不反向影响节点尺寸。
+      this.grid.style.minHeight = "0";
       if (this.lastCols !== cols) this.lastCols = cols;
-      this.shrinkGridToContent(total);
     }
 
     /**
@@ -1161,6 +1258,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     shrinkGridToContent(total) {
       const root = this.root;
       if (!root || !(total > 0)) return;
+      // ⓪ 自适应模式下「还能继续补图」时，先补满，**不要**用缩小节点来消灭空白 ——
+      //    用户原话：「应该是图片适配节点，而不是节点适配图片」（2026-09-15），
+      //    2026-09-16 又复报「还是填充不满节点，用一半以上的空位」。
+      //    只有补到池子取空（fillMoreExhausted / 没有 next_cursor）才允许收缩兜底，
+      //    这样"节点尺寸是用户定的、图片负责填满它"才是默认行为。
+      if (this.autoLimit() && !this.fillMoreExhausted
+        && (this.isDanbooruSource() || this.nextCursor)) return;
       // ① 用户手动调过尺寸 → 本次结果集内**不再自动收缩**。否则「放回大小」会被下一帧
       //    缩回去，用户看到的就是「手动放大也不填满」。
       if (this.userResizedAt) return;
@@ -1202,7 +1306,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     /** 节点尺寸被外部改变时调用：距上次程序化改尺寸足够久 ⇒ 判定为用户手动拖动。 */
     noteExternalResize() {
-      if (Date.now() - this.programmaticResizeAt > 350) this.userResizedAt = Date.now();
+      if (Date.now() - this.programmaticResizeAt > 350) {
+        this.userResizedAt = Date.now();
+        // 用户重新定了尺寸 = 新目标：解锁目标高度、给足补图轮次。
+        // 否则补图链还拿着**旧的大目标**把节点钉回去 ⇒「缩小节点还会自己变回去」。
+        this._autoFillTarget = 0;
+        this.autoFillRounds = 0;
+      }
     }
 
     /**
@@ -1231,7 +1341,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         if (this.disposed || !this.posts.length) return;
         if (changed) {
           // 列数变化 ⇒ 同一屏能放的张数变了（原有行为：重取一页）
+          // ⚠️ 但这是**尺寸变化引起的**，不是用户发起的搜索：不能借它重置补图预算，
+          //    否则「补图撑大节点 → 列数变化 → 重置 → 再补」就是死循环。
+          const keepRounds = this.autoFillRounds;
+          const keepTarget = this._autoFillTarget;
           this.search({ resetPage: true });
+          this.autoFillRounds = keepRounds;
+          this._autoFillTarget = keepTarget;
           return;
         }
         // 纵向拉大 ⇒ 补图填满（追加，不重置用户已翻到的位置）
@@ -1254,11 +1370,17 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
      * —— root 还包含搜索框/工具条/分页/状态栏等固定 chrome（实测 ~130–150px），
      * 拿它当可视高会让「明明填满了」也恒判填不满，一拉大就无限补图。
      */
-    gridUnderfilled() {
+    gridUnderfilled(targetHeight = 0) {
       const total = Number(this._layoutTotal) || 0;
-      const visible = Number(this.grid?.clientHeight) || 0;
+      const minCol = Number(this._layoutMinCol) || total;
+      const visible = Number(targetHeight) > 0
+        ? Number(targetHeight)
+        : (Number(this.grid?.clientHeight) || 0);
       if (!(total > 0) || !(visible > 0)) return false;
-      return total < visible * DG_UNDERFILL_RATIO;
+      // 判据取**最矮列**（与总高取较小者）：瀑布流里「最长列到顶、旁边一列只到一半」
+      // 在肉眼看来依然是没填满，而只看最高列会把它判成"满了"从而停止补图
+      // —— 2026-09-16 用户复报「还是填充不满节点，用一半以上的空位」的真根因。
+      return Math.min(total, minCol) < visible * DG_UNDERFILL_RATIO;
     }
 
     /**
@@ -1309,6 +1431,64 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       } finally {
         this.fillMoreBusy = false;
       }
+    }
+
+    /**
+     * 渲染完成后检查「填满没有」，没填满就继续补 —— 首屏、翻页、换源、换筛选都会走到这里。
+     * 2026-09-16 用户真机反馈：「还是填充不满节点，用一半以上的空位」。
+     * 根因：补图原先只在 handleGridResize 里触发（列数变化 / 纵向拉大），首屏与翻页后
+     * 即便明显没填满也无人过问，空白就一直留着。
+     */
+    scheduleAutoFill() {
+      if (this.autoFillTimer || this.disposed) return;
+      // 等一拍：applyMasonryLayout 由 rAF 调度，且同一帧里可能刚触发过一次「自动收缩」
+      this.autoFillTimer = setTimeout(() => {
+        this.autoFillTimer = null;
+        void this.autoFillIfUnderfilled();
+      }, 80);
+    }
+
+    /** 补图的目标可视高 = 判定那一刻的**真实视口**，随后锁死。
+     *  ⚠️ 不要用 settings.gridHeight：它会被"被撑大的尺寸"污染成上限值，
+     *  拿它当目标就会在用户缩小时把节点又放大回去（用户 2026-09-16："我一要缩小节点，就放大多次"）。 */
+    autoFillTargetHeight() {
+      if (this._autoFillTarget > 0) return this._autoFillTarget;
+      return Number(this.grid?.clientHeight) || 0;
+    }
+
+    async autoFillIfUnderfilled() {
+      if (this.disposed || this.fillMoreBusy || this.fillMoreExhausted) return;
+      if (!this.autoLimit() || !this.posts.length) return;
+      if (this.autoFillRounds >= DG_AUTO_FILL_MAX_ROUNDS) return;
+      // ③ 时间窗限流：不受任何「重置」影响的最后一道闸。
+      //    列数变化会走 handleGridResize → search(resetPage) → autoFillRounds 归零，
+      //    于是「补图 → 内容变高 → 布局器把节点撑大 → 列数变化 → 重置 → 再补」会**无限**循环
+      //    （用户 2026-09-16 真机反馈："在无限变大，扩充完图片之后又触发扩充，一直扩充"）。
+      const now = Date.now();
+      if (!this._autoFillWindowAt || now - this._autoFillWindowAt > DG_AUTO_FILL_WINDOW_MS) {
+        this._autoFillWindowAt = now;
+        this._autoFillWindowCount = 0;
+      }
+      if (this._autoFillWindowCount >= DG_AUTO_FILL_MAX_PER_WINDOW) return;
+      // ⓪ 用户刚动过尺寸 → 静默 1.5s：绝不和用户的手抢尺寸（见 DG_USER_RESIZE_GRACE_MS）
+      if (this.userResizedAt && now - this.userResizedAt < DG_USER_RESIZE_GRACE_MS) return;
+      const target = this.autoFillTargetHeight();
+      if (!(target > 0)) return;
+      if (!this.gridUnderfilled(target)) return;
+      // C站/P站：契约只有 next_cursor，没有它就到底了
+      if (!this.isDanbooruSource() && !this.nextCursor) {
+        this.fillMoreExhausted = true;
+        return;
+      }
+      this._autoFillTarget = target;   // 锁定：补图期间目标高度不变
+      this.autoFillRounds += 1;
+      this._autoFillWindowCount += 1;
+      // fillMoreForHeight 收尾会 renderPosts → 再次 scheduleAutoFill，
+      // 于是「补一批 → 仍不满 → 再补」自动链到填满 / 取空 / 达到上限为止。
+      await this.fillMoreForHeight();
+      // ⚠️ **绝不**在这里调 setGridHeight / setSize 把尺寸"钉回去"：那会在用户拖动缩小的
+      //    同时和用户对着干（用户实测"我一要缩小节点，就放大多次"）。
+      //    补图只负责往列里塞图；节点尺寸永远由用户（或前端布局器）决定。
     }
 
     /** 当前是否为「自适应张数」模式 */
@@ -1411,7 +1591,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     /** 本次请求实际要几张 */
     resolveLimit() {
-      if (this.autoLimit()) return dgComputeAutoCount(this.grid, this.gridMetrics());
+      if (this.autoLimit()) return dgComputeAutoCount(this.grid, this.gridMetrics(), this._measuredAvgCardH);
       return this.settings.limit;
     }
 
@@ -1709,8 +1889,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         return;
       }
       if (resetPage) this.page = 1;
-      // 新一轮搜索（点搜索/换筛选/列数变化）＝ 新结果集 → 重新允许「拉大补图」
-      if (resetPage) this.fillMoreExhausted = false;
+      // 新一轮搜索（点搜索/换筛选/列数变化）＝ 新结果集 → 重新允许「拉大补图」与「自动补满」
+      if (resetPage) {
+        this.fillMoreExhausted = false;
+        this.autoFillRounds = 0;
+        this._autoFillTarget = 0;   // 新结果集 = 新目标，重新按当前尺寸评估
+      }
       this.settings.lastQuery = normalizeTags(this.queryWidget?.value || "");
       this.saveSettings();
       this.setQuery(this.settings.lastQuery);
@@ -2372,8 +2556,29 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       return groups;
     }
 
+    /** 该条目所在图源是否真的有提示词（P站 capabilities.prompt=false → 没有，只有日文标签） */
+    postHasPrompt(post) {
+      const sourceId = this.postSourceId(post);
+      if (sourceId === DANBOORU_SOURCE_ID) return true;
+      // 用「明确声明 false 才禁用」的语义：capabilities 尚未拉到时不要误伤 C站（prompt=true）
+      return this.sourceCapabilities(sourceId)?.prompt !== false;
+    }
+
     buildPromptForPost(post, promptOutput = null, excludePattern = "") {
       const settings = normalizePromptOutputSettings(promptOutput || this.promptOutputSettings());
+      // ⚠️ P站 没有提示词（capabilities.prompt=false）：它的 tags 是 Pixiv 用户自由打的
+      // **日文/多语言标签**（实测同一张图会同时出现 初音ミク / 初音未来 / hatsunemiku），
+      // 把 tags 当 prompt 吐给下游 = 往提示词里灌非 Danbooru 规范的词。
+      // UI 早已按 capabilities 隐藏了 Prompt/入库 按钮，但**输出端口**之前没短路
+      // （rawPromptGroups 会回退到 tag_string 拼 general），这里补上。
+      if (!this.postHasPrompt(post)) {
+        return {
+          prompt: "",
+          tags: [],
+          groups: Object.fromEntries(PROMPT_CATEGORY_ORDER.map((category) => [category, []])),
+          settings: { ...settings, categories: [...settings.categories] },
+        };
+      }
       let excludeRegex = null;
       if (String(excludePattern || "").trim()) {
         try { excludeRegex = new RegExp(String(excludePattern).trim(), "i"); } catch { excludeRegex = null; }
@@ -2859,6 +3064,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (rendered.length && this.failedImageCount >= rendered.length) {
         this.appendGridNotice(`本页 ${this.failedImageCount} 张预览全部加载失败 —— 检查 Clash 代理，或点工具条「刷新」绕过缓存重试`);
       }
+      // 渲染完立即检查「填满没有」：首屏 / 翻页 / 换源 / 换筛选都要（见 scheduleAutoFill）
+      this.scheduleAutoFill();
     }
 
     pageWindow() {
@@ -4910,6 +5117,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         clearTimeout(this.resizeSearchTimer);
         this.resizeSearchTimer = null;
       }
+      // 自动补满的定时器：节点销毁后不能再排补图请求
+      if (this.autoFillTimer) {
+        clearTimeout(this.autoFillTimer);
+        this.autoFillTimer = null;
+      }
       if (this.grid) this.grid.style.minHeight = "";
       window.removeEventListener("resize", this.positionSuggestionsHandler);
       document.removeEventListener("scroll", this.positionSuggestionsHandler, true);
@@ -4961,17 +5173,24 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const element = ui.build();
         const domWidget = this.addDOMWidget?.("anima_danbooru_gallery", "custom", element, { serialize: false, hideOnZoom: false });
         ui.domWidget = domWidget;
+        // 尺寸 owner = **用户/工作流保存的节点尺寸**，不是图片内容。
+        // ① 初始高度取「节点当前高度」而不是 settings.gridHeight —— 后者可能已被历史撑大污染成上限；
+        // ② min/max 钉成同一个值 ⇒ 新前端布局器没有"按内容分配"的余地；
+        // ③ 用户拖动后由 onResize 把这两个值跟到新尺寸（见下），布局器始终没有自主权。
+        //    （2026-09-16 用户：「节点大小完全限制于我的设定，不要因为图像而改变，也不要自主变大变小」）
+        const lockedHeight = Math.max(360, Math.round((this.size?.[1] || 0) - 95) || ui.settings.gridHeight || 620);
+        ui.lockedHeight = lockedHeight;
         ui.domSizeSync = installDOMWidgetSizeSync({
           node: this,
           domWidget,
           element,
-          minHeight: 360,
-          maxHeight: 1200,
-          initialContentHeight: ui.settings.gridHeight,
+          minHeight: lockedHeight,
+          maxHeight: lockedHeight,
+          initialContentHeight: lockedHeight,
           nodeChromeHeight: 95,
-          onContentHeight: (height, { commit }) => {
+          onContentHeight: (height) => {
+            // 只记录，**绝不**用内容高度反过来改节点尺寸
             ui.settings.gridHeight = height;
-            if (commit) ui.saveSettings();
           },
         });
         // installDOMWidgetSizeSync 已经包了一层 node.onResize；这里**再包一层**（链式调用，
@@ -4981,7 +5200,30 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const sizeSyncOnResize = this.onResize;
         this.onResize = function (...args) {
           const result = sizeSyncOnResize?.apply(this, args);
-          this._animaDanbooruGallery?.noteExternalResize?.();
+          const uiRef = this._animaDanbooruGallery;
+          uiRef?.noteExternalResize?.();
+          // 用户拖动结束后把新高度写进工作流属性：过去只改内存（syncNow 走的是
+          // notifyContentHeight(false) ⇒ 从不 commit），于是刷新/重启又回到旧的大高度
+          // —— 用户看到的"缩小了又自己变回去"有这一半原因。
+          if (uiRef) {
+            // ① **立即**把「固定区间」跟到当前尺寸：否则拖动过程中 min/max 还停在旧值，
+            //    布局器会按旧区间把节点拉回去（表现为拖不动 / 回弹）。
+            const nowHeight = Math.round((this.size?.[1] || 0) - 95);
+            if (nowHeight > 0) {
+              uiRef.domSizeSync?.setBounds?.(nowHeight, nowHeight);
+              uiRef.lockedHeight = nowHeight;
+            }
+            // ② 拖动结束后再持久化（写工作流属性 + 标记改动，需要节流）
+            clearTimeout(uiRef.gridHeightCommitTimer);
+            uiRef.gridHeightCommitTimer = setTimeout(() => {
+              const height = Number(uiRef.grid?.clientHeight) || 0;
+              if (!(height > 0)) return;
+              if (Math.abs(height - (Number(uiRef.settings?.gridHeight) || 0)) > 2) {
+                uiRef.settings.gridHeight = height;
+                uiRef.saveSettings();
+              }
+            }, 400);
+          }
           return result;
         };
         const originalRemoved = this.onRemoved;

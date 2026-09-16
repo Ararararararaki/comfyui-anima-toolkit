@@ -2,7 +2,14 @@
 
 ## 📌 最新交接（先读这个）
 
-**`docs/HANDOFF-2026-09-15-多源画廊接入.md`** —— **最新**（2026-09-15）：把「TK D站画廊」扩成**多源画廊**（D站 / C站 / P站）。
+**`docs/HANDOFF-2026-09-16-Outputs预热与meta持久化.md`** —— **最新**（2026-09-16）：
+**Outputs 后台预热**（后端自驱：常驻预热器 + 增量索引 + `/anima/gallery/status`，不再依赖浏览器）、
+**LoRA 组/meta 持久化 7 层防线**（键级合并 + 空值护栏 + 迁到 `data/` + 更新链用户数据黑名单）、
+**画廊节点尺寸完全由用户决定**（不再被图片内容顶大/自主缩放）、P站 不再输出 prompt、
+Tag Getter 扩展分类「全开/全关」。含 3 条必须记住的实测结论（ComfyUI 无执行完成钩子、
+`client_id` 为空时事件不发、`builtAt` 是毫秒）。
+
+上一份：**`docs/HANDOFF-2026-09-15-多源画廊接入.md`**：把「TK D站画廊」扩成**多源画廊**（D站 / C站 / P站）。
 
 - **架构**：一个节点 + 图源下拉；`anima_gallery_sources.py`（协议层：统一 item schema 13 键 + 图源注册表 + 容错加载）
   + `anima_gallery_civitai.py` + `anima_gallery_pixiv.py`；前端由 `/anima/gallery/sources` 的 **capabilities 驱动控件显隐**。
@@ -73,7 +80,7 @@ python -X utf8 .scratch/check_widget_safety.py       # 检查 COMBO / FLOAT 的�
 |---|---|
 | **版本** | **2.14.0**（`VERSION` 唯一真源；`__init__.py` 运行时读它） |
 | 远端 main | `19cc45c2`（本地 == 远端；推送前记得先 commit，见 §3） |
-| **CI** | ⚠️ **2026-09-14 起连续 4 次红**（含 2.14.0 发布提交），根因已定位并修复（见下），**修复推送后才会转绿** |
+| **CI** | ✅ **已修复并转绿**（`ece7ffcc`）。此前 2026-09-14 起连红 4 次，根因是「白名单 `git add` 不会带上删除」→ manifest 与 HEAD 不自洽，详见 §0 下的复盘 |
 | GitHub Release | `v2.10.0` ~ `v2.14.0`（**2.9 及更早从未打 tag**） |
 | **ComfyUI Registry** | ✅ **`anima-toolkit` @ `toki`**，最新 2.14.0（`Pending` 待审） |
 | 离线测试 | **335 passed**；`python tests/run_tests.py` = **6/6** |

@@ -5,6 +5,7 @@ import { deleteFiles, renameFile, batchFavorite, batchRate } from '../services/o
 import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, buildDirTreeFromPaths, reparseAllMetadata, ensureMetadataFresh } from '../services/outputScanner'
 import { restoreAllFromDb } from '../services/outputManifest'
 import { preloadThumbnailsFromDb, probeBackendThumbs, backendThumbsEnabled, animaThumbUrl, probeGalleryIndex, galleryIndexEnabled, galleryEntries, galleryIndexBuiltAt, fetchGalleryMeta } from '../services/outputThumbnail'
+import { probeGalleryStatus, galleryStatusAvailable, galleryStatusBusy } from '../services/galleryStatus'
 import { hashPath } from '../services/outputManifest'
 import { outputsDb } from '../db/outputsDb'
 import { addPrompt, generatePromptId } from '../store/prompts'
@@ -157,6 +158,8 @@ export async function initOutputs() {
     bindOutputsExecutionEvents()
     window.addEventListener('focus', triggerOutputsIncrementalScan)
     document.addEventListener('visibilitychange', () => { if (!document.hidden) triggerOutputsIncrementalScan() })
+    // 面板启动即安排一次「闲置预热」：用户还没点 outputs 栏目，数据就先进 store（切过去零等待）
+    scheduleOutputsIdleWarmup()
     return
   }
   if (_nativeOutputs) {
@@ -175,6 +178,7 @@ export async function initOutputs() {
     bindOutputsExecutionEvents()
     window.addEventListener('focus', triggerOutputsIncrementalScan)
     document.addEventListener('visibilitychange', () => { if (!document.hidden) triggerOutputsIncrementalScan() })
+    scheduleOutputsIdleWarmup()
     return
   }
 
@@ -230,6 +234,83 @@ export async function initOutputs() {
 
   // ── 扫描进度订阅 ──
   bindScanProgressUI()
+
+  // 面板启动即安排一次「闲置预热」（同上：数据先进 store，用户切到 outputs 时零等待）
+  scheduleOutputsIdleWarmup()
+}
+
+// ── 面板启动即预备 outputs 数据（2026-09-15）──
+// 用户需求：生完图打开管理页面，直接点 outputs 就能看到全新的图 —— **不需要**先点开别的栏目，
+// 更不该等到点了 outputs 才开始加载。所以面板一启动（不管当前在哪个栏目）就在**闲置时**把数据备好。
+//
+// ⚠️ 首屏红线（同 initOutputs 里 ensureMetadataFresh 的血泪注释）：预热绝不能出现在首屏关键路径上。
+//    它只在 requestIdleCallback 里跑、失败静默，且不允许在首屏 await。
+let _warmupScheduled = false
+let _prepareInflight: Promise<boolean> | null = null
+
+/** 安排一次闲置预热：requestIdleCallback 优先（带 timeout 兜底），不支持时退回 setTimeout 1200ms。 */
+function scheduleOutputsIdleWarmup() {
+  if (_warmupScheduled) return
+  _warmupScheduled = true
+  const run = () => {
+    void prepareOutputsData().then(() => {
+      // 用户可能已经切到 outputs（或正停在这里）：把刚落库的数据显出来
+      if (isOutputsActive()) renderOutputsView()
+    })
+  }
+  if (typeof window.requestIdleCallback === 'function') {
+    // timeout：浏览器一直忙（比如正在出图）时也要保证 4s 内跑到，否则「预热」等于没有
+    window.requestIdleCallback(run, { timeout: 4000 })
+  } else {
+    window.setTimeout(run, 1200)
+  }
+}
+
+/** 数据预备：把 outputs 要用的数据搬进 store。并发去重（同一时刻只跑一条链，避免重复拉 manifest）。 */
+function prepareOutputsData(): Promise<boolean> {
+  if (_prepareInflight) return _prepareInflight
+  const p = runPrepareOutputsData()
+  _prepareInflight = p
+  void p.then(() => { if (_prepareInflight === p) _prepareInflight = null })
+  return p
+}
+
+/**
+ * 预备本体（失败静默，绝不抛）：
+ *   ① store 里已有数据 → 只做一次**极轻**的「索引换代了吗」检查（/anima/gallery/status 纯内存；
+ *      老后端退回 /fresh）。换代才真的重拉 manifest —— 一次 16.5MB，绝不白拉。
+ *   ② store 还是空的 → 拉一次 manifest 落库（面板刚启动、后端刚预备完的场景），
+ *      用户切过去时数据已经在了。TK 原生模式的数据源是 /api/tk，不在这里抢。
+ * 返回：现在 store 里有数据吗。
+ */
+async function runPrepareOutputsData(): Promise<boolean> {
+  try {
+    const hasData = useOutputStore.getState().files.length > 0
+    if (hasData) {
+      // 只有 gallery 索引在用时才有"索引换代"这回事；原生/目录管线由各自的轮询负责
+      if (galleryIndexEnabled()) {
+        const grew = await probeOutputsGrew()
+        if (grew) await refreshOutputsFromGallery()
+      }
+      return true
+    }
+    if (_nativeOutputs) return false
+    // 索引还没就绪：先问一次纯内存的预备状态 —— 后端正在预备时，用户该看到「后端正在预备新图…」
+    // 而不是"没有图片"，并且要在几秒后自动补上（短延时重试链），而不是干等 60s 轮询。
+    const status = await probeGalleryStatus()
+    if (galleryStatusBusy(status)) {
+      const runAt = Number(status?.warmup?.lastRunAt || 0)
+      markOutputsWarmupBusy(runAt !== _lastOutputsWarmupRunAt)
+      _lastOutputsWarmupRunAt = runAt
+      return false
+    }
+    const ok = await probeGalleryIndex(true)
+    if (!ok) return false
+    await restoreOutputsFromDb()
+    return useOutputStore.getState().files.length > 0
+  } catch {
+    return useOutputStore.getState().files.length > 0
+  }
 }
 
 /** 扫描进度订阅：scanStatus 变化时更新进度条（全量扫描/重解析共用，gallery 分支也注册） */
@@ -297,15 +378,19 @@ function startOutputsAutoScan() {
 
 async function triggerOutputsIncrementalScan() {
   const s = useOutputStore.getState()
+  // gallery 索引模式（**无论有没有 TK 原生存储**）：先问后端的「有没有新图」轻量探测，只有真的
+  // 新增/换代才拉全量 manifest。这样即使停留在别的栏目（甚至页面被切走）也能把新图准备好，
+  // 切回来立即可见。
+  // ⚠️ 这段必须放在 _nativeOutputs 判断之外（2026-09-15 修）：此前它嵌在原生分支里，于是
+  //    「gallery 索引可用 + 未装 TK 本地存储」这个组合（恰恰是不需要目录授权的主流用法）
+  //    **从来没跑过**轻量探测 —— 生完图不点刷新就永远看不到新图。
+  if (galleryIndexEnabled() && !outputsProbeDead()) {
+    const grew = await probeOutputsGrew()
+    if (grew) await refreshOutputsFromGallery()
+    if (isOutputsActive()) renderOutputsView()
+    return
+  }
   if (_nativeOutputs) {
-    // gallery 索引模式：先问后端的「有没有新图」轻量探测，只有真的新增才拉全量 manifest。
-    // 这样即使停留在别的栏目（甚至页面被切走）也能把新图准备好，切回来立即可见。
-    if (galleryIndexEnabled()) {
-      const grew = await probeOutputsGrew()
-      if (grew) await refreshOutputsFromGallery()
-      if (isOutputsActive()) renderOutputsView()
-      return
-    }
     // TK SQLite 模式：scan 是幂等的增量扫描，隐藏时也跑，数据先就位
     if (s.scanStatus === 'scanning') return
     try {
@@ -354,42 +439,138 @@ function bindOutputsExecutionEvents() {
 
 /**
  * gallery 索引模式下的「有没有新图」探测。
- * 用后端 /anima/gallery/fresh（只 stat 文件名，不解析 PNG、不传 16.5MB 索引）；
- * 后端不可用（老插件）时返回 false，静默退回「只靠切页刷新」的旧行为。
+ *
+ * ① 优先走后端**自驱预备**状态端点 `/anima/gallery/status`（纯内存、不扫盘，比 /fresh 还便宜），
+ *    它一次给出 index.builtAt / index.building / warmup.pending —— 正好是这里需要的全部判据；
+ * ② 老后端没有该端点（404）时**静默退回** /anima/gallery/fresh（只 stat 文件名，字段不变）；
+ * ③ 后端整体不可用（两条端点都没有）时熔断，不再每轮轮询都吃 404。
  *
  * ⚠️ 判据不能只看 changed（磁盘文件数 > 索引里的 total）：
- *   ① 后端重建索引是**后台线程**，探测到 changed 的那一刻索引往往还没建完，
+ *   ① 后端重建索引是**后台任务**，探测到 changed 的那一刻索引往往还没建完，
  *      此时拉 manifest 拿到的仍是旧索引；
  *   ② 等它建完后 count 已经追平，changed 又变回 false —— 于是**再也不会来拉**，
- *      新图永远不出现（用户实测：必须手动点刷新）。这就是「没有自动加载」的根因。
- *   所以这里额外比对后端返回的 `builtAt`（索引构建时刻）：只要索引换代了就重拉，
- *   与 changed 无关；`building` 期间则跳过，等下一轮 builtAt 变了再拉。
+ *      新图永远不出现（用户实测：必须手动点刷新）。
+ *   所以核心判据是后端返回的 `builtAt`（索引构建时刻）：只要索引换代了就重拉，与 changed 无关；
+ *   `building` / `pending` 期间则跳过（等下一轮 builtAt 变了再拉），并安排一次短延时重试。
  */
 let _outputsFreshMisses = 0
 let _renderedIndexBuiltAt = 0
+/** 后端是否正在预备/重建索引（供状态栏与空态提示「后端正在预备新图…」）。 */
+let _outputsWarmupBusy = false
+/** 上次轻量探测时刻：切栏目时 5s 内不重复问（刚问过就别再问，做到"零请求"直出）。 */
+let _lastOutputsProbeAt = 0
+/** 上次见到的预热轮次时刻（后端 warmup.lastRunAt）：用来判断"有没有新的一轮预热跑完"。 */
+let _lastOutputsWarmupRunAt = 0
+/** 「预备中」期间的短延时重试（后端 20s 一轮预热，别让用户等满 60s 的轮询）。 */
+let _outputsBusyRetryTimer: number | null = null
+let _outputsBusyRetries = 0
+const OUTPUTS_BUSY_RETRY_MS = 4000
+const OUTPUTS_BUSY_RETRY_MAX = 5
+
+/** 轻量探测是否已整体判死（老插件：/status 与 /fresh 都没有）。判死后 gallery 分支退回目录增量扫描。 */
+function outputsProbeDead(): boolean {
+  return _outputsFreshMisses >= 3 && !galleryStatusAvailable()
+}
+
+/** 预备中重试：4s 后再探一次（最多 5 次 ≈ 20s，正好覆盖后端一轮预热），避免用户白等 60s 轮询。 */
+function scheduleOutputsBusyRetry() {
+  if (_outputsBusyRetryTimer !== null || _outputsBusyRetries >= OUTPUTS_BUSY_RETRY_MAX) return
+  _outputsBusyRetries++
+  _outputsBusyRetryTimer = window.setTimeout(() => {
+    _outputsBusyRetryTimer = null
+    // gallery 管线在用时走常规的探测链；否则（store 还空、索引尚未启用）直接再预备一次，
+    // 否则重试会落到目录句柄分支上，等于什么都没做。
+    if (galleryIndexEnabled() && !outputsProbeDead()) void triggerOutputsIncrementalScan()
+    else void prepareOutputsData().then(() => { if (isOutputsActive()) renderOutputsView() })
+  }, OUTPUTS_BUSY_RETRY_MS)
+}
+
+/**
+ * 标记「后端正在预备」：置状态栏/空态提示 + 安排短延时重试。
+ * `runAdvanced` = 后端又跑完一轮预热（有推进）→ 补一次重试额度，
+ * 否则长预热（首次建库可达十几秒）会把 5 次额度耗光，用户要白等满 60s 轮询才看到新图。
+ */
+function markOutputsWarmupBusy(runAdvanced: boolean) {
+  if (runAdvanced) _outputsBusyRetries = 0
+  _outputsWarmupBusy = true
+  scheduleOutputsBusyRetry()
+}
+
+/** 后端已把索引做完了 → 解除"预备中"标记与重试计数。 */
+function clearOutputsBusy() {
+  if (_outputsBusyRetryTimer !== null) { clearTimeout(_outputsBusyRetryTimer); _outputsBusyRetryTimer = null }
+  _outputsBusyRetries = 0
+  _outputsWarmupBusy = false
+}
+
 async function probeOutputsGrew(): Promise<boolean> {
-  // 老版后端没有该端点：连续失败 3 次后就别再打了（避免每轮轮询都吃一个 404）
+  // 老版后端两个端点都没有：连续失败 3 次后就别再打了（避免每轮轮询都吃一个 404）
   if (_outputsFreshMisses >= 3) return false
+  _lastOutputsProbeAt = Date.now()
   try {
+    // ① 首选：后端自驱预备状态（纯内存）。拿到就完全按它的判据走，不再打 /fresh。
+    const status = await probeGalleryStatus()
+    if (status) {
+      _outputsFreshMisses = 0
+      // 预热轮次（秒级时间戳，只用来判断"后端有没有新的一轮进展"）
+      const warmupRunAt = Number(status.warmup?.lastRunAt || 0)
+      const warmupRunAdvanced = warmupRunAt !== _lastOutputsWarmupRunAt
+      _lastOutputsWarmupRunAt = warmupRunAt
+      // 正在重建/预热排队中：此刻拉只会拿到旧索引，本轮跳过（索引做完后 builtAt 会变）
+      if (galleryStatusBusy(status)) {
+        markOutputsWarmupBusy(warmupRunAdvanced)
+        return false
+      }
+      clearOutputsBusy()
+      // ⚠️ builtAt 取**两处里更新**的那个（2026-09-15 实测踩到）：/anima/gallery/status 是纯内存
+      //    端点，**不**像 /manifest、/fresh 那样先把内存索引与磁盘对齐；而后台的增量预热是直接
+      //    改索引**文件**的。于是 status.index.builtAt 在预热写过盘之后仍是旧值 —— 只认它就会
+      //    「后端明明已经索引好了新图，前端却永远不拉」。warmup.lastResult.builtAt 是那一轮
+      //    增量更新的真实返回值，两者取 max 才能既不过度拉取、又不漏掉换代。
+      const indexBuiltAt = Number(status.index?.builtAt || 0)
+      const warmupBuiltAt = Number(status.warmup?.lastResult?.builtAt || 0)
+      const builtAt = Math.max(indexBuiltAt, warmupBuiltAt)
+      // 预热器刚跑完一轮"真更新"（非 skipped）却没给 builtAt 时的兜底：只要真写了索引，builtAt
+      // 必变。按预热轮次去重 —— 同一轮只可能拉一次，绝不会变成每轮轮询都拉 16.5MB。
+      const warmupRewrote = warmupBuiltAt === 0 && indexBuiltAt === 0 && warmupRunAdvanced
+        && !!status.warmup?.lastResult && !status.warmup.lastResult.skipped
+      // 首屏那次 probeGalleryIndex() 已经载入了一份索引，它的 builtAt 由 service 记着；
+      // 用它做基准，避免启动后第一次探测就为"比对版本"白拉一次 16.5MB manifest。
+      const knownBuiltAt = _renderedIndexBuiltAt || galleryIndexBuiltAt()
+      const indexRotated = builtAt > 0 && builtAt !== knownBuiltAt
+      // 索引条数比载入的多（后端预热已增量收录新图，但 builtAt 尚未换代时的兜底判据）
+      const knownTotal = galleryEntries()?.size || 0
+      const indexGrew = Number(status.index?.total || 0) > knownTotal
+      if (!indexRotated && !indexGrew && !warmupRewrote) return false
+      await probeGalleryIndex(true)   // 强制重拉 manifest（false 会被首次探测后的短路挡住）
+      // 基准取**真正载入内存**的那份索引的 builtAt（manifest 返回的权威值），
+      // 否则上面那个 max() 会让下一轮又判定"换代了"，变成每轮都拉一次 16.5MB
+      _renderedIndexBuiltAt = galleryIndexBuiltAt() || builtAt
+      return true
+    }
+
+    // ② 老后端：退回 /anima/gallery/fresh（字段不变，语义相同）
     const resp = await fetch('/anima/gallery/fresh', { cache: 'no-store' })
     if (!resp.ok) throw new Error(String(resp.status))
     const data = await resp.json()
     _outputsFreshMisses = 0
     // 正在后台重建：此刻拉只会拿到旧索引，跳过（下一轮 builtAt 会变，那时再拉）
-    if (data?.building) return false
+    if (data?.building) {
+      markOutputsWarmupBusy(false)   // 老后端没有轮次信息：不补额度，重试次数上限兜底
+      return false
+    }
+    clearOutputsBusy()
     const builtAt = Number(data?.builtAt || 0)
-    // 首屏那次 probeGalleryIndex() 已经载入了一份索引，它的 builtAt 由 service 记着；
-    // 用它做基准，避免启动后第一次探测就为"比对版本"白拉一次 16.5MB manifest。
     const knownBuiltAt = _renderedIndexBuiltAt || galleryIndexBuiltAt()
     const indexRotated = builtAt > 0 && builtAt !== knownBuiltAt
     if (!data?.changed && !indexRotated) return false
     await probeGalleryIndex(true)   // 强制重拉 manifest（false 会被首次探测后的短路挡住）
-    _renderedIndexBuiltAt = builtAt
+    _renderedIndexBuiltAt = galleryIndexBuiltAt() || builtAt
     return true
   } catch {
     _outputsFreshMisses += 1
     if (_outputsFreshMisses === 3) {
-      console.info('[Outputs] /anima/gallery/fresh 不可用，退回「切换页面/窗口获焦」刷新')
+      console.info('[Outputs] 后端轻量探测端点（/anima/gallery/status 与 /fresh）都不可用，退回「切换页面/窗口获焦」刷新')
     }
     return false
   }
@@ -409,12 +590,27 @@ let _lastIncrementalScan = 0
 export async function activateOutputs() {
   if (!_initDone) return
   if (_nativeOutputs) {
+    // 数据在面板启动时就已经拉过一遍（initOutputs 的 refreshNativeOutputs）：先把 store 里的图
+    // 渲染出来，别让用户在切栏目时干等一轮 /api/tk 往返；随后再后台刷新一次。
+    if (useOutputStore.getState().files.length > 0) { renderOutputsView(); setupInfiniteScroll() }
     try { await refreshNativeOutputs() } catch { /* 保留当前缓存 */ }
     renderOutputsView()
     setupInfiniteScroll()
     return
   }
   const state = useOutputStore.getState()
+
+  // ── gallery 索引模式：保证「切进来就有图」且尽量新鲜 ──
+  // ① 已有数据 → 立刻渲染（零等待、不拉 manifest）。是否要更新交给后台那一次**极轻**检查：
+  //    /anima/gallery/status 是纯内存端点，且 5s 内不重复问；只有 index.builtAt 换代了才静默
+  //    重拉 manifest 后重渲染（先旧后新，绝不白屏）。
+  // ② 没有数据（面板刚启动、后端索引刚就绪或正在预备）→ 立刻补一次，别让用户对着空网格。
+  if (galleryIndexEnabled()) {
+    if (state.files.length > 0) renderOutputsView()
+    if (Date.now() - _lastOutputsProbeAt >= 5000) {
+      void prepareOutputsData().then(() => { if (isOutputsActive()) renderOutputsView() })
+    }
+  }
 
   // 有目录句柄时尝试增量扫描
   if (state.dirHandle) {
@@ -714,7 +910,10 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
     destroyOutputsVS()
     removeOutputsSentinel()
     // 库里有图但被筛选/路径滤空 → 给准确空状态 + 一键清除筛选（防"幽灵筛选把历史日期藏掉"的困惑）
-    el.innerHTML = state.files.length > 0 ? renderFilteredEmpty() : renderEmpty(hasDir)
+    const filtered = state.files.length > 0
+    el.innerHTML = filtered ? renderFilteredEmpty() : renderEmpty(hasDir)
+    // 索引模式下真·空库：换掉会误导的「选择目录」文案，必要时补「后端正在预备新图…」
+    if (!filtered) decorateOutputsEmpty(el)
     el.querySelector<HTMLElement>('#outputsClearFiltersBtn')?.addEventListener('click', () => {
       const st2 = useOutputStore.getState()
       st2.clearAdvancedFilters()
@@ -844,7 +1043,26 @@ function syncCardMeta(card: HTMLElement, file: OutputFile, meta: OutputMetadata 
 function updateOutputsStats(state: ReturnType<typeof useOutputStore.getState>) {
   const el = document.querySelector('.outputs-stats') as HTMLElement
   if (!el) return
+  // 后端正在预备/重建索引时顺带一句人话提示（比让用户对着旧图或空网格猜更好）
   el.innerHTML = renderStats(state.files.length, state.filteredFiles.length, state.selectedIds.size)
+    + (_outputsWarmupBusy ? outputsWarmupHintHtml() : '')
+}
+
+/** 「后端正在预备新图…」提示（状态栏 / 空态共用）。图标走 icon()（禁 emoji），颜色跟随宿主主题变量。 */
+function outputsWarmupHintHtml(): string {
+  return `<span class="outputs-warmup-hint" style="display:inline-flex;align-items:center;gap:6px;color:var(--text2);font-size:12px">${icon('spinner', 12)}<span>后端正在预备新图…</span></span>`
+}
+
+/**
+ * gallery 索引模式的空态兜底：索引模式**不需要**目录授权，静态空态那句「选择 ComfyUI 输出目录」
+ * 会把人带偏；后端正在预备时更要说明"新图马上到"，而不是让用户对着空网格以为坏了。
+ */
+function decorateOutputsEmpty(root: HTMLElement) {
+  if (!galleryIndexEnabled()) return
+  const p = root.querySelector('.outputs-empty p')
+  if (!p) return
+  p.textContent = _outputsWarmupBusy ? '后端正在预备新图，完成后会自动出现' : '后端索引里还没有图片'
+  if (_outputsWarmupBusy) p.insertAdjacentHTML('afterend', outputsWarmupHintHtml())
 }
 
 /** Shift+click 范围选中 */

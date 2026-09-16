@@ -680,13 +680,130 @@ async def anima_thumb(request):
 # ── Gallery 元数据索引（M3，docs/后端图片管线可行性评估-2026-09-11.md）──
 # 按钮所需摘要（prompt/model/seed/loras/hasWorkflow）在后台建索引，前端一次拉取；
 # 完整 workflowJson/raw 仍按需（/anima/gallery/meta），与「点击触发解析」的原则一致。
+#
+# 预热通道（2026-09-15，用户要求「生完图 → 打开面板 → Outputs 新图已经在那儿」）：
+# 索引的**增量**更新交给 services/gallery_warmup.py 的后台心跳（插件加载时由 __init__.py 挂上），
+# 后端自己盯着 output 目录，不再依赖「前端先轮询 / 用户先点到 Outputs」才动。
+# 本模块保留全量重建（_gallery_build_worker / /anima/gallery/rebuild）作为**保底**：
+# 预热器缺失（老用户更新链只下发部分文件）时，行为与改动前完全一致。
 
-_GALLERY_STATE = {"building": False, "progress": 0, "total": 0, "index": None, "loaded": False}
+_GALLERY_STATE = {"building": False, "progress": 0, "total": 0, "index": None, "loaded": False, "sig": None}
 _GALLERY_LOCK = threading.Lock()
+
+# latest（os.stat 的 mtime，**秒**）与 builtAt（索引里的 **毫秒**）比大小时的容差（毫秒）。
+_GALLERY_STALE_LAG_MS = 2000
 
 
 def _gallery_index_path() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "gallery", "index.json")
+
+
+# ── 预热器桥接（services/gallery_warmup.py；懒导入 + 全程容错）────────────────
+# 接口契约（由 __init__.py 挂载时传入）：
+#   install_gallery_warmup(*, output_root_getter, index_path_getter, interval_sec, debounce_sec) -> dict
+#   warmup_status() -> {"installed","running","intervalSec","lastRunAt","lastDurationMs","lastResult","lastError","runs","pending"}
+#   request_warmup(reason="") -> bool
+
+def _gallery_warmup_module():
+    """取预热器模块；不可用（文件缺失/导入炸）时返回 None。
+
+    懒导入且**不缓存失败**：services/gallery_warmup.py 属增量交付的新文件，
+    老用户走更新链可能还没拿到它 —— 缺了只是「没有预热」，绝不能影响画廊本体。
+    """
+    try:
+        from .services import gallery_warmup
+        return gallery_warmup
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _gallery_warmup_status() -> dict:
+    """预热器状态（纯内存读取）。未挂载/导入失败/自身抛错一律归一成 {"installed": False}。"""
+    module = _gallery_warmup_module()
+    if module is None:
+        return {"installed": False}
+    try:
+        status = module.warmup_status()
+    except Exception as exc:  # noqa: BLE001
+        return {"installed": False, "error": str(exc)}
+    return status if isinstance(status, dict) else {"installed": False}
+
+
+def _gallery_warmup_busy() -> bool:
+    """预热器是否正在跑（含 debounce 排队中）。纯内存读取。"""
+    status = _gallery_warmup_status()
+    return bool(status.get("running") or status.get("pending"))
+
+
+def _gallery_handoff_to_warmup(reason: str) -> bool:
+    """把「发现变化」交给预热器做增量更新。返回 True = 已接管，调用方**不要**再走全量重建。
+
+    判据是「预热器**已挂载**」而不是 request_warmup 的返回值：那个 bool 在 debounce 合并窗口内
+    可能返回 False（含义更接近「已经在排队了」），若据此退回全量重建，就会出现增量与全量同时跑两份。
+    """
+    module = _gallery_warmup_module()
+    if module is None:
+        return False
+    try:
+        if not module.warmup_status().get("installed"):
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        module.request_warmup(reason)
+    except Exception as exc:  # noqa: BLE001
+        # 挂载了但请求通道炸了：退回全量重建保底（下一轮探测不会再重复触发，building 会挡住）
+        print(f"[anima_gallery] 预热请求失败，改走全量重建: {exc}")
+        return False
+    return True
+
+
+_GALLERY_VERSION_CACHE = None
+
+
+def _gallery_plugin_version() -> str:
+    """插件版本（唯一真源 = 仓库根 VERSION，与 __init__.__version__ 同源）。
+
+    读一次即常驻内存 —— /anima/gallery/status 是纯内存端点，热路径上不碰磁盘。
+    """
+    global _GALLERY_VERSION_CACHE
+    if _GALLERY_VERSION_CACHE is None:
+        try:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"), encoding="utf-8") as vf:
+                _GALLERY_VERSION_CACHE = vf.read().strip()
+        except Exception:  # noqa: BLE001
+            _GALLERY_VERSION_CACHE = ""
+    return _GALLERY_VERSION_CACHE
+
+
+def _gallery_index_sig() -> tuple:
+    """索引文件签名 (路径, mtime, size)：一次 stat，用来判断内存索引是否已被后台写过盘。"""
+    path = _gallery_index_path()
+    try:
+        st = os.stat(path)
+        return (path, st.st_mtime, st.st_size)
+    except OSError:
+        return (path, 0.0, 0)
+
+
+async def _gallery_sync_index_from_disk() -> bool:
+    """磁盘索引换代（预热器增量更新写过盘）时，把内存索引重载进来。
+
+    为什么必须有这一步：增量更新由 services/gallery_warmup.py 在后台写**文件**，它拿不到本模块的
+    _GALLERY_STATE —— 不重载，manifest/fresh 会永远返回旧索引，表现为「预热跑了但面板还是旧图」。
+    代价：索引没换代时只花一次 stat（不读那 16.5MB）；换代才在**线程**里 load_index（不阻塞事件循环）。
+    正在全量重建（building）时跳过：那份内存索引由 _gallery_build_worker 负责写。
+    """
+    sig = _gallery_index_sig()
+    with _GALLERY_LOCK:
+        if _GALLERY_STATE["building"] or sig == _GALLERY_STATE["sig"]:
+            return False
+    index = await asyncio.to_thread(anima_gallery.load_index, sig[0])
+    with _GALLERY_LOCK:
+        _GALLERY_STATE["index"] = index
+        _GALLERY_STATE["sig"] = sig
+        _GALLERY_STATE["loaded"] = int(index.get("builtAt", 0) or 0) > 0
+    return True
 
 
 def _gallery_build_worker(output_root: str) -> None:
@@ -700,20 +817,63 @@ def _gallery_build_worker(output_root: str) -> None:
             _GALLERY_STATE["index"] = index
             _GALLERY_STATE["loaded"] = True
             _GALLERY_STATE["building"] = False
+            # 记下刚落盘那份索引的签名：省掉紧随其后的 sync 再读一次 16.5MB
+            _GALLERY_STATE["sig"] = _gallery_index_sig()
     except Exception as exc:
         print(f"[anima_gallery] 索引构建失败: {exc}")
         with _GALLERY_LOCK:
             _GALLERY_STATE["building"] = False
 
 
+@PromptServer.instance.routes.get("/anima/gallery/status")
+async def gallery_status(request):
+    """画廊状态：预热器状态 + 当前索引摘要 + 输出目录 + 版本。
+
+    这个端点不扫盘、不解析索引，是给前端高频轮询用的「现在到哪一步了」：预热器没写过盘时
+    只多花**一次 stat**（微秒级）；只有索引真换代时才在线程里重载一次（不阻塞事件循环）。
+    面板一打开就拉它：warmup.lastRunAt / index.builtAt 一变，说明后台已经把新图索引好了，
+    再去拉一次 /anima/gallery/manifest 即可 —— 于是「生完图 → 打开面板 → Outputs 新图已就位」
+    不再依赖前端先点到 Outputs 才开始加载。
+    预热器不可用（老用户更新链没下发 services/gallery_warmup.py）时同样返回 200，warmup = {"installed": false}。
+    """
+    try:
+        output_root = folder_paths.get_output_directory()
+    except Exception:  # noqa: BLE001
+        output_root = ""
+    # ⚠️ 跨模块接缝（2026-09-16 前端 agent 实测发现）：预热器是直接改索引**文件**的
+    #    （services/gallery_warmup.py → anima_gallery.update_index_incremental），拿不到本模块的
+    #    内存副本 _GALLERY_STATE["index"]。这里不补一次同步的话，预热写过盘之后
+    #    status.index.builtAt 会一直是旧值 —— 只认它的前端永远不去拉新索引（表现为"预热跑了但面板还是旧图"）。
+    #    代价：没换代只多一次 stat；换代才在线程里 load_index（与 /manifest 同一套逻辑）。
+    await _gallery_sync_index_from_disk()
+    with _GALLERY_LOCK:
+        index = _GALLERY_STATE["index"] or {}
+        index_view = {
+            "total": int(index.get("total", 0) or 0),
+            "builtAt": index.get("builtAt", 0) or 0,
+            "building": bool(_GALLERY_STATE["building"]),
+            "progress": _GALLERY_STATE["progress"],
+            "loaded": bool(_GALLERY_STATE["loaded"]),
+        }
+    return web.json_response({
+        "warmup": _gallery_warmup_status(),
+        "index": index_view,
+        "outputRoot": output_root,
+        "version": _gallery_plugin_version(),
+    }, dumps=lambda o: json.dumps(o, ensure_ascii=False, separators=(",", ":")))
+
+
 @PromptServer.instance.routes.get("/anima/gallery/manifest")
 async def gallery_manifest(request):
     """全库元数据摘要（按钮/卡片/筛选所需）+ 构建状态。前端一次拉取。"""
+    # 预热器/后台增量更新写过盘后，内存索引可能已经过期 —— 先同步（没换代只花一次 stat）
+    await _gallery_sync_index_from_disk()
     with _GALLERY_LOCK:
         if not _GALLERY_STATE["loaded"] and not _GALLERY_STATE["building"]:
             index = anima_gallery.load_index(_gallery_index_path())
             _GALLERY_STATE["index"] = index
             _GALLERY_STATE["loaded"] = index.get("builtAt", 0) > 0
+            _GALLERY_STATE["sig"] = _gallery_index_sig()
         index = _GALLERY_STATE["index"]
         payload = {
             "building": _GALLERY_STATE["building"],
@@ -734,7 +894,10 @@ async def gallery_fresh(request):
     动机（2026-09-13 用户反馈）：面板 outputs 不进页面就不会自动更新 —— 老实现只在窗口获焦/
     切页时扫描，隐藏时直接 return。要让「生成完就自动更新」成立，需要一个**便宜**的轮询信号：
     这里只返回文件总数（与索引里的 total 比对），前端据此决定要不要拉全量 manifest。
-    发现新文件且当前没在建索引时，顺手触发一次后台增量建索引（幂等）。
+    发现变化且当前没在建索引时，顺手把更新交给后端预热通道（幂等），降级链见下方注释：
+      ① services/gallery_warmup.py 的 request_warmup()（增量、debounce 合并）
+      ② 预热器不可用 → 退回本模块的全量重建线程（改动前的原行为，保底）
+    返回字段保持 latest/count/known/builtAt/changed/building 不变（有前端在依赖）。
     """
     try:
         root = folder_paths.get_output_directory()
@@ -754,10 +917,15 @@ async def gallery_fresh(request):
     except Exception as exc:
         return web.json_response({"error": f"扫描输出目录失败: {exc}"}, status=500)
 
+    # 预热器可能刚把增量索引写盘 —— 先让内存索引跟上，再算 changed/known/builtAt，
+    # 否则会出现「后台其实已经更新完了，本端点却永远说还没变」。
+    await _gallery_sync_index_from_disk()
+
     # 用 total 而不是 len(entries)：索引对象有 16.5MB，别为了数个数把它整个读进来。
-    index = _GALLERY_STATE["index"]
-    known = int((index or {}).get("total", 0) or 0)
-    built_at = float((index or {}).get("builtAt", 0) or 0)
+    with _GALLERY_LOCK:
+        index = _GALLERY_STATE["index"]
+        known = int((index or {}).get("total", 0) or 0)
+        built_at = float((index or {}).get("builtAt", 0) or 0)
     # 判据①：磁盘文件数比索引里的 total 多（原有语义）。
     # 判据②：磁盘上有**比索引构建时刻更新**的文件（latest > builtAt）。
     #   只判①会漏两种情况，实测表现为「输出图不自动更新、必须手动点刷新」：
@@ -765,16 +933,29 @@ async def gallery_fresh(request):
     #   · 索引一旦重建完成，① 必然变回 False —— 前端据此就再也不来拉新索引了。
     #   所以这里把已经算好的 latest（最新 mtime）用起来，并把 builtAt 一并返回，
     #   让前端能判断"索引换代了没有"（见 panel 的 probeOutputsGrew）。
-    stale = bool(built_at) and latest > built_at + 1.0
+    #   ⚠️ 单位（2026-09-15 修正）：builtAt 是**毫秒**（anima_gallery.build_index 里
+    #   `int(time.time() * 1000)`），而 os.stat 的 mtime 是**秒**。旧代码直接写
+    #   `latest > built_at + 1.0` 拿秒比毫秒 ⇒ 恒为 False ⇒ 判据② 从来没生效过
+    #   （「文件被覆盖/重写、总数没变」时探测不到新图）。现在统一换算到毫秒，容差 _GALLERY_STALE_LAG_MS。
+    stale = bool(built_at) and latest * 1000.0 > built_at + _GALLERY_STALE_LAG_MS
     with _GALLERY_LOCK:
         changed = count > known or stale
         building = bool(_GALLERY_STATE["building"])
         if changed and not building:
-            _GALLERY_STATE["building"] = True
-            _GALLERY_STATE["progress"] = 0
-            _GALLERY_STATE["total"] = count
-            threading.Thread(target=_gallery_build_worker, args=(root,), daemon=True).start()
-            building = True
+            # 降级链（2026-09-15）：① 首选交给预热器做**增量**更新（request_warmup，带 debounce
+            #   合并，N 次探测只真跑一次）；② 预热器不可用（services/gallery_warmup.py 缺失/
+            #   导入失败/未挂载）才退回本模块的**全量重建线程** —— 即改动前的行为（保底）。
+            #   ⚠️ ② 不能删：老用户走更新链可能只拿到部分文件，且它是前端「手动重建」的同一份实现。
+            if _gallery_handoff_to_warmup("gallery-fresh"):
+                # 已交给预热器。只在它**确实在跑/在排队**时才回报 building=True，
+                # 免得把老前端的 probeOutputsGrew 永久卡在「正在重建，跳过本轮」。
+                building = _gallery_warmup_busy()
+            else:
+                _GALLERY_STATE["building"] = True
+                _GALLERY_STATE["progress"] = 0
+                _GALLERY_STATE["total"] = count
+                threading.Thread(target=_gallery_build_worker, args=(root,), daemon=True).start()
+                building = True
     return web.json_response({
         "latest": round(latest, 3),
         "count": count,
