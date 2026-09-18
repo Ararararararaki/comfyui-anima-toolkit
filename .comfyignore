@@ -1,0 +1,28 @@
+# Registry 包内容白名单式排除 —— 最终用户「装来用」只需要运行时产物。
+#
+# 语法与 .gitignore 相同；.comfyignore 叠加在 .gitignore 之上，
+# 且**未被 git 跟踪的文件本来就不会入包**（所以 tests/ tools/ docs/ .scratch/ AGENTS.md
+# 这些开发内容早已在 .gitignore 里，此处只是防御性再声明一次）。
+#
+# 官方文档要求把本文件提交进仓库：这样本地 `comfy node publish` 与 CI 打出的包内容一致。
+
+# 面板源码（Vite + TS）。用户装到本地跑的是编译产物 app/，panel/ 只是 CI 的构建源。
+panel/
+
+# README 配图：在 GitHub 上看 README 需要，装到本地用不到。
+screenshots/
+
+# GitHub CI 配置。
+.github/
+
+# ── 以下为防御性声明（当前已在 .gitignore 中，不会入包）──
+tests/
+tools/
+docs/
+.scratch/
+AGENTS.md
+CLAUDE.md
+CONTRIBUTING.md
+requirements-dev.txt
+data/batches/
+data/_sources/
