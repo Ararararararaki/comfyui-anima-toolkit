@@ -3,6 +3,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
 (function () {
   const NODE_NAME = "TK Batch LoRA Loader";
+  // 权重范围 ±10：滑块类（slider）LoRA 常需要远超 ±2 的强度（例如 -5 / +8）。
+  // 后端 anima_batch_lora.py 的 _parse_lora_syntax 用 float() 解析、本身无范围限制，这里只约束 UI 输入。
+  const LORA_WEIGHT_MIN = -10;
+  const LORA_WEIGHT_MAX = 10;
   const normalizeLoraName = (value) => String(value || "").trim().replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
   // 浏览器内搜索：统一全角字符、大小写、路径/文件名分隔符，允许中文、英文和混合关键词进行包含匹配。
   const normalizeLoraSearchText = (value) => String(value ?? "")
@@ -822,7 +826,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           .anima-lora-widget .weight-step { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; padding:0; border:none; border-radius:4px; background:rgba(255,255,255,0.06); color:#8A8F98; cursor:pointer; flex-shrink:0; transition:all 0.15s ease-out; font-family:"Geist Mono","JetBrains Mono",monospace; font-size:13px; line-height:1; font-weight:600; user-select:none; -webkit-user-select:none; }
           .anima-lora-widget .weight-step:hover { background:rgba(94,106,210,0.18); color:#EDEDEF; box-shadow:0 0 0 1px rgba(94,106,210,0.25); }
           .anima-lora-widget .weight-step:active { transform:scale(0.92); background:rgba(94,106,210,0.28); }
-          .anima-lora-widget .weight-val { width:32px; font-size:9px; text-align:center; background:transparent; color:#EDEDEF; border:none; padding:1px 0; font-family:"Geist Mono","JetBrains Mono",monospace; outline:none; }
+          .anima-lora-widget .weight-val { width:40px; font-size:9px; text-align:center; background:transparent; color:#EDEDEF; border:none; padding:1px 0; font-family:"Geist Mono","JetBrains Mono",monospace; outline:none; }
           .anima-lora-widget .del-btn { display:inline-flex; align-items:center; justify-content:center; background:none; border:none; color:rgba(255,80,80,0.4); cursor:pointer; padding:0 3px; flex-shrink:0; transition:all 0.15s ease-out; border-radius:3px; line-height:1; width:18px; height:18px; }
           .anima-lora-widget .del-btn:hover { color:#ff6b6b; background:rgba(255,80,80,0.1); }
           .anima-lora-widget .lora-toggle { width:26px; height:14px; border-radius:7px; background:rgba(255,255,255,0.10); position:relative; cursor:pointer; flex-shrink:0; transition:all 0.2s var(--ease); box-shadow:inset 0 1px 2px rgba(0,0,0,0.4); }
@@ -1564,6 +1568,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         // ── 触发词预览（小字灰显）已按用户要求移除：卡片不显示触发词（悬停预览图仍保留） ──
 
         // ── 权重调节（尖括号 scrubbing，替代滑块）──
+        // 范围 ±10（LORA_WEIGHT_MIN ~ LORA_WEIGHT_MAX）：滑块类 LoRA 需要大强度；
+        // 单击步进 0.05，也可直接点数字框输入（回车生效）。
         // 结构：< 数字 >；按住 < / > 后水平拖动鼠标可连续调整权重（每级 0.05），
         // 松开（mouseup/mouseleave）才 commit，避免拖动过程反复重建 DOM widget。
         const weightGroup = document.createElement("div");
@@ -1580,6 +1586,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         valSpan.className = "weight-val";
         valSpan.type = "text"; valSpan.inputMode = "decimal";
         valSpan.value = l.weight.toFixed(2);
+        valSpan.title = `权重 ${LORA_WEIGHT_MIN} ~ ${LORA_WEIGHT_MAX}（可直接输入，回车生效）`;
 
         const incBtn = document.createElement("button");
         incBtn.className = "weight-step";
@@ -1592,7 +1599,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
         function clamp(v, min, max) { return isNaN(v) ? 0 : Math.max(min, Math.min(max, v)); }
         const applyWeight = (v) => {
-          l.weight = clamp(v, -2, 2);
+          l.weight = clamp(v, LORA_WEIGHT_MIN, LORA_WEIGHT_MAX);
           valSpan.value = l.weight.toFixed(2);
         };
         // 单击步进 0.05（仅纯单击；若刚发生 scrubbing 拖动则跳过，避免双重 commit 重建 DOM 丢卡片）
@@ -1648,7 +1655,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
         valSpan.onchange = () => {
           const v = parseFloat(valSpan.value);
-          if (!isNaN(v) && v >= -2 && v <= 2) { applyWeight(v); this._commit(); }
+          if (!isNaN(v) && v >= LORA_WEIGHT_MIN && v <= LORA_WEIGHT_MAX) { applyWeight(v); this._commit(); }
           else { valSpan.value = l.weight.toFixed(2); }
         };
         valSpan.onkeydown = (e) => { if (e.key === "Enter") valSpan.blur(); };
