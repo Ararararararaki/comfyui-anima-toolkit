@@ -108,7 +108,7 @@ from . import anima_prompt_library  # Prompt 库服务端镜像（浏览器 Inde
 try:
     from . import anima_gallery_sources  # noqa: F401
 except Exception as _gallery_sources_error:  # noqa: BLE001
-    print(f"[多源画廊] 协议层加载失败（其它节点与 D站画廊不受影响）：{_gallery_sources_error}")
+    print(f"[多源画廊] 协议层加载失败（其它节点与 TK 多重画廊节点不受影响）：{_gallery_sources_error}")
 
 # 画廊预热器（services/gallery_warmup.py）：插件一加载就挂上后台心跳 —— 后端自己盯着 output 目录
 # 做**增量**索引更新，于是「生完图 → 打开面板 → 切到 Outputs」时新图已经在那儿了，
@@ -191,7 +191,7 @@ WEB_DIRECTORY = "./web"
 # 从根上消掉「两个地方要一起改」这个失败模式；读失败（打包丢文件等）才回落到内置值。
 # 更新链（_is_update_release_path / 更新 ZIP 校验）本来就要求包里带 VERSION，
 # 所以这个文件在真实安装里一定存在。
-_FALLBACK_VERSION = "2.14.0"
+_FALLBACK_VERSION = "2.15.0"
 try:
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"), encoding="utf-8") as _vf:
         __version__ = _vf.read().strip() or _FALLBACK_VERSION

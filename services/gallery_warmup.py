@@ -510,6 +510,7 @@ def _driver_loop() -> None:
     立刻回到基准间隔。
     """
     idle = 0
+    first_round = True
     try:
         # 启动延迟（可被 request_warmup 提前唤醒：那时已经"生完图"，启动期早过了）
         if _WAKE.wait(_FIRST_DELAY_SEC):
@@ -520,6 +521,15 @@ def _driver_loop() -> None:
                 pending = bool(_STATUS["pending"])
                 # 带上触发来源（"event:executed" / "request"），既做诊断标签也决定"要不要强制跑"
                 reason = (_REQ_STATS["lastReason"] or "request") if pending else "poll"
+            # ⚠️ **首轮强制跑一次**（2026-09-17）：解析器换代（``anima_gallery.PARSER_VERSION`` 变了）
+            #    时磁盘上一点变化都没有 —— poll 的签名判据会说 "unchanged" 直接跳过，
+            #    于是老图永远停在旧语义上（用户视角：重启了，提示词还是老样子）。
+            #    首轮用一个非 poll 的理由强制走一次增量；``update_index_incremental`` 内部
+            #    发现索引里的 parserVersion 与代码不一致时会**全量重解析**（本机 4070 张 ≈ 13s）。
+            #    代价：每次启动多一次扫盘 + 逐条 mtime/size 比对（约 0.2~1s），仅换代那次是十几秒。
+            if first_round:
+                reason = "startup"
+                first_round = False
             if pending:
                 _debounce_sleep()
             try:

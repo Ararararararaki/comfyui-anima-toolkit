@@ -194,6 +194,25 @@ function canReuseLoras(prev: OutputMetadata | undefined, next: OutputMetadata): 
 }
 
 /**
+ * 写入前的「已提取」结论：`canReuseLoras` 沿用旧结果之外，**还要尊重写入者自带的结论**。
+ *
+ * ⚠️ 2026-09-17 修（Outputs 元数据"像没加载好"的真根因之一）：
+ * Gallery 索引直出（`restoreOutputsFromDb` 的 gallery 分支）与后端 `/anima/gallery/meta`
+ * 给的条目**自带后端解析好的 `loras` 与 `lorasExtracted: true`**。此前这两个写入方法
+ * 一律「沿用不了就置 false」（那是为 **DB 原始记录不存 loras** 的场景写的），于是：
+ *   ① 摘要被误判成「未提取」→ 可见区观察器每次都重新入队 →
+ *      每张卡反复读 IDB（gallery 模式下 IDB 里压根没有这些记录）→ 读空 → 标记不变 → 再入队，
+ *      形成**无限循环**（实测一次会话刷出 2.3 万条日志，且在持续增长）；
+ *   ② 依赖该标记的 UI 与早退判据全部失效。
+ * 语义边界：只有后端摘要 / 完整元数据 / 已提取路径会带 `lorasExtracted: true`；
+ * IndexedDB 原始记录不含该字段（见 types/outputs.ts），仍走「置 false」的老路径。
+ */
+function resolvedLorasExtracted(prev: OutputMetadata | undefined, slim: OutputMetadata, incoming: OutputMetadata): boolean {
+  if (canReuseLoras(prev, slim)) return true
+  return !!incoming.lorasExtracted
+}
+
+/**
  * 按需元数据读取的并发去重表：id → 正在进行的 DB 读。
  * （可见区一次会出现十几张卡同时要元数据，连点「复制 Prompt」也会撞上同一条）
  */
@@ -484,9 +503,9 @@ export const useOutputStore = create<OutputState>((set, get) => ({
       slim.loras = prev?.loras || []
       slim.lorasExtracted = true
     } else {
-      slim.lorasExtracted = false
+      slim.lorasExtracted = resolvedLorasExtracted(prev, slim, meta)
     }
-    if (META_DBG) console.log('[meta-dbg] putMetadata', meta.imageId, { reuse: canReuseLoras(prev, slim), prevExtracted: prev?.lorasExtracted, fpSame: !!prev && prev.workflowFingerprint === slim.workflowFingerprint })
+    if (META_DBG) console.log('[meta-dbg] putMetadata', meta.imageId, { reuse: canReuseLoras(prev, slim), prevExtracted: prev?.lorasExtracted, incomingExtracted: meta.lorasExtracted, fpSame: !!prev && prev.workflowFingerprint === slim.workflowFingerprint })
     const next = new Map(s.metadataCache)
     next.set(meta.imageId, slim)
     return { metadataCache: next, metadataVersion: s.metadataVersion + 1 }
@@ -508,7 +527,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
         slim.lorasExtracted = true
         if (META_DBG) dbgReuse++
       } else {
-        slim.lorasExtracted = false
+        slim.lorasExtracted = resolvedLorasExtracted(prev, slim, m)
       }
       next.set(m.imageId, slim)
     }

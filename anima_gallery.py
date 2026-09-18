@@ -16,7 +16,11 @@ import zlib
 from PIL import Image
 
 INDEX_VERSION = 1
-PARSER_VERSION = 1
+# 解析语义版本：**改动提取逻辑时必须 +1** —— 索引里记着上一轮的 parserVersion，
+# 不一致时增量更新会放弃复用旧条目、全量重解析一次（否则老图永远停在旧语义上，
+# 而它们的 mtime/size 没变，_entry_unchanged 会一直判定"可复用"）。
+# 2（2026-09-17）：正向提示词从「只取最长候选」改为「拼接全部候选 + 标签级保序去重」。
+PARSER_VERSION = 2
 _HEAD_BYTES = 4 * 1024 * 1024  # tEXt 在 IDAT 之前，读头部即可覆盖绝大多数图
 
 # 与前端 isNegativeText 相同的保守负面词表（命中≥2 判负，仅用于 hasPrompt 启发式）
@@ -30,6 +34,19 @@ _LORA_EXT_RE = re.compile(r"\.(safetensors|pt|bin)$", re.I)
 def _looks_negative(text: str) -> bool:
     lower = (text or "").lower()
     return sum(1 for w in _NEG_WORDS if w in lower) >= 2
+
+
+def _looks_negative_strong(text: str, hits: int = 3) -> bool:
+    """更严的判负（默认命中 ≥3）：**只用于从正向链上筛候选段**。
+
+    为什么不能沿用 ≥2（2026-09-17）：拼接会让文本变长，而正向段里偶发出现
+    `watermark` / `cropped` 之类词（用户自己选的 tag）并不罕见 —— 用 ≥2 会把
+    整段正向词条误判成负面而丢掉（表现为"提示词又少了一段"）。
+    真正的负面提示词段实测命中 5~10 个（`worst quality, low quality, lowres, jpeg artifacts,
+    bad composition, bad anatomy …`），阈值 3 足以把它挡掉，又不会误杀正向段。
+    """
+    lower = (text or "").lower()
+    return sum(1 for w in _NEG_WORDS if w in lower) >= hits
 
 
 # ── PNG chunk 解析（只读文件头部；tEXt 精确 / zTXt zlib / iTXt 近似，与前端行为对齐）──
@@ -192,12 +209,19 @@ def _checkpoint_name(wf) -> str:
     return ""
 
 
-def _collect_positive_candidates(wf) -> str:
-    """从每个 KSampler 的 positive 输入沿引用可达的所有节点，收集直接文本候选。
+def _collect_positive_texts(wf) -> list:
+    """从每个 KSampler 的 positive 输入沿引用可达的所有节点，收集正向文本候选（**按发现顺序**）。
+
+    ⚠️ 返回的是**列表**而不是"最长的一条"（2026-09-17 修）：
+    正向提示词在工作流里常由**多路汇聚**而成 —— 触发词段（PrimitiveStringMultiline）+
+    词条段（TKPromptCards）+ 反推/图库段（DanbooruGallery 的 selections、WD14 等），
+    经 TK String Router / Formatter 合并后喂给 KSampler。此前 `max(good, key=len)`
+    只把最长的一条当 prompt ⇒ **其余段整段丢失**（用户实测反馈"复制的正面提示词不完整"）。
+    合成交给 `_join_positive_texts()`。
 
     正向链上常见「条件拼接」节点：一支连负面 CLIPTextEncode、一支连正向文本节点。
-    命中顺序不可控（负面可能先出现）→ 收集全部候选、过滤负面、取最长（正向全文本
-    通常完整写在某个文本节点里）。UI（links 表）与 API（[节点id, 槽位] 引用）都支持。
+    命中顺序不可控（负面可能先出现）→ 收集全部候选、过滤负面。
+    UI（links 表）与 API（[节点id, 槽位] 引用）都支持。
     """
     node_map = {}
     for n in _iter_nodes(wf):
@@ -275,9 +299,7 @@ def _collect_positive_candidates(wf) -> str:
         seen.add(key)
         node = resolve_source(ref)
         if not isinstance(node, dict):
-            print('  [collect][断]', key)
             continue
-        print('  [collect]', key, '->', str(node.get("class_type") or node.get("type"))[:36])
         node_id = node.get("id")
         inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else None
         wv = node.get("widgets_values")
@@ -305,8 +327,52 @@ def _collect_positive_candidates(wf) -> str:
         # ④ 沿上游引用继续回溯（引用只有 [节点id, 槽位] 二元组与 int 两种形态）
         for ref2 in input_refs(inputs):
             stack.append(ref2)
-    good = [t for t in texts if not _looks_negative(t)]
-    return max(good, key=len) if good else ""
+    return texts
+
+
+_SPLIT_TAGS_RE = re.compile(r"[,，\n]+")
+
+
+def _join_positive_texts(texts) -> str:
+    """多路正向候选 → 一条完整提示词（段落级 + 标签级两级去重，**保序**）。
+
+    实测（2026-09-17 真机）：
+      · 两路汇聚的图：只取最长 = 141 字符（整段漏掉词条段）→ 拼接后 180 字符；
+      · 某三路汇聚的图：去重掉 **124 个重复标签**（多段本就大量重叠），长度几乎不变但内容互补。
+    规则：① 过滤判负与过短（<3 字符）候选；② 丢掉"是别的候选子串"的段落；
+          ③ 按 [,，\\n] 切标签、**大小写不敏感保序去重**（同一标签只保留首次出现）；
+          ④ 用 ", " 连接 —— 与 TK String Router / Formatter 的默认分隔符（"逗号 ,"）一致，
+             同时把段内空行/换行归一成逗号：复制出来就是可直接用的单行提示词。
+    """
+    segs: list = []
+    for raw in texts:
+        t = (raw or "").strip().strip(",").strip()
+        if len(t) < 3 or _looks_negative_strong(t):
+            continue
+        if t in segs or any(t != o and t in o for o in segs):
+            continue
+        # 后到的更长段若包含先到的短段 → 踢掉短的（保留信息更全的那条）
+        segs = [o for o in segs if not (o != t and o in t)]
+        segs.append(t)
+    if not segs:
+        return ""
+    seen: set = set()
+    out: list = []
+    for piece in _SPLIT_TAGS_RE.split(", ".join(segs)):
+        tag = piece.strip()
+        if not tag:
+            continue
+        low = tag.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        out.append(tag)
+    return ", ".join(out)
+
+
+def _collect_positive_candidates(wf) -> str:
+    """（兼容入口）正向候选 → 合成一条完整提示词；调用方不必关心两级去重的细节。"""
+    return _join_positive_texts(_collect_positive_texts(wf))
 
 
 def _mine_prompt_field(value, depth: int):
@@ -344,8 +410,12 @@ def parse_comfy_summary(wf) -> dict:
         val = fields.get(key)
         out[key] = "" if val is None else str(val)
     texts = [t for t in _extract_text_nodes(wf) if not _looks_negative(t)]
+    # ⚠️ 这里**不再对拼接结果做判负**（2026-09-17）：拼接体比任何单段都长，
+    #    用"命中≥2 个负面词"去判整条，会把只是偶发含 1~2 个负面词的**正向**提示词整条丢掉。
+    #    负面链的段已经在 _join_positive_texts 内部按更严的阈值（≥3）逐段挡掉了；
+    #    若所有候选段都被挡掉，拼接结果本就是空串，自然落到下面的兜底分支。
     traced = _collect_positive_candidates(wf)
-    if traced and not _looks_negative(traced):
+    if traced:
         out["prompt"] = traced
         out["hasPrompt"] = True
     elif texts:
@@ -612,12 +682,21 @@ def update_index_incremental(output_root: str, index_path: str, progress_cb=None
                 existing_built_at, len(old_entries), started)
 
         # ④ 逐文件复用或重解析（顺序沿用 scan_output_files 的 mtime 倒序，新图在前）
+        #    解析器换代（索引里的 parserVersion ≠ 代码里的 PARSER_VERSION）→ 本轮**不复用**
+        #    任何旧条目，全部重解析一次：改的是提取语义，而 mtime/size 没变，
+        #    只按 _entry_unchanged 判定会让老图永远停在旧结果上。
+        try:
+            parser_stale = int(existing.get("parserVersion") or 0) != PARSER_VERSION
+        except (TypeError, ValueError):
+            parser_stale = True
+        if parser_stale:
+            print(f"[gallery] 解析器版本换代（{existing.get('parserVersion')} → {PARSER_VERSION}）：本轮全量重解析")
         entries: dict = {}
         added = updated = reused = 0
         total_files = len(files)
         for i, (rel, full, mtime, size) in enumerate(files):
             old = old_entries.get(rel)
-            if _entry_unchanged(old, mtime, size):
+            if not parser_stale and _entry_unchanged(old, mtime, size):
                 entries[rel] = old
                 reused += 1
             else:

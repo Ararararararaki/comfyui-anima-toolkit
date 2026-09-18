@@ -21,6 +21,9 @@
    `warnings` 里如实说明（避免「输入关键词却返回不相干结果」这种静默错误）。
 3. **分页是真 cursor**：`metadata.nextCursor`（形如 `"5|1719470081918"`）透传回 `cursor=` 即得下一页
    （实测两页 id 无重叠）；`nextPage` 里还带 cursor，但我们只用 `nextCursor`，**不自造页码**。
+   ⚠️ 该 cursor 是**不透明**的：`<已取条数>|<排序时间戳>`，两段必须成对 —— 前端拿不到「第 N 页」的语义；
+   且**直连上游实测 `page` / `skip` 完全无效**（回包与不带时逐条相同、无单调性），
+   所以 `capabilities()` 里 `page_numbers=False`（见该方法的注释）。
 4. `sort` 合法值只有 `Most Reactions / Most Comments / Most Collected / Newest / Oldest / Random`
    （非法值上游回 400 ZodError，列出全集）；`limit` 上限 200；`nsfw` 合法值 `None/Soft/Mature/X`。
 5. **key 对 `/api/v1/images` 没有可见影响**（无 key / 正确 key / 32 个 0 的假 key，回包逐字节相同，
@@ -485,7 +488,13 @@ class CivitaiGallerySource(GallerySource):
         # C站没有标签体系；有 prompt（meta.prompt）；NSFW 档位齐全；匿名可读（无需登录）；
         # **`query=False`**：图片端点实测忽略关键词（PLAN §6）→ 前端据此禁用/标注搜索框，
         # 只保留「本页内本地过滤」的说明（搜索照旧可用，只是不是服务端检索）。
-        return {"tags": False, "prompt": True, "nsfw": True, "login": False, "query": False}
+        # **`page_numbers=False`**（第 6 键，分页能力）：C站 上游分页只有**不透明 cursor**
+        # （形如 `"<已取条数>|<排序时间戳>"`，两段必须成对，且时间戳段是排序游标而非时间窗口）——
+        # 前端无法从页码自造第 N 批；且**直连上游实测 `page` / `skip` 参数完全无效**
+        # （返回集合与不带它们时逐条相同、无单调性，稳定复现；`page` 不是被忽略就是被当成未知参数丢弃）。
+        # 所以这里必须显式声明 false：前端只给「上一批/下一批」，不画页码框（缺省也是 false，写出来是为了可读）。
+        return {"tags": False, "prompt": True, "nsfw": True, "login": False, "query": False,
+                "page_numbers": False}
 
     def images_headers(self) -> dict[str, str]:
         # 实测 image.civitai.com 带不带 Referer 都是 200 → 无需防盗链头

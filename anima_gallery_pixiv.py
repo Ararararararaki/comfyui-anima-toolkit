@@ -1115,6 +1115,8 @@ def search_illusts(
     """P站搜索主干：返回 `(items, next_cursor)`（契约 §5.3）。
 
     分页语义：P站每页 30 条且只给 `next_url`；`cursor` 参数统一承载 `next_url` 里的 offset。
+    `page`（页码）是**另一条等价入口**，只为 `capabilities.page_numbers=true` 服务：
+    `cursor` 非空时优先走 cursor，`page` 只在没给 cursor 时生效（offset 换算见下方）。
     """
     keyword = normalize_word(query, word)
     size = _bounded_int(limit, 30, MIN_PAGE_SIZE, MAX_PAGE_SIZE)
@@ -1129,7 +1131,14 @@ def search_illusts(
     if cursor is not None and str(cursor) != "":
         offset = cursor_to_offset(cursor)
     elif page is not None:
-        # 兼容「页码」写法：协议层若传 page=2，则按 P站每页 30 条换算 offset
+        # 兼容「页码」写法（capabilities.page_numbers=true 的依据）：协议层/前端传 page=2 → offset=30。
+        #
+        # ⚠️ 换算分母是 **PIXIV_PAGE_SIZE（写死 30）**，与 `limit` **无关** —— 真机实测：P站 上游
+        # `search/illust` 固定每页 30 条，`limit`（offset 之后本地截取的条数，≤ MAX_PAGE_SIZE=48）
+        # 只决定「这一批回给前端几条」，改不动上游的分页栅格。所以：
+        #   · page=2 → offset=30 是**上游语义**，不是「第 2 屏 48 条」；
+        #   · **不要**擅自改成 `(page - 1) * size`：那会让同一个 page 在不同 limit 下指向不同数据，
+        #     与上游栅格错位（翻页出现空洞/重复），且语义变更需用户另行确认。
         offset = max(0, (_bounded_int(page, 1, 1, 100000) - 1) * PIXIV_PAGE_SIZE)
     else:
         offset = 0
@@ -1209,14 +1218,17 @@ class PixivSource:
     契约（不可改）：
       - `search(query, cursor, filters) -> (items, next_cursor)`
       - `images_headers()` → 取图代理必须附加的请求头（P站是 Referer，缺则 403）
-      - `capabilities` → `{"tags":true,"prompt":false,"nsfw":true,"login":true}`
+      - `capabilities` → `{"tags":true,"prompt":false,"nsfw":true,"login":true,"page_numbers":true}`
+        （`query` 不写，走协议层缺省 True）；`page_numbers=true` = 支持按页码跳转（上游固定每页 30 条）
       - id / label → 路由与源下拉用
     """
 
     SOURCE_ID = PIXIV_SOURCE_ID
     id = PIXIV_SOURCE_ID
     label = PIXIV_LABEL
-    capabilities = _Capabilities(tags=True, prompt=False, nsfw=True, login=True)
+    capabilities = _Capabilities(tags=True, prompt=False, nsfw=True, login=True, page_numbers=True)
+    # `query` 没显式写：走 CAPABILITY_DEFAULTS 的缺省 True（P站 search/illust 是服务端关键词检索）。
+    # `page_numbers=True`：上游 search/illust 收 `page`，且**固定每页 30 条**（见 search_illusts 的换算注释）。
     # 协议层若需要「这个源要不要先登录」，直接读这个
     requires_login = True
 
@@ -1478,7 +1490,11 @@ async def anima_gallery_pixiv_logout(request: web.Request) -> web.Response:
 
 
 async def anima_gallery_pixiv_search(request: web.Request) -> web.Response:
-    """`GET /anima/gallery/pixiv/search?word=&target=&sort=&cursor=` → 统一 item 列表。"""
+    """`GET /anima/gallery/pixiv/search?word=&target=&sort=&cursor=&page=` → 统一 item 列表。
+
+    `page`（页码跳转）早已接收，`capabilities.page_numbers=true` 就是给它的声明；
+    与 `cursor` 二选一，给了 cursor 就以 cursor 为准（见 search_illusts 的分页优先级）。
+    """
     query = request.query
     cursor = query.get("cursor", "")
     try:
@@ -1487,6 +1503,7 @@ async def anima_gallery_pixiv_search(request: web.Request) -> web.Response:
             word=query.get("word", "") or query.get("query", ""),
             query=query.get("query", ""),
             cursor=cursor if cursor != "" else None,
+            # 页码跳转：上游固定每页 30 条，换算写死 PIXIV_PAGE_SIZE（与 limit 无关）
             page=query.get("page"),
             limit=query.get("limit", 30),
             target=query.get("target", query.get("search_target", "partial_match_for_tags")),

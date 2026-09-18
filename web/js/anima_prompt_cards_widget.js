@@ -2327,17 +2327,28 @@
         : "插入提示词不再转义括号（ComfyUI 会把裸括号当权重语法）");
     }
 
-    // 用选中卡片替换光标所在词
-    _applySuggest(card) {      if (!card) return;
+    // 用选中卡片替换光标所在词（并在词后补英文逗号，免去手打逗号的麻烦）
+    _applySuggest(card) {
+      if (!card) return;
       const el = this.curTextEl;
       const t = el.value;
       const caret = el.selectionStart ?? t.length;
       const [ws, we] = this._wordBounds(t, caret);
       const repl = cardToText(card);
-      const next = t.slice(0, ws) + repl + t.slice(we);
+      // ⚠️ 2026-09-18（用户要求）：补全后自动补 ", " —— 接着写下一个词不用再手打逗号。
+      // （②区中文联想走 _appendResolvedText，它内部本来就会补分隔符，所以这里只补①区。）
+      // 三种情况**不补**：① 该词后面本来就有逗号（中英文都算）；② 插入内容自己以逗号结尾；
+      //                    ③ 后面紧跟换行 —— 那是多行提示词的分段处，补逗号会破坏分行。
+      const tail = t.slice(we);
+      const needComma = !/^\s*[,，]/.test(tail)
+        && !/[,，]\s*$/.test(repl.trim())
+        && !/^\s*\r?\n/.test(tail);
+      const inserted = needComma ? `${repl}, ` : repl;
+      const next = t.slice(0, ws) + inserted + tail;
       this._setPromptText(next, { preserveHidden: true, render: false });
       el.value = this.curText();
-      const pos = ws + repl.length;
+      // 光标落在逗号之后，直接接着打下一个词
+      const pos = ws + inserted.length;
       el.setSelectionRange(pos, pos);
       this._hideSuggest();
       this._renderChips();

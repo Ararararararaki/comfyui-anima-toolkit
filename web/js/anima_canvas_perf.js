@@ -11,7 +11,9 @@
 //      auto <该节点真实宽> <该节点真实高>。视口外节点直接跳过渲染；因为 intrinsic
 //      尺寸取自节点真实 size（不是猜测值），节点外框、前端 DOM 测量、工作流读写
 //      全部保持不变。
-//   2) .lg-node 提升为合成层（will-change:transform），让平移只走合成器、不重绘。
+//   2) ~~.lg-node 提升为合成层（will-change:transform）~~ —— **2026-09-17 已移除**：
+//      它给每个节点建独立合成层，导致「鼠标悬浮到按钮上时节点浮到最上层、盖住设置面板并反复
+//      出现/消失」（远程串流下表现为闪）。且实测该条单独收益为 0，收益全部来自 content-visibility。
 //
 // 注意（踩坑记录）：绝不要把 contain:paint 加在 [data-testid="transform-pane"] 上
 // —— 该元素自身带 translate 变换，paint containment 会把裁剪框一起平移，实测会
@@ -25,7 +27,6 @@
   const POLL_MS = 1500;      // 兜底扫描：节点增删/改尺寸（有签名比对，不变就不写样式）
   const DEBOUNCE_MS = 250;   // 事件触发的合并窗口
   const MAX_NODES = 2000;    // 超大图直接放弃裁剪（避免撑爆样式表）
-  const MAX_NODES_WC = 300;  // 节点再多就不做图层提升（每节点一个合成层的显存/开销）
 
   let styleEl = null;
   let signature = "";
@@ -106,17 +107,20 @@
   }
 
   function buildCss(nodes, totalCount = nodes.length) {
-    // 图层提升只在节点数适中时启用：每节点一个合成层，超大图会给显存/图层管理添负担，
-    // 而实测 will-change 单独使用收益为 0（收益来自 content-visibility），故可安全降级。
-    const head = totalCount <= MAX_NODES_WC ? ".lg-node{will-change:transform}" : "";
-    if (nodes.length > MAX_NODES) return head; // 节点过多：只保留图层提升
-    if (!nodes.length) return head;
+    // ⚠️ 2026-09-17：**不再给 .lg-node 加 will-change:transform**（原来是 totalCount<=300 时加）。
+    // 它把**每个节点**提升为独立合成层（93 节点 = 93 层），实测在「鼠标悬浮到可交互按钮上」时
+    // 会出现：所有节点浮到最上层、盖住设置面板（fixed z-index 1804）、并反复出现又消失 ——
+    // 远程串流下被放大成明显的闪。而本文件最初的实测结论本就是
+    // 「will-change 单独使用收益为 0，收益来自 content-visibility」⇒ 零收益 + 高风险，直接去掉。
+    // 若将来真需要图层提升，应只在**拖动/缩放期间**临时加、松手即撤，不能常驻。
+    if (nodes.length > MAX_NODES) return ""; // 节点过多：不做裁剪（避免撑爆样式表）
+    if (!nodes.length) return "";
     const rules = new Array(nodes.length);
     for (let i = 0; i < nodes.length; i++) {
       const n = nodes[i];
       rules[i] = `.lg-node[data-node-id="${n.id}"]{content-visibility:auto;contain-intrinsic-size:auto ${n.w}px ${n.h}px}`;
     }
-    return (head ? head + "\n" : "") + rules.join("\n");
+    return rules.join("\n");
   }
 
   function ensureStyle() {

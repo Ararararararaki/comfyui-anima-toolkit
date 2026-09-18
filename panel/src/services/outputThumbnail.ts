@@ -287,6 +287,9 @@ let _galleryEntries: Map<string, GalleryEntry> | null = null
 // 当前内存里这份 entries 对应的索引构建时刻（来自 /anima/gallery/manifest 的 builtAt）。
 // 调用方用它判断"索引换代了没有"，避免为了比对而重复拉一次 16.5MB 的 manifest。
 let _galleryBuiltAt = 0
+// 后端**解析器语义版本**（manifest 顶层 parserVersion）。它变了 = 提取逻辑变了（同一张图能解析出
+// 不一样的结果），调用方必须据此让本地缓存失效 —— 图没变、mtime/size 没变，只有版本能区分。
+let _galleryParserVersion = 0
 
 export function galleryIndexEnabled(): boolean {
   return _galleryState === 'ready'
@@ -299,6 +302,11 @@ export function galleryEntries(): Map<string, GalleryEntry> | null {
 /** 当前已载入的索引构建时刻（0 = 未知）。 */
 export function galleryIndexBuiltAt(): number {
   return _galleryBuiltAt
+}
+
+/** 后端解析器版本（0 = 未知/旧后端不带该字段）。用于元数据指纹：版本一变，本地缓存即失效。 */
+export function galleryParserVersion(): number {
+  return _galleryParserVersion
 }
 
 /** 拉取并探测 gallery 索引。
@@ -325,6 +333,7 @@ export async function probeGalleryIndex(force = false): Promise<boolean> {
         if (data?.entries && typeof data.entries === 'object' && Object.keys(data.entries).length > 0) {
           _galleryEntries = new Map(Object.entries(data.entries) as [string, GalleryEntry][])
           _galleryBuiltAt = Number(data.builtAt || 0)
+          _galleryParserVersion = Number(data.parserVersion || 0)
           _galleryState = 'ready'
           return true
         }

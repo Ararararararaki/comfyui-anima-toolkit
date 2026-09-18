@@ -48,18 +48,24 @@ export function installDOMWidgetSizeSync({
 
   const ensureElementFillsWidgetRow = () => {
     if (disposed) return;
-    element.style.boxSizing = "border-box";
-    element.style.width = "100%";
-    element.style.height = "100%";
-    element.style.minWidth = "0px";
-    element.style.minHeight = "0px";
-    element.style.maxWidth = "100%";
-    element.style.maxHeight = "none";
-    element.style.flex = "1 1 0%";
+    // ⚠️ 2026-09-17：**只在值真的不同时才写**（幂等写入）。
+    // 此前无条件写 8 个 style 属性 —— 每次写入都会让该子树的样式/布局失效，而本函数由
+    // ResizeObserver 与 node.onResize 触发，于是「hover 引起的任何重排 → 写样式 → 再次重排 →
+    // ResizeObserver 再触发」会互相放大（实测表现为节点区域反复重绘/闪现，远程串流下尤其明显）。
+    const set = (prop, value) => { if (element.style[prop] !== value) element.style[prop] = value; };
+    set("boxSizing", "border-box");
+    set("width", "100%");
+    set("height", "100%");
+    set("minWidth", "0px");
+    set("minHeight", "0px");
+    set("maxWidth", "100%");
+    set("maxHeight", "none");
+    set("flex", "1 1 0%");
     const widgetGrid = element.closest?.(".lg-node-widgets");
+    // 同理：同一元素上已经是目标值时不要再写（否则等于每次 sync 都让整个节点重新布局）
     if (widgetGrid) {
-      widgetGrid.style.minHeight = "0px";
-      widgetGrid.style.alignContent = "stretch";
+      if (widgetGrid.style.minHeight !== "0px") widgetGrid.style.minHeight = "0px";
+      if (widgetGrid.style.alignContent !== "stretch") widgetGrid.style.alignContent = "stretch";
     }
   };
 
@@ -91,8 +97,9 @@ export function installDOMWidgetSizeSync({
 
   node.onResize = function (...args) {
     const result = originalOnResize?.apply(this, args);
-    // 立即只调整 DOM 的填充约束；绝不把 DOM 高度写回节点，避免尺寸正反馈。
-    syncNow();
+    // ⚠️ 2026-09-17：这里**只排程、不再同步 syncNow()**。
+    // 在 resize 回调里同步读写 style = 强制同步布局（layout thrashing）：拖动/悬浮引发的
+    // 连续 resize 会退化成每帧多次「写样式 → 立刻重排」。排到 rAF 里做，一帧只同步一次。
     scheduleSync();
     return result;
   };

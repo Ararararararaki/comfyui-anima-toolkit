@@ -92,12 +92,17 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
    * `query` 是 2026-09-15 协调者拍板新增的第 5 键（C站 实测**上游不支持关键词检索**：
    * /api/v1/images 忽略 query/q/search/text/prompt/tag/keyword 七个参数名，
    * 后端只在已取回的那一页内做本地过滤并用 warnings 说明）→ C站 query=false。
+   * `page_numbers` 是第 6 键（2026-09-16）：源是否支持**页码分页**。true → 页码按钮 + 跳页框
+   * （page 参数）；false → 游标分页（cursor + next_cursor，只能顺序前进）。
+   * ⚠️ **D站 不在 `/anima/gallery/sources` 的回包里**（真机只有 civitai / pixiv 两个源），
+   *    它完全靠这张兜底表——所以 D站 的 `page_numbers: true` 必须写在这里，否则
+   *    `sourceCapabilities()` 的「缺字段一律 false」会把它判成无页码能力，退化成游标分页。
    * **capabilities 是隐藏/禁用/提示文案的唯一依据**，不按源名硬编码判断。
    */
   const GALLERY_SOURCE_FALLBACK = Object.freeze({
-    [DANBOORU_SOURCE_ID]: { id: DANBOORU_SOURCE_ID, label: "D站", capabilities: { tags: true, prompt: false, nsfw: false, login: false, query: true } },
-    civitai: { id: "civitai", label: "C站", capabilities: { tags: false, prompt: true, nsfw: true, login: false, query: false } },
-    pixiv: { id: "pixiv", label: "P站", capabilities: { tags: true, prompt: false, nsfw: false, login: true, query: true } },
+    [DANBOORU_SOURCE_ID]: { id: DANBOORU_SOURCE_ID, label: "D站", capabilities: { tags: true, prompt: false, nsfw: false, login: false, query: true, page_numbers: true } },
+    civitai: { id: "civitai", label: "C站", capabilities: { tags: false, prompt: true, nsfw: true, login: false, query: false, page_numbers: false } },
+    pixiv: { id: "pixiv", label: "P站", capabilities: { tags: true, prompt: false, nsfw: false, login: true, query: true, page_numbers: true } },
   });
   const GALLERY_SOURCE_PLACEHOLDERS = Object.freeze({
     [DANBOORU_SOURCE_ID]: "标签（多个用空格分隔，回车直接搜）如：1girl long hair…",
@@ -140,6 +145,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     ["date_asc", "最早"],
     ["popular_desc", "人气顺（需 Pixiv 会员）"],
   ]);
+  /**
+   * 页码模式下**每页固定张数**。P站 上游（/v1/illust/search）固定每页 30 条，
+   * 后端路由把 `page` 换算成 `(page-1)*30`（与 limit 参数无关）——
+   * 所以页码模式的画廊源必须发 limit=30，否则「页码 = 批次」的语义会对不上
+   * （发 48 也只会回 30 条，用户看到的"每页张数"跟设置里选的完全不符）。
+   */
+  const GALLERY_PAGE_SIZE = 30;
+  /** 分页条上最多渲染几个「批次 chip」（更早的折叠成「…」，避免翻几十批后按钮铺满一行） */
+  const GALLERY_CURSOR_CHIP_MAX = 10;
 
   function normalizeSourceFilters(saved) {
     const source = saved && typeof saved === "object" ? saved : {};
@@ -277,6 +291,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       name: String(source.name || "").trim(),
       query: String(source.query || "").trim(),
       note: String(source.note || source.description || "").trim().slice(0, 240),
+      // 备注的来源：true = 用户手填（含"故意留空"），false/缺省 = 自动翻译。
+      // ⚠️ 手填的绝不能被自动翻译覆盖，留空的也不能被"补全" —— 这正是「自定义备注」的语义。
+      noteManual: source.noteManual === true,
       rating: normalizeRatings(source.rating),
       filters: normalizeFilters(source.filters),
     };
@@ -389,6 +406,31 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   /** 列宽上下限（pt）：下限保证小节点仍能看清缩略图，上限避免大节点出现巨图 */
   const DG_MIN_PT = 116;
   const DG_MAX_PT = 330;
+  /**
+   * 缩略图大小档位（目标列宽 pt）。**默认 116 = 旧行为（零回归）**。
+   * 旧实现只用 DG_MIN_PT 算列数 ⇒ 节点越宽列数越多、单图永远 ~118px，
+   * DG_MAX_PT 全仓零使用点（实测 grid 700→4000 宽，卡片 133.8→118.1px）。
+   * 用户 2026-09-16 选的是「缩略图大小档位」方案：把目标列宽变成显式设置，
+   * 并让 DG_MAX_PT 真正生效（cols 下限保护，见 gridMetrics）。
+   */
+  const DG_THUMB_TIERS = Object.freeze([
+    { width: 116, label: "小" },
+    { width: 150, label: "中" },
+    { width: 190, label: "大" },
+    { width: 240, label: "特大" },
+    { width: 330, label: "巨大" },
+  ]);
+  /** 档位归一化：先按 [DG_MIN_PT, DG_MAX_PT] 夹，再吸附到最近档位（下拉框必须能如实呈现） */
+  function clampThumbWidth(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return DG_MIN_PT;
+    const clamped = Math.max(DG_MIN_PT, Math.min(DG_MAX_PT, n));
+    let best = DG_THUMB_TIERS[0];
+    for (const tier of DG_THUMB_TIERS) {
+      if (Math.abs(tier.width - clamped) < Math.abs(best.width - clamped)) best = tier;
+    }
+    return best.width;
+  }
   /** 竖图盒比上限（h/w）：超过按上限截断，渲染层用 object-fit:contain 完整嵌入 */
   const DG_CLAMP_MAX_ASPECT = 2.2;
   /** 盒比（h/w）≤ 此值 → 跨 2 列；≤ 再下一档 → 跨 3 列 */
@@ -408,15 +450,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
    * —— 纵向拉大不改变列数，旧的 handleGridResize 只在列数变化时重取，所以永远不补图。
    */
   const DG_UNDERFILL_RATIO = 0.9;
-  // 渲染后「补到填满」的连续轮次上限：图源池子取空时会自然停（fillMoreExhausted），
-  // 这个上限是第二道闸，防的是「判据始终差一点」导致的无限打接口。
-  // 2026-09-16 从 6 收到 3：用户实测「会莫名放大特别多」—— 补图轮次越多，越容易
-  // 把节点撑大（见 autoFillIfUnderfilled 里关于正反馈的注释）。
-  // 渲染后「补到填满」的连续轮次上限。
-  // 2026-09-16 用户实测「在无限变大，扩充完图片之后又触发扩充，一直扩充」→ 定为 **1**：
-  // 渲染后最多自动补一批（够补上首屏差的那点），再多必须由用户主动拉大节点触发。
-  // 配合下面的时间窗限流，即使还有未预料的触发路径也滚不起来。
-  const DG_AUTO_FILL_MAX_ROUNDS = 1;
+  // 渲染后「补到填满」的连续轮次上限（**按需**，不再是常量 1）。
+  // 历史：2026-09-16 从 6 收到 1（用户实测「在无限变大，扩充完图片之后又触发扩充」）。
+  // 现在节点尺寸被 setBounds 钉死（内容再高也不会撑大节点），"补图撑大节点"的正反馈
+  // 已经不成立，所以轮次改为按缺多少张算：见 autoFillRoundsBudget()。
+  // 仍然保留一个硬上限，配合下面的时间窗限流做第二道闸。
+  const DG_AUTO_FILL_MAX_ROUNDS_CAP = 3;
   // ③ 时间窗限流（**不受任何重置影响**的最后一道闸，见 autoFillIfUnderfilled）：
   //    列数变化会走 handleGridResize → search(resetPage) → autoFillRounds 归零，
   //    单靠轮次上限拦不住「补图撑大节点 → 列数变化 → 重置 → 再补」的无限循环。
@@ -489,6 +528,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       limit: [0, 12, 24, 48].includes(source.limit) ? source.limit : 0,
       rating: normalizeRatings(source.rating),
       gridHeight: Number.isFinite(source.gridHeight) ? Math.max(360, Math.min(1200, source.gridHeight)) : 620,
+      // 缩略图大小（目标列宽 pt）：缺省 116 = 旧行为；档位 116/150/190/240/330
+      thumbWidth: clampThumbWidth(source.thumbWidth),
       categories: Array.isArray(source.categories) ? source.categories : [],
       postCategories: source.postCategories && typeof source.postCategories === "object" ? source.postCategories : {},
       presets: Array.isArray(source.presets) ? source.presets.map(normalizePreset).filter((preset) => preset.name) : [],
@@ -628,6 +669,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.gallerySources = null;      // /anima/gallery/sources 覆盖兜底表后的结果
       this.gallerySourcesReady = null; // 首次拉取能力的 Promise（搜索/渲染等它一次）
       this.cursorStack = [""];         // C站/P站 cursor 分页：栈顶 = 当前批次（""=首批）
+      // 与 cursorStack 一一对应的「该批带回了几张」：用于在分页条上显示「已浏览 K 张」。
+      // 只记账、不重放请求（回退 = 截断栈 + 重查一次）。
+      this.cursorBatchSizes = [0];
       this.nextCursor = null;          // 回包 next_cursor（null = 没有下一批）
       this.sourceSelect = null;
       this.sourcePicker = null;
@@ -664,7 +708,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       return String(this.sourceEntry(sourceId)?.label || sourceId || "");
     }
 
-    /** capabilities 是隐藏/禁用控件的**唯一依据**（PLAN §5.3 + `query` 第 5 键）；缺字段一律按 false 处理 */
+    /** capabilities 是隐藏/禁用控件的**唯一依据**（PLAN §5.3 + `query` 第 5 键 + `page_numbers` 第 6 键）；
+     *  缺字段一律按 false 处理 —— 所以 D站 的 page_numbers 必须靠 GALLERY_SOURCE_FALLBACK 兜住。 */
     sourceCapabilities(sourceId = null) {
       const caps = this.sourceEntry(sourceId)?.capabilities || {};
       return {
@@ -674,7 +719,25 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         login: caps.login === true,
         // query 缺省按 true：搜索框是主要输入，后端没声明时不该因为缺字段就退回"本页过滤"文案
         query: caps.query !== false,
+        // page_numbers 缺省按 false（"没声明能力"的源一律进游标分支，不猜）
+        page_numbers: caps.page_numbers === true,
       };
+    }
+
+    /**
+     * 该源是否**页码分页**（D站 / P站）。这是分页分支的唯一判据 ——
+     * 不再用 `isDanbooruSource()`（按源名硬编码）判断翻页形态。
+     * 没声明 `page_numbers` 的源拿不到 true，所以永远进不了页码分支。
+     */
+    pageMode(sourceId = null) {
+      return this.sourceCapabilities(sourceId).page_numbers;
+    }
+
+    /** 分页条 / 状态栏里的「第几批」：页码模式的源显示页码，游标模式的源显示批号 */
+    galleryBatchLabel() {
+      return this.pageMode()
+        ? `第 ${Math.max(1, Number(this.page) || 1)} 页`
+        : `第 ${this.cursorStack.length} 批`;
     }
 
     /**
@@ -723,15 +786,24 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     /**
-     * C站/P站 的查询参数。分页**只用 cursor**（契约钉死：参数名 cursor、回包字段 next_cursor）。
+     * 画廊源（非 D站）的查询参数。分页形态**按 capabilities.page_numbers 分支**：
+     *   · page_numbers=true（P站）→ 发 `page`（绝不混进 cursor），每页固定 GALLERY_PAGE_SIZE 张；
+     *   · page_numbers=false（C站）→ 发 `cursor`（栈顶 = 当前批次），回包字段 next_cursor。
      * ⚠️ 查询参数名契约里写的是"由各源自定义"，PLAN §3 阶段1/2 分别写了 `query=` 与 `word=`，
      *    这里按文档发主名，同时附带 `query` 作为别名（FastAPI 会忽略未声明的查询参数），
      *    以免两边命名分歧导致"点了搜索没反应"。
      */
     gallerySearchParams(sourceId, query) {
       const params = new URLSearchParams();
-      params.set("cursor", String(this.cursorStack[this.cursorStack.length - 1] ?? ""));
-      params.set("limit", String(this.resolveLimit()));
+      if (this.pageMode(sourceId)) {
+        params.set("page", String(Math.max(1, Number(this.page) || 1)));
+        // P站 上游固定 30 条/页、page 换算写死 (page-1)*30（与 limit 无关）——
+        // 发别的 limit 只会让"页码 = 批次"的语义错位，所以这里就是 30。
+        params.set("limit", String(GALLERY_PAGE_SIZE));
+      } else {
+        params.set("cursor", String(this.cursorStack[this.cursorStack.length - 1] ?? ""));
+        params.set("limit", String(this.resolveLimit()));
+      }
       if (sourceId === "pixiv") {
         params.set("word", query);
         params.set("query", query);
@@ -753,7 +825,21 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     resetGalleryCursor() {
       this.cursorStack = [""];
+      this.cursorBatchSizes = [0];
       this.nextCursor = null;
+    }
+
+    /** 当前批次自己带回了几张（记账值；没有记录时退回当前显示张数） */
+    cursorBatchSizeAt(index) {
+      const value = Number(this.cursorBatchSizes?.[index]);
+      return Number.isFinite(value) && value > 0 ? value : (index === this.cursorStack.length - 1 ? this.posts.length : 0);
+    }
+
+    /** 截至当前批次累计浏览了几张（游标分页没有总数，只能用「已经取回过的批」累加） */
+    galleryBrowsedCount() {
+      let total = 0;
+      for (let i = 0; i < this.cursorStack.length; i++) total += this.cursorBatchSizeAt(i);
+      return Math.max(total, this.posts.length);
     }
 
     /** 统一 item schema（PLAN §5.2）→ 内部 post 形状（渲染/预览/下载链路一条都不用分叉） */
@@ -801,7 +887,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.saveSettings();
         this.filterControls?.refresh();
       }
-      if (resetPage) this.resetGalleryCursor();
+      if (resetPage) {
+        this.resetGalleryCursor();
+        // 页码分页的源（P站）也要回到第 1 页：否则换词/换筛选后仍停在上次翻到的页码，
+        // 用户看到的"新搜索"会从第 7 页开始。
+        this.page = 1;
+      }
       // 新一批搜索（cursor 归零）＝ 新结果集 → 重新允许「拉大补图」与「自动补满」
       if (resetPage) {
         this.fillMoreExhausted = false;
@@ -862,16 +953,18 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.renderPosts();
         this.renderPagination();
         const batch = this.cursorStack.length;
+        // 记账：本批带回了几张（分页条的「已浏览 K 张」就是这些批次累加，见 galleryBrowsedCount）
+        if (batch >= 1) this.cursorBatchSizes[batch - 1] = this.posts.length;
         // 后端的 warnings（契约允许的可选键）**必须让用户看见** —— 例如 C站 不支持关键词检索时
         // 后端会在这一页内本地过滤并回报"关键词未生效"；不说的话用户以为搜了却没反应（静默错误）。
         const warnings = Array.isArray(data?.warnings) ? data.warnings.map((w) => String(w || "").trim()).filter(Boolean) : [];
         const notices = [...warnings];
         if (excludedCount) notices.push(`已排除 ${excludedCount} 张（${excludeTags.join("、")}）`);
         if (items.length > this.posts.length + excludedCount) notices.push(`${items.length - this.posts.length - excludedCount} 张缺图已跳过`);
-        if (!this.nextCursor) notices.push("已到末页");
+        if (!this.pageMode(sourceId) && !this.nextCursor) notices.push("已到末页");
         if (caps.login && sourceId === "pixiv") notices.push("P站标签与 Danbooru 词库不通用");
         if (caps.prompt === false && sourceId === "pixiv") notices.push("P站无提示词，可下载原图喂 WD14 反推");
-        this.setStatus(`${this.sourceLabel(sourceId)}：${this.posts.length} 张 · 第 ${batch} 批` + (notices.length ? `（${notices.join("；")}）` : ""));
+        this.setStatus(`${this.sourceLabel(sourceId)}：${this.posts.length} 张 · ${this.galleryBatchLabel()}` + (notices.length ? `（${notices.join("；")}）` : ""));
         // 空结果 + 有警告时，网格里也写一格：状态栏那一行很容易被忽略
         if (!this.posts.length && warnings.length) this.appendGridNotice(warnings.join("；"));
       } catch (error) {
@@ -905,10 +998,27 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (delta > 0) {
         if (!this.nextCursor) return;
         this.cursorStack.push(this.nextCursor);
+        // 记账数组必须与 cursorStack 同长，否则「已浏览 K 张」会把不存在的批次算进去
+        this.cursorBatchSizes.length = this.cursorStack.length;
+        this.cursorBatchSizes[this.cursorStack.length - 1] = 0;
       } else {
         if (this.cursorStack.length <= 1) return;
         this.cursorStack.pop();
+        this.cursorBatchSizes.length = this.cursorStack.length;
       }
+      await this.searchGallerySource({ resetPage: false });
+    }
+
+    /**
+     * 一键回退到第 index+1 批（index 从 0 起）。
+     * ⚠️ **截断栈 + 重查一次**，不是"重放压栈" —— 后者要按批次数量打 N 次接口
+     * （回退 8 批 = 8 个请求），而 cursor 栈里本来就存着每一批的 cursor，直接截断即可。
+     */
+    async jumpGalleryBatch(index) {
+      const target = Math.max(0, Math.min(Number(index) || 0, this.cursorStack.length - 1));
+      if (target === this.cursorStack.length - 1) return;
+      this.cursorStack.length = target + 1;
+      this.cursorBatchSizes.length = target + 1;
       await this.searchGallerySource({ resetPage: false });
     }
 
@@ -1114,6 +1224,27 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       });
     }
 
+    /** 目标列宽（pt）：设置里的「缩略图大小」档位；缺省 DG_MIN_PT(116) = 旧行为 */
+    thumbTargetPt() {
+      return clampThumbWidth(this.settings?.thumbWidth);
+    }
+
+    /**
+     * 改「缩略图大小」档位。返回是否真的变了。
+     * ⚠️ 必须同时丢掉 `lastColStep` 反推基准：gridMetrics() 优先按上次的列步长反推列数
+     * （那是为了抵消滚动条出现/消失的十几像素，见 §4.1），档位一变、旧基准还在，
+     * 列数就会原样沿用 ⇒ 换档看起来"没反应"。这与「宽度大改丢基准」是同一套保险。
+     * **不碰节点尺寸**：本方法绝不调 applyGridHeight()/setGridHeight()。
+     */
+    setThumbWidth(value) {
+      const next = clampThumbWidth(value);
+      if (next === this.thumbTargetPt()) return false;
+      this.settings.thumbWidth = next;
+      this.lastColStep = 0;
+      this.lastCols = 0;
+      return true;
+    }
+
     /**
      * 网格几何。列数优先由「上次布局算出的列步长」反推 —— 垂直滚动条出现后 clientWidth
      * 会比 layout 时小十几像素，直接除会让卡片宽出容器、产生横向滚动条（实测 rightEdge 1295 > 1283）。
@@ -1123,12 +1254,21 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const width = this.grid.clientWidth || 780;
       const style = getComputedStyle(this.grid);
       const padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      // ⚠️ 这个下限保护必须**原样保留**（§4.1 第一处保险）：首帧 clientWidth=0 时 usable 退化成
+      //    DG_MIN_PT ⇒ cols=1，配合 dgSpanFor 的 Math.min(2, cols) 与布局侧的 !isFinite(top) 兜底，
+      //    才不会回到"span=2 → top=Infinity → 卡片被甩出可视区且不自愈"的老坑。
       const usable = Math.max(DG_MIN_PT, width - padX);
+      const target = this.thumbTargetPt();   // 目标列宽：设置档位，缺省 116 = 旧公式
       const cols = this.lastColStep > DG_GAP
         ? Math.max(1, Math.round((usable + DG_GAP) / this.lastColStep))
-        : Math.max(1, Math.floor((usable + DG_GAP) / (DG_MIN_PT + DG_GAP)));
-      const cardWidth = Math.max(1, (usable - DG_GAP * (cols - 1)) / cols);
-      return { width, cols, cardWidth, usable };
+        : Math.max(1, Math.floor((usable + DG_GAP) / (target + DG_GAP)));
+      // 列数**下限**保护：让 DG_MAX_PT 真正生效（旧代码它只有定义、零使用点）——
+      // 窄节点 + 大档位时卡宽不得宽过 DG_MAX_PT，否则"想放大缩略图"会得到比预期更夸张的巨图。
+      // 对缺省档位无影响：usable 最小时 minCols = ceil(123/337) = 1。
+      const minCols = Math.max(1, Math.ceil((usable + DG_GAP) / (DG_MAX_PT + DG_GAP)));
+      const finalCols = Math.max(cols, minCols);
+      const cardWidth = Math.max(1, (usable - DG_GAP * (finalCols - 1)) / finalCols);
+      return { width, cols: finalCols, cardWidth, usable };
     }
 
     /** 每张卡盒子实际使用的宽高比（宽/高）：超高图按上限截断，其余保留真实比例（零裁切） */
@@ -1264,7 +1404,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       //    只有补到池子取空（fillMoreExhausted / 没有 next_cursor）才允许收缩兜底，
       //    这样"节点尺寸是用户定的、图片负责填满它"才是默认行为。
       if (this.autoLimit() && !this.fillMoreExhausted
-        && (this.isDanbooruSource() || this.nextCursor)) return;
+        && (this.pageMode() || this.nextCursor)) return;
       // ① 用户手动调过尺寸 → 本次结果集内**不再自动收缩**。否则「放回大小」会被下一帧
       //    缩回去，用户看到的就是「手动放大也不填满」。
       if (this.userResizedAt) return;
@@ -1390,11 +1530,16 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
      */
     async fillMoreForHeight() {
       if (this.disposed || this.fillMoreBusy || this.fillMoreExhausted) return;
-      if (!this.autoLimit()) return;
+      // 本地分类浏览（activeCategory）是**有限的本地集合**（按 id 回查已归类图片）：没有"下一页"可补，
+      // 而补图走的是 search()，它开头就会清掉 activeCategory ⇒ 用户会被静默踢出分类视图。
+      if (this.settings.activeCategory) return;
+      // ⚠️ 这里**不再**按 autoLimit() 早退：固定张数档位（"至少 N 张"）一屏放不下时也要补，
+      //    否则节点一大就只剩半屏空白（2026-09-16 用户 limit=12 的真实场景）。
+      //    真正的闸门是下面的 gridUnderfilled()：一屏放得下就一张都不多取。
       if (!this.posts.length) return;
       if (!this.gridUnderfilled()) return;
-      // C站/P站：契约只有 next_cursor，没有它就到底了
-      if (!this.isDanbooruSource() && !this.nextCursor) {
+      // 游标模式的源：契约只有 next_cursor，没有它就到底了；页码模式的源由后端按 page 换算 offset
+      if (!this.pageMode() && !this.nextCursor) {
         this.fillMoreExhausted = true;
         return;
       }
@@ -1402,12 +1547,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const seen = new Set(before.map((post) => String(post.id)));
       this.fillMoreBusy = true;
       try {
-        if (this.isDanbooruSource()) {
-          // D站：page 分页（老路由/老参数不变），取下一页
+        if (this.pageMode()) {
+          // 页码模式（D站 page / P站 page）：取下一页（D站 老路由/老参数一个字节没改）
           this.page += 1;
           await this.search();
         } else {
-          // C站/P站：cursor 栈前进一批
+          // 游标模式（C站）：cursor 栈前进一批
           await this.stepGalleryCursor(1);
         }
         const fetched = this.posts.slice();
@@ -1458,8 +1603,18 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     async autoFillIfUnderfilled() {
       if (this.disposed || this.fillMoreBusy || this.fillMoreExhausted) return;
-      if (!this.autoLimit() || !this.posts.length) return;
-      if (this.autoFillRounds >= DG_AUTO_FILL_MAX_ROUNDS) return;
+      // 分类浏览不补图（有限本地集合 + 补图会静默退出分类视图，理由见 fillMoreForHeight 顶部）
+      if (this.settings.activeCategory) return;
+      // ⚠️ 固定张数档位（"至少 N 张"）同样允许补图 —— 旧实现在这里 `!this.autoLimit()` 直接早退，
+      //    于是「limit=12 + 大节点」永远只有 12 张、剩下的格子全空（用户真机就是这个形态）。
+      //    放行不等于乱补：下面 gridUnderfilled() 才是分界（一屏放得下就一张都不补），
+      //    再加按需的轮次上限 + 30s/4 批时间窗 + 1.5s grace 三道闸。
+      if (!this.posts.length) return;
+      const target = this.autoFillTargetHeight();
+      if (!(target > 0)) return;
+      if (!this.gridUnderfilled(target)) return;
+      // ② 轮次上限：**按还差几张算**（旧实现硬编码 1 轮，大节点根本补不满）
+      if (this.autoFillRounds >= this.autoFillRoundsBudget(target)) return;
       // ③ 时间窗限流：不受任何「重置」影响的最后一道闸。
       //    列数变化会走 handleGridResize → search(resetPage) → autoFillRounds 归零，
       //    于是「补图 → 内容变高 → 布局器把节点撑大 → 列数变化 → 重置 → 再补」会**无限**循环
@@ -1472,11 +1627,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (this._autoFillWindowCount >= DG_AUTO_FILL_MAX_PER_WINDOW) return;
       // ⓪ 用户刚动过尺寸 → 静默 1.5s：绝不和用户的手抢尺寸（见 DG_USER_RESIZE_GRACE_MS）
       if (this.userResizedAt && now - this.userResizedAt < DG_USER_RESIZE_GRACE_MS) return;
-      const target = this.autoFillTargetHeight();
-      if (!(target > 0)) return;
-      if (!this.gridUnderfilled(target)) return;
-      // C站/P站：契约只有 next_cursor，没有它就到底了
-      if (!this.isDanbooruSource() && !this.nextCursor) {
+      // 游标模式的源：契约只有 next_cursor，没有它就到底了
+      if (!this.pageMode() && !this.nextCursor) {
         this.fillMoreExhausted = true;
         return;
       }
@@ -1489,6 +1641,38 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // ⚠️ **绝不**在这里调 setGridHeight / setSize 把尺寸"钉回去"：那会在用户拖动缩小的
       //    同时和用户对着干（用户实测"我一要缩小节点，就放大多次"）。
       //    补图只负责往列里塞图；节点尺寸永远由用户（或前端布局器）决定。
+    }
+
+    /** 一轮补图大约能带回多少张（与实际请求发的 limit 同源） */
+    autoFillPerRound() {
+      // 页码模式的非 D站 源：P站 上游固定每页 GALLERY_PAGE_SIZE 张（gallerySearchParams 也发这个值）
+      if (this.pageMode() && !this.isDanbooruSource()) return GALLERY_PAGE_SIZE;
+      const limit = Number(this.resolveLimit());
+      return limit > 0 ? limit : DG_MAX_PER_REQUEST;
+    }
+
+    /** 距离「填满一屏」还差几张（估算：缺口高度 ÷ 单卡高 × 列数） */
+    autoFillNeed(target) {
+      const total = Number(this._layoutTotal) || 0;
+      const minCol = Number(this._layoutMinCol) || total;
+      const filled = Math.max(0, Math.min(total, minCol));
+      const shortfall = Math.max(0, Number(target) * DG_UNDERFILL_RATIO - filled);
+      if (!(shortfall > 0)) return 0;
+      const cardH = Math.max(DG_MIN_CARD_H, Number(this._measuredAvgCardH) || 0);
+      const cols = Math.max(1, this.gridMetrics().cols);
+      return Math.ceil(cols * (shortfall / cardH));
+    }
+
+    /**
+     * 本轮结果集内允许自动补几批：= ceil(还差几张 / 一轮带回几张)，夹在 [1, DG_AUTO_FILL_MAX_ROUNDS_CAP]。
+     * 旧实现是常量 1（最多补一批）—— 节点一大就明显补不满（用户 2026-09-16："还是填充不满节点"）。
+     * 不会滚成无限循环：① 每补完一批都重新判 gridUnderfilled（真填满就停）；② 池子取空置 fillMoreExhausted；
+     * ③ 30 秒内最多 DG_AUTO_FILL_MAX_PER_WINDOW 批的**时间窗**（不受任何重置影响）是硬闸。
+     */
+    autoFillRoundsBudget(target) {
+      const need = this.autoFillNeed(target);
+      if (!(need > 0)) return 0;
+      return Math.max(1, Math.min(DG_AUTO_FILL_MAX_ROUNDS_CAP, Math.ceil(need / this.autoFillPerRound())));
     }
 
     /** 当前是否为「自适应张数」模式 */
@@ -2317,7 +2501,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const nodeId = String(this.node.id || "");
         const galleryNode = template[nodeId];
         if (!galleryNode || typeof galleryNode !== "object") {
-          throw new Error("当前工作流模板中没有启用的 TK D站画廊节点");
+          throw new Error("当前工作流模板中没有启用的 TK 多重画廊节点");
         }
         if (!galleryNode.inputs || typeof galleryNode.inputs !== "object") galleryNode.inputs = {};
         // 某些 ComfyUI 版本的 graphToPrompt 会省略 hidden 输入；补回当前字段，
@@ -2637,14 +2821,21 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const parts = presetTagParts(query);
       if (!parts.length) return String(query || "").trim() ? "筛选条件" : "";
       const translations = await this.ensureTagTranslations(parts.map(({ tag }) => tag));
-      return parts.map(({ tag, sign }) => {
+      // 去冗余：不同标签译成同一个中文时（如 `1girl` 与 `solo`/同义译名）只保留第一条，
+      // 否则备注会变成「口交、口交、口交…」这种重复串。
+      const seen = new Set();
+      const labels = [];
+      for (const { tag, sign } of parts) {
         const translated = String(translations[tag] || "").trim();
         const fallback = tag.replace(/_/g, " ");
         const label = translated || fallback;
-        if (sign === "-") return `排除${label}`;
-        if (sign === "~") return `近似${label}`;
-        return label;
-      }).join("、").slice(0, 240);
+        const text = sign === "-" ? `排除${label}` : sign === "~" ? `近似${label}` : label;
+        const key = text.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        labels.push(text);
+      }
+      return labels.join("、").slice(0, 240);
     }
 
     async hydratePresetNotes(onUpdated) {
@@ -2653,7 +2844,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         if (changed) onUpdated?.();
         return changed;
       }
-      const missing = this.settings.presets.filter((preset) => preset.query && !preset.note);
+      // ⚠️ `noteManual` 的预设不参与自动补全：用户手填的（或故意留空的）备注必须原样保留，
+      // 否则下次打开面板就被自动翻译覆盖 —— 这是「自定义备注」的关键约束。
+      const missing = this.settings.presets.filter((preset) => preset.query && !preset.note && !preset.noteManual);
       if (!missing.length) return false;
       const task = (async () => {
         let changed = false;
@@ -3084,9 +3277,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.pagination.append(badge);
         return;
       }
-      // C站 / P站：契约只有 cursor + next_cursor（没有页码语义），所以只给「上一批 / 下一批」。
-      // 不摆页码输入框 —— 那会变成一个"输了没反应"的控件（见 PLAN §5.3 分页一节）。
-      if (!this.isDanbooruSource()) {
+      // 分页形态**按 capabilities.page_numbers 分支**（不再按源名硬编码）：
+      //   · 声明了页码能力（D站 / P站，见 GALLERY_SOURCE_FALLBACK）→ 页码按钮 + 跳页框 + ‹ ›；
+      //   · 没声明或声明 false（C站，以及任何后端回包里没有这个键的源）→ 游标分页。
+      // 为什么"没声明能力的源进不到页码分支"：sourceCapabilities() 是「缺字段一律 false」语义
+      // （`caps.page_numbers === true`），而 pageMode() 只读这个布尔 —— 只有**显式声明 true**
+      // 的源才能拿到页码 UI；D站 不在 /anima/gallery/sources 回包里，靠兜底表声明 true。
+      if (!this.pageMode()) {
         const batch = this.cursorStack.length;
         const previous = document.createElement("button");
         previous.type = "button";
@@ -3097,8 +3294,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         previous.onclick = () => { void this.stepGalleryCursor(-1); };
         const label = document.createElement("span");
         label.className = "adg-cursor-batch";
-        label.textContent = `第 ${batch} 批`;
-        label.title = "C站 / P站 用游标分页：只能顺序前进，没有跳页";
+        // 进度三件套：批次 / 本批张数 / 累计已浏览张数；没有 next_cursor = 已到底（用户不用猜还有没有）
+        label.textContent = `第 ${batch} 批 · 本批 ${this.posts.length} 张 · 已浏览 ${this.galleryBrowsedCount()} 张`
+          + (this.nextCursor ? "" : " · 已到底");
+        label.title = "游标分页：只能顺序前进，没有跳页；点右侧批次块可直接回退到看过的批次";
         const next = document.createElement("button");
         next.type = "button";
         next.className = "adg-cursor-step";
@@ -3107,6 +3306,31 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         next.title = this.nextCursor ? "按后端返回的 next_cursor 取下一批" : "没有更多了";
         next.onclick = () => { void this.stepGalleryCursor(1); };
         this.pagination.append(previous, label, next);
+        // ── 批次 chip：一键回退到任意看过的批次 ──
+        // cursor 栈里每批的 cursor 都还在，回退 = 截断栈 + **重查一次**（不是重放压栈，
+        // 后者回退 8 批要打 8 次接口）。只渲染最近 GALLERY_CURSOR_CHIP_MAX 批，更早的折叠成「…」，
+        // 免得翻几十批后分页条变成一堵按钮墙。
+        const chipStart = Math.max(0, batch - GALLERY_CURSOR_CHIP_MAX);
+        if (chipStart > 0) {
+          const more = document.createElement("span");
+          more.className = "adg-cursor-more";
+          more.textContent = "…";
+          more.title = `更早的 ${chipStart} 批已折叠，可用「‹ 上一批」逐批回退`;
+          this.pagination.append(more);
+        }
+        for (let i = chipStart; i < batch; i++) {
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "adg-cursor-chip";
+          chip.textContent = `第${i + 1}批`;
+          chip.classList.toggle("active", i === batch - 1);
+          chip.disabled = i === batch - 1;
+          chip.title = i === batch - 1
+            ? "当前批次"
+            : `回到第 ${i + 1} 批（用栈里已有的 cursor 重查一次，不重放中间的批次）`;
+          chip.onclick = () => { void this.jumpGalleryBatch(i); };
+          this.pagination.append(chip);
+        }
         return;
       }
       for (const page of this.pageWindow()) {
@@ -3116,7 +3340,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.pagination.append(button);
       }
       const input = document.createElement("input");
-      input.type = "number"; input.min = "1"; input.value = String(this.page); input.title = "输入页码跳转";
+      input.type = "number"; input.min = "1"; input.value = String(this.page);
+      input.title = this.isDanbooruSource() ? "输入页码跳转" : `输入页码跳转（该源每页固定 ${GALLERY_PAGE_SIZE} 张）`;
       input.onkeydown = (event) => { if (event.key === "Enter") { this.page = Math.max(1, Number(input.value) || 1); this.search(); } };
       this.pagination.append(input);
       for (const [label, delta] of [["‹", -1], ["›", 1]]) {
@@ -3765,9 +3990,25 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const isGallerySource = sourceId !== DANBOORU_SOURCE_ID;
       // P站 的用途是「下载原图 → WD14 反推」（PLAN §5.7），所以画廊源一律原图优先：
       // full_url 就是契约里的 original（各源适配器保证 original 优先、退回 large）。
+      // ⚠️ 2026-09-18 修（用户反馈「画廊的下载固定长边为 850，要能下原图」）：
+      // D站 的 `large_file_url` 是 **sample 档 —— 最长边恒为 850**，`file_url` 才是原图。
+      // 此前 D站 分支把 `large_file_url` 排在 `file_url` **前面**，所以下载到的永远是 850 的 sample。
+      // 现在两层保险：
+      //   ① 原图字段优先（file_url）；
+      //   ② 若 file_url 缺失，把 sample 直链**改写成 original 直链** ——
+      //      实测（真机 D站 API）：同一张图只差两处，`/sample/` → `/original/`、
+      //      文件名去掉 `sample-` 前缀，例如
+      //        .../sample/18/02/sample-1802cdbb….jpg → .../original/18/02/1802cdbb….jpg
+      //      （原图 3135×4000，sample 只有 850 长边）。
+      const danbooruOriginal = (url) => {
+        const s = String(url || "");
+        if (!s || !/\/sample\//i.test(s)) return "";
+        return s.replace(/\/sample\//i, "/original/").replace(/\/(sample-)/i, "/");
+      };
       const imageUrl = isGallerySource
         ? (post.full_url || post.large_file_url || post.file_url || post.preview_url || post.preview_file_url)
-        : (post.large_file_url || post.file_url || post.preview_file_url);
+        : (post.file_url || danbooruOriginal(post.large_file_url) || post.full_url
+           || danbooruOriginal(post.sample_url) || post.large_file_url || post.preview_file_url);
       if (!imageUrl) return;
       this.setStatus(`正在下载 #${post.id || ""}…`);
       try {
@@ -3778,7 +4019,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const link = document.createElement("a");
         link.href = objectUrl;
         const prefix = isGallerySource ? sourceId : "danbooru";
-        link.download = `${prefix}_${post.id || "image"}.${post.file_ext || "jpg"}`;
+        // 扩展名从**实际取到的 URL** 推断：D站 sample 常被转成 jpg，而原图可能是 png/webp，
+        // 直接用 post.file_ext 会把 png 存成 .jpg（下载链路改成原图后必须跟着改）。
+        const extFromUrl = (u) => (String(u).match(/\.([a-z0-9]{2,5})(?:[?#]|$)/i) || [])[1] || "";
+        link.download = `${prefix}_${post.id || "image"}.${extFromUrl(imageUrl) || post.file_ext || "jpg"}`;
         document.body.append(link);
         link.click();
         link.remove();
@@ -4161,6 +4405,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       saveButton.type = "button";
       saveButton.className = "primary";
       saveButton.textContent = "保存当前";
+      // 中文备注：**可留空**（留空 = 自动翻译）；填了就以手填为准，且不会被自动翻译覆盖。
+      const noteInput = document.createElement("input");
+      noteInput.className = "adg-preset-note-input";
+      noteInput.placeholder = "中文备注（留空 = 自动翻译）";
+      noteInput.setAttribute("aria-label", "预设中文备注（可留空）");
       saveButton.onclick = async () => {
         const name = nameInput.value.trim();
         if (!name) {
@@ -4168,15 +4417,24 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           this.setStatus("请输入预设名称", "error");
           return;
         }
-        const query = this.queryWidget?.value || this.settings.lastQuery || "";
+        // ⚠️ 搜索词必须**以搜索框里的实时输入为准**（2026-09-17 修）：
+        // 此前是 `this.queryWidget?.value || this.settings.lastQuery` —— `lastQuery` 只在**点搜索时**
+        // 才更新（见 search() 里的赋值），于是「改了词但没点搜索就保存」会保存成**上一次搜索的词**，
+        // 备注也随之翻成上一个词的翻译（用户实测：「保存前的第一个之后，其他几个词会跟随第一个的翻译；
+        // 保存前先搜索一次就正确」）。现在按 输入框 → 序列化值 → lastQuery 依次取值，绝不用"上次搜索"顶替当前输入。
+        const query = String(
+          this.queryInput?.value ?? this.queryWidget?.value ?? this.settings.lastQuery ?? ""
+        ).trim();
+        const manualNote = noteInput.value.trim().slice(0, 240);
         const oldText = saveButton.textContent;
         saveButton.disabled = true;
-        saveButton.textContent = "生成中文备注…";
+        saveButton.textContent = manualNote ? "保存中…" : "生成中文备注…";
         try {
           const preset = {
             name,
             query,
-            note: await this.buildPresetNote(query),
+            note: manualNote || await this.buildPresetNote(query),
+            noteManual: !!manualNote,
             rating: [...this.settings.rating],
             filters: { ...this.settings.filters },
           };
@@ -4186,18 +4444,24 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           this.saveSettings();
           this.renderPresetOptions();
           nameInput.value = "";
+          noteInput.value = "";
           renderRows();
-          this.setStatus(`${existing >= 0 ? "已更新" : "已保存"}搜索预设：${name}`, "success");
+          // 提示里带上实际保存的搜索词：改词没点搜索时，用户能立刻看出存进去的是哪一条
+          this.setStatus(`${existing >= 0 ? "已更新" : "已保存"}搜索预设：${name}${query ? ` · ${query}` : ""}`, "success");
         } catch (error) {
-          this.setStatus(`生成中文备注失败：${error?.message || "未知错误"}`, "error");
+          this.setStatus(`保存搜索预设失败：${error?.message || "未知错误"}`, "error");
         } finally {
           saveButton.disabled = false;
           saveButton.textContent = oldText;
         }
       };
       nameInput.onkeydown = (event) => { if (event.key === "Enter") { event.preventDefault(); saveButton.click(); } };
+      noteInput.onkeydown = (event) => { if (event.key === "Enter") { event.preventDefault(); saveButton.click(); } };
       saveRow.append(nameInput, saveButton);
-      content.append(saveRow);
+      const noteRow = document.createElement("div");
+      noteRow.className = "adg-preset-note-row";
+      noteRow.append(noteInput);
+      content.append(saveRow, noteRow);
 
       const list = document.createElement("div");
       list.className = "adg-preset-list";
@@ -4227,6 +4491,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             : (preset.query || "（无查询词）");
           meta.textContent = metaText;
           meta.title = metaText;
+          if (preset.noteManual) pick.dataset.manual = "1";
           pick.append(name, meta);
           pick.onclick = () => {
             this.setQuery(preset.query);
@@ -4253,7 +4518,50 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             renderRows();
             this.setStatus(`已删除搜索预设：${preset.name}`);
           };
-          ops.append(remove);
+          // 自定义中文备注：行内编辑。手填（含"清空"）后不再被自动翻译覆盖。
+          const noteBtn = document.createElement("button");
+          noteBtn.type = "button";
+          noteBtn.className = "adg-preset-note-edit";
+          noteBtn.textContent = preset.noteManual ? "改备注" : "备注";
+          noteBtn.title = preset.noteManual
+            ? "编辑自定义中文备注（清空 = 保持为空，不再自动翻译）"
+            : "自定义中文备注（填过之后就不再自动翻译）";
+          noteBtn.setAttribute("aria-label", `${noteBtn.textContent}：${preset.name}`);
+          noteBtn.onclick = (event) => {
+            event.stopPropagation();
+            const input = document.createElement("input");
+            input.className = "adg-preset-note-input-inline";
+            input.value = preset.note || "";
+            input.placeholder = "中文备注（留空 = 不再自动翻译）";
+            input.setAttribute("aria-label", `编辑预设备注：${preset.name}`);
+            // 备注框显示在 pick 按钮内部：必须挡掉冒泡，否则点输入框会顺手"应用预设"
+            input.onpointerdown = (e) => e.stopPropagation();
+            input.onclick = (e) => e.stopPropagation();
+            meta.replaceWith(input);
+            input.focus();
+            input.select();
+            let settled = false;
+            const commit = (save) => {
+              if (settled) return;
+              settled = true;
+              if (save) {
+                const value = input.value.trim().slice(0, 240);
+                preset.note = value;
+                // 填过（哪怕是清空）就算"手动备注"：留空表示故意不要备注，不该被自动翻译补回来
+                preset.noteManual = true;
+                this.saveSettings();
+                this.renderPresetOptions();
+                this.setStatus(value ? `已保存备注：${value}` : `已设为无备注（不再自动翻译）：${preset.name}`);
+              }
+              renderRows();
+            };
+            input.onkeydown = (e) => {
+              if (e.key === "Enter") { e.preventDefault(); commit(true); }
+              else if (e.key === "Escape") { e.preventDefault(); commit(false); }
+            };
+            input.onblur = () => commit(true);
+          };
+          ops.append(noteBtn, remove);
           row.append(pick, ops);
           list.append(row);
         });
@@ -4648,13 +4956,28 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       viewGrid.className = "adg-settings-grid";
       const pageLabel = document.createElement("label");
       pageLabel.className = "adg-field";
-      pageLabel.textContent = "每页图片数";
+      pageLabel.textContent = "每页图片数（至少）";
       const select = document.createElement("select");
       // 0 = 自适应：按节点尺寸算出「刚好填满一屏」的张数（列数 × 可视行数），
       // 节点越宽越高，自动显示越多，不再固定 24/48 让大节点半屏空白。
       select.add(new Option("自适应（按节点大小）", "0", false, !this.settings.limit));
-      [12, 24, 48].forEach((limit) => select.add(new Option(String(limit), String(limit), false, limit === this.settings.limit)));
-      select.title = "自适应 = 按节点宽高算出刚好填满的图片数量；拖动节点改变大小后会自动重算";
+      // 固定档位语义 = **至少 N 张**：一屏放不下更多时仍会自动补（见 autoFillIfUnderfilled），
+      // 所以文案必须写明，否则用户会以为"设了 12 就永远只有 12 张"。
+      [12, 24, 48].forEach((limit) => {
+        const option = new Option(String(limit), String(limit), false, limit === this.settings.limit);
+        // 页码模式的源（P站）上游固定每页 GALLERY_PAGE_SIZE 条 → 48 档根本拿不到，
+        // 禁用 + 写明原因，而不是留一个选了也不生效的假选项。
+        if (limit > GALLERY_PAGE_SIZE && this.pageMode()) {
+          option.disabled = true;
+          option.textContent = `${limit}（该源每页固定 ${GALLERY_PAGE_SIZE}，不可用）`;
+        }
+        select.append(option);
+      });
+      select.title = this.pageMode()
+        ? `自适应 = 按节点宽高算出刚好填满的张数；固定档位 = 至少 N 张（不足一屏会自动补满）。`
+          + `当前图源用页码分页、上游每页固定 ${GALLERY_PAGE_SIZE} 张，所以 ${GALLERY_PAGE_SIZE} 以上的档位不可用。`
+        : "自适应 = 按节点宽高算出刚好填满的图片数量；固定档位 = 至少 N 张（不足一屏会自动补满，"
+          + "实际张数可能多于所选值）；拖动节点改变大小后会自动重算";
       pageLabel.append(select);
       const heightLabel = document.createElement("label");
       heightLabel.className = "adg-field";
@@ -4666,7 +4989,23 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       heightInput.step = "20";
       heightInput.value = String(this.settings.gridHeight);
       heightLabel.append(heightInput);
-      viewGrid.append(pageLabel, heightLabel);
+      const thumbLabel = document.createElement("label");
+      thumbLabel.className = "adg-field";
+      thumbLabel.textContent = "缩略图大小";
+      const thumbSelect = document.createElement("select");
+      for (const tier of DG_THUMB_TIERS) {
+        thumbSelect.add(new Option(
+          `${tier.label}（${tier.width}px${tier.width === DG_MIN_PT ? " · 默认" : ""}）`,
+          String(tier.width),
+          false,
+          tier.width === this.thumbTargetPt(),
+        ));
+      }
+      thumbSelect.title = "缩略图目标列宽：档位越大、列数越少、单图越大（图片仍是零裁切 contain）。"
+        + `实际卡宽会≥档位、且不超过 ${DG_MAX_PT}px（列数有下限保护，窄节点不会被撑出巨图）。`
+        + "只影响网格排版，不改变节点尺寸。默认「小 116px」= 旧行为。";
+      thumbLabel.append(thumbSelect);
+      viewGrid.append(pageLabel, heightLabel, thumbLabel);
       viewSection.append(viewTitle, viewGrid);
       content.append(viewSection);
 
@@ -4817,6 +5156,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         onApply: () => {
           this.settings.limit = Number(select.value);
           this.settings.gridHeight = Math.max(360, Math.min(1200, Number(heightInput.value) || 620));
+          // 缩略图档位：setThumbWidth 只改设置 + 丢列步长反推基准，**不碰节点尺寸**；
+          // 让新档位生效走的是下面既有的 applyGridHeight() + search(resetPage) 两条原有行为。
+          this.setThumbWidth(Number(thumbSelect.value));
           this.saveSettings();
           this.applyGridHeight();
           this.search({ resetPage: true });

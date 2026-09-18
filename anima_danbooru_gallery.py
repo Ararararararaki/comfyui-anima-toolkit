@@ -475,12 +475,12 @@ class _DanbooruBrowser:
         try:
             from playwright.sync_api import sync_playwright
         except Exception as error:
-            print(f"[D站画廊·风控网关] 未安装 playwright（需 pip install playwright 才能自动过风控）：{error}")
+            print(f"[多重画廊·风控网关] 未安装 playwright（需 pip install playwright 才能自动过风控）：{error}")
             return False
         try:
             self._playwright = sync_playwright().start()
         except Exception as error:
-            print(f"[D站画廊·风控网关] playwright 驱动启动失败：{error}")
+            print(f"[多重画廊·风控网关] playwright 驱动启动失败：{error}")
             return False
         launch_kwargs: dict[str, Any] = dict(
             headless=False,  # 无头模式过不了 CF 的交互式校验（已实测），用静默有头模式
@@ -511,7 +511,7 @@ class _DanbooruBrowser:
             except Exception:
                 context = None
         if context is None:
-            print("[D站画廊·风控网关] 本机未找到可用的 Edge/Chrome，无法自动过风控")
+            print("[多重画廊·风控网关] 本机未找到可用的 Edge/Chrome，无法自动过风控")
             self.shutdown()
             return False
         self._context = context
@@ -519,7 +519,7 @@ class _DanbooruBrowser:
         try:
             self._warm()
         except Exception as error:
-            print(f"[D站画廊·风控网关] 预热 Danbooru 失败：{error}；网关不可用")
+            print(f"[多重画廊·风控网关] 预热 Danbooru 失败：{error}；网关不可用")
             self.shutdown()
             return False
         return True
@@ -548,7 +548,7 @@ class _DanbooruBrowser:
                 timeout=45000,
             )
         except Exception:
-            print("[D站画廊·风控网关] 浏览器校验未完全就绪，继续尝试")
+            print("[多重画廊·风控网关] 浏览器校验未完全就绪，继续尝试")
         self._last_warm = time.time()
 
     def _run(self, script: str, argument: Any) -> Any:
@@ -608,7 +608,7 @@ def _browser_json_or_none(url: str, params: dict[str, Any]) -> Any:
     try:
         return browser.json(url, params)
     except Exception as error:
-        print(f"[D站画廊] 浏览器网关搜索失败：{error}")
+        print(f"[多重画廊] 浏览器网关搜索失败：{error}")
         return None
 
 
@@ -619,7 +619,7 @@ def _browser_bytes_or_none(url: str) -> tuple[bytes, str] | None:
     try:
         return browser.bytes(url)
     except Exception as error:
-        print(f"[D站画廊] 浏览器网关图片失败：{error}")
+        print(f"[多重画廊] 浏览器网关图片失败：{error}")
         return None
 
 
@@ -1671,7 +1671,7 @@ class DanbooruGallery:
                 "可检查网络/代理并重启 ComfyUI，或取消勾选失效图片后重跑。\n" + detail
             )
         if len(failures) > 0:
-            print(f"[D站画廊] 跳过 {len(failures)} 张下载失败的图（原图可能已失效），使用剩余 {len(images)} 张继续")
+            print(f"[多重画廊] 跳过 {len(failures)} 张下载失败的图（原图可能已失效），使用剩余 {len(images)} 张继续")
         metadata_payload: dict[str, Any] = {"items": metadata, "failures": failures}
         metadata_payload["prompt_output_enabled"] = prompt_output_enabled
         if prompt_settings is not None:
@@ -1680,4 +1680,4 @@ class DanbooruGallery:
 
 
 NODE_CLASS_MAPPINGS = {DanbooruGallery.NAME: DanbooruGallery}
-NODE_DISPLAY_NAME_MAPPINGS = {DanbooruGallery.NAME: "TK D站画廊"}
+NODE_DISPLAY_NAME_MAPPINGS = {DanbooruGallery.NAME: "TK 多重画廊"}

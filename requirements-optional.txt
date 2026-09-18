@@ -4,7 +4,7 @@
 # 按需安装：
 #   pip install -r requirements-optional.txt
 
-# D站画廊的 Cloudflare 风控自救网关（用真实浏览器渲染引擎绕过人机校验）。
+# 多重画廊的 Cloudflare 风控自救网关（用真实浏览器渲染引擎绕过人机校验）。
 # 缺失时：搜索/下载仍走 requests 路径，被风控时才会提示需要它。
 playwright>=1.40
 

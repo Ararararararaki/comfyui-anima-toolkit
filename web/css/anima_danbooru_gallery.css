@@ -345,6 +345,12 @@
    ⚠️ 必须覆盖 .adg-pagination button 的固定 24px 宽 —— 否则「下一批 ›」会被挤成竖排文字
    （2026-09-15 浏览器实测，截图里三个字竖着排）。 */
 .adg-pagination button.adg-cursor-step { width: auto; min-width: 0; padding: 4px 10px; white-space: nowrap; }
+/* 批次 chip（一键回退到第 N 批）：同样必须覆盖 24px 固定宽，否则「第12批」会被挤成竖排。
+   active 那条让"当前批次"和用户自己区分得开（页码按钮的 .active 之前没有任何样式）。 */
+.adg-pagination button.adg-cursor-chip { width: auto; min-width: 0; padding: 3px 7px; font-size: 11px; white-space: nowrap; }
+.adg-pagination button.active { border-color: var(--adg-go, #a895ff); background: var(--adg-tint-strong, #6758c9); color: var(--adg-fg, #fff); }
+.adg-pagination button.active:disabled { opacity: .8; }
+.adg-cursor-more { color: var(--adg-fg-soft, #9b9a95); font-size: 11px; padding: 0 1px; }
 .adg-cursor-batch { padding: 2px 8px; border: 1px solid var(--adg-line, rgba(255,255,255,.12)); border-radius: 999px; color: var(--adg-fg-soft, #9b9a95); font-size: 11px; white-space: nowrap; }
 .adg-cat-mode-badge { font-size: 11px; color: var(--adg-go, #8b5cf6); border: 1px dashed var(--adg-go, #8b5cf6); border-radius: 6px; padding: 2px 8px; white-space: nowrap; }
 .adg-info { color: var(--adg-fg-soft, #aeb1bd); }
@@ -571,6 +577,19 @@
 .adg-preset-row-ops { display: flex; align-items: center; }
 .adg-preset-remove { min-width: 42px; height: 100%; padding: 0 7px; border: 1px solid rgba(248,113,113,.24); border-radius: 7px; color: #d99a9a; background: rgba(220,38,38,.08); cursor: pointer; font-size: 10px; }
 .adg-preset-remove:hover { border-color: #f87171; color: #ffd1d1; background: rgba(220,38,38,.22); }
+/* 自定义中文备注：保存行下方的输入 + 行内编辑 + 行尾「备注 / 改备注」按钮 */
+.adg-preset-note-row { display: flex; padding: 0 8px 8px; }
+.adg-preset-note-input { flex: 1; min-width: 0; padding: 7px 8px; border: 1px solid rgba(255,255,255,.12); border-radius: 7px; color: #e2e3e9; background: rgba(255,255,255,.04); font-size: 11px; }
+.adg-preset-note-input::placeholder { color: #6f6a7d; }
+.adg-preset-note-input:focus { outline: none; border-color: #8f86ed; box-shadow: 0 0 0 2px rgba(139,92,246,.14); }
+.adg-preset-note-input-inline { width: 100%; max-width: 100%; padding: 3px 6px; border: 1px solid rgba(168,149,255,.55); border-radius: 6px; color: #e2e3e9; background: rgba(0,0,0,.3); font-size: 10px; }
+.adg-preset-note-input-inline::placeholder { color: #6f6a7d; }
+.adg-preset-note-input-inline:focus { outline: none; border-color: var(--adg-accent, #8f86ed); }
+.adg-preset-note-edit { min-width: 42px; height: 100%; padding: 0 7px; border: 1px solid rgba(168,149,255,.24); border-radius: 7px; color: #b9b3d6; background: rgba(139,92,246,.08); cursor: pointer; font-size: 10px; }
+.adg-preset-note-edit:hover { border-color: var(--adg-accent, #8f86ed); color: #EDEDEF; background: rgba(139,92,246,.2); }
+/* 手填备注的行：左侧一道细标记，和"自动翻译"一眼区分 */
+.adg-preset-pick[data-manual="1"] { border-left: 2px solid rgba(168,149,255,.55); }
+.adg-preset-pick[data-manual="1"] .adg-preset-row-meta { color: #c9c2f0; }
 .adg-image-preview { max-width: 90vw; max-height: 90vh; object-fit: contain; border-radius: 8px; box-shadow: 0 20px 50px rgba(0,0,0,.6); }
 @media (prefers-reduced-motion: reduce) {
   .adg-dropdown-chevron,

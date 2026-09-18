@@ -5259,17 +5259,25 @@ html[data-theme="drinkit"] .main-tabs .main-tab.active {
  * 铁律：polish.css / design-system.css 对 .tab 用了 !important 覆盖，故这里必须：
  *   ① 用 #tabsContainer（id，特异性 a=1）前缀，压过其 html[data-theme] .tab（a=0）；
  *   ② 同带 !important，才能在特异性+重要度双重上胜出。
- * 实底用 --surface-muted（drinkit=#ededed 实灰 / mono=#292929 实深），
- *   不写死 --surface(#fff) —— 否则浅色下复发「淡底隐形」旧病；
- *   边框用 --border-hover：design-system 把 drinkit --border 覆成 rgba(0,0,0,.06)，
+ * 边框用 --border-hover：design-system 把 drinkit --border 覆成 rgba(0,0,0,.06)，
  *   用 --border-hover 才能保证浅色主题下看得到边框。
  * 激活态走「accent 底 + accent-foreground 字」：
- *   drinkit=深墨#171717+白字 / mono=亮#e2e2e2+深字 / mono-light=深#151515+白字，
+ *   drinkit=蓝#1683ff+白字 / mono=亮#e2e2e2+深字 / mono-light=深墨#171717+白字，
  *   深浅两套主题都保证对比、且符合本项目克制风格（不刺眼）。 */
 #tabsContainer .tab {
-  /* 未激活：透明底 + 边框 + 主题前景字 —— 不能用 --surface-muted：
-     mono 主题下它与 --accent 同为 #e2e2e2，激活/未激活会同色不可分（CDP 实测）。 */
-  background: transparent !important;
+  /* 未激活：**实底** + 边框 + 主题前景字。
+     ⚠️ 2026-09-17 修正：此处原为 `background: transparent`，导致 tab 的可读性**完全依赖父容器底色**
+     —— 一旦父容器/宿主背景是深色，就成了「深字 + 深底」，按钮完全看不清
+     （用户真机反馈：「白色主题下界面如果是深色的背景，按钮完全看不清字」）。
+     实测三个主题（CDP 取计算值）：
+       --surface-muted      drinkit #ececea / mono #292929 / mono-light #ededed   ← 均**不透明**
+       它与 --text 的对比度   8.6+      / 10.8+      / 7.4+                        ← 均**高对比**
+       它与 --accent（激活底） drinkit 蓝 / mono 亮#e2e2e2 / mono-light 深墨#171717 ← 均**可区分**
+     故改用 --surface-muted 给实底，tab 自带底色、不再依赖父容器。
+     （旧注释称「mono 下 --surface-muted 与 --accent 同为 #e2e2e2」——实测已不成立：
+       mono 的 --surface-muted=#292929、--accent=#e2e2e2。）
+     不用 --surface：drinkit 下它是 rgba(255,255,255,.78) **半透明**，仍会透出深色底。 */
+  background: var(--surface-muted) !important;
   border: 1px solid var(--border-hover) !important;
   color: var(--text) !important;
 }

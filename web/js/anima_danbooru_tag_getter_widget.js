@@ -888,6 +888,48 @@
     }
   }
 
+  // ── 历史脏值修复（2026-09-16 真机复现）────────────────────────────────────
+  //
+  // 症状：场景预设选了之后，**刷新页面（F5）或重新打开工作流就变回「自定义（不用预设）」**，
+  //       每次都得手动重选；同时「质量元词」等扩展分类会莫名被勾上。
+  //
+  // 根因（真机 + 浏览器实测确认，两条缺陷叠加）：
+  //   ① `addDOMWidget(..., { serialize: false })` 把开关写进了 widget.options，
+  //      而 ComfyUI 的 `LGraphNode.serialize()` 判断的是 **`widget.serialize === false`**
+  //      ⇒ DOM widget 照样被序列化，每次 Ctrl+S 都让本节点的 widgets_values
+  //      比原生控件多出一项（实测：48 个原生控件 → 存成 49 项）。
+  //   ② `ComfyNode.configure()` 在 super.configure 之前会调用前端的 `migrateWidgetsValues()`：
+  //        i = [name 命中控件表的 input] + [forceInput 的 input]   // 本节点 = 48 + 1 = 49
+  //        if (i.length === widgets_values.length) 剔除 forceInput 所在位
+  //      它本是用来兼容「旧工作流里 forceInput 也占了一个值」的格式，
+  //      而多出的第 49 项恰好让长度相等 ⇒ 前端误判 ⇒ 按 natural_language 的位置剔掉一位
+  //      ⇒ **整份 widgets_values 左移一位**。
+  //      后果：preset 读到的是下一格（空字符串）→ 显示「自定义（不用预设）」；
+  //      而真正的预设名落进 `物件道具词_weight`（FLOAT），随后被权重归一化清洗成 1.0 —— 静默丢失。
+  //
+  // 修法：① 在 widget 自身上设 `serialize = false`（见 onNodeCreated）；
+  //      ② 加载时先把多出的尾巴裁掉，让长度回到「原生控件数」，前端便不再误判。
+  //      两条都要有：① 管新保存的工作流，② 管用户机器上已经存坏的那些。
+  const DOM_WIDGET_NAME = "tk_danbooru_tag_getter";
+
+  /**
+   * 裁掉历史工作流里 DOM widget 多写的那一项（只裁「长度恰好多 1」的情形）。
+   *
+   * 长度不足（更旧的工作流，控件更少）不在这里处理 —— 交给 ComfyUI 自己补默认值。
+   * 用 DOM widget 的**名字**定位而不是写死数字，这样将来再多加控件也不会误裁。
+   */
+  function trimLegacyDomWidgetValue(node, info) {
+    const values = info?.widgets_values;
+    if (!Array.isArray(values)) return info;
+    const widgets = node?.widgets ?? [];
+    if (!widgets.some((widget) => widget.name === DOM_WIDGET_NAME)) return info;
+    const nativeCount = widgets.length - 1; // 除 DOM widget 之外的原生控件数
+    if (values.length === nativeCount + 1) {
+      return { ...info, widgets_values: values.slice(0, nativeCount) };
+    }
+    return info;
+  }
+
   function init() {
     const api = window.comfyAPI?.app?.app;
     if (!api) return setTimeout(init, 500);
@@ -897,6 +939,15 @@
         if (nodeData.name !== NODE_NAME) return;
         const originalCreated = nodeType.prototype.onNodeCreated;
         const originalConfigure = nodeType.prototype.onConfigure;
+        // ⚠️ 必须包在 ComfyUI 自己的 configure **外层**：它内部会先跑前端的
+        // widgets_values 迁移（migrateWidgetsValues），错位就是那一步造成的，
+        // 等 onConfigure 再补救已经晚了（原值已被权重归一化清洗掉）。
+        const originalConfigureRaw = nodeType.prototype.configure;
+        if (typeof originalConfigureRaw === "function") {
+          nodeType.prototype.configure = function (info) {
+            return originalConfigureRaw.apply(this, [trimLegacyDomWidgetValue(this, info)]);
+          };
+        }
         nodeType.prototype.onNodeCreated = function () {
           const result = originalCreated?.apply(this, arguments);
           if (this._tkDanbooruTagGetterUI) return result;
@@ -912,6 +963,13 @@
           const element = ui.build();
           const domWidget = this.addDOMWidget?.("tk_danbooru_tag_getter", "custom", element, { serialize: false, hideOnZoom: false });
           if (domWidget) {
+            // ⚠️ 这一行是「预设刷新后丢失」的根因修复：必须设在 widget **自身** 上。
+            // ComfyUI 的 LGraphNode.serialize() 判断的是 `widget.serialize === false`，
+            // 只传进 options（`{ serialize: false }`）不会阻止序列化 ——
+            // DOM widget 的值会被塞进 widgets_values 末尾，让数组长度恰好撞上
+            // 前端 migrateWidgetsValues 的误判条件，导致整份值左移一位。
+            // 详见文件末尾 trimLegacyDomWidgetValue() 的注释。
+            domWidget.serialize = false;
             // 20 个分类（两列 10 行）+ 预设行 + 主题 chips（折叠后约 4 行）+ 排除区
             // （自然语言区块已移除，高度比原来少约 60px）
             domWidget.computeSize = () => [0, 500];

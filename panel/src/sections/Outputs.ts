@@ -4,7 +4,7 @@ import { useOutputStore } from '../store/outputStore'
 import { deleteFiles, renameFile, batchFavorite, batchRate } from '../services/outputService'
 import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, buildDirTreeFromPaths, reparseAllMetadata, ensureMetadataFresh } from '../services/outputScanner'
 import { restoreAllFromDb } from '../services/outputManifest'
-import { preloadThumbnailsFromDb, probeBackendThumbs, backendThumbsEnabled, animaThumbUrl, probeGalleryIndex, galleryIndexEnabled, galleryEntries, galleryIndexBuiltAt, fetchGalleryMeta } from '../services/outputThumbnail'
+import { preloadThumbnailsFromDb, probeBackendThumbs, backendThumbsEnabled, animaThumbUrl, probeGalleryIndex, galleryIndexEnabled, galleryEntries, galleryIndexBuiltAt, galleryParserVersion, fetchGalleryMeta } from '../services/outputThumbnail'
 import { probeGalleryStatus, galleryStatusAvailable, galleryStatusBusy } from '../services/galleryStatus'
 import { hashPath } from '../services/outputManifest'
 import { outputsDb } from '../db/outputsDb'
@@ -95,7 +95,7 @@ async function downloadOutputWorkflow(meta: OutputMetadata | undefined, baseName
         useOutputStore.getState().putMetadata({
           ...meta, ...(full as object), imageId: meta.imageId,
           workflowJson: '', rawMetadata: (full.rawMetadata as Record<string, string>) || {},
-          workflowFingerprint: `g:${file.mtime / 1000}:${file.size}`,
+          workflowFingerprint: galleryFingerprint(file.mtime, file.size),
           lorasExtracted: true,
         } as OutputMetadata)
       }
@@ -114,6 +114,140 @@ async function downloadOutputWorkflow(meta: OutputMetadata | undefined, baseName
     showToast('⬇️ 工作流 .json 已下载，拖入 ComfyUI 画布即可导入')
   } catch {
     showToast('⚠️ 下载失败')
+  }
+}
+
+/**
+ * 取「完整元数据」（含 workflowJson / rawMetadata）的统一入口。
+ *
+ * 背景（2026-09-17 用户反馈："点进工具箱，元数据没解析，要手动点刷新才能提 LoRA 标签"）：
+ * Gallery 索引模式下，内存里的条目是**后端摘要**（prompt/loras/model 有，workflowJson 为空），
+ * 而"复制 LoRA 标签 / 查看元数据 / 保存到 Prompt 库"要的是**完整工作流**。此前这些路径一律
+ * 直读 `outputsDb.metadata`（IndexedDB）—— 但 gallery 模式**从不写 IDB**，于是全部读到空：
+ * 用户只能先点「刷新」（走目录句柄扫描、逐张解析 PNG 落 IDB）才拿得到，正是那个"浪费时间"的点。
+ *
+ * 现在的取用顺序：
+ *   ① IndexedDB —— native / 目录句柄模式解析过的完整记录（也含此前本函数回填过的）
+ *   ② Gallery 后端 `/anima/gallery/meta?path=` —— 摘要条目按需补全（一次几十 KB，本地毫秒级）
+ *      取到后**落 IDB + 回写内存**：同一张再取就是零请求
+ *   ③ 都没有 → 调用方自行回落内存摘要（prompt/loras 至少有）
+ */
+const _fullMetaInflight = new Map<string, Promise<OutputMetadata | null>>()
+
+/**
+ * gallery 条目的内容指纹：**带后端解析器版本**。
+ * 为什么必须带版本：图没变（mtime/size 都不变）、只有**提取逻辑**变了时，光看 mtime+size
+ * 无法区分新旧结果 —— 后端 `PARSER_VERSION` 一变，指纹跟着变，本地缓存（IndexedDB 回填记录、
+ * 内存已提取标记）自然失效并重新解析。实测踩过：只按 mtime/size 做指纹时，
+ * 后端改了 prompt 提取逻辑，前端仍长期拿旧结果（用户视角就是"重启了还是老样子"）。
+ */
+function galleryFingerprint(mtimeMs: number, size: number): string {
+  return `g${galleryParserVersion()}:${Math.round(mtimeMs / 1000)}:${size}`
+}
+
+/** 后端 meta 响应 → 前端 OutputMetadata（imageId 必须换成前端 hashPath id，后端给的是相对路径）。 */
+function normalizeGalleryMeta(full: Record<string, unknown>, file: OutputFile, fileId: string): OutputMetadata {
+  const text = (v: unknown) => (typeof v === 'string' ? v : v == null ? '' : String(v))
+  const raw = (full.rawMetadata && typeof full.rawMetadata === 'object')
+    ? full.rawMetadata as Record<string, string>
+    : {}
+  return {
+    imageId: fileId,
+    model: text(full.model), seed: text(full.seed), steps: text(full.steps), cfg: text(full.cfg),
+    sampler: text(full.sampler), scheduler: text(full.scheduler), vae: text(full.vae),
+    clipSkip: Number(full.clipSkip) || 0,
+    prompt: text(full.prompt), negativePrompt: text(full.negativePrompt),
+    workflowJson: text(full.workflowJson), rawMetadata: raw,
+    loras: Array.isArray(full.loras) ? full.loras as string[] : [],
+    hasWorkflow: !!full.hasWorkflow || !!text(full.workflowJson),
+    lorasExtracted: true,
+    // 与 gallery 摘要同款指纹：同一张图不会因"摘要 → 完整版"的写入把已提取结果判成变了
+    workflowFingerprint: galleryFingerprint(file.mtime, file.size),
+  }
+}
+
+async function loadFullOutputMeta(fileId: string): Promise<OutputMetadata | null> {
+  if (!fileId) return null
+  const state = useOutputStore.getState()
+  const file = state.files.find(f => f.id === fileId)
+  // ① IndexedDB：完整记录（有 workflowJson 才算完整，摘要版不会进 DB）
+  try {
+    const row = await outputsDb.metadata.get(fileId)
+    if (row?.workflowJson) {
+      // 新鲜度校验：gallery 回填的记录带 `g<parserVersion>:…` 指纹，指纹一致才算可用。
+      // 后端解析器换代时图没变、指纹变 → 视为过期，重新向后端取（否则一直拿旧语义的 prompt）。
+      const fresh = !galleryIndexEnabled() || !file
+        || row.workflowFingerprint === galleryFingerprint(file.mtime, file.size)
+      if (fresh) return row
+    } else if (row && !galleryIndexEnabled()) {
+      // 没有 workflow 也要留意：native/句柄模式下"无工作流"是合法结论，此时直接返回它
+      return row
+    }
+  } catch { /* DB 读失败：继续走 gallery 回退 */ }
+  // ② Gallery 后端按需补全（并发去重：连点/多入口同时取同一张只发一次请求）
+  if (!galleryIndexEnabled()) return state.metadataCache.get(fileId) ?? null
+  const inflight = _fullMetaInflight.get(fileId)
+  if (inflight) return inflight
+  const task = (async (): Promise<OutputMetadata | null> => {
+    // 用外层取到的 file（同一次调用内 store.files 不会变；重名遮蔽只会让人误读）
+    if (!file) return null
+    const full = await fetchGalleryMeta(file.path)
+    if (!full) return null
+    const record = normalizeGalleryMeta(full, file, fileId)
+    if (!record.workflowJson) return null
+    // 落 IDB：下次（含页面刷新后）零请求；失败不影响本次返回
+    void outputsDb.metadata.put(record).catch(() => { /* 存储失败：仅失去持久化 */ })
+    // 回写内存（走 store 的合并逻辑，保留摘要里已有的 loras 与已提取标记）
+    useOutputStore.getState().putMetadata(record)
+    return record
+  })()
+  _fullMetaInflight.set(fileId, task)
+  void task.then(() => { _fullMetaInflight.delete(fileId) }, () => { _fullMetaInflight.delete(fileId) })
+  return task
+}
+
+/**
+ * 标记「这一张确认取不到元数据」（内存、IDB、gallery 后端都没有）。
+ * 目的只有一个：让可见区观察器的早退判据成立（`!hasWorkflow`），
+ * 否则这些条目每次进屏都会重新入队 → 反复读盘/请求却永远拿不到结果（实测会刷出上万条日志）。
+ * 只写内存，**不写 IDB** —— 后端索引更新后（refreshOutputsFromGallery 会重建 files + 摘要）自动重新收录。
+ */
+function markMetadataUnavailable(fileId: string): void {
+  useOutputStore.getState().putMetadata({
+    imageId: fileId, model: '', seed: '', steps: '', cfg: '', sampler: '', scheduler: '',
+    vae: '', clipSkip: 0, prompt: '', negativePrompt: '', workflowJson: '', rawMetadata: {},
+    loras: [], hasWorkflow: false, lorasExtracted: true,
+  })
+}
+
+/**
+ * 写剪贴板（**带兜底与超时**）。
+ *
+ * 为什么不能直接 `await navigator.clipboard.writeText()`（2026-09-17 实测）：
+ * 它在两种真实场景下**既不 resolve 也不 reject，就是一直挂着** —— 页面失焦、或权限被策略拒绝时。
+ * 后果是 `await` 之后的 `showToast` 永远不执行 ⇒ **用户点了按钮毫无反应**（既没成功提示也没失败提示）。
+ * （实测：在无焦点的自动化上下文里，`clipboard.writeText()` 挂到 CDP 调用超时；同一份代码在人工点击时正常。）
+ * 所以：1.2s 超时 + `execCommand('copy')` 回退，并**返回是否成功**，让调用方一定给出反馈。
+ */
+async function writeClipboard(text: string): Promise<boolean> {
+  try {
+    const ok = await Promise.race([
+      navigator.clipboard.writeText(text).then(() => true),
+      new Promise<boolean>(resolve => setTimeout(() => resolve(false), 1200)),
+    ])
+    if (ok) return true
+  } catch { /* 被拒绝 → 走下面的回退 */ }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0'
+    document.body.appendChild(ta)
+    ta.select()
+    const done = document.execCommand('copy')
+    ta.remove()
+    return !!done
+  } catch {
+    return false
   }
 }
 
@@ -253,9 +387,11 @@ function scheduleOutputsIdleWarmup() {
   if (_warmupScheduled) return
   _warmupScheduled = true
   const run = () => {
-    void prepareOutputsData().then(() => {
+    void prepareOutputsData().then((ok) => {
       // 用户可能已经切到 outputs（或正停在这里）：把刚落库的数据显出来
       if (isOutputsActive()) renderOutputsView()
+      // 数据已就位 → 顺手把**最新这批图**的完整元数据也备好（用户下一步多半就是点进 outputs 复制）
+      if (ok) scheduleFullMetadataWarmup()
     })
   }
   if (typeof window.requestIdleCallback === 'function') {
@@ -587,6 +723,55 @@ async function refreshOutputsFromGallery() {
 
 let _lastIncrementalScan = 0
 
+// ── 首屏完整元数据预热（2026-09-17）──
+// 用户要求：面板关着 → 点进工具箱 → outputs 里的图"直接就能复制使用"。
+// 摘要（gallery manifest，面板启动即入库）已覆盖 prompt / LoRA 名字；
+// 但「复制 LoRA 标签（带权重）」「查看元数据」「下载工作流」要的是**完整工作流** ——
+// gallery 模式必须向后端按需取一次。为了不让用户在那儿等，进入栏目后在**空闲时间**
+// 把**当前可见的卡**静默补全：
+//   · 只补可见区（一屏），不随滚动无限拉 —— 否则浏览几百张就是几十 MB 的请求
+//   · 并发 2、失败静默、取到即落 IDB（下次连请求都没有）
+//   · 绝不进首屏关键路径（requestIdleCallback，且首帧之后才排）
+const FULL_META_WARM_CONCURRENCY = 2
+/** 一轮预热最多补多少张：够铺满一屏多一点，避免在超大屏上把一整屏拉满 */
+const FULL_META_WARM_MAX = 24
+let _fullMetaWarmToken = 0
+
+function scheduleFullMetadataWarmup(): void {
+  if (!galleryIndexEnabled()) return
+  const token = ++_fullMetaWarmToken
+  const run = () => {
+    if (token !== _fullMetaWarmToken) return
+    let ids = Array.from(document.querySelectorAll<HTMLElement>('.outputs-card[data-id], .outputs-list-card[data-id]'))
+      .map(el => el.dataset.id || '')
+      .filter(Boolean)
+      .slice(0, FULL_META_WARM_MAX)
+    // 还没有卡片 DOM（面板刚启动、用户尚未切到 Outputs）→ 用 store 里最新的这批：
+    // 用户马上要看的多半就是刚生成的那几张，这样"点进来"时东西已经在手上（零等待）。
+    if (ids.length === 0) {
+      ids = useOutputStore.getState().filteredFiles.slice(0, FULL_META_WARM_MAX).map(f => f.id)
+    }
+    if (ids.length === 0) return
+    void runFullMetadataWarm(ids, token)
+  }
+  const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback
+  if (typeof idle === 'function') idle(run, { timeout: 3000 })
+  else setTimeout(run, 600)
+}
+
+/** 并发受控地把这一屏的完整元数据补齐（token 失效即停：用户已切走/又进了一次栏目）。 */
+async function runFullMetadataWarm(ids: string[], token: number): Promise<void> {
+  let cursor = 0
+  const worker = async (): Promise<void> => {
+    while (token === _fullMetaWarmToken) {
+      const id = ids[cursor++]
+      if (!id) return
+      try { await loadFullOutputMeta(id) } catch { /* 静默：单张失败不影响其余 */ }
+    }
+  }
+  await Promise.all(Array.from({ length: FULL_META_WARM_CONCURRENCY }, () => worker()))
+}
+
 export async function activateOutputs() {
   if (!_initDone) return
   if (_nativeOutputs) {
@@ -610,6 +795,9 @@ export async function activateOutputs() {
     if (Date.now() - _lastOutputsProbeAt >= 5000) {
       void prepareOutputsData().then(() => { if (isOutputsActive()) renderOutputsView() })
     }
+    // 首屏可见卡的**完整**元数据静默补全（空闲时跑，见 scheduleFullMetadataWarmup）：
+    // 用户点进来后「复制 LoRA 标签 / 查看元数据」应当是即时的，而不是等到点击才去后端取
+    scheduleFullMetadataWarmup()
   }
 
   // 有目录句柄时尝试增量扫描
@@ -1227,12 +1415,9 @@ function bindOutputsEvents() {
         // 按需读取**这一张**的元数据（内存 → 单条 DB 读），不再依赖「进页面时已全量预载」
         const meta = await useOutputStore.getState().loadMetadata(id)
         if (meta?.prompt) {
-          try {
-            await navigator.clipboard.writeText(meta.prompt)
-            showToast('Prompt 已复制到剪贴板')
-          } catch {
-            showToast('复制失败')
-          }
+          // 走带兜底的写入：剪贴板被拒/挂起时也要给用户一句话，而不是"点了没反应"
+          const ok = await writeClipboard(meta.prompt)
+          showToast(ok ? 'Prompt 已复制到剪贴板' : '⚠️ 复制失败：浏览器拒绝了剪贴板访问')
         } else {
           showToast('该图片无 Prompt')
         }
@@ -1253,13 +1438,13 @@ function bindOutputsEvents() {
     if (copyLoraBtn) {
       const id = copyLoraBtn.dataset.id
       if (id) {
-        // 完整 workflow（含权重）从 DB 懒读——内存缓存是瘦身版（无 workflowJson）
-        const full = await outputsDb.metadata.get(id)
+        // 完整 workflow（含权重）：IDB 优先，gallery 模式自动从后端按需补全（不再是"必须先点刷新"）
+        const full = await loadFullOutputMeta(id)
         if (full?.workflowJson) {
           const tags = extractLoraTagsFromWorkflow(full.workflowJson, full.rawMetadata)
           if (tags.length > 0) {
-            await navigator.clipboard.writeText(tags.join(', '))
-            showToast(`已复制 ${tags.length} 个 LoRA 标签`)
+            const ok = await writeClipboard(tags.join(', '))
+            showToast(ok ? `已复制 ${tags.length} 个 LoRA 标签` : '⚠️ 复制失败：浏览器拒绝了剪贴板访问')
           } else {
             showToast('未检测到 LoRA 节点')
           }
@@ -1275,8 +1460,8 @@ function bindOutputsEvents() {
     if (dlWfBtn) {
       const id = dlWfBtn.dataset.id
       if (id) {
-        // 完整 workflow 从 DB 懒读（内存缓存为瘦身版）
-        const meta = await outputsDb.metadata.get(id)
+        // 完整 workflow：统一入口（IDB → gallery 后端按需）
+        const meta = await loadFullOutputMeta(id)
         const file = useOutputStore.getState().files.find(f => f.id === id)
         await downloadOutputWorkflow(meta ?? undefined, file?.filename || 'workflow')
       }
@@ -2176,8 +2361,15 @@ async function pumpVisibleMetadata(): Promise<void> {
     const id = _visibleMetaQueue.shift()!
     _visibleMetaRunning++
     void useOutputStore.getState().loadMetadata(id, { loras: true })
-      .then(() => {
+      .then(async () => {
         _metaRetry.delete(id)
+        // ── Gallery 模式兜底（2026-09-17）：内存与 IDB 都没有这一条（典型场景：刚重命名 →
+        //    id 变了、或索引尚未收录）时向后端要一次；再拿不到就写一条「已确认无元数据」，
+        //    否则早退判据永远不成立 → 每次进屏都重新入队 → 又变成刷日志的空转循环。
+        if (!useOutputStore.getState().metadataCache.has(id) && galleryIndexEnabled()) {
+          const full = await loadFullOutputMeta(id)
+          if (!full) markMetadataUnavailable(id)
+        }
         const c = useOutputStore.getState().metadataCache.get(id)
         if (META_DBG) console.log('[meta-dbg] pumped', id, { loras: c?.loras?.length, extracted: c?.lorasExtracted, hasWf: c?.hasWorkflow })
         if (useOutputStore.getState().metadataCache.has(id)) scheduleMetaRefresh()
@@ -2313,7 +2505,7 @@ async function restoreOutputsFromDb(): Promise<boolean> {
           sampler: e.sampler || '', scheduler: e.scheduler || '', vae: '', clipSkip: 0,
           prompt: e.prompt || '', negativePrompt: '', workflowJson: '', rawMetadata: {},
           loras: e.loras || [], hasWorkflow: !!e.hasWorkflow, lorasExtracted: true,
-          workflowFingerprint: `g:${e.mtime}:${e.size}`,
+          workflowFingerprint: galleryFingerprint((e.mtime || 0) * 1000, e.size || 0),
         })
       }
       useOutputStore.setState({
@@ -2616,7 +2808,7 @@ async function compressImage(blob: Blob, maxDimension = 1920): Promise<Blob> {
 async function saveOutputPromptToLibrary(fileId: string): Promise<void> {
   const state = useOutputStore.getState()
   const file = state.files.find(f => f.id === fileId)
-  const meta = (await outputsDb.metadata.get(fileId)) ?? state.metadataCache.get(fileId)
+  const meta = (await loadFullOutputMeta(fileId)) ?? state.metadataCache.get(fileId)
   if (!file || !meta?.prompt.trim()) {
     showToast('该图片无 Prompt，无法保存')
     return
@@ -2808,8 +3000,8 @@ async function openMetaPanel(fileId: string) {
   const state = useOutputStore.getState()
   const file = state.files.find(f => f.id === fileId)
   if (!file) return
-  // 完整元数据（含 workflowJson）从 DB 懒读——内存缓存为瘦身版，面板/下载需要完整数据
-  const meta = (await outputsDb.metadata.get(fileId)) ?? state.metadataCache.get(fileId) ?? null
+  // 完整元数据（含 workflowJson）：统一入口 —— IDB 命中即用，gallery 模式自动从后端补全
+  const meta = (await loadFullOutputMeta(fileId)) ?? state.metadataCache.get(fileId) ?? null
 
   const overlay = document.createElement('div')
   overlay.style.cssText = 'position:fixed;inset:0;background:radial-gradient(ellipse at top,rgba(10,10,15,0.85),rgba(2,2,3,0.95));z-index:99999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);'

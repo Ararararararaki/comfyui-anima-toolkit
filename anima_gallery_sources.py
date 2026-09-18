@@ -6,7 +6,8 @@
 
     GallerySource.search(query, cursor, limit, **filters) -> (items, next_cursor)
     GallerySource.images_headers() -> {请求头}      （图片代理取图时附加，P站的 Referer 靠它）
-    GallerySource.capabilities()   -> {tags,prompt,nsfw,login}   （前端隐藏/禁用控件的唯一依据）
+    GallerySource.capabilities()   -> {tags,prompt,nsfw,login,query,page_numbers}
+                                                      （前端隐藏/禁用控件的唯一依据）
 
 适配器接入约定（两种都支持，越简单越好）：
   1. **推荐**：模块里放一个图源实例 `SOURCE = MySource()`，本模块加载时自动注册；
@@ -82,17 +83,28 @@ ITEM_KEYS: tuple[str, ...] = (
 # capabilities 的键就是前端「隐藏/禁用控件」的全部依据（多一个少一个都会让前端判错）。
 # 第 5 键 `query` 是 2026-09-15 的契约补充（PLAN §6）：C站 图片端点实测不支持关键词搜索 → false，
 # 前端据此自动禁用/标注搜索框（**不按源名硬编码**）；D站（标签检索）/P站（search/illust）都是 true。
-CAPABILITY_KEYS: tuple[str, ...] = ("tags", "prompt", "nsfw", "login", "query")
+# 第 6 键 `page_numbers` 是 2026-09-15 的分页契约补充：该图源**能否按页码跳转**（前端据此决定
+# 画页码窗口还是只给「上一批/下一批」）。⚠️ 必须是**布尔**（`normalize_capabilities` 会 `bool(...)` 强转，
+# 写成 `pagination: "page"` 这类字符串枚举会被转成 True、语义全错）：
+#   · P站  → true  ：上游 search/illust 支持 `page` 且固定每页 30 条（见 anima_gallery_pixiv 的换算注释）；
+#   · C站  → false ：上游分页只有不透明 `cursor`，实测 `page`/`skip` 参数完全无效（见 anima_gallery_civitai）；
+#   · D站  → true  ：走的是老路由 `/anima/danbooru/posts`（page 分页），**不在本模块的注册表里**，
+#                    由前端兜底表声明，本模块不代它表态；
+#   · 缺省 → false ：没声明能力的源一律按「只能 cursor 翻批」处理，前端不会画出一个点了没反应的页码框。
+CAPABILITY_KEYS: tuple[str, ...] = ("tags", "prompt", "nsfw", "login", "query", "page_numbers")
 
 # 各能力的**缺省值**（源没显式声明时用）：
 # · 不认识的能力默认「不支持」—— 前端最多少显示一个控件，不会点出一个假功能；
-# · 但 `query` 反过来缺省 True：绝大多数图源都能按关键词检索，缺省 false 会把搜索框误禁掉。
+# · 但 `query` 反过来缺省 True：绝大多数图源都能按关键词检索，缺省 false 会把搜索框误禁掉；
+# · `page_numbers` 与 `tags` 同向缺省 False：能按页码跳转是**少数图源**的能力（P站/D站），
+#   缺省 true 会让前端给一个只认 cursor 的源画出页码输入框 → 用户点了没反应。
 CAPABILITY_DEFAULTS: dict[str, bool] = {
     "tags": False,
     "prompt": False,
     "nsfw": False,
     "login": False,
     "query": True,
+    "page_numbers": False,
 }
 
 # 统一 item 里允许出现的「原始字段别名」：各源回包字段名不同，这里做一层收敛。
@@ -138,7 +150,7 @@ class GallerySource(Protocol):
         ...
 
     def capabilities(self) -> dict[str, bool]:
-        """`{"tags","prompt","nsfw","login"}` 四个 bool。"""
+        """`{"tags","prompt","nsfw","login","query","page_numbers"}` 六个 bool（缺的按键缺省补）。"""
         ...
 
 
@@ -283,8 +295,9 @@ def normalize_items(raw_items: Any, source: str = "", mapper: Any = None) -> lis
 def normalize_capabilities(capabilities: Any) -> dict[str, bool]:
     """capabilities 收敛成契约里的**恰好这些键**（多余键丢弃；缺的按键缺省补，见 `CAPABILITY_DEFAULTS`）。
 
-    ⚠️ 这里是 `query` 能否真的发到前端的**唯一咽喉**：源的 `capabilities()` 写成方法、属性、
-    可调用 dict 都行，但都必须过这一关（旧版本只回 4 键，PLAN §6 的 `query:false` 因此永远发不出去）。
+    ⚠️ 这里是 `query` / `page_numbers` 能否真的发到前端的**唯一咽喉**：源的 `capabilities()`
+    写成方法、属性、可调用 dict 都行，但都必须过这一关（旧版本只回 4 键，PLAN §6 的 `query:false`
+    因此永远发不出去；加第 6 键 `page_numbers` 时同样只有走到这里的键前端才看得到）。
     """
     data = capabilities if isinstance(capabilities, dict) else {}
     return {key: bool(data.get(key, CAPABILITY_DEFAULTS.get(key, False))) for key in CAPABILITY_KEYS}
