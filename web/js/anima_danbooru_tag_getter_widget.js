@@ -203,6 +203,41 @@
       // 于是"选了预设之后底下的开关看起来一个都没变"（值其实变了）。
       if (control && control.toggle) control.toggle.checked = widget.value;
       if (control && control.row) control.row.classList.toggle("is-selected", widget.value);
+      // ★ 用户**手动**改开关 = 离开任何命名预设 —— 见 releasePresetOnManualEdit。
+      // applyPreset() 自己批量写值时会用 _applyingPreset 跳过本逻辑。
+      if (!this._applyingPreset) this.releasePresetOnManualEdit(category);
+    }
+
+    /**
+     * 手动改开关 → 把预设切回「自定义（不用预设）」。
+     *
+     * 为什么必须在**前端**解除：后端 `get_tags` 执行时会调
+     * `_apply_preset(preset, category_flags)`，而自定义预设存的是**完整开关快照**
+     * （`_apply_custom_preset` 对 `CATEGORY_NAMES` 无差别覆盖），于是用户在这次执行前
+     * 改过的开关会被预设快照盖回去 —— **UI 显示 false、提交值也是 false，实际生效却是 true**，
+     * 面板上完全看不出来。
+     *
+     * 用户 2026-09-20 实报："图一明明关闭了背景词却输出了 simple background"。
+     * 实测复现：preset="普通过滤"（data/tag_presets.json 里 `背景词: true`）时，
+     * `_apply_preset` 把提交的 `背景词=false` 展开成 `true`，输出含 simple background、
+     * dropped=0；换成"不用预设"则正确丢弃 25 个词。
+     *
+     * 把预设名切回"不用预设"是最诚实的表达：**开关值才是真实状态**，
+     * 名字不该继续宣称"我还在用那套预设"。预设本身仍然可用 —— 从下拉里选它即可套用。
+     */
+    releasePresetOnManualEdit(category) {
+      const widget = this.widgetFor("preset");
+      const current = String(this.presetSelect?.value ?? widget?.value ?? PRESET_NONE);
+      if (!current || current === PRESET_NONE) return;
+      if (this.presetSelect) this.presetSelect.value = PRESET_NONE;
+      if (widget) {
+        widget.value = PRESET_NONE;
+        if (typeof widget.callback === "function") widget.callback(PRESET_NONE);
+      }
+      this.updatePresetHint(PRESET_NONE);
+      this.setPresetStatus(
+        `开关已手动改动 → 切到「自定义（不用预设）」，改的「${category}」现在生效；`
+        + `预设「${current}」只在你从下拉里选它时才套用`);
     }
 
     setFilterValue(name, value) {
@@ -222,6 +257,10 @@
       this.node.graph?.change();
       const control = this.weightControls.get(category);
       if (control && control.value !== this.formatWeight(widget.value)) control.value = this.formatWeight(widget.value);
+      // 与开关对称：手动改权重同样算"离开预设"。
+      // （后端 `_apply_preset` 已改为"显式传参优先"，所以行为上本来就不会被覆盖；
+      //   这里是为了让面板名实一致，并给用户一句解释。）
+      if (!this._applyingPreset) this.releasePresetOnManualEdit(`${category}权重`);
     }
 
     hideNativeWidget(widget) {
@@ -511,37 +550,46 @@
     // ── 场景预设 ──
 
     applyPreset(name) {
-      const spec = PRESETS[name];
-      // 自定义预设（后端 data/tag_presets.json）存的是**完整开关快照 + 权重**，
-      // 不在前端这张内置表里 —— 只查 PRESETS 会给自定义预设拿到空 spec，
-      // 结果 20 个开关一个都不动（"选了没反应"）。
-      const custom = spec ? null : (this.customPresets || {})[name];
-      if (spec) {
-        CATEGORY_NAMES.forEach((category) => {
-          let next = Boolean(this.widgetFor(category)?.value);
-          if (spec.only) next = spec.only.includes(category);
-          if (spec.off && spec.off.includes(category)) next = false;
-          this.setWidgetValue(category, next);
-        });
-      } else if (custom) {
-        const flags = custom.flags || {};
-        CATEGORY_NAMES.forEach((category) => {
-          if (category in flags) this.setWidgetValue(category, Boolean(flags[category]));
-        });
-        Object.entries(custom.weights || {}).forEach(([category, value]) => {
-          if (typeof value === "number" && Number.isFinite(value)) {
-            this.setWeightValue(category, value);
-          }
-        });
+      // 套用期间屏蔽 setWidgetValue 里的"手动改动即脱离预设"：
+      // 否则这里刚写下去的第一个开关就会把预设名清成「不用预设」，
+      // 剩下的开关没人套用（"选了预设没反应"的历史 bug 会以新形态复发）。
+      const previousApplying = this._applyingPreset;
+      this._applyingPreset = true;
+      try {
+        const spec = PRESETS[name];
+        // 自定义预设（后端 data/tag_presets.json）存的是**完整开关快照 + 权重**，
+        // 不在前端这张内置表里 —— 只查 PRESETS 会给自定义预设拿到空 spec，
+        // 结果 20 个开关一个都不动（"选了没反应"）。
+        const custom = spec ? null : (this.customPresets || {})[name];
+        if (spec) {
+          CATEGORY_NAMES.forEach((category) => {
+            let next = Boolean(this.widgetFor(category)?.value);
+            if (spec.only) next = spec.only.includes(category);
+            if (spec.off && spec.off.includes(category)) next = false;
+            this.setWidgetValue(category, next);
+          });
+        } else if (custom) {
+          const flags = custom.flags || {};
+          CATEGORY_NAMES.forEach((category) => {
+            if (category in flags) this.setWidgetValue(category, Boolean(flags[category]));
+          });
+          Object.entries(custom.weights || {}).forEach(([category, value]) => {
+            if (typeof value === "number" && Number.isFinite(value)) {
+              this.setWeightValue(category, value);
+            }
+          });
+        }
+        const widget = this.widgetFor("preset");
+        if (widget) {
+          widget.value = name;
+          if (typeof widget.callback === "function") widget.callback(name);
+        }
+        this.node.graph?.change();
+        this.updateCount();
+        this.updatePresetHint(name);
+      } finally {
+        this._applyingPreset = previousApplying;
       }
-      const widget = this.widgetFor("preset");
-      if (widget) {
-        widget.value = name;
-        if (typeof widget.callback === "function") widget.callback(name);
-      }
-      this.node.graph?.change();
-      this.updateCount();
-      this.updatePresetHint(name);
     }
 
     updatePresetHint(name) {
@@ -592,8 +640,77 @@
         this.customPresets = (data && typeof data.presets === "object" && data.presets) || {};
         (data?.names || []).forEach((name) => this.appendPresetOption(name));
       } catch (error) {
-        /* 拉不到就只少自定义那部分 */
+        // 不静默：拉不到自定义预设时，`presetExpectedFlags` 无法判断期望值 ⇒ 载入对账退化为
+        // "不摘预设"。留一条 warn，免得以后又把"对账没生效"误判成"对账逻辑写错了"。
+        console.warn("[TK Tag Getter] 拉取 /anima/tag_presets 失败，载入对账可能无法生效：", error);
       }
+      // 自定义预设拉齐之后再对账 —— 否则会误判成"不认识的预设名"而放过。
+      this.reconcilePresetWithSwitches();
+    }
+
+    /**
+     * 载入时对账：**开关值才是真实状态**，预设名只是标签。
+     *
+     * 后端 `get_tags` 执行时会调 `_apply_preset(preset, flags)`，自定义预设存的是
+     * **完整开关快照**（`_apply_custom_preset` 对 CATEGORY_NAMES 无差别覆盖），
+     * 所以只要 preset 名还挂着，运行期就会把开关盖回快照值 —— UI 与提交值都是
+     * false、实际生效 true，面板上完全看不出来。
+     *
+     * 用户 2026-09-20 实报的工作流正是这个状态：preset="普通过滤"
+     * （`data/tag_presets.json` 里 `背景词: true`）但「背景词」开关已关。
+     * 只靠"手动改开关才摘预设"救不了这份**已保存**的工作流（用户不动开关就还是错的），
+     * 所以载入后立刻比对一次：**只要开关与预设快照不一致，就把预设名摘成
+     * 「自定义（不用预设）」**，让面板显示与运行期行为重新一致。
+     *
+     * 正常情况（选了预设后没手动改过）两者一致 ⇒ 不会被摘，预设照常可用。
+     */
+    reconcilePresetWithSwitches() {
+      const widget = this.widgetFor("preset");
+      const name = String(this.presetSelect?.value ?? widget?.value ?? PRESET_NONE);
+      if (!name || name === PRESET_NONE) return;
+
+      const expected = this.presetExpectedFlags(name);
+      if (!expected) return;                       // 不认识的预设名：不动，交给后端旧语义
+      const mismatched = CATEGORY_NAMES.filter((category) => {
+        if (!(category in expected)) return false;
+        return Boolean(this.widgetFor(category)?.value) !== Boolean(expected[category]);
+      });
+      if (!mismatched.length) return;
+
+      if (this.presetSelect) this.presetSelect.value = PRESET_NONE;
+      if (widget) {
+        widget.value = PRESET_NONE;
+        if (typeof widget.callback === "function") widget.callback(PRESET_NONE);
+      }
+      this.updatePresetHint(PRESET_NONE);
+      this.setPresetStatus(
+        `此工作流保存时用的预设「${name}」与实际开关不一致（${mismatched.join("、")}），`
+        + `已自动切到「自定义（不用预设）」—— 现在按面板上的开关执行，不会再被预设覆盖`);
+    }
+
+    /** 预设对每个分类的期望开关值；内置预设按 only/off 规则推，自定义预设用其快照。 */
+    presetExpectedFlags(name) {
+      const spec = PRESETS[name];
+      const custom = spec ? null : (this.customPresets || {})[name];
+      if (!spec && !custom) return null;
+      const expected = {};
+      CATEGORY_NAMES.forEach((category) => {
+        if (custom) {
+          const flags = custom.flags || {};
+          if (category in flags) expected[category] = Boolean(flags[category]);
+          return;
+        }
+        // 与后端 `_apply_preset` 的优先级**逐条对齐**：先 only、后 off（off 覆盖 only）。
+        // 写成 `else if` 会在 `{only:[…], off:[…]}` 并存时推出错误的期望值 ⇒ 误摘预设。
+        // 当前内置预设只剩「不用预设」（本分支是死代码），但一旦恢复规则型预设就会咬人。
+        if (spec.only) {
+          expected[category] = spec.only.includes(category);
+        }
+        if (spec.off && spec.off.includes(category)) {
+          expected[category] = false;
+        }
+      });
+      return expected;
     }
 
     /** 把自定义预设名加进下拉（已存在则不动）。 */
@@ -708,8 +825,12 @@
       this.reportListener = ({ detail }) => {
         const nodeId = String(this.node?.id ?? "");
         if (!nodeId || String(detail?.node ?? "") !== nodeId) return;
-        const report = detail?.output?.tk_filter_report;
-        if (!report) return;                                  // 不是本节点的执行结果
+        // ComfyUI 的 ui 通道约定「每个值都是 list」（execution.py 用
+        // `[y for x in uis for y in x[k]]` 展平）。后端因此回传 `[报告]`；
+        // 这里同时容忍历史上的单 dict 形态，避免旧缓存/旧版本回放时又瞎一次。
+        const raw = detail?.output?.tk_filter_report;
+        const report = Array.isArray(raw) ? raw[0] : raw;
+        if (!report || typeof report !== "object") return;    // 不是本节点的执行结果
         this.reportData = report;
         this.renderFilterReport(report);
       };
@@ -885,6 +1006,12 @@
       }
       this.updatePresetHint(String(presetWidget?.value || PRESET_NONE));
       this.updateCount();
+      // ★ 载入收尾再对账一次（幂等）。`refreshPresetOptions()` 是**唯一**触发对账的地方，
+      // 而它只被 build() 调用 —— 于是两类路径会漏掉对账：
+      //   ① 只走 configure 不重新 build（复制粘贴节点 / 部分加载）；
+      //   ② 那次 fetch 失败被 catch 吞掉时（此时 customPresets 为空、对账无从判断）。
+      // 在 load() 末尾补一次，配合下面 catch 里的 warn，把这两条静默失效路径堵掉。
+      this.reconcilePresetWithSwitches();
     }
   }
 

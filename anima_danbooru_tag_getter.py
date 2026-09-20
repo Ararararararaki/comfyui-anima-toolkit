@@ -486,6 +486,17 @@ class AnimaTKDanbooruTagGetter:
         * **内置**（``cls.PRESETS``）：只声明 ``off`` / ``only`` 规则；
         * **自定义**（``data/tag_presets.json``）：存的是用户保存的完整开关快照 + 权重。
 
+        ⚠️ **显式传参优先，预设只补缺省键**（2026-09-20 修）。
+        过去这里**无条件**用预设快照覆盖调用方传来的开关，于是：
+        用户在面板上关掉「背景词」→ 提交值确实是 ``False``，但执行期被
+        ``preset="普通过滤"``（快照里 ``背景词: true``）盖回去 ⇒
+        「明明关了却还输出 simple background」，而且**面板与底栏都看不出异常**
+        （报告是按覆盖后的值生成的，dropped 为空）。用户实报即此。
+        现在：GUI 每次都传全量 20 个键 ⇒ 预设不再覆盖任何显式开关，名实不符的
+        工作流直接以开关为准；只传 ``preset`` 名、不传开关的调用方（API/脚本）
+        ``provided`` 为空 ⇒ 快照整套补上，**「选预设 = 整套套用」的能力不变**
+        （该套用本身发生在前端 ``applyPreset`` 写开关那一刻）。
+
         只改开关状态，不引入任何隐藏状态 —— 展开结果会写回各 BOOLEAN 控件，
         因此工作流保存后就是一份普通的开关快照，行为可预期、可手改。
 
@@ -493,6 +504,10 @@ class AnimaTKDanbooruTagGetter:
         里除了分类布尔值还带着 ``<分类>_weight`` 键，重建会把权重全部丢掉，
         导致所有分类权重静默失效。
         """
+        # ★ 必须在下面 ``_coerce_flag`` 补全**之前**取"调用方真正传了哪些键"：
+        # 补全之后 flags 恒为全量，就再也分不出"用户设的"与"预设补的"了。
+        provided = {name for name in cls.CATEGORY_NAMES if name in category_flags}
+        provided_weights = {name for name in cls.WEIGHT_INPUTS.values() if name in category_flags}
         flags = dict(category_flags)
         for category in cls.CATEGORY_NAMES:
             flags[category] = cls._coerce_flag(category, category_flags.get(category))
@@ -500,8 +515,14 @@ class AnimaTKDanbooruTagGetter:
         if spec is None:
             custom = cls.custom_presets().get(str(preset_name or "").strip())
             if custom:
-                return cls._apply_custom_preset(custom, flags)
+                return cls._apply_custom_preset(custom, flags, provided, provided_weights)
             spec = {}
+        # ⚠️ 内置「规则型」预设（only/off）**保持覆盖调用方的值** —— 与自定义快照相反。
+        # 规则是"我明确要求只留这些 / 关掉这些"，本来就该压过当前开关
+        # （语义由 `test_preset_off_turns_off_named_categories_only` 与
+        #  `test_preset_only_turns_everything_else_off` 锁定：显式传 True 也要被 off 关掉）。
+        # 自定义预设存的是"一份完整开关快照"，与用户手上的开关是**同一维度**的东西，
+        # 所以只有那边改成"显式传参优先"（见 `_apply_custom_preset`）。
         if "only" in spec:
             allowed = set(spec["only"])
             for category in cls.CATEGORY_NAMES:
@@ -512,15 +533,26 @@ class AnimaTKDanbooruTagGetter:
         return flags
 
     @classmethod
-    def _apply_custom_preset(cls, preset, flags):
-        """应用自定义预设快照：开关 + 权重一起还原（权重键与控件名同名）。"""
+    def _apply_custom_preset(cls, preset, flags, provided=None, provided_weights=None):
+        """应用自定义预设快照：开关 + 权重一起还原（权重键与控件名同名）。
+
+        ``provided`` / ``provided_weights`` = 调用方**显式**传了值的键名集合，
+        它们优先于快照（见 ``_apply_preset`` 的说明）。省略时退化为旧行为（整套覆盖），
+        以免任何按旧签名调用的地方（脚本、测试）语义突变。
+        """
+        provided = provided or set()
+        provided_weights = provided_weights or set()
         snapshot = preset.get("flags") or {}
         for category in cls.CATEGORY_NAMES:
+            if category in provided:
+                continue
             if category in snapshot:
                 flags[category] = bool(snapshot[category])
         for category, value in (preset.get("weights") or {}).items():
             input_name = cls.WEIGHT_INPUTS.get(category)
-            if input_name and isinstance(value, (int, float)):
+            if not input_name or input_name in provided_weights:
+                continue
+            if isinstance(value, (int, float)):
                 flags[input_name] = float(value)
         return flags
 
@@ -821,7 +853,14 @@ class AnimaTKDanbooruTagGetter:
             if natural:
                 tag_text = f"{tag_text}\n\n{natural}" if tag_text else natural
             report["natural_language"] = natural
-            return {"ui": {"tk_filter_report": self._finalise_report(report)},
+            # ⚠️ ui 通道的**每个值必须是 list** —— ComfyUI execution.py:411 用
+            # `ui = {k: [y for x in uis for y in x[k]] for k in uis[0].keys()}`
+            # 把多次调用的同名 ui 值拼成一个列表（它假定值是 list）。
+            # 直接传 dict 会被 `for y in dict` 迭代成 **keys 列表**，前端拿到的就是
+            # `['auto_classify','kept',…]`，所有字段 undefined、底栏退化成兜底文案
+            # （用户 2026-09-20 实报"过滤诊断没有任何内容输出"，真机 executed 事件实测
+            # outputKeys=["tk_filter_report"] / tkType="array"）。包一层 list 才合规。
+            return {"ui": {"tk_filter_report": [self._finalise_report(report)]},
                     "result": (tag_text,)}
         else:
             result = []
@@ -888,7 +927,15 @@ class AnimaTKDanbooruTagGetter:
         )
         if include_natural and raw_natural_language:
             tag_text = f"{tag_text}\n\n{raw_natural_language}" if tag_text else raw_natural_language
-        return (tag_text,)
+        # ⚠️ 双输入模式（接了 Danbooru Tag Sorter）此前**只回裸 tuple** ⇒ 前端 executed 事件
+        # 取不到 ui.tk_filter_report，面板底部「过滤诊断」永远停在"尚未执行"占位
+        # （用户 2026-09-20 实报"过滤诊断没有任何内容输出"）。
+        # ui 通道是 ComfyUI 把执行期数据回传前端的**唯一**方式，因此两条返回路径必须同形；
+        # 形状从 (text,) 变成 {"ui": …, "result": (text,)} 是安全的 —— 单输入模式一直是后者。
+        report["natural_language"] = raw_natural_language
+        # 见单输入分支的注释：ui 值必须是 list（ComfyUI 会按 list 展平）。
+        return {"ui": {"tk_filter_report": [self._finalise_report(report)]},
+                "result": (tag_text,)}
 
 
 # ── 自定义预设库的 HTTP 接口（前端面板保存 / 删除预设用）──
