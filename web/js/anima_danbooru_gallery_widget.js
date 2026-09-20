@@ -59,8 +59,18 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   const ORDER_LABELS = { score: "评分", favcount: "收藏", random: "随机", rank: "综合" };
   // 这些控件为了脱离 LiteGraph 的裁剪层而挂在 body 上；命中它们时，不能再把同一坐标
   // 下的节点按钮当成“丢失的点击”补发，否则联想项/筛选菜单/弹窗会同时点到下面的按钮。
-  const PORTAL_INTERACTION_SELECTOR = ".adg-suggestions, .adg-portal-menu, .adg-dialog-overlay";
+  // Portal/浮层自己拥有其坐标上的交互权，recoverPointer 不得穿过它们补发点击。
+  // ⚠️ .adg-prompt-tooltip 只有 **D站** 卡片上的浮层才是 pointer-events: auto（.is-danbooru）；
+  //    pointer-events: none 的元素不进 elementsFromPoint 的命中栈，所以这条对 C站 的浮层天然不生效 ——
+  //    加进来是显式声明"浮层的点击归浮层"，不再依赖 targetNode 恰好为 null 这个隐式巧合。
+  const PORTAL_INTERACTION_SELECTOR = ".adg-suggestions, .adg-portal-menu, .adg-dialog-overlay, .adg-prompt-tooltip";
   const PROMPT_CATEGORY_ORDER = Object.freeze(["artist", "copyright", "character", "general", "meta"]);
+  // 悬停浮层的「延迟隐藏」窗口：鼠标要从卡片移到浮层上，中间必然穿过卡片外的一瞬。
+  // 太短 = 还没移进去就没了；太长 = 鼠标已经走开了浮层还挂着。
+  // 取 280ms（而不是更短的 180ms）：浮层被视口边缘翻转/钳制时可能落在离光标 300px 开外
+  //（窄视口 + 光标在左半屏，见 positionTooltip 的钳制分支），180ms 内跨过去要超过 1.7 m/s
+  // 的手速 —— 慢速移动就会变成"浮层先消失"。
+  const PROMPT_TOOLTIP_HIDE_DELAY = 280;
   const PROMPT_CATEGORY_LABELS = Object.freeze({
     artist: "画师",
     copyright: "版权/作品",
@@ -614,6 +624,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.translationCache = new Map();
       this.presetNoteHydration = null;
       this.tooltip = null;
+      this.tooltipHideTimer = null;   // 「延迟隐藏」定时器（只被 D站 的可交互浮层用到）
+      this.tooltipCard = null;        // 当前浮层对应的卡片（判「鼠标从浮层移回同一张卡」用）
       this.domWidget = null;
       this.domSizeSync = null;
       this.pointerRecoveryHandler = null;
@@ -3502,6 +3514,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     renderPosts() {
+      // 浮层收尾 —— **只收可交互浮层（D站）**：C站 浮层的生命周期必须保持改动前那样
+      // （一直留到鼠标离开），否则就成了"仅 D站"之外的行为变化（独立审计抓到的外溢）。
+      // 这里**无条件**收：下面会 replaceChildren 整体重建全部卡片，浮层指向的那张卡必然失效
+      //（"自动填图只是追加卡片"是错的 —— fillMoreForHeight 也是走 renderPosts 全量重建）。
+      // ⚠️ 不要改成"判断卡片 isConnected"：那样求值时旧卡片还在文档里，守卫恒为 false（死代码）。
+      if (this.tooltip?.classList.contains("is-danbooru")) this.hidePromptTooltip();
       if (!this.grid) return;
       this.imageLoadObserver?.disconnect();
       this.grid.replaceChildren();
@@ -3686,9 +3704,24 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           }
         }
         card.append(selectButton, actions);
-        card.addEventListener("mouseenter", (event) => this.showPromptTooltip(card, event));
+        card.addEventListener("mouseenter", (event) => {
+          this.cancelHidePromptTooltip();
+          // 浮层已经是这张卡的（鼠标从浮层移回来）→ 只取消隐藏、**不要重建**：
+          // 重建会让占位文案闪一下、锚点被重置导致位置跳，反复进出时就是肉眼可见的闪烁。
+          if (this.tooltip && this.tooltipCard === card) return;
+          this.showPromptTooltip(card, event);
+        });
         card.addEventListener("mousemove", (event) => this.positionTooltip(event));
-        card.addEventListener("mouseleave", () => this.hidePromptTooltip());
+        card.addEventListener("mouseleave", () => {
+          // D站 的浮层可交互（鼠标能移进去），必须**延迟**隐藏：鼠标从卡片移到浮层上要穿过
+          // 卡片外的一瞬，而浮层是 body 子元素、卡片收不到它的事件，只能靠这条延迟窗口把两者
+          // 接起来（浮层的 mouseenter 会取消它；mousemove 只在卡片内触发 ⇒ 离开卡片后锚点
+          // 自动冻结，浮层停在原地等鼠标移进来）。
+          // ⚠️ 其它图源（C站）保持**即时**隐藏 —— 它们与 D站 共用同一个浮层函数，但浮层没有
+          //    .is-danbooru（仍是 pointer-events: none），鼠标本来就进不去，延迟只会让它白挂 180ms。
+          if (this.isPromptTooltipInteractiveCard(card)) this.scheduleHidePromptTooltip();
+          else this.hidePromptTooltip();
+        });
         this.grid.append(card);
         this.observePreviewImage(preview);
       }
@@ -4271,10 +4304,25 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       }
     }
 
+    /**
+     * 该卡片的悬停浮层是否可交互（当前只有 D站）。
+     * 判据取自**卡片自己的** dataset.source（3559 写入：D站 为空串、C站 "civitai"、P站 "pixiv"），
+     * 而不是 this.settings.source —— 卡片自带来源，切源时 switchGallerySource(1449) 会 renderPosts
+     * 重建全部卡片，行为因此天然跟随，不需要额外的清理代码（也别把这个判据缓存进实例字段）。
+     */
+    isPromptTooltipInteractiveCard(card) {
+      return !String(card?.dataset?.source || "");
+    }
+
     async showPromptTooltip(card, event) {
       let tags = [];
       try { tags = JSON.parse(card.dataset.tags || "[]"); } catch { tags = []; }
-      if (!tags.length) return;
+      // 无标签的卡片（P站 恒如此、D站 偶有）：先收掉可能还挂着的旧浮层再退出。
+      // 否则「移出卡片 A（已排 280ms 隐藏）→ 移进无标签卡 B」会取消隐藏定时器并把 A 的浮层
+      // 留在屏幕上（还跟着光标跑、吃点击）。
+      if (!tags.length) { this.hidePromptTooltip(); return; }
+      // 这个浮层是否可交互（D站 = 可移入 + 标签可点）。只算一次，下面各分支复用。
+      const interactive = this.isPromptTooltipInteractiveCard(card);
       let promptGroups = {};
       try { promptGroups = JSON.parse(card.dataset.promptGroups || "{}"); } catch { promptGroups = {}; }
       const tagKeys = new Set(tags.map(promptCardKey));
@@ -4299,9 +4347,20 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.hidePromptTooltip();
       const tooltip = document.createElement("div");
       tooltip.className = "adg-prompt-tooltip";
+      // 只有 D站 的浮层可交互（CSS: .adg-prompt-tooltip.is-danbooru { pointer-events: auto }）。
+      // D站 与 C站 共用同一个浮层元素，C站 没有这个类 ⇒ 保持 pointer-events: none、不吃点击。
+      if (interactive) tooltip.classList.add("is-danbooru");
       tooltip.textContent = "正在加载双语 Prompt…";
       document.body.append(tooltip);
       this.tooltip = tooltip;
+      this.tooltipCard = card;   // 供 mouseenter 判断「浮层已经是这张卡的」，避免来回移动时重建闪烁
+      if (interactive) {
+        // 鼠标移进浮层 → 取消卡片 mouseleave 排下的延迟隐藏，这样才能停留、滚动、点标签。
+        tooltip.addEventListener("mouseenter", () => this.cancelHidePromptTooltip());
+        tooltip.addEventListener("mouseleave", () => this.scheduleHidePromptTooltip());
+        // 标签点击走**容器级委托**：浮层内容会被 replaceChildren 整体重建，逐个标签绑会丢。
+        tooltip.addEventListener("click", (clickEvent) => this.handlePromptTooltipClick(clickEvent));
+      }
       this.positionTooltip(event);
       await this.ensureTagTranslations(groupedTags);
       if (this.tooltip !== tooltip) return;
@@ -4319,6 +4378,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           const chinese = this.translationCache.get(tag);
           line.append(english);
           if (chinese) line.append(Object.assign(document.createElement("small"), { textContent: chinese }));
+          if (interactive) {
+            // ⚠️ 显示文本上面已被空格化，检索必须用**下划线原文**，所以把原文写进 dataset，
+            //    点击时读它；绝不从 textContent 反推（Danbooru 检索用的就是标签原文）。
+            line.dataset.tag = tag;
+            line.classList.add("is-searchable");
+            line.title = `点击搜索「${tag.replace(/_/g, " ")}」`;
+          }
           return line;
         }));
         return section;
@@ -4426,8 +4492,51 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     hidePromptTooltip() {
+      this.cancelHidePromptTooltip();
       this.tooltip?.remove();
       this.tooltip = null;
+      this.tooltipCard = null;
+    }
+
+    /** 延迟隐藏（只被 D站 的可交互浮层路径调用）：给鼠标留出从卡片移到浮层上的时间窗口 */
+    scheduleHidePromptTooltip() {
+      this.cancelHidePromptTooltip();
+      this.tooltipHideTimer = setTimeout(() => {
+        this.tooltipHideTimer = null;
+        this.hidePromptTooltip();
+      }, PROMPT_TOOLTIP_HIDE_DELAY);
+    }
+
+    cancelHidePromptTooltip() {
+      if (!this.tooltipHideTimer) return;
+      clearTimeout(this.tooltipHideTimer);
+      this.tooltipHideTimer = null;
+    }
+
+    /**
+     * D站 浮层里的标签被点击 → 直接用该标签重新搜索。
+     * 只对 D站 成立：D站 的 tags 是真 Danbooru 词表标签、检索走 /anima/danbooru/posts（2464 之后）；
+     * C站 的「标签」是自然语言分句且上游忽略关键词，P站 根本没有浮层（4277 早退）。
+     */
+    handlePromptTooltipClick(event) {
+      const line = event.target?.closest?.(".adg-prompt-tooltip-line.is-searchable");
+      if (!line || !this.tooltip?.contains(line)) {
+        // 点在浮层空白处 = 一个明确的「收起」手势（否则浮层只能等鼠标移开 280ms 才消失）。
+        if (this.tooltip?.contains(event.target)) this.hidePromptTooltip();
+        return;
+      }
+      const rawTag = String(line.dataset.tag || "").trim();
+      if (!rawTag) return;
+      // 必须拦住这次事件：节点侧另有一层「把点击补发给同坐标下宿主按钮」的恢复逻辑
+      // （见 pointer 恢复处理），不拦会让一次点击同时触发卡片上的按钮。
+      event.preventDefault();
+      event.stopPropagation();
+      this.setQuery(rawTag);     // 同步搜索框与序列化 widget（两者必须一致；currentQuery() 只读 widget）
+      this.hidePromptTooltip();  // 搜索会整体重渲染，浮层留着只会指向旧卡片
+      // search() / renderPosts() 都不会重置滚动 —— 点了标签却停在上一批结果的滚动位置，
+      // 会让人以为"点了没反应"。
+      if (this.grid) this.grid.scrollTop = 0;
+      void this.search({ resetPage: true }).catch(() => {});
     }
 
     async downloadPost(post) {

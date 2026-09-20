@@ -453,6 +453,17 @@
 .adg-prompt-tooltip::-webkit-scrollbar-track { border-radius: 8px; background: transparent; }
 .adg-prompt-tooltip::-webkit-scrollbar-thumb { min-height: 42px; border: 2px solid transparent; border-radius: 8px; background: var(--adg-tint-strong, #6b6b76); background-clip: padding-box; }
 .adg-prompt-tooltip::-webkit-scrollbar-thumb:hover { background: var(--adg-fg-soft, #8f899e); background-clip: padding-box; }
+/* ── D站 专属：浮层可交互（鼠标能移入、能滚动、标签能点） ──
+   ⚠️ 不要改上面 443 行的 pointer-events: none —— D站 与 C站 共用同一个浮层元素，
+      改容器会让 C站 的长文本浮层也吃点击、盖住卡片。只给「D站 卡片开的浮层」加 .is-danbooru。
+   ⚠️ 这段必须留在 443 行**之后**：两个测试拿 css.index(".adg-prompt-tooltip") 当切片右边界
+      （tests/test_danbooru_gallery_prompt_tooltip.py:27、tests/test_gallery_multisource_ui.py:297），
+      把含该字符串的规则插到 443 行之前会让切片提前结束、丢掉 .adg-card-actions 的断言 → 假红。 */
+.adg-prompt-tooltip.is-danbooru { pointer-events: auto; }
+/* 点一下 = 按该标签重新搜索（只加在 D站 的标签上，见 widget 的 is-searchable） */
+.adg-prompt-tooltip-line.is-searchable { cursor: pointer; }
+.adg-prompt-tooltip-line.is-searchable:hover { border-color: var(--adg-accent, #8b7bff); background: var(--adg-tint-strong, rgba(139,123,255,.18)); }
+.adg-prompt-tooltip-line.is-searchable:active { background: var(--adg-tint-strong, rgba(139,123,255,.30)); }
 .adg-dialog-overlay { position: fixed; inset: 0; z-index: 100000; display: grid; place-items: center; padding: 16px; background: rgba(0,0,0,.64); backdrop-filter: blur(2px); }
 .adg-dialog { display: flex; min-width: 300px; max-width: min(620px, 94vw); max-height: min(760px, calc(100vh - 32px)); flex-direction: column; overflow: auto; padding: 16px; border: 1px solid var(--adg-border, rgba(255,255,255,.12)); border-radius: 8px; color: var(--adg-text, #eee); background: linear-gradient(180deg, #292934, #22222b); box-shadow: var(--adg-shadow-float, 0 10px 24px rgba(0,0,0,.34)); }
 .adg-dialog h3 { margin: 0 0 12px; color: var(--adg-accent-strong, #EDEDEF); font-size: 15px; letter-spacing: -.01em; }
