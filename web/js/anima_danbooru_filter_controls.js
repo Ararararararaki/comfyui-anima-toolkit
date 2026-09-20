@@ -46,9 +46,13 @@ export function normalizeFilters(value) {
 }
 
 export class GalleryFilterControls {
-  constructor({ readSettings, commit }) {
+  constructor({ readSettings, commit, onRenameCategory, onDeleteCategory }) {
     this.readSettings = readSettings;
     this.commit = commit;
+    // 分类库的唯一真源在后端：重命名/删除必须回调给 widget 落库，
+    // 只改前端内存的话下次加载就被后端那份覆盖回来（用户表现为"改了又变回去/删了又回来"）。
+    this.onRenameCategory = onRenameCategory;
+    this.onDeleteCategory = onDeleteCategory;
     this.dropdowns = [];
     this.ratingDropdown = new PortalDropdown({
       label: "分级",
@@ -363,10 +367,17 @@ export class GalleryFilterControls {
       rename.className = "adg-category-op";
       rename.title = "重命名分类";
       rename.textContent = "✎";
-      rename.onclick = (event) => {
+      rename.onclick = async (event) => {
         event.stopPropagation();
         const name = prompt("重命名分类", category.name);
         if (!name?.trim()) return;
+        if (this.onRenameCategory) {
+          // 走后端：成功后 widget 会重新拉库并 refresh，这里不用再改内存
+          await this.onRenameCategory(category, name.trim());
+          this.refresh();
+          this.categoryDropdown.close();   // 菜单内容是打开时构建的，关掉免得显示旧名字
+          return;
+        }
         const cats = settings.categories.map((c) => (c.id === category.id ? { ...c, name: name.trim() } : c));
         this.commit({ categories: cats }, { render: true });
         this.refresh();
@@ -376,8 +387,15 @@ export class GalleryFilterControls {
       remove.className = "adg-category-op adg-category-op-remove";
       remove.title = "删除分类（其中的图片变回未分类）";
       remove.textContent = "✕";
-      remove.onclick = (event) => {
+      remove.onclick = async (event) => {
         event.stopPropagation();
+        if (this.onDeleteCategory) {
+          // 走后端：后端会把该分类下的条目退回「未分类」（不删条目）
+          await this.onDeleteCategory(category);
+          this.refresh();
+          this.categoryDropdown.close();   // 菜单内容是打开时构建的，关掉免得还列着已删的分类
+          return;
+        }
         const cats = settings.categories.filter((c) => c.id !== category.id);
         const postCategories = {};
         for (const [pid, cid] of Object.entries(settings.postCategories)) {

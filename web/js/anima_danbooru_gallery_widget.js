@@ -7,6 +7,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   const STORAGE_KEY_PREFIX = "anima_danbooru_gallery_settings_v2:";
   const LEGACY_STORAGE_KEY = "anima_danbooru_gallery_settings_v1";
   const LEGACY_MIGRATED_KEY = `${STORAGE_KEY_PREFIX}legacy_migrated`;
+  // 一次性标记：本浏览器里"**其它**画廊节点"的旧分类是否已并入共享库。
+  // 为什么需要：分类库后端化时只迁移了"当前节点"的 settings，而 localStorage 里
+  // 每个画廊节点各存一份（key = 前缀 + 节点 id）。别的节点里的归类从来没被迁移过
+  // ⇒ 用户更新后会看到"我分类里的图片少了好几张"（2026-09-20 实报）。
+  const OTHERS_MIGRATED_KEY = `${STORAGE_KEY_PREFIX}categories_migrated_others`;
   const FAVORITES_STORAGE_KEY = "anima_danbooru_gallery_favorites_v1";
   // localStorage 只适合记住浏览器偏好；工作流本身也必须带上画廊设置，
   // 否则 ComfyUI 重建节点时 node.id 尚未分配，按 id 读取会落到空设置。
@@ -874,6 +879,425 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       };
     }
 
+    /** 分类库键：`<source>:<id>`。D站/P站 的帖子 id 都是纯数字，只用 id 会**跨源撞号**。 */
+    postKeyOf(post) {
+      // ⚠️ 前缀必须走 postSourceId()，**不能直接拿 post.source**：D站 原生 post 的 `source`
+      //    是**作品来源 URL**（twitter / pixiv 链接），拿它当前缀会得到
+      //    `https://twitter.com/…:4583512` 这种键 ⇒ 后端按前缀分区时落进一个不存在的源，
+      //    归类静默失败（用户实报"分类建好了，却切换不进那个分类"）。
+      const source = this.postSourceId(post);
+      const id = String(post?.id ?? "");
+      return id ? `${source}:${id}` : "";
+    }
+
+    /** 把"纯 id 或 postKey"归一成 postKey（旧调用点/旧数据传的是纯 id）。 */
+    normaliseCategoryKey(entry) {
+      const text = String(entry ?? "");
+      if (!text) return "";
+      return text.includes(":") ? text : `${this.settings.source}:${text}`;
+    }
+
+    /** 内部 post 形状 → 协议层 ITEM_KEYS 快照（后端只存这套键，与搜索返回同形状）。 */
+    snapshotFromPost(post) {
+      return {
+        // 同样不能用 post.source（D站 那是作品来源 URL，见 postKeyOf）
+        source: this.postSourceId(post),
+        id: post?.id,
+        preview_url: post?.preview_file_url || post?.preview_url || "",
+        full_url: post?.large_file_url || post?.file_url || post?.full_url || "",
+        width: post?.image_width,
+        height: post?.image_height,
+        tags: Array.isArray(post?.tags) ? post.tags : undefined,
+        prompt: post?.prompt,
+        negative_prompt: post?.negative_prompt,
+        rating: post?.rating,
+        score: post?.score,
+        source_url: post?.source_url,
+        meta: post?.meta,
+        file_ext: post?.file_ext,
+      };
+    }
+
+    // ── 后端分类库（跨节点共享）──────────────────────────────────────────────
+    //
+    // 分类以前存在**每个节点的 settings** 里，而 settings 会随工作流写进 node.properties
+    // ⇒ 同一工作流里两个画廊各有一份、互不可见（用户 2026-09-20 实报"多个画廊的分类居然
+    // 不是共享的，这是巨大毛病"）。现在以 `data/gallery_categories.json` 为**唯一真源**：
+    //   · 加载：`initCategoryLibrary()` —— 先留一份工作流旧数据做迁移源，再拉后端覆盖内存缓存；
+    //   · 写入：`pushPostCategory()` —— 落库成功后才改内存，失败如实报错不静默；
+    //   · 浏览：`fetchCategoryPosts()` —— 直接读**本地快照**，不回查图源
+    //     （原实现靠 `id:` 元标签回查，只有 D站 有 ⇒ P站/C站 的分类浏览永远是空的）。
+    // settings 里那份仍随工作流保存，但降级为**离线只读缓存**（后端不可用时还能显示）。
+
+    async _categoryRequest(path, options) {
+      const response = await fetch(path, options);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data?.ok === false) {
+        throw new Error(data?.error || `HTTP ${response.status}`);
+      }
+      return data || {};
+    }
+
+    /**
+     * 拉后端分类库。
+     *
+     * ``keepLocalFallback=true``：**后端为空时不覆盖本地** —— 这是"更新后分类不丢"的关键一道闸。
+     * 场景：用户刚装上带本模块的版本，后端 `data/gallery_categories.json` 还不存在（返回空库）。
+     * 若无条件覆盖，用户当场看到"分类全没了"；更糟的是随后 `saveSettings()` 会把这份空值
+     * **写回工作流 node.properties** —— 那才真的丢了。所以首次加载走 keepLocalFallback，
+     * 等 migrate 把本地旧数据并进后端之后再拉一次（那次以后端为准）。
+     */
+    async loadCategoryLibrary({ keepLocalFallback = false } = {}) {
+      try {
+        // ★ 分类库**按图源分区**（用户 2026-09-20 第二轮实报"D站和P站的分类还不是独立的"）：
+        //   拉的是当前源那一片，别源的分类不会出现在这里；同一图源内仍跨节点/跨工作流共享。
+        const data = await this._categoryRequest(`/anima/gallery/categories?source=${encodeURIComponent(this.settings.source)}`);
+        const remoteCategories = Array.isArray(data.categories) ? data.categories : [];
+        const remotePosts = data.postCategories && typeof data.postCategories === "object"
+          ? data.postCategories : {};
+        const localCategories = Array.isArray(this.settings.categories) ? this.settings.categories : [];
+        const localPosts = this.settings.postCategories && typeof this.settings.postCategories === "object"
+          ? this.settings.postCategories : {};
+        const backendEmpty = !remoteCategories.filter((c) => String(c?.id) !== "uncategorized").length
+          && !Object.keys(remotePosts).length;
+        if (keepLocalFallback && backendEmpty && (localCategories.length > 1 || Object.keys(localPosts).length)) {
+          this.setStatus("共享分类库还是空的，已先沿用本工作流里的分类；正在迁移到共享库…", "");
+          return false;
+        }
+        this.settings.categories = remoteCategories;
+        this.settings.postCategories = remotePosts;
+        this._categoryLibraryLoaded = true;
+        return true;
+      } catch (error) {
+        // 后端不可用 → 退回工作流里保存的那份（只读缓存），**不阻塞**画廊其它功能
+        this.setStatus(`分类库读取失败，暂用本工作流缓存：${error?.message || error}`, "error");
+        return false;
+      }
+    }
+
+    /**
+     * 把**工作流里带的**旧分类并进全局库（幂等，只在本次会话跑一次）。
+     *
+     * 用户明确要求"不能让用户更新后原来的分类消失" —— 所以顺序是：
+     * ① 先把 settings 里的旧值抓一份（迁移源），② 再拉后端覆盖内存，③ 把旧值并进后端。
+     * 后端做的是**并集**：同名分类复用、冲突归属全局优先、条目只补缺 ⇒ 既不会丢旧数据，
+     * 也不会把别的节点已经归好的类覆盖掉。迁移成功后会重新拉一次，让内存与后端一致。
+     */
+    /**
+     * 收集**本浏览器 localStorage 里其它**画廊节点的旧分类（含旧版全局键）。
+     *
+     * 为什么必须收全：分类库后端化时只迁移了"当前节点"的 settings，而 localStorage 里
+     * 每个画廊节点各存一份（key = 前缀 + 节点 id）—— 别的节点 / 别的旧工作流里的归类
+     * 从来没被迁移过，用户更新后就会看到"分类里的图片少了好几张"。
+     * 这些数据**就在当前浏览器里、前端完全看得到**，没有任何理由不带走。
+     */
+    collectStoredCategoryBackups() {
+      const backups = [];
+      try {
+        if (localStorage.getItem(OTHERS_MIGRATED_KEY) === "1") return backups;   // 一次性
+      } catch {
+        return backups;
+      }
+      let total = 0;
+      try {
+        total = localStorage.length;
+      } catch {
+        return backups;
+      }
+      for (let index = 0; index < total; index += 1) {
+        let key = "";
+        try {
+          key = localStorage.key(index) || "";
+        } catch {
+          continue;
+        }
+        const isNodeKey = key.startsWith(STORAGE_KEY_PREFIX);
+        const isLegacyKey = key === LEGACY_STORAGE_KEY;
+        if (!isNodeKey && !isLegacyKey) continue;
+        if (key === this.settingsKey()) continue;          // 当前节点那份已单独处理
+        try {
+          const payload = JSON.parse(localStorage.getItem(key) || "{}");
+          const posts = payload && typeof payload.postCategories === "object" ? payload.postCategories : null;
+          if (posts && Object.keys(posts).length) {
+            backups.push({ key, categories: payload.categories, postCategories: posts });
+          }
+        } catch {
+          /* 某一份坏数据不影响其它节点 */
+        }
+      }
+      return backups;
+    }
+
+    async migrateLocalCategoriesOnce() {
+      if (this._categoryMigrated) return;
+      this._categoryMigrated = true;
+      const backup = this._localCategoryBackup || {};
+      const localCategories = Array.isArray(backup.categories) ? backup.categories : [];
+      const localPosts = backup.postCategories && typeof backup.postCategories === "object"
+        ? backup.postCategories : {};
+      // ★ 再收一遍"本浏览器里其它画廊节点"的旧分类（当前节点的那份优先，其余只补缺）
+      const collected = this.collectStoredCategoryBackups();
+      const mergedCategories = [...localCategories];
+      const mergedPosts = { ...localPosts };
+      for (const item of collected) {
+        for (const category of (Array.isArray(item.categories) ? item.categories : [])) {
+          if (category?.id && !mergedCategories.some((c) => String(c?.id) === String(category.id))) {
+            mergedCategories.push(category);
+          }
+        }
+        for (const [key, categoryId] of Object.entries(item.postCategories)) {
+          if (!(key in mergedPosts)) mergedPosts[key] = categoryId;
+        }
+      }
+      if (!mergedCategories.length && !Object.keys(mergedPosts).length) return;
+      const source = String(this.settings.source || "danbooru");
+      // 迁移**只并本图源的东西**（否则"升级后第一次打开 P站"会把 D站 的分类名搬进 P站 分区）：
+      //   · 归属：只收 key 前缀 = 本源（旧的无前缀 key 视为 D站，历史来源就是它）；
+      //   · 分类定义：D站 全并（旧版唯一的那套就是它的，空分类也不能丢），
+      //     别的源只并"本源条目真正引用到的分类"。
+      const localSourcePosts = {};
+      const usedCategoryIds = new Set();
+      for (const [key, categoryId] of Object.entries(mergedPosts)) {
+        const prefixed = key.includes(":") ? key : `danbooru:${key}`;
+        if (!prefixed.startsWith(`${source}:`)) continue;
+        localSourcePosts[prefixed] = categoryId;
+        usedCategoryIds.add(String(categoryId));
+      }
+      const sourceCategories = source === "danbooru"
+        ? mergedCategories
+        : mergedCategories.filter((c) => usedCategoryIds.has(String(c?.id)));
+      if (!sourceCategories.length && !Object.keys(localSourcePosts).length) return;
+      try {
+        const data = await this._categoryRequest("/anima/gallery/categories/migrate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source,
+            categories: sourceCategories,
+            postCategories: localSourcePosts,
+            snapshots: {},
+          }),
+        });
+        if (data.migrated || data.created) {
+          this.setStatus(
+            `已把浏览器里的旧分类并入共享库：新增分类 ${data.created} 个、归类 ${data.migrated} 条`
+            + (collected.length ? `（其中含其它画廊节点的 ${collected.length} 份）` : "")
+            + (data.skipped ? `；${data.skipped} 条与共享库一致，未改动` : ""), "success");
+        }
+        // 迁移成功后打一次性标记：这些旧数据已经进共享库，别再每次加载重跑
+        try {
+          if (collected.length) localStorage.setItem(OTHERS_MIGRATED_KEY, "1");
+        } catch { /* 存不进去就下次再来一遍，幂等 */ }
+        await this.loadCategoryLibrary();
+      } catch (error) {
+        // 迁移失败不能吞掉旧数据：settings 里那份仍在，下次加载会再试
+        this._categoryMigrated = false;
+        this.setStatus(`旧分类迁移失败（本地数据仍在工作流里，下次加载会重试）：${error?.message || error}`, "error");
+      }
+    }
+
+    /** 启动时调一次：抓旧数据 → 拉共享库 → 迁移。 */
+    async initCategoryLibrary() {
+      if (this._categoryInitStarted) return;
+      this._categoryInitStarted = true;
+      this._localCategoryBackup = {
+        categories: Array.isArray(this.settings.categories) ? [...this.settings.categories] : [],
+        postCategories: this.settings.postCategories && typeof this.settings.postCategories === "object"
+          ? { ...this.settings.postCategories } : {},
+      };
+      // ① 首次拉取**允许本地兜底**（后端空就不覆盖，见 loadCategoryLibrary 的说明）
+      await this.loadCategoryLibrary({ keepLocalFallback: true });
+      // ② 把工作流里的旧分类并进共享库（幂等；失败会保留备份并下次重试）
+      await this.migrateLocalCategoriesOnce();
+      // ③ 迁移之后再拉一次，这次以后端为唯一真源
+      await this.loadCategoryLibrary();
+      // 分类下拉挂在筛选器那一排，**没有**单独的"分类刷新"方法（我原先 `?.()` 调用的
+      // `refreshCategoryOptions` 根本不存在 ⇒ 后端拉回来的分类刷不到 UI）。用筛选器的刷新入口。
+      this.filterControls?.refresh?.();
+    }
+
+    /**
+     * key → post 索引：**归类时必须带快照**，否则分类浏览里没有图可渲染
+     * （用户实报"分类创建了、却切换不到那个分类"，根因就是这里——卡片按钮传的是
+     *  ``postKey`` 字符串，快照字段被整条丢掉，后端只能存一份空快照）。
+     */
+    rememberPostsForCategory(posts) {
+      if (!Array.isArray(posts) || !posts.length) return;
+      if (!this._postKeyIndex) this._postKeyIndex = new Map();
+      for (const post of posts) {
+        const key = this.postKeyOf(post);
+        if (key) this._postKeyIndex.set(key, post);
+      }
+      // 画廊可以滚很多页，索引只留最近的一批（够覆盖"刚看过就归类"的用法）
+      if (this._postKeyIndex.size > 4000) {
+        this._postKeyIndex = new Map(Array.from(this._postKeyIndex.entries()).slice(-2000));
+      }
+    }
+
+    /** 按 postKey 取快照；索引里没有就退回当前列表现查。 */
+    postSnapshotForCategory(key) {
+      const hit = this._postKeyIndex?.get(key);
+      if (hit) return this.snapshotFromPost(hit);
+      const live = (this.posts || []).find((post) => this.postKeyOf(post) === key);
+      return live ? this.snapshotFromPost(live) : null;
+    }
+
+    /**
+     * 归类（单张或多张）。**先落库再改内存** —— 失败时如实提示，不留下"看着归好了其实没存"的假象。
+     * ``categoryId`` 传空 = 取消归类。
+     */
+    async pushPostCategory(posts, categoryId) {
+      const list = (Array.isArray(posts) ? posts : [posts]).filter(Boolean);
+      const cleanCategory = String(categoryId || "");
+      let ok = 0;
+      let noSnapshot = 0;
+      for (const entry of list) {
+        // 允许传 post 对象，也允许直接传 key 字符串（批量归类那边手里只有 key）。
+        // 字符串不含 ":" 时补当前图源前缀 —— 旧数据/旧调用点传的是纯 id。
+        const isKey = typeof entry === "string";
+        const key = isKey
+          ? (entry.includes(":") ? entry : `${this.settings.source}:${entry}`)
+          : this.postKeyOf(entry);
+        if (!key) continue;
+        // ★ 无论传对象还是 key，都要把**快照**带上：分类浏览读的就是这份快照，
+        //   缺了它那个分类点进去就是空的（这正是"切换不到分类"的根因）。
+        const snapshot = isKey ? this.postSnapshotForCategory(key) : this.snapshotFromPost(entry);
+        if (cleanCategory && !snapshot) noSnapshot += 1;
+        try {
+          await this._categoryRequest("/anima/gallery/posts/category", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              postKey: key,
+              categoryId: cleanCategory,
+              snapshot: snapshot || undefined,
+            }),
+          });
+          if (cleanCategory) this.settings.postCategories[key] = cleanCategory;
+          else delete this.settings.postCategories[key];
+          ok += 1;
+        } catch (error) {
+          this.setStatus(`归类失败（${key}）：${error?.message || error}`, "error");
+        }
+      }
+      this.saveSettings();
+      if (noSnapshot) {
+        this.setStatus(`已归类 ${ok} 张，其中 ${noSnapshot} 张没取到图片快照（分类里会缺这几张）`, "error");
+      }
+      return ok;
+    }
+
+    /**
+     * 从后端分类键（``<source>:<id>``）取图源标识 —— 这是**最权威**的来源
+     * （后端就是按这个前缀分区的），比快照里的 ``source`` 字段可信：
+     * 旧版快照可能把 D站 原生 ``source``（作品来源 URL）存了进去。
+     */
+    sourceIdFromPostKey(postKey) {
+      const text = String(postKey || "");
+      const source = text.includes(":") ? text.split(":")[0].toLowerCase() : "";
+      return GALLERY_SOURCE_ORDER.includes(source) ? source : "";
+    }
+
+    /** 分类浏览：读**该图源**的后端本地快照并复用既有的 item→post 映射，不再回查任何图源。 */
+    async fetchCategoryPosts(categoryId) {
+      const data = await this._categoryRequest(
+        `/anima/gallery/posts?category=${encodeURIComponent(categoryId)}&source=${encodeURIComponent(this.settings.source)}`);
+      const fallbackSource = this.settings.source;
+      return (Array.isArray(data.items) ? data.items : [])
+        // ⚠️ 用 postKey 前缀定源，**不要用 item.source**（子代理复查 2026-09-20 指出的唯一残留）：
+        //    快照里的 source 若是脏值（旧版把作品来源 URL 存了进去），
+        //    postKeyOf(post) 就会与后端键不一致 ⇒ 被 renderPosts 的分类过滤剔掉 ⇒ 分类浏览空视图。
+        .map((item) => this.galleryItemToPost(item, this.sourceIdFromPostKey(item.postKey) || fallbackSource));
+    }
+
+    /**
+     * 取分类；不存在则**在后端**新建后返回。
+     *
+     * ⚠️ 不能再用本地 `c_${Date.now()}` 造 id —— 分类库的唯一真源在后端，
+     * 本地造的 id 落库时会被后端拒（`目标分类不存在`），或者更糟：写进去一个后端不认识的
+     * id，下次加载就被"洗掉"，用户表现为"我建的分类一会儿就没了"。
+     */
+    async ensureCategoryByName(name) {
+      const clean = String(name || "").trim();
+      if (!clean) return null;
+      const existing = (this.settings.categories || []).find((c) => c.name === clean);
+      if (existing) return existing;
+      try {
+        const data = await this._categoryRequest("/anima/gallery/categories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "create", name: clean, source: this.settings.source }),
+        });
+        const category = data.category;
+        if (category) {
+          if (!Array.isArray(this.settings.categories)) this.settings.categories = [];
+          if (!this.settings.categories.some((c) => String(c.id) === String(category.id))) {
+            this.settings.categories.push(category);
+          }
+          this.settings.categories.sort((a, b) => (a.sortOrder ?? 99) - (b.sortOrder ?? 99));
+          return category;
+        }
+      } catch (error) {
+        this.setStatus(`新建分类失败：${error?.message || error}`, "error");
+      }
+      return null;
+    }
+
+    /**
+     * 重命名分类 —— **必须走后端**（唯一真源）。
+     *
+     * 分类菜单（筛选器那一排）里的 ✎ 原先是纯前端改内存 + commit，看起来立刻生效，
+     * 但下次加载时后端那份会把旧名字送回来（用户表现为"改了又变回去"）。
+     */
+    async renameCategoryRemote(category, nextName) {
+      const clean = String(nextName || "").trim();
+      if (!category?.id || !clean || clean === category.name) return false;
+      try {
+        await this._categoryRequest("/anima/gallery/categories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "rename", id: category.id, name: clean, source: this.settings.source,
+          }),
+        });
+      } catch (error) {
+        this.setStatus(`重命名分类失败：${error?.message || error}`, "error");
+        return false;
+      }
+      await this.loadCategoryLibrary();
+      this.saveSettings();
+      this.filterControls?.refresh();
+      this.setStatus(`已重命名分类：${category.name} → ${clean}`, "success");
+      return true;
+    }
+
+    /** 删除分类 —— 同样走后端（后端把其中的条目退回「未分类」，**不删条目**）。 */
+    async deleteCategoryRemote(category) {
+      if (!category?.id) return false;
+      try {
+        await this._categoryRequest("/anima/gallery/categories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "delete", id: category.id, source: this.settings.source,
+          }),
+        });
+      } catch (error) {
+        this.setStatus(`删除分类失败：${error?.message || error}`, "error");
+        return false;
+      }
+      if (this.settings.activeCategory === category.id) {
+        this.settings.activeCategory = "";
+        this.applyActiveCategory("");
+      }
+      await this.loadCategoryLibrary();
+      this.saveSettings();
+      this.filterControls?.refresh();
+      this.renderPosts();
+      this.setStatus(`已删除分类：${category.name}（其中的图片已变回未分类）`, "success");
+      return true;
+    }
+
     /**
      * C站 / P站 搜索。与 D站 的差别只有三处：路由（/anima/gallery/{source}/search）、
      * 分页（cursor + next_cursor）、以及没有 D站 的计数标签上限。
@@ -1038,6 +1462,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.hidePromptTooltip();
       this.hideSuggestions();
       this.applySourceCapabilities();
+      // ★ 分类库**按图源分区** ⇒ 换源必须重新拉该源的分类与归属
+      //   （否则 D站 的分类会留在 P站 的下拉里 —— 用户实报"分类还不是独立的"）
+      await this.loadCategoryLibrary();
       this.filterControls?.refresh();
       const restored = String(this.settings.sourceQueries[id] || "");
       this.setQuery(restored);
@@ -1080,8 +1507,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (this.filterControls) {
         this.filterControls.ratingDropdown.element.hidden = !tagFiltersApplicable;
         this.filterControls.filterDropdown.element.hidden = !tagFiltersApplicable;
-        // ② 分类浏览器按 `id:` 回查 D站 帖子 → 只有 D站 有意义（本地归类按钮仍可用）
-        this.filterControls.categoryDropdown.element.hidden = !isDanbooru;
+        // ② 分类下拉 = **进入分类的入口**，三个图源都要有：分类浏览读的是本地快照
+        //    （`/anima/gallery/posts`），早就不靠 D站 的 `id:` 回查了 ——
+        //    旧代码在这里 `hidden = !isDanbooru`，用户实报"没有进入分类的按钮"。
+        this.filterControls.categoryDropdown.element.hidden = false;
       }
       // ③ 随机发现是 order:random + D站 评分地板，纯 D站 语义
       for (const button of this.randomTierButtonList || []) button.hidden = !isDanbooru;
@@ -1194,8 +1623,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     /** 某张帖子自己的图源（画廊 item 自带 source；D站 帖子没有 → 用当前源） */
     postSourceId(post) {
+      const active = this.activeSourceId();
+      // ⚠️ D站 的 post 自带 `source`，含义是**作品来源 URL**（twitter / pixiv 链接），
+      //    不是图源标识 —— D站 下一律用当前源，**不去猜值域**。
+      //    （子代理 2026-09-20 复查：靠白名单猜值域时，若某张 D站 图的 source 恰好是小写
+      //     "pixiv"/"civitai"，就会被当成对应图源，归类报"目标分类不存在"。）
+      if (active === DANBOORU_SOURCE_ID) return active;
       const id = String(post?.source || "");
-      return GALLERY_SOURCE_ORDER.includes(id) ? id : this.activeSourceId();
+      return GALLERY_SOURCE_ORDER.includes(id) ? id : active;
     }
 
     postImageUrl(post) {
@@ -2017,6 +2452,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     async search({ resetPage = false, force = false, skipFuzzy = false, retryCount = 0 } = {}) {
+      // ★ 一旦发起搜索，联想浮层就必须收起 —— 这是**所有**搜索入口（回车 / 搜索按钮 /
+      //   点候选词 / 模糊纠错重搜）的统一收敛点。
+      //   用户 2026-09-20 实报"点了上面的按钮搜索之后（联想）会重新出现"：点候选走的是
+      //   `setQuery()`，而它在输入框仍聚焦时会再排一次联想（180ms 后弹）—— 在这里清掉
+      //   定时器即可（hideSuggestions 内部会 clearTimeout）。
+      this.hideSuggestions();
       // 多源画廊：非 D站 走统一画廊协议 /anima/gallery/{source}/search（cursor 分页）。
       // ⚠️ D站 分支（下面这一整段）保持原样：路由 /anima/danbooru/posts、page 分页、
       //    计数标签上限、模糊纠错、排除标签本地过滤全部不动。
@@ -2214,10 +2655,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 进入分类浏览前保存普通搜索视图快照（切回时恢复）
       this._searchSnapshot = this._searchSnapshot || this.posts;
       const catName = this.settings.categories.find((c) => c.id === catId)?.name || catId;
-      const ids = Object.entries(this.settings.postCategories)
-        .filter(([, cid]) => cid === catId)
-        .map(([pid]) => pid);
-      if (!ids.length) {
+      const known = Object.values(this.settings.postCategories).filter((cid) => cid === catId).length;
+      if (!known) {
         this.posts = [];
         this.renderPosts();
         this.renderPagination();
@@ -2225,20 +2664,16 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         return;
       }
       const targetId = catId;
-      this.setStatus(`正在加载分类「${catName}」${ids.length} 张…`);
+      this.setStatus(`正在加载分类「${catName}」${known} 张…`);
       if (this.grid) this.grid.setAttribute("aria-busy", "true");
-      const posts = [];
+      let posts = [];
       try {
-        for (let i = 0; i < ids.length; i += 48) {
-          const batch = ids.slice(i, i + 48).join(",");
-          const params = new URLSearchParams({ tags: `id:${batch}`, page: "1", limit: "48" });
-          const response = await fetch(`/anima/danbooru/posts?${params}`);
-          const data = await response.json();
-          if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-          if (Array.isArray(data.posts)) posts.push(...data.posts);
-          // 竞态：期间用户又切换了分类/发起了搜索 → 放弃本次渲染
-          if (this.settings.activeCategory !== targetId) return;
-        }
+        // ★ 读**本地快照**（`/anima/gallery/posts?category=`），不再按 `id:` 元标签回查图源 ——
+        //   旧实现只有 D站 能被回查（`id:` 是 D站 专有），所以 P站/C站 的分类浏览永远是空的
+        //   （用户实报"P站画廊的分类是个摆设"）。
+        posts = await this.fetchCategoryPosts(targetId);
+        // 竞态：期间用户又切换了分类/发起了搜索 → 放弃本次渲染
+        if (this.settings.activeCategory !== targetId) return;
       } catch (error) {
         if (this.settings.activeCategory === targetId) {
           this.posts = [];
@@ -2253,8 +2688,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.posts = posts;
       this.renderPosts();
       this.renderPagination();
-      const missing = ids.length - posts.length;
-      this.setStatus(`分类「${catName}」：${posts.length} 张已归类图片（覆盖全部搜索历史）${missing ? `，${missing} 张原图已失效跳过` : ""}`);
+      const missing = Math.max(0, known - posts.length);
+      this.setStatus(
+        `分类「${catName}」：${posts.length} 张已归类图片（读本地快照，三个图源通用）`
+        + (missing ? `，${missing} 张还没有快照（旧数据迁移而来，下次归类时会补上）` : ""));
     }
 
     async fetchSuggestions(q, empty = false) {
@@ -3078,6 +3515,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 之前在这里重置它 ⇒「拉大节点 → 点下一批 → 节点又缩回内容高度」，
       // 用户看到的是「节点适配图片」而不是「图片适配节点」（2026-09-15 真机反馈）。
       this.renderedPostCount = 0;
+      // 见过的 post 登记进 key→post 索引：归类时靠它取快照（见 pushPostCategory）
+      this.rememberPostsForCategory(this.posts);
       if (!this.posts.length) {
         const empty = document.createElement("div");
         empty.className = "adg-empty";
@@ -3089,7 +3528,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 因此这里必须把过滤后真正渲染的 post 记下来，不能直接用 this.posts 下标。
       const rendered = [];
       for (const post of this.posts) {
-        if (this.settings.activeCategory && this.settings.postCategories[String(post.id)] !== this.settings.activeCategory) continue;
+        if (this.settings.activeCategory && this.settings.postCategories[this.postKeyOf(post)] !== this.settings.activeCategory) continue;
         const imageUrl = this.postImageUrl(post);
         if (!imageUrl) continue;
         rendered.push(post);
@@ -3216,6 +3655,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         }
         // 「下载原图」对 P站 是主用途（下载后喂 WD14 反推）→ 走 full_url（original 优先，见 downloadPost）
         addAction("下载", "下载原图（原图优先 full_url）", () => this.downloadPost(post));
+        // ★ 卡片上的「分类」按钮（用户 2026-09-20 要求"真正的在对应图片有按钮进行分类"）。
+        //   原先归类入口藏在「入库」弹窗里（要先点入库 → 再勾"写入本地分类" → 再选分类），
+        //   而且该按钮在 prompt=false 的图源（P站）会被隐藏 ⇒ P站 根本没法归类。
+        //   分类是**本地**属性，与图源有没有 prompt 无关，所以这个按钮永远显示。
+        addAction("分类", "把这张图归入本地分类（跨画廊节点共享）", () => this.openCategoryPicker([this.postKeyOf(post)]));
         const favoriteButton = addAction(isFavorite ? "★" : "☆", isFavorite ? "取消收藏" : "收藏", () => {
           const next = this.toggleFavorite(post.id);
           card.classList.toggle("is-favorite", next);
@@ -3229,7 +3673,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         favoriteButton.setAttribute("aria-label", isFavorite ? "取消收藏" : "收藏");
         favoriteButton.setAttribute("aria-pressed", isFavorite ? "true" : "false");
         // 分类徽章：已归类的卡片左上角显示分类名
-        const catId = this.settings.postCategories[String(post.id)];
+        const catId = this.settings.postCategories[this.postKeyOf(post)];
         if (catId) {
           const catName = this.settings.categories.find((c) => c.id === catId)?.name;
           if (catName) {
@@ -3383,7 +3827,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         actionTitle.textContent = "本次执行操作";
         const actionRow = document.createElement("div");
         actionRow.className = "adg-save-action-row";
-        const localCategoryId = String(this.settings.postCategories[String(post.id || "")] || "");
+        const localCategoryId = String(this.settings.postCategories[this.postKeyOf(post)] || "");
         const makeAction = (label, checked) => {
           const wrapper = document.createElement("label");
           wrapper.className = "adg-save-action-choice";
@@ -3429,11 +3873,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         localNewButton.onclick = () => {
           const name = localCategoryNameInput.value.trim();
           if (!name) { localCategoryNameInput.focus(); return; }
-          const existing = (this.settings.categories || []).find((category) => category.name === name);
-          const category = existing || { id: `c_${Date.now()}`, name };
-          if (!existing) this.settings.categories.push(category);
-          renderLocalCategoryOptions();
-          localCategorySelect.value = category.id;
+          // ★ 新建分类必须由**后端**发 id。本地造的 `c_${Date.now()}` 后端不认：归类会被拒
+          //   （"目标分类不存在"），或写进去一个后端不认识的 id、下次加载被洗掉
+          //   —— 用户表现为"刚建的分类一会儿就没了"。
+          this.ensureCategoryByName(name).then((category) => {
+            if (!category) return;
+            renderLocalCategoryOptions();
+            localCategorySelect.value = category.id;
+          });
           assignLocalCategoryInput.checked = true;
           localCategoryNameInput.value = "";
         };
@@ -3454,11 +3901,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             tagButton.textContent = tag.replace(/_/g, " ");
             tagButton.onclick = () => {
               const name = tag.replace(/_/g, " ");
-              const existing = (this.settings.categories || []).find((category) => category.name === name);
-              const category = existing || { id: `c_${Date.now()}`, name };
-              if (!existing) this.settings.categories.push(category);
-              renderLocalCategoryOptions();
-              localCategorySelect.value = category.id;
+              this.ensureCategoryByName(name).then((category) => {
+                if (!category) return;
+                renderLocalCategoryOptions();
+                localCategorySelect.value = category.id;
+              });
               assignLocalCategoryInput.checked = true;
             };
             tagWrap.append(tagButton);
@@ -3743,10 +4190,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (!saveOptions) return;
       const saveToLibrary = saveOptions.saveToLibrary !== false;
       if (saveOptions.assignLocalCategory) {
-        const postId = String(post.id || "");
-        if (saveOptions.localCategoryId) this.settings.postCategories[postId] = saveOptions.localCategoryId;
-        else delete this.settings.postCategories[postId];
-        this.saveSettings();
+        // 走后端（跨节点共享）：pushPostCategory 先落库、成功后才改内存；失败会如实提示
+        await this.pushPostCategory(post, saveOptions.localCategoryId || "");
         this.renderPosts();
         this.filterControls?.refresh();
       }
@@ -4252,19 +4697,25 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       head.textContent = ids.length ? `将 ${ids.length} 张图归入：` : "新建分类：";
       content.append(head);
 
-      const assign = (catId, catName) => {
-        if (catId) ids.forEach((id) => { this.settings.postCategories[id] = catId; });
-        else ids.forEach((id) => { delete this.settings.postCategories[id]; });
-        this.saveSettings();
+      const assign = async (catId, catName) => {
+        // 落库优先（跨节点共享）：ids 里是纯 id 或 postKey 都能处理
+        let ok = ids.length;
+        if (ids.length) ok = await this.pushPostCategory(ids, catId || "");
         this.renderPosts();
         this.filterControls?.refresh();
         this.removeDialog();
+        // ⚠️ 失败时**不能**再报"已归类"：pushPostCategory 已经在状态栏写了具体错误，
+        //    这里覆盖成成功文案会让用户以为归好了，实际库里没有（本轮的静默失败就是这么藏的）。
+        if (ids.length && ok < ids.length) {
+          this.setStatus(`归类未完成：${ids.length - ok}/${ids.length} 张没写进分类库（见上一条错误）`, "error");
+          return;
+        }
         this.setStatus(ids.length ? `已归类 ${ids.length} 张 → ${catName}` : `已创建分类：${catName}`, "success");
       };
 
       if (ids.length) {
         // 当前归类状态（单张时显示）
-        const currentCatId = ids.length === 1 ? this.settings.postCategories[ids[0]] || "" : "";
+        const currentCatId = ids.length === 1 ? this.settings.postCategories[this.normaliseCategoryKey(ids[0])] || "" : "";
 
         // 无分类
         const none = document.createElement("button");
@@ -4303,20 +4754,26 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             remove.className = "adg-category-op adg-category-op-remove";
             remove.title = "删除分类（其中的图片变回未分类）";
             remove.textContent = "✕";
-            remove.onclick = (event) => {
+            remove.onclick = async (event) => {
               event.stopPropagation();
-              const cats = this.settings.categories.filter((c) => c.id !== cat.id);
-              const postCategories = {};
-              for (const [pid, cid] of Object.entries(this.settings.postCategories)) {
-                if (cid !== cat.id) postCategories[pid] = cid;
+              // ★ 删除必须走**后端**（唯一真源）：后端会把该分类下的条目移回「未分类」；
+              //   只改前端内存的话，下次加载时这个分类会"复活"（别的节点/工作流仍指向它）。
+              try {
+                await this._categoryRequest("/anima/gallery/categories", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ action: "delete", id: cat.id, source: this.settings.source }),
+                });
+              } catch (error) {
+                this.setStatus(`删除分类失败：${error?.message || error}`, "error");
+                return;
               }
-              this.settings.categories = cats;
-              this.settings.postCategories = postCategories;
               if (this.settings.activeCategory === cat.id) this.settings.activeCategory = "";
+              await this.loadCategoryLibrary();      // 以后端为准重建内存缓存
               this.saveSettings();
               this.filterControls?.refresh();
               renderExisting();
-              this.setStatus(`已删除分类：${cat.name}`);
+              this.setStatus(`已删除分类：${cat.name}（其中的图片已变回未分类）`);
             };
             ops.append(remove);
             row.append(pick, ops);
@@ -4327,7 +4784,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         content.append(existingWrap);
 
         // 从标签一键建分类（单张时取该图标签；点标签 = 建分类并归类，零打字）
-        const firstPost = ids.length === 1 ? this.posts.find((p) => String(p.id) === ids[0]) : null;
+        // ⚠️ ids 里是 **postKey**（`<source>:<id>`），早先这里拿 `String(p.id) === ids[0]` 比，
+        //    永远匹配不上 ⇒ 标签 chips 从来不显示。按 postKey 比，并兼容旧调用点传的纯 id。
+        const firstKey = ids.length === 1 ? ids[0] : "";
+        const firstPost = firstKey
+          ? (this.posts.find((p) => this.postKeyOf(p) === firstKey)
+            || this.posts.find((p) => String(p.id) === firstKey)
+            || this._postKeyIndex?.get(firstKey)
+            || null)
+          : null;
         if (firstPost) {
           const tags = this.postTags(firstPost).slice(0, 10);
           if (tags.length) {
@@ -4344,10 +4809,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
               chip.textContent = tag.replace(/_/g, " ");
               chip.onclick = () => {
                 const displayName = tag.replace(/_/g, " ");
-                const existing = this.settings.categories.find((c) => c.name === displayName);
-                const cat = existing || { id: `c_${Date.now()}`, name: displayName };
-                if (!existing) this.settings.categories.push(cat);
-                assign(cat.id, displayName);
+                this.ensureCategoryByName(displayName).then((cat) => {
+                  if (cat) assign(cat.id, displayName);
+                });
               };
               tagWrap.append(chip);
             }
@@ -4368,10 +4832,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const create = () => {
         const name = newInput.value.trim();
         if (!name) return;
-        const existing = this.settings.categories.find((c) => c.name === name);
-        const cat = existing || { id: `c_${Date.now()}`, name };
-        if (!existing) this.settings.categories.push(cat);
-        assign(cat.id, name);
+        this.ensureCategoryByName(name).then((cat) => {
+          if (cat) assign(cat.id, name);
+        });
       };
       newInput.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); create(); } };
       const newBtn = document.createElement("button");
@@ -5311,6 +5774,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           if (render) this.renderPosts();
           if (search) this.search({ resetPage: true });
         },
+        // 分类的重命名 / 删除走后端（唯一真源）——只改前端内存的话，下次加载会"复活"
+        onRenameCategory: (category, nextName) => this.renameCategoryRemote(category, nextName),
+        onDeleteCategory: (category) => this.deleteCategoryRemote(category),
       });
       this.filterControls.mountFilters(filterGroup);
       // 源专属筛选（C站 分级/排序、P站 匹配/排序）：容器用新类名 adg-source-filters，
@@ -5369,16 +5835,34 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.galleryBatchPanel = galleryBatchPanel;
       const grid = document.createElement("div");
       grid.className = "adg-grid";
+      // ★ 联想浮层**必须单例**：它挂在 document.body 上（fixed 定位），而构建面板会被
+      //   多次调用（节点重绘 / 面板重建）。旧代码每次都 append 一个新 div，而销毁只在
+      //   teardown 里做 —— 于是 body 下会堆着若干"上一代"浮层：`this.suggestions` 只指
+      //   最新的那个，hideSuggestions() **关不到旧的**，屏幕上就永久漂着一条关不掉的联想条
+      //   （用户 2026-09-20 实报"无论如何都去不掉"+ 截图）。创建前先把残留清干净。
+      document.querySelectorAll("body > .adg-suggestions").forEach((el) => el.remove());
       const suggestions = document.createElement('div'); suggestions.className = 'adg-suggestions'; suggestions.style.display = 'none'; this.suggestions = suggestions;
       document.body.append(suggestions);
       window.addEventListener("resize", this.positionSuggestionsHandler);
       document.addEventListener("scroll", this.positionSuggestionsHandler, true);
+      // ★ 画布平移/缩放**既不发 window resize 也不发 document scroll**，所以浮层会僵在
+      //   旧坐标上（用户实报"一直漂浮在屏幕上"，实测漂到节点下方约 250px）。
+      //   画布一被操作就收起浮层 —— 此刻用户注意力在画布，联想本来也不该继续占屏。
+      this.canvasDismissHandler = (event) => {
+        if (!(event.target instanceof HTMLCanvasElement)) return;
+        this.hideSuggestions();
+      };
+      window.addEventListener("pointerdown", this.canvasDismissHandler, true);
+      window.addEventListener("wheel", this.canvasDismissHandler, { capture: true, passive: true });
       root.append(queryRow, toolbar, paginationRow, info, status, galleryBatchPanel, grid);
       this.root = root;
       this.status = status;
       this.grid = grid;
       this.setupImageLoading();
       this.applyGridHeight();
+      // 分类库（唯一真源在后端，跨节点共享）：抓工作流里的旧数据 → 拉后端 → 迁移。
+      // 异步执行、不阻塞首屏；失败也只是"分类暂时用工作流缓存"。
+      this.initCategoryLibrary();
       // Chrome 下新 ComfyUI 节点激活层可能先命中 node-body，导致 DOM
       // 控件“看得见但鼠标点不到”。只从同一节点的命中栈中恢复控件点击，
       // 不穿透到被其他节点遮住的画廊，避免误触别的节点。
@@ -5467,6 +5951,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (this.grid) this.grid.style.minHeight = "";
       window.removeEventListener("resize", this.positionSuggestionsHandler);
       document.removeEventListener("scroll", this.positionSuggestionsHandler, true);
+      if (this.canvasDismissHandler) {
+        window.removeEventListener("pointerdown", this.canvasDismissHandler, true);
+        window.removeEventListener("wheel", this.canvasDismissHandler, true);
+        this.canvasDismissHandler = null;
+      }
       if (this.pointerRecoveryHandler) {
         window.removeEventListener("mouseup", this.pointerRecoveryHandler, true);
         this.pointerRecoveryHandler = null;

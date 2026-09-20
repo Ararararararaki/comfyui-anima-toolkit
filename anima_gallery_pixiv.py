@@ -32,6 +32,7 @@ import functools
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import socket
@@ -897,6 +898,51 @@ def illust_to_item(illust: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _page_url(url: Any, page: int) -> Any:
+    """把 P站图片 URL 里的 `_p0` 换成 `_p{page}`（多页作品用）。
+
+    同一作品各页的 URL **只差 `_pN` 这一段**（`…/123456_p0_master1200.jpg`），所以不必为每页
+    各发一次 `/v1/illust/detail` —— 直接替换即可（社区通行做法，省掉 N 倍请求）。
+    """
+    if not url or int(page or 0) <= 0:
+        return url
+    text = str(url)
+    replaced = re.sub(r"_p0(?=[_.])", f"_p{int(page)}", text, count=1)
+    return replaced if replaced != text else url
+
+
+def illust_to_items(illust: Any) -> list[dict]:
+    """一个作品 → **每页一条 item**。
+
+    用户 2026-09-20 实报："P站画廊似乎只会显示页面第一张图片，如果一个页面有多张图片，
+    后续的图片不会显示"。根因就在这里：原实现是
+    ``items = [illust_to_item(illust) for illust in raw_items]`` —— **一个作品只产出一条**，
+    而 P站 的多页作品（漫画 / 图集）``page_count`` 常是 2~100+，其余页被整批丢掉。
+
+    ⚠️ 单页作品**保持原样**（id 不带页码后缀）：改变 id 会让既有工作流里已保存的
+    选中状态与本地分类键（``<source>:<id>``）一起失配。
+    """
+    base = illust_to_item(illust)
+    meta = base.get("meta") if isinstance(base.get("meta"), dict) else {}
+    try:
+        count = int(meta.get("page_count") or 1)
+    except (TypeError, ValueError):
+        count = 1
+    base_id = str(base.get("id") or "")
+    if count <= 1 or not base_id:
+        return [base]
+    items: list[dict] = []
+    for page in range(count):
+        item = dict(base)
+        # ⚠️ id **必须带页码**：画廊的去重 / 选中 / 分类键都吃 id，同一 id 的多条会互相覆盖
+        item["id"] = f"{base_id}_p{page}"
+        item["preview_url"] = _page_url(base.get("preview_url"), page)
+        item["full_url"] = _page_url(base.get("full_url"), page)
+        item["meta"] = {**meta, "page": page, "page_count": count, "illust_id": base_id}
+        items.append(item)
+    return items
+
+
 def next_cursor_from_url(next_url: Any) -> str | None:
     """`next_url` → 契约的 `next_cursor`（取其中的 offset；P站没有不透明 cursor）。"""
     if not next_url:
@@ -1192,8 +1238,13 @@ def search_illusts(
         raw_items = payload.get("illusts") if isinstance(payload.get("illusts"), list) else []
         next_cursor = next_cursor_from_url(payload.get("next_url"))
 
-    items = [illust_to_item(illust) for illust in raw_items if isinstance(illust, dict)]
-    items = _filter_items(items, min_bookmark=min_bookmark, nsfw=nsfw)[:size]
+    # ⚠️ 分页语义按**作品**算：先把作品截到 size，再展开成"每页一条"。
+    # 反过来的话（先展开再 [:size]）同一个作品的后续页会把后面的作品挤出这一页，
+    # 用户表现为"翻一页只剩几个作品"。
+    raw_items = raw_items[:size]
+    items = [item for illust in raw_items if isinstance(illust, dict)
+             for item in illust_to_items(illust)]
+    items = _filter_items(items, min_bookmark=min_bookmark, nsfw=nsfw)
     if not force:
         _cache_put(cache_key, items, next_cursor)
     return items, next_cursor
