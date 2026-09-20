@@ -801,6 +801,21 @@
 }
 .adg-suggestions.is-localized .adg-suggestions-label,
 .adg-suggestions.is-localized .adg-suggestions-extension { padding: 2px 7px; }
+/* ── 搜索历史（输入框聚焦且内容为空时，占联想浮层的位置显示）── */
+.adg-search-history-head { display: flex; align-items: center; gap: 6px; padding: 3px 7px; color: var(--adg-muted, #9b9a95); font-size: 10px; }
+.adg-search-history-clear { margin-left: auto; padding: 1px 6px; border: 1px solid var(--adg-border, #34383c); border-radius: 4px; color: var(--adg-muted, #9b9a95); background: transparent; cursor: pointer; font-size: 10px; }
+.adg-search-history-clear:hover { color: var(--adg-fg, #e8e8ea); border-color: var(--adg-accent, #8b7bff); }
+.adg-search-history-item { display: flex; align-items: center; gap: 6px; padding: 4px 7px; cursor: pointer; }
+.adg-search-history-item:hover { background: var(--adg-tint, rgba(255,255,255,.05)); }
+.adg-search-history-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--adg-fg, #e8e8ea); }
+/* 删除按钮是次要控件：平时不显形，hover 该行才出现（避免一屏全是 ✕） */
+.adg-search-history-remove { flex: 0 0 auto; padding: 0 4px; border: none; border-radius: 4px; color: var(--adg-muted, #9b9a95); background: transparent; cursor: pointer; opacity: 0; }
+.adg-search-history-item:hover .adg-search-history-remove,
+/* ⚠️ `:focus-visible` 是必须的：删除键可以被 Tab 到，若不给焦点可见态，
+   键盘用户会「看不见焦点却按下了删除」——静默删掉一条历史。 */
+.adg-search-history-remove:focus-visible { opacity: 1; }
+.adg-search-history-remove:hover { color: #ff9090; }
+.adg-search-history-empty { padding: 4px 7px; color: var(--adg-muted, #9b9a95); font-size: 10px; }
 .adg-suggestions.is-localized .adg-localized-suggestion {
   display: grid;
   width: 100%;

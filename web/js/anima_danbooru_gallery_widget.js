@@ -13,6 +13,21 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   // ⇒ 用户更新后会看到"我分类里的图片少了好几张"（2026-09-20 实报）。
   const OTHERS_MIGRATED_KEY = `${STORAGE_KEY_PREFIX}categories_migrated_others`;
   const FAVORITES_STORAGE_KEY = "anima_danbooru_gallery_favorites_v1";
+  // 搜索历史：**每节点一份**（前缀 + nodeId，与 settings 一致），值形如
+  //   { "danbooru": ["1girl solo", …], "civitai": […], "pixiv": […] }
+  const SEARCH_HISTORY_KEY_PREFIX = "anima_danbooru_gallery_search_history_v1_";
+  /** 每个图源各留最近多少条。12 条 ≈ 一屏可见，且 localStorage 占用可忽略（一条平均 ~20 字符）。 */
+  const SEARCH_HISTORY_LIMIT = 12;
+  /** 单条查询串的存储上限 —— 防手改 localStorage 塞进超长串把浮层撑爆（条数上限管不到单条长度） */
+  const SEARCH_HISTORY_ITEM_MAX = 200;
+  /**
+   * 搜索历史的**去重键**：大小写不敏感，下划线 / 加号与空格等价
+   *（D站 里 `long_hair` 与 `long hair` 是同一个标签，不该在历史里占两行）。
+   * ⚠️ 只用于判重 —— 显示与实际搜索都用用户输入的**原文**。
+   */
+  function searchHistoryKeyOf(value) {
+    return String(value || "").trim().toLowerCase().replace(/[_+]+/g, " ").replace(/\s+/g, " ");
+  }
   // localStorage 只适合记住浏览器偏好；工作流本身也必须带上画廊设置，
   // 否则 ComfyUI 重建节点时 node.id 尚未分配，按 id 读取会落到空设置。
   const WORKFLOW_SETTINGS_PROPERTY = "tk_danbooru_gallery_settings_v1";
@@ -2337,6 +2352,221 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify([...this.favorites]));
     }
 
+    // ── 搜索历史（需求 2026-09-21：记录最近几次搜索、点一下就重新用）──
+    // 设计取舍（用户只说了大意，细节由实现补足，均可按需放宽）：
+    //  · 存**用户在搜索框里输入的原始串**，不是 `currentQuery()` 拼完筛选 token 的最终请求串 ——
+    //    点击复用的语义是"再搜一次我当时输的东西"，而不是把当时的 age:/ratio: 也一起复活。
+    //  · **按图源分开**：D站 的 tag 语法与 C站/P站 的关键词不通用，混在一起点了必然搜不到。
+    //  · **每节点一份**（`getNodeStorageKey`，与 settings 一致；文档写明多节点搜索设置互相独立）。
+    //  · **只写 localStorage、不写工作流属性**：历史是本地使用痕迹，不该随工作流分享给别人
+    //    （settings 会用 `WORKFLOW_SETTINGS_PROPERTY` 跟着工作流走，历史刻意不跟）。
+    //  · 去重按规范化键（见 searchHistoryKeyOf），命中的旧条目**提到最前**而不是新增一条。
+    searchHistoryKey() {
+      return `${SEARCH_HISTORY_KEY_PREFIX}${String(this.node?.id ?? "").trim() || "unassigned"}`;
+    }
+
+    /** 读出全部图源的历史；任何坏数据都退化成空对象，绝不阻塞搜索框 */
+    loadSearchHistory() {
+      try {
+        const raw = JSON.parse(localStorage.getItem(this.searchHistoryKey()) || "{}");
+        if (!raw || typeof raw !== "object") return {};
+        const out = {};
+        for (const source of GALLERY_SOURCE_ORDER) {
+          const list = raw[source];
+          if (!Array.isArray(list)) continue;
+          // 只收**字符串**并限长：手改过 localStorage 的话，`[{"a":1}]` 会渲染成可点的
+          // "[object Object]"；超长串则会把浮层撑爆（条数上限管不到单条长度）。
+          out[source] = list
+            .filter((v) => typeof v === "string")
+            .map((v) => v.trim().slice(0, SEARCH_HISTORY_ITEM_MAX))
+            .filter(Boolean)
+            .slice(0, SEARCH_HISTORY_LIMIT);
+        }
+        return out;
+      } catch {
+        return {};
+      }
+    }
+
+    saveSearchHistory(history) {
+      try {
+        localStorage.setItem(this.searchHistoryKey(), JSON.stringify(history || {}));
+      } catch {
+        /* 配额满：历史是可选功能，写不进去也不该影响搜索本身 */
+      }
+    }
+
+    /** 当前图源（或指定图源）的历史列表，最新在前 */
+    searchHistoryFor(sourceId = null) {
+      const id = sourceId || this.activeSourceId();
+      return this.loadSearchHistory()[id] || [];
+    }
+
+    /**
+     * 记一次搜索。**只在"用户主动发起"的入口调用** ——
+     * 别在工作流恢复的初次搜索 / 翻页 / 补图 / 竞态中被丢弃的搜索里调（那些不是用户的一次检索）。
+     */
+    recordSearchHistory(query) {
+      const text = String(query || "").trim();
+      if (!text) return;
+      const id = this.activeSourceId();
+      const key = searchHistoryKeyOf(text);
+      const history = this.loadSearchHistory();
+      const list = (history[id] || []).filter((item) => searchHistoryKeyOf(item) !== key);
+      list.unshift(text);
+      history[id] = list.slice(0, SEARCH_HISTORY_LIMIT);
+      this.saveSearchHistory(history);
+    }
+
+    /** 删一条（按规范化键匹配；显示用的是原文） */
+    removeSearchHistory(query, sourceId = null) {
+      const id = sourceId || this.activeSourceId();
+      const key = searchHistoryKeyOf(query);
+      const history = this.loadSearchHistory();
+      history[id] = (history[id] || []).filter((item) => searchHistoryKeyOf(item) !== key);
+      this.saveSearchHistory(history);
+    }
+
+    /** 清空当前图源的历史 */
+    clearSearchHistory(sourceId = null) {
+      const id = sourceId || this.activeSourceId();
+      const history = this.loadSearchHistory();
+      delete history[id];
+      this.saveSearchHistory(history);
+    }
+
+    /**
+     * 在联想浮层的位置显示「最近搜索」。
+     * 复用 `.adg-suggestions` 容器（它是挂在 body 上的 portal）—— 定位、点外部关闭、blur 收起、
+     * 画布操作收起全部是现成的；互斥也因此**天然成立**：非空查询走联想、空查询走历史，同一个容器
+     * 不可能同时显示两样。别另起一个浮层（那要再付一套单例清理 + 手写互斥的代价）。
+     */
+    showSearchHistory() {
+      const suggestions = this.suggestions;
+      if (!suggestions) return;
+      // 多节点场景：后构建的节点在 build() 里会移除 body 上所有 `.adg-suggestions`（那是为修
+      // "关不掉的联想条"事故加的单例清理），于是**先构建**的那个节点的浮层已经脱离文档。
+      // 这里补挂一次，否则它的历史（以及联想）会静默失效。
+      if (!suggestions.isConnected) document.body.append(suggestions);
+      // ⚠️ 必须**同步**渲染（不能借 180ms 防抖）：聚焦那一刻就该看到历史。
+      // 同时清掉联想可能在途的定时器/请求，避免它稍后把历史覆盖掉。
+      if (this.suggestionTimer) { clearTimeout(this.suggestionTimer); this.suggestionTimer = null; }
+      this.suggestionController?.abort();
+      this.suggestionController = null;
+      this.suggestionRequestId += 1;
+
+      const items = this.searchHistoryFor();
+      suggestions.classList.remove("is-localized");
+      suggestions.replaceChildren();
+
+      const head = document.createElement("div");
+      head.className = "adg-search-history-head";
+      const title = document.createElement("span");
+      title.textContent = items.length ? `最近搜索 · ${items.length}` : "最近搜索";
+      head.append(title);
+      if (items.length) {
+        const clear = document.createElement("button");
+        clear.type = "button";
+        clear.className = "adg-search-history-clear";
+        clear.textContent = "清空";
+        clear.title = `清空「${this.sourceLabel?.(this.activeSourceId()) || "当前栏目"}」的搜索历史`;
+        clear.addEventListener("pointerdown", (event) => event.stopPropagation());
+        clear.addEventListener("mousedown", (event) => event.stopPropagation());
+        clear.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          this.clearSearchHistory();
+          this.refreshSearchHistoryView();
+        });
+        head.append(clear);
+      }
+      suggestions.append(head);
+
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "adg-search-history-empty";
+        empty.textContent = "还没有搜索记录 —— 搜一次就会出现在这里";
+        suggestions.append(empty);
+      } else {
+        suggestions.append(...items.map((text) => this.buildSearchHistoryRow(text)));
+      }
+      // ⚠️ 顺序不能反：`positionSuggestions()` 首行是「display === 'none' 就 return」，
+      //    而浮层创建时 inline 就是 display:none（CSS 兜底的 top/left 是 0）——
+      //    先 position 再 display 会让**首次**显示落在视口左上角。
+      //    （fetchSuggestions 就是先 display 后 position，照它抄。）
+      suggestions.style.display = "block";
+      this.positionSuggestions();
+    }
+
+    /** 增删后原地重绘，并把焦点交还搜索框（否则 focus 落在被移除的按钮上，blur 逻辑会收起浮层） */
+    refreshSearchHistoryView() {
+      this.showSearchHistory();
+      this.queryInput?.focus();
+    }
+
+    buildSearchHistoryRow(text) {
+      const row = document.createElement("div");
+      row.className = "adg-search-history-item";
+      row.title = `搜索「${text}」`;
+      // 与联想候选项同样的防抢：ComfyUI 画布 / 节点激活面罩会吃掉这几帧的点击
+      row.addEventListener("pointerdown", (event) => event.stopPropagation());
+      // ⚠️ mousedown 必须 `preventDefault`（不能只 stopPropagation）：否则默认行为会让搜索框失焦 →
+      //    blur 逻辑 160ms 后收起浮层 → 这次点击的 mouseup 落在已被清空的容器上，click 根本不触发
+      //   （表现：按住一会儿再松手 = 点了没反应）；而且节点侧的"补发点击"会把这次 mouseup 当成
+      //    被面罩吃掉的点击、补发给下层卡片按钮。preventDefault 阻止焦点转移，搜索框保持聚焦，浮层不被收起。
+      row.addEventListener("mousedown", (event) => { event.preventDefault(); event.stopPropagation(); });
+
+      const label = document.createElement("span");
+      label.className = "adg-search-history-text";
+      label.textContent = text;
+
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "adg-search-history-remove";
+      remove.textContent = "✕";
+      remove.title = "从历史里删掉这一条";
+      remove.addEventListener("pointerdown", (event) => event.stopPropagation());
+      // 同上：不 preventDefault 的话，按住删除键也会先被 blur 收起浮层、点击落空
+      remove.addEventListener("mousedown", (event) => { event.preventDefault(); event.stopPropagation(); });
+      remove.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.removeSearchHistory(text);
+        this.refreshSearchHistoryView();
+      });
+
+      row.append(label, remove);
+      row.addEventListener("click", () => this.applySearchHistoryQuery(text));
+      return row;
+    }
+
+    /**
+     * 用户主动提交一次搜索的统一收口 = 填搜索框 + 记历史 + 收起浮层 + 滚回顶部 + 发起搜索。
+     * 覆盖「用户意图明确」的入口：搜索框回车 / 「搜索」按钮 / 点联想候选 / 点 prompt 标签 / 点历史条目。
+     * ⚠️ **不要**用它覆盖：翻页、补图、换源重搜、筛选与设置变更重搜、模糊纠错与重试递归、
+     * build() 的初次搜索 —— 那些都不是"用户的一次检索"（`search()` 有 30 个调用点，其中 ≥14 个是状态驱动）。
+     */
+    submitSearch(query) {
+      const text = String(query ?? "").trim();
+      if (text) {
+        this.setQuery(text);
+        // ⚠️ 必须在这里就取原文：`search()` 内部会用 setQuery(lastQuery) 把输入框改写成规范化结果
+        //（小写、丢掉 order:、截断到 8 个标签），到那时"用户输入的原文"已经没了。
+        this.recordSearchHistory(text);
+      }
+      this.hideSuggestions();
+      if (this.grid) this.grid.scrollTop = 0;
+      void this.search({ resetPage: true }).catch((error) => {
+        // 不打断 UI，但也别把错误吞干净 —— 这几个入口原本会把失败冒到 console
+        console.warn("[画廊] 搜索失败:", error);
+      });
+    }
+
+    /** 点历史条目 = 与其它用户搜索入口走同一条路径 */
+    applySearchHistoryQuery(text) {
+      this.submitSearch(text);
+    }
+
     toggleFavorite(postId) {
       const id = String(postId || "");
       if (!id) return false;
@@ -2377,6 +2607,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     scheduleSuggestions(value) {
+      const query = String(value ?? "");
+      // 空查询 = 显示「最近搜索」（占用联想浮层的位置）。
+      // 历史是本地数据、与图源无关，所以这条要放在 D站 守卫**之前**判：
+      // 三个图源都有搜索框 —— C站 的 `capability.query=false` 只是把它切到"页内本地过滤"模式
+      //（框还在、照样能输入），P站 是正常的关键词搜索。所以历史对三者都适用。
+      if (!query.trim()) {
+        this.showSearchHistory();
+        return;
+      }
       // 联想走的是 D站 /anima/danbooru/suggest（Danbooru tag 词典）：非 D站 图源没有这套词典，
       // 弹出来的候选一定插不进去 —— 直接不弹（capabilities.tags=false 的 C站 尤其如此）。
       if (!this.isDanbooruSource()) {
@@ -2384,11 +2623,6 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         return;
       }
       if (this.suggestionTimer) clearTimeout(this.suggestionTimer);
-      const query = String(value ?? "");
-      if (!query.trim()) {
-        this.hideSuggestions();
-        return;
-      }
       this.suggestionTimer = setTimeout(() => {
         this.suggestionTimer = null;
         this.fetchSuggestions(query);
@@ -2768,8 +3002,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             const input = this.queryInput;
             const raw = input?.value ?? this.queryWidget?.value ?? "";
             const pos = input?.selectionStart ?? raw.length;
-            this.setQuery(empty ? target : replaceWordAt(raw, pos, target));
-            this.search({ resetPage: true });
+            // 记历史要记**替换后的完整标签串** —— 用户敲的半截串不算一次检索
+            this.submitSearch(empty ? target : replaceWordAt(raw, pos, target));
           };
           this.suggestions.append(button);
         }
@@ -4531,12 +4765,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // （见 pointer 恢复处理），不拦会让一次点击同时触发卡片上的按钮。
       event.preventDefault();
       event.stopPropagation();
-      this.setQuery(rawTag);     // 同步搜索框与序列化 widget（两者必须一致；currentQuery() 只读 widget）
       this.hidePromptTooltip();  // 搜索会整体重渲染，浮层留着只会指向旧卡片
-      // search() / renderPosts() 都不会重置滚动 —— 点了标签却停在上一批结果的滚动位置，
-      // 会让人以为"点了没反应"。
-      if (this.grid) this.grid.scrollTop = 0;
-      void this.search({ resetPage: true }).catch(() => {});
+      // 填搜索框 / 记历史 / 收起浮层 / 滚回顶部 / 发起搜索 —— 全走用户搜索的统一收口
+      this.submitSearch(rawTag);
     }
 
     async downloadPost(post) {
@@ -5071,7 +5302,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             this.settings.filters = normalizeFilters(preset.filters);
             this.saveSettings();
             this.filterControls.refresh();
-            this.search({ resetPage: true });
+            // 预设是「查询 + 筛选」的复合动作：筛选上面已经设好，查询本身走用户搜索的统一收口（含记历史）
+            this.submitSearch(preset.query);
             this.removeDialog();
           };
           const ops = document.createElement("span");
@@ -5772,7 +6004,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       queryInput.onkeydown = (event) => {
         if (event.key === "Enter" && !event.isComposing) {
           event.preventDefault();
-          this.search({ resetPage: true });
+          this.submitSearch(queryInput.value);
         }
       };
       queryRow.append(queryInput);
@@ -5828,7 +6060,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.sourceSelect = select;
         mainGroup.append(picker);
       }
-      addAction("搜索", "按上方标签搜索", () => this.search({ resetPage: true }), mainGroup).className = "adg-primary-action";
+      addAction("搜索", "按上方标签搜索", () => this.submitSearch(this.queryInput?.value ?? this.queryWidget?.value ?? ""), mainGroup).className = "adg-primary-action";
       // ── 随机发现：order:random + 质量地板。三档质量让用户挑口味，而不是给一个
       //    「随机」开关把没人贴过的冷门图倒进来（见 RANDOM_QUALITY_TIERS 注释）。
       {
@@ -5922,7 +6154,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.settings.filters = normalizeFilters(p.filters);
         this.saveSettings();
         this.filterControls.refresh();
-        this.search({ resetPage: true });
+        // 同预设管理器：筛选已经设好，查询走统一收口（含记历史）
+        this.submitSearch(p.query);
         preset.value = "";
       };
       presetGroup.append(preset);
