@@ -15,6 +15,8 @@ import type { OutputFile, OutputMetadata, OutputDir, OutputScanStatus } from '..
 import type { PromptEntry } from '../types'
 import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow } from '../services/outputMetadata'
 import { extractPngTextChunks, injectPngTextChunks } from '../services/pngChunks'
+import { applyExportMetadata, isExportMetadataNoop } from '../utils/imageMetadata'
+import { useExportMetadataStore, exportMetadataOptions } from '../store/exportMetadata'
 import { VirtualScroll, type VirtualScrollItemStyle } from '../components/VirtualScroll'
 import { MasonryVirtualScroll } from '../components/MasonryVirtualScroll'
 import { ensureAllMetadata, countMetadataMissing } from '../services/outputMetadataIndex'
@@ -256,6 +258,8 @@ export async function initOutputs() {
   _initDone = true
 
   _nativeOutputs = await probeNativeStorage()
+  // 导出元数据开关的按钮状态（store 已在模块加载时从 localStorage 恢复好）
+  syncMetadataButton()
   // 后端直供图源探测（插件 ≥2.5.1 的 /anima/thumb）：可用则卡片 <img> 直接引用小图 URL，
   // 浏览器不再自己读盘解码原图。探测一次，失败（旧版插件/后端离线）自动走旧管线。
   await probeBackendThumbs()
@@ -1613,6 +1617,16 @@ function bindOutputsEvents() {
       return
     }
 
+    // 工具栏：导出元数据开关 + 署名设置
+    if (target.closest('.outputs-metadata-btn')) {
+      toggleMetadataExport()
+      return
+    }
+    if (target.closest('.outputs-metadata-config-btn')) {
+      openMetadataConfigPanel()
+      return
+    }
+
     // 工具栏全选按钮（切换选中状态，基准=当前已过滤列表）
     if (target.closest('.outputs-select-all-btn')) {
       const st = useOutputStore.getState()
@@ -2769,6 +2783,129 @@ async function getFileBlob(fileId: string): Promise<{ name: string; blob: Blob }
   }
 }
 
+/**
+ * 导出专用取字节：在 getFileBlob 之上套一层元数据策略（开关关闭时是零开销直通）。
+ * ⚠️ 只在「用户会拿到这份字节」的路径上用它。以下用途必须继续用 getFileBlob：
+ *   · ensureEditSrc —— 编辑画布的像素基准
+ *   · saveEditedImage 里读原图元数据以注入副本 —— 一旦被 strip 就静默破坏「副本保留工作流」
+ *   · copyImagesToClipboard 的降级分支 —— 只取文件名，不碰字节
+ */
+async function getExportBlob(fileId: string): Promise<{ name: string; blob: Blob } | null> {
+  const r = await getFileBlob(fileId)
+  if (!r) return null
+  return { name: r.name, blob: await applyExportMetadata(r.blob, exportMetadataOptions()) }
+}
+
+/** 把开关状态同步到工具栏按钮：active 高亮 + title 写明当前状态（避免用户忘了自己开过） */
+function syncMetadataButton() {
+  const st = useExportMetadataStore.getState()
+  const btn = document.getElementById('outputsMetadataBtn')
+  if (!btn) return
+  btn.classList.toggle('active', st.enabled)
+  const filled = st.entries.filter(e => e.key.trim() !== '' && e.value !== '').length
+  btn.title = st.enabled
+    ? `导出时去除元数据：已开启${filled > 0 ? `（另写入 ${filled} 项署名）` : '（未填署名 = 只去不写）'}`
+    : '导出时去除元数据（当前：关闭）'
+}
+
+/** 开关按钮：切换 + 同步 UI + 明确告知影响面（这是会改变用户拿到的东西的开关，不能静默） */
+function toggleMetadataExport() {
+  const st = useExportMetadataStore.getState()
+  st.setEnabled(!st.enabled)
+  syncMetadataButton()
+  showToast(st.enabled
+    ? '已开启：导出副本将去除 prompt/workflow（磁盘原图不动）'
+    : '已关闭：导出恢复为原图字节')
+}
+
+/**
+ * 「署名与自定义元数据」设置弹层。
+ * 输入框改动只写 store 不重绘（否则每敲一个字就丢焦点、光标跳到末尾），只有增删行才重绘。
+ */
+function openMetadataConfigPanel() {
+  document.getElementById('outputsMetaConfigOverlay')?.remove()
+
+  const overlay = document.createElement('div')
+  overlay.id = 'outputsMetaConfigOverlay'
+  overlay.style.cssText = 'position:fixed;inset:0;background:radial-gradient(ellipse at top,rgba(10,10,15,0.85),rgba(2,2,3,0.95));z-index:99999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);'
+  const panel = document.createElement('div')
+  panel.style.cssText = 'background:var(--bg2);color:var(--text);border-radius:12px;padding:16px;width:90vw;max-width:560px;max-height:85vh;overflow-y:auto;border:1px solid var(--border);box-shadow:0 24px 70px rgba(0,0,0,0.5);'
+
+  const draw = () => {
+    const st = useExportMetadataStore.getState()
+    panel.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <strong style="font-size:14px">导出元数据</strong>
+        <span style="flex:1"></span>
+        <button class="outputs-meta-close-btn" data-cfg="close" title="关闭">${icon('x', 14)}</button>
+      </div>
+      <div style="font-size:12px;color:var(--descrip-text);line-height:1.7;margin-bottom:12px">
+        开启后，<b>下载 / 打包下载 / 复制到剪贴板 / 大图预览 / 编辑器副本</b>都会去掉 ComfyUI 写进 PNG 的
+        <code>prompt</code> 与 <code>workflow</code>（提示词与工作流不再随图外流），并写入下面的署名。<br>
+        <b>磁盘上的原图不会被改动</b>；去掉 workflow 后图片拖回 ComfyUI 无法恢复工作流。
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;margin-bottom:14px;cursor:pointer">
+        <input type="checkbox" data-cfg="enabled" ${st.enabled ? 'checked' : ''}>
+        <span style="font-size:13px">启用（默认关闭）</span>
+      </label>
+      <div style="font-size:12px;color:var(--descrip-text);margin-bottom:6px">
+        署名与自定义元数据（<b>留空 = 不写入该项</b>；也不会去清除图里已有的同名块）
+      </div>
+      ${st.entries.map((e, i) => `
+        <div style="display:flex;gap:6px;margin-bottom:6px">
+          <input class="outputs-filter-input" data-cfg="key" data-idx="${i}" value="${escAttr(e.key)}" placeholder="键名" style="width:38%">
+          <input class="outputs-filter-input" data-cfg="value" data-idx="${i}" value="${escAttr(e.value)}" placeholder="值" style="flex:1">
+          <button class="outputs-batch-btn danger" data-cfg="remove" data-idx="${i}" title="删除该行">${icon('trash', 12)}</button>
+        </div>`).join('')}
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="outputs-batch-btn" data-cfg="add">${icon('plus', 12)}<span>添加自定义键</span></button>
+        <button class="outputs-batch-btn" data-cfg="reset">恢复默认四键</button>
+      </div>`
+  }
+
+  const close = () => {
+    document.removeEventListener('keydown', onKey)
+    overlay.remove()
+  }
+  const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+
+  // 输入框只写 store（不重绘，保住焦点与光标位置）
+  panel.addEventListener('input', (e) => {
+    const el = e.target as HTMLInputElement
+    const field = el.dataset.cfg
+    if (field !== 'key' && field !== 'value') return
+    useExportMetadataStore.getState().setEntry(Number(el.dataset.idx),
+      field === 'key' ? { key: el.value } : { value: el.value })
+    syncMetadataButton()
+  })
+
+  panel.addEventListener('change', (e) => {
+    const el = e.target as HTMLInputElement
+    if (el.dataset.cfg === 'enabled') {
+      useExportMetadataStore.getState().setEnabled(el.checked)
+      syncMetadataButton()
+    }
+  })
+
+  panel.addEventListener('click', (e) => {
+    const el = (e.target as HTMLElement).closest('[data-cfg]') as HTMLElement | null
+    if (!el) return
+    const st = useExportMetadataStore.getState()
+    switch (el.dataset.cfg) {
+      case 'close': close(); return
+      case 'add': st.addEntry(); draw(); return
+      case 'reset': st.restoreDefaults(); draw(); syncMetadataButton(); return
+      case 'remove': st.removeEntry(Number(el.dataset.idx)); draw(); syncMetadataButton(); return
+    }
+  })
+
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close() })
+  document.addEventListener('keydown', onKey)
+  draw()
+  overlay.appendChild(panel)
+  document.body.appendChild(overlay)
+}
+
 /** Blob 转 Base64 DataURL */
 function blobToDataURL(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -2860,7 +2997,7 @@ async function saveOutputPromptToLibrary(fileId: string): Promise<void> {
 
 /** 复制单张图片到剪贴板 */
 async function copyImageToClipboard(fileId: string) {
-  const result = await getFileBlob(fileId)
+  const result = await getExportBlob(fileId)
   if (!result) { showToast('复制失败：找不到文件'); return }
   try {
     const type = result.blob.type || 'image/png'
@@ -2886,7 +3023,7 @@ async function copyImagesToClipboard(ids: string[]) {
   let copiedCount = 0
 
   for (const id of ids) {
-    const result = await getFileBlob(id)
+    const result = await getExportBlob(id)
     if (!result) continue
 
     // 多图时压缩以减少 base64 体积
@@ -2962,7 +3099,7 @@ async function copyImagesToClipboard(ids: string[]) {
 
 /** 下载单张图片 */
 async function downloadImage(fileId: string) {
-  const result = await getFileBlob(fileId)
+  const result = await getExportBlob(fileId)
   if (!result) { showToast('下载失败：找不到文件'); return }
   const url = URL.createObjectURL(result.blob)
   const a = document.createElement('a')
@@ -2982,7 +3119,7 @@ async function downloadImagesAsZip(ids: string[]) {
   const zip = new JSZip()
   let added = 0
   for (const id of ids) {
-    const result = await getFileBlob(id)
+    const result = await getExportBlob(id)
     if (result) { zip.file(result.name, result.blob); added++ }
   }
   const zipBlob = await zip.generateAsync({ type: 'blob' })
@@ -3215,18 +3352,22 @@ async function saveEditedImage() {
     const blob = await new Promise<Blob | null>(res => cv.toBlob(b => res(b), mime))
     if (!blob) { showToast('⚠️ 导出失败'); return }
 
-    // PNG 副本保留原始 prompt/workflow 元数据（写入导出 PNG 的 tEXt chunks）
-    let bytes: Uint8Array<ArrayBuffer>
-    if (ext === 'png') {
+    // PNG 副本的元数据（2026-09-21 用户决定：跟随导出元数据开关）
+    //  · 开关关闭（默认）→ 保持原行为：把原始 prompt/workflow 注入副本，方便拖回 ComfyUI 恢复工作流
+    //  · 开关开启 → 反过来：去掉元数据并写入自定义署名
+    let savedBlob: Blob
+    if (ext !== 'png') {
+      savedBlob = blob
+    } else if (isExportMetadataNoop(exportMetadataOptions())) {
       const original = await getFileBlob(_editFileId)
-      bytes = injectPngTextChunks(
+      const bytes = injectPngTextChunks(
         new Uint8Array(await blob.arrayBuffer()),
         original ? extractPngTextChunks(new Uint8Array(await original.blob.arrayBuffer())) : []
       )
+      savedBlob = new Blob([bytes], { type: mime })
     } else {
-      bytes = new Uint8Array(await blob.arrayBuffer())
+      savedBlob = await applyExportMetadata(blob, exportMetadataOptions())
     }
-    const savedBlob = new Blob([bytes], { type: mime })
 
     const base = file.filename.replace(/\.[^.]+$/, '')
     const newName = `${base}_edited.${ext}`
@@ -3362,20 +3503,28 @@ async function openPreview(fileId: string) {
   if (!_nativeOutputs && !dh) return
 
   let imgUrl = ''
-  if (_nativeOutputs) {
+  // 开关开启时预览也走「干净副本」——否则用户在预览界面「右键 → 图片另存为」拿到的仍是
+  // 带 prompt/workflow 的原图，整条功能被绕过（实测这是最常用的另存为路径）。
+  // 关闭时保持原路径：native 模式零拷贝直连后端整文件、目录模式直接用原 File，
+  // 既不动字节也不额外占内存。
+  if (!isExportMetadataNoop(exportMetadataOptions())) {
+    const r = await getExportBlob(fileId)
+    if (!r) return
+    imgUrl = URL.createObjectURL(r.blob)
+    _previewBlobUrl = imgUrl
+  } else if (_nativeOutputs) {
     imgUrl = nativeOutputUrl(file.path)
-  }
-  try {
-    if (!_nativeOutputs) {
+  } else {
+    try {
       if (!dh) return
       const current = await resolveDirEntry(dh, file.path)
       const fileHandle = await current.getFileHandle(file.filename)
       const f = await fileHandle.getFile()
       imgUrl = URL.createObjectURL(f)
       _previewBlobUrl = imgUrl
+    } catch {
+      return
     }
-  } catch {
-    return
   }
 
   // 打开 lightbox

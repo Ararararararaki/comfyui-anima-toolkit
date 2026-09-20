@@ -353,6 +353,11 @@
   border-color: var(--accent);
 }
 
+/* 「署名与自定义元数据」是次要控件：平时压低存在感，hover 才完全显形
+   （开关本体用上面的 .active 表示开启态，复用既有样式） */
+.outputs-metadata-config-btn { opacity: 0.45; }
+.outputs-metadata-config-btn:hover { opacity: 1; }
+
 /* 扫描进度条 */
 .outputs-scan-progress {
   display: flex;

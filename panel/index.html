@@ -502,6 +502,12 @@ try {
           <button class="outputs-toolbar-btn outputs-category-manage-btn" title="管理分类（删除/重命名）" data-icon="settings"></button>
           <button class="outputs-toolbar-btn outputs-filter-btn" data-filter="rated" data-icon="thumbsUp"><span>评分</span></button>
         </div>
+        <div class="outputs-toolbar-group">
+          <!-- 导出元数据开关：开启后下载/复制/预览/编辑器副本都去掉 ComfyUI 的
+               prompt/workflow 并写入自定义署名；默认关闭，关闭时导出路径零改动 -->
+          <button class="outputs-toolbar-btn outputs-metadata-btn" id="outputsMetadataBtn" data-icon="shield" title="导出时去除元数据（当前：关闭）"></button>
+          <button class="outputs-toolbar-btn outputs-metadata-config-btn" id="outputsMetadataConfigBtn" data-icon="user" title="署名与自定义元数据"></button>
+        </div>
         <button class="outputs-toolbar-btn outputs-shortcuts-btn" data-icon="keyboard" title="快捷键"></button>
         <!-- 统计信息并入工具栏同一行（原先在网格下方独占一条带背景的状态栏，白占竖向空间；
              内容由 Outputs.ts 的 renderStats() 填充） -->

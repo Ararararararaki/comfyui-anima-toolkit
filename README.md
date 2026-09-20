@@ -42,7 +42,7 @@ git clone https://github.com/Ararararararaki/comfyui-anima-toolkit
 
 一个 ComfyUI 自定义节点 + 配套本地管理面板:批量挂 LoRA、可视化管理模型、解析返图参数、整理提示词。
 
-当前发布版本: **2.16.0**。
+当前发布版本: **2.17.0**。
 
 ## 这个项目解决什么（10 秒版）
 
@@ -55,12 +55,11 @@ git clone https://github.com/Ararararararaki/comfyui-anima-toolkit
 | 出图后不知道参数、找不到历史图 | **Outputs 图片管理**：后端缩略图直出、PNG 参数索引、一键复制 Prompt / LoRA 标签 |
 | 想一次跑一批不同提示词 | **TK 批量提示词**：多组提示词串行出图 + 每组独立机位 |
 
-## 最近更新（2026-09-16 · 2.14.0）
+## 最近更新（2026-09-21 · 2.17.0）
 
-- **多源画廊（D站 / C站 / P站）**：`TK 多重画廊` 节点新增**图源下拉**，同一个节点切换三个图源；前端由后端声明的 **capabilities 驱动控件显隐**，不再出现"点了没反应的开关"。
-- **C站 / P站 图源**：C站 支持排序 / NSFW 档位 / 时间窗 / 作者 / 模型浏览并取回完整 Prompt 与采样参数；P站 走 OAuth 2.0 + PKCE 授权后可关键词搜索，定位是**素材**（不提供 Prompt，选中后送 WD14 反推）。
-- **图源密钥面板**：C站 API key 与 P站 授权分开管理（**只回显掩码**），各自落盘在 `data/` 下，不进仓库。
-- **画廊视觉重做 + 一批交互修复**：去掉发光与彩色 glow；修掉操作条隐形吃点击、悬停 Prompt 浮层被裁切、节点"慢慢变小"的正反馈、纵向拉大不加载更多图。
+- **Outputs 导出元数据开关**：下载 / 打包下载 / 复制到剪贴板 / 大图预览 / 编辑器保存副本时，自动去掉 ComfyUI 写进 PNG 的 `prompt` 与 `workflow`，并可写入自定义署名（`Author` / `Copyright` / …）。**chunk 级无损、不改一个像素**，磁盘原图不动，**默认关闭**。
+- **画廊本地分类库**：分类定义与归类落 `data/gallery_categories.json`，跨画廊节点共享、按图源（D站/P站/C站）隔离。
+- **多源画廊（D站 / C站 / P站）**：一个节点切换三个图源；C站 / P站 密钥分开管理，只回显掩码。
 - **Prompt Cards 联想键盘**：`Tab` 接受候选、`Enter` 还给换行、输入法组字期间不拦截按键。
 
 更早版本的完整改动记录见 [`CHANGELOG.md`](CHANGELOG.md)。
@@ -190,7 +189,7 @@ ZIP 安装: 下载 GitHub → Code → Download ZIP,将 ZIP 内层的仓库内�
 
 ZIP 安装后必须确认 `custom_nodes/ComfyUI-Anima-Batch-LoRA/__init__.py` 直接存在,不能多套一层 `仓库名-main/` 目录。更新和手动覆盖都完成后,仍需通过绘世启动器重启 ComfyUI。
 
-完整的版本改动记录见 [`CHANGELOG.md`](CHANGELOG.md)（当前 **2.14.0**）。
+完整的版本改动记录见 [`CHANGELOG.md`](CHANGELOG.md)（当前 **2.17.0**）。
 
 ## 开发者:从源码重建面板
 
