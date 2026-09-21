@@ -5465,14 +5465,24 @@
         }
       },
       async setup() {
-        window.__tkCardsDebug = window.__tkCardsDebug || {};
-        window.__tkCardsDebug.splitTags = splitTags;
-        window.__tkCardsDebug.splitPromptPieces = splitPromptPieces;
-        window.__tkCardsDebug.serializePromptPieces = serializePromptPieces;
-        window.__tkCardsDebug.appendCardToPrompt = appendCardToPrompt;
-        window.__tkCardsDebug.appendPromptBlock = appendPromptBlock;
+        // 兜底：新版前端（comfyui_frontend_package 1.48.x）只对「app setup 前已注册」的扩展
+        // 调用本回调，而本脚本按 setTimeout 轮询注册 → 命中与否取决于加载时序。
+        // 调试钩子的主动挂载见 init() 末尾的 attachDebugHooks()。
+        attachDebugHooks();
       },
     });
+    // 主动挂调试钩子：不依赖 setup 回调，保证排障时 window.__tkCardsDebug 一定可用
+    // （2026-09-22：Prompt Batch 就因 setup 未调用导致 __tkDebug 缺失，排障时一度误判）。
+    attachDebugHooks();
+  }
+
+  function attachDebugHooks() {
+    window.__tkCardsDebug = window.__tkCardsDebug || {};
+    window.__tkCardsDebug.splitTags = splitTags;
+    window.__tkCardsDebug.splitPromptPieces = splitPromptPieces;
+    window.__tkCardsDebug.serializePromptPieces = serializePromptPieces;
+    window.__tkCardsDebug.appendCardToPrompt = appendCardToPrompt;
+    window.__tkCardsDebug.appendPromptBlock = appendPromptBlock;
   }
 
   injectStyle();

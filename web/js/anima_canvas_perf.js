@@ -212,28 +212,39 @@
     };
   }
 
+  // 启动渲染裁剪：等前端把节点 DOM 建起来再判断是否支持。
+  // ⚠️ 不能只放在扩展 setup() 里（2026-09-22 真机定位）：新版前端（comfyui_frontend_package
+  //    1.48.x）只在 app.setup() 时对「当时已注册」的扩展调用 setup；本脚本按 setTimeout 轮询
+  //    等 app 就绪后才 registerExtension，能否命中取决于加载时序。一旦错过，setup 永不调用，
+  //    内容裁剪从一开始就没启用 —— 表现为「性能优化莫名失效」且无任何报错。
+  //    因此改由 init() 主动启动，setup() 与节点创建钩子仅作兜底（flagAllows/enabled 双重幂等）。
+  function startCanvasPerf(tries) {
+    if (!flagAllows() || enabled) return;
+    const n = tries || 0;
+    if (supported()) { enable(); return; }
+    if (n > 40) return;
+    setTimeout(() => startCanvasPerf(n + 1), 250);
+  }
+
   function init() {
     const app = api();
     if (!app?.registerExtension) return setTimeout(init, 500);
     app.registerExtension({
       name: "TK.CanvasPerf",
       async setup() {
-        if (!flagAllows()) return;
-        // 等前端把节点 DOM 建起来再判断是否支持。
-        const waitDom = (tries) => {
-          if (supported()) { enable(); return; }
-          if (tries > 40) return;
-          setTimeout(() => waitDom(tries + 1), 250);
-        };
-        waitDom(0);
+        // 兜底：若本扩展在 app setup 前已注册，这里会被调用（主动启动已在 init() 发起）。
+        startCanvasPerf(0);
       },
       async beforeRegisterNodeDef(nodeType) {
         if (!flagAllows()) return;
         try { hookNodeResize(nodeType); } catch (_) {}
       },
-      nodeCreated() { scheduleRefresh(); },
-      loadedGraphNode() { scheduleRefresh(); },
+      // 兜底：首屏 10 秒窗口内没等到节点 DOM 时，加载工作流时再补一次启动。
+      nodeCreated() { startCanvasPerf(0); scheduleRefresh(); },
+      loadedGraphNode() { startCanvasPerf(0); scheduleRefresh(); },
     });
+    // 主动启动（不等 setup 回调）
+    startCanvasPerf(0);
     // 运行期开关（供探针/排障使用）
     window.__tkCanvasPerf = {
       setEnabled(v) { if (v) { window.localStorage.removeItem(FLAG_KEY); enable(); } else { try { window.localStorage.setItem(FLAG_KEY, "0"); } catch (_) {} disable(); } return enabled; },
