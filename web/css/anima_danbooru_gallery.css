@@ -396,6 +396,18 @@
 .adg-card.is-copyright { border-left-color: #4fb0f0; }
 .adg-card.is-character { border-left-color: #6ede8a; }
 .adg-card.is-general { border-left-color: #8b8798; }
+/* D站 差分（父子级）角标：对应 D站 网页给缩略图描的绿框 / 橙框（绿=有子级、橙=有父级）。
+   用右上角角标而不是整圈边框 —— 左边框已被上面的类别色条占用，整圈描色会与选中态紫框撞车。
+   颜色是语义色（与 D站 网页一致），不跟随主题；底板亮，故文字用深色。
+   类名按**关系来源**（D站 字段名）命名、文字按**身份**写，两者不要混：
+   has-children ⇒ 图上有子级 ⇒ 这张是「父帖」；has-parent ⇒ 图上有父级 ⇒ 这张是「子帖」。 */
+.adg-diff-marks { position: absolute; top: 6px; right: 6px; z-index: 3; display: flex; gap: 3px; pointer-events: none; }
+.adg-diff-marks span { padding: 1px 5px; border-radius: 4px; color: #10130f; font-size: 10px; font-weight: 700; line-height: 1.4; }
+.adg-diff-has-children { background: rgba(110, 222, 138, .92); }
+.adg-diff-has-parent { background: rgba(240, 166, 60, .92); }
+/* P站 多页作品角标：等价 Pixiv 网页缩略图右上角的多页标识（本插件直接写页数 / 当前页）。
+   与差分角标同处右上角，但两者分属不同图源、不会同时出现在一张卡上。 */
+.adg-pages-badge { position: absolute; top: 6px; right: 6px; z-index: 3; padding: 1px 5px; border-radius: 4px; color: #fff; background: rgba(0, 0, 0, .72); font-size: 10px; font-weight: 700; line-height: 1.4; pointer-events: none; }
 .adg-card-select { display: flex; height: 100%; width: 100%; flex-direction: column; gap: 3px; border: 0; padding: 3px; box-sizing: border-box; color: inherit; background: transparent; text-align: left; cursor: pointer; }
 .adg-card-select:focus-visible { outline: 2px solid #a895ff; outline-offset: 1px; }
 /* 图片区吃掉卡片剩余高度；cover 让图片完整铺满盒子（盒子比例已按真实盒比算出，裁切可忽略） */
@@ -650,6 +662,26 @@
 }
 .adg-query::placeholder { color: var(--adg-fg-soft, #7b7b8d); }
 .adg-query:focus { border-color: var(--adg-go, #a895ff); }
+/* 差分组浏览的「← 返回」：与搜索框同排，只有进入差分组后才占位（JS 用 hidden 收起）。
+   原搜索词可能很长，故限宽 + 省略号，不把搜索框挤没。 */
+.adg-diff-return {
+  flex: 0 1 auto;
+  max-width: 46%;
+  margin-left: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--adg-go, #a895ff);
+  border-radius: var(--adg-r-sm, 6px);
+  color: var(--adg-fg, #ededf2);
+  background: var(--adg-input-bg, #23232c);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color var(--adg-dur, 150ms) var(--adg-ease, ease-out), background var(--adg-dur, 150ms) var(--adg-ease, ease-out);
+}
+.adg-diff-return:hover { border-color: var(--adg-go, #b49cff); background: var(--adg-tint-strong, rgba(255, 255, 255, .1)); }
+.adg-diff-return[hidden] { display: none; }
 
 /* ── TK 新风格：弹出菜单与设置弹窗统一为灰黑 / 米白色调 ── */
 .adg-portal-menu,

@@ -86,6 +86,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   //（窄视口 + 光标在左半屏，见 positionTooltip 的钳制分支），180ms 内跨过去要超过 1.7 m/s
   // 的手速 —— 慢速移动就会变成"浮层先消失"。
   const PROMPT_TOOLTIP_HIDE_DELAY = 280;
+  // 悬停浮层的「延迟显示」：光标停在卡片上这么久才弹。
+  // 为什么必须有它（2026-09-21 真机反馈）：原实现是一进入卡片就弹 + 浮层跟着光标跑，
+  // 而 2.19 给浮层里的标签加了「点击即搜索」—— 想去点标签时光标一动浮层就跟着挪，永远点不到。
+  // 现在改成「停留才弹 + 位置冻结（见 positionTooltip 的锚点）」，350ms 既不会"划过就闪一堆浮层"，
+  // 也不至于让用户等；再配合下面的延迟隐藏，光标才腾得出来移进浮层点标签。
+  const PROMPT_TOOLTIP_SHOW_DELAY = 350;
   const PROMPT_CATEGORY_LABELS = Object.freeze({
     artist: "画师",
     copyright: "版权/作品",
@@ -640,6 +646,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.presetNoteHydration = null;
       this.tooltip = null;
       this.tooltipHideTimer = null;   // 「延迟隐藏」定时器（只被 D站 的可交互浮层用到）
+      this.tooltipShowTimer = null;   // 「延迟显示」定时器（悬停 PROMPT_TOOLTIP_SHOW_DELAY 才弹）
+      this.tooltipHoverPoint = null;  // 光标在卡片内的最后位置：只用来定一次位，浮层不跟随它移动
       this.tooltipCard = null;        // 当前浮层对应的卡片（判「鼠标从浮层移回同一张卡」用）
       this.domWidget = null;
       this.domSizeSync = null;
@@ -716,6 +724,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.randomReshuffleBtn = null;
       this.promptSettingsBtn = null;
       this.gallerySecretState = null;
+      // 差分组（父子级）浏览：点卡片「差分」把搜索词临时换成 parent:<根帖id>，
+      // 这里记着进入前的搜索词与页码，供搜索框旁的「← 返回」还原（见 openDiffGroup / exitDiffGroup）。
+      this.diffContext = null;
+      // P站 多页作品：一页搜索结果里「一作品 × N 页」会被适配器展开成 N 条 item，
+      // 折叠回「一作品一张卡」后其余页存在 groups 里，点卡片「全部页」再展开（见 foldPixivPages）。
+      this.pixivPageGroups = null;   // Map<illust_id, post[]>：本批结果里各多页作品的全部页
+      this.pixivDetail = null;       // 非 null = 正在看某个作品的全部页（纯展示层覆盖）
+      this.diffReturnBtn = null;
     }
 
     // ──────────────────────────── 多源画廊（D站 / C站 / P站）────────────────────────────
@@ -1358,6 +1374,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         // Pixiv 搜索必须有词（契约只有 search/illust，没有匿名兜底列表）→ 明确提示，
         // 而不是发一个必然失败的请求。
         this.posts = [];
+        // 详情态必须一起清：`displayPosts()` 在 pixivDetail 非空时会**忽略 this.posts**，
+        // 只清 posts 的话网格仍显示上一个作品的整组页，而状态栏写着"请输入关键词"。
+        this.pixivDetail = null;
+        this.syncReturnButton();
         this.renderPosts();
         this.renderPagination();
         this.setStatus("P站：请输入关键词后回车搜索（日文 / 英文均可）");
@@ -1392,6 +1412,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.posts = items
           .map((item) => this.galleryItemToPost(item, sourceId))
           .filter((post) => post.preview_file_url || post.large_file_url);
+        // 折叠**前**的条数（= 含 P站 多页作品展开出来的每一条）：下面那条「缺图已跳过」要拿它比，
+        // 否则被折叠掉的页会被误报成缺图。
+        const loadedCount = this.posts.length;
         // 排除标签是本地按 Danbooru tag_string 过滤的（无标签体系时没有意义，控件在设置里已禁用）
         const excludeTags = caps.tags ? (this.settings.excludeTags || []) : [];
         let excludedCount = 0;
@@ -1401,6 +1424,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           this.posts = this.posts.filter((post) => !String(post.tag_string || "").split(" ").some((tag) => tagSet.has(tag)));
           excludedCount = before - this.posts.length;
         }
+        // 新一批结果 = 离开 P站 作品详情；并把多页作品折成「一作品一张卡」（见 foldPixivPages）
+        const beforeFold = this.posts.length;
+        this.pixivDetail = null;
+        this.posts = this.foldPixivPages(this.posts);
+        const foldedCount = beforeFold - this.posts.length;
+        this.syncReturnButton();
         this.renderPosts();
         this.renderPagination();
         const batch = this.cursorStack.length;
@@ -1411,7 +1440,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const warnings = Array.isArray(data?.warnings) ? data.warnings.map((w) => String(w || "").trim()).filter(Boolean) : [];
         const notices = [...warnings];
         if (excludedCount) notices.push(`已排除 ${excludedCount} 张（${excludeTags.join("、")}）`);
-        if (items.length > this.posts.length + excludedCount) notices.push(`${items.length - this.posts.length - excludedCount} 张缺图已跳过`);
+        if (items.length > loadedCount + excludedCount) notices.push(`${items.length - loadedCount - excludedCount} 张缺图已跳过`);
+        if (foldedCount) notices.push(`已折叠 ${foldedCount} 页多页作品（点卡片「全部页」展开）`);
         if (!this.pageMode(sourceId) && !this.nextCursor) notices.push("已到末页");
         if (caps.login && sourceId === "pixiv") notices.push("P站标签与 Danbooru 词库不通用");
         if (caps.prompt === false && sourceId === "pixiv") notices.push("P站无提示词，可下载原图喂 WD14 反推");
@@ -1421,6 +1451,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       } catch (error) {
         if (timedOut) {
           this.posts = [];
+          this.pixivDetail = null;   // 同上：不清详情态的话网格仍显示旧作品的整组页
+          this.syncReturnButton();
           this.renderPosts();
           this.setStatus("搜索超时（45 秒）：图源或代理网络不稳定，请检查 Clash 节点后重试", "error");
           return;
@@ -1436,6 +1468,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           return this.searchGallerySource({ resetPage: false, retryCount: attempt });
         }
         this.posts = [];
+        this.pixivDetail = null;   // 同上：不清详情态的话网格仍显示旧作品的整组页
+        this.syncReturnButton();
         this.renderPosts();
         this.renderPagination();
         this.setStatus(`${this.sourceLabel(sourceId)} 搜索失败：${error?.message || "未知错误"}`, "error");
@@ -1476,8 +1510,16 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     async switchGallerySource(nextId) {
       const id = String(nextId || "");
       if (!GALLERY_SOURCE_ORDER.includes(id) || id === this.activeSourceId()) return;
+      // 差分组是 D站 的查询语义（parent:<id>），换源后必须退出，否则「← 返回」会把 D站 的词带到别的源。
+      // ⚠️ 顺序要紧（独立审查抓到的 S1）：**先取出要保存的搜索词、再退出差分组**。差分组期间搜索框里
+      //    是临时的 `parent:<id>`，直接把它记进 sourceQueries[previous]，那个栏目下次被切回时搜索框
+      //    会永久变成 `parent:<id>`（此时返回按钮已经不在了，用户无法还原）。要保存的是 returnQuery。
+      const carryQuery = this.diffContext
+        ? String(this.diffContext.returnQuery ?? "")
+        : this.gallerySourceQuery();
+      this.leaveDiffGroup();
       const previous = this.activeSourceId();
-      this.settings.sourceQueries[previous] = this.gallerySourceQuery();
+      this.settings.sourceQueries[previous] = carryQuery;
       this.settings.source = id;
       // 本地分类浏览是 D站 的实现（按 id: 回查 D站 帖子），换源时退出该模式，
       // 否则新源会带着一个永远匹配不上的分类过滤。
@@ -1486,6 +1528,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.resetGalleryCursor();
       this.page = 1;
       this.posts = [];
+      // 换源必须退出 P站 作品详情：否则在"P站 模块未装"之类**提前 return** 的路径上，
+      // 网格会一直显示上一个源的作品页（审查指出的问题 3）。
+      this.pixivDetail = null;
+      this.syncReturnButton();
       this.hidePromptTooltip();
       this.hideSuggestions();
       this.applySourceCapabilities();
@@ -1942,6 +1988,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.resizeSearchTimer = null;
         if (this.disposed || !this.posts.length) return;
         if (changed) {
+          // P站 作品详情是纯展示层（不重取数据）：列数变化只需重排 —— 而重取会顺手清掉详情态、
+          // 把用户静默踢回搜索结果（审查指出的问题 4）。布局在上面 scheduleMasonryLayout() 已排过。
+          if (this.pixivDetail) return;
           // 列数变化 ⇒ 同一屏能放的张数变了（原有行为：重取一页）
           // ⚠️ 但这是**尺寸变化引起的**，不是用户发起的搜索：不能借它重置补图预算，
           //    否则「补图撑大节点 → 列数变化 → 重置 → 再补」就是死循环。
@@ -1995,6 +2044,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 本地分类浏览（activeCategory）是**有限的本地集合**（按 id 回查已归类图片）：没有"下一页"可补，
       // 而补图走的是 search()，它开头就会清掉 activeCategory ⇒ 用户会被静默踢出分类视图。
       if (this.settings.activeCategory) return;
+      // P站 作品详情同理：这里的"卡片"是同一个作品的全部页，没有下一页可补，
+      // 而补图会重搜 ⇒ 用户会被静默踢出作品详情。
+      if (this.pixivDetail) return;
       // ⚠️ 这里**不再**按 autoLimit() 早退：固定张数档位（"至少 N 张"）一屏放不下时也要补，
       //    否则节点一大就只剩半屏空白（2026-09-16 用户 limit=12 的真实场景）。
       //    真正的闸门是下面的 gridUnderfilled()：一屏放得下就一张都不多取。
@@ -2007,6 +2059,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       }
       const before = this.posts.slice();
       const seen = new Set(before.map((post) => String(post.id)));
+      // ⚠️ 补图过程中 search() 会用**新批**重建 pixivPageGroups（1426 → foldPixivPages），
+      //    只保留新批的页 ⇒ 早批作品的「全部页」会静默失效（按钮还在，点了没反应）。
+      //    先把当前分组留下来，合并完再并回去（见下面的合并与 catch 恢复）。
+      const keepPixivGroups = this.pixivPageGroups;
       this.fillMoreBusy = true;
       try {
         if (this.pageMode()) {
@@ -2025,13 +2081,18 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           this.posts = before;
         } else {
           this.posts = merged;
+          // 把两批的多页作品分组并起来（同 id 以新批为准）：否则早批卡片的「全部页」点了没反应
+          const groups = new Map(keepPixivGroups || []);
+          for (const [id, pages] of (this.pixivPageGroups || new Map())) groups.set(id, pages);
+          this.pixivPageGroups = groups.size ? groups : null;
           this.setStatus(`${this.sourceLabel()}：已补到 ${merged.length} 张（填满本屏）`);
         }
         this.renderPosts();
         this.renderPagination();
       } catch (error) {
-        // 补图失败不该打断用户：恢复原结果集，把原因写在状态栏
+        // 补图失败不该打断用户：恢复原结果集（连同多页分组），把原因写在状态栏
         this.posts = before;
+        this.pixivPageGroups = keepPixivGroups;
         this.renderPosts();
         this.renderPagination();
         this.setStatus(`补图失败：${error?.message || "未知错误"}`, "error");
@@ -2067,6 +2128,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (this.disposed || this.fillMoreBusy || this.fillMoreExhausted) return;
       // 分类浏览不补图（有限本地集合 + 补图会静默退出分类视图，理由见 fillMoreForHeight 顶部）
       if (this.settings.activeCategory) return;
+      // P站 作品详情也不补图（理由同上：作品的全部页已铺满，补图只会把人踢出详情）
+      if (this.pixivDetail) return;
       // ⚠️ 固定张数档位（"至少 N 张"）同样允许补图 —— 旧实现在这里 `!this.autoLimit()` 直接早退，
       //    于是「limit=12 + 大节点」永远只有 12 张、剩下的格子全空（用户真机就是这个形态）。
       //    放行不等于乱补：下面 gridUnderfilled() 才是分界（一屏放得下就一张都不补），
@@ -2547,6 +2610,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
      * build() 的初次搜索 —— 那些都不是"用户的一次检索"（`search()` 有 30 个调用点，其中 ≥14 个是状态驱动）。
      */
     submitSearch(query) {
+      // 任何「用户主动提交搜索」都意味着离开差分组浏览（回车 / 「搜索」按钮 / 点联想候选 /
+      // 点 prompt 标签 / 点历史条目 / 预设）——「← 返回」不该与搜索框状态打架。
+      // 差分跳转自己**不走**这里（见 openDiffGroup）：它不是用户的一次检索，不该进搜索历史。
+      this.leaveDiffGroup();
       const text = String(query ?? "").trim();
       if (text) {
         this.setQuery(text);
@@ -2720,6 +2787,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.filterControls?.refresh();
       }
       this._searchSnapshot = null; // 新搜索后 posts 即将被覆盖，分类快照失效
+      // 切到 D站 取数 = 离开 P站 作品详情（两种上下文分属不同图源，留着会互相打架）
+      this.pixivDetail = null;
+      this.pixivPageGroups = null;
+      this.syncReturnButton();
       this._droppedOrder = false;
       this._randomTrimmed = false;
       // 工作流恢复/外部修改时，确保输入框与序列化 widget 一致（widget 是权威值）
@@ -2837,9 +2908,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.renderPosts();
         this.renderPagination();
         this.rememberRandomResults(query);
-        const source = data.cached ? "缓存" : "D站";
+        // 差分浏览时状态栏明说当前是差分组，而不是让用户以为搜索词被悄悄改了
+        const source = this.diffContext ? `差分组 parent:${this.diffContext.rootId}` : (data.cached ? "缓存" : "D站");
         const notices = [];
         if (Array.isArray(data.warnings) && data.warnings.length) notices.push(...data.warnings.map(String));
+        // 差分组只剩根帖自己 = 子帖已删除/隐藏，别让用户以为「差分」按钮坏了
+        if (this.diffContext && this.posts.length <= 1) notices.push("未找到该作品的可显示差分（子帖可能已删除或隐藏）");
         if (unavailableCount) notices.push(`${unavailableCount} 张原图已失效，已跳过`);
         if (this._droppedOrder) {
           const limitHint = this.registered
@@ -2886,6 +2960,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     // 分类切换 = 本地分类浏览模式：不再过滤当前搜索页，而是按 id 从 D站 拉取
     // 该分类全部已归类图片（id 是免费 metatag，不占计数槽；一次最多 48 个 id，分批合取）。
     async applyActiveCategory(catId) {
+      // 分类浏览与 P站 作品详情是两种**互斥**的"展示层覆盖"：同时开着会让网格与分页条各说各话
+      //（分页徽章写"本地分类浏览"、网格却是某个作品的全部页）。进分类就先退出作品详情（问题 2）。
+      this.pixivDetail = null;
+      this.syncReturnButton();
       this.settings.activeCategory = catId;
       this.saveSettings();
       this.filterControls?.refresh();
@@ -3747,6 +3825,170 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.grid.append(cell);
     }
 
+    /**
+     * 差分组根帖 id。D站 的 `parent:<id>` 语义是 `parent_id = id OR id = id`
+     * （2026-09-21 实测 posts.json?tags=parent%3A10994513 同时回父帖与它的子帖），
+     * 所以有父级时用父帖 id 当根，一次就能取到「父帖 + 全部同级差分」；没有父级但有
+     * 活跃子帖时用自己当根。返回 0 = 该帖不存在差分关系（不画按钮、不画角标）。
+     */
+    diffRootId(post) {
+      const parentId = Number(post?.parent_id);
+      if (Number.isFinite(parentId) && parentId > 0) return parentId;
+      // has_children 为真但子帖全被删除/隐藏（has_active_children=false）时，parent:<id> 只会回自己一张
+      const hasActiveChildren = post?.has_active_children === true || post?.has_active_children === "t";
+      if (hasActiveChildren) return Number(post?.id) || 0;
+      return 0;
+    }
+
+    /**
+     * 进入差分组浏览：把搜索词换成 `parent:<根帖id>` 重搜，并亮出搜索框旁的「← 返回」。
+     * 与 D站 网页点 "This post has N child" 之后的 `?q=parent%3A<id>` 是同一套查询，
+     * 复用现有搜索/分页/多选/入库/下载全链路，不新造一套取数路径。
+     * ⚠️ 刻意**不走** submitSearch：那是"用户的一次检索"，会记进搜索历史（parent:<id> 是噪音）。
+     */
+    openDiffGroup(post) {
+      const rootId = this.diffRootId(post);
+      if (!rootId) return;
+      const previous = this.diffContext;
+      this.diffContext = {
+        rootId,
+        // 在差分组里再点别的卡片的「差分」时，返回按钮仍回到**最初**那次搜索词，而不是层层回退
+        returnQuery: previous ? previous.returnQuery : String(this.queryWidget?.value ?? ""),
+        returnPage: previous ? previous.returnPage : this.page,
+      };
+      this.setQuery(`parent:${rootId}`);
+      // setQuery 在输入框仍聚焦时会再排一次联想（键盘触发「差分」的场景）——立刻收起，
+      // 与 submitSearch 的收口行为对齐（浮层不该盖在刚重搜的画廊上）。
+      this.hideSuggestions();
+      this.syncReturnButton();
+      if (this.grid) this.grid.scrollTop = 0;
+      // force：绕过 30s 搜索缓存 —— 刚从同一个 parent:<id> 退出来再点进去，否则拿到的是旧页
+      void this.search({ resetPage: true, force: true });
+    }
+
+    /** 退出差分组浏览：还原进入前的搜索词与页码 */
+    exitDiffGroup() {
+      const context = this.diffContext;
+      if (!context) return;
+      this.leaveDiffGroup();
+      this.setQuery(context.returnQuery);
+      this.hideSuggestions();
+      this.page = context.returnPage || 1;
+      // 回到原视图时滚回顶部：否则会停在差分组里滚动到的位置，看起来像"没返回成功"
+      if (this.grid) this.grid.scrollTop = 0;
+      void this.search({ resetPage: false, force: true });
+    }
+
+    /** 离开差分组浏览：只收状态与按钮，**不改搜索词也不重搜**（用户自己改词 / 换图源时用） */
+    leaveDiffGroup() {
+      if (!this.diffContext) return;
+      this.diffContext = null;
+      this.syncReturnButton();
+    }
+
+    // ──────────────────────── P站 多页作品（折叠 / 展开） ────────────────────────
+    // P站 适配器把「一个作品 × N 页」展开成 N 条 item（id = `<illust_id>_p<page>`，meta 带
+    // page / page_count / illust_id，见 anima_gallery_pixiv.illust_to_items）——那是为了修
+    // "P站 只显示第一页"。但把 N 条全铺进瀑布流会让一页变成上百张卡片：节点视口放不下，
+    // 视口外的卡片永远点不到（2026-09-21 真机实报）。这里折回「一作品一张卡」，
+    // 其余页等卡片「全部页」按钮再展开 —— 与 Pixiv 网页「缩略图带页数、点进作品才看全部页」一致。
+
+    /**
+     * 按 illust_id 折叠多页作品：一个作品只出一张卡（它的第一页），其余页收进 pixivPageGroups。
+     * 单页作品（无 illust_id）与其它图源**原样返回**（零影响）。
+     */
+    foldPixivPages(posts) {
+      const groups = new Map();
+      for (const post of posts) {
+        const illustId = String(post?.meta?.illust_id || "");
+        if (!illustId) continue;
+        const bucket = groups.get(illustId);
+        if (bucket) bucket.push(post);
+        else groups.set(illustId, [post]);
+      }
+      this.pixivPageGroups = groups.size ? groups : null;
+      if (!groups.size) return posts;
+      const seen = new Set();
+      const cards = [];
+      for (const post of posts) {
+        const illustId = String(post?.meta?.illust_id || "");
+        if (!illustId) { cards.push(post); continue; }   // 单页作品：没有 illust_id，原样出卡
+        if (seen.has(illustId)) continue;                 // 同一作品的第 2..N 页：不再单独出卡
+        seen.add(illustId);
+        cards.push(post);                                 // 适配器按 page 升序 push ⇒ 首条就是第一页
+      }
+      return cards;
+    }
+
+    /** 当前该渲染哪些卡片：P站「全部页」详情模式下是单个作品的全部页，否则是搜索结果本身 */
+    displayPosts() {
+      return this.pixivDetail?.pages?.length ? this.pixivDetail.pages : this.posts;
+    }
+
+    /**
+     * 进入 P站 作品详情 = 展开该作品的全部页，等价于 Pixiv 网页点进 /artworks/<id>。
+     * **只在展示层覆盖**（不动 this.posts / 光标栈 / 页码），所以「← 返回」不需要重新请求。
+     */
+    openPixivPages(post) {
+      const illustId = String(post?.meta?.illust_id || "");
+      const pages = this.pixivPageGroups?.get(illustId);
+      if (!illustId || !pages?.length) return;
+      this.pixivDetail = { illustId, pages: pages.slice() };
+      if (this.grid) this.grid.scrollTop = 0;
+      this.syncReturnButton();
+      this.renderPosts();
+      this.renderPagination();
+      this.setStatus(`P站 作品 #${illustId}：全部 ${pages.length} 页（点搜索框旁「← 返回」回到搜索结果）`);
+    }
+
+    /** 离开 P站 作品详情：只收状态 + 重渲染（搜索结果本身从未被动过，不必重搜） */
+    closePixivPages() {
+      if (!this.pixivDetail) return;
+      this.pixivDetail = null;
+      this.syncReturnButton();
+      this.renderPosts();
+      this.renderPagination();
+      this.setStatus(`${this.sourceLabel(this.activeSourceId())}：${this.posts.length} 张 · ${this.galleryBatchLabel()}`);
+    }
+
+    // ──────────────────────── 搜索框旁的「← 返回」 ────────────────────────
+
+    /**
+     * 「← 返回」按钮的唯一数据源：当前所处的**上一层视图**。
+     * · D站 差分组（换过搜索词）→ 返回 = 还原原搜索词与页码并重搜（数据要重新取）；
+     * · P站 作品详情（只是展示层覆盖）→ 返回 = 直接还原本地结果，不必重搜。
+     * 两者分属不同图源、不会同时存在，所以共用搜索框旁这一颗按钮。
+     */
+    returnTarget() {
+      if (this.pixivDetail) {
+        return { label: "搜索结果", title: "回到 P站 搜索结果（不重新请求）", apply: () => this.closePixivPages() };
+      }
+      if (this.diffContext) {
+        const original = String(this.diffContext.returnQuery || "").trim();
+        return { label: original, title: `退出差分组，回到搜索：${original || "（无关键词）"}`, apply: () => this.exitDiffGroup() };
+      }
+      return null;
+    }
+
+    /** 按钮与当前「上一层视图」同步（没有可返回的层时整颗按钮不占位） */
+    syncReturnButton() {
+      const button = this.diffReturnBtn;
+      if (!button) return;
+      const target = this.returnTarget();
+      button.hidden = !target;
+      if (!target) return;
+      const label = String(target.label || "").trim();
+      button.textContent = label ? `← 返回 ${label}` : "← 返回";
+      button.title = target.title || "返回上一层视图";
+    }
+
+    /** 点「← 返回」：回到上一层视图（差分组 / 作品详情各自处理） */
+    goBack() {
+      const target = this.returnTarget();
+      if (!target) return;
+      target.apply();
+    }
+
     renderPosts() {
       // 浮层收尾 —— **只收可交互浮层（D站）**：C站 浮层的生命周期必须保持改动前那样
       // （一直留到鼠标离开），否则就成了"仅 D站"之外的行为变化（独立审计抓到的外溢）。
@@ -3767,9 +4009,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 之前在这里重置它 ⇒「拉大节点 → 点下一批 → 节点又缩回内容高度」，
       // 用户看到的是「节点适配图片」而不是「图片适配节点」（2026-09-15 真机反馈）。
       this.renderedPostCount = 0;
-      // 见过的 post 登记进 key→post 索引：归类时靠它取快照（见 pushPostCategory）
+      // 渲染源：P站 作品详情模式下是「该作品全部页」，否则是搜索结果本身（见 displayPosts）
+      const posts = this.displayPosts();
+      // 见过的 post 登记进 key→post 索引：归类时靠它取快照（见 pushPostCategory / openCategoryPicker）。
+      // ⚠️ **两份都要登记**：搜索结果 this.posts 折叠后只剩每个多页作品的第一页，
+      //    详情页里给第 2..N 页归类时就得靠这些被折叠的页也在索引里。
       this.rememberPostsForCategory(this.posts);
-      if (!this.posts.length) {
+      if (posts !== this.posts) this.rememberPostsForCategory(posts);
+      if (!posts.length) {
         const empty = document.createElement("div");
         empty.className = "adg-empty";
         empty.textContent = "没有可显示的图片";
@@ -3779,7 +4026,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 布局按「本页实际渲染的卡片」下标对齐（见 applyMasonryLayout 读 this._layoutPosts），
       // 因此这里必须把过滤后真正渲染的 post 记下来，不能直接用 this.posts 下标。
       const rendered = [];
-      for (const post of this.posts) {
+      for (const post of posts) {
         if (this.settings.activeCategory && this.settings.postCategories[this.postKeyOf(post)] !== this.settings.activeCategory) continue;
         const imageUrl = this.postImageUrl(post);
         if (!imageUrl) continue;
@@ -3807,6 +4054,21 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         // 图源标记：卡片自己的来源（画廊 item 自带 source；D站 为空 = 当前源 D站）
         const postSourceId = this.postSourceId(post);
         const isGallerySource = postSourceId !== DANBOORU_SOURCE_ID;
+        // P站 的标签**不是 prompt**（capabilities.prompt=false ⇒ buildPromptForPost 把 tags 短路成 []，
+        // 见那里的注释），但 pixiv 标签本身是真标签，浮层拿它做展示 / 翻译 / 点击检索都成立。
+        // 所以另开一个**浮层专用**字段，绝不复用 card.dataset.tags —— 后者喂着选中输出
+        //（selectionFromCard）与 Prompt 编辑器，填进去等于把日文标签当提示词灌给下游。
+        if (postSourceId === "pixiv") {
+          // ⚠️ 主文本必须取 `meta.tag_details[].name`（**原文**），不能用 post.tags：
+          //    后端把「原文 + 翻译」一起 append 进了 item.tags（见 anima_gallery_pixiv.illust_to_item），
+          //    拿它当浮层主文本会让每个标签重复出现两遍（翻译那份已由小字承担，见 pixivTagTranslations）。
+          const details = Array.isArray(post?.meta?.tag_details) ? post.meta.tag_details : [];
+          const names = [...new Set(details.map((entry) => String(entry?.name || "").trim()).filter(Boolean))];
+          const hoverTags = names.length
+            ? names
+            : (Array.isArray(post?.tags) ? post.tags : String(post?.tag_string || "").split(" "));
+          card.dataset.hoverTags = JSON.stringify(hoverTags.map((tag) => String(tag || "").trim()).filter(Boolean));
+        }
         const postCaps = this.sourceCapabilities(postSourceId);
         card.dataset.source = isGallerySource ? postSourceId : "";
         if (isGallerySource) {
@@ -3896,6 +4158,22 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           return button;
         };
         addAction("预览", "预览图片", () => this.openImagePreview(post));
+        // D站 差分（父子级）作品：parent_id / has_active_children 是 D站 posts.json 自带字段，
+        // 点「差分」把搜索词换成 parent:<根帖id>，一次拿到「父帖 + 全部直接子帖」。
+        // 张数接口不回（post.children 是空串），所以按钮不带数量，只给关系本身。
+        if (!isGallerySource) {
+          const diffRootId = this.diffRootId(post);
+          if (diffRootId) {
+            addAction("差分", `查看该作品的差分组：搜索 parent:${diffRootId}（父帖与全部子帖）`, () => this.openDiffGroup(post));
+          }
+        }
+        // P站 多页作品：卡片只代表第一页，点「全部页」展开全作品（等价点进 Pixiv 的 /artworks/<id>）。
+        // 页数来自适配器写进 meta 的 page_count（见 anima_gallery_pixiv.illust_to_items）。
+        // 已经在作品详情里时不再给这个按钮 —— 那只会重新打开同一个作品，属于"点了没反应"的控件。
+        const pageCount = Number(post?.meta?.page_count) || 0;
+        if (pageCount > 1 && !this.pixivDetail) {
+          addAction("全部页", `查看该作品全部 ${pageCount} 页（相当于 P站 作品详情页）`, () => this.openPixivPages(post));
+        }
         // capabilities.prompt=false 的图源（P站）没有提示词可看/可入库 → 不收这两个按钮，
         // 否则点下去只会得到空内容（项目 UI 规范：不要留点了没反应的控件）。
         const promptActionsApplicable = postCaps.prompt || !isGallerySource;
@@ -3937,22 +4215,74 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             card.append(badge);
           }
         }
+        // 差分角标：对应 D站 网页给缩略图描的绿框 / 橙框（绿=有子级、橙=有父级）。
+        // 左上角已被本地分类徽章占用，故走右上角；常驻可见，用来在瀑布流里一眼认出差分组。
+        if (!isGallerySource) {
+          const parentPostId = Number(post.parent_id);
+          const marks = [];
+          // ⚠️ 文案说的是「这张图**是**什么」，不是「这张图**有**什么」：
+          //    D站 的 has_active_children 表示"它是父帖（有子级差分）"，parent_id 表示"它是某帖的子帖"。
+          //    早先写成「有子级 / 有父级」两个单字，用户实测一眼读成"这张是子帖 / 这张是父帖"，
+          //    于是一个「1 父 + 3 子」的差分组看着整个反掉（2026-09-21 真机实报）。
+          const hasChildren = post.has_active_children === true || post.has_active_children === "t";
+          if (hasChildren) {
+            marks.push(["adg-diff-has-children", "父帖", "差分组父帖：存在子级差分作品（对应 D站 网页的绿框）"]);
+          }
+          if (Number.isFinite(parentPostId) && parentPostId > 0) {
+            marks.push(["adg-diff-has-parent", "子帖", `差分组子帖：父帖 #${parentPostId}（对应 D站 网页的橙框）`]);
+          }
+          if (marks.length) {
+            const badge = document.createElement("span");
+            badge.className = "adg-diff-marks";
+            badge.title = `${marks.map(([, , hint]) => hint).join("；")}——点卡片「差分」看整组`;
+            for (const [className, text] of marks) {
+              const dot = document.createElement("span");
+              dot.className = className;
+              dot.textContent = text;
+              badge.append(dot);
+            }
+            card.append(badge);
+          }
+        }
+        // P站 多页标识：等价 Pixiv 网页缩略图右上角的多页角标。
+        // 搜索结果里写总页数（「12页」）；已进作品详情则写进度（「3/12」）—— 那正是 Pixiv 详情页的读法。
+        if (pageCount > 1) {
+          const pageNo = Number(post?.meta?.page) || 0;
+          const badge = document.createElement("span");
+          badge.className = "adg-pages-badge";
+          badge.textContent = this.pixivDetail ? `${pageNo + 1}/${pageCount}` : `${pageCount}页`;
+          badge.title = this.pixivDetail
+            ? `P站 多页作品：第 ${pageNo + 1} 页 / 共 ${pageCount} 页`
+            : `P站 多页作品：共 ${pageCount} 页（当前显示第 1 页，点卡片「全部页」展开）`;
+          card.append(badge);
+        }
         card.append(selectButton, actions);
         card.addEventListener("mouseenter", (event) => {
           this.cancelHidePromptTooltip();
           // 浮层已经是这张卡的（鼠标从浮层移回来）→ 只取消隐藏、**不要重建**：
           // 重建会让占位文案闪一下、锚点被重置导致位置跳，反复进出时就是肉眼可见的闪烁。
           if (this.tooltip && this.tooltipCard === card) return;
-          this.showPromptTooltip(card, event);
+          // 悬停 PROMPT_TOOLTIP_SHOW_DELAY 才弹（不是一进入就弹）：快速划过一串卡片不该弹一堆浮层
+          this.tooltipHoverPoint = { clientX: event.clientX, clientY: event.clientY };
+          this.scheduleShowPromptTooltip(card);
         });
-        card.addEventListener("mousemove", (event) => this.positionTooltip(event));
+        // ⚠️ mousemove **只记录光标停留点，绝不移动浮层**：浮层跟随光标时，2.19 新加的
+        //    「点标签即搜索」永远点不到（光标一动浮层就跟着挪）。定位只在浮层创建时做一次，
+        //    之后锚点冻结 —— 内容异步加载完再定位也只是用同一个锚点（见 positionTooltip）。
+        card.addEventListener("mousemove", (event) => {
+          this.tooltipHoverPoint = { clientX: event.clientX, clientY: event.clientY };
+          // 浮层若被 renderPosts 收掉（补图 / 筛选 / 分类都会重建卡片）而光标仍停在**同一张卡**上，
+          // mouseenter 不会再触发 ⇒ 这里补排一次显示；否则要"移出再移入"才会重新弹（审查指出的 N1）。
+          if (!this.tooltip && !this.tooltipShowTimer) this.scheduleShowPromptTooltip(card);
+        });
         card.addEventListener("mouseleave", () => {
+          // 还没弹出来就离开了 → 取消这次悬停，别让浮层在光标走了之后才蹦出来
+          this.cancelShowPromptTooltip();
           // D站 的浮层可交互（鼠标能移进去），必须**延迟**隐藏：鼠标从卡片移到浮层上要穿过
           // 卡片外的一瞬，而浮层是 body 子元素、卡片收不到它的事件，只能靠这条延迟窗口把两者
-          // 接起来（浮层的 mouseenter 会取消它；mousemove 只在卡片内触发 ⇒ 离开卡片后锚点
-          // 自动冻结，浮层停在原地等鼠标移进来）。
+          // 接起来（浮层的 mouseenter 会取消它）。
           // ⚠️ 其它图源（C站）保持**即时**隐藏 —— 它们与 D站 共用同一个浮层函数，但浮层没有
-          //    .is-danbooru（仍是 pointer-events: none），鼠标本来就进不去，延迟只会让它白挂 180ms。
+          //    .is-danbooru（仍是 pointer-events: none），鼠标本来就进不去，延迟只会让它白挂。
           if (this.isPromptTooltipInteractiveCard(card)) this.scheduleHidePromptTooltip();
           else this.hidePromptTooltip();
         });
@@ -3985,6 +4315,16 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         badge.className = "adg-cat-mode-badge";
         badge.textContent = "本地分类浏览";
         badge.title = "当前为该分类全部已归类图片；搜索或翻页即返回普通搜索";
+        this.pagination.append(badge);
+        return;
+      }
+      // P站 作品详情：这不是"搜索结果的一页"，页码/游标条没有意义（该作品的全部页已一次铺满）。
+      // 借用分类浏览那枚 chip 的样式，只换文案。
+      if (this.pixivDetail) {
+        const badge = document.createElement("span");
+        badge.className = "adg-cat-mode-badge";
+        badge.textContent = `P站 作品 #${this.pixivDetail.illustId} · 全部 ${this.pixivDetail.pages.length} 页`;
+        badge.title = "正在看单个作品的全部页；点搜索框旁的「← 返回」回到搜索结果";
         this.pagination.append(badge);
         return;
       }
@@ -4539,24 +4879,56 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     /**
-     * 该卡片的悬停浮层是否可交互（当前只有 D站）。
-     * 判据取自**卡片自己的** dataset.source（3559 写入：D站 为空串、C站 "civitai"、P站 "pixiv"），
-     * 而不是 this.settings.source —— 卡片自带来源，切源时 switchGallerySource(1449) 会 renderPosts
+     * 该卡片的悬停浮层是否可交互 = 可移入 + 标签可点。**D站 与 P站** 都算（P站 为 2026-09-21 新增）。
+     * 判据取自**卡片自己的** dataset.source（D站 为空串、C站 "civitai"、P站 "pixiv"），
+     * 而不是 this.settings.source —— 卡片自带来源，切源时 switchGallerySource 会 renderPosts
      * 重建全部卡片，行为因此天然跟随，不需要额外的清理代码（也别把这个判据缓存进实例字段）。
+     * · D站 / P站：主文本都是**真标签**，点一下就能直接拿去检索；
+     * · C站 不可交互：它的「标签」是别人写好的整段提示词拆出来的自然语言分句，
+     *   且上游 /api/v1/images 忽略关键词参数 —— 点了搜不出东西，保持 pointer-events: none。
+     * ⚠️ 返回 true 会让浮层带上 `.is-danbooru` 类（CSS 里那句 `pointer-events: auto` 的开关）；
+     *    类名是历史遗留（原本只有 D站），语义其实就是「可交互浮层」。
      */
     isPromptTooltipInteractiveCard(card) {
-      return !String(card?.dataset?.source || "");
+      const source = String(card?.dataset?.source || "");
+      return !source || source === "pixiv";
+    }
+
+    /**
+     * P站 标签 → pixiv 官方翻译（`meta.tag_details[].translated_name`，见 anima_gallery_pixiv）。
+     * 该字段的语言由后端 Accept-Language 决定，出厂即「中文优先、其次英文」
+     *（`PIXIV_ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9,en;q=0.8,ja;q=0.7"`），
+     * 所以这里拿到的正是用户要的那一份翻译，不必再去抓 pixiv 网页的 Crowdin 数据。
+     * 与原文相同的条目直接丢掉：pixiv 没给这条翻译时，别显示一条重复的小字。
+     * 其余图源没有这个字段 → 返回空表，浮层小字退回本地词典那条老路。
+     */
+    pixivTagTranslations(card) {
+      let meta = {};
+      try { meta = JSON.parse(card.dataset.galleryMeta || "{}"); } catch { return {}; }
+      const details = Array.isArray(meta.tag_details) ? meta.tag_details : [];
+      const map = {};
+      for (const entry of details) {
+        const name = String(entry?.name || "").trim();
+        const translated = String(entry?.translated_name || "").trim();
+        if (name && translated && translated !== name) map[name] = translated;
+      }
+      return map;
     }
 
     async showPromptTooltip(card, event) {
       let tags = [];
-      try { tags = JSON.parse(card.dataset.tags || "[]"); } catch { tags = []; }
-      // 无标签的卡片（P站 恒如此、D站 偶有）：先收掉可能还挂着的旧浮层再退出。
+      // 标签源：P站 走 hoverTags —— 它的 dataset.tags 恒为空（P站 标签不是 prompt，
+      // buildPromptForPost 会把 tags 短路掉，见 renderPosts 里写 hoverTags 的注释）；
+      // 其余图源没有 hoverTags，行为与改动前完全一致。
+      try { tags = JSON.parse(card.dataset.hoverTags || card.dataset.tags || "[]"); } catch { tags = []; }
+      // 无标签的卡片（D站 偶有、C站 未给提示词时）：先收掉可能还挂着的旧浮层再退出。
       // 否则「移出卡片 A（已排 280ms 隐藏）→ 移进无标签卡 B」会取消隐藏定时器并把 A 的浮层
       // 留在屏幕上（还跟着光标跑、吃点击）。
       if (!tags.length) { this.hidePromptTooltip(); return; }
-      // 这个浮层是否可交互（D站 = 可移入 + 标签可点）。只算一次，下面各分支复用。
+      // 这个浮层是否可交互（D站 / P站 = 可移入 + 标签可点）。只算一次，下面各分支复用。
       const interactive = this.isPromptTooltipInteractiveCard(card);
+      // P站 的官方标签翻译；其余图源恒为空表（浮层小字退回本地词典那条老路）
+      const tagTranslations = this.pixivTagTranslations(card);
       let promptGroups = {};
       try { promptGroups = JSON.parse(card.dataset.promptGroups || "{}"); } catch { promptGroups = {}; }
       const tagKeys = new Set(tags.map(promptCardKey));
@@ -4609,9 +4981,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           line.className = "adg-prompt-tooltip-line";
           const english = document.createElement("span");
           english.textContent = tag.replace(/_/g, " ");
-          const chinese = this.translationCache.get(tag);
+          // 小字翻译：先本地中文词典（D站 词表命中的那些），再退到 pixiv 官方翻译
+          //（translated_name，出厂已按「中文优先、其次英文」取过，见 pixivTagTranslations）。
+          // 两者都没有就不显示小字 —— 与 pixiv 网页版「没翻译就不附小字」的行为一致。
+          const translated = String(this.translationCache.get(tag) || tagTranslations[tag] || "").trim();
           line.append(english);
-          if (chinese) line.append(Object.assign(document.createElement("small"), { textContent: chinese }));
+          if (translated && translated !== tag) {
+            line.append(Object.assign(document.createElement("small"), { textContent: translated }));
+          }
           if (interactive) {
             // ⚠️ 显示文本上面已被空格化，检索必须用**下划线原文**，所以把原文写进 dataset，
             //    点击时读它；绝不从 textContent 反推（Danbooru 检索用的就是标签原文）。
@@ -4683,7 +5060,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const note = document.createElement("div");
         note.className = "adg-prompt-tooltip-note";
         note.textContent = sourceId === "pixiv"
-          ? "P站标签为日文体系，与 Danbooru 词库不通用；用途是下载原图后交给 WD14 反推"
+          ? "P站标签是 pixiv 自己的词表（与 Danbooru 不通用，不进 Prompt 输出）；小字为 pixiv 官方翻译，点标签可直接搜索"
           : "C站无标签体系，这里显示的是原作者写的提示词与采样参数";
         extras.push(note);
       }
@@ -4694,11 +5071,19 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       return wrap;
     }
 
+    /**
+     * 按锚点定位浮层。`event` 可以是真实事件，也可以是 `{ clientX, clientY }` 点对象
+     * （见 scheduleShowPromptTooltip 传进来的光标停留点）。
+     * ⚠️ **不要传 `{ x, y }`**：这里认的是 `clientX/clientY`；字段名不对就判定不出坐标、
+     *    一个 left/top 都不会设 —— 没有定位的 `position: fixed` 会渲染在静态位置，
+     *    浮层整个掉到屏幕左上角（2026-09-21 踩过这个坑）。
+     */
     positionTooltip(event) {
       if (!this.tooltip) return;
       // 记住锚点：内容异步加载完（"正在加载双语 Prompt…" → 真面板）尺寸会变，
       // 那时必须用**同一个锚点**重新定位，否则会以小尺寸算出的位置承载大尺寸内容，
-      // 直接盖住画廊并溢出视口。
+      // 直接盖住画廊并溢出视口。锚点只在这里被写入，且只在浮层创建时由外部传点进来 ——
+      // 「浮层不再跟随光标」正是靠这一点实现的。
       if (event && typeof event.clientX === "number") {
         this.tooltipAnchor = { x: event.clientX, y: event.clientY };
       }
@@ -4725,7 +5110,34 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.tooltip.style.top = `${Math.round(top)}px`;
     }
 
+    /**
+     * 延迟显示：光标在卡片上停够 PROMPT_TOOLTIP_SHOW_DELAY 才弹浮层。
+     * 锚点取「光标停留点」（mousemove 只记录、不移动浮层），弹出后就冻在那里 ——
+     * 于是光标得以腾出来移进浮层点标签，这正是 2.19 想给却给不了的能力。
+     */
+    scheduleShowPromptTooltip(card) {
+      this.cancelShowPromptTooltip();
+      this.tooltipShowTimer = setTimeout(() => {
+        this.tooltipShowTimer = null;
+        void this.showPromptTooltip(card, this.tooltipHoverPoint || this.cardCenterPoint(card));
+      }, PROMPT_TOOLTIP_SHOW_DELAY);
+    }
+
+    cancelShowPromptTooltip() {
+      if (!this.tooltipShowTimer) return;
+      clearTimeout(this.tooltipShowTimer);
+      this.tooltipShowTimer = null;
+    }
+
+    /** 没有光标坐标时的兜底锚点（例如卡片被键盘聚焦）：弹在卡片中心 */
+    cardCenterPoint(card) {
+      const rect = card?.getBoundingClientRect?.();
+      if (!rect) return null;
+      return { clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+    }
+
     hidePromptTooltip() {
+      this.cancelShowPromptTooltip();
       this.cancelHidePromptTooltip();
       this.tooltip?.remove();
       this.tooltip = null;
@@ -4748,9 +5160,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     /**
-     * D站 浮层里的标签被点击 → 直接用该标签重新搜索。
-     * 只对 D站 成立：D站 的 tags 是真 Danbooru 词表标签、检索走 /anima/danbooru/posts（2464 之后）；
-     * C站 的「标签」是自然语言分句且上游忽略关键词，P站 根本没有浮层（4277 早退）。
+     * 浮层里的标签被点击 → 直接用该标签重新搜索。
+     * 只对**可交互浮层**成立（D站 / P站，见 isPromptTooltipInteractiveCard）：两边的标签都是真标签，
+     * 点了能直接拿去检索（D站 走 /anima/danbooru/posts，P站 走 /anima/gallery/pixiv/search）。
+     * C站 的「标签」是自然语言分句且上游忽略关键词 → 浮层不可交互，走不到这里。
      */
     handlePromptTooltipClick(event) {
       const line = event.target?.closest?.(".adg-prompt-tooltip-line.is-searchable");
@@ -6007,9 +6420,20 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           this.submitSearch(queryInput.value);
         }
       };
-      queryRow.append(queryInput);
+      // 差分组浏览的「← 返回」：与搜索框同排，只有进入差分组后才占位（见 syncReturnButton）。
+      // 和搜索框一样必须 stopPropagation，否则点击会被 ComfyUI 捕获阶段抢给节点容器。
+      const diffReturn = document.createElement("button");
+      diffReturn.type = "button";
+      diffReturn.className = "adg-diff-return";
+      diffReturn.hidden = true;
+      diffReturn.onpointerdown = (event) => event.stopPropagation();
+      diffReturn.onmousedown = (event) => event.stopPropagation();
+      diffReturn.onclick = (event) => { event.stopPropagation(); this.goBack(); };
+      queryRow.append(queryInput, diffReturn);
       this.queryInput = queryInput;
+      this.diffReturnBtn = diffReturn;
       this.queryRow = queryRow;
+      this.syncReturnButton();
       _danQueryFocusTargets.add(this);
       const toolbar = document.createElement("div");
       toolbar.className = "adg-toolbar";
