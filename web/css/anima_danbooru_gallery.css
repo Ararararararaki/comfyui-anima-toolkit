@@ -448,6 +448,9 @@
    否则下游测试的 CSS 切片会提前截断、断言假红（2026-09-21 实测踩到过一次）。
    `:hover` 这条本身必须保留。 */
 .adg-card-actions button:hover { border-color: var(--adg-go, #9988ff); background: rgba(0,0,0,.88); }
+/* P站「匹配D站」成功态：变灰 + 绿字。既是状态显示，也避免用户误触重复发起请求 */
+.adg-card-actions button.is-matched { border-color: rgba(110, 222, 138, .55); color: #6ede8a; cursor: default; }
+.adg-card-actions button.is-matched:hover { border-color: rgba(110, 222, 138, .55); background: rgba(0, 0, 0, .74); }
 /* 无 hover 能力的设备（触摸屏 / 触控板外接屏）：没有"悬停才出现"这回事，
    隐藏就等于永远点不到 —— 改为常显可点，否则误触防住了、按钮却彻底不可用。 */
 @media (hover: none) {
@@ -488,6 +491,16 @@
 .adg-settings-section { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--adg-border-soft, rgba(255,255,255,.08)); border-radius: 8px; background: var(--adg-tint, rgba(255,255,255,.03)); }
 .adg-settings-title { color: var(--adg-accent-strong, #c8beff); font-size: 11px; font-weight: 700; letter-spacing: .03em; }
 .adg-settings-help { color: var(--adg-muted, #8f899e); font-size: 10px; line-height: 1.45; }
+/* 紧凑设置行：功能名在左、开关/下拉在右（同一行）。
+   ⚠️ 别用 .adg-field —— 它是 flex column（文字在上、控件在下），每个开关都会独占一整行，
+   两个开关叠起来把设置面板拉得很长。 */
+.adg-settings-switch { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #bfc2ce; font-size: 11px; }
+.adg-settings-switch > .adg-settings-title { flex: 1 1 auto; }
+.adg-settings-switch label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; cursor: pointer; }
+.adg-settings-switch input[type="checkbox"] { margin: 0; accent-color: #9d8cff; }
+/* flex 行里的下拉不能继承 .adg-field select 的 width:100%（会把左边的功能名挤没），
+   但外观要与它一致 —— 显式补一份，字号略小以贴合紧凑行 */
+.adg-settings-switch select { box-sizing: border-box; flex: 0 0 auto; width: auto; max-width: 62%; padding: 5px 6px; border: 1px solid rgba(255,255,255,.12); border-radius: 6px; color: #eee; background: #17171d; font: inherit; font-size: 11px; }
 .adg-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .adg-prompt-settings { display: flex; min-width: min(420px, 78vw); flex-direction: column; gap: 9px; }
 .adg-prompt-settings-tip { max-width: 460px; color: var(--adg-muted); font-size: 11px; line-height: 1.45; }

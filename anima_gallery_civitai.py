@@ -141,6 +141,18 @@ CIVITAI_MAX_ATTEMPTS = 3
 CITIVAI_RETRY_STATUS = frozenset({429, 503})
 CIVITAI_RETRY_DELAY_SECONDS = 1.5
 
+# ── 「无限加载」池（2026-09-21）：仅当前端开关开启时启用；默认目标 0 = 关闭，行为与改动前逐字节相同 ──
+# 为什么不需要激进轮询：`/api/v1/images` 单页上限就是 200（实测 201 → 400 ZodError），
+# 于是 200 条 = **1 次请求**、1000 条 = 5 次 —— 请求数本身很少，瓶颈在「间隔是否礼貌」而不在次数。
+# 单批固定取满 200（= MAX_LIMIT）：默认目标 200 正好一次请求成型，避免为了 240 去拉两次。
+POOL_BATCH_LIMIT = MAX_LIMIT
+POOL_TARGET_OPTIONS = (200, 400, 600, 800, 1000)  # 前端下拉档位（对应 1~5 次请求）
+POOL_TARGET_DEFAULT = 200
+POOL_TARGET_MAX = 2000      # 前端只发上面五档；这里是**服务端防护**（手改 URL 也不至于打到 20 次）
+# 批间隔：实测单页 0.27~0.73s，且上游会偶发 429/503（已有 3 次重试）——
+# 多批之间留 1s 足以远离风控，而 1000 条档位总共也只多等 4 秒。
+POOL_BATCH_INTERVAL_SECONDS = 1.0
+
 
 # ---------- 代理（与 D站 `_resolve_danbooru_proxies` / FALLBACK_PROXY_PORTS 同约定） ----------
 # 直连 civitai.com 在本机时通时断，且大陆网络普遍需要代理；requests 只读 env 代理、不读系统代理，
@@ -477,6 +489,43 @@ def _item_matches(item: dict[str, Any], terms: list[str]) -> bool:
     return all(term in haystack for term in terms)
 
 
+def _civitai_pool(cursor: str | None, target: int, *, nsfw: str | None = None, sort: str | None = None,
+                  period: str | None = None, username: str | None = None,
+                  ) -> tuple[list[dict[str, Any]], str | None, int]:
+    """「无限加载」池：连续拉取直到累计 `target` 条或上游耗尽。
+
+    返回 `(items, next_cursor, batches)`；`next_cursor` 留给前端「加载更多 / 翻页补池」继续往后拉。
+
+    ⚠️ **这里刻意不做关键词过滤**：池模式下的搜索范围是「已加载的全部内容」，过滤必须发生在前端
+    （整池都在它手里）——否则用户每换一个关键词都要重新拉一遍池，那正是这次要消灭的浪费。
+    单页模式（`pool_target=0`）走的仍是原来那条路径，一个字节都没动。
+
+    批间隔：上游偶发 429/503（`_civitai_request_json` 自带 3 次重试 + 1.5s 退避），多批之间再留
+    `POOL_BATCH_INTERVAL_SECONDS`，既礼貌又几乎不增加可感知等待（1000 条档位总共也只多等 4 秒）。
+    """
+    collected: list[dict[str, Any]] = []
+    batches = 0
+    next_cursor = str(cursor).strip() if cursor and str(cursor).strip() else None
+    while len(collected) < target:
+        want = min(POOL_BATCH_LIMIT, target - len(collected))
+        params = build_search_params(query="", cursor=next_cursor, limit=want,
+                                     nsfw=nsfw, sort=sort, period=period, username=username)
+        data = _civitai_images_page(params)
+        raw_items = data.get("items")
+        page_items = [_civitai_to_item(raw) for raw in raw_items] if isinstance(raw_items, list) else []
+        batches += 1
+        collected.extend(page_items)
+        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        raw_next = metadata.get("nextCursor")
+        next_cursor = str(raw_next).strip() if isinstance(raw_next, (str, int)) and str(raw_next).strip() else None
+        # 上游没给下一页游标、或这一批没取满（说明已到底）→ 停
+        if not next_cursor or len(page_items) < want:
+            break
+        if len(collected) < target:
+            time.sleep(POOL_BATCH_INTERVAL_SECONDS)
+    return collected, next_cursor, batches
+
+
 # ---------- 图源实现 ----------
 class CivitaiGallerySource(GallerySource):
     """C站图源（PLAN §5.3：`{source}` 段 = `civitai`）。"""
@@ -502,8 +551,23 @@ class CivitaiGallerySource(GallerySource):
 
     def search_page(self, query: str = "", cursor: str | None = None, limit: int = DEFAULT_LIMIT,
                     nsfw: str | None = None, sort: str | None = None, period: str | None = None,
-                    username: str | None = None, **filters: Any) -> dict[str, Any]:
-        """返回 `{"items", "next_cursor", "warnings"}`（路由用；`search()` 是它的契约包装）。"""
+                    username: str | None = None, pool_target: int = 0, **filters: Any) -> dict[str, Any]:
+        """返回 `{"items", "next_cursor", "warnings", "pool"}`（路由用；`search()` 是它的契约包装）。
+
+        `pool_target > 0` = 「无限加载」池模式（默认 0 = 关闭，单页行为与改动前完全一致）：
+        连续拉取到累计 `pool_target` 条或上游耗尽，**不做 query 本地过滤**（关键词由前端在整池上筛，
+        这样切词零请求、搜索范围天然是「已加载的全部内容」）。回包多一个 `pool` 字段说明本轮加载量。
+        """
+        pool_target = _bounded_int(pool_target, 0, 0, POOL_TARGET_MAX)
+        if pool_target:
+            items, pool_cursor, batches = _civitai_pool(
+                cursor, pool_target, nsfw=nsfw, sort=sort, period=period, username=username)
+            pool_warnings: list[str] = []
+            if not civitai_key_configured():
+                pool_warnings.append("未配置 C站 API key：当前按匿名身份请求（实测图片端点匿名可读）。")
+            return {"items": items, "next_cursor": pool_cursor, "warnings": pool_warnings,
+                    "pool": {"loaded": len(items), "target": pool_target, "batches": batches}}
+        # ↓↓↓ 单页模式：以下与改动前逐字节相同 ↓↓↓
         params = build_search_params(query=query, cursor=cursor, limit=limit, nsfw=nsfw,
                                      sort=sort, period=period, username=username)
         data = _civitai_images_page(params)
@@ -619,7 +683,7 @@ async def anima_gallery_sources(request: web.Request) -> web.Response:
 async def anima_gallery_civitai_search(request: web.Request) -> web.Response:
     """C站图片搜索：**cursor 分页**（透传 `metadata.nextCursor`），参数 query/cursor/limit/nsfw/sort。"""
     raw = {key: request.query.get(key, "") for key in
-           ("query", "cursor", "limit", "nsfw", "sort", "period", "username")}
+           ("query", "cursor", "limit", "nsfw", "sort", "period", "username", "pool_target")}
     try:
         limit = _bounded_int(raw["limit"], DEFAULT_LIMIT, MIN_LIMIT, MAX_LIMIT)
         # 参数校验放在路由里：非法值要回 400 + 中文提示，而不是把 ZodError 透传给前端
@@ -636,6 +700,8 @@ async def anima_gallery_civitai_search(request: web.Request) -> web.Response:
                 query=raw["query"], cursor=raw["cursor"] or None, limit=limit,
                 nsfw=raw["nsfw"], sort=raw["sort"], period=raw["period"],
                 username=raw["username"] or None,
+                # 「无限加载」池：>0 时后端连续拉取到该条数（来自设置里的档位），0 = 原有单页行为
+                pool_target=_bounded_int(raw["pool_target"], 0, 0, POOL_TARGET_MAX),
             ),
         )
     except requests.Timeout:
@@ -658,6 +724,8 @@ async def anima_gallery_civitai_search(request: web.Request) -> web.Response:
         "next_cursor": page["next_cursor"],
         "total": None,  # C站 images 端点不返回总数（契约字段照样保留）
         "warnings": page["warnings"],
+        # 池模式独有的加载量（单页模式为 None）：前端用它显示「已累计加载 N 条」
+        "pool": page.get("pool"),
     })
 
 

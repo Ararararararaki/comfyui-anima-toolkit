@@ -1615,6 +1615,131 @@ async def anima_danbooru_fuzzy(request: web.Request) -> web.Response:
     })
 
 
+# ---------- P站 作品 → D站 帖子 反查（2026-09-21） ----------
+# 由来：P站 的 tag 是画师自由打的日文/多语言词，模型理解不了，所以 P站 页面原本不输出 prompt。
+# 但 D站 收录了大量 P站 作品、且帖子自带 `pixiv_id` —— 于是可以「拿 P站 作品 id 反查 D站 帖子」，
+# 直接把 D站 的规范标签当 prompt 用：不必翻译、不必 WD14 反推（反推还会误判污染提示词）。
+# 实测（2026-09-21）：`pixiv_id:>0` 可用；多值 `pixiv_id:a,b,c` 一次能查多个；
+# 一个 pixiv_id 常对应多个 D站 帖子（原图/差分/重复上传），且 tag 数远多于 P站 自己的标签。
+PIXIV_MATCH_MAX_IDS = 60      # 单次最多反查多少个作品（P站 一页 30 张 → 通常 1 批就够）
+PIXIV_MATCH_BATCH_IDS = 30    # 每个上游请求塞多少个 pixiv_id（多值查询，实测可行）
+PIXIV_MATCH_MAX_POSTS = 200   # 每个 pixiv_id 最多取回多少候选帖子，用于消歧
+
+
+def _pixiv_match_payload(post: dict[str, Any], pixiv_id: str) -> dict[str, Any]:
+    """把命中的 D站 帖子裁成前端要的形状：字段名与 D站 posts 一致，
+    于是前端可以直接把它喂进既有的 rawPromptGroups（按 tag_string_<类别> 分组），不必另写一套。"""
+    return {
+        "pixiv_id": pixiv_id,
+        "post_id": post.get("id"),
+        "tag_count": post.get("tag_count"),
+        "rating": post.get("rating"),
+        "score": post.get("score"),
+        "fav_count": post.get("fav_count"),
+        "file_ext": post.get("file_ext"),
+        "source_url": f"https://danbooru.donmai.us/posts/{post.get('id')}",
+        "tag_string": post.get("tag_string"),
+        "tag_string_general": post.get("tag_string_general"),
+        "tag_string_character": post.get("tag_string_character"),
+        "tag_string_copyright": post.get("tag_string_copyright"),
+        "tag_string_artist": post.get("tag_string_artist"),
+        "tag_string_meta": post.get("tag_string_meta"),
+    }
+
+
+# pixiv 的原始图片 URL 形如 `.../79828064_p2.jpg` —— 用它把 D站 帖子对回 pixiv 的页号
+_PIXIV_PAGE_RE = re.compile(r"_(p\d+)(?=[._]|$)", re.IGNORECASE)
+
+
+def _pixiv_source_page(post: dict[str, Any]) -> int | None:
+    """从 D站 帖子的 `source` 里解析 pixiv 页号（`.../79828064_p0.jpg` → 0）；拿不到返回 None。
+
+    2026-09-21 实测：多页作品被逐页上传到 D站 时，source 会保留 `_pN` 且与 pixiv 页序一致
+    （#3842827→p0、#3842830→p1、#3842833→p2）。有它才能把「页 → 帖子」精确对上。
+    """
+    for candidate in str(post.get("source") or "").split():
+        match = _PIXIV_PAGE_RE.search(candidate)
+        if not match:
+            continue
+        try:
+            return int(match.group(1)[1:])
+        except ValueError:
+            continue
+    return None
+
+
+def _match_pixiv_ids(pixiv_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """反查 pixiv 作品 id → D站 帖子，**按页归并**。
+
+    回包：`{pixiv_id: {"pages": {"0": 帖子, "1": 帖子, ...}, "root": 帖子}}`
+
+    ⚠️ 为什么必须按页（2026-09-21 修的真实 bug）：一个 pixiv 多页作品在 D站 常有多个帖子
+    （逐页上传并连成父子链），而 `pixiv_id` 本身**不区分页码**。早先的实现是「多命中取 tag 最多」——
+    那等于随便挑一页、再把它套到该作品的所有页上：首页于是可能带出后几页的 NSFW 标签（提示词污染）。
+    现在：能解析出 `_pN` 就按页各就各位；同一页有多条（真差分）才按 tag 最多消歧；
+    解析不出页号的帖子只作为 `root` 兜底（该页在 D站 没有独立帖子时使用）。
+    """
+    matches: dict[str, dict[str, Any]] = {}
+    wanted = set(pixiv_ids)
+    for start in range(0, len(pixiv_ids), PIXIV_MATCH_BATCH_IDS):
+        chunk = pixiv_ids[start:start + PIXIV_MATCH_BATCH_IDS]
+        data = _danbooru_json(DANBOORU_POSTS_URL, {
+            "tags": "pixiv_id:" + ",".join(chunk),
+            "limit": PIXIV_MATCH_MAX_POSTS,
+        })
+        if not isinstance(data, list):
+            continue
+        for post in data:
+            if not isinstance(post, dict):
+                continue
+            pixiv_id = _safe_get(post, "pixiv_id", None)
+            pixiv_id = str(pixiv_id).strip() if pixiv_id is not None else ""
+            if not pixiv_id or pixiv_id not in wanted:
+                continue
+            entry = matches.setdefault(pixiv_id, {"pages": {}, "root": None})
+            payload = _pixiv_match_payload(post, pixiv_id)
+            page = _pixiv_source_page(post)
+            if page is not None:
+                payload["page"] = page
+                current = entry["pages"].get(str(page))
+                # 同一页出现多条 = 真差分（同一页的不同版本）——这时"取 tag 最多"才是对的
+                if current is None or int(payload.get("tag_count") or 0) > int(current.get("tag_count") or 0):
+                    entry["pages"][str(page)] = payload
+            # 根帖（parent_id 为空）= 该页在 D站 没有独立帖子时的兜底
+            if not _safe_get(post, "parent_id", None):
+                root = entry["root"]
+                if root is None or int(payload.get("tag_count") or 0) > int(root.get("tag_count") or 0):
+                    entry["root"] = payload
+    return matches
+
+
+@PromptServer.instance.routes.get("/anima/danbooru/pixiv_match")
+async def anima_danbooru_pixiv_match(request: web.Request) -> web.Response:
+    """P站 作品 id → D站 帖子（供 P站 画廊把作品标签升级成 Danbooru 规范标签）。
+
+    参数：`ids=149884381,148075989`（逗号分隔，最多 PIXIV_MATCH_MAX_IDS 个）。
+    回包：`{"matches": {"<pixiv_id>": {"pages": {"0": 帖子, ...}, "root": 帖子}}, "requested": N}` ——
+    按页归并（见 `_match_pixiv_ids` 的说明）；未收录的作品不出现在 matches 里。
+    """
+    ids: list[str] = []
+    for token in str(request.query.get("ids", "")).replace("，", ",").split(","):
+        text = token.strip()
+        if text.isdigit() and text not in ids:
+            ids.append(text)
+    if not ids:
+        return web.json_response({"matches": {}, "requested": 0})
+    ids = ids[:PIXIV_MATCH_MAX_IDS]
+    try:
+        matches = await asyncio.get_running_loop().run_in_executor(None, _match_pixiv_ids, ids)
+    except requests.Timeout:
+        return web.json_response({"error": "D站 反查超时：请确认 Clash/代理已开启后重试"}, status=504)
+    except requests.RequestException as error:
+        return web.json_response({"error": _friendly_danbooru_error(error)}, status=502)
+    except (TypeError, ValueError) as error:
+        return web.json_response({"error": f"D站 反查回包异常：{error}"}, status=502)
+    return web.json_response({"matches": matches, "requested": len(ids)})
+
+
 class DanbooruGallery:
     """将画廊的用户选择转换为 ComfyUI 可连接的图像和提示词列表，并输出结构化元数据。"""
 
