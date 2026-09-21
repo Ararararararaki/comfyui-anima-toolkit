@@ -1784,11 +1784,46 @@
     // 注入函数 injectRegionIntoPrompt / injectAnimaRegionIntoPrompt / findCondNode
     // 等仍保留在文件内（SD 等其他底模未来可恢复），此处不再调用。
 
+    // ── auto-queue 信号（供 wrapper 判定，见其上方注释）──
+    // 信号① autoQueueGraphChanged：前端 ChangeTracker 捕获图变化后派发，新老 UI 都会发；
+    // 信号② app.ui.autoQueueEnabled/autoQueueMode：legacy 菜单的 auto-queue 开关
+    //        （与前端源码 isAutoQueueOnChange() 里的 $.ui.autoQueueEnabled 同源）。
+    const AUTO_QUEUE_WINDOW_MS = 800;   // 事件与队列调用同源同步发出，窗口取小值以降低误判
+    function installAutoQueueSignal(app) {
+      if (window.__tkAutoQueueSignal) return;
+      window.__tkAutoQueueSignal = { at: 0, hits: 0 };
+      for (const target of [document, window, app, app?.api]) {
+        try {
+          if (target && typeof target.addEventListener === "function") {
+            target.addEventListener("autoQueueGraphChanged", () => {
+              window.__tkAutoQueueSignal.at = Date.now();
+              window.__tkAutoQueueSignal.hits++;
+            });
+          }
+        } catch (e) { /* 该目标不可用则跳过 */ }
+      }
+    }
+    function autoQueueSignalled(app) {
+      try {
+        const ui = app?.ui;
+        if (ui && ui.autoQueueEnabled === true) {
+          const m = ui.autoQueueMode;
+          if (m === "instant" || m === "change") return true;
+        }
+      } catch (e) { /* ignore */ }
+      try {
+        const at = window.__tkAutoQueueSignal?.at || 0;
+        if (at && Date.now() - at < AUTO_QUEUE_WINDOW_MS) return true;
+      } catch (e) { /* ignore */ }
+      return false;
+    }
+
     // 全局：包装 app.queuePrompt
     function installQueueExpansion() {
       const app = window.comfyAPI?.app?.app;
       if (!app || typeof app.queuePrompt !== "function" || app.__animaBatchInstalled) return;
       app.__animaBatchInstalled = true;
+      installAutoQueueSignal(app);
       const prev = app.queuePrompt;
       const orig = prev.bind(app);
 
@@ -1817,8 +1852,18 @@
       // auto_queue（前端 instant/change 模式的自动重排）永不展开批量：
       // 队列清空后自动重排会把同一批反复提交（历史里出现过连续重复任务），
       // TK 批量本身就是自动化，无需自动重排。禁用/隐藏 TK 节点后走正常逻辑。
+      //
+      // ⚠️ 2026-09-22：前端 1.48.7 的自动队列走 Z.queuePrompt(0, batchCount)，**不传第 3 参**，
+      //    而 options.intent.trigger_source 现在只用于 telemetry ⇒ 仅靠 trigger 判定会漏掉
+      //    新前端的自动重排（开着 auto-queue + 节点启用时，每次改图都可能展开一整批）。
+      //    这里补两个与前端实现同源的信号，见 installAutoQueueSignal/autoQueueSignalled。
       const trigger = (options && options.intent && options.intent.trigger_source) || "";
-      if (trigger === "auto_queue") return false;
+      if (trigger === "auto_queue" || (!options && autoQueueSignalled(app))) {
+        if (trigger !== "auto_queue") {
+          try { console.debug("[TK Batch] 判定为自动队列触发（options 缺失 + auto-queue 信号），已跳过批量展开"); } catch (e) { /* ignore */ }
+        }
+        return false;
+      }
 
       // ── 2026-08-24 起改走「服务端批任务控制器」：
       //    不再逐条注入画布 widget + 逐条 orig() 入队（画布可能被污染、无批次状态、
