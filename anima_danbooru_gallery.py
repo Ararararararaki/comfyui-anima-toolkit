@@ -19,7 +19,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlencode, urlparse
 import urllib.request
 
@@ -541,15 +541,23 @@ class _DanbooruBrowser:
 
     def _warm(self) -> None:
         page = self._page
-        page.goto("https://danbooru.donmai.us/", wait_until="domcontentloaded", timeout=60000)
         try:
-            page.wait_for_function(
-                "() => (document.title || '').includes('Danbooru') && document.readyState === 'complete'",
-                timeout=45000,
-            )
-        except Exception:
-            print("[多重画廊·风控网关] 浏览器校验未完全就绪，继续尝试")
-        self._last_warm = time.time()
+            page.goto("https://danbooru.donmai.us/", wait_until="domcontentloaded", timeout=60000)
+            try:
+                page.wait_for_function(
+                    "() => (document.title || '').includes('Danbooru') && document.readyState === 'complete'",
+                    timeout=45000,
+                )
+            except Exception:
+                print("[多重画廊·风控网关] 浏览器校验未完全就绪，继续尝试")
+        finally:
+            # ⚠️ 无论成功失败都必须记账。这是 2026-09-21 用户实报「P站 栏目选某些图片后
+            #    节点一直卡住不继续」的两条根因之一：
+            #    原来 `self._last_warm` 只在整个 _warm 走完后才赋值，而 `page.goto` **不在 try 内**
+            #    ⇒ goto 超时（60s）抛异常时这一行被跳过 ⇒ `time.time() - self._last_warm`
+            #    永远 > _WARM_INTERVAL_SECONDS ⇒ **下一次取图又重跑一遍 warm**（60s + 45s）。
+            #    一张图 60s、十张图就是十分钟，用户看到的就是"卡住不动"。
+            self._last_warm = time.time()
 
     def _run(self, script: str, argument: Any) -> Any:
         with self._lock:
@@ -562,9 +570,12 @@ class _DanbooruBrowser:
 
     def json(self, url: str, params: dict[str, Any]) -> Any:
         full = url + "?" + urlencode(params)
+        # 同 bytes()：evaluate 层没有超时，必须 JS 自带（见那里的说明）
         result = self._run(
-            "async (u) => { const r = await fetch(u, {headers: {'Accept':'application/json'}}); "
-            "const t = await r.text(); return {s: r.status, t}; }",
+            "async (u) => { const c = new AbortController(); const timer = setTimeout(() => c.abort(), 20000); "
+            "try { const r = await fetch(u, {headers: {'Accept':'application/json'}, signal: c.signal}); "
+            "const t = await r.text(); return {s: r.status, t}; } "
+            "finally { clearTimeout(timer); } }",
             full,
         )
         status = _safe_get(result, "s", 0)
@@ -574,12 +585,21 @@ class _DanbooruBrowser:
         raise RuntimeError(f"D站 搜索失败（HTTP {status}）：{text[:240]}")
 
     def bytes(self, url: str) -> tuple[bytes, str]:
+        # ⚠️ 超时必须由 JS 自己带（AbortController），因为 **Playwright 的
+        #    `page.set_default_timeout()` 不作用于 `page.evaluate`** ——
+        #    实测 `inspect.signature(Page.evaluate)` 只有 (self, expression, arg)，没有 timeout 参数，
+        #    所以下面 `_run` 里那句 set_default_timeout(25000) 对本次求值是**无效兜底**。
+        #    原先裸写 `await fetch(u)`：一旦 CDN 出现半开连接 / 极慢响应，JS 永不 settle
+        #    ⇒ Python 侧永久阻塞在该 evaluate ⇒ 节点永不返回。
+        #    这正是 2026-09-21 用户实报「一直卡在画廊节点不继续」的另一条根因。
         result = self._run(
-            "async (u) => { const r = await fetch(u); "
+            "async (u) => { const c = new AbortController(); const timer = setTimeout(() => c.abort(), 20000); "
+            "try { const r = await fetch(u, {signal: c.signal}); "
             "const b = await r.arrayBuffer(); const d = new Uint8Array(b); "
             "const CH = 65536; const parts = []; "
             "for (let i = 0; i < d.length; i += CH) { parts.push(String.fromCharCode.apply(null, d.subarray(i, i + CH))); } "
-            "return {s: r.status, ct: r.headers.get('content-type') || '', b64: btoa(parts.join(''))}; }",
+            "return {s: r.status, ct: r.headers.get('content-type') || '', b64: btoa(parts.join(''))}; } "
+            "finally { clearTimeout(timer); } }",
             url,
         )
         status = _safe_get(result, "s", 0)
@@ -683,11 +703,22 @@ def _danbooru_json(url: str, params: dict[str, Any], timeout: int = 20) -> Any:
     raise RuntimeError(CF_BLOCKED_MSG)
 
 
-def _danbooru_get_image(url: str, timeout: int = 30) -> tuple[bytes, str]:
-    """下载 Danbooru 图片/视频字节（requests 优先，连接 6s 快速失败 + 换路重试 + 浏览器网关兜底）。"""
+def _danbooru_get_image(url: str, timeout: int = 30, allow_browser: bool = True) -> tuple[bytes, str]:
+    """下载 Danbooru 图片/视频字节（requests 优先，连接 6s 快速失败 + 换路重试 + 浏览器网关兜底）。
+
+    ``allow_browser=False``：**禁用内置浏览器网关兜底**，第三方图源（P站/C站）必须这样调。
+    理由：网关是一个停在 ``danbooru.donmai.us`` 的页面，从它发起
+    ``fetch("https://i.pximg.net/...")`` 属**跨域**请求，浏览器会带上
+    ``Referer: https://danbooru.donmai.us/``，而 P站 CDN 校验 Referer 必须含 pixiv.net
+    （见本文件顶部的「取图铁律」）⇒ **必然 403**。也就是说网关对第三方图源既不可能成功，
+    又要白付一次 warm（最坏 60s + 45s），纯属有害无益。
+    """
     global _browser_working
-    if _browser_working:
-        got = _browser_bytes_or_none(url)
+    # allow_browser=False 时让每次调用都直接拿到 None（等价于"网关不可用"）：
+    # 第三方图源因此只走 requests 的两条路，失败就如实报错，不再空等网关。
+    browser = _browser_bytes_or_none if allow_browser else (lambda _u: None)
+    if allow_browser and _browser_working:
+        got = browser(url)
         if got is not None:
             return got
         _browser_working = False
@@ -705,7 +736,7 @@ def _danbooru_get_image(url: str, timeout: int = 30) -> tuple[bytes, str]:
         try:
             resp = _danbooru_session.get(url, timeout=(6, timeout))
         except (requests.Timeout, requests.ConnectionError):
-            got = _browser_bytes_or_none(url)
+            got = browser(url)
             if got is not None:
                 _browser_working = True
                 return got
@@ -714,7 +745,7 @@ def _danbooru_get_image(url: str, timeout: int = 30) -> tuple[bytes, str]:
     if not _resp_is_cf(resp):
         resp.raise_for_status()
         return resp.content, resp.headers.get("Content-Type", "application/octet-stream").split(";", 1)[0]
-    got = _browser_bytes_or_none(url)
+    got = browser(url)
     if got is not None:
         _browser_working = True
         return got
@@ -848,27 +879,101 @@ def _normalize_zh_text(value: Any) -> str:
     return re.sub(r"[\s\u3000]+", "", str(value or "").strip().lower())
 
 
+class _ZhIndex(NamedTuple):
+    """中文反查索引：一次遍历建好、整体发布，读者不会看到半成品。"""
+
+    source: dict[str, str]  # 建索引时的词典对象；身份不一致即视为失效需重建
+    exact: dict[str, Any]  # 归一化译文 -> tag | [tag, ...]（按词典原始顺序，保留重复项）
+    entries: list[tuple[str, str, str]]  # (tag, 归一化译文, 原始译文)，仅英文 tag，供子串扫描
+    cjk_entries: list[tuple[str, str, str]]  # 同上，但 tag 与译文都含中文的反向记录
+
+
+_zh_index_lock = threading.Lock()
+_zh_index: _ZhIndex | None = None
+
+
+def _build_zh_index(translations: dict[str, str]) -> _ZhIndex:
+    """遍历一次词典，预建「归一化译文 -> 标签」反向索引与子串扫描列表。
+
+    词典在进程内是只读常量（_load_translations 只加载一次），故索引可常驻。
+    归一化结果与原串逐字相同时直接复用原对象，避免为 40 万条目再复制一份字符串。
+    """
+    exact: dict[str, Any] = {}
+    entries: list[tuple[str, str, str]] = []
+    cjk_entries: list[tuple[str, str, str]] = []
+    for raw_tag, raw_zh in translations.items():
+        tag = _normalize_tag_slug(raw_tag)
+        if not tag:
+            continue
+        zh = _normalize_zh_text(raw_zh)
+        if not zh:
+            continue
+        tag_key = raw_tag if tag == raw_tag else tag
+        zh_key = raw_zh if zh == raw_zh else zh
+        if not any("\u4e00" <= char <= "\u9fff" for char in tag_key):
+            # 子串联想只考虑英文标签；tag 含中文的是反向记录，一律不参与。
+            entries.append((tag_key, zh, raw_zh))
+        elif any("\u4e00" <= char <= "\u9fff" for char in zh):
+            # 反向记录通常译文是英文，只有这类条目还可能命中「片段匹配」。
+            cjk_entries.append((tag_key, zh, raw_zh))
+        bucket = exact.get(zh_key)
+        if bucket is None:
+            exact[zh_key] = tag_key
+        elif isinstance(bucket, list):
+            bucket.append(tag_key)
+        else:
+            exact[zh_key] = [bucket, tag_key]
+    return _ZhIndex(translations, exact, entries, cjk_entries)
+
+
+def _zh_index_snapshot() -> _ZhIndex:
+    """惰性取索引：首次用到才构建，之后复用；词典为空时索引同样为空，不抛异常。"""
+    global _zh_index
+    translations = _load_translations()
+    index = _zh_index
+    if index is not None and index.source is translations:
+        return index
+    with _zh_index_lock:
+        index = _zh_index
+        if index is not None and index.source is translations:
+            return index
+        built = _build_zh_index(translations)
+        _zh_index = built
+        return built
+
+
+def _zh_exact_tags(index: _ZhIndex, query: str) -> tuple[str, ...] | list[str]:
+    """取反向索引条目：单个标签存裸串（省一次 list 分配），多个标签存 list。"""
+    bucket = index.exact.get(query)
+    if bucket is None:
+        return ()
+    if isinstance(bucket, str):
+        return (bucket,)
+    return bucket
+
+
 def _local_zh_tag_candidates(text: str, limit: int = 8) -> list[str]:
     """从本地 Danbooru 中文词典反查标签；优先整句，随后才做较长中文片段匹配。"""
     query = _normalize_zh_text(text)
     if not query:
         return []
-    translations = _load_translations()
+    index = _zh_index_snapshot()
     exact: list[str] = []
     fragments: list[tuple[int, str]] = []
     seen: set[str] = set()
-    for raw_tag, raw_zh in translations.items():
-        tag = _normalize_tag_slug(raw_tag)
-        zh = _normalize_zh_text(raw_zh)
-        if not tag or not zh or tag in seen:
+    for tag in _zh_exact_tags(index, query):
+        if not tag or tag in seen:
             continue
-        if zh == query:
-            exact.append(tag)
-            seen.add(tag)
-        elif len(zh) >= 2 and zh in query and any("\u4e00" <= ch <= "\u9fff" for ch in zh):
-            fragments.append((len(zh), tag))
+        exact.append(tag)
+        seen.add(tag)
     if exact:
         return exact[:limit]
+    # 走到这里说明一个整句命中都没有，seen 必然为空、字典序也不影响下面的排序结果，
+    # 故直接扫两份列表即可（含中文 tag 且译文也含中文的少数条目在 cjk_entries 里补全）。
+    for bucket in (index.entries, index.cjk_entries):
+        for tag, zh, _raw_zh in bucket:
+            if len(zh) >= 2 and zh in query and any("\u4e00" <= ch <= "\u9fff" for ch in zh):
+                fragments.append((len(zh), tag))
     fragments.sort(key=lambda item: (-item[0], item[1]))
     return [tag for _, tag in fragments[:limit]]
 
@@ -880,15 +985,13 @@ def _local_zh_exact_tag_candidates(text: str, limit: int = 8) -> list[str]:
         return []
     result: list[str] = []
     seen: set[str] = set()
-    for raw_tag, raw_zh in _load_translations().items():
-        tag = _normalize_tag_slug(raw_tag)
+    for tag in _zh_exact_tags(_zh_index_snapshot(), query):
         if not tag or tag in seen or any("\u4e00" <= char <= "\u9fff" for char in tag):
             continue
-        if _normalize_zh_text(raw_zh) == query:
-            seen.add(tag)
-            result.append(tag)
-            if len(result) >= limit:
-                break
+        seen.add(tag)
+        result.append(tag)
+        if len(result) >= limit:
+            break
     return result
 
 
@@ -909,16 +1012,12 @@ def _local_zh_tag_search(text: str, limit: int = 24) -> list[tuple[str, str]]:
 
     matches: list[tuple[int, int, str, str]] = []
     seen: set[str] = set()
-    for raw_tag, raw_zh in _load_translations().items():
-        tag = _normalize_tag_slug(raw_tag)
-        zh_display = str(raw_zh or "").strip()
-        zh = _normalize_zh_text(zh_display)
-        # 词典同时保存英文→中文和中文→英文，反向记录不能作为双语候选。
-        if not tag or tag in seen or not zh or any("\u4e00" <= char <= "\u9fff" for char in tag):
-            continue
-        if query not in zh or not any("\u4e00" <= char <= "\u9fff" for char in zh):
+    # 索引里的 entries 已排除 tag 含中文的反向记录，与原循环里那层过滤等价。
+    for tag, zh, raw_zh in _zh_index_snapshot().entries:
+        if tag in seen or query not in zh or not any("\u4e00" <= char <= "\u9fff" for char in zh):
             continue
         seen.add(tag)
+        zh_display = str(raw_zh or "").strip()
         # 以中文前缀优先；长度仅用于稳定排序，最终仍按 D 站帖数排序。
         matches.append((0 if zh.startswith(query) else 1, len(zh), tag, zh_display))
     matches.sort(key=lambda item: (item[0], item[1], item[2]))
@@ -1122,7 +1221,10 @@ def _gallery_get_image(image_url: str, headers: dict[str, str] | None = None) ->
         previous = {name: _danbooru_session.headers.get(name) for name in extra}
         _danbooru_session.headers.update(extra)
         try:
-            return _danbooru_get_image(image_url)
+            # ⚠️ allow_browser=False —— 第三方图源**不得**借道 D站 浏览器网关：
+            # 网关页面停在 danbooru.donmai.us，从它 fetch i.pximg.net 是跨域且 Referer 不对，
+            # 必然 403；同时还要白付一次 warm（最坏 60s+45s）。详见 _danbooru_get_image 的说明。
+            return _danbooru_get_image(image_url, allow_browser=False)
         finally:
             for name, value in previous.items():
                 if value is None:

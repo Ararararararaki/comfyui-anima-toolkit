@@ -12,7 +12,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   // 每个画廊节点各存一份（key = 前缀 + 节点 id）。别的节点里的归类从来没被迁移过
   // ⇒ 用户更新后会看到"我分类里的图片少了好几张"（2026-09-20 实报）。
   const OTHERS_MIGRATED_KEY = `${STORAGE_KEY_PREFIX}categories_migrated_others`;
-  const FAVORITES_STORAGE_KEY = "anima_danbooru_gallery_favorites_v1";
+  // ⚠️ 卡片上的「★ 收藏」功能已于 2026-09-21 移除（用户裁决：与分类功能重合且无使用入口）。
+  //    实测它当时**只有装饰作用**：全文件没有任何地方读 favorites 做筛选/排序，
+  //    入库时的 `isFavorite: false` 是硬编码常量、与这个按钮无关，唯一效果是卡片描边变黄。
+  //    旧数据（localStorage 的 anima_danbooru_gallery_favorites_v1）留着不清理，无害。
   // 搜索历史：**每节点一份**（前缀 + nodeId，与 settings 一致），值形如
   //   { "danbooru": ["1girl solo", …], "civitai": […], "pixiv": […] }
   const SEARCH_HISTORY_KEY_PREFIX = "anima_danbooru_gallery_search_history_v1_";
@@ -641,7 +644,6 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 记录多选卡片的实际点击顺序；不能用 DOM 顺序代替，因为翻页/筛选后的显示顺序可能不同。
       this.selectionOrder = [];
       this.dialogId = `anima-danbooru-dialog-${node.id}`;
-      this.favorites = this.loadFavorites();
       this.translationCache = new Map();
       this.presetNoteHydration = null;
       this.tooltip = null;
@@ -1757,10 +1759,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
      * 网格几何。列数优先由「上次布局算出的列步长」反推 —— 垂直滚动条出现后 clientWidth
      * 会比 layout 时小十几像素，直接除会让卡片宽出容器、产生横向滚动条（实测 rightEdge 1295 > 1283）。
      */
-    gridMetrics() {
+    gridMetrics(precomputedStyle = null) {
       if (!this.grid) return { width: 780, cols: 3, cardWidth: 240, usable: 756 };
       const width = this.grid.clientWidth || 780;
-      const style = getComputedStyle(this.grid);
+      // 允许调用方把**刚取过的** computed style 传进来：applyMasonryLayout 为了 paddingTop/
+      // paddingLeft 已经 getComputedStyle 过一次，而这里只差 paddingLeft/Right —— 同一次布局里
+      // 重复取值等于白多一次样式重算（且它落在每页 48 张图的重排路径上）。
+      // 只在确认两次取值之间**没有写过样式**时才可复用，见 applyMasonryLayout 的调用点。
+      const style = precomputedStyle || getComputedStyle(this.grid);
       const padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
       // ⚠️ 这个下限保护必须**原样保留**（§4.1 第一处保险）：首帧 clientWidth=0 时 usable 退化成
       //    DG_MIN_PT ⇒ cols=1，配合 dgSpanFor 的 Math.min(2, cols) 与布局侧的 !isFinite(top) 兜底，
@@ -1812,7 +1818,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.lastColStep = 0;
       }
       this._lastLayoutUsable = rawUsable;
-      const { usable, cols } = this.gridMetrics();
+      // 复用上面刚取的 gridStyle：此处到取值之间只写过 JS 字段（lastColStep/_lastLayoutUsable），
+      // 没有任何 DOM 样式写入 ⇒ 样式没有失效，不必再 getComputedStyle 一次。
+      const { usable, cols } = this.gridMetrics(gridStyle);
       const padTop = parseFloat(gridStyle.paddingTop) || 0;
       const colStep = (usable - DG_GAP * (cols - 1)) / cols + DG_GAP;
       const cardWidth = (usable - DG_GAP * (cols - 1)) / cols;
@@ -1936,10 +1944,19 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     /**
      * 把网格高度应用到节点。**所有程序化改尺寸都必须走这里** ——
      * 记下时刻，供 noteExternalResize() 区分「用户拖动」与「我们自己改的」。
+     *
+     * ⚠️ 调用方只剩**用户显式操作**（设置面板改高度）。初始化路径（build / onConfigure）
+     * 已经全部改走 syncGridHeightFromNode()：它们只记录、不改尺寸 —— 尺寸真源是 node.size[1]。
      */
     setGridHeight(height) {
       this.programmaticResizeAt = Date.now();
       if (this.domSizeSync) {
+        // ⚠️ 必须先**解锁区间**再改尺寸。setBounds 一旦被调用过（用户拖动过节点就会，
+        //    见 onResize 里的 setBounds(nowHeight, nowHeight)），min/max 就被钉成 [h,h]，
+        //    于是 setContentHeight 内部的 clamp(height, min, max) 会把任何目标高度夹回 h
+        //    ⇒ 设置面板的「画廊高度」输入框**静默失效**（实测：拖过节点后再输入新高度没反应）。
+        //    一次把 min/max 都设成目标值即可解锁；随后 setContentHeight 写 size 并复位区间。
+        this.domSizeSync.setBounds?.(height, height);
         this.domSizeSync.setContentHeight(height);
         return;
       }
@@ -1948,7 +1965,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.root.style.minHeight = "0px";
         this.root.style.maxHeight = "none";
       }
-      this.node?.setSize?.([Math.max(360, this.node.size?.[0] || 780), height + 95]);
+      // 宽度下限与 anima_dom_widget_size_sync.js 的 getNodeWidth 对齐（那里是 280）：
+      // 原先这里写 360，两处不一致 ⇒ 窄节点（用户拖到 300 宽）走这条 fallback 时会被
+      // 悄悄撑到 360。真正该决定宽度的是用户/工作流，这里只是兜底，不该顺手改宽。
+      this.node?.setSize?.([Math.max(280, this.node.size?.[0] || 780), height + 95]);
       this.node?.graph?.setDirtyCanvas?.(true, true);
     }
 
@@ -1996,9 +2016,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           //    否则「补图撑大节点 → 列数变化 → 重置 → 再补」就是死循环。
           const keepRounds = this.autoFillRounds;
           const keepTarget = this._autoFillTarget;
+          // ⚠️ 「池子已取空」也必须一起保回来：search(resetPage) 内部会把它清成 false，
+          //    不清回来就会拿同一个**已知取空**的游标再打一次上游接口（有硬闸兜底不会死循环，
+          //    但纯属白打一轮）。列数变化不是新结果集，这三项都该原样保留。
+          const keepExhausted = this.fillMoreExhausted;
           this.search({ resetPage: true });
           this.autoFillRounds = keepRounds;
           this._autoFillTarget = keepTarget;
+          this.fillMoreExhausted = keepExhausted;
           return;
         }
         // 纵向拉大 ⇒ 补图填满（追加，不重置用户已翻到的位置）
@@ -2352,9 +2377,30 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.renderPresetOptions();
       void this.hydratePresetNotes();
       this.updatePromptOutputButton();
-      this.applyGridHeight();
+      // ⚠️ 这里**不再** applyGridHeight()：refreshSettingsUI 的职责是「把 settings 刷进面板 UI」，
+      //    不是「把 settings 灌进节点尺寸」。它挂在 onConfigure（工作流载入）路径上，原来会用
+      //    settings.gridHeight 覆盖掉**工作流里保存的节点尺寸** —— 用户实报的「节点大小被动改变」
+      //    正是这条（此刻 userResizedAt 仍是 0，所有"用户已手动改过尺寸"的守卫都还没生效）。
+      //    现在尺寸真源只有一个：node.size[1]；settings.gridHeight 降级为它的记录副本。
+      this.syncGridHeightFromNode();
       // 工作流里保存的图源要恢复成对应的控件可见性（P站 隐藏提示词类控件等）
       this.applySourceCapabilities();
+    }
+
+    /**
+     * 把「节点当前高度」反写进 settings.gridHeight —— **只记录，绝不改尺寸**。
+     *
+     * 尺寸真源唯一：`node.size[1]`（用户拖出来的、或工作流里保存的那个）。
+     * settings.gridHeight 只剩两个用途：① 设置面板输入框的显示值；② 节点尺寸异常时的兜底。
+     * 反向（settings → 尺寸）**只允许发生在用户显式改设置面板时**，见 applyGridHeight()。
+     *
+     * 95 = 节点 chrome（标题栏/端口等）高度，与下方 installDOMWidgetSizeSync 的
+     * `nodeChromeHeight: 95`、以及 onResize 里 `size[1] - 95` 是同一个值。
+     */
+    syncGridHeightFromNode() {
+      const raw = Math.round((Number(this.node?.size?.[1]) || 0) - 95);
+      if (!(raw > 0)) return;
+      this.settings.gridHeight = Math.max(360, Math.min(1200, raw));
     }
 
     loadWorkflowSettings() {
@@ -2383,6 +2429,25 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       }
     }
 
+    /**
+     * 轻量持久化：只写 localStorage，**不碰 node.properties、不标脏画布**。
+     *
+     * 用于 search() 这类**高频**路径（用户搜索 / 翻页 / 自动补图 / 列数变化重取 / 随机发现）：
+     * 它们只改 `lastQuery` 这种"本机 UI 便利状态"，对节点在画布上的显示毫无影响，
+     * 也不该跟着工作流走 —— 重开工作流并不会自动重搜一次，带过去只是白白撑大 properties。
+     *
+     * 与 saveSettings() 的分工：凡是改了**要跟工作流走**的（分类 / 预设 / 筛选 / 档位 / 开关）
+     * 一律仍走 saveSettings()；只有纯 UI 状态才走这里。
+     * ⚠️ 这里的**不标脏**才是收益主体：`setDirtyCanvas(true, true)` 会让下一帧整块画布重绘，
+     *    而它原先挂在每一次搜索/翻页/补图上（这些操作一步都没改画布内容）。
+     *
+     * ⚠️ localStorage 仍写**全量**（含 postCategories）：后端虽是分类真源，但后端不可用时
+     *    这份本机副本是唯一兜底，不能为了省序列化把它扔掉。
+     */
+    saveUiState() {
+      try { localStorage.setItem(this.settingsKey(), JSON.stringify(this.settings)); } catch {}
+    }
+
     // 重建工具栏「搜索预设」下拉选项（保存/删除预设后调用）
     renderPresetOptions() {
       if (!this.presetSelect) return;
@@ -2401,18 +2466,6 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 用户在设置面板里指定高度 = 明确意图 → 本次结果集内不要再自动收缩
       this.userResizedAt = Date.now();
       this.setGridHeight(height);
-    }
-
-    loadFavorites() {
-      try {
-        return new Set(JSON.parse(localStorage.getItem(FAVORITES_STORAGE_KEY) || "[]").map(String));
-      } catch {
-        return new Set();
-      }
-    }
-
-    saveFavorites() {
-      localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify([...this.favorites]));
     }
 
     // ── 搜索历史（需求 2026-09-21：记录最近几次搜索、点一下就重新用）──
@@ -2634,15 +2687,6 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.submitSearch(text);
     }
 
-    toggleFavorite(postId) {
-      const id = String(postId || "");
-      if (!id) return false;
-      if (this.favorites.has(id)) this.favorites.delete(id);
-      else this.favorites.add(id);
-      this.saveFavorites();
-      return this.favorites.has(id);
-    }
-
     setStatus(message, tone = "") {
       if (!this.status) return;
       this.status.textContent = message;
@@ -2838,7 +2882,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this._autoFillTarget = 0;   // 新结果集 = 新目标，重新按当前尺寸评估
       }
       this.settings.lastQuery = normalizeTags(this.queryWidget?.value || "");
-      this.saveSettings();
+      // 高频路径：只落 localStorage。这里改的是"本机搜索框回填值"，与画布显示无关，
+      // 不该写 properties、更不该 setDirtyCanvas 标脏整块画布（见 saveUiState 注释）。
+      this.saveUiState();
       this.setQuery(this.settings.lastQuery);
 
       this.controller?.abort();
@@ -3153,12 +3199,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 老节点/恢复工作流时可能没有点击记录：保留 DOM 顺序作为一次性兜底，
       // 之后这些卡片也会进入明确的顺序记录。
       const orderedKeys = [];
+      // O(1) 去重：原实现用 `orderedKeys.includes(key)`，选满 n 张时退化成 O(n²)
+      // （`selectionOrder` 本身可能含重复项，所以这里的去重语义必须保留）。
+      const seenKeys = new Set();
       for (const key of this.selectionOrder) {
-        if (cardsByKey.has(key) && !orderedKeys.includes(key)) orderedKeys.push(key);
+        if (cardsByKey.has(key) && !seenKeys.has(key)) { seenKeys.add(key); orderedKeys.push(key); }
       }
       for (const card of selectedCards) {
         const key = this.selectionKey(card);
-        if (key && !orderedKeys.includes(key)) orderedKeys.push(key);
+        if (key && !seenKeys.has(key)) { seenKeys.add(key); orderedKeys.push(key); }
       }
       this.selectionOrder = orderedKeys;
       return orderedKeys
@@ -4037,8 +4086,6 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const categoryClass = dgCardCategoryClass(post);
         if (categoryClass) card.classList.add(categoryClass);
         const postId = String(post.id || "");
-        const isFavorite = this.favorites.has(postId);
-        card.classList.toggle("is-favorite", isFavorite);
         card.dataset.imageUrl = imageUrl;
         const promptResult = this.buildPromptForPost(post);
         const promptEdit = this.promptEdits.get(String(post.id || ""));
@@ -4114,7 +4161,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           card.classList.add("is-image-failed");
           this.failedImageCount = (this.failedImageCount || 0) + 1;
         };
-        preview.onload = () => this.scheduleMasonryLayout();
+        // ⚠️ 只有**元数据缺宽高**时才需要 onload 兜底重排：布局只按 post 元数据算盒高
+        //    （cardAspect 读的是 image_width/height，不是图片的渲染尺寸），元数据齐全时
+        //    上面已预设 width/height/aspectRatio，盒子尺寸在摆放时就已定死，图片解码**不会**
+        //    改变布局（applyMasonryLayout 末尾有同一条结论）。原先无条件重排 ⇒ 一页最多 48 张图
+        //    陆续到达 = 最多 48 次全量重排（每次 querySelectorAll + getComputedStyle + 逐卡写
+        //    5 处 style）；rAF 只合并同一帧内的多次调用，而图片是陆续到达的，合并不掉。
+        if (!(imageWidth > 0 && imageHeight > 0)) {
+          preview.onload = () => this.scheduleMasonryLayout();
+        }
         const caption = document.createElement("span");
         caption.className = "adg-caption";
         const isVid = this.isVideoPost(post);
@@ -4178,7 +4233,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         // 否则点下去只会得到空内容（项目 UI 规范：不要留点了没反应的控件）。
         const promptActionsApplicable = postCaps.prompt || !isGallerySource;
         const promptAction = addAction("Prompt", "查看、编辑和复制 Prompt", () => this.openPromptEditor(card, post));
-        const libraryAction = addAction("入库", "分类 / 入库：在同一弹窗中分别选择本地分类和 Prompt 入库，可只执行其中一项", () => this.saveToPromptLibrary(post, { includeLocalCategory: true }));
+        // tooltip 压到一行：原 30+ 字挂在 9px 的小按钮上，既读不完也把按钮撑得难看；
+        // 具体两项操作在弹窗里自解释（那里有 intro 与折叠区）。文案锚点「入库」二字不动。
+        const libraryAction = addAction("入库", "入库 / 归类这张图", () => this.saveToPromptLibrary(post, { includeLocalCategory: true }));
         if (!promptActionsApplicable) {
           promptAction.hidden = true;
           libraryAction.hidden = true;
@@ -4190,18 +4247,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         //   而且该按钮在 prompt=false 的图源（P站）会被隐藏 ⇒ P站 根本没法归类。
         //   分类是**本地**属性，与图源有没有 prompt 无关，所以这个按钮永远显示。
         addAction("分类", "把这张图归入本地分类（跨画廊节点共享）", () => this.openCategoryPicker([this.postKeyOf(post)]));
-        const favoriteButton = addAction(isFavorite ? "★" : "☆", isFavorite ? "取消收藏" : "收藏", () => {
-          const next = this.toggleFavorite(post.id);
-          card.classList.toggle("is-favorite", next);
-          favoriteButton.classList.toggle("is-favorite", next);
-          favoriteButton.textContent = next ? "★" : "☆";
-          favoriteButton.title = next ? "取消收藏" : "收藏";
-          favoriteButton.setAttribute("aria-label", next ? "取消收藏" : "收藏");
-          favoriteButton.setAttribute("aria-pressed", next ? "true" : "false");
-        });
-        favoriteButton.classList.toggle("is-favorite", isFavorite);
-        favoriteButton.setAttribute("aria-label", isFavorite ? "取消收藏" : "收藏");
-        favoriteButton.setAttribute("aria-pressed", isFavorite ? "true" : "false");
+        // ★ 收藏按钮已于 2026-09-21 移除：它只有装饰作用（描边变黄），没有任何读取入口
+        //   （无"只看收藏"筛选、无排序、入库时的 isFavorite 是硬编码常量），且与上面的
+        //   「分类」功能重合。用户裁决：去除。
         // 分类徽章：已归类的卡片左上角显示分类名
         const catId = this.settings.postCategories[this.postKeyOf(post)];
         if (catId) {
@@ -4419,9 +4467,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       content.className = "adg-prompt-settings adg-save-options";
       const intro = document.createElement("div");
       intro.className = "adg-prompt-settings-tip";
+      // 文案收敛（2026-09-21）：原首句 40 字，把"怎么操作"写成了正文，而下面那两个
+      // checkbox 与折叠区本身已自解释。压到一行，信息量不减。
       intro.textContent = includeLocalCategory
-        ? "可在同一弹窗中分别勾选本地分类和 Prompt 入库；两项可同时执行，也可只执行其中一项。"
-        : "选择本次入库的 Prompt 库分类，以及要写入 Prompt 和双语卡片的 D 站标签类别。不会修改全局 Prompt 设置。";
+        ? "两项操作可任选其一，也可同时执行。"
+        : "选择 Prompt 库分类与要写入的 D 站标签类别；不改动全局 Prompt 设置。";
       content.append(intro);
 
       let saveLibraryInput = null;
@@ -4452,9 +4502,22 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         assignLocalCategoryInput = makeAction("写入本地分类", Boolean(localCategoryId));
         content.append(actionTitle, actionRow);
 
+        // ── 旧路径折叠（2026-09-21）──
+        // 「本地分类 / 新建分类 / 标签快捷新建」这一整套，卡片上已经有独立入口
+        // （renderPosts 里的「分类」按钮；下面 4231-4235 那处注释也写明归类入口已从弹窗搬出）。
+        // 留在弹窗里 = 同一件事两个入口，还把弹窗撑到 26 个控件、一屏看不完。
+        // 默认折叠，需要时展开；功能一个不删（用户 2026-09-21 裁决：折叠而非删除）。
+        const legacyGroup = document.createElement("details");
+        legacyGroup.className = "adg-save-legacy-group";
+        const legacySummary = document.createElement("summary");
+        legacySummary.textContent = "本地分类 / 快捷新建（也可用卡片上的「分类」按钮）";
+        legacyGroup.append(legacySummary);
+
         const localTitle = document.createElement("div");
         localTitle.className = "adg-prompt-settings-title";
-        localTitle.textContent = "本地分类（勾选“写入本地分类”后生效）";
+        // 「勾选…后生效」这个条件说明交给上面那个 checkbox 自己表达（它就在同一屏内），
+        // 标题里不再嵌套另一个控件的文案。
+        localTitle.textContent = "本地分类";
         localCategorySelect = document.createElement("select");
         localCategorySelect.className = "adg-save-category-select";
         localCategorySelect.setAttribute("aria-label", "本地分类");
@@ -4492,13 +4555,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           localCategoryNameInput.value = "";
         };
         localNewRow.append(localCategoryNameInput, localNewButton);
-        content.append(localTitle, localCategorySelect, localNewRow);
+        legacyGroup.append(localTitle, localCategorySelect, localNewRow);
         // 保留原“分类”按钮的快捷能力：点当前图片标签即可新建并选中本地分类。
         const tagChoices = this.postTags(post).slice(0, 10);
         if (tagChoices.length) {
           const tagTitle = document.createElement("div");
           tagTitle.className = "adg-prompt-settings-tip";
-          tagTitle.textContent = "从本图标签快速新建分类：";
+          tagTitle.textContent = "快速新建：";
           const tagWrap = document.createElement("div");
           tagWrap.className = "adg-category-tags";
           for (const tag of tagChoices) {
@@ -4517,8 +4580,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             };
             tagWrap.append(tagButton);
           }
-          content.append(tagTitle, tagWrap);
+          legacyGroup.append(tagTitle, tagWrap);
         }
+        content.append(legacyGroup);
       }
 
       const libraryTitle = document.createElement("div");
@@ -4656,6 +4720,21 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       excludeInput.addEventListener("input", () => { if (!promptDirty) refreshPreview(); });
       promptInput.addEventListener("input", () => { promptDirty = true; refreshPreview(); });
 
+      // ── 就地错误反馈（2026-09-21）──
+      // 此前校验失败只调 setStatus()，而状态栏在**节点内部**，被 z-index:100000 的弹窗遮罩
+      // 完全盖住 ⇒ 用户看到的现象是「点『应用』毫无反应」。这里在弹窗内补一条 role="alert"，
+      // 与 setStatus 并存（后者仍供关闭弹窗后回看，语义不变）。
+      const errorBox = document.createElement("div");
+      errorBox.className = "adg-dialog-error";
+      errorBox.setAttribute("role", "alert");
+      errorBox.hidden = true;
+      const showError = (message) => {
+        errorBox.textContent = message;
+        errorBox.hidden = false;
+        try { errorBox.scrollIntoView({ block: "nearest" }); } catch {}
+      };
+      content.append(errorBox);
+
       return new Promise((resolve) => {
         refreshPreview();
         this.openDialog({
@@ -4667,6 +4746,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             const assignLocalCategory = assignLocalCategoryInput ? assignLocalCategoryInput.checked : false;
             if (!saveToLibrary && !assignLocalCategory) {
               this.setStatus("至少选择“存入 Prompt 库”或“写入本地分类”其中一项", "error");
+              showError("至少勾选一项：存入 Prompt 库 / 写入本地分类");
               return false;
             }
             const localCategoryId = localCategorySelect?.value || "";
@@ -4678,12 +4758,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             const selectedCategories = PROMPT_CATEGORY_ORDER.filter((category) => categoryInputs.get(category)?.checked);
             if (!selectedCategories.length) {
               this.setStatus("至少选择一个 Prompt 类别", "error");
+              showError("至少保留一个 Prompt 类别");
               return false;
             }
             const excludePattern = excludeInput.value.trim();
             if (excludePattern) {
               try { new RegExp(excludePattern, "i"); } catch (error) {
                 this.setStatus(`排除正则无效：${error.message || error}`, "error");
+                showError(`排除正则无效：${error.message || error}`);
                 excludeInput.focus();
                 return false;
               }
@@ -4699,6 +4781,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             const promptText = (promptDirty ? promptInput.value : generated.prompt).trim();
             if (!promptText && !previewResult?.allParts?.length) {
               this.setStatus("排除规则过滤后没有可保存的 Prompt", "error");
+              showError("排除规则过滤后没有可保存的 Prompt（检查上面的排除正则）");
               promptInput.focus();
               return false;
             }
@@ -5790,7 +5873,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       setTimeout(() => nameInput.focus(), 50);
     }
 
-    openDialog({ title, content, onApply, onCancel, showApply = true }) {
+    openDialog({ title, content, onApply, onCancel, showApply = true, applyLabel = "应用" }) {
       this.removeDialog();
       const overlay = document.createElement("div");
       overlay.id = this.dialogId;
@@ -5800,6 +5883,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       dialog.setAttribute("role", "dialog");
       dialog.setAttribute("aria-modal", "true");
       const heading = document.createElement("h3");
+      // 无障碍：模态必须能被读出标题。此前只有 role/aria-modal，屏幕阅读器只会念「对话框」。
+      heading.id = `${this.dialogId}-title`;
+      dialog.setAttribute("aria-labelledby", heading.id);
       heading.textContent = title;
       const actions = document.createElement("div");
       actions.className = "adg-dialog-actions";
@@ -5816,7 +5902,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const apply = document.createElement("button");
         apply.type = "button";
         apply.className = "primary";
-        apply.textContent = "应用";
+        // ⚠️ 默认值必须**保持「应用」**：tests/verify_tk_prompt_output.py 断言设置弹窗的
+        //    footerButtons === ["取消","应用"]。要按场景改文案的调用方传 applyLabel 即可，
+        //    绝不能改默认值（改了会挂测试，且会让所有复用它的弹窗一起变）。
+        apply.textContent = applyLabel;
         apply.onclick = () => {
           if (onApply?.() === false) return;
           this.removeDialog();
@@ -5826,7 +5915,48 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       dialog.append(heading, content, actions);
       overlay.append(dialog);
       overlay.addEventListener("mousedown", (event) => { if (event.target === overlay) close(); });
+      // ── 键盘可达性（2026-09-21）：模态对话框三件套 ──
+      // 此前**完全没有** keydown 处理：习惯性按 Esc 关不掉，Tab 会一路跑到背后的画布上。
+      // 监听挂在 overlay 上而不是 document：overlay 是 position:fixed inset:0 的全屏层，
+      // 移除它时监听随之消失，不需要额外的解绑与泄漏防护。
+      const FOCUSABLE = "button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
+      const focusables = () => [...dialog.querySelectorAll(FOCUSABLE)]
+        .filter((el) => !el.disabled && el.getClientRects().length > 0);
+      overlay.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          close();
+          return;
+        }
+        if (event.key !== "Tab") return;
+        const items = focusables();
+        if (!items.length) return;
+        const first = items[0];
+        const last = items[items.length - 1];
+        // 焦点还没进来（刚打开就按 Tab）或已跑到弹窗外 ⇒ 拉回弹窗内
+        if (!dialog.contains(document.activeElement)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus();
+          return;
+        }
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      });
       document.body.append(overlay);
+      // 初始焦点：优先落到第一个真正的输入控件，没有才退到首个可聚焦元素。
+      // 用 rAF 排到下一帧（与文件里既有的补焦点写法一致），并复查仍在文档里。
+      requestAnimationFrame(() => {
+        if (!overlay.isConnected) return;
+        const preferred = dialog.querySelector("input:not([type='hidden']), select, textarea")
+          || focusables()[0];
+        try { preferred?.focus?.({ preventScroll: true }); } catch {}
+      });
     }
 
     /**
@@ -6384,6 +6514,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     build() {
+      // 重入守卫：重复 build 会**双绑** 5 个 window/document 级监听（见 dispose 的移除清单），
+      // 而 dispose 只摘一次 ⇒ 监听泄漏，且此后每次松手/滚动都要多跑一遍别人的处理器。
+      // 当前唯一调用点已被 `_animaDanbooruGallery` 标志挡着，现存代码不会触发；这里是第二道，
+      // 防的是将来新增调用点。dispose 后也一并挡住（那时 disposed=true，DOM 已拆）。
+      if (this.root || this.disposed) return;
       this.filterControls?.destroy();
       const root = document.createElement("section");
       root.className = "anima-danbooru-gallery";
@@ -6625,7 +6760,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.status = status;
       this.grid = grid;
       this.setupImageLoading();
-      this.applyGridHeight();
+      // ⚠️ 这里**不再** applyGridHeight()。build() 跑在 onNodeCreated 里，此刻
+      //    installDOMWidgetSizeSync 还没执行（在本函数更下方才装），domSizeSync 仍是 null
+      //    ⇒ setGridHeight() 只能走 fallback 直接 node.setSize(...)，**宽度和高度一起改**
+      //    （窄节点会被 Math.max(360, w) 撑到 360 宽），而且绕开了 setBounds 的区间钉死
+      //    与 setContentHeight 的 clamp —— 用户实报的「新建节点后尺寸自己变了」就是这条。
+      //    正确的初始化在下方：lockedHeight 直接取「节点当前高度」，即工作流保存的/默认的尺寸。
+      //    这里只把 settings.gridHeight 同步成节点真实高度（只记录，不改尺寸）。
+      this.syncGridHeightFromNode();
       // 分类库（唯一真源在后端，跨节点共享）：抓工作流里的旧数据 → 拉后端 → 迁移。
       // 异步执行、不阻塞首屏；失败也只是"分类暂时用工作流缓存"。
       this.initCategoryLibrary();
@@ -6634,6 +6776,16 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 不穿透到被其他节点遮住的画廊，避免误触别的节点。
       const recoverPointer = (event) => {
         if (!this.root?.isConnected) return;
+        // ⚡ 把「事件目标的节点归属」判据提到 hit-test **之前** —— 判据一字未改，只是提前。
+        //    target 不属于任何节点时（点画布空白、拖画布框选、点 ComfyUI 自己的工具栏/菜单，
+        //    这些才是绝大多数 mouseup）下面无论如何都会在同一个判据处 return，
+        //    但那时 `elementsFromPoint`（hit-test + 强制布局刷新）与两轮 `closest`
+        //    （命中栈常有 10~40 个元素）已经白跑完了 —— 而这笔开销每次松手都要付。
+        //    closest 是纯树遍历、**不读布局**，所以这次预筛本身几乎免费。
+        const earlyTargetNode = (event.target instanceof Element
+          ? event.target.closest?.("[data-node-id]")?.dataset.nodeId
+          : undefined) ?? null;
+        if (!earlyTargetNode) return;
         const stack = document.elementsFromPoint(event.clientX, event.clientY);
         // Portal/Modal 自己拥有该坐标的交互权。recoverPointer 只负责修复
         // LiteGraph 面罩遮住的“节点内控件”，不能穿过任何外部浮层。
@@ -6648,9 +6800,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         //    旧写法会一路往下找到**下面的画廊节点本身**，于是判定为“同一个节点”而放行 →
         //    补发点击 → 穿透到同坐标下的卡片，参考图被换成用户没想选的图。
         //    现在要求目标本身落在本节点内（含节点激活面罩），否则一律不补发。
-        const targetNode = (event.target instanceof Element
-          ? event.target.closest?.("[data-node-id]")?.dataset.nodeId
-          : undefined) ?? null;
+        //    （上面的 earlyTargetNode 预筛已经保证它非空，这里直接复用同一个值。）
+        const targetNode = earlyTargetNode;
         if (!targetNode || (candidateNode && targetNode !== candidateNode)) return;
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -6813,7 +6964,20 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             // ② 拖动结束后再持久化（写工作流属性 + 标记改动，需要节流）
             clearTimeout(uiRef.gridHeightCommitTimer);
             uiRef.gridHeightCommitTimer = setTimeout(() => {
-              const height = Number(uiRef.grid?.clientHeight) || 0;
+              // ⚠️⚠️ 这里必须记「内容区高度」，**不是** grid.clientHeight。
+              //     两者的语义与数值都不同：settings.gridHeight 是 setContentHeight() 的入参
+              //     （= node.size[1] - chrome），而 .adg-grid 只是 root 的最后一个子元素 ——
+              //     它上面还有 queryrow / toolbar / 分页 / info / 状态栏，实测占掉约 190px。
+              //     真机实测（2026-09-21，节点 2000×720）：
+              //       node.size[1] = 720 → 内容区可用 625（720-95），而 grid.clientHeight = 434。
+              //     原实现写的是后者 ⇒ settings.gridHeight 被记成 434，于是下一次
+              //     applyGridHeight()（设置面板「应用」）按 434 调 setContentHeight ⇒
+              //     node.size[1] = 434 + 95 = 529，**比用户设定的 720 矮 191px**。
+              //     这正是「被动改变节点尺寸」中最隐蔽的一条：它不在拖动时发作，而在用户
+              //     下一次动设置面板时发作，看起来就像"节点自己变矮了"。
+              //     getContentHeight() = clamp(size[1] - chrome, min, max)，而此刻区间正是
+              //     setBounds(nowHeight, nowHeight) 刚钉的 [size[1]-95, size[1]-95] ⇒ 自洽。
+              const height = Math.round(Number(uiRef.domSizeSync?.getContentHeight?.()) || 0);
               if (!(height > 0)) return;
               if (Math.abs(height - (Number(uiRef.settings?.gridHeight) || 0)) > 2) {
                 uiRef.settings.gridHeight = height;

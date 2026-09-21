@@ -21,17 +21,25 @@
 //
 // 关闭方式：localStorage.setItem("tk_canvas_perf", "0") 后刷新；
 // 运行期开关：window.__tkCanvasPerf.setEnabled(false)。
+//
+// 兜底轮询门控（2026-09-21）：setInterval 那一拍只在「页面可见 且 距上次画布活动 >= IDLE_MS」
+// 时执行（pollTick）。尺寸变化本来就由 onResize 钩子 + nodeCreated/loadedGraphNode 覆盖，
+// 轮询只是兜底；门控让它不再在拖动帧里插入强制同步布局。force / 事件路径不受门控。
 (function () {
   const STYLE_ID = "tk-canvas-perf-style";
   const FLAG_KEY = "tk_canvas_perf";
-  const POLL_MS = 1500;      // 兜底扫描：节点增删/改尺寸（有签名比对，不变就不写样式）
+  const POLL_MS = 4000;      // 兜底扫描：节点增删/改尺寸（有签名比对，不变就不写样式）
   const DEBOUNCE_MS = 250;   // 事件触发的合并窗口
   const MAX_NODES = 2000;    // 超大图直接放弃裁剪（避免撑爆样式表）
+  const IDLE_MS = 2000;      // 距上次画布活动不足此时长 ⇒ 跳过这一拍兜底轮询（见 pollTick）
 
   let styleEl = null;
   let signature = "";
   let debounceTimer = 0;
   let pollTimer = 0;
+  // 最近一次「画布活动」（节点增删/改尺寸等事件）的时间戳，只被 scheduleRefresh() 记账，
+  // 只被 pollTick() 读取 —— 用于让兜底轮询避开正在发生的画布操作。
+  let lastActivityAt = 0;
   // enabled = 「裁剪样式当前是否真的生效」（不是「用户是否想要」）。初始 false，
   // 只有 enable() 成功注入样式后才为 true，这样 isEnabled() 不会误报。
   let enabled = false;
@@ -139,7 +147,9 @@
     const all = collectNodes();
     if (!all.length) return false;
     // 规模较大时跳过 DOM 实测（每次刷新一次布局 flush 不划算），直接信任图内 size
-    const measured = all.length <= 500 ? collectMeasuredSizes() : null;
+    // 门限 200（2026-09-21 由 500 下调）：DOM 实测只是「尺寸一致性守卫」，不是主力来源，
+    // 节点一多就该退回图内 size，避免为兜底路径付出一次强制同步布局。
+    const measured = all.length <= 200 ? collectMeasuredSizes() : null;
     const nodes = measured
       ? all.filter((n) => {
         const m = measured.get(String(n.id));
@@ -155,7 +165,22 @@
     return true;
   }
 
+  // 兜底轮询的门控 —— **只作用于定时器路径**，这是本文件唯一会被门控挡住的入口：
+  //   · force=true 路径（enable() 初次 refresh(true)、__tkCanvasPerf.refresh()）不经此处；
+  //   · 事件路径（scheduleRefresh → 防抖 → refresh()）也不经此处。
+  // 于是「尺寸同步」永远由事件驱动保证，门控只用来避免在拖动/缩放进行中插入一次
+  // querySelectorAll + offsetWidth/Height 造成的强制同步布局（拖动掉帧的嫌疑源）。
+  function pollTick() {
+    if (document.hidden) return false;                        // 页面切后台：不扫
+    if (Date.now() - lastActivityAt < IDLE_MS) return false;  // 刚有画布活动：交给事件路径，本拍跳过
+    refresh();
+    return true;
+  }
+
   function scheduleRefresh() {
+    // 记账必须放在提前返回之前：事件被防抖窗口合并时，「最后活动时刻」仍要往后推，
+    // 否则拖动过程中的连续 onResize 只会记录第一拍，门控会在拖动中途放行。
+    lastActivityAt = Date.now();
     if (!enabled || debounceTimer) return;
     debounceTimer = setTimeout(() => { debounceTimer = 0; refresh(); }, DEBOUNCE_MS);
   }
@@ -163,7 +188,7 @@
   function enable() {
     enabled = true;
     refresh(true);
-    if (!pollTimer) pollTimer = setInterval(() => refresh(), POLL_MS);
+    if (!pollTimer) pollTimer = setInterval(pollTick, POLL_MS);
   }
   function disable() {
     enabled = false;

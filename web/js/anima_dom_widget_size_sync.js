@@ -136,8 +136,18 @@ export function installDOMWidgetSizeSync({
     min = Math.max(120, finiteNumber(nextMin, min));
     max = Math.max(min, finiteNumber(nextMax, min));
     if (domWidget && usesNativeLayoutSizing) {
-      element.style.setProperty("--comfy-widget-min-height", `${min}px`);
-      element.style.setProperty("--comfy-widget-max-height", `${max}px`);
+      // ⚠️ 只加**幂等值比较**，**不动时机**（调用方要求立即跟上，否则高度会回弹）：
+      // 自定义属性只能走 setProperty/getPropertyValue（`style["--x"]` 不生效）。
+      // 理由与上面 ensureElementFillsWidgetRow 同一套：本函数由 onResize 高频触发
+      // （拖动节点时每帧），值没变时的写入会让该子树样式无谓失效。
+      const minPx = `${min}px`;
+      const maxPx = `${max}px`;
+      if (element.style.getPropertyValue("--comfy-widget-min-height") !== minPx) {
+        element.style.setProperty("--comfy-widget-min-height", minPx);
+      }
+      if (element.style.getPropertyValue("--comfy-widget-max-height") !== maxPx) {
+        element.style.setProperty("--comfy-widget-max-height", maxPx);
+      }
     }
     ensureElementFillsWidgetRow();
     return { min, max };
