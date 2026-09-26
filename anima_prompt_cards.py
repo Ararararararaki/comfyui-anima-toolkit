@@ -1110,6 +1110,22 @@ LLM_CONF_PATH = os.path.join(LLM_CONF_DIR, "llm_config.json")
 LLM_CONF_LOCK = threading.Lock()
 OLLAMA_BASE = "http://127.0.0.1:11434"
 
+
+def _ollama_base() -> str:
+    """Ollama 服务地址：统一翻译设置 > 内置默认。
+
+    换端口或把 Ollama 装在别处时，用户可在节点②区「翻译设置 → 分类 LLM」里改，
+    不必改源码；未配置时与改造前行为一致。
+    """
+    try:
+        from .anima_translate_settings import get_setting
+        value = str(get_setting("ollama_base") or "").strip()
+        if value:
+            return value.rstrip("/")
+    except Exception:
+        pass
+    return OLLAMA_BASE
+
 _LLM_CONFIG_DEFAULT = {"mode": "auto", "base_url": "", "api_key": "", "model": ""}
 
 
@@ -1137,7 +1153,7 @@ async def _ollama_available() -> tuple[bool, str]:
     """探测本地 Ollama；返回 (可用, 建议模型名)。"""
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as s:
-            async with s.get(OLLAMA_BASE + "/api/tags") as r:
+            async with s.get(_ollama_base() + "/api/tags") as r:
                 if r.status == 200:
                     data = await r.json()
                     models = [m.get("name", "") for m in (data.get("models") or [])]
@@ -1161,7 +1177,7 @@ async def _llm_chat(messages: list, conf: dict, timeout: int = 90) -> str:
     ok, ollama_model = await _ollama_available()
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as s:
         if mode == "ollama" or (mode == "auto" and ok):
-            async with s.post(OLLAMA_BASE + "/api/chat",
+            async with s.post(_ollama_base() + "/api/chat",
                               json={"model": model or ollama_model, "messages": messages,
                                     "stream": False, "options": {"temperature": 0.1}}) as r:
                 if r.status == 200:

@@ -19,7 +19,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlencode, urlparse
 import urllib.request
 
@@ -541,15 +541,23 @@ class _DanbooruBrowser:
 
     def _warm(self) -> None:
         page = self._page
-        page.goto("https://danbooru.donmai.us/", wait_until="domcontentloaded", timeout=60000)
         try:
-            page.wait_for_function(
-                "() => (document.title || '').includes('Danbooru') && document.readyState === 'complete'",
-                timeout=45000,
-            )
-        except Exception:
-            print("[多重画廊·风控网关] 浏览器校验未完全就绪，继续尝试")
-        self._last_warm = time.time()
+            page.goto("https://danbooru.donmai.us/", wait_until="domcontentloaded", timeout=60000)
+            try:
+                page.wait_for_function(
+                    "() => (document.title || '').includes('Danbooru') && document.readyState === 'complete'",
+                    timeout=45000,
+                )
+            except Exception:
+                print("[多重画廊·风控网关] 浏览器校验未完全就绪，继续尝试")
+        finally:
+            # ⚠️ 无论成功失败都必须记账。这是 2026-09-21 用户实报「P站 栏目选某些图片后
+            #    节点一直卡住不继续」的两条根因之一：
+            #    原来 `self._last_warm` 只在整个 _warm 走完后才赋值，而 `page.goto` **不在 try 内**
+            #    ⇒ goto 超时（60s）抛异常时这一行被跳过 ⇒ `time.time() - self._last_warm`
+            #    永远 > _WARM_INTERVAL_SECONDS ⇒ **下一次取图又重跑一遍 warm**（60s + 45s）。
+            #    一张图 60s、十张图就是十分钟，用户看到的就是"卡住不动"。
+            self._last_warm = time.time()
 
     def _run(self, script: str, argument: Any) -> Any:
         with self._lock:
@@ -562,9 +570,12 @@ class _DanbooruBrowser:
 
     def json(self, url: str, params: dict[str, Any]) -> Any:
         full = url + "?" + urlencode(params)
+        # 同 bytes()：evaluate 层没有超时，必须 JS 自带（见那里的说明）
         result = self._run(
-            "async (u) => { const r = await fetch(u, {headers: {'Accept':'application/json'}}); "
-            "const t = await r.text(); return {s: r.status, t}; }",
+            "async (u) => { const c = new AbortController(); const timer = setTimeout(() => c.abort(), 20000); "
+            "try { const r = await fetch(u, {headers: {'Accept':'application/json'}, signal: c.signal}); "
+            "const t = await r.text(); return {s: r.status, t}; } "
+            "finally { clearTimeout(timer); } }",
             full,
         )
         status = _safe_get(result, "s", 0)
@@ -574,12 +585,21 @@ class _DanbooruBrowser:
         raise RuntimeError(f"D站 搜索失败（HTTP {status}）：{text[:240]}")
 
     def bytes(self, url: str) -> tuple[bytes, str]:
+        # ⚠️ 超时必须由 JS 自己带（AbortController），因为 **Playwright 的
+        #    `page.set_default_timeout()` 不作用于 `page.evaluate`** ——
+        #    实测 `inspect.signature(Page.evaluate)` 只有 (self, expression, arg)，没有 timeout 参数，
+        #    所以下面 `_run` 里那句 set_default_timeout(25000) 对本次求值是**无效兜底**。
+        #    原先裸写 `await fetch(u)`：一旦 CDN 出现半开连接 / 极慢响应，JS 永不 settle
+        #    ⇒ Python 侧永久阻塞在该 evaluate ⇒ 节点永不返回。
+        #    这正是 2026-09-21 用户实报「一直卡在画廊节点不继续」的另一条根因。
         result = self._run(
-            "async (u) => { const r = await fetch(u); "
+            "async (u) => { const c = new AbortController(); const timer = setTimeout(() => c.abort(), 20000); "
+            "try { const r = await fetch(u, {signal: c.signal}); "
             "const b = await r.arrayBuffer(); const d = new Uint8Array(b); "
             "const CH = 65536; const parts = []; "
             "for (let i = 0; i < d.length; i += CH) { parts.push(String.fromCharCode.apply(null, d.subarray(i, i + CH))); } "
-            "return {s: r.status, ct: r.headers.get('content-type') || '', b64: btoa(parts.join(''))}; }",
+            "return {s: r.status, ct: r.headers.get('content-type') || '', b64: btoa(parts.join(''))}; } "
+            "finally { clearTimeout(timer); } }",
             url,
         )
         status = _safe_get(result, "s", 0)
@@ -683,11 +703,22 @@ def _danbooru_json(url: str, params: dict[str, Any], timeout: int = 20) -> Any:
     raise RuntimeError(CF_BLOCKED_MSG)
 
 
-def _danbooru_get_image(url: str, timeout: int = 30) -> tuple[bytes, str]:
-    """下载 Danbooru 图片/视频字节（requests 优先，连接 6s 快速失败 + 换路重试 + 浏览器网关兜底）。"""
+def _danbooru_get_image(url: str, timeout: int = 30, allow_browser: bool = True) -> tuple[bytes, str]:
+    """下载 Danbooru 图片/视频字节（requests 优先，连接 6s 快速失败 + 换路重试 + 浏览器网关兜底）。
+
+    ``allow_browser=False``：**禁用内置浏览器网关兜底**，第三方图源（P站/C站）必须这样调。
+    理由：网关是一个停在 ``danbooru.donmai.us`` 的页面，从它发起
+    ``fetch("https://i.pximg.net/...")`` 属**跨域**请求，浏览器会带上
+    ``Referer: https://danbooru.donmai.us/``，而 P站 CDN 校验 Referer 必须含 pixiv.net
+    （见本文件顶部的「取图铁律」）⇒ **必然 403**。也就是说网关对第三方图源既不可能成功，
+    又要白付一次 warm（最坏 60s + 45s），纯属有害无益。
+    """
     global _browser_working
-    if _browser_working:
-        got = _browser_bytes_or_none(url)
+    # allow_browser=False 时让每次调用都直接拿到 None（等价于"网关不可用"）：
+    # 第三方图源因此只走 requests 的两条路，失败就如实报错，不再空等网关。
+    browser = _browser_bytes_or_none if allow_browser else (lambda _u: None)
+    if allow_browser and _browser_working:
+        got = browser(url)
         if got is not None:
             return got
         _browser_working = False
@@ -705,7 +736,7 @@ def _danbooru_get_image(url: str, timeout: int = 30) -> tuple[bytes, str]:
         try:
             resp = _danbooru_session.get(url, timeout=(6, timeout))
         except (requests.Timeout, requests.ConnectionError):
-            got = _browser_bytes_or_none(url)
+            got = browser(url)
             if got is not None:
                 _browser_working = True
                 return got
@@ -714,7 +745,7 @@ def _danbooru_get_image(url: str, timeout: int = 30) -> tuple[bytes, str]:
     if not _resp_is_cf(resp):
         resp.raise_for_status()
         return resp.content, resp.headers.get("Content-Type", "application/octet-stream").split(";", 1)[0]
-    got = _browser_bytes_or_none(url)
+    got = browser(url)
     if got is not None:
         _browser_working = True
         return got
@@ -848,27 +879,101 @@ def _normalize_zh_text(value: Any) -> str:
     return re.sub(r"[\s\u3000]+", "", str(value or "").strip().lower())
 
 
+class _ZhIndex(NamedTuple):
+    """中文反查索引：一次遍历建好、整体发布，读者不会看到半成品。"""
+
+    source: dict[str, str]  # 建索引时的词典对象；身份不一致即视为失效需重建
+    exact: dict[str, Any]  # 归一化译文 -> tag | [tag, ...]（按词典原始顺序，保留重复项）
+    entries: list[tuple[str, str, str]]  # (tag, 归一化译文, 原始译文)，仅英文 tag，供子串扫描
+    cjk_entries: list[tuple[str, str, str]]  # 同上，但 tag 与译文都含中文的反向记录
+
+
+_zh_index_lock = threading.Lock()
+_zh_index: _ZhIndex | None = None
+
+
+def _build_zh_index(translations: dict[str, str]) -> _ZhIndex:
+    """遍历一次词典，预建「归一化译文 -> 标签」反向索引与子串扫描列表。
+
+    词典在进程内是只读常量（_load_translations 只加载一次），故索引可常驻。
+    归一化结果与原串逐字相同时直接复用原对象，避免为 40 万条目再复制一份字符串。
+    """
+    exact: dict[str, Any] = {}
+    entries: list[tuple[str, str, str]] = []
+    cjk_entries: list[tuple[str, str, str]] = []
+    for raw_tag, raw_zh in translations.items():
+        tag = _normalize_tag_slug(raw_tag)
+        if not tag:
+            continue
+        zh = _normalize_zh_text(raw_zh)
+        if not zh:
+            continue
+        tag_key = raw_tag if tag == raw_tag else tag
+        zh_key = raw_zh if zh == raw_zh else zh
+        if not any("\u4e00" <= char <= "\u9fff" for char in tag_key):
+            # 子串联想只考虑英文标签；tag 含中文的是反向记录，一律不参与。
+            entries.append((tag_key, zh, raw_zh))
+        elif any("\u4e00" <= char <= "\u9fff" for char in zh):
+            # 反向记录通常译文是英文，只有这类条目还可能命中「片段匹配」。
+            cjk_entries.append((tag_key, zh, raw_zh))
+        bucket = exact.get(zh_key)
+        if bucket is None:
+            exact[zh_key] = tag_key
+        elif isinstance(bucket, list):
+            bucket.append(tag_key)
+        else:
+            exact[zh_key] = [bucket, tag_key]
+    return _ZhIndex(translations, exact, entries, cjk_entries)
+
+
+def _zh_index_snapshot() -> _ZhIndex:
+    """惰性取索引：首次用到才构建，之后复用；词典为空时索引同样为空，不抛异常。"""
+    global _zh_index
+    translations = _load_translations()
+    index = _zh_index
+    if index is not None and index.source is translations:
+        return index
+    with _zh_index_lock:
+        index = _zh_index
+        if index is not None and index.source is translations:
+            return index
+        built = _build_zh_index(translations)
+        _zh_index = built
+        return built
+
+
+def _zh_exact_tags(index: _ZhIndex, query: str) -> tuple[str, ...] | list[str]:
+    """取反向索引条目：单个标签存裸串（省一次 list 分配），多个标签存 list。"""
+    bucket = index.exact.get(query)
+    if bucket is None:
+        return ()
+    if isinstance(bucket, str):
+        return (bucket,)
+    return bucket
+
+
 def _local_zh_tag_candidates(text: str, limit: int = 8) -> list[str]:
     """从本地 Danbooru 中文词典反查标签；优先整句，随后才做较长中文片段匹配。"""
     query = _normalize_zh_text(text)
     if not query:
         return []
-    translations = _load_translations()
+    index = _zh_index_snapshot()
     exact: list[str] = []
     fragments: list[tuple[int, str]] = []
     seen: set[str] = set()
-    for raw_tag, raw_zh in translations.items():
-        tag = _normalize_tag_slug(raw_tag)
-        zh = _normalize_zh_text(raw_zh)
-        if not tag or not zh or tag in seen:
+    for tag in _zh_exact_tags(index, query):
+        if not tag or tag in seen:
             continue
-        if zh == query:
-            exact.append(tag)
-            seen.add(tag)
-        elif len(zh) >= 2 and zh in query and any("\u4e00" <= ch <= "\u9fff" for ch in zh):
-            fragments.append((len(zh), tag))
+        exact.append(tag)
+        seen.add(tag)
     if exact:
         return exact[:limit]
+    # 走到这里说明一个整句命中都没有，seen 必然为空、字典序也不影响下面的排序结果，
+    # 故直接扫两份列表即可（含中文 tag 且译文也含中文的少数条目在 cjk_entries 里补全）。
+    for bucket in (index.entries, index.cjk_entries):
+        for tag, zh, _raw_zh in bucket:
+            if len(zh) >= 2 and zh in query and any("\u4e00" <= ch <= "\u9fff" for ch in zh):
+                fragments.append((len(zh), tag))
     fragments.sort(key=lambda item: (-item[0], item[1]))
     return [tag for _, tag in fragments[:limit]]
 
@@ -880,15 +985,13 @@ def _local_zh_exact_tag_candidates(text: str, limit: int = 8) -> list[str]:
         return []
     result: list[str] = []
     seen: set[str] = set()
-    for raw_tag, raw_zh in _load_translations().items():
-        tag = _normalize_tag_slug(raw_tag)
+    for tag in _zh_exact_tags(_zh_index_snapshot(), query):
         if not tag or tag in seen or any("\u4e00" <= char <= "\u9fff" for char in tag):
             continue
-        if _normalize_zh_text(raw_zh) == query:
-            seen.add(tag)
-            result.append(tag)
-            if len(result) >= limit:
-                break
+        seen.add(tag)
+        result.append(tag)
+        if len(result) >= limit:
+            break
     return result
 
 
@@ -909,16 +1012,12 @@ def _local_zh_tag_search(text: str, limit: int = 24) -> list[tuple[str, str]]:
 
     matches: list[tuple[int, int, str, str]] = []
     seen: set[str] = set()
-    for raw_tag, raw_zh in _load_translations().items():
-        tag = _normalize_tag_slug(raw_tag)
-        zh_display = str(raw_zh or "").strip()
-        zh = _normalize_zh_text(zh_display)
-        # 词典同时保存英文→中文和中文→英文，反向记录不能作为双语候选。
-        if not tag or tag in seen or not zh or any("\u4e00" <= char <= "\u9fff" for char in tag):
-            continue
-        if query not in zh or not any("\u4e00" <= char <= "\u9fff" for char in zh):
+    # 索引里的 entries 已排除 tag 含中文的反向记录，与原循环里那层过滤等价。
+    for tag, zh, raw_zh in _zh_index_snapshot().entries:
+        if tag in seen or query not in zh or not any("\u4e00" <= char <= "\u9fff" for char in zh):
             continue
         seen.add(tag)
+        zh_display = str(raw_zh or "").strip()
         # 以中文前缀优先；长度仅用于稳定排序，最终仍按 D 站帖数排序。
         matches.append((0 if zh.startswith(query) else 1, len(zh), tag, zh_display))
     matches.sort(key=lambda item: (item[0], item[1], item[2]))
@@ -1122,7 +1221,10 @@ def _gallery_get_image(image_url: str, headers: dict[str, str] | None = None) ->
         previous = {name: _danbooru_session.headers.get(name) for name in extra}
         _danbooru_session.headers.update(extra)
         try:
-            return _danbooru_get_image(image_url)
+            # ⚠️ allow_browser=False —— 第三方图源**不得**借道 D站 浏览器网关：
+            # 网关页面停在 danbooru.donmai.us，从它 fetch i.pximg.net 是跨域且 Referer 不对，
+            # 必然 403；同时还要白付一次 warm（最坏 60s+45s）。详见 _danbooru_get_image 的说明。
+            return _danbooru_get_image(image_url, allow_browser=False)
         finally:
             for name, value in previous.items():
                 if value is None:
@@ -1511,6 +1613,131 @@ async def anima_danbooru_fuzzy(request: web.Request) -> web.Response:
         "changed": bool(replacements),
         "replacements": replacements,
     })
+
+
+# ---------- P站 作品 → D站 帖子 反查（2026-09-21） ----------
+# 由来：P站 的 tag 是画师自由打的日文/多语言词，模型理解不了，所以 P站 页面原本不输出 prompt。
+# 但 D站 收录了大量 P站 作品、且帖子自带 `pixiv_id` —— 于是可以「拿 P站 作品 id 反查 D站 帖子」，
+# 直接把 D站 的规范标签当 prompt 用：不必翻译、不必 WD14 反推（反推还会误判污染提示词）。
+# 实测（2026-09-21）：`pixiv_id:>0` 可用；多值 `pixiv_id:a,b,c` 一次能查多个；
+# 一个 pixiv_id 常对应多个 D站 帖子（原图/差分/重复上传），且 tag 数远多于 P站 自己的标签。
+PIXIV_MATCH_MAX_IDS = 60      # 单次最多反查多少个作品（P站 一页 30 张 → 通常 1 批就够）
+PIXIV_MATCH_BATCH_IDS = 30    # 每个上游请求塞多少个 pixiv_id（多值查询，实测可行）
+PIXIV_MATCH_MAX_POSTS = 200   # 每个 pixiv_id 最多取回多少候选帖子，用于消歧
+
+
+def _pixiv_match_payload(post: dict[str, Any], pixiv_id: str) -> dict[str, Any]:
+    """把命中的 D站 帖子裁成前端要的形状：字段名与 D站 posts 一致，
+    于是前端可以直接把它喂进既有的 rawPromptGroups（按 tag_string_<类别> 分组），不必另写一套。"""
+    return {
+        "pixiv_id": pixiv_id,
+        "post_id": post.get("id"),
+        "tag_count": post.get("tag_count"),
+        "rating": post.get("rating"),
+        "score": post.get("score"),
+        "fav_count": post.get("fav_count"),
+        "file_ext": post.get("file_ext"),
+        "source_url": f"https://danbooru.donmai.us/posts/{post.get('id')}",
+        "tag_string": post.get("tag_string"),
+        "tag_string_general": post.get("tag_string_general"),
+        "tag_string_character": post.get("tag_string_character"),
+        "tag_string_copyright": post.get("tag_string_copyright"),
+        "tag_string_artist": post.get("tag_string_artist"),
+        "tag_string_meta": post.get("tag_string_meta"),
+    }
+
+
+# pixiv 的原始图片 URL 形如 `.../79828064_p2.jpg` —— 用它把 D站 帖子对回 pixiv 的页号
+_PIXIV_PAGE_RE = re.compile(r"_(p\d+)(?=[._]|$)", re.IGNORECASE)
+
+
+def _pixiv_source_page(post: dict[str, Any]) -> int | None:
+    """从 D站 帖子的 `source` 里解析 pixiv 页号（`.../79828064_p0.jpg` → 0）；拿不到返回 None。
+
+    2026-09-21 实测：多页作品被逐页上传到 D站 时，source 会保留 `_pN` 且与 pixiv 页序一致
+    （#3842827→p0、#3842830→p1、#3842833→p2）。有它才能把「页 → 帖子」精确对上。
+    """
+    for candidate in str(post.get("source") or "").split():
+        match = _PIXIV_PAGE_RE.search(candidate)
+        if not match:
+            continue
+        try:
+            return int(match.group(1)[1:])
+        except ValueError:
+            continue
+    return None
+
+
+def _match_pixiv_ids(pixiv_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """反查 pixiv 作品 id → D站 帖子，**按页归并**。
+
+    回包：`{pixiv_id: {"pages": {"0": 帖子, "1": 帖子, ...}, "root": 帖子}}`
+
+    ⚠️ 为什么必须按页（2026-09-21 修的真实 bug）：一个 pixiv 多页作品在 D站 常有多个帖子
+    （逐页上传并连成父子链），而 `pixiv_id` 本身**不区分页码**。早先的实现是「多命中取 tag 最多」——
+    那等于随便挑一页、再把它套到该作品的所有页上：首页于是可能带出后几页的 NSFW 标签（提示词污染）。
+    现在：能解析出 `_pN` 就按页各就各位；同一页有多条（真差分）才按 tag 最多消歧；
+    解析不出页号的帖子只作为 `root` 兜底（该页在 D站 没有独立帖子时使用）。
+    """
+    matches: dict[str, dict[str, Any]] = {}
+    wanted = set(pixiv_ids)
+    for start in range(0, len(pixiv_ids), PIXIV_MATCH_BATCH_IDS):
+        chunk = pixiv_ids[start:start + PIXIV_MATCH_BATCH_IDS]
+        data = _danbooru_json(DANBOORU_POSTS_URL, {
+            "tags": "pixiv_id:" + ",".join(chunk),
+            "limit": PIXIV_MATCH_MAX_POSTS,
+        })
+        if not isinstance(data, list):
+            continue
+        for post in data:
+            if not isinstance(post, dict):
+                continue
+            pixiv_id = _safe_get(post, "pixiv_id", None)
+            pixiv_id = str(pixiv_id).strip() if pixiv_id is not None else ""
+            if not pixiv_id or pixiv_id not in wanted:
+                continue
+            entry = matches.setdefault(pixiv_id, {"pages": {}, "root": None})
+            payload = _pixiv_match_payload(post, pixiv_id)
+            page = _pixiv_source_page(post)
+            if page is not None:
+                payload["page"] = page
+                current = entry["pages"].get(str(page))
+                # 同一页出现多条 = 真差分（同一页的不同版本）——这时"取 tag 最多"才是对的
+                if current is None or int(payload.get("tag_count") or 0) > int(current.get("tag_count") or 0):
+                    entry["pages"][str(page)] = payload
+            # 根帖（parent_id 为空）= 该页在 D站 没有独立帖子时的兜底
+            if not _safe_get(post, "parent_id", None):
+                root = entry["root"]
+                if root is None or int(payload.get("tag_count") or 0) > int(root.get("tag_count") or 0):
+                    entry["root"] = payload
+    return matches
+
+
+@PromptServer.instance.routes.get("/anima/danbooru/pixiv_match")
+async def anima_danbooru_pixiv_match(request: web.Request) -> web.Response:
+    """P站 作品 id → D站 帖子（供 P站 画廊把作品标签升级成 Danbooru 规范标签）。
+
+    参数：`ids=149884381,148075989`（逗号分隔，最多 PIXIV_MATCH_MAX_IDS 个）。
+    回包：`{"matches": {"<pixiv_id>": {"pages": {"0": 帖子, ...}, "root": 帖子}}, "requested": N}` ——
+    按页归并（见 `_match_pixiv_ids` 的说明）；未收录的作品不出现在 matches 里。
+    """
+    ids: list[str] = []
+    for token in str(request.query.get("ids", "")).replace("，", ",").split(","):
+        text = token.strip()
+        if text.isdigit() and text not in ids:
+            ids.append(text)
+    if not ids:
+        return web.json_response({"matches": {}, "requested": 0})
+    ids = ids[:PIXIV_MATCH_MAX_IDS]
+    try:
+        matches = await asyncio.get_running_loop().run_in_executor(None, _match_pixiv_ids, ids)
+    except requests.Timeout:
+        return web.json_response({"error": "D站 反查超时：请确认 Clash/代理已开启后重试"}, status=504)
+    except requests.RequestException as error:
+        return web.json_response({"error": _friendly_danbooru_error(error)}, status=502)
+    except (TypeError, ValueError) as error:
+        return web.json_response({"error": f"D站 反查回包异常：{error}"}, status=502)
+    return web.json_response({"matches": matches, "requested": len(ids)})
 
 
 class DanbooruGallery:

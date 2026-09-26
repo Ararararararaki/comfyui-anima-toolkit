@@ -1127,14 +1127,19 @@
     // 新版 ComfyUI 前端的 graphToPrompt() 是 async（返回 Promise），必须 await——
     // 否则拿到的是 Promise 对象，.output 恒为 undefined，批次永远报"无法获取工作流模板"。
     async _templateAsync() {
-      const app = window.comfyAPI?.app?.app;
+      // 三级兜底，与画廊 currentWorkflowTemplate() 对齐；额外允许全局 app 兜底
+      // （前端 1.48.7 里 window.comfyAPI.app.app 与全局 app 的可见时机可能不同）。
+      const app = window.comfyAPI?.app?.app || (typeof window.app !== "undefined" ? window.app : null);
       if (app && typeof app.graphToPrompt === "function") {
         try {
           const g = await app.graphToPrompt();
           const t = g && typeof g === "object" ? (g.output ?? g.prompt ?? g) : null;
           if (t && typeof t === "object" && !Array.isArray(t) && Object.keys(t).length) return t;
-        } catch (e) { /* 落入 api.getPrompt */ }
+        } catch (e) { /* 落入下一级兜底 */ }
       }
+      // 兜底 2：旧版前端的 api.getPrompt()。
+      // ⚠️ 前端 1.48.7（ComfyUI 0.33.1）实测已移除该方法（typeof === "undefined"），
+      //    保留它只为兼容旧版本前端，不要指望这一级救场。
       const api = window.comfyAPI?.api?.api || window.api;
       if (api && typeof api.getPrompt === "function") {
         try {
@@ -1779,25 +1784,86 @@
     // 注入函数 injectRegionIntoPrompt / injectAnimaRegionIntoPrompt / findCondNode
     // 等仍保留在文件内（SD 等其他底模未来可恢复），此处不再调用。
 
+    // ── auto-queue 信号（供 wrapper 判定，见其上方注释）──
+    // 信号① autoQueueGraphChanged：前端 ChangeTracker 捕获图变化后派发，新老 UI 都会发；
+    // 信号② app.ui.autoQueueEnabled/autoQueueMode：legacy 菜单的 auto-queue 开关
+    //        （与前端源码 isAutoQueueOnChange() 里的 $.ui.autoQueueEnabled 同源）。
+    const AUTO_QUEUE_WINDOW_MS = 800;   // 事件与队列调用同源同步发出，窗口取小值以降低误判
+    function installAutoQueueSignal(app) {
+      if (window.__tkAutoQueueSignal) return;
+      window.__tkAutoQueueSignal = { at: 0, hits: 0 };
+      for (const target of [document, window, app, app?.api]) {
+        try {
+          if (target && typeof target.addEventListener === "function") {
+            target.addEventListener("autoQueueGraphChanged", () => {
+              window.__tkAutoQueueSignal.at = Date.now();
+              window.__tkAutoQueueSignal.hits++;
+            });
+          }
+        } catch (e) { /* 该目标不可用则跳过 */ }
+      }
+    }
+    function autoQueueSignalled(app) {
+      try {
+        const ui = app?.ui;
+        if (ui && ui.autoQueueEnabled === true) {
+          const m = ui.autoQueueMode;
+          if (m === "instant" || m === "change") return true;
+        }
+      } catch (e) { /* ignore */ }
+      try {
+        const at = window.__tkAutoQueueSignal?.at || 0;
+        if (at && Date.now() - at < AUTO_QUEUE_WINDOW_MS) return true;
+      } catch (e) { /* ignore */ }
+      return false;
+    }
+
     // 全局：包装 app.queuePrompt
     function installQueueExpansion() {
       const app = window.comfyAPI?.app?.app;
-      if (!app || app.__animaBatchInstalled) return;
+      if (!app || typeof app.queuePrompt !== "function" || app.__animaBatchInstalled) return;
       app.__animaBatchInstalled = true;
-      const orig = app.queuePrompt.bind(app);
+      installAutoQueueSignal(app);
+      const prev = app.queuePrompt;
+      const orig = prev.bind(app);
 
-    app.queuePrompt = async function (number, batchCount, options) {
+    const wrapper = async function (number, batchCount, options) {
       // 找到批处理节点
       // 只认「启用中」的批量节点（mode 0 = always；mute/禁用/隐藏后 mode 非 0 → 走正常队列）
-      const batchNode = getNodes(app).find((n) => n._animaBatchUI && n.mode === 0);
-      if (!batchNode) return orig(number, batchCount, options);
+      const batchNodes = getNodes(app).filter((n) => n._animaBatchUI);
+      const batchNode = batchNodes.find((n) => n.mode === 0);
+      if (!batchNode) {
+        // 静默降级曾是「点了队列没反应」的主要困惑来源：画布上明明有 TK Prompt Batch 节点，
+        // 但它被 mute/bypass（mode != 0）时拦截按设计不展开。这里给一次性可见提示（不刷屏）。
+        if (batchNodes.length && !app.__animaBatchDisabledWarned) {
+          app.__animaBatchDisabledWarned = true;
+          const modes = batchNodes.map((n) => `${n.id}:mode=${n.mode}`).join(", ");
+          try {
+            console.info(
+              `[TK Batch] 画布上的 TK Prompt Batch 节点未启用（${modes}），本次「队列」不展开批量。` +
+              "如需批量：启用该节点后点「队列」，或直接点节点上的「▶ 开始批次」。"
+            );
+          } catch (e) { /* 控制台不可用忽略 */ }
+        }
+        return orig(number, batchCount, options);
+      }
       const ui = batchNode._animaBatchUI;
 
       // auto_queue（前端 instant/change 模式的自动重排）永不展开批量：
       // 队列清空后自动重排会把同一批反复提交（历史里出现过连续重复任务），
       // TK 批量本身就是自动化，无需自动重排。禁用/隐藏 TK 节点后走正常逻辑。
+      //
+      // ⚠️ 2026-09-22：前端 1.48.7 的自动队列走 Z.queuePrompt(0, batchCount)，**不传第 3 参**，
+      //    而 options.intent.trigger_source 现在只用于 telemetry ⇒ 仅靠 trigger 判定会漏掉
+      //    新前端的自动重排（开着 auto-queue + 节点启用时，每次改图都可能展开一整批）。
+      //    这里补两个与前端实现同源的信号，见 installAutoQueueSignal/autoQueueSignalled。
       const trigger = (options && options.intent && options.intent.trigger_source) || "";
-      if (trigger === "auto_queue") return false;
+      if (trigger === "auto_queue" || (!options && autoQueueSignalled(app))) {
+        if (trigger !== "auto_queue") {
+          try { console.debug("[TK Batch] 判定为自动队列触发（options 缺失 + auto-queue 信号），已跳过批量展开"); } catch (e) { /* ignore */ }
+        }
+        return false;
+      }
 
       // ── 2026-08-24 起改走「服务端批任务控制器」：
       //    不再逐条注入画布 widget + 逐条 orig() 入队（画布可能被污染、无批次状态、
@@ -1811,7 +1877,31 @@
       }
       return orig(number, batchCount, options);
     };
-  }
+    // 排障标记：真机可沿 __tkBatchOriginal 链巡检本包装是否仍在队列链上。
+    // ComfyUI 前端 1.48.x 里多个插件（Danbooru 画廊 / Krita 等）会依次包装 app.queuePrompt，
+    // 本包装可能被套在内层；只要每层都调用它捕获的上一层，链就完整。
+    wrapper.__tkBatchWrapper = true;
+    wrapper.__tkBatchOriginal = prev;
+    app.queuePrompt = wrapper;
+    // 排障导出：真机里 app.queuePrompt 常被别的插件再包一层（Danbooru 画廊 / Krita 等），
+    // 此时无法从 app.queuePrompt 反查本层是否仍在链上。留一个稳定句柄，
+    // 可沿 __tkBatchOriginal 走到底测链深度，并比对 app.queuePrompt !== __animaBatchWrapper。
+    app.__animaBatchWrapper = wrapper;
+    }
+
+    // 队列拦截的「主动安装」：不依赖扩展 setup() 回调。
+    // ⚠️ 根因（2026-09-22 真机定位，ComfyUI 0.33.1 / 前端 1.48.7）：新版前端只在 app.setup()
+    //    时对「当时已注册」的扩展调用 setup；本脚本用 setTimeout 轮询等 app 就绪后再注册，
+    //    能否命中完全取决于加载时序。一旦错过，setup 永不调用 → installQueueExpansion 不执行
+    //    → 点「队列」静默不展开批量（且无任何报错）。实测：页面加载后 1.5 分钟内
+    //    __animaBatchInstalled 仍为 false，之后才变 true；注册晚于 app setup 的探测扩展则永不触发。
+    // 因此这里主动安装（幂等），扩展 setup() 仅作兜底。
+    function ensureQueueExpansion(tries) {
+      const n = tries || 0;
+      const app = window.comfyAPI?.app?.app;
+      if (app && typeof app.queuePrompt === "function") { installQueueExpansion(); return; }
+      if (n < 120) setTimeout(() => ensureQueueExpansion(n + 1), 250);
+    }
 
   function getWidgetValue(node, key) {
     const w = node?.widgets?.find((x) => x.name === key);
@@ -1944,12 +2034,19 @@ function init() {
         };
       },
       async setup() {
+        // 兜底：新前端只对「app setup 前已注册」的扩展调用本回调（见 ensureQueueExpansion 注释），
+        // 主动安装已在 init() 里发起，这里再调一次是幂等的。
         installQueueExpansion();
         // 调试钩子（CDP/控制台验证区域注入用）
         window.__tkDebug = window.__tkDebug || {};
         window.__tkDebug.injectRegionIntoPrompt = injectRegionIntoPrompt;
       },
     });
+    // 主动安装队列拦截（不等 setup 回调，避免加载时序竞态导致批量静默失效）
+    ensureQueueExpansion(0);
+    // 调试钩子：供 CDP 探针巡检拦截是否真的挂上（与 setup 是否被调用无关）
+    window.__tkDebug = window.__tkDebug || {};
+    window.__tkDebug.queueExpansionInstalled = () => !!window.comfyAPI?.app?.app?.__animaBatchInstalled;
   }
 
   function injectStyle() {

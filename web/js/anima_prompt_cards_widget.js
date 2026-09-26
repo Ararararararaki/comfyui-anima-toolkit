@@ -602,6 +602,91 @@
     ["dashscope", "DashScope"],
   ];
 
+  // ── 图标表（节点侧没有 TS 工具链，这里内联 panel/src/utils/icon.ts 的同一套
+  //    lucide 24x24 path + 同一 icon(name, size, cls) 签名；节点面板禁 emoji）。──
+  const ICON_PATHS = {
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+    refresh: '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>',
+    x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+    check: '<polyline points="20 6 9 17 4 12"/>',
+    plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+    trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+    info: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
+    alertCircle: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>',
+    languages: '<path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/>',
+    globe: '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
+    folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+    save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
+    eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+    ban: '<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/>',
+    list: '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
+    zap: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+  };
+
+  function icon(name, size = 16, cls = "") {
+    const pathData = ICON_PATHS[name];
+    if (!pathData) return "";
+    const clsAttr = cls ? ` class="${escAttr(cls)}"` : "";
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"${clsAttr}>${pathData}</svg>`;
+  }
+
+  // ── 统一翻译设置（面向所有用户：一份配置覆盖全部翻译相关选项）──
+  // 存储以后端 data/translate_settings.json 为准（跨浏览器/跨机器一致），
+  // 后端不可用时回落到 localStorage，保证未配置任何东西也能直接用。
+  const TRANSLATE_SETTINGS_KEY = "anima_tk_cards_translate_settings_v1";
+  const TRANSLATE_SETTINGS_DEFAULT = {
+    default_source: "auto",
+    enabled_sources: TRANSLATE_SOURCES.map(([id]) => id).filter((id) => id !== "auto"),
+    allow_fallback: true,
+    timeout_ms: 20000,
+    auto_calibrate: true,
+    semantic_enabled: false,
+    llm_model: "gemma-4b",
+    weight_min: -2,
+    weight_max: 2,
+    deeplx: { exe_path: "", log_path: "", port: 1188 },
+    dashscope: { base_url: "", model: "" },
+    ollama_base: "",
+    proxy: "",
+  };
+  let translateSettings = JSON.parse(JSON.stringify(TRANSLATE_SETTINGS_DEFAULT));
+  // 权重区间（默认 -2 ~ 2，与旧行为一致；设置面板可放宽/收紧）
+  const promptWeightRange = { min: -2, max: 2 };
+
+  function applyTranslateSettings(raw) {
+    const source = raw && typeof raw === "object" ? raw : {};
+    const merged = { ...TRANSLATE_SETTINGS_DEFAULT, ...source };
+    merged.deeplx = { ...TRANSLATE_SETTINGS_DEFAULT.deeplx, ...(source.deeplx || {}) };
+    merged.dashscope = { ...TRANSLATE_SETTINGS_DEFAULT.dashscope, ...(source.dashscope || {}) };
+    merged.enabled_sources = Array.isArray(merged.enabled_sources)
+      ? merged.enabled_sources.filter((id) => TRANSLATE_SOURCES.some(([sid]) => sid === id && sid !== "auto"))
+      : TRANSLATE_SETTINGS_DEFAULT.enabled_sources.slice();
+    if (!merged.enabled_sources.length) merged.enabled_sources = TRANSLATE_SETTINGS_DEFAULT.enabled_sources.slice();
+    if (!TRANSLATE_SOURCES.some(([id]) => id === merged.default_source)) merged.default_source = "auto";
+    if (typeof merged.llm_model !== "string" || !merged.llm_model.trim()) merged.llm_model = TRANSLATE_SETTINGS_DEFAULT.llm_model;
+    const timeout = Number(merged.timeout_ms);
+    merged.timeout_ms = Number.isFinite(timeout) ? Math.max(3000, Math.min(120000, Math.round(timeout))) : TRANSLATE_SETTINGS_DEFAULT.timeout_ms;
+    const minW = Number(merged.weight_min);
+    const maxW = Number(merged.weight_max);
+    promptWeightRange.min = Number.isFinite(minW) ? Math.max(-10, Math.min(-0.1, minW)) : -2;
+    promptWeightRange.max = Number.isFinite(maxW) ? Math.min(10, Math.max(0.1, maxW)) : 2;
+    translateSettings = merged;
+    return merged;
+  }
+  function loadTranslateSettingsLocal() {
+    try { return JSON.parse(localStorage.getItem(TRANSLATE_SETTINGS_KEY) || "{}"); } catch (e) { return {}; }
+  }
+  function saveTranslateSettingsLocal(raw) {
+    try { localStorage.setItem(TRANSLATE_SETTINGS_KEY, JSON.stringify(raw || {})); } catch (e) {}
+  }
+  applyTranslateSettings(loadTranslateSettingsLocal());
+
+  /** 本地翻译模型 id（设置面板可选；默认 gemma-4b，未配置时功能照常可用）。 */
+  function localLlmModelId() {
+    const value = String(translateSettings.llm_model || "").trim();
+    return value || TRANSLATE_SETTINGS_DEFAULT.llm_model;
+  }
+
   async function translateAuto(text, source = "auto") {
     const result = await translateDetailed(text, source);
     return result.translatedText || "";
@@ -611,9 +696,29 @@
     const q = String(text || "").trim().slice(0, 2000);
     if (!q) return { ok: false, translatedText: "" };
     const lp = langOf(q) === "zh" ? "auto|en" : "en|zh-CN";
-    const selected = TRANSLATE_SOURCES.some(([id]) => id === source) ? source : "auto";
+    const fallback = translateSettings.default_source || "auto";
+    const selected = TRANSLATE_SOURCES.some(([id]) => id === source) ? source : fallback;
+    // 翻译源白名单与「是否自动回退」由后端读取同一份设置文件（本面板保存的那份），
+    // 因此 /api/translate 的参数与响应契约保持不变，只在单源失败时由前端补一次兜底。
     const sourceParam = selected === "auto" ? "" : "&source=" + encodeURIComponent(selected);
-    const r = await fetchJson("/api/translate?q=" + encodeURIComponent(q) + "&langpair=" + encodeURIComponent(lp) + sourceParam);
+    const request = (extra) => fetchJson(
+      "/api/translate?q=" + encodeURIComponent(q) + "&langpair=" + encodeURIComponent(lp) + sourceParam + extra,
+      { timeout: translateSettings.timeout_ms },
+    );
+    let r;
+    try {
+      r = await request("");
+    } catch (error) {
+      // 单源超时/网络失败时，若用户允许回退则退回自动链再试一次
+      if (selected !== "auto" && translateSettings.allow_fallback !== false) {
+        r = await fetchJson(
+          "/api/translate?q=" + encodeURIComponent(q) + "&langpair=" + encodeURIComponent(lp),
+          { timeout: translateSettings.timeout_ms },
+        );
+      } else {
+        throw error;
+      }
+    }
     if (r.ok && r.translatedText) return r;
     if (r.error) throw new Error(r.error);
     return r;
@@ -862,7 +967,8 @@
   function normalizePromptCardWeight(value) {
     const parsed = Number.parseFloat(String(value ?? "").trim());
     const safe = Number.isFinite(parsed) ? parsed : 1;
-    const clamped = Math.max(-2, Math.min(2, safe));
+    // 区间默认 -2 ~ 2（与旧行为一致）；设置面板可放宽，提示文案同步显示实际区间。
+    const clamped = Math.max(promptWeightRange.min, Math.min(promptWeightRange.max, safe));
     return Math.round(clamped * 10) / 10;
   }
 
@@ -950,7 +1056,7 @@
   const CUR_TEXT_HEIGHT_DEFAULT = 120;
   const CHIPS_HEIGHT_MIN = 90;
   const CHIPS_HEIGHT_MAX = 680;
-  const CHIPS_HEIGHT_DEFAULT = 180;
+  const CHIPS_HEIGHT_DEFAULT = 240;
   const CARD_GRID_HEIGHT_MIN = 150;
   const CARD_GRID_HEIGHT_MAX = 680;
   const CARD_GRID_HEIGHT_DEFAULT = 300;
@@ -964,9 +1070,11 @@
   function loadDraft() { try { return localStorage.getItem(DRAFT_KEY) || ""; } catch (e) { return ""; } }
   function loadTranslateSource() {
     try {
-      const value = localStorage.getItem(TRANSLATE_SOURCE_KEY) || "auto";
-      return TRANSLATE_SOURCES.some(([id]) => id === value) ? value : "auto";
-    } catch (e) { return "auto"; }
+      const legacy = localStorage.getItem(TRANSLATE_SOURCE_KEY);
+      // 老用户的浏览器里已有一份选择，优先沿用，避免升级后被重置成默认源
+      if (legacy && TRANSLATE_SOURCES.some(([id]) => id === legacy)) return legacy;
+    } catch (e) {}
+    return translateSettings.default_source || "auto";
   }
   function saveTranslateSource(value) { try { localStorage.setItem(TRANSLATE_SOURCE_KEY, String(value || "auto")); } catch (e) {} }
   function loadUiState() {
@@ -2400,6 +2508,24 @@
       });
     }
 
+    /** 回写②区正文并保住光标：调权重会把 tag 改写成 (tag:1.3)，直接赋值会把
+     *  光标顶到末尾（实测 5 → 145），因此写入前后保存/恢复选区与滚动位置。 */
+    _writeCurrentText(next) {
+      const el = this.curTextEl;
+      if (!el) return;
+      const focused = document.activeElement === el;
+      if (!focused) {
+        el.value = next;
+        return;
+      }
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      const scrollTop = el.scrollTop;
+      el.value = next;
+      try { el.setSelectionRange(start, end); } catch (e) { /* 非文本型输入忽略 */ }
+      el.scrollTop = scrollTop;
+    }
+
     _setPieceWeight(index, value, commit = true) {
       const parts = this._promptPieces();
       const piece = parts[index];
@@ -2413,7 +2539,7 @@
         this._persistPromptPieces();
       }
       else if (this.w.positive) this.w.positive.value = next;
-      if (this.curTextEl) this.curTextEl.value = next;
+      this._writeCurrentText(next);
 
       const chip = this.chipsEl?.querySelector(`[data-piece-index="${index}"]`);
       if (chip) {
@@ -2422,7 +2548,8 @@
         const valueEl = chip.querySelector(".tk-cards-chip-weight-val");
         if (valueEl) valueEl.value = piece.weight;
       }
-      if (commit) this._renderChips();
+      // 成交后不再整块重渲染卡片流：chip 宽度改由容器分配后，重渲染只会让其它卡片
+      // 闪一下、并丢掉 chips 容器滚动位置；上面两处就地更新已覆盖该片段全部可见信息。
       return { next, piece, weight };
     }
 
@@ -2476,7 +2603,7 @@
       const parts = this._ensurePromptPiecesInSync();
       this.chipsEl.innerHTML = "";
       if (!parts.length) {
-        this.chipsEl.innerHTML = `<div class="tk-cards-empty">输入提示词后按逗号/换行分组（保留原分组；点击片段=存为卡片；hover ✕=移除）</div>`;
+        this.chipsEl.innerHTML = `<div class="tk-cards-empty">输入提示词后按逗号/换行分组（保留原分组；点击片段=存为卡片；片段右上角图标可翻译、隐藏或移除）</div>`;
         return;
       }
       for (let index = 0; index < parts.length; index++) {
@@ -2484,7 +2611,7 @@
         const chip = document.createElement("span");
         chip.className = "tk-cards-chip" + (p.hidden ? " is-hidden" : "");
         chip.dataset.pieceIndex = String(index);
-        chip.title = p.hidden ? "此片段已隐藏，不会输出；点击右侧显示按钮恢复" : "点击存为卡片；点击右侧隐藏按钮可停用；hover ✕ 移除该片段";
+        chip.title = p.hidden ? "此片段已隐藏，不会输出；点右上角按钮恢复" : "点击存为卡片；右上角可隐藏或移除该片段";
         const zh = this._translationForPiece(p.text);
         const chipBody = document.createElement("span");
         chipBody.className = "tk-cards-chip-body";
@@ -2508,7 +2635,7 @@
         weightVal.inputMode = "decimal";
         weightVal.className = "tk-cards-chip-weight-val";
         weightVal.value = promptCardWeightText(p.weight);
-        weightVal.title = "手动输入权重（范围 -2.0 到 2.0）";
+        weightVal.title = `手动输入权重（范围 ${promptWeightRange.min.toFixed(1)} 到 ${promptWeightRange.max.toFixed(1)}）`;
         const inc = document.createElement("button");
         inc.type = "button";
         inc.className = "tk-cards-chip-weight-step";
@@ -2516,7 +2643,8 @@
         inc.title = "提高权重（按住左右拖动可连续调）";
         inc.setAttribute("aria-label", "提高片段权重");
         weightGroup.append(dec, weightVal, inc);
-        chipTop.append(enS, weightGroup);
+        // 权重控件放左侧：右上角是 hover 才出现的操作覆盖层，权重放右边会被盖住
+        chipTop.append(weightGroup, enS);
         chipBody.appendChild(chipTop);
         if (zh) {
           const zhS = document.createElement("span");
@@ -2560,11 +2688,15 @@
         });
         this._bindPieceWeightScrub(dec, index);
         this._bindPieceWeightScrub(inc, index);
+        // 右上角操作覆盖层：三个操作统一走既有 icon() 图标规范，hover / 键盘聚焦才出现。
+        // 旧版为它们常驻 padding-right:68px，chip 宽 230px 时约 30% 宽度长期空置。
+        const actions = document.createElement("span");
+        actions.className = "tk-cards-chip-actions";
         const visibility = document.createElement("button");
         visibility.type = "button";
-        visibility.className = "tk-cards-chip-toggle";
+        visibility.className = "tk-cards-chip-toggle tk-cards-icon-btn";
         visibility.dataset.pieceAction = "visibility";
-        visibility.textContent = p.hidden ? "显示" : "隐藏";
+        visibility.innerHTML = icon(p.hidden ? "eye" : "ban", 12);
         visibility.title = p.hidden ? "恢复此片段并输出" : "隐藏此片段（保留卡片但不输出）";
         visibility.setAttribute("aria-label", visibility.title);
         visibility.setAttribute("aria-pressed", String(!p.hidden));
@@ -2572,31 +2704,32 @@
           ev.stopPropagation();
           this._togglePieceVisibility(index);
         });
-        chip.appendChild(visibility);
-        chip.addEventListener("click", (ev) => {
-          ev.stopPropagation();
-          this.addCard(this.curCat, { en: p.text, zh: zh || "", weight: p.weight });
-        });
         const translate = document.createElement("button");
         translate.type = "button";
-        translate.className = "tk-cards-chip-translate";
-        translate.textContent = "译";
+        translate.className = "tk-cards-chip-translate tk-cards-icon-btn";
+        translate.innerHTML = icon("languages", 12);
         translate.title = "快捷翻译此片段（不进入 Danbooru/BGE-M3 校准）";
+        translate.setAttribute("aria-label", "快捷翻译此片段");
         translate.addEventListener("click", (ev) => {
           ev.stopPropagation();
           this.translatePieceQuick(index, translate, chip);
         });
-        chip.appendChild(translate);
         const x = document.createElement("button");
         x.type = "button";
-        x.className = "tk-cards-chip-x";
-        x.textContent = "✕";
+        x.className = "tk-cards-chip-x tk-cards-icon-btn";
+        x.innerHTML = icon("x", 12);
         x.title = "从当前提示词移除该片段";
+        x.setAttribute("aria-label", "从当前提示词移除该片段");
         x.addEventListener("click", (ev) => {
           ev.stopPropagation();
           this._removePromptPiece(index);
         });
-        chip.appendChild(x);
+        actions.append(visibility, translate, x);
+        chip.appendChild(actions);
+        chip.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          this.addCard(this.curCat, { en: p.text, zh: zh || "", weight: p.weight });
+        });
         this.chipsEl.appendChild(chip);
       }
     }
@@ -2606,6 +2739,23 @@
       if (this.resolveEl) {
         this.resolveEl.style.display = "none";
         this.resolveEl.innerHTML = "";
+      }
+    }
+
+    /** 拉取后端统一翻译设置（跨浏览器一致）；后端不可用时保持本机缓存值。 */
+    async _loadTranslateSettings() {
+      try {
+        const snapshot = await fetchJson("/anima/translate/settings", { timeout: 8000 });
+        if (!snapshot?.settings) return;
+        const next = applyTranslateSettings(snapshot.settings);
+        saveTranslateSettingsLocal(next);
+        if (this.translateSourceEl) {
+          let hasLocalChoice = false;
+          try { hasLocalChoice = Boolean(localStorage.getItem(TRANSLATE_SOURCE_KEY)); } catch (e) {}
+          if (!hasLocalChoice) this.translateSourceEl.value = next.default_source;
+        }
+      } catch (error) {
+        /* 后端未就绪时沿用本机缓存，功能不受影响 */
       }
     }
 
@@ -2628,20 +2778,46 @@
           : "尚未执行翻译";
         if (this.translateStatusSummary) this.translateStatusSummary.textContent = `${actual} · 翻译状态（点击展开）`;
         const deeplx = result.deeplx || {};
-        const deeplxAction = deeplx.installed
-          ? `<button type="button" class="tk-cards-resolve-save" data-a="restart-deeplx">重启 DeepLX</button>`
-          : "";
+        // 未安装时不再整条隐藏：用户至少要能看到这个功能存在、并知道去哪填路径。
+        const deeplxTitle = deeplx.installed
+          ? `重启本机 DeepLX 进程（${deeplx.exe || ""}）`
+          : "未检测到 DeepLX 可执行文件；可在「翻译设置 → 服务配置 → DeepLX」里填写路径与端口";
+        // 图标按钮（低频运维动作，title/aria-label 保留完整语义）：让动作条在默认 400px
+        // 节点宽度下把 5 个控件全部排进一行，并为「Gemma 加载中…」这类更宽的瞬态文案留出余量。
+        const deeplxAction = `<button type="button" class="tk-cards-btn tk-cards-icon-btn" data-a="restart-deeplx" title="${escAttr(deeplxTitle)}" aria-label="重启 DeepLX" ${deeplx.installed ? "" : "disabled"}>${icon("refresh", 14)}</button>`;
         const llm = result.local_llm || {};
         const llmBusy = llm.status === "downloading" || llm.status === "loading";
         const llmReady = llm.status === "ready" && llm.model;
-        const llmActionLabel = llmReady ? "释放 Gemma" : (llmBusy ? "Gemma 加载中…" : "启用 Gemma");
+        // 默认模型保持 gemma-4b（沿用既有文案锚点）；用户可在设置里换成别的本地模型。
+        const llmModelId = translateSettings.llm_model || "gemma-4b";
+        const llmModelRaw = String(llm.models?.[llmModelId]?.label || llmModelId).replace(/\s*[（(].*$/, "").trim();
+        const llmShortName = llmModelId === "gemma-4b" ? "Gemma" : (llmModelRaw || llmModelId);
+        const llmActionLabel = llmReady ? `释放 ${llmShortName}` : (llmBusy ? `${llmShortName} 加载中…` : `启用 ${llmShortName}`);
         const llmActionTitle = llmReady
-          ? "释放本地 LLM 显存；之后选择本地LLM翻译时仍会按需加载"
-          : "主动加载盘上的 Gemma；仅选择本地LLM翻译时才会自动按需加载";
-        const localLlmAction = `<button type="button" class="tk-cards-btn ${llmReady ? "" : "tk-cards-btn-main"}" data-a="toggle-local-llm" title="${escAttr(llmActionTitle)}" ${llmBusy ? "disabled" : ""}>${llmActionLabel}</button><button type="button" class="tk-cards-resolve-save" data-a="manage-local-llm">管理模型</button>`;
+          ? `释放本地 LLM（${llmModelId}）显存；之后选择本地LLM翻译时仍会按需加载`
+          : `主动加载 ${llmModelId}；仅选择本地LLM翻译时才会自动按需加载。模型可在「翻译设置」里更换`;
+        const localLlmAction = `<button type="button" class="tk-cards-btn ${llmReady ? "" : "tk-cards-btn-main"}" data-a="toggle-local-llm" title="${escAttr(llmActionTitle)}" ${llmBusy ? "disabled" : ""}>${llmActionLabel}</button><button type="button" class="tk-cards-btn tk-cards-adaptive" data-a="manage-local-llm" title="管理本地翻译模型：查看与下载模型、启用或卸载" aria-label="管理模型"><span class="tk-cards-adaptive-text">管理模型</span><span class="tk-cards-adaptive-icon">${icon("list", 14)}</span></button>`;
         const baidu = result.baidu || {};
-        const baiduAction = `<button type="button" class="tk-cards-resolve-save" data-a="manage-baidu" title="配置百度翻译 APPID、API Key 和模型选项">百度设置${baidu.configured ? "" : "（未配置）"}</button>`;
-        this.translateStatusEl.innerHTML = `<span class="tk-cards-translate-actual">${esc(actual)}</span><span class="tk-cards-translate-provider-list">${items}</span><span class="tk-cards-translate-status-actions">${deeplxAction}${baiduAction}${localLlmAction}</span>`;
+        // 按钮文案固定为「百度设置」（原「百度设置（未配置）」宽 115px，是动作条在 400px 下溢出的主因）。
+        // 未配置状态必须不依赖 CSS 级联深浅地可见：宿主存在更高优先级的规则覆盖 .tk-cards-btn 的
+        // 基础描边（实测给该按钮加上 is-warn 后 borderTopColor 仍等于宿主值、--tk-warn 从未出现在
+        // 计算值里），故改用内联样式（虚线描边 + warn 色）+ 零布局占位的角标圆点承载；两者都不改变
+        // 按钮宽度，不影响动作条在窄节点下的排布。
+        // 双套内容：宽节点显示文字，窄节点（容器查询命中）换成图标，避免 320px 下被裁掉。
+        const baiduUnconfigured = !baidu.configured;
+        const baiduTitle = baidu.configured
+          ? "百度翻译已配置；点击修改 APPID、API Key 与模型选项"
+          : "百度翻译未配置；点击填写 APPID 与 API Key";
+        const baiduWarnStyle = baiduUnconfigured
+          ? ` style="position:relative;border-style:dashed;border-color:#c6a76a"`
+          : "";
+        const baiduWarnDot = baiduUnconfigured
+          ? `<span style="position:absolute;top:2px;right:2px;width:5px;height:5px;border-radius:50%;background:#c6a76a" aria-hidden="true"></span>`
+          : "";
+        const baiduAction = `<button type="button" class="tk-cards-btn tk-cards-adaptive${baiduUnconfigured ? " is-warn" : ""}"${baiduWarnStyle} data-a="manage-baidu" title="${escAttr(baiduTitle)}" aria-label="百度设置"><span class="tk-cards-adaptive-text">百度设置</span><span class="tk-cards-adaptive-icon">${icon("languages", 14)}</span>${baiduWarnDot}</button>`;
+        const settingsAction = `<button type="button" class="tk-cards-icon-btn" data-a="translate-settings" title="翻译设置：统一配置翻译源、各服务参数、词典与缓存" aria-label="翻译设置">${icon("settings", 14)}</button>`;
+        this.translateStatusEl.innerHTML = `<span class="tk-cards-translate-actual">${esc(actual)}</span><span class="tk-cards-translate-provider-list">${items}</span><span class="tk-cards-translate-status-actions tk-cards-actions">${deeplxAction}${baiduAction}${localLlmAction}${settingsAction}</span>`;
+        this.translateStatusEl.querySelector('[data-a="translate-settings"]')?.addEventListener("click", () => this._openTranslateSettings());
         this.translateStatusEl.querySelector('[data-a="toggle-local-llm"]')?.addEventListener("click", () => this._toggleLocalLlm());
         this.translateStatusEl.querySelector('[data-a="manage-local-llm"]')?.addEventListener("click", () => this._manageLocalLlm());
         this.translateStatusEl.querySelector('[data-a="manage-baidu"]')?.addEventListener("click", () => this._manageBaidu());
@@ -2694,8 +2870,8 @@
           this._localLlmSessionAutoRelease = !wasReady;
           if (!wasReady) {
             if (before.status !== "loading" && before.status !== "downloading") {
-              const loaded = await postJson("/anima/translate/local_llm/load", { model: "gemma-4b", download: false }, 12000);
-              if (loaded?.ok === false) throw new Error(loaded.error || "本地 Gemma 未能启动");
+              const loaded = await postJson("/anima/translate/local_llm/load", { model: localLlmModelId(), download: false }, 12000);
+              if (loaded?.ok === false) throw new Error(loaded.error || "本地模型未能启动");
             }
             await this._waitLocalLlmReady();
           }
@@ -2737,17 +2913,18 @@
         const state = await fetchJson("/anima/translate/local_llm/status", { timeout: 8000 });
         if (state.status === "ready") {
           await postJson("/anima/translate/local_llm/unload", {}, 12000);
-          this._flash("Gemma 已释放，显存已归还给生图", 5000);
+          this._flash("本地翻译模型已释放，显存已归还给生图", 5000);
         } else {
           await this._assertGenerationIdle();
-          const loaded = await postJson("/anima/translate/local_llm/load", { model: "gemma-4b" }, 12000);
-          if (loaded?.ok === false) throw new Error(loaded.error || "Gemma 启动失败");
-          this._flash("Gemma 加载中…", 3000);
+          const modelId = localLlmModelId();
+          const loaded = await postJson("/anima/translate/local_llm/load", { model: modelId }, 12000);
+          if (loaded?.ok === false) throw new Error(loaded.error || "本地模型启动失败");
+          this._flash(`本地模型 ${modelId} 加载中…`, 3000);
           await this._waitLocalLlmReady();
-          this._flash("Gemma 已启用；会占用显存，生图前可点击“释放 Gemma”", 6000);
+          this._flash(`本地模型 ${modelId} 已启用；会占用显存，生图前可点击「释放」收回`, 6000);
         }
       } catch (error) {
-        this._flash("Gemma 操作失败：" + (error.message || error), 6000);
+        this._flash("本地模型操作失败：" + (error.message || error), 6000);
       } finally {
         this._localLlmActionBusy = false;
         await this._refreshTranslationStatus();
@@ -2916,6 +3093,411 @@
       await render();
       overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
       overlay.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { ev.preventDefault(); close(); } });
+      overlay.focus?.();
+    }
+
+    /**
+     * 统一翻译设置：一个入口集中配置全部翻译相关选项（翻译源与回退、各服务参数、
+     * 本地模型、词典与缓存）。配置落后端 data/translate_settings.json（跨浏览器一致），
+     * 后端不可用时回落到 localStorage；所有字段都有默认值，未配置时功能照常可用。
+     */
+    async _openTranslateSettings() {
+      let snapshot = { settings: translateSettings };
+      try {
+        snapshot = await fetchJson("/anima/translate/settings", { timeout: 8000 });
+      } catch (error) {
+        snapshot = { settings: translateSettings, offline: true, error: error.message || String(error) };
+      }
+      const remote = applyTranslateSettings(snapshot.settings || translateSettings);
+      const status = snapshot.state || {};
+      const overlay = document.createElement("div");
+      overlay.className = "tk-cards-overlay";
+      overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-config-box" role="dialog" aria-modal="true" aria-label="翻译设置">
+        <div class="tk-cards-overlay-head"><b>翻译设置</b><button type="button" class="tk-cards-icon-btn" data-a="close" title="关闭" aria-label="关闭">${icon("x", 14)}</button></div>
+        <div class="tk-cards-settings-status" data-a="status"></div>
+        <div class="tk-cards-config-body">
+          <section class="tk-cards-config-group">
+            <div class="tk-cards-config-group-head"><b>翻译源与回退</b></div>
+            <label class="tk-cards-field"><span>默认翻译源</span><select class="tk-cards-select" data-f="default_source">${TRANSLATE_SOURCES.map(([id, label]) => `<option value="${escAttr(id)}">${esc(label)}</option>`).join("")}</select></label>
+            <div class="tk-cards-config-row">
+              <label class="tk-cards-field"><span>单源失败时自动回退到其它源</span><select class="tk-cards-select" data-f="allow_fallback"><option value="1">自动回退</option><option value="0">只用所选源</option></select></label>
+              <label class="tk-cards-field"><span>单次翻译超时（毫秒）</span><input type="number" min="3000" max="120000" step="1000" data-f="timeout_ms"></label>
+            </div>
+            <div class="tk-cards-config-hint">下面勾选的源才参与自动回退链；关掉用不上的源可以少等超时。</div>
+            <div class="tk-cards-check-grid" data-a="sources"></div>
+          </section>
+          <section class="tk-cards-config-group">
+            <div class="tk-cards-config-group-head"><b>服务配置</b></div>
+            <div class="tk-cards-config-sub">
+              <div class="tk-cards-config-sub-head">DeepLX<span class="tk-cards-muted" data-a="deeplx-state"></span></div>
+              <label class="tk-cards-field"><span>可执行文件路径（留空用环境变量 DEEPLX_EXE 或默认位置）</span><input data-f="deeplx_exe" autocomplete="off" placeholder="例如 D:/Tools/DeepLX/deeplx_windows_amd64.exe"></label>
+              <div class="tk-cards-config-row">
+                <label class="tk-cards-field"><span>日志路径（留空用默认位置）</span><input data-f="deeplx_log" autocomplete="off" placeholder="例如 D:/Tools/DeepLX/deeplx.log"></label>
+                <label class="tk-cards-field"><span>端口</span><input type="number" min="1" max="65535" step="1" data-f="deeplx_port"></label>
+              </div>
+              <div class="tk-cards-actions"><button type="button" class="tk-cards-btn" data-a="deeplx-restart">检测并启动</button></div>
+            </div>
+            <div class="tk-cards-config-sub">
+              <div class="tk-cards-config-sub-head">百度翻译<span class="tk-cards-muted" data-a="baidu-state"></span></div>
+              <div class="tk-cards-config-row">
+                <label class="tk-cards-field"><span>APPID</span><input data-b="appid" autocomplete="off" placeholder="百度开发者 APPID"></label>
+                <label class="tk-cards-field"><span>API Key</span><input type="password" autocomplete="new-password" data-b="api-key" placeholder="留空保持不变"></label>
+              </div>
+              <div class="tk-cards-config-row">
+                <label class="tk-cards-field"><span>翻译模型</span><select class="tk-cards-select" data-b="model"><option value="llm">大模型翻译（llm）</option><option value="nmt">机器翻译（nmt）</option></select></label>
+                <label class="tk-cards-check"><input type="checkbox" data-b="intervene"><span>启用术语库干预（账号需已开通）</span></label>
+              </div>
+              <div class="tk-cards-config-hint">APPID 与 API Key 只保存在本机后端配置文件，不回传前端、不写入工作流；这四项与「打开完整弹窗」共用同一份配置。</div>
+              <div class="tk-cards-actions">
+                <button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="baidu-save">保存百度配置</button>
+                <button type="button" class="tk-cards-btn" data-a="baidu-test">测试连接</button>
+                <button type="button" class="tk-cards-btn" data-a="open-baidu">打开完整弹窗</button>
+              </div>
+            </div>
+            <div class="tk-cards-config-sub">
+              <div class="tk-cards-config-sub-head">本地翻译模型<span class="tk-cards-muted" data-a="llm-state"></span></div>
+              <label class="tk-cards-field"><span>默认加载模型</span><select class="tk-cards-select" data-f="llm_model"></select></label>
+              <div class="tk-cards-config-hint" data-a="llm-dir">模型目录：读取中…</div>
+              <div class="tk-cards-actions"><button type="button" class="tk-cards-btn" data-a="open-llm">管理模型</button></div>
+            </div>
+            <div class="tk-cards-config-sub">
+              <div class="tk-cards-config-sub-head">DashScope（阿里云百炼）</div>
+              <label class="tk-cards-field"><span>Base URL</span><input data-f="dashscope_base" autocomplete="off" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"></label>
+              <div class="tk-cards-config-row">
+                <label class="tk-cards-field"><span>模型</span><input data-f="dashscope_model" autocomplete="off" placeholder="qwen-turbo"></label>
+                <label class="tk-cards-field"><span>API Key</span><input type="password" autocomplete="new-password" data-f="dashscope_key" placeholder="留空保持不变"></label>
+              </div>
+              <label class="tk-cards-check"><input type="checkbox" data-f="dashscope_key_clear"><span>清除已保存的 DashScope API Key</span></label>
+            </div>
+            <div class="tk-cards-config-sub">
+              <div class="tk-cards-config-sub-head">分类 LLM<span class="tk-cards-muted" data-a="llm-classify-state"></span></div>
+              <label class="tk-cards-field"><span>连接模式</span><select class="tk-cards-select" data-f="classify_mode"><option value="auto">自动：Ollama 优先</option><option value="ollama">Ollama</option><option value="api">OpenAI 兼容 API</option></select></label>
+              <div class="tk-cards-config-row">
+                <label class="tk-cards-field"><span>Base URL</span><input data-f="classify_base" autocomplete="off" placeholder="例如 http://127.0.0.1:8080/v1"></label>
+                <label class="tk-cards-field"><span>模型名</span><input data-f="classify_model" autocomplete="off" placeholder="例如 qwen-turbo"></label>
+              </div>
+              <div class="tk-cards-config-row">
+                <label class="tk-cards-field"><span>API Key</span><input type="password" autocomplete="new-password" data-f="classify_key" placeholder="留空保持不变"></label>
+                <label class="tk-cards-field"><span>Ollama 服务地址</span><input data-f="ollama_base" autocomplete="off" placeholder="http://127.0.0.1:11434"></label>
+              </div>
+              <label class="tk-cards-check"><input type="checkbox" data-f="classify_key_clear"><span>清除已保存的分类 LLM API Key</span></label>
+            </div>
+          </section>
+          <section class="tk-cards-config-group">
+            <div class="tk-cards-config-group-head"><b>质量与校准</b></div>
+            <label class="tk-cards-check" data-a="calibrate-row"><input type="checkbox" data-f="auto_calibrate"><span>「翻译并校准」时查找 Danbooru 规范标签</span></label>
+            <label class="tk-cards-check"><input type="checkbox" data-f="semantic_enabled"><span>自然语言中文优先走 BGE-M3 语义检索（首次需初始化）</span></label>
+            <div class="tk-cards-config-row">
+              <label class="tk-cards-field"><span>权重下限</span><input type="number" min="-10" max="-0.1" step="0.1" data-f="weight_min"></label>
+              <label class="tk-cards-field"><span>权重上限</span><input type="number" min="0.1" max="10" step="0.1" data-f="weight_max"></label>
+            </div>
+            <label class="tk-cards-field"><span>出图代理（留空则自动探测本机 7890 / 7897 / 10809）</span><input data-f="proxy" autocomplete="off" placeholder="http://127.0.0.1:7890"></label>
+          </section>
+          <section class="tk-cards-config-group">
+            <div class="tk-cards-config-group-head"><b>词典与缓存</b></div>
+            <div class="tk-cards-config-hint" data-a="glossary-hint">用户词典：读取中…</div>
+            <div class="tk-cards-actions">
+              <button type="button" class="tk-cards-btn" data-a="glossary-view">查看用户词典</button>
+              <button type="button" class="tk-cards-btn" data-a="cache-clear">清空翻译缓存</button>
+            </div>
+            <div class="tk-cards-glossary-list" data-a="glossary" hidden></div>
+          </section>
+        </div>
+        <div class="tk-cards-settings-status tk-cards-config-result" data-a="action-status" hidden></div>
+        <div class="tk-cards-actions tk-cards-config-actions">
+          <button type="button" class="tk-cards-btn" data-a="reset">恢复默认</button>
+          <button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">保存设置</button>
+        </div>
+      </div>`;
+      // ⚠️ overlay 最后才插入文档（见本方法末尾）：旧写法是「先 appendChild、再隔着若干
+      // await 后端请求才绑动作」，面板可见后约 2 秒内点任何按钮都无效（能命中按钮但没有
+      // 监听器）。绑完再入文档，保证「可见即可用」。
+      const close = () => overlay.remove();
+      overlay.querySelector('[data-a="close"]').addEventListener("click", close);
+      overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
+      overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); close(); } });
+
+      const f = (name) => overlay.querySelector(`[data-f="${name}"]`);
+      /** 环境提示位（面板打开时写一次：后端可用性）。保存/操作结果绝不写这里。 */
+      const setStatus = (text, tone = "") => {
+        const el = overlay.querySelector('[data-a="status"]');
+        el.textContent = text;
+        el.className = "tk-cards-settings-status" + (tone ? ` ${tone}` : "");
+      };
+      /** 操作结果提示位（保存/测试/清缓存等），与上面的环境提示物理分开，互不覆盖。 */
+      const setResult = (text, tone = "") => {
+        const el = overlay.querySelector('[data-a="action-status"]');
+        el.textContent = text;
+        el.className = "tk-cards-settings-status tk-cards-config-result" + (tone ? ` ${tone}` : "");
+        el.hidden = !text;
+        el.scrollIntoView?.({ block: "nearest" });
+      };
+
+      // ── 表单初始值 ──
+      f("default_source").value = remote.default_source;
+      f("allow_fallback").value = remote.allow_fallback === false ? "0" : "1";
+      f("timeout_ms").value = String(remote.timeout_ms);
+      f("deeplx_exe").value = remote.deeplx.exe_path || "";
+      f("deeplx_log").value = remote.deeplx.log_path || "";
+      f("deeplx_port").value = String(remote.deeplx.port || 1188);
+      f("dashscope_base").value = remote.dashscope.base_url || "";
+      f("dashscope_model").value = remote.dashscope.model || "";
+      f("ollama_base").value = remote.ollama_base || "";
+      f("proxy").value = remote.proxy || "";
+      f("weight_min").value = String(remote.weight_min);
+      f("weight_max").value = String(remote.weight_max);
+      f("auto_calibrate").checked = remote.auto_calibrate !== false;
+      f("semantic_enabled").checked = remote.semantic_enabled === true;
+
+      // 翻译源清单（带每个源的实时配置状态）
+      const providers = status.providers || {};
+      const sourceGrid = overlay.querySelector('[data-a="sources"]');
+      sourceGrid.innerHTML = TRANSLATE_SOURCES.filter(([id]) => id !== "auto").map(([id, label]) => {
+        const st = providers[id] || {};
+        const stateText = st.cooldown_seconds > 0 ? "冷却中" : (st.configured === false ? "未配置" : (st.health === "healthy" ? "可用" : "待使用"));
+        const on = remote.enabled_sources.includes(id);
+        return `<label class="tk-cards-check tk-cards-check-row"><input type="checkbox" data-s="${escAttr(id)}" ${on ? "checked" : ""}><span>${esc(label)}<small class="tk-cards-muted">${esc(stateText)}</small></span></label>`;
+      }).join("");
+
+      // 本地模型清单（来自后端，未加载也可选）
+      const llmModels = status.local_llm?.models || {};
+      const llmSelect = f("llm_model");
+      const modelIds = Object.keys(llmModels).length ? Object.keys(llmModels) : [remote.llm_model];
+      llmSelect.innerHTML = modelIds.map((id) => `<option value="${escAttr(id)}">${esc(llmModels[id]?.label || id)}</option>`).join("");
+      llmSelect.value = modelIds.includes(remote.llm_model) ? remote.llm_model : modelIds[0];
+      overlay.querySelector('[data-a="llm-dir"]').textContent = `模型目录：${status.local_llm?.models_dir || "（后端未返回，重启 ComfyUI 后可见）"}`;
+      overlay.querySelector('[data-a="deeplx-state"]').textContent = status.deeplx
+        ? `　当前：${status.deeplx.installed ? "已安装" : "未检测到"}${status.deeplx.listening ? " · 运行中" : ""}${status.deeplx.port ? ` · 端口 ${status.deeplx.port}` : ""}`
+        : "";
+      overlay.querySelector('[data-a="baidu-state"]').textContent = status.baidu
+        ? `　当前：${status.baidu.configured ? "已配置" : "未配置"}`
+        : "";
+      // 百度四项在面板内直接读写（与「打开完整弹窗」共用 data/translation_providers.json，存储不迁移）
+      const b = (name) => overlay.querySelector(`[data-b="${name}"]`);
+      const loadBaiduConfig = async () => {
+        try {
+          const conf = await fetchJson("/anima/translate/baidu/config", { timeout: 8000 });
+          b("appid").placeholder = conf.has_appid ? "已保存，留空保持不变" : "百度开发者 APPID";
+          b("api-key").placeholder = conf.has_api_key ? "已保存，留空保持不变" : "百度开发者 API Key";
+          b("model").value = conf.model_type === "nmt" ? "nmt" : "llm";
+          b("intervene").checked = conf.need_intervene === true;
+        } catch (error) {
+          setResult(`百度配置读取失败：${error.message || error}`, "is-error");
+        }
+      };
+      const baiduPayload = () => ({
+        appid: b("appid").value.trim(),
+        api_key: b("api-key").value.trim(),
+        model_type: b("model").value,
+        need_intervene: b("intervene").checked,
+      });
+      overlay.querySelector('[data-a="baidu-save"]').addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        setResult("正在保存百度配置…");
+        try {
+          const conf = await postJson("/anima/translate/baidu/config", baiduPayload(), 15000);
+          if (conf.ok === false) throw new Error(conf.error || "保存失败");
+          b("appid").value = "";
+          b("api-key").value = "";
+          b("appid").placeholder = conf.has_appid ? "已保存，留空保持不变" : "百度开发者 APPID";
+          b("api-key").placeholder = conf.has_api_key ? "已保存，留空保持不变" : "百度开发者 API Key";
+          setResult(conf.configured ? "百度配置已保存并启用" : "已保存，但还缺少 APPID 或 API Key", conf.configured ? "is-success" : "");
+          await this._refreshTranslationStatus();
+        } catch (error) {
+          setResult(`百度配置保存失败：${error.message || error}`, "is-error");
+        } finally {
+          button.disabled = false;
+        }
+      });
+      overlay.querySelector('[data-a="baidu-test"]').addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        setResult("正在测试百度翻译…");
+        try {
+          const r = await postJson("/anima/translate/baidu/test", { ...baiduPayload(), q: "你好，世界" }, 40000);
+          if (!r.ok) throw new Error(r.error || "百度翻译测试失败");
+          setResult(`百度连接成功：${r.translatedText || "已返回译文"}`, "is-success");
+        } catch (error) {
+          setResult(`百度连接失败：${error.message || error}`, "is-error");
+        } finally {
+          button.disabled = false;
+        }
+      });
+      loadBaiduConfig();
+      overlay.querySelector('[data-a="llm-state"]').textContent = status.local_llm
+        ? `　当前：${status.local_llm.status === "ready" ? `已加载 ${status.local_llm.model || ""}` : (status.local_llm.status || "未加载")}`
+        : "";
+
+      // 分类 LLM（复用既有 /anima/llm/config 路由与存储）
+      let llmConf = { mode: "auto" };
+      try {
+        llmConf = await fetchJson("/anima/llm/config", { timeout: 8000 });
+      } catch (error) {
+        setStatus(`分类 LLM 配置读取失败：${error.message || error}`, "is-error");
+      }
+      f("classify_mode").value = ["auto", "ollama", "api"].includes(llmConf.mode) ? llmConf.mode : "auto";
+      f("classify_base").value = llmConf.base_url || "";
+      f("classify_model").value = llmConf.model || "";
+      f("classify_key").placeholder = llmConf.hasApiKey ? "已保存，留空保持不变" : "可留空";
+      overlay.querySelector('[data-a="llm-classify-state"]').textContent = llmConf.ollama?.available
+        ? `　当前：Ollama 可用（${llmConf.ollama.model || "已连接"}）`
+        : "　当前：Ollama 未检测到";
+
+      // 用户词典（后端既有 GET 只按词查单条，这里走新增的 list 路由）
+      const glossaryEl = overlay.querySelector('[data-a="glossary"]');
+      const glossaryHint = overlay.querySelector('[data-a="glossary-hint"]');
+      const renderGlossary = async () => {
+        try {
+          const r = await fetchJson("/anima/translate/glossary/list", { timeout: 8000 });
+          const entries = Array.isArray(r.entries) ? r.entries : [];
+          glossaryHint.textContent = entries.length
+            ? `用户词典：${entries.length} 条（保存过的中文→英文对照优先于机翻）`
+            : "用户词典：暂无条目（在翻译结果里点「存词典」即可添加）";
+          glossaryEl.innerHTML = entries.map((entry) => `<div class="tk-cards-glossary-row" data-k="${escAttr(entry.id)}">
+            <span class="tk-cards-glossary-text"><b>${esc(entry.source_text)}</b><small>${esc(entry.translated_text)}</small></span>
+            <button type="button" class="tk-cards-icon-btn" data-a="glossary-del" data-k="${escAttr(entry.id)}" title="删除该词典条目" aria-label="删除该词典条目">${icon("trash", 12)}</button>
+          </div>`).join("");
+          glossaryEl.querySelectorAll('[data-a="glossary-del"]').forEach((button) => {
+            button.addEventListener("click", async () => {
+              button.disabled = true;
+              try {
+                await fetchJson(`/anima/translate/glossary?id=${encodeURIComponent(button.getAttribute("data-k"))}`, { method: "DELETE", timeout: 8000 });
+                await renderGlossary();
+              } catch (error) {
+                setStatus(`删除词典条目失败：${error.message || error}`, "is-error");
+                button.disabled = false;
+              }
+            });
+          });
+        } catch (error) {
+          glossaryHint.textContent = `用户词典不可用：${error.message || error}`;
+        }
+      };
+      renderGlossary();
+
+      const readForm = () => ({
+        default_source: f("default_source").value,
+        enabled_sources: [...sourceGrid.querySelectorAll("input[data-s]")].filter((el) => el.checked).map((el) => el.getAttribute("data-s")),
+        allow_fallback: f("allow_fallback").value !== "0",
+        timeout_ms: Number(f("timeout_ms").value),
+        auto_calibrate: f("auto_calibrate").checked,
+        semantic_enabled: f("semantic_enabled").checked,
+        llm_model: f("llm_model").value,
+        weight_min: Number(f("weight_min").value),
+        weight_max: Number(f("weight_max").value),
+        deeplx: { exe_path: f("deeplx_exe").value.trim(), log_path: f("deeplx_log").value.trim(), port: Number(f("deeplx_port").value) },
+        dashscope: { base_url: f("dashscope_base").value.trim(), model: f("dashscope_model").value.trim() },
+        ollama_base: f("ollama_base").value.trim(),
+        proxy: f("proxy").value.trim(),
+        api_keys: {
+          dashscope_api_key: f("dashscope_key").value.trim(),
+          dashscope_api_key_clear: f("dashscope_key_clear").checked,
+          classify_api_key: f("classify_key").value.trim(),
+          classify_api_key_clear: f("classify_key_clear").checked,
+        },
+        classify: {
+          mode: f("classify_mode").value,
+          base_url: f("classify_base").value.trim(),
+          model: f("classify_model").value.trim(),
+        },
+      });
+
+      overlay.querySelector('[data-a="open-baidu"]').addEventListener("click", () => this._manageBaidu());
+      overlay.querySelector('[data-a="open-llm"]').addEventListener("click", () => this._manageLocalLlm());
+      overlay.querySelector('[data-a="deeplx-restart"]').addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        setResult("正在检测并启动 DeepLX…");
+        try {
+          await postJson("/anima/translate/settings", readForm(), 15000);
+          const restart = await postJson("/anima/translate/deeplx/restart", {}, 15000);
+          setResult(restart.started ? "DeepLX 已启动" : "DeepLX 未能启动：请检查可执行文件路径与端口", restart.started ? "is-success" : "is-error");
+          await this._refreshTranslationStatus();
+        } catch (error) {
+          setResult(`DeepLX 操作失败：${error.message || error}`, "is-error");
+        } finally {
+          button.disabled = false;
+        }
+      });
+      overlay.querySelector('[data-a="glossary-view"]').addEventListener("click", async () => {
+        glossaryEl.hidden = !glossaryEl.hidden;
+        if (!glossaryEl.hidden) await renderGlossary();
+      });
+      overlay.querySelector('[data-a="cache-clear"]').addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          const r = await postJson("/anima/translate/cache/clear", {}, 15000);
+          setResult(`翻译缓存已清空（移除 ${Number(r.removed) || 0} 条）`, "is-success");
+        } catch (error) {
+          setResult(`清空翻译缓存失败：${error.message || error}`, "is-error");
+        } finally {
+          button.disabled = false;
+        }
+      });
+      overlay.querySelector('[data-a="reset"]').addEventListener("click", () => {
+        const d = TRANSLATE_SETTINGS_DEFAULT;
+        f("default_source").value = d.default_source;
+        f("allow_fallback").value = d.allow_fallback ? "1" : "0";
+        f("timeout_ms").value = String(d.timeout_ms);
+        f("deeplx_exe").value = d.deeplx.exe_path;
+        f("deeplx_log").value = d.deeplx.log_path;
+        f("deeplx_port").value = String(d.deeplx.port);
+        f("dashscope_base").value = d.dashscope.base_url;
+        f("dashscope_model").value = d.dashscope.model;
+        f("ollama_base").value = d.ollama_base;
+        f("proxy").value = d.proxy;
+        f("weight_min").value = String(d.weight_min);
+        f("weight_max").value = String(d.weight_max);
+        f("auto_calibrate").checked = d.auto_calibrate;
+        f("semantic_enabled").checked = d.semantic_enabled;
+        sourceGrid.querySelectorAll("input[data-s]").forEach((el) => { el.checked = d.enabled_sources.includes(el.getAttribute("data-s")); });
+        setResult("已填入默认值，点「保存设置」后才生效");
+      });
+      overlay.querySelector('[data-a="save"]').addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        const payload = readForm();
+        if (!payload.enabled_sources.length) { setResult("至少要启用一个翻译源", "is-error"); return; }
+        button.disabled = true;
+        setResult("保存中…");
+        try {
+          const saved = await postJson("/anima/translate/settings", payload, 20000);
+          if (saved?.ok === false) throw new Error(saved.error || "保存失败");
+          const next = applyTranslateSettings(saved.settings || payload);
+          saveTranslateSettingsLocal(next);
+          // 默认源变更时同步覆盖旧的一次性 localStorage 选择，避免设置看起来不生效
+          if (this.translateSourceEl) {
+            saveTranslateSource(next.default_source);
+            this.translateSourceEl.value = next.default_source;
+          }
+          // 分类 LLM 走既有路由（与「LLM」按钮共用同一份配置）
+          const classifyPayload = { mode: payload.classify.mode, base_url: payload.classify.base_url, model: payload.classify.model };
+          if (payload.api_keys.classify_api_key) classifyPayload.api_key = payload.api_keys.classify_api_key;
+          if (payload.api_keys.classify_api_key_clear) { classifyPayload.api_key = ""; classifyPayload.api_key_clear = true; }
+          await postJson("/anima/llm/config", classifyPayload, 15000);
+          setResult("设置已保存", "is-success");
+          this._flash("翻译设置已保存");
+          await this._refreshTranslationStatus();
+        } catch (error) {
+          // 后端不可用也不能丢配置：规范化后写入本机缓存，本浏览器内继续生效
+          const cached = applyTranslateSettings(payload);
+          saveTranslateSettingsLocal(cached);
+          if (this.translateSourceEl) this.translateSourceEl.value = cached.default_source;
+          setResult(`设置未写入后端（${error.message || error}）；已保存到本机缓存，本浏览器内继续生效`, "is-error");
+        } finally {
+          button.disabled = false;
+        }
+      });
+
+      // 环境提示（后端可用性）只在面板打开时写一次，占用独立的 status 位；
+      // 保存/测试结果写 action-status 位 —— 两者物理分开，失败反馈不会被这条覆盖。
+      setStatus(snapshot.offline
+        ? `后端设置接口不可用（${snapshot.error || "未连接"}）：当前显示本机缓存值，保存只写入浏览器`
+        : "改动点「保存设置」后生效；敏感字段留空表示保持不变。", snapshot.offline ? "is-error" : "");
+      // 所有监听器与表单初值都已就绪 → 此时才把面板插入文档（可见即可用）
+      document.body.appendChild(overlay);
+      overlay.tabIndex = -1;
       overlay.focus?.();
     }
 
@@ -3183,7 +3765,7 @@
       const parts = this._promptPieces();
       const piece = parts[index];
       if (!piece || button?.disabled) return;
-      const originalLabel = button?.textContent || "译";
+      const originalHtml = button?.innerHTML || "";
       if (button) {
         button.disabled = true;
         button.textContent = "…";
@@ -3207,7 +3789,8 @@
       } finally {
         if (button?.isConnected) {
           button.disabled = false;
-          button.textContent = originalLabel;
+          // 按钮内容是内联 SVG 图标（icon() 规范），用 innerHTML 原样还原
+          if (originalHtml) button.innerHTML = originalHtml;
         }
       }
     }
@@ -4502,24 +5085,33 @@
       overlay.className = "tk-cards-overlay";
       overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-batch-translate-box">
         <div class="tk-cards-overlay-head"><b>批量重译卡片</b><button type="button" class="tk-cards-btn" data-a="close">关闭</button></div>
-        <div class="tk-cards-settings-note">中文优先取 <b>D 站词典</b>（画廊用的那份，秒回、不联网）；词典没收录的才走机翻（DeepLX → DashScope）。</div>
+        <div class="tk-cards-settings-note">中文优先取 <b>D 站词典</b>（画廊用的那份，秒回、不联网）；词典没收录的才按所选翻译源机翻——这里的选择与②区「翻译源」一致，可在「翻译设置」里配置回退顺序。</div>
         <label class="tk-cards-field"><span>处理范围</span><select data-f="scope"><option value="all">全部卡片（${all.length} 张，覆盖已有注释）</option><option value="missing">仅未翻译（${missing.length} 张）</option><option value="dictionary">只用 D 站词典（${missing.length} 张，秒完成、不机翻）</option></select></label>
+        <label class="tk-cards-field"><span>翻译源</span><select class="tk-cards-select" data-f="source">${TRANSLATE_SOURCES.map(([id, label]) => `<option value="${escAttr(id)}">${esc(label)}</option>`).join("")}</select></label>
         <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="start">开始重译</button></div>
       </div>`;
       document.body.appendChild(overlay);
       const close = () => overlay.remove();
+      const sourceSel = overlay.querySelector('[data-f="source"]');
+      sourceSel.value = this.translateSourceEl?.value || loadTranslateSource();
       overlay.querySelector('[data-a="close"]').addEventListener("click", close);
       overlay.querySelector('[data-a="cancel"]').addEventListener("click", close);
       overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
       overlay.addEventListener("keydown", (ev) => { if (ev.key === "Escape") close(); });
       overlay.querySelector('[data-a="start"]').addEventListener("click", async () => {
         const scope = overlay.querySelector('[data-f="scope"]').value;
+        const source = sourceSel.value;
+        // 弹窗里选的源同步回②区，避免两处显示不一致
+        if (this.translateSourceEl && this.translateSourceEl.value !== source) {
+          this.translateSourceEl.value = source;
+          saveTranslateSource(source);
+        }
         close();
-        await this.batchTranslate(scope);
+        await this.batchTranslate(scope, source);
       });
     }
 
-    async batchTranslate(scope = "all") {
+    async batchTranslate(scope = "all", source = null) {
       if (scope === "dictionary") {           // 纯词典档：不碰机翻
         await this.fillZhFromDictionary("missing");
         return;
@@ -4528,6 +5120,7 @@
       const todo = scope === "missing" ? all.filter((p) => !String(p.notes || "").trim()) : all;
       if (!todo.length) { this._flash("该范围没有可翻译的卡片"); return; }
       const total = todo.length;
+      const effectiveSource = source || this.translateSourceEl?.value || loadTranslateSource();
       let cursor = 0, okN = 0, failN = 0;
 
       // 第一步：整批查 D 站词典（一次请求最多 160 条）—— 命中的直接用，不再送机翻
@@ -4556,7 +5149,7 @@
           if (index >= remaining.length) return;
           const card = remaining[index];
           try {
-            const zh = await translateAuto(card.prompt);
+            const zh = await translateAuto(card.prompt, effectiveSource);
             if (!zh || zh === card.prompt) { failN++; continue; }
             card.notes = zh;
             card.updatedAt = Date.now();
@@ -4925,7 +5518,15 @@
       translateBox.open = this.uiState.collapsed.translate !== true;
       const translateHead = document.createElement("summary");
       translateHead.className = "tk-cards-translate-head";
-      translateHead.innerHTML = `<b>中文翻译输入</b><span>选择候选后加入下方当前提示词，不会覆盖已有内容</span>`;
+      translateHead.innerHTML = `<b>中文翻译输入</b><span>选择候选后加入下方当前提示词，不会覆盖已有内容</span><button type="button" class="tk-cards-icon-btn" data-a="translate-settings" title="翻译设置：统一配置翻译源、各服务参数、词典与缓存" aria-label="翻译设置">${icon("settings", 14)}</button>`;
+      const settingsEntry = translateHead.querySelector('[data-a="translate-settings"]');
+      settingsEntry.addEventListener("pointerdown", (event) => event.stopPropagation());
+      settingsEntry.addEventListener("click", (event) => {
+        // summary 内的按钮默认会连带展开/收起整个翻译框，这里拦住
+        event.preventDefault();
+        event.stopPropagation();
+        this._openTranslateSettings();
+      });
       translateBox.appendChild(translateHead);
       translateBox.addEventListener("toggle", () => {
         this.uiState.collapsed.translate = !translateBox.open;
@@ -5108,6 +5709,7 @@
       this._switchLibPane(this.uiState.pane || "lib");
       if (this.w.positive?.value) this._renderChips();
       this._refreshTranslationStatus();
+      this._loadTranslateSettings();
     }
 
     _switchLibPane(which) {
@@ -5151,6 +5753,28 @@
  .tk-cards-btn-main:hover { border-color:var(--tk-accent-strong); background:var(--tk-accent-strong); color:#111315; }
  .tk-cards-btn-danger { border-color:rgba(203,133,133,.7); background:rgba(203,133,133,.10); color:#e1a5a5; }
  .tk-cards-btn-danger:hover { border-color:var(--tk-danger); background:rgba(203,133,133,.18); color:#f0c0c0; }
+ /* 统一按钮组容器与图标按钮：面板里所有就地拼装的按钮行都收敛到这两条 */
+ .tk-cards-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+ .tk-cards-icon-btn { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; padding:0; box-sizing:border-box; border:1px solid var(--tk-border); border-radius:4px; background:#202326; color:var(--tk-muted); cursor:pointer; line-height:1; }
+ .tk-cards-icon-btn:hover, .tk-cards-icon-btn:focus-visible { border-color:var(--tk-accent); background:#2a2d30; color:var(--tk-accent-strong); outline:none; }
+ .tk-cards-icon-btn:disabled { opacity:.45; cursor:default; }
+ /* 弹窗/面板内的通用字段与复选框（百度、模型管理两个弹窗此前完全没有样式） */
+ .tk-cards-field input, .tk-cards-field select, .tk-cards-field textarea { width:100%; min-height:28px; box-sizing:border-box; padding:5px 7px; border:1px solid var(--tk-border); border-radius:4px; background:#202326; color:var(--tk-text); font-size:11px; }
+ .tk-cards-field input:focus, .tk-cards-field select:focus, .tk-cards-field textarea:focus { outline:none; border-color:var(--tk-accent); box-shadow:0 0 0 2px rgba(208,201,187,.12); }
+ .tk-cards-check { display:flex; align-items:center; gap:7px; min-height:28px; padding:4px 7px; box-sizing:border-box; border:1px solid var(--tk-border-soft); border-radius:4px; background:#141618; color:var(--tk-text); font-size:11px; cursor:pointer; }
+ .tk-cards-check input { flex:0 0 auto; width:14px; height:14px; margin:0; accent-color:var(--tk-accent); }
+ .tk-cards-check > span { min-width:0; }
+ .tk-cards-check:hover { border-color:var(--tk-border); }
+ .tk-cards-muted { color:var(--tk-muted); font-size:10px; }
+ .tk-cards-baidu-box, .tk-cards-llm-box { width:min(520px,92vw); }
+ .tk-cards-baidu-status { min-height:20px; padding:6px 8px; border:1px solid var(--tk-border-soft); border-radius:4px; background:#141618; color:var(--tk-muted); font-size:11px; }
+ .tk-cards-baidu-status[data-tone="success"] { border-color:rgba(155,178,182,.7); color:#c2d7d9; }
+ .tk-cards-baidu-status[data-tone="error"] { border-color:rgba(203,133,133,.7); color:#e2aaaa; }
+ .tk-cards-llm-rows { display:flex; flex-direction:column; gap:6px; }
+ .tk-cards-llm-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-height:42px; box-sizing:border-box; padding:7px 8px; border:1px solid var(--tk-border-soft); border-radius:4px; background:#151719; font-size:11px; }
+ .tk-cards-llm-row b { flex:0 0 auto; color:var(--tk-text); font-size:11px; }
+ .tk-cards-llm-row .tk-cards-btn { margin-left:auto; }
+ .tk-cards-llm-error { color:var(--tk-warn); font-size:10px; min-height:14px; }
  .tk-cards-select { width:100%; min-height:30px; box-sizing:border-box; border:1px solid var(--tk-border); border-radius:4px; background:#202326; color:var(--tk-text); font-size:11px; padding:5px 7px; }
  .tk-cards-search { width:100%; min-height:30px; box-sizing:border-box; border:1px solid var(--tk-border); border-radius:4px; background:#141618; color:var(--tk-text); font-size:11px; padding:5px 8px; }
  .tk-cards-search:focus, .tk-cards-textarea:focus { outline:none; border-color:var(--tk-accent); box-shadow:0 0 0 2px rgba(208,201,187,.12); }
@@ -5189,9 +5813,10 @@
  .tk-cards-translate-box > summary:focus-visible { outline:2px solid var(--tk-accent); outline-offset:-2px; }
  .tk-cards-translate-box[open] > :not(summary) { margin-left:7px; margin-right:7px; }
  .tk-cards-translate-box[open] > .tk-cards-translate-input-row { margin-bottom:7px; }
- .tk-cards-translate-head { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
- .tk-cards-translate-head b { color:var(--tk-accent-strong); font-size:11px; }
- .tk-cards-translate-head span { color:var(--tk-muted); font-size:10px; }
+ .tk-cards-translate-head { display:flex; align-items:center; gap:8px; }
+ .tk-cards-translate-head b { flex:0 0 auto; color:var(--tk-accent-strong); font-size:11px; }
+ .tk-cards-translate-head > span { flex:1 1 auto; min-width:0; color:var(--tk-muted); font-size:10px; }
+ .tk-cards-translate-head .tk-cards-icon-btn { flex:0 0 auto; }
  .tk-cards-translate-source { display:flex; align-items:center; gap:6px; }
  .tk-cards-translate-source > span { flex:0 0 auto; color:var(--tk-muted); font-size:10px; }
  .tk-cards-translate-source .tk-cards-select { width:auto; min-width:150px; min-height:27px; }
@@ -5199,13 +5824,45 @@
  .tk-cards-translate-status-details > summary { min-height:24px; box-sizing:border-box; padding:5px 7px; cursor:pointer; color:var(--tk-muted); user-select:none; }
  .tk-cards-translate-status-details[open] > summary { color:var(--tk-accent-strong); border-bottom:1px solid var(--tk-border-soft); }
  .tk-cards-translate-status-details > summary:focus-visible { outline:2px solid var(--tk-accent); outline-offset:-2px; }
- .tk-cards-translate-status { display:flex; flex-direction:column; gap:3px; padding:5px 6px; }
- .tk-cards-translate-actual { color:var(--tk-info); font-weight:600; }
- .tk-cards-translate-provider-list { display:flex; flex-wrap:wrap; gap:3px 9px; }
- .tk-cards-translate-provider-list span { white-space:nowrap; }
- .tk-cards-translate-status-actions { display:flex; }
- .tk-cards-translate-status { display:flex; align-items:center; flex-wrap:wrap; gap:3px 10px; padding:4px 6px; border:1px solid var(--tk-border-soft); border-radius:4px; background:#141618; color:var(--tk-muted); font-size:9px; }
- .tk-cards-translate-status .tk-cards-translate-status-actions { margin-left:auto; }
+ .tk-cards-translate-actual { flex:0 0 auto; order:2; color:var(--tk-info); font-weight:600; }
+ /* provider 列表与动作条都强制单行（必要时横向滚动），状态行高度不再随内容折行增长。
+    旧写法 flex-wrap:wrap 在 400px 默认节点宽度下把动作条折成两行，状态行高 100→169px，
+    「管理模型」按钮被顶进底部工具栏区域导致集成脚本点击超时。
+    动作条用 order:1 提到状态行最上方：按钮 bottom 落在工具栏（视口底部 47px）之上。
+    溢出时滚动条必须可见：早期写法 scrollbar-width:none + ::-webkit-scrollbar{height:0}
+    把溢出内容彻底藏起来，320px 窄节点下「管理模型」「翻译设置」被裁到动作条可视区外且无任何提示
+    （实测 320px：overflow=137px，clientWidth 仅 244px）。改用 6px 细滚动条显式提示还有内容。 */
+ .tk-cards-translate-provider-list { display:flex; flex:1 1 auto; min-width:0; flex-wrap:nowrap; order:3; gap:3px 9px; overflow-x:auto; }
+ .tk-cards-translate-provider-list::-webkit-scrollbar { height:6px; }
+ .tk-cards-translate-provider-list::-webkit-scrollbar-thumb { border-radius:3px; background:#626a70; }
+ .tk-cards-translate-provider-list::-webkit-scrollbar-track { border-radius:3px; background:#141618; }
+ .tk-cards-translate-provider-list span { white-space:nowrap; flex:0 0 auto; }
+ /* 注意：这里不能声明 scrollbar-width —— Chromium 一旦看到该标准属性就会改回 overlay 滚动条
+    （不占布局、静止时淡出），::-webkit-scrollbar 的自定义高度随之失效，实测 scrollbarH 仍为 0。
+    只写 ::-webkit-scrollbar 系列即可强制经典滚动条：溢出时始终可见且占 6px。 */
+ .tk-cards-translate-status-actions { flex:1 1 100%; order:1; flex-wrap:nowrap; gap:3px; overflow-x:auto; }
+ .tk-cards-translate-status-actions::-webkit-scrollbar { height:6px; }
+ .tk-cards-translate-status-actions::-webkit-scrollbar-thumb { border-radius:3px; background:#626a70; }
+ .tk-cards-translate-status-actions::-webkit-scrollbar-track { border-radius:3px; background:#141618; }
+ .tk-cards-translate-status-actions > * { flex:0 0 auto; }
+ /* 动作条内按钮水平内边距 9→6px、间距 4→3px（高度档不变）：让 4 个按钮 + 设置图标在默认宽度下同排。
+    实测 400px：overflow 57→0px，5 个控件 right 全部 ≤ 动作条右缘且 elementFromPoint 命中自身。 */
+ .tk-cards-translate-status-actions .tk-cards-btn { padding:4px 6px; }
+ /* 状态行内所有按钮同一高度档（含图标按钮），保证基线对齐；图标按钮横向 padding 归零保持方形 */
+ .tk-cards-translate-status-actions .tk-cards-icon-btn { width:28px; height:28px; padding:0; }
+ /* 未配置状态提示（跟随主题变量，不硬编码灰阶） */
+ .tk-cards-btn.is-warn { border-color:var(--tk-warn); color:var(--tk-warn); }
+ /* 窄节点降级：状态行自身作为容器，内容宽 ≤300px（对应节点宽 ≈320px）时把文字按钮换成图标，
+     让动作条在极端窄宽度下也 overflow == 0，而不是把控件裁到可视区外。
+     容器查询不受支持时整块被忽略，退化为「文字版 + 可见滚动条」，仍有溢出提示。 */
+ .tk-cards-translate-status { container-type:inline-size; }
+ .tk-cards-adaptive-icon { display:none; }
+ @container (max-width:300px) {
+   .tk-cards-adaptive .tk-cards-adaptive-text { display:none; }
+   .tk-cards-adaptive .tk-cards-adaptive-icon { display:inline-flex; align-items:center; }
+   .tk-cards-adaptive { display:inline-flex; align-items:center; justify-content:center; width:28px; padding:0 !important; }
+ }
+ .tk-cards-translate-status { display:flex; align-items:center; flex-wrap:wrap; gap:4px 8px; padding:6px 7px; border:1px solid var(--tk-border-soft); border-radius:4px; background:#141618; color:var(--tk-muted); font-size:10px; }
  .tk-cards-translate-provider-list span.is-ok b { color:var(--tk-info); }
  .tk-cards-cur-chips-tools { display:flex; gap:4px; }
  .tk-cards-chip-translation.is-error { color:var(--tk-warn); }
@@ -5215,9 +5872,8 @@
  .tk-cards-translate-input-wrap { position:relative; flex:1 1 auto; min-width:0; }
  .tk-cards-translate-input-row .tk-cards-translate-input { display:block; width:100%; min-width:0; }
  .tk-cards-translate-actions { display:flex; flex:0 0 auto; flex-direction:column; justify-content:center; gap:4px; }
- .tk-cards-png-drop { display:inline-flex; align-items:center; gap:4px; min-height:26px; box-sizing:border-box; padding:2px 4px; border:1px dashed #555a5e; border-radius:4px; background:#141618; color:var(--tk-muted); font-size:9px; }
- .tk-cards-png-drop span { color:var(--tk-muted); font-size:9px; }
- .tk-cards-png-drop .tk-cards-btn { min-height:22px; padding:2px 6px; font-size:9px; }
+ .tk-cards-png-drop { display:inline-flex; align-items:center; gap:4px; min-height:28px; box-sizing:border-box; padding:0 4px 0 8px; border:1px dashed #555a5e; border-radius:4px; background:#141618; color:var(--tk-muted); font-size:10px; }
+ .tk-cards-png-drop span { color:var(--tk-muted); font-size:10px; }
  .tk-cards-png-drop.is-dragging { border-color:var(--tk-accent); background:#292d30; color:var(--tk-accent-strong); }
  .tk-cards-translate-suggest { top:calc(100% + 2px); max-height:180px; }
 /* ②区卡片库联想下拉 */
@@ -5247,42 +5903,45 @@
  .tk-cards-resolve-tags strong { min-width:0; color:var(--tk-accent-strong); font-weight:600; word-break:break-word; }
  .tk-cards-resolve-actions { display:flex; align-items:center; gap:4px; flex-wrap:wrap; }
  .tk-cards-resolve-candidate-wrap { display:inline-flex; align-items:center; gap:2px; }
- .tk-cards-resolve-candidate { display:inline-flex; align-items:center; gap:5px; min-height:27px; padding:4px 7px; border:1px solid var(--tk-border); border-radius:4px; background:#202326; color:var(--tk-text); cursor:pointer; font-size:10px; }
+ .tk-cards-resolve-candidate { display:inline-flex; align-items:center; gap:5px; min-height:28px; padding:4px 9px; border:1px solid var(--tk-border); border-radius:4px; background:#202326; color:var(--tk-text); cursor:pointer; font-size:11px; }
  .tk-cards-resolve-candidate:hover, .tk-cards-resolve-candidate:focus-visible { border-color:var(--tk-accent); background:#2b2f32; color:var(--tk-accent-strong); outline:none; }
  .tk-cards-resolve-candidate.is-verified { border-color:rgba(155,178,182,.7); }
  .tk-cards-resolve-candidate small { color:var(--tk-info); font-size:9px; }
- .tk-cards-resolve-fallback { min-height:27px; font-size:10px; }
- .tk-cards-resolve-save { min-height:25px; padding:3px 6px; border:1px solid var(--tk-border); border-radius:4px; background:#202326; color:var(--tk-muted); cursor:pointer; font-size:9px; }
+ .tk-cards-resolve-save { min-height:28px; padding:4px 9px; border:1px solid var(--tk-border); border-radius:4px; background:#202326; color:var(--tk-muted); cursor:pointer; font-size:11px; }
  .tk-cards-resolve-save:hover, .tk-cards-resolve-save:focus-visible { border-color:var(--tk-accent); color:var(--tk-accent-strong); outline:none; }
  .tk-cards-resolve-empty { color:var(--tk-muted); font-size:10px; }
  .tk-cards-resolve-semantic-hint { display:flex; align-items:center; gap:6px; flex-wrap:wrap; color:var(--tk-warn); font-size:10px; line-height:1.4; }
- .tk-cards-resolve-semantic-hint .tk-cards-btn { min-height:25px; padding:3px 7px; font-size:10px; }
-.tk-cards-chips { display:flex; flex-wrap:wrap; align-content:flex-start; gap:4px; height:180px; min-height:0; max-height:180px; overflow:auto; }
-.tk-cards-chip { position:relative; display:block; max-width:260px; min-width:150px; padding:4px 68px 4px 8px; border:1px solid #555a5e; border-radius:4px; background:#24282b; color:var(--tk-text); cursor:pointer; font-size:11px; overflow:hidden; }
- .tk-cards-chip:hover { border-color:var(--tk-accent); background:#303437; }
+.tk-cards-chips { display:flex; flex-wrap:wrap; align-content:flex-start; gap:5px; min-height:120px; max-height:680px; overflow:auto; }
+/* chip 宽度改为容器驱动：flex 基准固定 220px，宽度不再随权重文本长度变化。
+   旧版是 display:block + flex:0 1 auto（宽度取 max-content），权重 1.0→1.5 时
+   实测卡片宽 204.7→229.9px、同行第二张被右推 25.2px。 */
+.tk-cards-chip { position:relative; display:block; flex:1 1 220px; max-width:280px; min-width:150px; padding:4px 8px; border:1px solid #555a5e; border-radius:4px; background:#24282b; color:var(--tk-text); cursor:pointer; font-size:11px; overflow:hidden; }
+.tk-cards-chip:hover { border-color:var(--tk-accent); background:#303437; }
 .tk-cards-chip.is-hidden { border-color:rgba(203,133,133,.7); background:rgba(203,133,133,.08); opacity:.72; }
 .tk-cards-chip.is-hidden:hover { opacity:1; background:rgba(203,133,133,.14); }
 .tk-cards-chip.is-hidden .tk-cards-chip-en { color:var(--tk-muted); text-decoration:line-through; text-decoration-color:rgba(203,133,133,.8); }
 .tk-cards-chip-body { display:block; min-width:0; overflow:hidden; }
-.tk-cards-chip-top { display:flex; align-items:center; gap:4px; min-width:0; }
+.tk-cards-chip-top { display:flex; align-items:center; gap:5px; min-width:0; }
 .tk-cards-chip-en { min-width:0; flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.tk-cards-chip-zh { display:block; font-size:9px; color:var(--tk-muted); }
-.tk-cards-chip-translation { display:block; color:var(--tk-info); font-size:9px; line-height:1.25; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tk-cards-chip-zh { display:block; font-size:10px; color:var(--tk-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tk-cards-chip-translation { display:block; color:var(--tk-info); font-size:10px; line-height:1.25; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tk-cards-chip-weight { display:inline-flex; align-items:center; gap:2px; flex:0 0 auto; padding:1px 2px; border:1px solid rgba(255,255,255,.08); border-radius:4px; background:rgba(0,0,0,.12); }
 .tk-cards-chip-weight-step { display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; padding:0; border:0; border-radius:3px; background:rgba(255,255,255,.06); color:var(--tk-muted); cursor:pointer; font-family:"Geist Mono","JetBrains Mono",monospace; font-size:11px; line-height:1; font-weight:600; user-select:none; -webkit-user-select:none; }
 .tk-cards-chip-weight-step:hover { background:rgba(94,106,210,.24); color:var(--tk-text); }
 .tk-cards-chip-weight-step:active { transform:scale(.92); background:rgba(94,106,210,.34); }
 .tk-cards-chip-weight-val { box-sizing:border-box; width:30px; height:16px; padding:0; border:0; outline:0; background:transparent; color:var(--tk-text); text-align:center; font:9px "Geist Mono","JetBrains Mono",monospace; }
 .tk-cards-chip-weight-val:focus { border-radius:2px; box-shadow:0 0 0 1px var(--tk-accent); }
-.tk-cards-chip-translate { position:absolute; top:0; right:19px; bottom:0; display:none; padding:0 3px; border:0; background:transparent; color:var(--tk-info); font-size:10px; cursor:pointer; }
-.tk-cards-chip:hover .tk-cards-chip-translate { display:block; }
-.tk-cards-chip-translate:hover { color:var(--tk-accent-strong); }
-.tk-cards-chip-toggle { position:absolute; top:0; right:36px; bottom:0; display:none; width:29px; padding:0 2px; border:0; background:transparent; color:var(--tk-danger); font-size:9px; cursor:pointer; }
-.tk-cards-chip:hover .tk-cards-chip-toggle { display:inline-flex; align-items:center; justify-content:center; }
-.tk-cards-chip-toggle:hover, .tk-cards-chip-toggle:focus-visible { color:#f1b3b3; background:rgba(203,133,133,.14); outline:none; }
-.tk-cards-chip-x { position:absolute; top:0; right:0; bottom:0; display:none; background:transparent; border:none; color:#ff8a8a; font-size:9px; cursor:pointer; padding:0 3px; }
-.tk-cards-chip:hover .tk-cards-chip-x { display:block; }
- .tk-cards-chip-x:hover { color:#ff5555; }
+/* 三个操作按钮收进右上角覆盖层：hover / 键盘聚焦才出现，不再为它们常驻
+   padding-right:68px（chip 宽 230px 时约 30% 宽度长期空置）。 */
+.tk-cards-chip-actions { position:absolute; top:2px; right:2px; display:none; align-items:center; gap:2px; padding:1px; border-radius:4px; background:rgba(20,22,24,.88); }
+.tk-cards-chip:hover .tk-cards-chip-actions, .tk-cards-chip:focus-within .tk-cards-chip-actions { display:inline-flex; }
+.tk-cards-chip-actions .tk-cards-icon-btn { width:18px; height:18px; border-color:transparent; background:transparent; }
+.tk-cards-chip-translate { color:var(--tk-info); }
+.tk-cards-chip-translate:hover, .tk-cards-chip-translate:focus-visible { color:var(--tk-accent-strong); }
+.tk-cards-chip-toggle { color:var(--tk-danger); }
+.tk-cards-chip-toggle:hover, .tk-cards-chip-toggle:focus-visible { color:#f1b3b3; outline:none; }
+.tk-cards-chip-x { color:#ff8a8a; }
+.tk-cards-chip-x:hover, .tk-cards-chip-x:focus-visible { color:#ff5555; }
 .tk-cards-chips-resize-handle { margin-top:2px; }
 .tk-cards-cur-tools { display:flex; gap:4px; }
  .tk-cards-cats { display:flex; flex-wrap:wrap; gap:4px; padding-bottom:2px; }
@@ -5308,6 +5967,29 @@
 /* 快速分类大弹窗 */
  .tk-cards-catpick-box { width:min(480px,92vw); max-height:72vh; }
  .tk-cards-settings-box { width:min(520px,92vw); }
+ /* 统一翻译设置面板（一个入口覆盖全部翻译相关配置项） */
+ .tk-cards-config-box { width:min(560px,92vw); }
+ .tk-cards-config-body { display:flex; flex:1 1 auto; min-height:0; flex-direction:column; gap:9px; overflow:auto; padding-right:2px; }
+ .tk-cards-config-group { display:flex; flex-direction:column; gap:7px; padding:9px; border:1px solid var(--tk-border-soft); border-radius:6px; background:#151719; }
+ .tk-cards-config-group-head { display:flex; align-items:center; gap:6px; color:var(--tk-accent-strong); font-size:11px; font-weight:650; }
+ .tk-cards-config-sub { display:flex; flex-direction:column; gap:6px; padding:8px; border:1px solid var(--tk-border-soft); border-radius:5px; background:#141618; }
+ .tk-cards-config-sub-head { display:flex; align-items:baseline; gap:4px; flex-wrap:wrap; color:var(--tk-text); font-size:11px; font-weight:600; }
+ .tk-cards-config-sub-head .tk-cards-muted { font-weight:400; }
+ .tk-cards-config-row { display:flex; align-items:flex-end; gap:8px; flex-wrap:wrap; }
+ .tk-cards-config-row > .tk-cards-field { flex:1 1 180px; min-width:0; }
+ .tk-cards-config-hint { color:var(--tk-muted); font-size:10px; line-height:1.5; }
+ .tk-cards-check-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:5px; }
+ .tk-cards-check-row small { margin-left:5px; }
+ .tk-cards-glossary-list { display:flex; flex-direction:column; gap:4px; max-height:220px; overflow:auto; }
+ .tk-cards-glossary-list[hidden] { display:none; }
+ .tk-cards-glossary-row { display:flex; align-items:center; gap:8px; min-height:32px; box-sizing:border-box; padding:4px 6px 4px 8px; border:1px solid var(--tk-border-soft); border-radius:4px; background:#141618; }
+ .tk-cards-glossary-text { display:flex; flex:1 1 auto; min-width:0; align-items:baseline; gap:7px; }
+ .tk-cards-glossary-text b { color:var(--tk-text); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .tk-cards-glossary-text small { color:var(--tk-muted); font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .tk-cards-config-actions { justify-content:flex-end; padding-top:9px; border-top:1px solid var(--tk-border-soft); }
+ .tk-cards-config-actions .tk-cards-btn { min-width:104px; }
+ /* 操作结果提示位：与环境提示位（[data-a="status"]）分开，互不覆盖 */
+ .tk-cards-config-result[hidden] { display:none; }
  .tk-cards-card-grid-resize-handle { margin-top:2px; }
  .tk-cards-card-search { width:100%; min-height:28px; box-sizing:border-box; margin:0 0 5px; padding:5px 8px; border:1px solid var(--tk-border); border-radius:4px; background:#141618; color:var(--tk-text); font-size:11px; }
  .tk-cards-card-search:focus { outline:none; border-color:var(--tk-accent); box-shadow:0 0 0 2px rgba(208,201,187,.12); }
@@ -5465,14 +6147,24 @@
         }
       },
       async setup() {
-        window.__tkCardsDebug = window.__tkCardsDebug || {};
-        window.__tkCardsDebug.splitTags = splitTags;
-        window.__tkCardsDebug.splitPromptPieces = splitPromptPieces;
-        window.__tkCardsDebug.serializePromptPieces = serializePromptPieces;
-        window.__tkCardsDebug.appendCardToPrompt = appendCardToPrompt;
-        window.__tkCardsDebug.appendPromptBlock = appendPromptBlock;
+        // 兜底：新版前端（comfyui_frontend_package 1.48.x）只对「app setup 前已注册」的扩展
+        // 调用本回调，而本脚本按 setTimeout 轮询注册 → 命中与否取决于加载时序。
+        // 调试钩子的主动挂载见 init() 末尾的 attachDebugHooks()。
+        attachDebugHooks();
       },
     });
+    // 主动挂调试钩子：不依赖 setup 回调，保证排障时 window.__tkCardsDebug 一定可用
+    // （2026-09-22：Prompt Batch 就因 setup 未调用导致 __tkDebug 缺失，排障时一度误判）。
+    attachDebugHooks();
+  }
+
+  function attachDebugHooks() {
+    window.__tkCardsDebug = window.__tkCardsDebug || {};
+    window.__tkCardsDebug.splitTags = splitTags;
+    window.__tkCardsDebug.splitPromptPieces = splitPromptPieces;
+    window.__tkCardsDebug.serializePromptPieces = serializePromptPieces;
+    window.__tkCardsDebug.appendCardToPrompt = appendCardToPrompt;
+    window.__tkCardsDebug.appendPromptBlock = appendPromptBlock;
   }
 
   injectStyle();
