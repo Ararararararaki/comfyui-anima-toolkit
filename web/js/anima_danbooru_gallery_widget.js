@@ -479,6 +479,44 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
     return best.width;
   }
+
+  /**
+   * P站 取图尺寸档 —— 管的是**喂给节点执行**的那张图，不是画廊缩略图。
+   *
+   * 为什么需要它（2026-09-25 实测，经 Clash 7890 同一张 832×1216）：
+   *   原图 784KB / 1.08s · 1200px 850KB / 1.11s · 540px 40KB / 0.45s；
+   * 而对 6688×3764 的 PNG 原图，原图 27.7MB / 47s，降到 1200px 是亚秒级。
+   * 差距来自 P站 CDN 经代理只有约 312KB/s（D站 同条件 1296KB/s）。
+   * 默认 original = 本设置引入前的行为（零回归）。
+   */
+  const DG_IMAGE_SIZE_TIERS = Object.freeze([
+    { id: "original", label: "原图", note: "最清晰 · 最慢" },
+    { id: "master", label: "1200px", note: "长边≤1200 · 快得多" },
+    { id: "thumb", label: "540px", note: "最快 · 适合试跑" },
+  ]);
+
+  /** 档位归一化：非法值一律回 original（= 本设置引入前的行为） */
+  function clampImageSize(value) {
+    return DG_IMAGE_SIZE_TIERS.some((tier) => tier.id === value) ? value : "original";
+  }
+
+  /**
+   * 由 P站 的 preview（540px）URL 推导其它尺寸档。三种形态只差前缀与文件名后缀：
+   *   原图   : https://i.pximg.net/img-original/img/…/X_p0.jpg
+   *   1200px : https://i.pximg.net/img-master/img/…/X_p0_master1200.jpg   ← 抹掉 `/c/WxH` 前缀
+   *   540px  : https://i.pximg.net/c/540x540_70/img-master/img/…/X_p0_master1200.jpg
+   * `item.preview_url` 就是第三条（见 anima_gallery_pixiv.illust_to_item），所以 1200px
+   * 不必另拼 URL —— 把 `/c/<W>x<H>[_Q]/` 抹掉即可（真机实测 200 / 850KB）。
+   * 非 pximg 域名或拿不到 preview 时返回空串，由调用方原样退回原图，绝不猜别的源。
+   */
+  function pixivSizedUrl(previewUrl, size) {
+    const preview = String(previewUrl || "");
+    if (!preview || !/^https:\/\/[^/]*pximg\.net\//i.test(preview)) return "";
+    if (size === "thumb") return preview;
+    if (size === "master") return preview.replace(/\/c\/\d+x\d+(?:_\d+)?\//i, "/");
+    return "";
+  }
+
   /** 竖图盒比上限（h/w）：超过按上限截断，渲染层用 object-fit:contain 完整嵌入 */
   const DG_CLAMP_MAX_ASPECT = 2.2;
   /** 盒比（h/w）≤ 此值 → 跨 2 列；≤ 再下一档 → 跨 3 列 */
@@ -594,6 +632,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       gridHeight: Number.isFinite(source.gridHeight) ? Math.max(360, Math.min(1200, source.gridHeight)) : 620,
       // 缩略图大小（目标列宽 pt）：缺省 116 = 旧行为；档位 116/150/190/240/330
       thumbWidth: clampThumbWidth(source.thumbWidth),
+      // P站 取图尺寸（喂给节点执行的图）：缺字段 = original ⇒ 老工作流恢复后行为不变
+      imageSize: clampImageSize(source.imageSize),
       categories: Array.isArray(source.categories) ? source.categories : [],
       postCategories: source.postCategories && typeof source.postCategories === "object" ? source.postCategories : {},
       presets: Array.isArray(source.presets) ? source.presets.map(normalizePreset).filter((preset) => preset.name) : [],
@@ -3221,6 +3261,21 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       } catch { /* 模糊接口失败则不打扰，保留原有“你是不是想搜”提示 */ }
     }
 
+    /**
+     * 喂给**节点执行**的图片 URL —— 设置里的「取图尺寸（P站）」在这里生效。
+     *
+     * ⚠️ 只影响送到节点的地址：画廊缩略图仍用 540px，卡片菜单里的「下载原图」
+     *    仍走 post.full_url ⇒ 想要原图随时能单独下，不必为此把整批拖慢。
+     * 非 P站（或拿不到 preview）一律原样返回原图，不猜别的源。
+     */
+    effectiveImageUrl(card) {
+      const full = String(card?.dataset?.imageUrl || "");
+      const size = clampImageSize(this.settings?.imageSize);
+      if (size === "original" || !full) return full;
+      if (String(card?.dataset?.source || "") !== "pixiv") return full;
+      return pixivSizedUrl(card?.dataset?.previewUrl, size) || full;
+    }
+
     selectionFromCard(card) {
       const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
       let promptGroups = {};
@@ -3229,7 +3284,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       try { tags = card.dataset.tags ? JSON.parse(card.dataset.tags) : []; } catch { tags = []; }
       const promptOutputEnabled = this.settings.promptOutputEnabled !== false;
       return {
-        image_url: card.dataset.imageUrl || "",
+        image_url: this.effectiveImageUrl(card),
         prompt: promptOutputEnabled ? (card.dataset.prompt || "") : "",
         post_id: card.dataset.postId || "",
         tags: Array.isArray(tags) ? tags : [],
@@ -4527,6 +4582,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         preview.decoding = "async";
         preview.alt = `${isGallerySource ? this.sourceLabel(postSourceId) : "Danbooru"} #${post.id || ""}`;
         const previewUrl = post.preview_file_url || imageUrl;
+        // 取图尺寸档靠它推导 1200px（见 pixivSizedUrl）：preview 本身就是 540px 那条 CDN URL
+        card.dataset.previewUrl = previewUrl;
         const imageWidth = Number(post.image_width);
         const imageHeight = Number(post.image_height);
         if (imageWidth > 0 && imageHeight > 0) {
@@ -6870,7 +6927,25 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         + `实际卡宽会≥档位、且不超过 ${DG_MAX_PT}px（列数有下限保护，窄节点不会被撑出巨图）。`
         + "只影响网格排版，不改变节点尺寸。默认「小 116px」= 旧行为。";
       thumbLabel.append(thumbSelect);
-      viewGrid.append(pageLabel, heightLabel, thumbLabel);
+      const sizeLabel = document.createElement("label");
+      sizeLabel.className = "adg-field";
+      sizeLabel.textContent = "取图尺寸（P站）";
+      const sizeSelect = document.createElement("select");
+      for (const tier of DG_IMAGE_SIZE_TIERS) {
+        sizeSelect.add(new Option(
+          `${tier.label}（${tier.note}）`,
+          tier.id,
+          false,
+          tier.id === clampImageSize(this.settings.imageSize),
+        ));
+      }
+      sizeSelect.title = "只影响**喂给节点执行**的 P站 图。原图最清晰但最慢："
+        + "P站 原图常 2–27MB、CDN 经代理约 312KB/s，单张可达数十秒；"
+        + "1200px / 540px 体积小一个量级，批量取图快数倍。"
+        + "画廊缩略图与卡片菜单的「下载原图」都不受影响 —— 想要原图随时能单独下。"
+        + "改档位会刷新网格，需重新选图。";
+      sizeLabel.append(sizeSelect);
+      viewGrid.append(pageLabel, heightLabel, thumbLabel, sizeLabel);
       viewSection.append(viewTitle, viewGrid);
       content.append(viewSection);
 
@@ -7093,6 +7168,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           // 缩略图档位：setThumbWidth 只改设置 + 丢列步长反推基准，**不碰节点尺寸**；
           // 让新档位生效走的是下面既有的 applyGridHeight() + search(resetPage) 两条原有行为。
           this.setThumbWidth(Number(thumbSelect.value));
+          // P站 取图尺寸：只改设置本身；下面 search({resetPage:true}) 会重建网格，
+          // 已选中的卡片随之清空（与缩略图档位同样的既有行为），需重新选图。
+          this.settings.imageSize = clampImageSize(sizeSelect.value);
           this.saveSettings();
           this.applyGridHeight();
           this.search({ resetPage: true });
