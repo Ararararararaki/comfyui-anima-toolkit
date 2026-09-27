@@ -378,6 +378,11 @@
 .adg-pagination button.adg-cursor-chip { width: auto; min-width: 0; padding: 3px 7px; font-size: 11px; white-space: nowrap; }
 .adg-pagination button.active { border-color: var(--adg-go, #a895ff); background: var(--adg-tint-strong, #6758c9); color: var(--adg-fg, #fff); }
 .adg-pagination button.active:disabled { opacity: .8; }
+/* 无限滚动模式的分页位（2026-09-27）：显示「已加载 N 张 · 继续滚动加载 / 已到底」+ 回到顶部。
+   ⚠️ 必须覆盖 .adg-pagination button 的固定 24px 宽 —— 否则按钮里的中文会被挤成竖排文字
+   （与上面 .adg-cursor-step 同一个坑）。 */
+.adg-pagination .adg-scroll-count { color: var(--adg-dim, #9aa0b4); font-size: 11px; white-space: nowrap; }
+.adg-pagination button.adg-scroll-top { width: auto; min-width: 0; padding: 4px 10px; white-space: nowrap; }
 .adg-cursor-more { color: var(--adg-fg-soft, #9b9a95); font-size: 11px; padding: 0 1px; }
 .adg-cursor-batch { padding: 2px 8px; border: 1px solid var(--adg-line, rgba(255,255,255,.12)); border-radius: 999px; color: var(--adg-fg-soft, #9b9a95); font-size: 11px; white-space: nowrap; }
 .adg-cat-mode-badge { font-size: 11px; color: var(--adg-go, #8b5cf6); border: 1px dashed var(--adg-go, #8b5cf6); border-radius: 6px; padding: 2px 8px; white-space: nowrap; }

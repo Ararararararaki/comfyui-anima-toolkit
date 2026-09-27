@@ -249,6 +249,13 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
    * （发 48 也只会回 30 条，用户看到的"每页张数"跟设置里选的完全不符）。
    */
   const GALLERY_PAGE_SIZE = 30;
+  /**
+   * 页码分页源里**只有 P站**受上面那条约束（后端 page↔offset 写死 `(page-1)*30`）。
+   * yande.re / konachan.net / safebooru 的 `page` 与 `limit` 是**相互独立**的参数
+   * （moebooru `post.json` 与 gelbooru-dapi 都如此，后端 MAX_LIMIT=100），
+   * 所以它们可以按节点尺寸发自适应张数 —— 2026-09-27 修「底部大片空白」时确立。
+   */
+  const GALLERY_PAGE_LIMIT_MAX = 100;
   // C站「无限加载」池（2026-09-21）：档位必须与后端 anima_gallery_civitai.POOL_TARGET_OPTIONS 一致 ——
   // C站 图片接口单页上限就是 200 条，所以每一档正好对应 1~5 次请求。
   const CIVITAI_POOL_TARGET_OPTIONS = Object.freeze([200, 400, 600, 800, 1000]);
@@ -658,6 +665,21 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
   const DG_TALLER_MIN_DELTA = 120;
   const DG_TALLER_MIN_RATIO = 1.15;
 
+  // ---------- 无限滚动（2026-09-27）----------
+  /** 距底部多少像素就预取下一批（提前量，避免用户真的滚到底才开始转圈） */
+  const DG_SCROLL_PREFETCH_PX = 600;
+  /**
+   * 无限滚动下**保留在列表里的最大张数**（上限回收）。
+   * 不回收的话 DOM 会随滚动无限膨胀 —— 本项目是「全量重排 + 绝对定位」，每追加一批都要
+   * 重建全部卡片 + O(n) 重写 style。300 张时单次布局仍在几十毫秒量级，够用且不卡。
+   * ⚠️ 回收**不丢选中记录**：选中态与提示词编辑按 id 存在 `promptEdits` / `selectionOrder` 里。
+   */
+  const DG_LOADED_POSTS_MAX = 300;
+  /** 无限滚动模式下每批固定取多少张（**不要**用自适应值：那等于"每滚一屏发一次请求"） */
+  const DG_SCROLL_BATCH_MIN = 24;
+  /** 滚动方式：`infinite` = 滚到底自动加载（默认）；`pager` = 旧的分页器 */
+  const GALLERY_SCROLL_MODES = Object.freeze(["infinite", "pager"]);
+
   // ---------- 随机发现（产品向）----------
   // 裸 order:random 是「全库随机」，实测返回的多是无人点赞的冷门帖（score 个位数、有没有人贴都不知道），
   // 正是用户说的「不要冷门没贴的」。这里给随机加**质量地板**：随机池 = 满足分数/收藏门槛的帖子。
@@ -758,6 +780,11 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       civitaiPool: normalizeCivitaiPool(source.civitaiPool),
       // P站「匹配 D站」：缺字段 = 关闭（不自动反查）
       pixivMatch: normalizePixivMatch(source.pixivMatch),
+      // 滚动方式（2026-09-27）：`infinite` = 滚到底自动加载（默认）；`pager` = 旧分页器。
+      // 缺字段 = infinite（用户明确要求"就不用页数的方式了"），非法值一律回默认。
+      galleryScrollMode: GALLERY_SCROLL_MODES.includes(source.galleryScrollMode)
+        ? String(source.galleryScrollMode)
+        : "infinite",
     };
   }
 
@@ -845,6 +872,13 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       // 渲染后自动补满（2026-09-16 用户真机反馈："还是填充不满节点，用一半以上的空位"）：
       // 首屏 / 翻页 / 换源 渲染完就先检查一次「填满没有」，不再只等用户纵向拉大节点。
       this.autoFillTimer = null;
+      this.autoFillRetryTimer = null; // 被闸门拦下后的**有界重试**定时器（2026-09-27，见 scheduleAutoFillRetry）
+      // 无限滚动（2026-09-27）
+      this._scrollLoading = false;      // 追加请求在途（与 fillMoreBusy 联合互斥）
+      this._scrollRafPending = false;   // 滚动回调的 rAF 节流标记
+      this._infiniteScrollBound = false;
+      this._gridScrollHandler = null;
+      this._gridWheelHandler = null;
       this.autoFillRounds = 0;       // 本轮结果集内已自动补了几次（上限 DG_AUTO_FILL_MAX_ROUNDS）
       // 补图的目标可视高：**一经确定就在本轮结果集内锁死**。
       // 为什么不每轮重读 grid.clientHeight：新前端布局器会按 DOM 内容把节点撑高，
@@ -1018,6 +1052,51 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       return this.sourceCapabilities(sourceId).page_numbers;
     }
 
+    /** 该源是否 P站 —— 唯一受「每页固定 30」约束的页码源（后端 page↔offset 写死） */
+    isPixivSource(sourceId = null) {
+      return String(sourceId || this.activeSourceId()) === "pixiv";
+    }
+
+    /**
+     * 页码分页源的**每页张数**（2026-09-27）。
+     *
+     * 原先 `gallerySearchParams()` 对所有页码源**硬发** `GALLERY_PAGE_SIZE = 30`，
+     * `resolveLimit()` / `dgComputeAutoCount()` 完全不参与 ⇒ 节点越宽越填不满
+     * （离线复算、视口 800px：780 宽 6 列填 52.7%、1200 宽 9 列 33.3%、1580 宽 12 列 23.2%），
+     * 用户实报的「底部大片空白 + 最右列明显稀疏」正是这个。
+     *
+     * 现在：P站 保持 30（后端 `page` 换算写死 `(page-1)*30`，发别的值只会让"页码=批次"错位），
+     * 其余页码源（yande.re / konachan.net / safebooru）用自适应值，后端各自 clamp 到 100。
+     */
+    galleryPageLimit(sourceId = null) {
+      if (this.isPixivSource(sourceId)) return GALLERY_PAGE_SIZE;
+      const limit = Number(this.resolveLimit());
+      const base = limit > 0 ? limit : GALLERY_PAGE_SIZE;
+      return Math.max(DG_MIN_AUTO_COUNT, Math.min(GALLERY_PAGE_LIMIT_MAX, base));
+    }
+
+    /**
+     * 是否「无限滚动」模式（2026-09-27）。
+     * 只在**页码分页的源**上生效（D站 / P站）：C站 的游标批次条与「无限加载池」本身已经是
+     * "加载更多"形态，叠加会语义打架；P站 作品详情与本地分类浏览是有限集合，也不适用。
+     */
+    scrollMode() {
+      return this.settings.galleryScrollMode === "infinite"
+        && this.pageMode()
+        && !this.pixivDetail
+        && !this.settings.activeCategory;
+    }
+
+    /**
+     * 无限滚动每批取多少张（**固定值**，不是自适应值）。
+     * 自适应值等于"刚好一屏" ⇒ 滚一屏就得发一次请求；固定 24~48 张能让一次请求覆盖好几屏。
+     */
+    resolveAppendLimit() {
+      const limit = Number(this.resolveLimit());
+      const base = limit > 0 ? limit : DG_SCROLL_BATCH_MIN;
+      return Math.max(DG_SCROLL_BATCH_MIN, Math.min(GALLERY_PAGE_LIMIT_MAX, base));
+    }
+
     /** 分页条 / 状态栏里的「第几批」：页码模式的源显示页码，游标模式的源显示批号 */
     galleryBatchLabel() {
       return this.pageMode()
@@ -1085,9 +1164,10 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       const params = new URLSearchParams();
       if (this.pageMode(sourceId)) {
         params.set("page", String(Math.max(1, Number(this.page) || 1)));
-        // P站 上游固定 30 条/页、page 换算写死 (page-1)*30（与 limit 无关）——
-        // 发别的 limit 只会让"页码 = 批次"的语义错位，所以这里就是 30。
-        params.set("limit", String(GALLERY_PAGE_SIZE));
+        // ⚠️ 2026-09-27 修「底部大片空白」：原先这里对所有页码源硬发 limit=30，
+        // 自适应张数完全不参与 ⇒ 节点越宽越填不满（见 galleryPageLimit 的说明）。
+        // P站 必须保持 30（后端 page↔offset 写死），其余页码源发自适应值。
+        params.set("limit", String(this.galleryPageLimit(sourceId)));
       } else {
         params.set("cursor", String(this.cursorStack[this.cursorStack.length - 1] ?? ""));
         params.set("limit", String(this.resolveLimit()));
@@ -2334,7 +2414,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
      * 末批（无更多）与「取回来的全是重复」都记进 fillMoreExhausted，之后不再打接口。
      */
     async fillMoreForHeight() {
-      if (this.disposed || this.fillMoreBusy || this.fillMoreExhausted) return;
+      if (this.disposed || this.fillMoreExhausted) return;
       // 本地分类浏览（activeCategory）是**有限的本地集合**（按 id 回查已归类图片）：没有"下一页"可补，
       // 而补图走的是 search()，它开头就会清掉 activeCategory ⇒ 用户会被静默踢出分类视图。
       if (this.settings.activeCategory) return;
@@ -2346,6 +2426,28 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       //    真正的闸门是下面的 gridUnderfilled()：一屏放得下就一张都不多取。
       if (!this.posts.length) return;
       if (!this.gridUnderfilled()) return;
+      const appended = await this.appendNextBatch();
+      if (!appended) return;
+      this.renderPosts();
+      this.renderPagination();
+      this.setStatus(`${this.sourceLabel()}：已补到 ${this.posts.length} 张（填满本屏）`);
+    }
+
+    /**
+     * **追加下一批**（纯数据动作；2026-09-27 从 `fillMoreForHeight()` 里抽出）。
+     *
+     * 取数 → 去重合并 → 空页/全重复判到底 → 失败回滚。抽出来的唯一目的是让**两条链共用同一实现**：
+     *   · 自动补满（首屏没填满 / 节点拉大）—— `fillMoreForHeight()`
+     *   · 无限滚动（滚到底）—— `loadNextPageForScroll()`
+     * 否则两条链各写一套翻页逻辑，就会同时打上游（后端画廊并发只有 3，重复请求很贵）。
+     *
+     * 返回是否**真的**追加到了新内容（false = 已到底 / 被守卫拦下 / 失败 ⇒ 调用方不必渲染）。
+     */
+    async appendNextBatch() {
+      if (this.disposed || this.fillMoreBusy || this.fillMoreExhausted) return;
+      if (this.settings.activeCategory) return;
+      if (this.pixivDetail) return;
+      if (!this.posts.length) return;
       // 游标模式的源：契约只有 next_cursor，没有它就到底了；页码模式的源由后端按 page 换算 offset
       if (!this.pageMode() && !this.nextCursor) {
         this.fillMoreExhausted = true;
@@ -2373,16 +2475,15 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
           // 空页 / 全是重复 ⇒ 池子取光了，别再打接口
           this.fillMoreExhausted = true;
           this.posts = before;
-        } else {
-          this.posts = merged;
-          // 把两批的多页作品分组并起来（同 id 以新批为准）：否则早批卡片的「全部页」点了没反应
-          const groups = new Map(keepPixivGroups || []);
-          for (const [id, pages] of (this.pixivPageGroups || new Map())) groups.set(id, pages);
-          this.pixivPageGroups = groups.size ? groups : null;
-          this.setStatus(`${this.sourceLabel()}：已补到 ${merged.length} 张（填满本屏）`);
+          return false;
         }
-        this.renderPosts();
-        this.renderPagination();
+        this.posts = merged;
+        // 把两批的多页作品分组并起来（同 id 以新批为准）：否则早批卡片的「全部页」点了没反应
+        const groups = new Map(keepPixivGroups || []);
+        for (const [id, pages] of (this.pixivPageGroups || new Map())) groups.set(id, pages);
+        this.pixivPageGroups = groups.size ? groups : null;
+        this.trimLoadedPosts();
+        return true;
       } catch (error) {
         // 补图失败不该打断用户：恢复原结果集（连同多页分组），把原因写在状态栏
         this.posts = before;
@@ -2390,9 +2491,84 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
         this.renderPosts();
         this.renderPagination();
         this.setStatus(`补图失败：${error?.message || "未知错误"}`, "error");
+        return false;
       } finally {
         this.fillMoreBusy = false;
       }
+    }
+
+    /**
+     * 无限滚动的**上限回收**：只保留最近 DG_LOADED_POSTS_MAX 张。
+     * 只动数据不动 DOM —— `renderPosts()` 是全量重建，下次渲染自然收敛到上限。
+     * ⚠️ 回收不丢选中记录（选中态/提示词编辑按 id 存在 promptEdits / selectionOrder 里），
+     * 但 `querySelectorAll(".adg-card.is-selected")` 这类"从 DOM 取选中"的写法会漏掉被回收的卡。
+     */
+    trimLoadedPosts() {
+      const max = DG_LOADED_POSTS_MAX;
+      if (!Array.isArray(this.posts) || this.posts.length <= max) return;
+      this.posts = this.posts.slice(this.posts.length - max);
+    }
+
+    /**
+     * 滚到底时加载下一批（无限滚动入口，2026-09-27）。
+     *
+     * 与自动补满的**分工**：这里**不带** `gridUnderfilled()` 判据（滚到底就是要加载），
+     * 但共用同一套取数与去重（`appendNextBatch()`），并复用 `fillMoreBusy` 互斥锁 ——
+     * 否则"滚动加载"与"自动补满"会同时打上游（后端画廊并发只有 3）。
+     */
+    async loadNextPageForScroll() {
+      if (this.disposed || this._scrollLoading || this.fillMoreBusy || this.fillMoreExhausted) return;
+      if (!this.scrollMode() || !this.posts.length) return;
+      this._scrollLoading = true;
+      try {
+        const appended = await this.appendNextBatch();
+        if (!appended) return;
+        this.renderPosts({ preserveScroll: true });
+        this.renderPagination();
+      } finally {
+        this._scrollLoading = false;
+      }
+    }
+
+    /**
+     * 绑定网格的滚动行为（2026-09-27）。
+     *
+     * ① **滚轮拦截（无条件绑，与无限滚动模式无关）**：ComfyUI 画布会用 wheel 做缩放/平移，
+     *    不拦的话鼠标停在画廊上滚不动 —— 用户实报"得去拖右侧那条滚动条"。项目里已有同款先例：
+     *    联想浮层挂了 `wheel` + `stopPropagation`（capture + passive）。
+     * ② **滚到底预取**：滚动容器就是 `.adg-grid` 自己（CSS `flex:1 1 0%; height:0; overflow-y:auto`），
+     *    与懒加载 observer 的 `root: this.grid` 是同一个。不用"哨兵 div"：grid 内全是
+     *    `position:absolute` 的卡片，哨兵会被覆盖，还要和 `.adg-grid-notice` 抢位。
+     */
+    setupInfiniteScroll() {
+      if (!this.grid || this._infiniteScrollBound) return;
+      this._infiniteScrollBound = true;
+      this._gridWheelHandler = (event) => { event.stopPropagation(); };
+      this.grid.addEventListener("wheel", this._gridWheelHandler, { capture: true, passive: true });
+      this._gridScrollHandler = () => {
+        if (this._scrollRafPending) return;
+        this._scrollRafPending = true;
+        const run = () => {
+          this._scrollRafPending = false;
+          if (this.disposed || !this.grid || !this.scrollMode()) return;
+          const remaining = this.grid.scrollHeight - this.grid.scrollTop - this.grid.clientHeight;
+          if (remaining <= DG_SCROLL_PREFETCH_PX) void this.loadNextPageForScroll();
+        };
+        if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+        else setTimeout(run, 16);
+      };
+      this.grid.addEventListener("scroll", this._gridScrollHandler, { passive: true });
+    }
+
+    /** 解绑网格滚动监听（dispose 用） */
+    teardownInfiniteScroll() {
+      if (this.grid) {
+        if (this._gridScrollHandler) this.grid.removeEventListener("scroll", this._gridScrollHandler);
+        if (this._gridWheelHandler) this.grid.removeEventListener("wheel", this._gridWheelHandler, { capture: true });
+      }
+      this._gridScrollHandler = null;
+      this._gridWheelHandler = null;
+      this._infiniteScrollBound = false;
     }
 
     /**
@@ -2403,11 +2579,39 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
      */
     scheduleAutoFill() {
       if (this.autoFillTimer || this.disposed) return;
+      // 无限滚动模式（2026-09-27）：自动补满只负责**首屏**（补一次），之后全部交给滚动加载。
+      // 不这样切界，两条链会同时打上游（后端画廊并发只有 3）—— 这是本次改造的核心决策点。
+      if (this.scrollMode() && this.autoFillRounds > 0) return;
       // 等一拍：applyMasonryLayout 由 rAF 调度，且同一帧里可能刚触发过一次「自动收缩」
       this.autoFillTimer = setTimeout(() => {
         this.autoFillTimer = null;
         void this.autoFillIfUnderfilled();
       }, 80);
+    }
+
+    /**
+     * **有界重试**（2026-09-27）：补图被闸门拦下时排一次延迟重试。
+     *
+     * 修的是什么：`autoFillIfUnderfilled()` 里的 busy / 30s 窗口 / 1.5s grace 原先都是
+     * 「拦下就 return，**没有任何重试**」—— 撞上任意一道就**永久停手**，用户对着半屏空白干瞪眼，
+     * 这正是「节点拉大了却一直填不满」里那个确定性的缺陷（另两个候选拦点是运行时的，未埋点确认）。
+     *
+     * 安全边界（与 2026-09-16「节点无限变大」血案相邻，必须守住）：
+     * ① 只排**一个**定时器（`autoFillRetryTimer` 去重），不会自我复制；
+     * ② 延迟夹在 [120ms, 5s]，最长也就等到下一个窗口；
+     * ③ **不动**时间窗硬闸（`DG_AUTO_FILL_WINDOW_MS` / `DG_AUTO_FILL_MAX_PER_WINDOW`）——
+     *    它不受任何重置影响，30s 内最多 4 批，是防"补图→撑大→列数变化→再补"死循环的最后一道；
+     * ④ 只重置**轮次预算**（那是"本轮结果集"的软预算，被 grace/窗口打断后本来就该重新计）。
+     */
+    scheduleAutoFillRetry(delayMs) {
+      if (this.disposed || this.autoFillRetryTimer) return;
+      const delay = Math.max(120, Math.min(5000, Math.round(Number(delayMs) || 0)));
+      this.autoFillRetryTimer = setTimeout(() => {
+        this.autoFillRetryTimer = null;
+        if (this.disposed || !this.posts.length) return;
+        this.autoFillRounds = 0;
+        void this.autoFillIfUnderfilled();
+      }, delay);
     }
 
     /** 补图的目标可视高 = 判定那一刻的**真实视口**，随后锁死。
@@ -2419,7 +2623,10 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
     }
 
     async autoFillIfUnderfilled() {
-      if (this.disposed || this.fillMoreBusy || this.fillMoreExhausted) return;
+      if (this.disposed || this.fillMoreExhausted) return;
+      // 上一批还在飞：等它收尾再判 —— 原先这里是直接 return（**没有任何重试**），
+      // 于是撞上"请求在途"这一次机会就永久停手（2026-09-27 修，见 scheduleAutoFillRetry）
+      if (this.fillMoreBusy) { this.scheduleAutoFillRetry(250); return; }
       // 分类浏览不补图（有限本地集合 + 补图会静默退出分类视图，理由见 fillMoreForHeight 顶部）
       if (this.settings.activeCategory) return;
       // P站 作品详情也不补图（理由同上：作品的全部页已铺满，补图只会把人踢出详情）
@@ -2443,9 +2650,17 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
         this._autoFillWindowAt = now;
         this._autoFillWindowCount = 0;
       }
-      if (this._autoFillWindowCount >= DG_AUTO_FILL_MAX_PER_WINDOW) return;
+      if (this._autoFillWindowCount >= DG_AUTO_FILL_MAX_PER_WINDOW) {
+        // 30s 窗口用尽：等下一个窗口再补一次（硬闸语义不变，只是不再"永久停手"）
+        this.scheduleAutoFillRetry(DG_AUTO_FILL_WINDOW_MS - (now - this._autoFillWindowAt) + 200);
+        return;
+      }
       // ⓪ 用户刚动过尺寸 → 静默 1.5s：绝不和用户的手抢尺寸（见 DG_USER_RESIZE_GRACE_MS）
-      if (this.userResizedAt && now - this.userResizedAt < DG_USER_RESIZE_GRACE_MS) return;
+      if (this.userResizedAt && now - this.userResizedAt < DG_USER_RESIZE_GRACE_MS) {
+        // 让开这 1.5s，之后自动接着补（原先直接 return ⇒ 这次补图机会被永久丢掉）
+        this.scheduleAutoFillRetry(DG_USER_RESIZE_GRACE_MS - (now - this.userResizedAt) + 100);
+        return;
+      }
       // 游标模式的源：契约只有 next_cursor，没有它就到底了
       if (!this.pageMode() && !this.nextCursor) {
         this.fillMoreExhausted = true;
@@ -4941,7 +5156,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       target.apply();
     }
 
-    renderPosts() {
+    renderPosts({ preserveScroll = false } = {}) {
       // 浮层收尾 —— **只收可交互浮层（D站）**：C站 浮层的生命周期必须保持改动前那样
       // （一直留到鼠标离开），否则就成了"仅 D站"之外的行为变化（独立审计抓到的外溢）。
       // 这里**无条件**收：下面会 replaceChildren 整体重建全部卡片，浮层指向的那张卡必然失效
@@ -4949,11 +5164,18 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       // ⚠️ 不要改成"判断卡片 isConnected"：那样求值时旧卡片还在文档里，守卫恒为 false（死代码）。
       if (this.tooltip?.classList.contains("is-danbooru")) this.hidePromptTooltip();
       if (!this.grid) return;
+      // 2026-09-27（无限滚动）：追加时**必须保住滚动位置** —— replaceChildren() 会把 scrollTop
+      // 归零，用户"滚到底触发加载"的那一刻会被弹回顶部。这是追加路径唯一必做的防跳。
+      const keepScrollTop = preserveScroll ? this.grid.scrollTop : 0;
       this.imageLoadObserver?.disconnect();
       this.grid.replaceChildren();
       this.grid.style.minHeight = "";
-      this.lastCols = 0;
-      this.lastColStep = 0;
+      if (!preserveScroll) {
+        // ⚠️ 追加路径**不要**重置列基准：`lastColStep` 是抗「滚动条出现/消失造成的十几像素」
+        //    的反推基准（见 applyMasonryLayout 注释），追加时列宽根本没变，重置只会让卡片宽度抖一下。
+        this.lastCols = 0;
+        this.lastColStep = 0;
+      }
       this.failedImageCount = 0;
       // 新一批结果 → 允许重新评估一次自动收缩。
       this.shrunkTotal = null;
@@ -5267,6 +5489,8 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       if (rendered.length && this.failedImageCount >= rendered.length) {
         this.appendGridNotice(`本页 ${this.failedImageCount} 张预览全部加载失败 —— 检查 Clash 代理，或点工具条「刷新」绕过缓存重试`);
       }
+      // 追加路径：把滚动位置还回去（否则"滚到底触发加载"时会被弹回顶部）
+      if (preserveScroll) this.grid.scrollTop = keepScrollTop;
       // 渲染完立即检查「填满没有」：首屏 / 翻页 / 换源 / 换筛选都要（见 scheduleAutoFill）
       this.scheduleAutoFill();
     }
@@ -5276,8 +5500,38 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       return Array.from({ length: 5 }, (_, index) => start + index);
     }
 
+    /**
+     * 无限滚动模式的分页位（2026-09-27）：显示「已加载 N 张」+ 是否到底 + 一个回到顶部。
+     * 不显示页码 —— 无限滚动下 `this.page` 会一路涨到几十，显示"第 37 页"只会让用户困惑。
+     */
+    renderInfiniteScrollHint() {
+      const bar = this.pagination;
+      if (!bar) return;
+      bar.replaceChildren();
+      const count = document.createElement("span");
+      count.className = "adg-scroll-count";
+      count.textContent = this.fillMoreExhausted
+        ? `已加载 ${this.posts.length} 张 · 已到底`
+        : `已加载 ${this.posts.length} 张 · 继续滚动加载`;
+      bar.append(count);
+      const top = document.createElement("button");
+      top.type = "button";
+      top.className = "adg-scroll-top";
+      top.textContent = "回到顶部";
+      top.onclick = () => { if (this.grid) this.grid.scrollTop = 0; };
+      bar.append(top);
+    }
+
     renderPagination() {
       if (!this.pagination) return;
+      // 无限滚动模式（2026-09-27）：分页位换成「已加载 N 张 · 继续滚动加载 / 已到底」。
+      // ⚠️ 早退放在**最前面**，下面那套页码 / 游标批次条**原文一字不动** —— 设置里切回
+      //    `pager` 即可原样使用，而且 tests/test_gallery_multisource_ui.py 是按本函数
+      //    切片做字符串断言的（页码段必须还在）。
+      if (this.scrollMode()) {
+        this.renderInfiniteScrollHint();
+        return;
+      }
       this.pagination.replaceChildren();
       if (this.settings.activeCategory) {
         const badge = document.createElement("span");
@@ -7352,20 +7606,44 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       // 所以文案必须写明，否则用户会以为"设了 12 就永远只有 12 张"。
       [12, 24, 48].forEach((limit) => {
         const option = new Option(String(limit), String(limit), false, limit === this.settings.limit);
-        // 页码模式的源（P站）上游固定每页 GALLERY_PAGE_SIZE 条 → 48 档根本拿不到，
+        // 页码分页里**只有 P站**上游固定每页 GALLERY_PAGE_SIZE 条 → 48 档根本拿不到，
         // 禁用 + 写明原因，而不是留一个选了也不生效的假选项。
-        if (limit > GALLERY_PAGE_SIZE && this.pageMode()) {
+        // （yande.re / konachan.net / safebooru 的 page 与 limit 相互独立，能吃 48 档 —— 2026-09-27）
+        if (limit > GALLERY_PAGE_SIZE && this.isPixivSource()) {
           option.disabled = true;
-          option.textContent = `${limit}（该源每页固定 ${GALLERY_PAGE_SIZE}，不可用）`;
+          option.textContent = `${limit}（P站每页固定 ${GALLERY_PAGE_SIZE}，不可用）`;
         }
         select.append(option);
       });
       select.title = this.pageMode()
         ? `自适应 = 按节点宽高算出刚好填满的张数；固定档位 = 至少 N 张（不足一屏会自动补满）。`
-          + `当前图源用页码分页、上游每页固定 ${GALLERY_PAGE_SIZE} 张，所以 ${GALLERY_PAGE_SIZE} 以上的档位不可用。`
+          + (this.isPixivSource()
+            ? `P站 上游每页固定 ${GALLERY_PAGE_SIZE} 张，所以 ${GALLERY_PAGE_SIZE} 以上的档位不可用。`
+            : `当前图源用页码分页，但 page 与 limit 相互独立，各档位都能生效。`)
         : "自适应 = 按节点宽高算出刚好填满的图片数量；固定档位 = 至少 N 张（不足一屏会自动补满，"
           + "实际张数可能多于所选值）；拖动节点改变大小后会自动重算";
       pageLabel.append(select);
+      // 滚动方式（2026-09-27）：无限滚动（滚到底自动加载，默认）/ 分页器。
+      // 只在页码分页的源（D站/P站）有意义 —— C站 等本来就是"加载更多"形态（见 scrollMode()）。
+      const scrollLabel = document.createElement("label");
+      scrollLabel.className = "adg-field";
+      scrollLabel.textContent = "滚动方式";
+      const scrollSelect = document.createElement("select");
+      scrollSelect.add(new Option("无限滚动（滚到底自动加载）", "infinite", false, this.settings.galleryScrollMode === "infinite"));
+      scrollSelect.add(new Option("分页（显示页码）", "pager", false, this.settings.galleryScrollMode === "pager"));
+      scrollSelect.title = "无限滚动 = 滚到底自动加载下一批（推荐，不再有页码）；"
+        + "分页 = 旧的分页器，可用页码跳转。只对页码分页的图源（D站/P站）生效。";
+      scrollSelect.onchange = () => {
+        this.settings.galleryScrollMode = GALLERY_SCROLL_MODES.includes(scrollSelect.value)
+          ? scrollSelect.value
+          : "infinite";
+        this.saveSettings();
+        this.renderPagination();
+        // 切到无限滚动时立刻判一次要不要预取（否则要等用户先滚一下才有反应）
+        if (this.scrollMode()) void this.loadNextPageForScroll();
+      };
+      scrollLabel.append(scrollSelect);
+      pageLabel.after(scrollLabel);
       const heightLabel = document.createElement("label");
       heightLabel.className = "adg-field";
       heightLabel.textContent = "画廊高度（px）";
@@ -7968,6 +8246,9 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       this.status = status;
       this.grid = grid;
       this.setupImageLoading();
+      // 无限滚动 + 滚轮拦截（2026-09-27）：滚轮拦截是**无条件**的（否则鼠标停在画廊上滚不动，
+      // 用户只能去拖右侧滚动条）；滚到底预取只在 scrollMode() 下生效。
+      this.setupInfiniteScroll();
       // ⚠️ 这里**不再** applyGridHeight()。build() 跑在 onNodeCreated 里，此刻
       //    installDOMWidgetSizeSync 还没执行（在本函数更下方才装），domSizeSync 仍是 null
       //    ⇒ setGridHeight() 只能走 fallback 直接 node.setSize(...)，**宽度和高度一起改**
@@ -8079,6 +8360,11 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
         clearTimeout(this.autoFillTimer);
         this.autoFillTimer = null;
       }
+      if (this.autoFillRetryTimer) {
+        clearTimeout(this.autoFillRetryTimer);
+        this.autoFillRetryTimer = null;
+      }
+      this.teardownInfiniteScroll();
       if (this.grid) this.grid.style.minHeight = "";
       window.removeEventListener("resize", this.positionSuggestionsHandler);
       document.removeEventListener("scroll", this.positionSuggestionsHandler, true);
