@@ -8,6 +8,38 @@
 
 用户可在节点工具栏「🔄 更新」检查到新版本。
 
+## [2.23.1] - 2026-09-27
+
+### 修复
+
+- **画廊滚轮仍被画布抢走**（用户实报："滚动只会变成缩放画布比例，无法真正滚动"）：
+  上一版只在 `.adg-grid` 上挂了 `wheel` + `stopPropagation`（capture），**对 ComfyUI 无效**。
+  查 ComfyUI 1.48.7 前端打包源码（`assets/settingStore-*.js`）后确认：判定发生在**画布容器**
+  上（Vue `@wheel` → `handleWheel`），条件是
+
+  ```js
+  wheelCapturedByFocusedElement = e => {
+    const t = e.target?.closest('[data-capture-wheel="true"]');
+    const n = document.activeElement;
+    return !!(t && n && t.contains(n));      // 两个条件缺一不可
+  }
+  shouldForwardWheelEvent = e => !wheelCapturedByFocusedElement(e) || isCanvasGestureWheel(e);
+  ```
+
+  不满足就把 wheel 交给 `forwardEventToCanvas()` 做画布缩放。现在按**官方约定**实现：
+  网格打 `data-capture-wheel="true"` + `tabIndex = -1`，鼠标移入网格时聚焦它
+  （**正在编辑输入框时不抢焦点**，否则鼠标滑过画廊会把光标从提示词框里踢出去），
+  并补 `.adg-grid:focus { outline: none }` 避免多一圈描边。
+- ⚠️ **Ctrl/Cmd+滚轮与横向滚轮仍归画布** —— 那是 ComfyUI 的画布手势白名单
+  （`isCanvasGestureWheel`），属官方语义，不是缺陷。
+
+### 升级须知
+
+- 生效方式：`web/js`、`web/css` 改动 **Ctrl+F5** 强刷即可，无需重启 ComfyUI。
+- 回归：`tests/test_gallery_infinite_scroll.py` 的滚轮用例已改写为"必须走官方约定"
+  （钉住 `data-capture-wheel` + 可聚焦 + 移入聚焦 + 不抢输入焦点），防止再退回
+  "加个 stopPropagation 以为就好了"。
+
 ## [2.23.0] - 2026-09-27
 
 ### 新增

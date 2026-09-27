@@ -878,7 +878,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       this._scrollRafPending = false;   // 滚动回调的 rAF 节流标记
       this._infiniteScrollBound = false;
       this._gridScrollHandler = null;
-      this._gridWheelHandler = null;
+      this._gridEnterHandler = null;   // 鼠标移入网格时聚焦它（"滚轮归画廊"的官方条件之一）
       this.autoFillRounds = 0;       // 本轮结果集内已自动补了几次（上限 DG_AUTO_FILL_MAX_ROUNDS）
       // 补图的目标可视高：**一经确定就在本轮结果集内锁死**。
       // 为什么不每轮重读 grid.clientHeight：新前端布局器会按 DOM 内容把节点撑高，
@@ -2533,9 +2533,15 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
     /**
      * 绑定网格的滚动行为（2026-09-27）。
      *
-     * ① **滚轮拦截（无条件绑，与无限滚动模式无关）**：ComfyUI 画布会用 wheel 做缩放/平移，
-     *    不拦的话鼠标停在画廊上滚不动 —— 用户实报"得去拖右侧那条滚动条"。项目里已有同款先例：
-     *    联想浮层挂了 `wheel` + `stopPropagation`（capture + passive）。
+     * ① **滚轮归画廊**：ComfyUI 前端（1.48.7）用 `wheelCapturedByFocusedElement()` 判定 ——
+     *    `e.target.closest('[data-capture-wheel="true"]')` **且** `document.activeElement`
+     *    落在该元素内，两个条件缺一不可；不满足就把 wheel 转发给画布做缩放。
+     *    ⚠️ 上一版只挂了 `wheel` + `stopPropagation`，**两个条件一个都没满足** ⇒ 用户实测
+     *    "滚动只会变成缩放画布比例"。现在改为：网格打 `data-capture-wheel`（见 build）+
+     *    鼠标移入即聚焦网格，让 activeElement 落进来。
+     *    ⚠️ 正在编辑输入框时**不抢焦点** —— 否则鼠标滑过画廊会把光标从提示词框里踢出去。
+     *    （Ctrl/Cmd+滚轮与横向滚轮仍归画布，那是官方的画布手势白名单。）
+     *
      * ② **滚到底预取**：滚动容器就是 `.adg-grid` 自己（CSS `flex:1 1 0%; height:0; overflow-y:auto`），
      *    与懒加载 observer 的 `root: this.grid` 是同一个。不用"哨兵 div"：grid 内全是
      *    `position:absolute` 的卡片，哨兵会被覆盖，还要和 `.adg-grid-notice` 抢位。
@@ -2543,8 +2549,20 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
     setupInfiniteScroll() {
       if (!this.grid || this._infiniteScrollBound) return;
       this._infiniteScrollBound = true;
-      this._gridWheelHandler = (event) => { event.stopPropagation(); };
-      this.grid.addEventListener("wheel", this._gridWheelHandler, { capture: true, passive: true });
+      this._gridEnterHandler = () => {
+        const grid = this.grid;
+        if (!grid || this.disposed) return;
+        const active = document.activeElement;
+        const editing = active && active !== grid && active !== document.body
+          && (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName || ""));
+        if (editing) return;   // 别把光标从用户正在编辑的输入框里踢走
+        try {
+          grid.focus({ preventScroll: true });
+        } catch {
+          grid.focus();
+        }
+      };
+      this.grid.addEventListener("pointerenter", this._gridEnterHandler);
       this._gridScrollHandler = () => {
         if (this._scrollRafPending) return;
         this._scrollRafPending = true;
@@ -2564,10 +2582,10 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
     teardownInfiniteScroll() {
       if (this.grid) {
         if (this._gridScrollHandler) this.grid.removeEventListener("scroll", this._gridScrollHandler);
-        if (this._gridWheelHandler) this.grid.removeEventListener("wheel", this._gridWheelHandler, { capture: true });
+        if (this._gridEnterHandler) this.grid.removeEventListener("pointerenter", this._gridEnterHandler);
       }
       this._gridScrollHandler = null;
-      this._gridWheelHandler = null;
+      this._gridEnterHandler = null;
       this._infiniteScrollBound = false;
     }
 
@@ -8222,6 +8240,16 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       this.galleryBatchPanel = galleryBatchPanel;
       const grid = document.createElement("div");
       grid.className = "adg-grid";
+      // ★ 滚轮归画廊（2026-09-27 修，ComfyUI 1.48.7 前端实测）：
+      //   ComfyUI 的判定是 `e.target.closest('[data-capture-wheel="true"]')`
+      //   **且** `document.activeElement` 落在该元素内 —— **两个条件缺一不可**，
+      //   否则普通纵向滚轮会被 `forwardEventToCanvas()` 转发给画布做缩放
+      //   （用户实报："滚动只会变成缩放画布比例，无法真正滚动"）。
+      //   所以：① 打上官方约定属性；② `tabIndex = -1` 让它能被**程序化聚焦**（不进 Tab 序列）；
+      //   ③ 鼠标移入时聚焦它（见 setupInfiniteScroll），使 activeElement 落在里面。
+      //   ⚠️ Ctrl/Cmd+滚轮与横向滚轮**仍归画布**（`isCanvasGestureWheel` 白名单），这是官方语义。
+      grid.dataset.captureWheel = "true";
+      grid.tabIndex = -1;
       // ★ 联想浮层**必须单例**：它挂在 document.body 上（fixed 定位），而构建面板会被
       //   多次调用（节点重绘 / 面板重建）。旧代码每次都 append 一个新 div，而销毁只在
       //   teardown 里做 —— 于是 body 下会堆着若干"上一代"浮层：`this.suggestions` 只指
