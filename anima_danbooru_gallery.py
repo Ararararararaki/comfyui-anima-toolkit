@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
 from typing import Any, NamedTuple
 from urllib.parse import urlencode, urlparse
 import urllib.request
@@ -183,35 +183,124 @@ def _proxy_candidates() -> list[dict[str, str]]:
     return candidates
 
 
+# 主路径的探测结果缓存：(单调时间, 选中的代理 server 或 ""=直连, 选中的请求头键)
+# ⚠️ 2026-09-26 实测补上：原先只有 _fallback_proxy() 有缓存，主路径每次请求都全量重探，
+# 而 pool.map 必须等最慢的那个死端口吃满 0.5s 超时 —— 本机 5 个死端口 ⇒ **每个请求白付 512ms**
+# （实测三轮 512.7/511.9/511.2ms）。英文联想因此长期卡在 835~1113ms，与「搜索很慢」的用户体感同源。
+_PROXY_PICK_LOCK = threading.Lock()
+_PROXY_PICK_CACHE: dict[str, Any] = {"stamp": 0.0, "server": None, "proxies": None}
+_PROXY_PICK_TTL = 30.0
+#: 首轮探测的等待上限：只等「第一个活下来的」，不给死端口留满超时。
+#: 死端口在 Windows 上 connect 直接吃满 timeout（实测 506~513ms），必须避免 let 它拖住整条链路。
+_PROXY_FIRST_HIT_WAIT = 0.25
+
+
+def _probe_first_alive(candidates: list[dict[str, str]]) -> dict[str, str] | None:
+    """**并发滚动探测**：全部候选同时开探，谁先活着返回谁，不等其它 future。
+
+    历史（2026-09-27 实测更正）：上一版是**串行 for + 0.25s 超时**，注释声称「零等待」，
+    但那只在活代理恰好排首位时成立（本机 7890 排首位，所以没暴露）。实测反例：
+      · 6 个候选全死 → `_apply_danbooru_proxy()` 冷路径 **2076ms**（串行累加 1524ms
+        + 失败后再全量 `pool.map` 兜底 540ms）；
+      · 活端口排最后 → **1538ms**。
+    对照：本函数并发版在两种场景都≈**254ms**（= 单个候选的探测耗时）。
+    且活端口排首位时仍保留**≈2ms**：先扫一遍「已完成的 future」，命中即返回 ——
+    本机 7890 是 0.3ms 完成，所以首轮扫描就命中，不会被后面 250ms 才失败的死端口拖住。
+    （⚠️ 不能用 `as_completed` 直接取第一个结果：它按**完成先后**而非**候选优先级**迭代，
+    死端口 250ms 完成、活端口 0.3ms 完成时反而先撞上死端口，实测让首位场景退化成 266ms。）
+
+    返回顺序仍按候选优先级：取「已完成的 future 里候选下标最小且活着」的那个；
+    若多个几乎同时完成，同样按下标取最小者（保持「按优先级选路」的原语义）。
+    """
+    if not candidates:
+        return None
+    servers = [c.get("https") or c.get("http") or "" for c in candidates]
+    pool: ThreadPoolExecutor | None = None
+    try:
+        pool = ThreadPoolExecutor(max_workers=min(len(servers), 8))
+        submitted: list[tuple[int, Any]] = [
+            (index, pool.submit(_probe_proxy_alive, server, _PROXY_FIRST_HIT_WAIT))
+            for index, server in enumerate(servers)
+            if server
+        ]
+        # 每轮等「下一个完成的」就重扫一遍已完成集合（按候选优先级取最小下标），
+        # 于是活端口 0.3ms 完成时首轮即返回，而全死场景只等到 ~250ms 就收口。
+        # +0.03s 是给「探测本体（urlparse + socket）在超时之外的开销」留的收口余量。
+        deadline = time.monotonic() + _PROXY_FIRST_HIT_WAIT + 0.03
+        done: set[Any] = set()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                newly, _ = futures_wait(
+                    [future for _index, future in submitted],
+                    timeout=remaining,
+                    return_when=FIRST_COMPLETED,
+                )
+            except Exception:
+                break
+            done |= newly
+            for index, future in sorted(submitted, key=lambda item: item[0]):
+                if future in done:
+                    try:
+                        if future.result():
+                            return candidates[index]
+                    except Exception:
+                        pass
+            if not newly:
+                break
+    except Exception:
+        return None
+    finally:
+        # ⚠️ 必须 `wait=False`：`with ThreadPoolExecutor(...)` 的 `__exit__` 会 join 所有
+        # worker，于是「2ms 就返回」仍会被 6 个死端口各自的 250ms 拖满 —— 实测 258ms，
+        # 正好把本函数的收益全部吃掉。死端口的探测线程在后台自然收尾即可（进程级 daemon）。
+        if pool is not None:
+            pool.shutdown(wait=False)
+    return None
+
+
 def _apply_danbooru_proxy() -> None:
     """每次请求前按当前环境实时解析代理（不再重启时一次性固化）。
 
-    策略：在所有候选代理里挑「活着」的第一个（TCP 活性探测，0.4s×并行），
+    策略：在所有候选代理里挑「活着」的第一个（TCP 活性探测，并发滚动，见 `_probe_first_alive`），
     全部探测失败才直连。这样即使 Clash 系统代理开关被关/指向死端口/重启瞬间，
-    也能自动落到可用的本地代理；探测结果 30s 缓存避免每次请求重复探测。
+    也能自动落到可用的本地代理。
+
+    缓存（2026-09-26 实测修复）：选路结果 30s 内复用 —— 见 `_PROXY_PICK_CACHE` 上方注释。
+    原先该缓存只落在 `_fallback_proxy()`，主路径每次请求重探，白付 ~512ms/请求。
+
+    2026-09-27 两处修正（冷审查实测）：
+      ① `_direct_blocked` 判定**提到缓存检查之前**。原先它在缓存之后，于是「直连被判死」
+         这个更强的信号会被 30s 缓存压住 —— 缓存里若存着「直连(空 dict)」的选路结果，
+         接下来 30s 内每次请求都照旧直连，正是「直连被墙」重复发生的来源。
+      ② session 代理改成**整体原子赋值**（`proxies = dict(chosen)`），不再
+         `clear()` 后再 `update()` —— 那两步之间并发的画廊缩略图请求会读到空代理 = 直连。
     """
     global _direct_blocked
+    now = time.monotonic()
     if _direct_blocked:
-        # 直连曾失败：只用探测到的活代理，绝不直连
+        # 直连曾失败：只用探测到的活代理，绝不直连。**先于缓存判定**（见 docstring ①）。
         fb = _fallback_proxy()
         if fb:
-            _danbooru_session.proxies.clear()
-            _danbooru_session.proxies.update(fb)
+            _danbooru_session.proxies = dict(fb)  # 原子赋值（见 docstring ②）
+            return
+    with _PROXY_PICK_LOCK:
+        cached = _PROXY_PICK_CACHE
+        if cached["proxies"] is not None and now - float(cached["stamp"]) < _PROXY_PICK_TTL:
+            _danbooru_session.proxies = dict(cached["proxies"])  # 原子赋值（见 docstring ②）
             return
     candidates = _proxy_candidates()
-    if candidates:
-        servers = [c["https"] for c in candidates]
-        try:
-            with ThreadPoolExecutor(max_workers=min(len(servers), 8)) as pool:
-                alive = list(pool.map(_probe_proxy_alive, servers))
-        except Exception:
-            alive = [False] * len(servers)
-        for proxies, ok in zip(candidates, alive):
-            if ok:
-                _danbooru_session.proxies.clear()
-                _danbooru_session.proxies.update(proxies)
-                return
-    _danbooru_session.proxies.clear()  # 全部不可达 → 直连（可能被墙，重试链会兜底）
+    picked = _probe_first_alive(candidates)
+    # 注意：`_probe_first_alive` 已是**并发滚动**探测（全部候选同时开探），
+    # 它的 None 就是「所有候选都死了」的完整结论，无需再做一次全量 `pool.map` 兜底 ——
+    # 旧代码那一步会让全死场景多付 ~540ms（实测总 2076ms）。
+    chosen: dict[str, str] = dict(picked) if picked else {}
+    # 原子赋值（空 dict = 直连，语义同旧 clear()）；不再 clear()+update() 两步。
+    _danbooru_session.proxies = dict(chosen)
+    with _PROXY_PICK_LOCK:
+        _PROXY_PICK_CACHE.update({"stamp": now, "proxies": chosen, "server": chosen.get("https") or ""})
 
 
 # ---------- Danbooru 账号（上限按账号等级：Member=2、Gold=6、Platinum+=不限；登录后限流更宽） ----------
@@ -864,6 +953,69 @@ def _suggestion_details(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+# ---------- 本地标签索引快路径（2026-09-26）----------
+# 为什么不直接用 _tag_translation：那个走的是 D 站词典的一种取法；本地索引的 zh 字段
+# 来自 anima_alias_index（36,480 角色 + 3,702 作品 + 131,913 标签的汉字别名），
+# 命中率更高且零网络。两者都拿不到时留空串，前端本来就会退化成只显示英文标签。
+def _local_suggest(term: str, limit: int = 20) -> list[dict[str, Any]]:
+    """用本地索引出候选；索引不可用/无命中时返回空列表（调用方落回远程路径）。
+
+    只读已建好的索引（`get_index(build=False)`），**绝不在请求路径里建索引**：
+    索引未就绪时立刻返回 []，让调用方落回既有远程路径（~300ms），用户不必等；
+    建索引由预热线程负责（`__init__.py` 已挂 `anima_tag_index.warm_async()`）。
+
+    返回结构对齐前端契约：tag / translation / postCount / category，
+    另带 count_is_snapshot=True 标明帖数是本地快照值（与 D 站实时值有偏差）。
+    """
+    cleaned = str(term or "").strip()
+    if not cleaned:
+        return []
+    try:
+        from .anima_tag_index import get_index
+    except ImportError:  # 独立运行（pytest / 探针）时的顶层导入
+        try:
+            from anima_tag_index import get_index  # type: ignore[no-redef]
+        except ImportError:
+            return []
+    try:
+        # ⚠️ 2026-09-27 修：必须 build=False（只读、不构建）。
+        # 上一轮已把本函数挪进 run_in_executor（事件循环不再冻结：心跳 2696ms → 186ms），
+        # 但**用户仍要等**——实测冷进程首个中文请求 2616ms，线上运行实例更慢
+        # （首请求 13.87s；/anima/animadex/status 里 build_ms=20.9s，同一索引本地独立测仅 1143ms）。
+        # 「不冻结事件循环」≠「用户不用等」：build=True 是在请求路径里同步建索引。
+        # 实测语义（本机）：索引已存在 → 返回对象 0.003ms；未建好 → 返回 None，不触发构建。
+        # 故此处取不到就立即返回 []（上方 except 已覆盖异常），调用方落回远程路径 ~300ms。
+        index = get_index(build=False)
+    except Exception:
+        return []
+    if index is None:
+        return []
+    try:
+        rows = index.suggest(cleaned, limit=limit)
+    except Exception:
+        return []
+
+    details: list[dict[str, Any]] = []
+    for row in rows:
+        tag = str(row.get("tag") or "").strip()
+        if not tag:
+            continue
+        slug = _normalize_tag_slug(tag)
+        translation = str(row.get("zh") or "").strip() or _tag_translation(slug) or ""
+        detail: dict[str, Any] = {
+            "tag": slug,
+            "translation": translation,
+            "postCount": int(row.get("count") or 0),
+            "category": "general",
+            "count_is_snapshot": True,
+        }
+        series = str(row.get("series") or "").strip()
+        if series:
+            detail["series"] = series
+        details.append(detail)
+    return details
+
+
 def _normalize_tag_slug(value: Any) -> str:
     """Danbooru 内部标签格式：小写、空格转下划线。"""
     text = str(value or "").strip().lower()
@@ -1486,6 +1638,35 @@ async def anima_danbooru_suggest(request: web.Request) -> web.Response:
         return web.json_response({"suggestions": [], "suggestionDetails": [], "didYouMean": [], "rewrites": []})
     term = query[-1]
 
+    # ★ 2026-09-26 本地索引快路径：命中即返回，不再远程往返。
+    # 实测依据（.scratch/gallery-refactor-20260926/probe_local_index_perf.py）：
+    #   英文前缀 0.00~0.04ms / 中文前缀 0.01~0.10ms / 中文子串(47万对) 15~19ms；
+    #   而远程路径英文实测 326~418ms（代理选路白付已另行修掉 512ms）。
+    # 返回结构与原路径**逐字段一致**（suggestions / suggestionDetails / didYouMean / rewrites），
+    # 前端无需改动。帖数来自本地快照，故 details 里带 count_is_snapshot=True 供界面如实标注。
+    #
+    # ⚠️ 2026-09-27 修（冷审查实测）：本快路径原先在事件循环里**同步**执行，冷启动实测
+    # **2696ms**（其中建索引 2391ms；另有 _load_translations 首次读 17.11MB 的
+    # danbooru_tags_zh.json）。预热线程未跑完时，首个联想请求会把整个 PromptServer
+    # 事件循环冻住 ~2.7s（进度推送与其它请求全卡）。同文件旧路径早已用 run_in_executor
+    # 保护（见下方 `fetch` 的 await），新快路径绕过了它 —— 现在补回同样的保护。
+    local_term = raw_term.lstrip("-~")
+    try:
+        local = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: _local_suggest(local_term, limit=20)
+        )
+    except Exception:
+        local = []
+    if local:
+        names = [row["tag"] for row in local]
+        return web.json_response({
+            "suggestions": names,
+            "suggestionDetails": local,
+            "didYouMean": names[:3],
+            "rewrites": names[:3],
+            "source": "local_index",
+        })
+
     def fetch():
         # 中文片段先查本地双语词典，再逐个向 D 站取帖数，效果与 D 站搜索框的
         # 「中文 → 英文」候选一致；有缓存时不会重复请求同一标签。
@@ -1857,11 +2038,16 @@ class DanbooruGallery:
             image_selection_list = payload.get("image_selections", prompt_selection_list) if isinstance(payload, dict) else []
             prompt_settings = self._prompt_settings(payload.get("prompt_settings")) if isinstance(payload, dict) else None
             prompt_output_enabled = payload.get("prompt_output_enabled", True) is not False if isinstance(payload, dict) else True
+            # AnimaDex 角色词（2026-09-26）：浮窗选中的角色，**写进 prompts 输出**而不是搜索框。
+            # 这样配合 prompt_settings 关掉原有的「角色/作品」类别，它就成为唯一的角色来源
+            # —— 即 YG 要的「换人物」：关掉原角色词、浮窗选新角色，输出直接变成新角色。
+            role_prompt = str(payload.get("role_prompt") or "").strip() if isinstance(payload, dict) else ""
         except (TypeError, ValueError, json.JSONDecodeError):
             prompt_selection_list = []
             image_selection_list = []
             prompt_settings = None
             prompt_output_enabled = True
+            role_prompt = ""
         if not isinstance(prompt_selection_list, list):
             prompt_selection_list = []
         if not isinstance(image_selection_list, list) or not image_selection_list:
@@ -1878,6 +2064,11 @@ class DanbooruGallery:
             if not isinstance(prompt_selection, dict):
                 prompt_selection = image_selection
             prompt = str(prompt_selection.get("prompt", "")) if prompt_output_enabled else ""
+            # AnimaDex 角色词**前置**拼接：它代表「人物」，按 Anima/Danbooru 习惯人物词在最前。
+            # 受同一个 prompt_output_enabled 约束（总开关关掉就什么都不输出，语义一致）；
+            # 想只保留它，用 prompt_settings 把原图的各类别关掉即可。
+            if prompt_output_enabled and role_prompt:
+                prompt = f"{role_prompt}, {prompt}" if prompt else role_prompt
             image_url = str(image_selection.get("image_url", ""))
             try:
                 images.append(self._download_image(image_url))

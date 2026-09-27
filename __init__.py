@@ -69,10 +69,6 @@ from .anima_prompt_saver import (
     NODE_CLASS_MAPPINGS as PROMPT_SAVER_NODE_CLASS_MAPPINGS,
     NODE_DISPLAY_NAME_MAPPINGS as PROMPT_SAVER_NODE_DISPLAY_NAME_MAPPINGS,
 )
-from .anima_lighting_prompt import (
-    NODE_CLASS_MAPPINGS as LIGHTING_PROMPT_NODE_CLASS_MAPPINGS,
-    NODE_DISPLAY_NAME_MAPPINGS as LIGHTING_PROMPT_NODE_DISPLAY_NAME_MAPPINGS,
-)
 from .anima_preset_latent import (
     NODE_CLASS_MAPPINGS as PRESET_LATENT_NODE_CLASS_MAPPINGS,
     NODE_DISPLAY_NAME_MAPPINGS as PRESET_LATENT_NODE_DISPLAY_NAME_MAPPINGS,
@@ -159,6 +155,34 @@ try:
 except Exception as _gallery_warmup_error:  # noqa: BLE001
     print(f"[画廊预热] 预热器不可用（画廊/面板不受影响，退回按需触发）：{_gallery_warmup_error}")
 
+# 画廊标签索引（anima_tag_index）：联想/搜索用的**本地**索引（英文标签 20.6 万 + 中文别名 23.5 万对）。
+# 2026-09-26 新增。为什么在这里预热：建索引实测约 1.2~1.8s，若留给首次查询，用户输入中文时
+# 会白等（改前实测冷启动首查 3.5~9.6s）。放后台线程预热后，首次联想即为稳态的毫秒级。
+#
+# ⚠️ 与上面两处同一套纪律：整体 try/except —— 索引建不起来只等于「联想退回远程路径」，
+# 绝不能让插件加载失败；且**只预热不阻塞**（线程 daemon，import 完成即返回）。
+try:
+    from .anima_tag_index import warm_async as _tag_index_warm_async
+
+    _TAG_INDEX_WARM_THREAD = _tag_index_warm_async()
+    if _TAG_INDEX_WARM_THREAD is not None:
+        print("[画廊标签索引] 已启动后台预热（首次联想无需等待建索引）")
+except Exception as _tag_index_error:  # noqa: BLE001
+    print(f"[画廊标签索引] 预热不可用（联想退回远程路径，功能不受影响）：{_tag_index_error}")
+
+# AnimaDex 角色库（anima_animadex）：**浮窗**用的提示词素材源（不是图源，不进 /anima/gallery/sources）。
+# 2026-09-26 新增。数据 = 随包的 anima_animadex.json.gz（2.77 MB / 36,488 角色，100% 带 trigger 与预览图）。
+# 预热理由同标签索引：解析 gzip + 建索引实测约 3~5s（含复用别名索引的角色中文名），
+# 留给首次打开浮窗就会白等，故后台线程预热。
+try:
+    from .anima_animadex import warm_async as _animadex_warm_async
+
+    _ANIMADEX_WARM_THREAD = _animadex_warm_async()
+    if _ANIMADEX_WARM_THREAD is not None:
+        print("[AnimaDex] 已启动后台预热（首次打开角色浮窗无需等待建索引）")
+except Exception as _animadex_error:  # noqa: BLE001
+    print(f"[AnimaDex] 预热不可用（浮窗功能不受影响，首次打开时按需构建）：{_animadex_error}")
+
 # 合并所有节点的注册表（ComfyUI 通过 __init__.py 顶层这两个变量发现所有节点）
 NODE_CLASS_MAPPINGS = {
     **NODE_CLASS_MAPPINGS,
@@ -169,7 +193,6 @@ NODE_CLASS_MAPPINGS = {
     **STRING_ROUTER_NODE_CLASS_MAPPINGS,
     **DANBOORU_TAG_GETTER_NODE_CLASS_MAPPINGS,
     **PROMPT_SAVER_NODE_CLASS_MAPPINGS,
-    **LIGHTING_PROMPT_NODE_CLASS_MAPPINGS,
     **PRESET_LATENT_NODE_CLASS_MAPPINGS,
     **LATENT_SWITCH_NODE_CLASS_MAPPINGS,
     **DANBOORU_NODE_CLASS_MAPPINGS,
@@ -188,7 +211,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **STRING_ROUTER_NODE_DISPLAY_NAME_MAPPINGS,
     **DANBOORU_TAG_GETTER_NODE_DISPLAY_NAME_MAPPINGS,
     **PROMPT_SAVER_NODE_DISPLAY_NAME_MAPPINGS,
-    **LIGHTING_PROMPT_NODE_DISPLAY_NAME_MAPPINGS,
     **PRESET_LATENT_NODE_DISPLAY_NAME_MAPPINGS,
     **LATENT_SWITCH_NODE_DISPLAY_NAME_MAPPINGS,
     **DANBOORU_NODE_DISPLAY_NAME_MAPPINGS,
@@ -207,7 +229,7 @@ WEB_DIRECTORY = "./web"
 # 从根上消掉「两个地方要一起改」这个失败模式；读失败（打包丢文件等）才回落到内置值。
 # 更新链（_is_update_release_path / 更新 ZIP 校验）本来就要求包里带 VERSION，
 # 所以这个文件在真实安装里一定存在。
-_FALLBACK_VERSION = "2.20.0"
+_FALLBACK_VERSION = "2.22.0"
 try:
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"), encoding="utf-8") as _vf:
         __version__ = _vf.read().strip() or _FALLBACK_VERSION

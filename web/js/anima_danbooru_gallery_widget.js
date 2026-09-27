@@ -1,6 +1,11 @@
 import { app } from "/scripts/app.js";
 import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRatings } from "./anima_danbooru_filter_controls.js";
 import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
+// 2026-09-26 低占位改造：复用项目既有的 portal 下拉菜单（同一个组件已服务于「分级/筛选/全部分类」），
+// 把低频的设置类操作收进一个「设置 ▾」菜单，工具条从 7 行压到 4 行。
+import { PortalDropdown } from "./anima_dropdown_menu.js";
+// AnimaDex 角色浮窗（2026-09-26）：浮窗形态的提示词素材源，**不是图源**（YG 明确要求）。
+import { AnimaDexPanel } from "./anima_animadex_panel.js";
 
 (() => {
   const NODE_NAME = "DanbooruGallery";
@@ -29,6 +34,25 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
    * ⚠️ 只用于判重 —— 显示与实际搜索都用用户输入的**原文**。
    */
   function searchHistoryKeyOf(value) {
+    return String(value || "").trim().toLowerCase().replace(/[_+]+/g, " ").replace(/\s+/g, " ");
+  }
+  /**
+   * 标签使用次数（自适应联想排序；思路参考 a1111-sd-webui-tagcomplete 的 adaptive sorting）。
+   * 值形如 `{"hatsune miku": 3}` —— 用户**实际选用过**的标签在后续联想里靠前。
+   * ⚠️ **全局一份**（不分节点、不分图源）：用词习惯是人的属性；且它只写 localStorage、
+   *    不随工作流走（与搜索历史同理），分享工作流不会把别人的联想顺序带偏。
+   */
+  const TAG_USAGE_STORAGE_KEY = "anima_danbooru_gallery_tag_usage_v1";
+  /** 只留使用次数最高的这么多条 —— 防 localStorage 无限膨胀（300 条 × ~30 字符 ≈ 10KB） */
+  const TAG_USAGE_LIMIT = 300;
+  /** 单个标签键的最大长度 —— 防手改 localStorage 塞进超长键 */
+  const TAG_USAGE_ITEM_MAX = 64;
+  /**
+   * 标签的**计数键**：下划线 / 加号与空格等价、大小写不敏感。
+   * 为什么必须归一化：联想候选给的是 `hatsune_miku`，而用户回车敲的是 `hatsune miku` ——
+   * 不归一化就成了两笔互不相干的计数，"自适应"当场失效。
+   */
+  function tagUsageKeyOf(value) {
     return String(value || "").trim().toLowerCase().replace(/[_+]+/g, " ").replace(/\s+/g, " ");
   }
   // localStorage 只适合记住浏览器偏好；工作流本身也必须带上画廊设置，
@@ -123,7 +147,36 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   // capabilities / §5.5 密钥 / §5.7 P站用途。前端**只按契约里的路由名 fetch**，不猜后端实现。
   // D站 继续走老路由 /anima/danbooru/posts（page 分页），一个字节都不改。
   const DANBOORU_SOURCE_ID = "danbooru";
-  const GALLERY_SOURCE_ORDER = Object.freeze([DANBOORU_SOURCE_ID, "civitai", "pixiv"]);
+  /**
+   * 图源**排序偏好**（2026-09-26 由「硬白名单」降级为「偏好 + 兜底」）。
+   *
+   * ⚠️ 改这一行的历史原因（真实架构债）：此前它叫硬白名单，`loadGallerySources()` 里写着
+   *    `if (!GALLERY_SOURCE_ORDER.includes(id)) continue;` —— 后端**可插拔**地注册了新图源
+   *    （适配器一落 `BUILTIN_ADAPTER_MODULES` 就出现在 `/anima/gallery/sources`），
+   *    前端却把它**静默丢弃**：加了图源、界面上下拉里根本不出现，且没有任何报错。
+   *    现在后端返回什么就展示什么，本数组只决定**排序**与**兜底文案**。
+   *    新增图源**不需要**再改前端 —— 只有想调整显示顺序时才动它。
+   */
+  const GALLERY_SOURCE_PREFERRED_ORDER = Object.freeze([DANBOORU_SOURCE_ID, "civitai", "pixiv"]);
+  /** 兜底文案用（保序语义的兼容别名；不要再拿它做白名单过滤）。 */
+  const GALLERY_SOURCE_ORDER = GALLERY_SOURCE_PREFERRED_ORDER;
+
+  /**
+   * 图源 id 是否**已知**（模块级版本）。
+   *
+   * ⚠️ 必须存在模块级函数：`normalizeGallerySettings()` 是模块作用域函数、没有 `this`，
+   *    而能力表 `this.gallerySources` 只有实例拿得到 —— 因此这里只认「兜底表 ∪ 偏好表」，
+   *    实例侧再由 `WangGallery.isKnownSource()` 叠上后端能力表（2026-09-26 真机踩过：
+   *    在模块级函数里写 `this.isKnownSource(...)` 会直接抛
+   *    `Cannot read properties of undefined (reading 'isKnownSource')`，
+   *    而静态测试与 node --check 都发现不了 —— 只有真机加载才暴露）。
+   */
+  function isKnownSourceId(value) {
+    const id = String(value || "").trim().toLowerCase();
+    if (!id) return false;
+    if (Object.prototype.hasOwnProperty.call(GALLERY_SOURCE_FALLBACK, id)) return true;
+    return GALLERY_SOURCE_PREFERRED_ORDER.includes(id);
+  }
   /**
    * /anima/gallery/sources 未就绪或请求失败时的兜底（另两个 agent 并行实现后端）。
    * 数值与 PLAN §5.3 钉死的 capabilities 一致：C站 tags=false / prompt=true / nsfw=true；
@@ -382,6 +435,56 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       };
       request.onerror = () => resolve(DEFAULT_PROMPT_LIBRARY_CATEGORIES.map((category) => ({ ...category })));
     });
+  }
+
+  // `@` 角色联想：一次向后端要多少条、最终显示多少条。
+  // ⚠️ 要 60 而不是 8 是**实测逼出来的**：后端排序是「前缀命中 → 中缀命中 → 热度降序」，
+  //    打 `@miku` 时前 13 名全是 mikuma / mikumo / mikura 这类前缀角色，**Hatsune Miku 排在第 14 位**
+  //    （count 103500，全库最热之一）—— 只取 8 条的话用户根本看不到初音未来。
+  //    多要一些（60 条实测 10ms / 27KB）在前端按词边界重排，再只显示 8 条（见 rankCharacterSuggestions）。
+  const AT_SUGGEST_FETCH_LIMIT = 60;
+  const AT_SUGGEST_LIMIT = 8;
+  // 角色联想浮层的宽度下限。搜索框本身可能只有 280px 宽，而一行要装
+  // 「中文名 → English (作品) + 帖数」—— 实测窄宽度下英文名被 ellipsis 截成 `H...`，
+  // 而英文名正是用户要的东西（它就是 tag）。只对角色模式生效（见 positionSuggestions）。
+  const AT_SUGGEST_MIN_WIDTH = 340;
+
+  /**
+   * `@` 角色联想的触发检测（2026-09-27）。
+   *
+   * 判据 = 光标前**最后一个** `@` 之后的文本（不含空格）。取「最后一个」而不是「以 `@` 开头」，
+   * 是为了让 `1girl @miku` 这种「已经写了别的标签再打 `@`」也能用 —— 实际使用中这比行首触发更常见。
+   * `@` 后出现空格即视为该片段已写完（`@miku 1girl`）⇒ 返回 null，交回标签联想，不弹角色。
+   *
+   * 返回 `{ start, end, query }`（`[start, end)` 就是待替换的 `@xxx` 片段）；null = 不是 `@` 场景。
+   */
+  function atTokenAt(raw, pos) {
+    const str = String(raw ?? "");
+    const caret = Math.max(0, Math.min(str.length, Number.isFinite(pos) ? pos : str.length));
+    const before = str.slice(0, caret);
+    const mark = before.lastIndexOf("@");
+    if (mark < 0) return null;
+    const query = before.slice(mark + 1);
+    if (query.includes(" ")) return null;
+    return { start: mark, end: caret, query };
+  }
+
+  /**
+   * 把 `@xxx` 片段整体替换成角色 trigger（`hatsune miku, vocaloid`）—— 而不是把 `@` 留在框里。
+   *
+   * ⚠️ 结束位置要**从 token.end 一直吃到空格/串尾**：用户可能把光标停在 `@mi|ku` 中间
+   * （那时 end 只到光标处），若只替换 `[start, end)` 就会剩下 `ku` 这种尾巴，拼出
+   * `hatsune miku, vocaloidku`。吃整个词元才是「把 @ 片段换成角色」的本意。
+   *
+   * 返回 null = 输入框在联想显示期间被改动过（`start` 处已不是 `@`）⇒ 调用方退回按词替换。
+   */
+  function replaceAtToken(raw, token, replacement) {
+    const str = String(raw ?? "");
+    const start = Math.max(0, Math.min(str.length, Number(token?.start) || 0));
+    if (str[start] !== "@") return null;
+    let end = Math.max(start, Math.min(str.length, Number(token?.end) || start));
+    while (end < str.length && str[end] !== " ") end++;
+    return str.slice(0, start) + replacement + str.slice(end);
   }
 
   // 搜索栏按空格分词的词级替换：点击补全建议时只替换光标所在的那一个标签，
@@ -648,7 +751,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       lastQuery: typeof source.lastQuery === "string" ? source.lastQuery : "",
       // 多源画廊：当前图源 + 各源自己的筛选 + 各源各自的搜索框内容。
       // 注意 D站 的筛选仍住在 filters/rating 里（老工作流恢复后不变），这里只放新源的东西。
-      source: GALLERY_SOURCE_ORDER.includes(source.source) ? source.source : DANBOORU_SOURCE_ID,
+      source: isKnownSourceId(source.source) ? String(source.source) : DANBOORU_SOURCE_ID,
       sourceFilters: normalizeSourceFilters(source.sourceFilters),
       sourceQueries: normalizeSourceQueries(source.sourceQueries),
       // C站「无限加载」池：缺字段 = 关闭（老工作流恢复后行为与改动前逐字节一致）
@@ -706,8 +809,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.suggestionRequestId = 0;
       this.suggestionTimer = null;
       this.suggestionController = null;
+      // `@` 角色联想当前锚定的 `@xxx` 片段（`{ start, end, query }`）；null = 当前不是角色联想态。
+      this.characterToken = null;
       this.positionSuggestionsHandler = () => this.positionSuggestions();
       this.selectionWidget = null;
+      // AnimaDex 角色词（浮窗写入 → 拼进节点的 prompts 输出；空串 = 不参与）
+      this.animadexRolePrompt = "";
       this.queryWidget = null;
       this.queryInput = null;
       // 记录多选卡片的实际点击顺序；不能用 DOM 顺序代替，因为翻页/筛选后的显示顺序可能不同。
@@ -822,7 +929,58 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     activeSourceId() {
       const id = String(this.settings?.source || "");
-      return GALLERY_SOURCE_ORDER.includes(id) ? id : DANBOORU_SOURCE_ID;
+      return this.isKnownSource(id) ? id : DANBOORU_SOURCE_ID;
+    }
+
+    /**
+     * 是否为**已知图源**（2026-09-26）。
+     *
+     * 判据顺序 = 后端能力表 → 兜底表 → 偏好顺序表。之所以要有这个统一入口：
+     * 原先 7 处各写一遍 `GALLERY_SOURCE_ORDER.includes(...)`，既让新图源静默失效，
+     * 又让「后端已注册但前端没跟上」这种状态到处不一致。收敛到一处后，新增图源零改动。
+     */
+    isKnownSource(sourceId) {
+      const id = String(sourceId || "").trim().toLowerCase();
+      if (!id) return false;
+      // 实例侧多一层：后端能力表（动态注册的图源只有它才知道）
+      if (this.gallerySources?.has?.(id)) return true;
+      // 静态部分复用模块级函数，避免两处各写一套后漂移
+      return isKnownSourceId(id);
+    }
+
+    /** 图源下拉/切换的**展示顺序**：偏好表打头，其余按后端返回顺序接在后面。 */
+    orderedSourceIds() {
+      const seen = new Set();
+      const out = [];
+      for (const id of GALLERY_SOURCE_PREFERRED_ORDER) {
+        if (this.isKnownSource(id)) { out.push(id); seen.add(id); }
+      }
+      for (const id of this.gallerySources?.keys?.() || []) {
+        if (!seen.has(id)) { out.push(id); seen.add(id); }
+      }
+      return out;
+    }
+
+    /**
+     * 按当前已知图源**重建下拉选项**（2026-09-26）。
+     *
+     * 调用时机：`loadGallerySources()` 异步返回之后。build() 里同步构建的那一次只可能拿到
+     * 兜底表（D站/C站/P站），后端动态注册的新图源必须靠这次重建才会出现在界面上。
+     * 保留当前选中值（重建后仍选中同一个源），避免重建把用户的源选择重置掉。
+     */
+    rebuildSourceOptions() {
+      const select = this.sourceSelect;
+      if (!select) return;
+      const previous = select.value || this.activeSourceId();
+      const ids = this.orderedSourceIds();
+      // 内容一致就跳过，避免无谓的 DOM 抖动（切源时不希望下拉闪一下）
+      const current = [...select.options].map((opt) => opt.value);
+      if (current.length === ids.length && current.every((id, i) => id === ids[i])) return;
+      select.replaceChildren();
+      for (const id of ids) {
+        select.append(new Option(this.sourceEntry(id)?.label || id, id));
+      }
+      select.value = ids.includes(previous) ? previous : this.activeSourceId();
     }
 
     sourceEntry(sourceId = null) {
@@ -880,14 +1038,17 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           const data = await response.json();
           const list = Array.isArray(data?.sources) ? data.sources : [];
           const map = new Map();
-          for (const id of GALLERY_SOURCE_ORDER) map.set(id, GALLERY_SOURCE_FALLBACK[id]);
+          // 先放兜底表（保证 D站 一定在：它不在 /anima/gallery/sources 回包里）
+          for (const id of GALLERY_SOURCE_PREFERRED_ORDER) map.set(id, GALLERY_SOURCE_FALLBACK[id]);
+          // 后端返回什么就收什么 —— **不再按白名单过滤**（那会让新图源静默消失，见上方注释）。
           for (const row of list) {
             const id = String(row?.id || "").trim();
-            if (!GALLERY_SOURCE_ORDER.includes(id)) continue;
+            if (!id) continue;
+            const fallback = GALLERY_SOURCE_FALLBACK[id];
             map.set(id, {
               id,
-              label: String(row?.label || GALLERY_SOURCE_FALLBACK[id].label),
-              capabilities: { ...GALLERY_SOURCE_FALLBACK[id].capabilities, ...(row?.capabilities || {}) },
+              label: String(row?.label || fallback?.label || id),
+              capabilities: { ...(fallback?.capabilities || {}), ...(row?.capabilities || {}) },
             });
           }
           this.gallerySources = map;
@@ -1319,7 +1480,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     sourceIdFromPostKey(postKey) {
       const text = String(postKey || "");
       const source = text.includes(":") ? text.split(":")[0].toLowerCase() : "";
-      return GALLERY_SOURCE_ORDER.includes(source) ? source : "";
+      return this.isKnownSource(source) ? source : "";
     }
 
     /** 分类浏览：读**该图源**的后端本地快照并复用既有的 item→post 映射，不再回查任何图源。 */
@@ -1616,7 +1777,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     async switchGallerySource(nextId) {
       const id = String(nextId || "");
-      if (!GALLERY_SOURCE_ORDER.includes(id) || id === this.activeSourceId()) return;
+      if (!this.isKnownSource(id) || id === this.activeSourceId()) return;
       // 差分组是 D站 的查询语义（parent:<id>），换源后必须退出，否则「← 返回」会把 D站 的词带到别的源。
       // ⚠️ 顺序要紧（独立审查抓到的 S1）：**先取出要保存的搜索词、再退出差分组**。差分组期间搜索框里
       //    是临时的 `parent:<id>`，直接把它记进 sourceQueries[previous]，那个栏目下次被切回时搜索框
@@ -1813,7 +1974,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       //     "pixiv"/"civitai"，就会被当成对应图源，归类报"目标分类不存在"。）
       if (active === DANBOORU_SOURCE_ID) return active;
       const id = String(post?.source || "");
-      return GALLERY_SOURCE_ORDER.includes(id) ? id : active;
+      return this.isKnownSource(id) ? id : active;
     }
 
     postImageUrl(post) {
@@ -2595,7 +2756,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const raw = JSON.parse(localStorage.getItem(this.searchHistoryKey()) || "{}");
         if (!raw || typeof raw !== "object") return {};
         const out = {};
-        for (const source of GALLERY_SOURCE_ORDER) {
+        for (const source of this.orderedSourceIds()) {
           const list = raw[source];
           if (!Array.isArray(list)) continue;
           // 只收**字符串**并限长：手改过 localStorage 的话，`[{"a":1}]` 会渲染成可点的
@@ -2678,9 +2839,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.suggestionController?.abort();
       this.suggestionController = null;
       this.suggestionRequestId += 1;
+      // 历史与角色联想互斥（同一个容器）：进历史就丢掉 `@` 锚点
+      this.characterToken = null;
 
       const items = this.searchHistoryFor();
-      suggestions.classList.remove("is-localized");
+      this.resetSuggestionMode();
       suggestions.replaceChildren();
 
       const head = document.createElement("div");
@@ -2781,6 +2944,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         // ⚠️ 必须在这里就取原文：`search()` 内部会用 setQuery(lastQuery) 把输入框改写成规范化结果
         //（小写、丢掉 order:、截断到 8 个标签），到那时"用户输入的原文"已经没了。
         this.recordSearchHistory(text);
+        // 自适应联想排序的**唯一记录点**：用户明确选用过的标签记一次（点候选 / 回车 / 点历史都算）。
+        // 与历史同理，翻页补图换源不走这里 —— 那些不是"用户的一次选用"。
+        this.recordTagUsage(text);
       }
       this.hideSuggestions();
       if (this.grid) this.grid.scrollTop = 0;
@@ -2793,6 +2959,89 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     /** 点历史条目 = 与其它用户搜索入口走同一条路径 */
     applySearchHistoryQuery(text) {
       this.submitSearch(text);
+    }
+
+    // ── 标签使用次数（自适应联想排序，需求 2026-09-27）──
+    // 只记「**选用**」不记「看见」：入口只有 submitSearch（回车 / 点联想候选 / 点 prompt 标签 /
+    // 点历史 / 预设），翻页、补图、换源重搜这些状态驱动的搜索一律不记（它们不走 submitSearch）。
+    // 与搜索历史的差别：历史是**每节点 + 按图源**分桶（那是"本地检索记录"），
+    // 用词习惯则全局一份 —— 同一个人的 D站 用词不该因为换节点而清零。
+
+    /** 读出全部计数；任何坏数据都退化成空对象，绝不阻塞联想 */
+    loadTagUsage() {
+      try {
+        const raw = JSON.parse(localStorage.getItem(TAG_USAGE_STORAGE_KEY) || "{}");
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+        const out = {};
+        for (const [key, value] of Object.entries(raw)) {
+          const name = String(key).trim().slice(0, TAG_USAGE_ITEM_MAX);
+          const count = Math.floor(Number(value));
+          // `__proto__` 单独挡掉：手改过的 localStorage 用它能在赋值时改原型链
+          if (!name || name === "__proto__" || !Number.isFinite(count) || count <= 0) continue;
+          out[name] = count;
+        }
+        return out;
+      } catch {
+        return {};
+      }
+    }
+
+    /** 写入并**按次数降序截断到 TAG_USAGE_LIMIT** —— 上限在这里收口，别指望调用方记得 */
+    saveTagUsage(usage) {
+      try {
+        const entries = Object.entries(usage || {})
+          .filter(([, count]) => Number(count) > 0)
+          .sort((a, b) => Number(b[1]) - Number(a[1]))
+          .slice(0, TAG_USAGE_LIMIT);
+        localStorage.setItem(TAG_USAGE_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)));
+      } catch {
+        /* 配额满：自适应排序是可选优化，写不进去也不该影响搜索本身 */
+      }
+    }
+
+    /**
+     * 记一次「标签被选用」。接受单个标签或整串查询 —— 整串按**逗号 / 换行**拆成标签逐个计数
+     * （⚠️ 不按空格拆：D站 的 `hatsune miku` 本身就是一个含空格的标签）。
+     * 含 `:` 的 metatag（`age:` / `order:` / `rating:`）不是联想候选，跳过不记。
+     */
+    recordTagUsage(value) {
+      const tokens = Array.isArray(value) ? value : String(value ?? "").split(/[,，\n]/);
+      const hits = [];
+      for (const token of tokens) {
+        const raw = String(token ?? "").trim();
+        if (!raw) continue;
+        const hasColon = raw.includes(":");
+        const wrapped = /^[([]/.test(raw);   // 带括号 = A1111 权重写法 `(tag:1.2)` / `[tag]`
+        const cleaned = raw
+          .replace(/^[([]+/, "").replace(/[)\]]+$/, "")   // 剥掉 `( )` / `[ ]` 外壳
+          .replace(/:\s*[\d.]+$/, "")                     // 剥掉权重后缀 `tag:1.2`
+          .trim();
+        // ⚠️ 无括号却含 `:` 的是 metatag（`age:18` / `rating:safe` / `order:score`）——
+        //    不是联想候选，记了只会白占 300 名额（且剥掉权重后还会退化成 `age` 这种脏键）。
+        if (!cleaned || (hasColon && !wrapped) || cleaned.includes(":")) continue;
+        const key = tagUsageKeyOf(cleaned).slice(0, TAG_USAGE_ITEM_MAX);
+        if (key) hits.push(key);
+      }
+      if (!hits.length) return;
+      const usage = this.loadTagUsage();
+      for (const key of hits) usage[key] = (Number(usage[key]) || 0) + 1;
+      this.saveTagUsage(usage);
+    }
+
+    /**
+     * 按使用次数**稳定**重排联想候选：次数降序；同次数（含全部未用过的）保持后端给的原始顺序。
+     * ⚠️ 稳定性是硬要求 —— 显式用原索引做次级比较，不依赖引擎的稳定排序实现：
+     *    未用过的候选若被打乱，等于"每次联想的顺序都在跳"，比不排序更糟。
+     */
+    sortSuggestionsByUsage(choices) {
+      const usage = this.loadTagUsage();
+      return choices
+        .map((item, index) => {
+          const tag = item && typeof item === "object" ? (item.tag || item.query) : item;
+          return { item, index, count: Number(usage[tagUsageKeyOf(tag)]) || 0 };
+        })
+        .sort((a, b) => (b.count - a.count) || (a.index - b.index))
+        .map((entry) => entry.item);
     }
 
     setStatus(message, tone = "") {
@@ -2809,10 +3058,22 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.suggestionController?.abort();
       this.suggestionController = null;
       this.suggestionRequestId += 1;
+      // 收起即退出角色联想态：下次输入要按**当时**的光标重新判定，不能沿用旧锚点
+      //（旧锚点的 start 可能已不在 `@` 上 —— replaceAtToken 会校验并退回按词替换）。
+      this.characterToken = null;
       if (!this.suggestions) return;
       this.suggestions.textContent = "";
-      this.suggestions.classList.remove("is-localized");
+      this.resetSuggestionMode();
       this.suggestions.style.display = "none";
+    }
+
+    /**
+     * 浮层换内容前必须清掉上一轮的模式类。
+     * ⚠️ 少了这一步，一次 `@` 角色联想之后，标签联想的横排 chip 会被残留的 `is-characters`
+     *    竖排规则改写（反之同样串味）—— 两者共用同一个 `.adg-suggestions` 容器。
+     */
+    resetSuggestionMode() {
+      this.suggestions?.classList.remove("is-localized", "is-characters");
     }
 
     positionSuggestions() {
@@ -2820,13 +3081,36 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const suggestions = this.suggestions;
       if (!input || !suggestions || suggestions.style.display === "none") return;
       const rect = input.getBoundingClientRect();
+      let width = rect.width;
+      let left = rect.left;
+      // 角色联想一行要装「中文名 → English (作品) + 帖数」，而搜索框可能只有 280px 宽 ——
+      // 实测英文名会被 ellipsis 截成 `H...`，可它正是用户要看的东西（它就是 tag）。
+      // 所以只给角色模式加宽度下限，并把左边界钳回视口内（变宽后可能顶出右边缘）；
+      // **标签联想的定位逻辑原样不动**（需求：非 `@` 场景保持原行为）。
+      if (suggestions.classList.contains("is-characters")) {
+        width = Math.max(width, AT_SUGGEST_MIN_WIDTH);
+        left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+      }
       suggestions.style.top = `${Math.round(rect.bottom + 3)}px`;
-      suggestions.style.left = `${Math.round(rect.left)}px`;
-      suggestions.style.width = `${Math.round(rect.width)}px`;
+      suggestions.style.left = `${Math.round(left)}px`;
+      suggestions.style.width = `${Math.round(width)}px`;
     }
 
     scheduleSuggestions(value) {
       const query = String(value ?? "");
+      // ── `@` 角色联想（AnimaDex）—— 优先级最高，且**先于图源守卫** ──
+      // 它查的是 AnimaDex 角色库（独立数据源，与当前画廊图源无关），三个图源都给：用户显式敲
+      // `@` 就是要角色，此时不该被「非 D站 没有标签词典」那条守卫吞掉（那条只管标签联想）。
+      const input = this.queryInput;
+      const caret = input && document.activeElement === input
+        ? (input.selectionStart ?? query.length)
+        : query.length;
+      const atToken = atTokenAt(query, caret);
+      if (atToken) {
+        this.scheduleCharacterSuggestions(atToken);
+        return;
+      }
+      this.characterToken = null;
       // 空查询 = 显示「最近搜索」（占用联想浮层的位置）。
       // 历史是本地数据、与图源无关，所以这条要放在 D站 守卫**之前**判：
       // 三个图源都有搜索框 —— C站 的 `capability.query=false` 只是把它切到"页内本地过滤"模式
@@ -2848,6 +3132,143 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       }, 180);
     }
 
+    /**
+     * `@` 角色联想（2026-09-27）：与标签联想**共用**同一套防抖 / 取消 / 竞态丢弃机制
+     *（suggestionTimer / suggestionController / suggestionRequestId），所以两者天然互斥、
+     * 不会互相覆盖 —— 别为它另起一套，否则会出现两条联想同时往一个容器里写。
+     */
+    scheduleCharacterSuggestions(token) {
+      this.characterToken = token;
+      if (this.suggestionTimer) clearTimeout(this.suggestionTimer);
+      this.suggestionTimer = setTimeout(() => {
+        this.suggestionTimer = null;
+        this.fetchCharacterSuggestions(String(token?.query ?? ""));
+      }, 180);
+    }
+
+    /**
+     * 角色候选的**词边界 + 热度重排**（2026-09-27 实测逼出来的，见 AT_SUGGEST_FETCH_LIMIT 的注释）。
+     *
+     * 后端只按「前缀 / 中缀 / 作品名」定级，不看词边界，于是 `@miku` 会给出一整屏 mikuma / mikumo / mikura。
+     * 这里按「用户真正在找什么」重新定级 —— **只改顺序，不增删候选**：
+     *   强命中（0）= 名称按空格 / 下划线分词后含**完整词**（`@miku` → `Hatsune Miku`）、
+     *               或某字段**以查询开头**（`@初音` → `初音未来`、`@hatsune` → `Hatsune Miku`）、
+     *               或某字段与查询**完全相等**（`@hatsune_miku`）；
+     *   其余（1）  = 后端命中的中缀 / 作品名命中（`@vocaloid` 这类作品查询全落这里）。
+     *
+     * ⚠️ 档内**一律按热度降序**，不设"精确度高于热度"的更细档位 —— 实测教训：把「中文名恰好等于
+     *    查询」单列一档会让 `@初音` 的首候选变成某个叫「初音」的冷门角色（count 58），而真正的
+     *    「初音未来」（count 103500）被压到第 3。中文场景下"名字完全相等"远不如"更热"可信。
+     */
+    rankCharacterSuggestions(items, query) {
+      const key = String(query ?? "").trim().toLowerCase();
+      if (!key) return items;
+      const rankOf = (item) => {
+        const values = [item?.name, item?.slug, item?.zh].map((v) => String(v ?? "").trim().toLowerCase());
+        const strong = values.some((value) => value === key
+          || value.startsWith(key)
+          || value.split(/[\s_]+/).filter(Boolean).includes(key));
+        return strong ? 0 : 1;
+      };
+      return items
+        .map((item, index) => ({ item, index, rank: rankOf(item) }))
+        .sort((a, b) => (a.rank - b.rank)
+          || (Number(b.item?.count || 0) - Number(a.item?.count || 0))
+          || (a.index - b.index))
+        .map((entry) => entry.item);
+    }
+
+    async fetchCharacterSuggestions(query) {
+      if (!this.suggestions) return;
+      this.suggestionController?.abort();
+      this.suggestionController = new AbortController();
+      const requestId = ++this.suggestionRequestId;
+      try {
+        // 用 `/anima/animadex/search` 而**不是** `/suggest`：suggest 只回
+        // slug/name/zh/series/count/thumb，**不带 trigger**，而选中后要把它替换成 trigger
+        //（`hatsune miku, vocaloid`）—— 缺 trigger 就得在点击时再补一次请求（多一次往返 + 一个
+        // 失败分支）。search 的 results 一次给全（trigger/name/zh/series/count）。
+        // 空查询（刚敲下 `@`）= 热度榜，正好当「这里有角色库」的提示。
+        const url = `/anima/animadex/search?q=${encodeURIComponent(String(query ?? "").trim())}&limit=${AT_SUGGEST_FETCH_LIMIT}`;
+        const response = await fetch(url, { signal: this.suggestionController.signal });
+        const data = await response.json();
+        if (requestId !== this.suggestionRequestId || !this.suggestions) return;
+        // 多要少显示：先按词边界重排，再截到 8 条（理由见 AT_SUGGEST_FETCH_LIMIT 与 rankCharacterSuggestions）。
+        const results = this.rankCharacterSuggestions(
+          Array.isArray(data?.results) ? data.results : [],
+          query,
+        ).slice(0, AT_SUGGEST_LIMIT);
+        const suggestions = this.suggestions;
+        suggestions.replaceChildren();
+        this.resetSuggestionMode();
+        suggestions.style.display = results.length ? "flex" : "none";
+        if (!results.length) return;
+        // 竖排列表（CSS 见 .adg-suggestions.is-characters）：与标签联想的横排 chip 不同，
+        // 「中文名 → English (作品)」一行的信息量撑不起 chip 宽度。
+        suggestions.classList.add("is-characters");
+        // ⚠️ 顺序同 fetchSuggestions：先 display 再 position（positionSuggestions 首行是
+        //    「display === 'none' 就 return」，反了会让首次显示落在视口左上角）。
+        this.positionSuggestions();
+
+        const label = document.createElement("span");
+        label.className = "adg-suggestions-label";
+        label.textContent = "角色 · AnimaDex";
+        suggestions.append(label);
+
+        for (const item of results) {
+          const trigger = String(item?.trigger || "").trim();
+          const english = String(item?.name || item?.slug || "").replaceAll("_", " ").trim();
+          const chinese = String(item?.zh || "").trim();
+          const series = String(item?.series || "").trim();
+          // trigger 缺失（旧索引 / 脏数据）时退回英文名：宁可填个近似标签，也不要往框里插空串。
+          const value = trigger || english;
+          if (!value) continue;
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "adg-char-suggestion";
+          button.dataset.trigger = value;
+          button.title = `插入 ${value}`;
+          // 与标签候选同样的防抢：ComfyUI 画布 / 节点激活面罩会吃掉这几帧的点击
+          button.onpointerdown = (event) => event.stopPropagation();
+          button.onmousedown = (event) => event.stopPropagation();
+          const name = document.createElement("span");
+          name.className = "adg-char-name";
+          // 有中文名就「中文名 → English」，没有就只给英文（AnimaDex 的中文表不覆盖全部角色）
+          name.textContent = chinese || english;
+          const arrow = document.createElement("span");
+          arrow.className = "adg-char-arrow";
+          arrow.textContent = chinese ? "→" : "";
+          const en = document.createElement("span");
+          en.className = "adg-char-en";
+          en.textContent = chinese ? english : "";
+          const seriesEl = document.createElement("span");
+          seriesEl.className = "adg-char-series";
+          seriesEl.textContent = series ? `(${series})` : "";
+          const count = document.createElement("span");
+          count.className = "adg-char-count";
+          count.textContent = Number(item?.count) > 0 ? formatCount(item.count) : "";
+          button.append(name, arrow, en, seriesEl, count);
+          button.onclick = () => this.applyCharacterSuggestion(value);
+          suggestions.append(button);
+        }
+      } catch { /* 角色库未就绪 / 请求被取消：静默，别打扰搜索框输入 */ }
+    }
+
+    /**
+     * 点角色候选 = 把 `@xxx` 片段换成 trigger，再走**与回车 / 点标签候选完全相同**的提交路径
+     *（submitSearch 负责填框、记历史、收起浮层、滚回顶部、发起搜索）—— 不另写一条提交流程。
+     */
+    applyCharacterSuggestion(value) {
+      const input = this.queryInput;
+      const raw = input?.value ?? this.queryWidget?.value ?? "";
+      const cursor = input?.selectionStart ?? raw.length;
+      // 锚点优先用**此刻**的光标重新判定（用户可能移动过光标），判不出来再退回显示联想时的记录值；
+      // replaceAtToken 返回 null = 该片段已被改动，退回「按光标所在词替换」，绝不把 `@` 留在框里。
+      const token = atTokenAt(raw, cursor) || this.characterToken;
+      const replaced = token ? replaceAtToken(raw, token, value) : null;
+      this.submitSearch(replaced != null ? replaced : replaceWordAt(raw, cursor, value));
+    }
+
     // 同步搜索框内容到 DOM 输入 + 隐藏的序列化 widget（两者始终一致）
     setQuery(value) {
       const v = String(value ?? "");
@@ -2855,6 +3276,32 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (this.queryWidget) this.queryWidget.value = v;
       if (this.queryInput && document.activeElement === this.queryInput) this.scheduleSuggestions(v);
       else this.hideSuggestions();
+    }
+
+    /**
+     * AnimaDex 浮窗的插入动作（2026-09-26 修正版）。
+     *
+     * ⚠️ 修正记录：初版把角色词写进了**搜索框** —— 那是理解偏了。YG 要的是
+     * 「输出的字符串里是 animadex，这样我关闭节点的角色作品等 prompt 输出，就可以实现替换角色」，
+     * 即写进**节点的 prompts 输出**。故这里改为：
+     *   ① 记到 `animadexRolePrompt`（**替换**语义：再选一个角色就换掉上一个）；
+     *   ② 立刻重写 `selection_data`，让下游拿到的 prompt 就是新角色；
+     *   ③ 状态栏回显，避免"改了没反应"。
+     */
+    applyAnimadexInsert(text) {
+      const value = String(text || "").trim();
+      if (!value) return;
+      this.animadexRolePrompt = value;
+      this.updateSelection();
+      this.setStatus(`AnimaDex 角色词已写入 Prompt 输出：${value}`, "success");
+    }
+
+    /** 清除 AnimaDex 角色词（回到「只输出图片自带 prompt」的状态）。 */
+    clearAnimadexRolePrompt() {
+      if (!this.animadexRolePrompt) return;
+      this.animadexRolePrompt = "";
+      this.updateSelection();
+      this.setStatus("已清除 AnimaDex 角色词", "success");
     }
 
     currentQuery() {
@@ -3187,10 +3634,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const names = empty ? d.didYouMean : d.suggestions;
         const details = !empty && Array.isArray(d.suggestionDetails) ? d.suggestionDetails : [];
         const choices = details.length ? details : (Array.isArray(names) ? names : []);
+        // 自适应排序：用户实际选用过的标签靠前（**稳定** —— 没用过的保持后端原序，见 sortSuggestionsByUsage）
+        const ordered = this.sortSuggestionsByUsage(choices);
         const rewrites = Array.isArray(d.rewrites) ? d.rewrites : [];
         const chineseQuery = [...String(q)].some((char) => /[\u4e00-\u9fff]/.test(char));
         this.suggestions.textContent = "";
-        this.suggestions.classList.toggle("is-localized", details.length > 0);
+        this.resetSuggestionMode();
+        if (details.length) this.suggestions.classList.add("is-localized");
         this.suggestions.style.display = choices.length ? "flex" : "none";
         if (!choices.length) return;
         this.positionSuggestions();
@@ -3202,7 +3652,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           : (empty ? "你是不是想搜" : "智能提示");
         this.suggestions.append(label);
 
-        for (const choice of choices) {
+        for (const choice of ordered) {
           const item = choice && typeof choice === "object" ? choice : { tag: choice };
           const target = String(item.tag || item.query || "").trim();
           if (!target) continue;
@@ -3225,6 +3675,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             translation.textContent = String(item.translation || "");
             arrow.textContent = translation.textContent ? " → " : "";
             count.textContent = Number(item.postCount) > 0 ? formatCount(item.postCount) : "";
+            // 本地索引的帖数是**快照值**，与 D 站实时值有偏差（实测 hatsune miku 低约 21%）。
+            // 用一个小上标如实标注来源，别让快照数字冒充实时值；远程路径不带该字段，行为不变。
+            if (item.count_is_snapshot && count.textContent) {
+              count.title = `本地快照帖数（非 D 站实时值）`;
+              count.classList.add("is-snapshot");
+            }
             button.append(...(chineseQuery ? [translation, arrow, tag, count] : [tag, arrow, translation, count]));
           } else {
             button.textContent = target.replaceAll("_", " ");
@@ -3344,6 +3800,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         prompt_settings: this.promptOutputSettings(),
         selections: [selection],
         image_selections: [{ image_url: selection.image_url }],
+        // 批量入队会逐张走这里，而 updateSelection() 走的是含 role_prompt 的那条路径。
+        // 少了这个字段，AnimaDex 选好的角色词在整批任务上**静默失效**（只有单张流程正常）。
+        role_prompt: String(this.animadexRolePrompt || ""),
       });
     }
 
@@ -3351,7 +3810,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const selected = this.selectedGallerySelections();
       const imageSelections = selected.map((selection) => ({ image_url: selection.image_url }));
       const promptOutputEnabled = this.settings.promptOutputEnabled !== false;
-      const value = JSON.stringify({ prompt_output_enabled: promptOutputEnabled, prompt_settings: this.promptOutputSettings(), selections: selected, image_selections: imageSelections });
+      const value = JSON.stringify({ prompt_output_enabled: promptOutputEnabled, prompt_settings: this.promptOutputSettings(), selections: selected, image_selections: imageSelections, role_prompt: String(this.animadexRolePrompt || "") });
       this.selectionWidget.value = value;
       this.selectionWidget.callback?.(value);
       this.node.graph?.change?.();
@@ -3643,6 +4102,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         ? "关闭后即使下游连线，节点也不会输出正向 Prompt"
         : "已关闭 Prompt 输出，点击恢复节点正向 Prompt 输出";
       this.promptOutputBtn.classList.toggle("is-disabled", !enabled);
+      // 2026-09-26：把开关状态同步到「设置 ▾」触发按钮的摘要上 ——
+      // 菜单收纳的代价是「状态看不见了」，这里补回来：关掉 Prompt 输出时触发按钮直接显示
+      // 「设置 · Prompt 关」，不必展开菜单才发现（低占位不等于低信息）。
+      if (this.settingsDropdown?.setSummary) {
+        this.settingsDropdown.setSummary(enabled ? "设置" : "设置 · Prompt 关", enabled ? 0 : 1);
+      }
     }
 
     rawPromptGroups(post) {
@@ -7274,8 +7739,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const select = document.createElement("select");
         select.className = "adg-source-select";
         select.setAttribute("aria-label", "图源");
-        for (const id of GALLERY_SOURCE_ORDER) {
-          select.append(new Option(GALLERY_SOURCE_FALLBACK[id].label, id));
+        for (const id of this.orderedSourceIds()) {
+          select.append(new Option(this.sourceEntry(id)?.label || id, id));
         }
         select.value = this.activeSourceId();
         select.onchange = () => { void this.switchGallerySource(select.value); };
@@ -7285,45 +7750,123 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         mainGroup.append(picker);
       }
       addAction("搜索", "按上方标签搜索", () => this.submitSearch(this.queryInput?.value ?? this.queryWidget?.value ?? ""), mainGroup).className = "adg-primary-action";
-      // ── 随机发现：order:random + 质量地板。三档质量让用户挑口味，而不是给一个
-      //    「随机」开关把没人贴过的冷门图倒进来（见 RANDOM_QUALITY_TIERS 注释）。
+      // ── 随机发现：order:random + 质量地板。
+      //
+      // 2026-09-26 低占位改造：原先 3 个档位各占一个按钮 + 「换一批」，共 4 个按钮挤在工具条
+      // 一行里（实测占掉约 4 个按钮宽度，把设置/Prompt 等挤到换行）。改为**一个紧凑下拉 +
+      // 一个「换一批」**，占位从 4 按钮降到 ~1.8 按钮宽，信息量不减（档位的 hint 进 title）。
+      //
+      // ⚠️ 两个引用契约必须保留（tests/test_gallery_multisource_ui.py:99-100 断言）：
+      //    · `randomTierButtonList` —— 仍是由按钮组成的数组，遍历 `.hidden = !isDanbooru`；
+      //      改成下拉后，数组里放的是 `[选择器容器, 换一批按钮]` 这类可置 hidden 的元素。
+      //    · `randomReshuffleBtn` —— 仍是「换一批」按钮本身。
       {
         const tierButtons = [];
+        const randomWrap = document.createElement("span");
+        randomWrap.className = "adg-random-group";
+
+        const tierSelect = document.createElement("select");
+        tierSelect.className = "adg-random-tier";
+        tierSelect.setAttribute("aria-label", "随机发现档位");
+        tierSelect.append(new Option("随机发现", ""));
         for (const tier of RANDOM_QUALITY_TIERS) {
-          const btn = addAction(tier.label, `随机发现：${tier.hint}（再点一次退出随机）`, () => {
-            if (this.settings.randomQuality === tier.id) void this.exitRandom();
-            else void this.discoverRandom(tier.id);
-          }, mainGroup);
-          btn.className = "adg-random-btn";
-          btn.dataset.tier = tier.id;
-          tierButtons.push(btn);
+          const opt = new Option(tier.label, tier.id);
+          opt.title = tier.hint;
+          tierSelect.append(opt);
         }
+        tierSelect.title = "随机发现：选一个档位进入随机浏览（再选回「随机发现」退出）";
+        tierSelect.onchange = () => {
+          const picked = tierSelect.value;
+          if (!picked) void this.exitRandom();
+          else void this.discoverRandom(picked);
+        };
+        randomWrap.append(tierSelect);
+
         const reshuffleBtn = addAction("换一批", "重新随机一次，并避开本档已看过的图", () => {
           void this.discoverRandom(this.settings.randomQuality || "good", { reshuffle: true });
-        }, mainGroup);        reshuffleBtn.className = "adg-random-reshuffle";
+        }, randomWrap);
+        reshuffleBtn.className = "adg-random-reshuffle";
+
+        mainGroup.append(randomWrap);
+
         this.randomTierButtons = () => {
-          for (const btn of tierButtons) btn.classList.toggle("active", this.settings.randomQuality === btn.dataset.tier);
           const on = Boolean(this.settings.randomQuality);
-          // 工具栏按钮的禁用样式由 .is-disabled 承载（CSS 里没有 :disabled 规则）
+          tierSelect.value = on ? this.settings.randomQuality : "";
           reshuffleBtn.disabled = !on;
           reshuffleBtn.classList.toggle("is-disabled", !on);
           reshuffleBtn.title = on ? "重新随机一次，并避开本档已看过的图" : "先选一个随机档位";
+          tierSelect.classList.toggle("active", on);
         };
         this.randomTierButtons();
         // 随机发现是 order:random + D站 评分地板：换源时整组隐藏（capabilities 驱动）
+        tierButtons.push(randomWrap);
         this.randomTierButtonList = tierButtons;
         this.randomReshuffleBtn = reshuffleBtn;
+        this.randomTierSelect = tierSelect;
       }
-      addAction("设置", "设置画廊显示、排除标签和 Danbooru 登录", () => this.openSettings(), mainGroup);
-      this.promptSettingsBtn = addAction("Prompt设置", "控制 Prompt 输出类别与格式", () => this.openPromptSettings(), mainGroup);
-      this.promptOutputBtn = addAction("", "", () => {
-        const enabled = this.setPromptOutputEnabled(this.settings.promptOutputEnabled === false);
-        this.setStatus(enabled ? "Prompt 输出已开启" : "Prompt 输出已关闭：下游将收到空 Prompt", "success");
-      }, mainGroup);
-      this.updatePromptOutputButton();
-      this.galleryBatchBtn = addAction("批量入队", "将选中的画廊卡片按显示顺序拆成独立任务，逐张执行", () => this.startGalleryBatch(), mainGroup);
-      this.galleryBatchBtn.className = "adg-batch-queue";
-      this.galleryBatchBtn.disabled = true;
+      // ── AnimaDex 角色浮窗入口（2026-09-26）──────────────────────────────────
+      // 只占 1 个按钮宽（低占位）：点开是浮窗，用来把角色基础词加进搜索框 ——
+      // 这是「换人物」最顺手的路径（查到角色 → 点一下 → 搜索框就是那个角色的词）。
+      // ⚠️ 它不是图源：不注册进 /anima/gallery/sources，也不参与图源下拉。
+      this.animadexPanel = new AnimaDexPanel({
+        onInsert: (text) => this.applyAnimadexInsert(text),
+      });
+      mainGroup.append(this.animadexPanel.buildTrigger());
+
+      // ── 设置类操作收进「设置 ▾」菜单（2026-09-26 低占位高能效改造）──────────────
+      //
+      // 改前：画廊设置 / Prompt设置 / Prompt 输出 / 批量入队 各占一个按钮，工具条被撑到 7 行
+      //（实测截图：7425 行附近那段）。这四件都是**低频**操作，不该常驻占位。
+      // 改后：一个「设置 ▾」菜单收纳它们，工具条省下 2 行；触发按钮上带**状态摘要**
+      //（如「设置 · Prompt 关」），信息量不减反增（关掉 Prompt 输出这种事不该靠翻菜单才发现）。
+      //
+      // ⚠️ 引用契约保持不变（tests/test_gallery_multisource_ui.py:134-135 断言）：
+      //    `this.promptSettingsBtn` / `this.promptOutputBtn` 仍指向真实 `<button>` 元素
+      //    （只是住进了菜单），故 `applySourceCapabilities()` 里那两行 `.hidden = !promptApplicable`
+      //    一字不改仍然有效。`this.galleryBatchBtn` 同理（verify_danbooru_gallery_batch.py 依赖它）。
+      {
+        // 持久容器：PortalDropdown.close() 只做 menu.remove()，容器本身存活，下次打开被重新 append。
+        const settingsMenuBody = document.createElement("div");
+        settingsMenuBody.className = "adg-settings-menu-body";
+
+        const settingsDropdown = new PortalDropdown({
+          label: "设置",
+          title: "画廊设置 / Prompt 输出 / 批量入队",
+          menuClass: "adg-settings-menu",
+          content: () => settingsMenuBody,
+        });
+        mainGroup.append(settingsDropdown.element);
+        this.settingsDropdown = settingsDropdown;
+
+        // 菜单项统一在点击后收起菜单（避免菜单挡住随后的设置弹窗）
+        const dismissThen = (fn) => () => { settingsDropdown.close(); fn(); };
+
+        this.settingsMenuBtn = addAction(
+          "画廊设置",
+          "设置画廊显示、排除标签和 Danbooru 登录",
+          dismissThen(() => this.openSettings()),
+          settingsMenuBody,
+        );
+        this.promptSettingsBtn = addAction(
+          "Prompt设置",
+          "控制 Prompt 输出类别与格式",
+          dismissThen(() => this.openPromptSettings()),
+          settingsMenuBody,
+        );
+        this.promptOutputBtn = addAction("", "", () => {
+          const enabled = this.setPromptOutputEnabled(this.settings.promptOutputEnabled === false);
+          this.setStatus(enabled ? "Prompt 输出已开启" : "Prompt 输出已关闭：下游将收到空 Prompt", "success");
+        }, settingsMenuBody);
+        this.updatePromptOutputButton();
+        this.galleryBatchBtn = addAction(
+          "批量入队",
+          "将选中的画廊卡片按显示顺序拆成独立任务，逐张执行",
+          dismissThen(() => this.startGalleryBatch()),
+          settingsMenuBody,
+        );
+        this.galleryBatchBtn.className = "adg-batch-queue";
+        this.galleryBatchBtn.disabled = true;
+      }
       this.filterControls = new GalleryFilterControls({
         readSettings: () => this.settings,
         commit: (patch, { search = false, render = false } = {}) => {
@@ -7485,7 +8028,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 拿不到就用契约兜底表，界面不会因为后端没就绪而缺控件或报错。
       this.applySourceCapabilities();
       void this.loadGallerySources().then(() => {
-        if (!this.disposed && this.root) this.applySourceCapabilities();
+        if (this.disposed || !this.root) return;
+        // ⚠️ 必须**重建下拉**（2026-09-26 真机踩到）：下拉是在 build() 里同步构建的，
+        //    而本请求在 build() 返回之后才发起 ⇒ 异步回来后若不重建，下拉永远只有兜底表
+        //    那 3 个源，后端新注册的图源（safebooru / yandere / konachan…）在界面上根本不出现。
+        //    这是「后端可插拔、前端看不见」的另一半真凶（另一半是原先的 includes 白名单过滤）。
+        this.rebuildSourceOptions();
+        this.applySourceCapabilities();
       });
       // 密钥/授权状态也预热一次：换源到 P站 时要立刻知道"模块没装"还是"没登录"（见 switchGallerySource）
       void this.refreshGallerySecretState();

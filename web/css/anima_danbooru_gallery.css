@@ -186,6 +186,31 @@
 .adg-menu-row-button:hover,
 .adg-menu-row-button:focus-visible,
 .adg-cascade-row.is-open > .adg-menu-row-button { outline: none; color: #fff; background: #40386f; }
+
+/* 「设置 ▾」菜单（2026-09-26 低占位高能效改造）
+   把「画廊设置 / Prompt设置 / Prompt 输出 / 批量入队」四个低频按钮收进菜单，工具条省 2 行。
+   菜单项用 addAction 生成的是普通 <button>，这里让它们长得与 .adg-menu-choice 一致
+   （整行可点、左对齐）—— 复用观感，不重复定义一整套。 */
+.adg-settings-menu-body { display: flex; flex-direction: column; gap: 2px; min-width: 172px; }
+.adg-settings-menu-body > button {
+  display: flex;
+  width: 100%;
+  min-height: 30px;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0 8px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--adg-text, #e7e4de);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.adg-settings-menu-body > button:hover,
+.adg-settings-menu-body > button:focus-visible { outline: none; color: #fff; background: #40386f; }
+.adg-settings-menu-body > button.is-disabled { opacity: .45; cursor: not-allowed; }
 .adg-menu-choice input { margin: 0; accent-color: #9d8cff; }
 .adg-menu-choice-text { flex: 1; }
 .adg-menu-choice.is-selected .adg-menu-choice-text { color: #c8beff; font-weight: 700; }
@@ -426,6 +451,29 @@
 /* 随机发现档位按钮 */
 .adg-random-btn.active { border-color: #a895ff; background: #6758c9; }
 .adg-random-reshuffle.is-disabled { opacity: .45; cursor: not-allowed; }
+
+/* 随机发现紧凑组（2026-09-26 低占位改造）
+   原先 3 档各占一个按钮 + 换一批 = 4 个按钮宽；现在 = 一个下拉 + 一个「换一批」。
+   颜色一律跟随宿主主题变量 —— 硬编码灰阶在浅色主题下不可读。 */
+.adg-random-group { display: inline-flex; align-items: center; gap: 2px; }
+.adg-random-group .adg-random-tier {
+  height: 22px;
+  max-width: 92px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--fg-color, #ddd);
+  background: var(--comfy-input-bg, #2a2a2a);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.adg-random-group .adg-random-tier:hover { border-color: var(--p-primary-color, #7d5cff); }
+/* 进入随机态时给出与旧按钮 active 同等的视觉反馈（边框高亮，不发光） */
+.adg-random-group .adg-random-tier.active {
+  border-color: #a895ff;
+  background: #6758c9;
+  color: #fff;
+}
 /* 悬浮操作条：视觉隐藏（opacity:0）时**必须同时禁用命中**，否则卡片顶部一整条看不见的
    按钮仍然吃点击 —— 2026-09-15 实测：opacity 0 时 elementFromPoint 在卡片顶部命中
    BUTTON「预览」「分类/入库」，用户点图片上半部就误触（"按钮太大"的真身）。
@@ -993,6 +1041,53 @@
 .adg-localized-suggestion .adg-suggestion-translation { color: var(--adg-accent-strong, #f0ece4); }
 .adg-localized-suggestion .adg-suggestion-arrow { color: var(--adg-muted, #9b9a95); }
 .adg-localized-suggestion .adg-suggestion-count { min-width: 42px; color: var(--adg-muted, #9b9a95); text-align: right; }
+/* 本地索引帖数标记（2026-09-26）：本地快照值 ≠ D 站实时值，用上标 · 区分来源。
+   颜色跟随宿主主题变量，不硬编码灰阶（浅色主题下也要可读）。 */
+.adg-localized-suggestion .adg-suggestion-count.is-snapshot::after {
+  content: "·";
+  margin-left: 1px;
+  opacity: 0.55;
+  font-size: 0.85em;
+  vertical-align: super;
+}
+
+/* ── `@` 角色联想（AnimaDex，2026-09-27）：搜索框里敲 `@初音` 直接出角色候选 ──
+   与标签联想**共用**同一个 `.adg-suggestions` 浮层，靠 `.is-characters` 切成竖排列表
+   （标签联想是横排 chip，两种形态不能混）。display 由 JS 内联设置，这里只管排布。
+   行内形态 = `中文名 → English (作品)` + 帖数。 */
+.adg-suggestions.is-characters { flex-direction: column; flex-wrap: nowrap; gap: 0; }
+.adg-suggestions.is-characters .adg-suggestions-label { padding: 2px 7px; }
+.adg-suggestions.is-characters .adg-char-suggestion {
+  display: grid;
+  width: 100%;
+  box-sizing: border-box;
+  grid-template-columns: minmax(0, auto) auto minmax(0, 1fr) auto auto;
+  gap: 4px;
+  align-items: baseline;
+  padding: 3px 7px;
+  border: 0;
+  border-radius: 0;
+  color: var(--adg-text, #e7e4de);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.adg-suggestions.is-characters .adg-char-suggestion:hover,
+.adg-suggestions.is-characters .adg-char-suggestion:focus-visible { background: #2a2d30; }
+.adg-char-suggestion .adg-char-name,
+.adg-char-suggestion .adg-char-en,
+.adg-char-suggestion .adg-char-series {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.adg-char-suggestion .adg-char-name { color: var(--adg-accent-strong, #f0ece4); }
+.adg-char-suggestion .adg-char-arrow { color: var(--adg-muted, #9b9a95); }
+.adg-char-suggestion .adg-char-en { color: #79c6d4; }
+.adg-char-suggestion .adg-char-series { color: var(--adg-muted, #9b9a95); font-size: 11px; }
+.adg-char-suggestion .adg-char-count { min-width: 42px; color: var(--adg-muted, #9b9a95); text-align: right; }
 
 /* ── 视口外卡片跳过 layout/paint（2026-09-21 性能轮）────────────────────────
    ⚠️ 只加 content-visibility / contain-intrinsic-size，**绝不重写 contain** ——
@@ -1036,3 +1131,192 @@
   line-height: 1.45;
 }
 .adg-dialog-error[hidden] { display: none; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   AnimaDex 角色浮窗（2026-09-26）
+   放在文件末尾是刻意的：测试以若干选择器为 CSS 切片右边界
+   （如 test_danbooru_prompt_tooltip 以 .adg-prompt-tooltip 为界），
+   插在中间会落进别人的断言区间。
+   低占位高能效：入口 1 个按钮宽；浮窗内以「缩略图网格」承载信息密度，
+   不堆留白。颜色全部走 .adg-dialog-overlay 作用域的弹层变量板。
+   ══════════════════════════════════════════════════════════════════════════ */
+.adg-animadex-trigger { flex: 0 0 auto; }
+.adg-animadex-dialog { width: min(760px, 94vw); height: min(700px, calc(100vh - 40px)); overflow: hidden; padding: 12px; gap: 8px; }
+.adg-animadex-head { display: flex; align-items: center; gap: 6px; }
+.adg-animadex-title { flex: 0 0 auto; font-size: 12px; font-weight: 700; color: var(--adg-accent-strong, #c8beff); letter-spacing: .02em; }
+.adg-animadex-search {
+  flex: 1 1 auto; min-width: 0; height: 26px; padding: 0 8px; font-size: 12px;
+  color: var(--adg-text, #e7e4de); background: var(--adg-bg, #17191b);
+  border: 1px solid var(--adg-border, #34383c); border-radius: 5px;
+}
+.adg-animadex-search:focus { outline: none; border-color: var(--adg-accent, #7d5cff); }
+.adg-animadex-close {
+  flex: 0 0 auto; width: 26px; height: 26px; padding: 0; font-size: 12px; cursor: pointer;
+  color: var(--adg-muted, #9b9a95); background: transparent;
+  border: 1px solid var(--adg-border, #34383c); border-radius: 5px;
+}
+.adg-animadex-close:hover { color: #fff; border-color: var(--adg-accent, #7d5cff); }
+/* 开关行：两个开关各占一行还是并排？并排 —— 省一行高度（低占位） */
+.adg-animadex-switches { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.adg-animadex-switch { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--adg-muted, #9b9a95); cursor: pointer; }
+.adg-animadex-switch input { margin: 0; cursor: pointer; }
+/* 网格：4 列紧凑缩略图
+   ⚠️ 2026-09-26 二次修正（YG 反馈「窗口太小看不清、角色的头全没了」）：
+   ① 原 `object-fit: cover` 会把 AnimaDex 的**全身立绘**裁成只剩中段 —— 头脚全丢。
+      改为 `contain`（完整显示整个人）+ `object-position: top center`（顶部对齐，
+      即使仍有余量也优先露头）；
+   ② 卡片高度 122 → 186px、浮窗 560 → 760px，让脸能看清。
+   固定行高的原则不变（避免加载状态影响布局，见上一条注释）。 */
+.adg-animadex-grid {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: 186px;
+  gap: 6px; padding: 2px; align-content: start;
+}
+.adg-animadex-card {
+  display: flex; flex-direction: column; gap: 2px; padding: 3px; cursor: pointer;
+  background: var(--adg-surface, #17191b); border: 1px solid var(--adg-border-soft, rgba(255,255,255,.08));
+  border-radius: 6px; text-align: left; overflow: hidden; box-sizing: border-box;
+}
+.adg-animadex-card:hover { border-color: var(--adg-accent, #7d5cff); background: var(--adg-surface-2, #22222b); }
+/* 图片占满剩余高度；contain + 顶部对齐 = 完整人物且优先露头 */
+.adg-animadex-thumb {
+  flex: 1 1 auto; min-height: 0; width: 100%; height: auto;
+  object-fit: contain; object-position: top center;
+  border-radius: 4px; background: var(--adg-bg, #101012); display: block;
+}
+.adg-animadex-thumb.is-broken { opacity: .25; }
+.adg-animadex-name { font-size: 12px; line-height: 1.25; color: var(--adg-text, #e7e4de); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.adg-animadex-sub { font-size: 10px; line-height: 1.2; color: var(--adg-muted, #9b9a95); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.adg-animadex-status { flex: 0 0 auto; font-size: 10px; color: var(--adg-muted, #9b9a95); }
+
+/* AnimaDex 浮窗的**双语联想**下拉（2026-09-26，YG 指定为替换人物的核心功能）
+   绝对定位在搜索框正下方 —— head 设为定位父级；双语行「中文 → English」+ 作品名。 */
+.adg-animadex-head { position: relative; }
+.adg-animadex-suggest {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 20;
+  display: flex; flex-direction: column; gap: 2px; max-height: 264px; overflow-y: auto;
+  padding: 3px; border-radius: 6px;
+  background: var(--adg-surface-2, #22222b); border: 1px solid var(--adg-border, #34383c);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, .38);
+}
+.adg-animadex-suggest-row {
+  display: flex; align-items: baseline; gap: 6px; width: 100%;
+  padding: 4px 6px; text-align: left; cursor: pointer;
+  font-size: 12px; color: var(--adg-text, #e7e4de);
+  background: transparent; border: none; border-radius: 4px;
+}
+.adg-animadex-suggest-row:hover,
+.adg-animadex-suggest-row.is-active { background: #40386f; color: #fff; }
+.adg-animadex-suggest-main { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adg-animadex-suggest-sub { flex: 0 0 auto; font-size: 10px; color: var(--adg-muted, #9b9a95); }
+
+/* AnimaDex 浮窗：全部 / 收藏 / 最近 三 tab + 卡片星标（2026-09-26）
+   低占位：一行三个小 tab，选中态用 accent 描边 + 提亮文字（不发光，与画廊同纪律）。 */
+.adg-animadex-tabs { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.adg-animadex-tab {
+  padding: 3px 12px; cursor: pointer; font-size: 11px; line-height: 1.5;
+  color: var(--adg-muted, #9b9a95);
+  background: var(--adg-surface, #17191b);
+  border: 1px solid var(--adg-border-soft, rgba(255, 255, 255, .08));
+  border-radius: 999px;
+}
+.adg-animadex-tab:hover { color: var(--adg-text, #e7e4de); border-color: var(--adg-accent, #7d5cff); }
+.adg-animadex-tab.is-active {
+  color: #fff; border-color: var(--adg-accent, #7d5cff);
+  background: #40386f;   /* 与联想下拉的 is-active 同色（沿用既有硬编码，避免 color-mix 兼容面） */
+}
+/* 星标：绝对定位在卡片右上角（卡片因此需要定位上下文） */
+.adg-animadex-card { position: relative; }
+.adg-animadex-fav {
+  position: absolute; top: 4px; right: 4px; z-index: 2;
+  width: 20px; height: 20px; padding: 0; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; line-height: 1;
+  color: var(--adg-muted, #9b9a95);
+  background: rgba(0, 0, 0, .55);
+  border: 1px solid var(--adg-border-soft, rgba(255, 255, 255, .12));
+  border-radius: 50%;
+  opacity: .55; transition: opacity .12s ease, color .12s ease;
+}
+.adg-animadex-card:hover .adg-animadex-fav { opacity: 1; }
+.adg-animadex-fav:hover { color: var(--adg-text, #e7e4de); border-color: var(--adg-accent, #7d5cff); }
+.adg-animadex-fav.is-on { color: #ffd76a; opacity: 1; }
+
+/* AnimaDex 浮窗：作品 / 系列筛选（2026-09-27）
+   挂在两个开关同一行尾（.adg-animadex-switches 已是 flex + wrap），沿用同一套字号与描边语言，
+   不额外占一行高度；颜色全部走 .adg-dialog-overlay 作用域的弹层变量板，不硬编码灰阶。
+   交互：原生 <select>（3,702 项滚不动）→ **可搜索输入 + 候选浮层**（过滤全覆盖 / 渲染有上限）。
+   ⚠️ 本段必须留在文件末尾 —— 中间插入会落进别人的断言区间（见本文件 AnimaDex 段头注释）。 */
+.adg-animadex-series { position: relative; display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--adg-muted, #9b9a95); }
+.adg-animadex-series-label { flex: 0 0 auto; }
+.adg-animadex-series-input {
+  width: 186px; height: 22px; padding: 0 6px; font-size: 11px;
+  color: var(--adg-text, #e7e4de); background: var(--adg-bg, #17191b);
+  border: 1px solid var(--adg-border-soft, rgba(255, 255, 255, .08)); border-radius: 5px;
+}
+.adg-animadex-series-input::placeholder { color: var(--adg-muted, #9b9a95); }
+.adg-animadex-series-input:hover { border-color: var(--adg-accent, #7d5cff); }
+.adg-animadex-series-input:focus { outline: none; border-color: var(--adg-accent, #7d5cff); }
+/* 清除按钮：只在有筛选时显形（syncSeriesClear 控制 display），平时不占视觉重量 */
+.adg-animadex-series-clear {
+  display: none; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0; cursor: pointer;
+  font-size: 10px; line-height: 1; color: var(--adg-muted, #9b9a95);
+  background: transparent; border: 1px solid var(--adg-border-soft, rgba(255, 255, 255, .08));
+  border-radius: 50%;
+}
+.adg-animadex-series-clear:hover { color: #fff; border-color: var(--adg-accent, #7d5cff); }
+/* 候选浮层：向下展开盖住网格顶部，z-index 高于联想下拉（20），不超过弹层遮罩层 */
+.adg-animadex-series-box {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 24;
+  display: flex; flex-direction: column; gap: 2px;
+  width: 244px; max-width: calc(100vw - 32px); max-height: 232px; overflow-y: auto; padding: 3px; border-radius: 6px;
+  background: var(--adg-surface-2, #22222b); border: 1px solid var(--adg-border, #34383c);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, .38);
+}
+.adg-animadex-series-row {
+  display: flex; align-items: baseline; gap: 6px; width: 100%;
+  padding: 4px 6px; text-align: left; cursor: pointer;
+  font-size: 12px; color: var(--adg-text, #e7e4de);
+  background: transparent; border: none; border-radius: 4px;
+}
+.adg-animadex-series-row:hover,
+.adg-animadex-series-row.is-active { background: #40386f; color: #fff; }
+.adg-animadex-series-row-main { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adg-animadex-series-row-count { flex: 0 0 auto; font-size: 10px; color: var(--adg-muted, #9b9a95); }
+.adg-animadex-series-hint { padding: 3px 6px; font-size: 10px; color: var(--adg-muted, #9b9a95); }
+
+/* ── AnimaDex 浮窗键盘导航（2026-09-27）───────────────────────────────────────
+   ① 网格高亮 .is-cursor：颜色全部走弹层变量板（--adg-accent / --adg-surface-2 /
+      --adg-accent-strong），浅色主题下同样读得清；
+   ② 用 outline + outline-offset:-2px 而不是加粗 border —— 边框宽度变化会让卡片内容
+      重排（缩略图跳动），outline 不占布局；
+   ③ 先撤原生 :focus-visible 描边（顺序必须在 .is-cursor 之前：两者特异性相同 0,2,0，
+      靠后的一条胜出，反过来会把高亮描边一起撤掉）。焦点落到卡片时 onfocus 已标成
+      .is-cursor，键盘可达性由它承担，同一件事不画两遍。 */
+.adg-animadex-card:focus-visible { outline: none; }
+.adg-animadex-card.is-cursor {
+  border-color: var(--adg-accent, #7d5cff);
+  background: var(--adg-surface-2, #22222b);
+  outline: 2px solid var(--adg-accent, #7d5cff);
+  outline-offset: -2px;
+}
+.adg-animadex-card.is-cursor .adg-animadex-name { color: var(--adg-accent-strong, #c8beff); }
+/* 键位提示：与两个开关同一行、贴右；平时压暗，鼠标进这一行才完全显形 */
+.adg-animadex-keyhint {
+  flex: 0 0 auto; margin-left: auto; font-size: 10px; line-height: 1.3;
+  color: var(--adg-muted, #9b9a95); opacity: .7; white-space: nowrap;
+  transition: opacity var(--adg-dur, 150ms) var(--adg-ease, ease-out);
+}
+.adg-animadex-switches:hover .adg-animadex-keyhint { opacity: 1; }
+/* 语言切换按钮（2026-09-27）：与关闭按钮同高、同色系，宽度自适应（`中` 一字 / `EN` 两字母）。
+   位置在 head 行、关闭按钮左侧 —— 它是「界面偏好」级操作，视觉重量必须低于搜索框与关闭按钮，
+   所以平时用 muted 色，hover 才点亮（与 .adg-animadex-close 同一套反馈语言）。 */
+.adg-animadex-lang {
+  flex: 0 0 auto; min-width: 26px; height: 26px; padding: 0 6px; cursor: pointer;
+  font-size: 11px; line-height: 1; letter-spacing: .02em;
+  color: var(--adg-muted, #9b9a95); background: transparent;
+  border: 1px solid var(--adg-border, #34383c); border-radius: 5px;
+}
+.adg-animadex-lang:hover { color: #fff; border-color: var(--adg-accent, #7d5cff); }

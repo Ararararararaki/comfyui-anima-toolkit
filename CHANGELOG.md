@@ -8,6 +8,66 @@
 
 用户可在节点工具栏「🔄 更新」检查到新版本。
 
+## [2.22.0] - 2026-09-27
+
+### 新增
+
+- **多源画廊新增三个图源：Safebooru / yande.re / Konachan.net**（`anima_gallery_safebooru.py`、
+  `anima_gallery_moebooru.py`）。三者**都不需要 API key**，走公开 API：Safebooru 属 gelbooru-dapi 系；
+  yande.re 与 Konachan.net 由**同一套 moebooru 骨架**服务（两家 `post.json` 键名实测同构）。
+  加上原有的 D站 / C站 / P站，**一个画廊节点共 6 个图源**。
+- **前端图源下拉不再需要改代码**：原先的硬白名单降级为**排序偏好 + 兜底文案**，
+  后端注册什么图源界面就显示什么（新增图源只落后端一行即可）。
+- **AnimaDex 角色浮窗**（**不是图源**）：画廊工具条「角色」按钮打开浮窗，内置 **36,488 个本地角色**
+  （随包 `anima_animadex.json.gz`，2.77 MB，100% 带触发词与预览图），支持**中英双语联想**、
+  收藏 / 最近两个页签、**作品可搜索筛选**（3,702 个作品）、键盘导航；点选后把基础提示词写进
+  **节点 Prompt 输出**（`selection_data.role_prompt`），配合 `prompt_settings` 关掉原有角色类别即可**换人物**。
+  后端 `anima_animadex.py` + 前端 `web/js/anima_animadex_panel.js`，路由
+  `/anima/animadex/{search,suggest,facets,status,refresh,image}`。
+  **选词拼接不走 LLM** —— 离线、确定、毫秒级。
+- **画廊搜索联想提速**：新增本地标签索引 `anima_tag_index.py`（20.6 万标签前缀索引 + 中文 2-gram 倒排），
+  联想从 **835 ms 降到 1~2 ms**（`hatsune_miku` 1046 ms → 1~2 ms；`蓝档` 32 ms → 2 ms）。
+  配套修掉每次请求全量重探 6 个代理端口的问题（30 s 缓存 + 首个活端口即返回，实测省下 512 ms/请求）。
+
+### 变更
+
+- **工具条低占位改造**：随机发现的 3 档按钮 + 「换一批」共 **4 个按钮 → 1 个下拉 + 1 个按钮**；
+  设置类 4 个常驻按钮收进「设置 ▾」菜单（复用项目既有 `PortalDropdown`）。
+  工具条高度 **7 行 → 5 行（250 px → 188 px）**。
+
+### 修复
+
+- **AnimaDex 作品筛选 `limit` 形同虚设**：`series_facets()` 硬编码 `min(200, …)` 且路由默认 200、
+  前端不传 limit ⇒ 3,702 个作品只放出 200 个（94% 选不到）。已改为全量返回（防呆上限 5000），
+  端到端复验 `sum(count) = 36,488`。
+- **浮窗联想下拉 ↓ 键原地不动**：取模公式漏 `cursor + 1`（-1 起按 ↓ 不移动），已修。
+
+### 升级须知
+
+- 本轮**无破坏性变更**：节点、端口与旧工作流均保持兼容。
+- 新图源（Safebooru / yande.re / Konachan.net）**无需任何密钥**，装上即可用。
+- `konachan.com` / `anime-pictures.net` / `waifu.im` 在本机出口被 Cloudflare 挑战页拦下（`Just a moment...`），
+  属**出口 IP 信誉**问题而非站点不可用，故本轮接的是全年龄镜像 `konachan.net`；换网络环境可再评估。
+- 生效方式：`web/js`、`web/css` 改动 **Ctrl+F5** 即可；`.py` 改动需重启 ComfyUI（或使用本机热重载器）。
+
+## [2.21.0] - 2026-09-26
+
+### 移除
+
+- **`TK 光影提示词` 节点（`AnimaTKLightingPrompt`）整体移除**：删除 `anima_lighting_prompt.py`
+  与其 `__init__.py` 注册（导入 + 两张映射表合并项），并同步清掉 README / `docs/FEATURES.md`
+  的节点说明与 `tests/test_lighting_prompt.py`。
+
+  光影预设改由 Prompt 库 / Prompt Cards 承载，插件不再内置光影词表。
+
+### 升级须知
+
+- **这是破坏性变更**：旧工作流里已放置的 `AnimaTKLightingPrompt` 节点在升级后会成为
+  **缺失节点（红框）**，其 `lighting_prompt` 连线一并失效。请把该路输入改为 Prompt 库 /
+  Prompt Cards 输出的提示词串，再删除缺失节点。
+- 节点侧面板（`web/js`）与该节点无关，无需改动；面板开发目录 `civitai` 侧同步删除了
+  该节点文件、测试与 `scripts/release.mjs` 的发布文件清单条目。
+
 ## [2.20.0] - 2026-09-21
 
 > 本版四项功能来自一份**外部贡献补丁**（`adg-gallery-fixes`）。合并前做了两路独立审查，
