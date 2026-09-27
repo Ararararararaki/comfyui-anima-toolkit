@@ -8,6 +8,26 @@
 
 用户可在节点工具栏「🔄 更新」检查到新版本。
 
+## [2.22.2] - 2026-09-27
+
+### 修复
+
+- **Prompt Cards 联想补全后不补逗号**（用户实测：「①区打 1gi 选 1girl，结果只有 1girl，
+  还得手动补逗号」）：片段模型的分隔符是「挂在**下一个片段之前**」（`separatorBefore`），
+  而**末尾**分隔符不属于任何后续片段 —— `splitPromptPieces()` 在循环结束后对残余分隔符调
+  `push("")`，被判空丢弃 ⇒ 用户手打的尾逗号、①区联想补的 `", "`、②区追加后的尾逗号，
+  只要经过一次 `serializePromptPieces()`（`_commitPromptPieces` / `_ensurePromptPiecesInSync`
+  都会走）就凭空消失。现在给最后一片段加 `trailingSeparator`（split / serialize / normalize
+  三处），并在 ①区 `_applySuggest()`、②区 `_appendResolvedText()` 里显式补尾逗号
+  （末尾是换行时不补，以免破坏多行分段）。
+- 同一根因顺带修好：用户**手动**在提示词末尾打的逗号也不再被吞。
+
+### 升级须知
+
+- 生效方式：`web/js` 改动 **Ctrl+F5** 强刷即可，无需重启 ComfyUI。
+- 新增回归 5 条（`tests/cards_widget_logic.test.js`：尾逗号往返不丢 / 无尾分隔符不多补 /
+  末尾换行照旧保留 / 尾分隔符挂位）。
+
 ## [2.22.1] - 2026-09-27
 
 ### 优化

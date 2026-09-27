@@ -518,6 +518,17 @@
       tokenStart = i;
     }
     push(source.slice(tokenStart));
+    // ⚠️ 2026-09-27 修复（用户实测：「选了 1girl 却还是 1girl，还得手动补逗号」）：
+    // 片段模型是「分隔符挂在**下一个片段之前**」（separatorBefore），于是**末尾**的分隔符
+    // （"1girl, " 里那个 ", "）不属于任何后续片段 —— 循环结束后它留在 separatorBefore 里，
+    // 而末尾那次 push("") 被 parsePromptToken 判空丢弃 ⇒ 尾分隔符**凭空消失**。
+    // 后果：用户手打的尾逗号、①区联想补的 ", "、②区追加后的尾逗号，只要经过一次
+    // serializePromptPieces（_commitPromptPieces / _ensurePromptPiecesInSync 都会走）
+    // 就被吃掉。现在把它挂到最后一片段的 trailingSeparator 上，serialize 时原样拼回。
+    if (separatorBefore && out.length) {
+      const last = out[out.length - 1];
+      last.trailingSeparator = String(last.trailingSeparator || "") + separatorBefore;
+    }
     return out;
   }
 
@@ -913,12 +924,33 @@
 
   function serializePromptPieces(parts) {
     const visible = (parts || []).filter((piece) => piece && !piece.hidden && formatWeightedPromptText(piece.text, piece.weight));
-    return visible.map((piece, index) => {
+    const body = visible.map((piece, index) => {
       const separator = index === 0
         ? ""
         : (typeof piece.separatorBefore === "string" && piece.separatorBefore ? piece.separatorBefore : ", ");
       return separator + formatWeightedPromptText(piece.text, piece.weight);
     }).join("");
+    // 尾分隔符挂在最后一片段上（见 splitPromptPieces 的说明）：不拼回就等于把它吃掉。
+    const tail = visible.length ? String(visible[visible.length - 1].trailingSeparator || "") : "";
+    return body + tail;
+  }
+
+  /**
+   * 给「最后一片段」补尾分隔符（默认 `", "`）—— 片段模型只存「前分隔符」，
+   * 末尾那个分隔符必须挂在最后一片段上才留得住（2026-09-27）。
+   * 不补的两种情况：① 末尾本来就有分隔符；② 末尾是换行（多行提示词的分段处，补逗号会破坏分行）。
+   * 返回是否真的改了（调用方据此决定要不要再 commit 一次）。
+   */
+  function ensureTrailingSeparator(pieces, separator = ", ") {
+    if (!Array.isArray(pieces) || !pieces.length) return false;
+    let last = null;
+    for (const piece of pieces) if (piece && !piece.hidden) last = piece;
+    if (!last) return false;
+    const existing = String(last.trailingSeparator || "");
+    if (/[,，、;；]/.test(existing)) return false;
+    if (/\r?\n/.test(existing)) return false;
+    last.trailingSeparator = separator;
+    return true;
   }
 
   // 隐藏片段不能只存在 CardsUI 内存：ComfyUI 刷新/重建节点时会重新读取
@@ -940,6 +972,8 @@
       separatorBefore: typeof piece.separatorBefore === "string"
         ? piece.separatorBefore
         : (index ? ", " : ""),
+      // 尾分隔符（"1girl, " 末尾的 ", "）：持久化必须带上，否则刷新页面/重建节点后又丢
+      trailingSeparator: typeof piece.trailingSeparator === "string" ? piece.trailingSeparator : "",
     };
   }
 
@@ -2454,6 +2488,9 @@
       const inserted = needComma ? `${repl}, ` : repl;
       const next = t.slice(0, ws) + inserted + tail;
       this._setPromptText(next, { preserveHidden: true, render: false });
+      // ⚠️ 2026-09-27 修复：片段模型只留「前分隔符」，上面补的 ", " 会在 serialize 时被吃掉
+      //（用户实测："选了 1girl 却还是 1girl，还得手动补逗号"）⇒ 显式挂到最后一个片段上。
+      if (needComma && ensureTrailingSeparator(this.promptPieces)) this._commitPromptPieces(false);
       el.value = this.curText();
       // 光标落在逗号之后，直接接着打下一个词
       const pos = ws + inserted.length;
@@ -3672,6 +3709,9 @@
           appendedCount += 1;
         }
       });
+      // ②区同样要带尾逗号（用户要求①②区一致）：片段模型只留「前分隔符」，追加完末尾那个
+      // 逗号留不住 ⇒ 用户在①区接着手打就会与上一个词粘连（2026-09-27 修复）。
+      if (appendedCount > 0) ensureTrailingSeparator(current);
       this._commitPromptPieces();
       this._hideResolve();
       return true;
