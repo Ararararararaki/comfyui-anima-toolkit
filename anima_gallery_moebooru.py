@@ -520,7 +520,13 @@ async def konachan_search(request: web.Request) -> web.Response:
 
 async def _moebooru_search(request: web.Request, source: MoebooruSource) -> web.Response:
     query = str(request.query.get("query", "") or "").strip()
+    # ⚠️ 2026-09-27 修复：前端在 `pageMode()` 分支发的是 **`page`**（见 gallerySearchParams），
+    #    而这里原先只读 `cursor` ⇒ 每次翻页都拿回**第 1 页**（实测 page=1/2/3 返回完全相同的 id），
+    #    表现就是「翻页没反应 / 无限滚动加载不到新图片」。
+    #    moebooru 的 cursor 语义**就是页码（1 基）**，所以 page 可以直接当 cursor 用。
     cursor = request.query.get("cursor")
+    if cursor in (None, ""):
+        cursor = request.query.get("page")
     try:
         limit = int(request.query.get("limit", DEFAULT_LIMIT))
     except (TypeError, ValueError):
@@ -534,7 +540,10 @@ async def _moebooru_search(request: web.Request, source: MoebooruSource) -> web.
     return web.json_response({
         "source": source.source_id,
         "items": items,
+        # 两个键都发：前端**只读下划线版** `next_cursor`（游标模式的源靠它续页），
+        # 驼峰版是历史键名，保留以免其它调用方（含外部脚本）断掉 —— 2026-09-27
         "nextCursor": next_cursor,
+        "next_cursor": next_cursor,
         "warnings": warnings,
     })
 

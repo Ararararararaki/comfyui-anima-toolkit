@@ -875,6 +875,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       this.autoFillRetryTimer = null; // 被闸门拦下后的**有界重试**定时器（2026-09-27，见 scheduleAutoFillRetry）
       // 无限滚动（2026-09-27）
       this._scrollLoading = false;      // 追加请求在途（与 fillMoreBusy 联合互斥）
+      this._scrollFillTimer = null;     // 渲染后「还需要更多图吗」的延时检查（见 scheduleScrollFill）
       this._scrollRafPending = false;   // 滚动回调的 rAF 节流标记
       this._infiniteScrollBound = false;
       this._gridScrollHandler = null;
@@ -2531,6 +2532,51 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
     }
 
     /**
+     * 内容还没超出容器（或已滚到底）⇒ 需要更多图。
+     * 滚动加载与「首屏没有滚动条」两条路径**共用这一个判据**（`remaining <= 预取提前量`）。
+     */
+    scrollNeedsMore() {
+      const grid = this.grid;
+      if (!grid) return false;
+      const remaining = grid.scrollHeight - grid.scrollTop - grid.clientHeight;
+      return remaining <= DG_SCROLL_PREFETCH_PX;
+    }
+
+    /**
+     * 渲染后检查「还需要更多图吗」（2026-09-27）。
+     *
+     * ⚠️ 这是无限滚动**唯一的自动入口**，存在的理由很具体：**一页填不满容器时根本没有滚动条**，
+     * 用户滚不动 ⇒ `scroll` 事件永不触发 ⇒ 加载链永远启动不了。用户实测原话：
+     * 「滚动不会触发画布放大缩小了，但是同样也不会滚动画廊，从而也无法加载新的图片」——
+     * 就是这条死锁。所以不能只靠滚动事件驱动。
+     */
+    scheduleScrollFill() {
+      if (!this.scrollMode() || this.disposed || this._scrollFillTimer) return;
+      this._scrollFillTimer = setTimeout(() => {
+        this._scrollFillTimer = null;
+        void this.autoFillByScroll();
+      }, 120);   // 等布局稳定：applyMasonryLayout 由 rAF 调度
+    }
+
+    /** 自动（非用户滚动）继续加载：受**轮次上限 + 30s/4 批时间窗**双重约束 */
+    async autoFillByScroll() {
+      if (!this.scrollMode() || this.disposed) return;
+      if (this._scrollLoading || this.fillMoreBusy || this.fillMoreExhausted) return;
+      if (!this.posts.length) return;
+      if (this.autoFillRounds >= DG_AUTO_FILL_MAX_ROUNDS_CAP) return;
+      if (!this.scrollNeedsMore()) return;
+      const now = Date.now();
+      if (!this._autoFillWindowAt || now - this._autoFillWindowAt > DG_AUTO_FILL_WINDOW_MS) {
+        this._autoFillWindowAt = now;
+        this._autoFillWindowCount = 0;
+      }
+      if (this._autoFillWindowCount >= DG_AUTO_FILL_MAX_PER_WINDOW) return;
+      this._autoFillWindowCount += 1;
+      this.autoFillRounds += 1;
+      await this.loadNextPageForScroll();
+    }
+
+    /**
      * 绑定网格的滚动行为（2026-09-27）。
      *
      * ① **滚轮归画廊**：ComfyUI 前端（1.48.7）用 `wheelCapturedByFocusedElement()` 判定 ——
@@ -2597,9 +2643,11 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
      */
     scheduleAutoFill() {
       if (this.autoFillTimer || this.disposed) return;
-      // 无限滚动模式（2026-09-27）：自动补满只负责**首屏**（补一次），之后全部交给滚动加载。
-      // 不这样切界，两条链会同时打上游（后端画廊并发只有 3）—— 这是本次改造的核心决策点。
-      if (this.scrollMode() && this.autoFillRounds > 0) return;
+      // 无限滚动模式（2026-09-27）：整条自动补满链让位给 `scheduleScrollFill()` ——
+      // 后者用**同一个判据**（内容没超出容器就继续加载）覆盖了"首屏填满"，而且能在
+      // 「一页填不满、压根没有滚动条」时也启动（那正是滚动加载启动不了的原因）。
+      // 两条链同时跑会一起打上游（后端画廊并发只有 3）。
+      if (this.scrollMode()) return;
       // 等一拍：applyMasonryLayout 由 rAF 调度，且同一帧里可能刚触发过一次「自动收缩」
       this.autoFillTimer = setTimeout(() => {
         this.autoFillTimer = null;
@@ -5511,6 +5559,9 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       if (preserveScroll) this.grid.scrollTop = keepScrollTop;
       // 渲染完立即检查「填满没有」：首屏 / 翻页 / 换源 / 换筛选都要（见 scheduleAutoFill）
       this.scheduleAutoFill();
+      // 无限滚动：内容还没超出容器（= 没有滚动条、滚不动）时也要继续加载 —— 否则
+      // 「一页填不满 ⇒ 滚不动 ⇒ scroll 永不触发 ⇒ 永远加载不了」就是死锁（2026-09-27 用户实测）
+      this.scheduleScrollFill();
     }
 
     pageWindow() {
@@ -8391,6 +8442,10 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       if (this.autoFillRetryTimer) {
         clearTimeout(this.autoFillRetryTimer);
         this.autoFillRetryTimer = null;
+      }
+      if (this._scrollFillTimer) {
+        clearTimeout(this._scrollFillTimer);
+        this._scrollFillTimer = null;
       }
       this.teardownInfiniteScroll();
       if (this.grid) this.grid.style.minHeight = "";

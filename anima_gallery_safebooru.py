@@ -507,7 +507,16 @@ SOURCE_IMAGE_HOSTS.setdefault(SAFEEBOORU_SOURCE_ID, IMAGE_HOSTS)
 async def safebooru_search(request: web.Request) -> web.Response:
     """统一画廊协议：`?query=&cursor=&limit=&rating=`。"""
     query = str(request.query.get("query", "") or "").strip()
+    # ⚠️ 2026-09-27 修复：前端在 `pageMode()` 分支发 **`page`**（1 基），而这里原先只读 `cursor`。
+    #    safebooru 的 cursor 是 **pid（0 基）**，与 page 差 1 ⇒ 回退时必须减 1，否则整体错一页。
     cursor = request.query.get("cursor")
+    if cursor in (None, ""):
+        page_value = request.query.get("page")
+        if page_value not in (None, ""):
+            try:
+                cursor = str(max(0, int(page_value) - 1))
+            except (TypeError, ValueError):
+                cursor = None
     try:
         limit = int(request.query.get("limit", DEFAULT_LIMIT))
     except (TypeError, ValueError):
@@ -521,7 +530,9 @@ async def safebooru_search(request: web.Request) -> web.Response:
     return web.json_response({
         "source": SAFEEBOORU_SOURCE_ID,
         "items": items,
+        # 两个键都发：前端**只读下划线版** `next_cursor`，驼峰版是历史键名（2026-09-27）
         "nextCursor": next_cursor,
+        "next_cursor": next_cursor,
         "warnings": warnings,
     })
 
