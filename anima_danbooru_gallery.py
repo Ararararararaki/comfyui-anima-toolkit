@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import asyncio
 import atexit
 import base64
+import hashlib
 import io
 import json
 import os
@@ -792,8 +793,14 @@ def _danbooru_json(url: str, params: dict[str, Any], timeout: int = 20) -> Any:
     raise RuntimeError(CF_BLOCKED_MSG)
 
 
-def _danbooru_get_image(url: str, timeout: int = 30, allow_browser: bool = True) -> tuple[bytes, str]:
+def _danbooru_get_image(url: str, timeout: int = 30, allow_browser: bool = True,
+                        extra_headers: dict[str, str] | None = None) -> tuple[bytes, str]:
     """下载 Danbooru 图片/视频字节（requests 优先，连接 6s 快速失败 + 换路重试 + 浏览器网关兜底）。
+
+    ``extra_headers``（2026-09-27 新增）：本次请求**专属**的请求头（如 P站 的 Referer）。
+    走 requests 的 per-request headers —— 与 session 默认头合并、request 优先，因此
+    **不再需要**改 `_danbooru_session.headers`，也就不需要那把把第三方图源取图串行化的全局锁。
+    第三方图源一律配合 ``allow_browser=False`` 使用（网关对它们必然 403，见下）。
 
     ``allow_browser=False``：**禁用内置浏览器网关兜底**，第三方图源（P站/C站）必须这样调。
     理由：网关是一个停在 ``danbooru.donmai.us`` 的页面，从它发起
@@ -812,18 +819,20 @@ def _danbooru_get_image(url: str, timeout: int = 30, allow_browser: bool = True)
             return got
         _browser_working = False
     _apply_danbooru_proxy()
+    # ⚠️ 并发安全（2026-09-27）：代理一律**整体原子赋值**，不再 clear()/update() 两步 ——
+    # 两步之间并发的取图线程会读到空 proxies（= 直连），与 `_apply_danbooru_proxy` 同一约定。
     try:
-        resp = _danbooru_session.get(url, timeout=(6, timeout))
+        resp = _danbooru_session.get(url, headers=extra_headers, timeout=(6, timeout))
     except (requests.Timeout, requests.ConnectionError) as error:
         if _danbooru_session.proxies:
-            _danbooru_session.proxies.clear()
+            _danbooru_session.proxies = {}
         else:
             _mark_direct_blocked()
             fb = _fallback_proxy()
             if fb:
-                _danbooru_session.proxies.update(fb)
+                _danbooru_session.proxies = dict(fb)
         try:
-            resp = _danbooru_session.get(url, timeout=(6, timeout))
+            resp = _danbooru_session.get(url, headers=extra_headers, timeout=(6, timeout))
         except (requests.Timeout, requests.ConnectionError):
             got = browser(url)
             if got is not None:
@@ -1317,9 +1326,10 @@ def _is_allowed_danbooru_url(url: str) -> bool:
 # ---------- 多源画廊：D站 之外的新图源（C站/P站…）也要能取到字节 ----------
 # 背景（PLAN §5.7）：节点下载路径原来只认 donmai.us，于是 C站/P站 的图被一律拒掉，
 # 「images 输出端口能直接给出可用于反推的图」这条就断了。这里**只新增**一条分支：
-# URL 属于协议层认识的图源时，借道 D站 既有的会话/代理探测/重试/网关机制取字节，
+# URL 属于协议层认识的图源时，借道 D站 既有的会话/代理探测/重试机制取字节，
 # 并附加该源声明的必需请求头（P站 的 Referer 缺了 i.pximg.net 直接 403）。
-_gallery_header_lock = threading.Lock()
+# 2026-09-27：原先那把 `_gallery_header_lock` 全局锁已删除 —— 它把第三方图源取图**串行化**，
+# 与「一次选多张、并发下载」直接冲突；额外头改走 per-request（见 `_gallery_get_image`）。
 
 
 def _gallery_image_headers(url: str) -> dict[str, str] | None:
@@ -1356,33 +1366,179 @@ def _gallery_image_headers(url: str) -> dict[str, str] | None:
 
 
 def _gallery_get_image(image_url: str, headers: dict[str, str] | None = None) -> tuple[bytes, str]:
-    """取第三方图源图片：代理探测/换路重试/浏览器网关兜底**全部沿用 D站那一套**。
+    """取第三方图源图片：代理探测/换路重试/超时**全部沿用 D站那一套**，只是不借浏览器网关。
 
-    做法是把额外请求头临时挂到同一个 `_danbooru_session` 上，借道 `_danbooru_get_image()`
-    跑完既有流程再还原 —— 因此 `_danbooru_get_image()` 与 `_apply_danbooru_proxy()` 一行都不用改。
-    锁把「改头 → 取图 → 还原」串起来，避免并发请求读到别人的头（窗口最长 = 一次取图超时）。
+    2026-09-27 改造（取图性能轮）：原先的做法是「临时改 `_danbooru_session.headers` +
+    全局锁 `_gallery_header_lock` 把『改头 → 取图 → 还原』串起来」。那把锁的代价是
+    **第三方图源的所有取图被串行化** —— 节点一次选 10 张 P站 图时，并发下载会被它排成一条队，
+    改造形同虚设。现在额外头直接交给 `_danbooru_get_image(extra_headers=...)`
+    （requests 的 per-request headers 与 session 默认头合并、request 优先），
+    **锁与「改头窗口」一并删除**，第三方图源可以真正并发取图。
     """
     extra = {str(key): str(value) for key, value in (headers or {}).items() if key and value is not None}
-    # 非 D站 CDN（Cloudflare 系）对非浏览器 UA 不友好；本分支统一用浏览器 UA，
-    # D站 自己的 UA 不受影响（只在这次取图的窗口内生效，用完还原）。
+    # 非 D站 CDN（Cloudflare 系）对非浏览器 UA 不友好；本分支统一用浏览器 UA
+    # （D站 自己的 UA 不受影响：它走不带 extra_headers 的另一条路）。
     extra.setdefault(
         "User-Agent",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
     )
-    with _gallery_header_lock:
-        previous = {name: _danbooru_session.headers.get(name) for name in extra}
-        _danbooru_session.headers.update(extra)
+    # ⚠️ allow_browser=False —— 第三方图源**不得**借道 D站 浏览器网关：
+    # 网关页面停在 danbooru.donmai.us，从它 fetch i.pximg.net 是跨域且 Referer 不对，
+    # 必然 403；同时还要白付一次 warm（最坏 60s+45s）。详见 _danbooru_get_image 的说明。
+    return _danbooru_get_image(image_url, allow_browser=False, extra_headers=extra)
+
+
+# ---------- 原图落盘缓存（2026-09-27，取图性能轮）------------------------------------
+# 为什么做：P站 经代理只有约 312KB/s，且每张还有约 1 秒固定开销（与分辨率无关，见
+# HANDOFF-2026-09-25）。反复跑同一批图（调参时最常见的用法）等于把同一批字节重下一遍。
+# 设计取舍：
+#   * 缓存的是**下载到的原始字节**（不是解码后的张量）—— 解码是纯 CPU、PIL 很快，
+#     而字节可以直接复用；视频帖仍每次抽帧（占比极小，不值得再缓存一份 PNG）。
+#   * 键 = URL 的 sha256 前缀；扩展名由响应 Content-Type 决定，读盘时反推回 Content-Type。
+#   * 单文件 > 64MB 不入缓存（yande.re 有 169MB 的原图，缓存它只会挤爆上限）；
+#     总容量超 2GB 时按 mtime 从旧到新淘汰（命中会刷新 mtime ⇒ 天然 LRU）。
+#   * 写盘走「临时文件 + os.replace」原子替换 —— 并发读到的永远是完整文件。
+#   * `ANIMA_IMAGE_CACHE=0` 可整体关掉；`ANIMA_IMAGE_CACHE_DIR` 可换目录（测试用）。
+IMAGE_CACHE_ENV = "ANIMA_IMAGE_CACHE"
+IMAGE_CACHE_DIR_ENV = "ANIMA_IMAGE_CACHE_DIR"
+IMAGE_CACHE_DIR_NAME = "image_cache"
+IMAGE_CACHE_MAX_BYTES = 2 * 1024 ** 3
+IMAGE_CACHE_MAX_FILE_BYTES = 64 * 1024 ** 2
+IMAGE_CACHE_PRUNE_INTERVAL = 60.0
+_IMAGE_EXT_BY_CONTENT_TYPE = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/avif": ".avif",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+}
+_IMAGE_CONTENT_TYPE_BY_EXT = {ext: ctype for ctype, ext in _IMAGE_EXT_BY_CONTENT_TYPE.items()}
+_image_cache_lock = threading.Lock()
+_image_cache_last_prune = 0.0
+
+
+def _image_cache_enabled() -> bool:
+    """默认开启；`ANIMA_IMAGE_CACHE=0/false/off/no` 关闭（排查取图问题时用）。"""
+    return str(os.environ.get(IMAGE_CACHE_ENV, "") or "").strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _image_cache_dir() -> Path:
+    override = str(os.environ.get(IMAGE_CACHE_DIR_ENV, "") or "").strip()
+    if override:
+        return Path(override)
+    return Path(__file__).with_name("data") / IMAGE_CACHE_DIR_NAME
+
+
+def _image_cache_key(url: str) -> str:
+    return hashlib.sha256(str(url or "").encode("utf-8")).hexdigest()[:40]
+
+
+def _image_cache_read(url: str) -> tuple[bytes, str] | None:
+    """命中则返回 `(bytes, content_type)`；任何 IO 异常都按「未命中」处理（绝不打断取图）。"""
+    key = _image_cache_key(url)
+    try:
+        for path in _image_cache_dir().glob(f"{key}.*"):
+            if path.suffix.lower() == ".part":
+                continue
+            try:
+                data = path.read_bytes()
+            except OSError:
+                continue
+            if not data:
+                continue
+            try:
+                os.utime(path, None)  # LRU：命中即刷新 mtime
+            except OSError:
+                pass
+            return data, _IMAGE_CONTENT_TYPE_BY_EXT.get(path.suffix.lower(), "application/octet-stream")
+    except OSError:
+        return None
+    return None
+
+
+def _image_cache_prune(now: float) -> None:
+    """超上限时按 mtime 从旧到新淘汰；60s 节流，避免每次写入都全目录 stat。"""
+    global _image_cache_last_prune
+    with _image_cache_lock:
+        if now - _image_cache_last_prune < IMAGE_CACHE_PRUNE_INTERVAL:
+            return
+        _image_cache_last_prune = now
+    directory = _image_cache_dir()
+    try:
+        entries: list[tuple[float, int, Path]] = []
+        for path in directory.iterdir():
+            try:
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+            except OSError:
+                continue
+            entries.append((stat.st_mtime, stat.st_size, path))
+    except OSError:
+        return
+    total = sum(size for _mtime, size, _path in entries)
+    if total <= IMAGE_CACHE_MAX_BYTES:
+        return
+    for _mtime, size, path in sorted(entries):
         try:
-            # ⚠️ allow_browser=False —— 第三方图源**不得**借道 D站 浏览器网关：
-            # 网关页面停在 danbooru.donmai.us，从它 fetch i.pximg.net 是跨域且 Referer 不对，
-            # 必然 403；同时还要白付一次 warm（最坏 60s+45s）。详见 _danbooru_get_image 的说明。
-            return _danbooru_get_image(image_url, allow_browser=False)
-        finally:
-            for name, value in previous.items():
-                if value is None:
-                    _danbooru_session.headers.pop(name, None)
-                else:
-                    _danbooru_session.headers[name] = value
+            path.unlink()
+        except OSError:
+            continue
+        total -= size
+        if total <= IMAGE_CACHE_MAX_BYTES:
+            break
+
+
+def _image_cache_write(url: str, data: bytes, content_type: str) -> None:
+    if not data or len(data) > IMAGE_CACHE_MAX_FILE_BYTES:
+        return
+    ctype = str(content_type or "").split(";", 1)[0].strip().lower()
+    ext = _IMAGE_EXT_BY_CONTENT_TYPE.get(ctype)
+    if ext is None:
+        return  # 类型不认识就不缓存：宁可不缓存，也不写一个扩展名骗人的文件
+    key = _image_cache_key(url)
+    directory = _image_cache_dir()
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        tmp = directory / f"{key}{ext}.part"
+        tmp.write_bytes(data)
+        os.replace(tmp, directory / f"{key}{ext}")
+    except OSError:
+        return
+    _image_cache_prune(time.monotonic())
+
+
+def _cached_image_fetch(url: str, fetcher) -> tuple[bytes, str]:
+    """落盘缓存包住任意的取图函数：命中即回，未命中则取回并写盘。"""
+    if not _image_cache_enabled():
+        return fetcher()
+    hit = _image_cache_read(url)
+    if hit is not None:
+        return hit
+    data, content_type = fetcher()
+    _image_cache_write(url, data, content_type)
+    return data, content_type
+
+
+# ---------- 一次选多张时的下载并发度（2026-09-27）------------------------------------
+# 为什么是 6：P站 经代理约 312KB/s，且每张有约 1 秒固定开销。并发太高容易被 CDN/风控盯上、
+# 也吃满带宽；6 路足以把「固定开销」重叠掉，是观感改善最明显的一档。
+# `ANIMA_SELECT_DOWNLOAD_WORKERS` 可覆盖（夹到 1~16；设 1 = 退回串行，便于对照排查）。
+SELECT_DOWNLOAD_WORKERS = 6
+SELECT_DOWNLOAD_WORKERS_ENV = "ANIMA_SELECT_DOWNLOAD_WORKERS"
+
+
+def _select_download_workers() -> int:
+    try:
+        value = int(str(os.environ.get(SELECT_DOWNLOAD_WORKERS_ENV, "") or "").strip() or 0)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        value = SELECT_DOWNLOAD_WORKERS
+    return max(1, min(value, 16))
 
 
 def _load_translations() -> dict[str, str]:
@@ -1953,14 +2109,18 @@ class DanbooruGallery:
     def _download_image(image_url: str) -> torch.Tensor:
         if _is_allowed_danbooru_url(image_url):
             # requests 优先，被风控时自动切内置浏览器网关（见 _danbooru_get_image）
-            image_bytes, content_type = _danbooru_get_image(image_url)
+            # 2026-09-27：外层套落盘缓存 —— 同一 URL 重复出图不再重下（见 _cached_image_fetch）
+            image_bytes, content_type = _cached_image_fetch(image_url, lambda: _danbooru_get_image(image_url))
         else:
             # 多源画廊（C站/P站…）：协议层认这个 URL 才走新分支；不认识则维持原拒绝语义
+            # ⚠️ 校验必须在缓存之前：未知主机一律拒绝，绝不因为"缓存里有"就放行
             gallery_headers = _gallery_image_headers(image_url)
             if gallery_headers is None:
                 raise ValueError("不允许的图片 URL：既不是 D站（donmai.us），也不属于任何已装配图源")
             # ⚠️ 必须附加该源的 images_headers()：P站 i.pximg.net 缺 Referer 直接 403
-            image_bytes, content_type = _gallery_get_image(image_url, gallery_headers)
+            image_bytes, content_type = _cached_image_fetch(
+                image_url, lambda: _gallery_get_image(image_url, gallery_headers)
+            )
         # D站 动画帖是 mp4：PIL 打不开 → 用 ffmpeg 抽首帧当图，避免"下载失败/黑图"
         if _looks_like_video(image_url, content_type, image_bytes):
             image_bytes = _extract_video_frame(image_bytes)
@@ -2053,10 +2213,13 @@ class DanbooruGallery:
         if not isinstance(image_selection_list, list) or not image_selection_list:
             return ([self._empty_image()], [""], "{}")
 
-        images: list[torch.Tensor] = []
-        prompts: list[str] = []
-        metadata: list[dict] = []
-        failures: list[str] = []
+        # ── 并发下载（2026-09-27，取图性能轮）─────────────────────────────────────
+        # 原先是**串行** `for` 循环逐张下载：选 10 张时，每张约 1 秒的固定开销
+        # （代理握手 + DNS/TLS + 首字节，与分辨率无关，见 HANDOFF-2026-09-25 实测）
+        # 被完整叠加；改成并发后这些固定开销互相重叠。
+        # 保序靠 `pool.map`（按输入顺序返回）+ 下面按 jobs 顺序组装：images / prompts /
+        # metadata / failures 的相对顺序与串行版**逐项一致**（下游按 index 对齐的前提）。
+        jobs: list[tuple[int, dict, str, str]] = []
         for index, image_selection in enumerate(image_selection_list):
             if not isinstance(image_selection, dict):
                 continue
@@ -2069,15 +2232,34 @@ class DanbooruGallery:
             # 想只保留它，用 prompt_settings 把原图的各类别关掉即可。
             if prompt_output_enabled and role_prompt:
                 prompt = f"{role_prompt}, {prompt}" if prompt else role_prompt
-            image_url = str(image_selection.get("image_url", ""))
+            jobs.append((index, prompt_selection, prompt, str(image_selection.get("image_url", ""))))
+
+        def _fetch(job: tuple[int, dict, str, str]):
+            _index, _prompt_selection, _prompt, image_url = job
             try:
-                images.append(self._download_image(image_url))
+                return job, self._download_image(image_url), None
+            except Exception as error:  # noqa: BLE001 —— 单张失败不影响其余（与原串行版语义一致）
+                return job, None, error
+
+        workers = min(_select_download_workers(), len(jobs)) if len(jobs) > 1 else 1
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                fetched = list(pool.map(_fetch, jobs))
+        else:
+            fetched = [_fetch(job) for job in jobs]
+
+        images: list[torch.Tensor] = []
+        prompts: list[str] = []
+        metadata: list[dict] = []
+        failures: list[str] = []
+        for (_index, prompt_selection, prompt, image_url), image, error in fetched:
+            output_selection = {**prompt_selection, "image_url": image_url, "prompt": prompt, "prompt_output_enabled": prompt_output_enabled}
+            if error is None:
+                images.append(image)
                 prompts.append(prompt)
-                output_selection = {**prompt_selection, "image_url": image_url, "prompt": prompt, "prompt_output_enabled": prompt_output_enabled}
                 metadata.append(self._selection_meta(output_selection, ok=True))
-            except Exception as error:
+            else:
                 failures.append(f"[{prompt[:24] or image_url[:48]}] {error}")
-                output_selection = {**prompt_selection, "image_url": image_url, "prompt": prompt, "prompt_output_enabled": prompt_output_enabled}
                 metadata.append(self._selection_meta(output_selection, ok=False, error=str(error)))
         if not images:
             # 不再静默输出黑图：全部下载失败 → 抛错，ComfyUI 队列停止，杜绝"图生图出黑屏"

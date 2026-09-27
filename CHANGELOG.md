@@ -8,6 +8,36 @@
 
 用户可在节点工具栏「🔄 更新」检查到新版本。
 
+## [2.22.1] - 2026-09-27
+
+### 优化
+
+- **画廊节点「一次选多张」改为并发下载**（`anima_danbooru_gallery.py` 的 `get_selected_data()`）：
+  原先逐张串行，每张约 1 秒的固定开销（代理握手 / DNS+TLS / 首字节，与分辨率无关）被完整叠加。
+  现在用线程池并发（默认 **6 路**，`ANIMA_SELECT_DOWNLOAD_WORKERS` 可调，设 1 退回串行对照排查），
+  输出顺序与串行版**逐项一致**（`pool.map` 保序 ⇒ prompt 与图片不会错配）。
+  实测 6 张：**0.60s → 0.24s（2.53×）**（D站 预览图；P站 每张固定开销更大，收益更明显）。
+- **原图落盘缓存**：同一 URL 重复出图不再重下（调参时最常见的用法）。按 URL 的 sha256 落盘，
+  总容量上限 2GB（超限按 LRU 淘汰）、单文件 >64MB 不入缓存（yande.re 有 169MB 的原图）、
+  写入走「临时文件 + 原子替换」；`ANIMA_IMAGE_CACHE=0` 可整体关闭，`ANIMA_IMAGE_CACHE_DIR` 可换目录。
+  缓存落在 `data/image_cache/`（纯运行时数据，不入库、不随包发布）。
+- **第三方图源取图不再被全局锁串行化**：原先靠「临时改 `_danbooru_session.headers` +
+  `_gallery_header_lock`」传 P站 Referer 等必需请求头，那把锁会让**所有**第三方取图排成一条队 ——
+  并发下载对 P站/C站 会完全无效。现在请求头走 per-request `extra_headers`
+  （`_danbooru_get_image` 新增该参数），全局头锁已删除。
+
+### 修复
+
+- 代理失败重试路径里的 `session.proxies.clear()/update()` 改为**整体原子赋值** ——
+  两步之间并发的取图线程会读到空代理（= 直连），与 `_apply_danbooru_proxy()` 的既有约定对齐。
+
+### 升级须知
+
+- 本轮**无破坏性变更**：节点端口、旧工作流与既有行为全部保持兼容
+  （含「全部下载失败即抛错、绝不静默输出黑图」这条语义）。
+- 对照排查用开关：`ANIMA_SELECT_DOWNLOAD_WORKERS=1` 退回串行；怀疑缓存干扰取图时 `ANIMA_IMAGE_CACHE=0`。
+- 生效方式：`.py` 改动需重启 ComfyUI（本机已装 `tk-hotreload` 热重载器，保存即生效）。
+
 ## [2.22.0] - 2026-09-27
 
 ### 新增
