@@ -1064,7 +1064,12 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       return this.sourceCapabilities(sourceId).page_numbers;
     }
 
-    /** 该源是否 P站 —— 唯一受「每页固定 30」约束的页码源（后端 page↔offset 写死） */
+    /**
+     * 该源是否 P站 —— 唯一受「每页固定 30」约束的页码源（后端 page↔offset 写死）。
+     *
+     * 同时是**搜索联想的分派判据**：D站 之外只有 P站 有标签联想数据源（pixiv 官网
+     * `/rpc/cps.php`，见 fetchSuggestions 的 endpoint 分派与 scheduleSuggestions 的守卫）。
+     */
     isPixivSource(sourceId = null) {
       return String(sourceId || this.activeSourceId()) === "pixiv";
     }
@@ -3582,9 +3587,10 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
         this.showSearchHistory();
         return;
       }
-      // 联想走的是 D站 /anima/danbooru/suggest（Danbooru tag 词典）：非 D站 图源没有这套词典，
-      // 弹出来的候选一定插不进去 —— 直接不弹（capabilities.tags=false 的 C站 尤其如此）。
-      if (!this.isDanbooruSource()) {
+      // 标签联想的数据源**按图源分**：D站 走 /anima/danbooru/suggest（Danbooru tag 词典），
+      // P站 走 /anima/gallery/pixiv/suggest（pixiv 官网搜索框那一份 /rpc/cps.php，中文译名可反查日文标签）。
+      // 其余图源（C站 / 萌站 …）没有可用的标签词典，弹出来的候选一定插不进去 —— 直接不弹。
+      if (!this.isDanbooruSource() && !this.isPixivSource()) {
         this.hideSuggestions();
         return;
       }
@@ -4110,8 +4116,14 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       this.suggestionController?.abort();
       this.suggestionController = new AbortController();
       const requestId = ++this.suggestionRequestId;
+      // P站 与 D站 共用下面这一整段渲染（后端回包字段已对齐）——**只有取数端点与文案不同**。
+      // 这样两边的浮层观感、防抢点击、以及点击后走的那条提交链路全都一致，不会各写一套后漂移。
+      const pixiv = this.isPixivSource();
+      const endpoint = pixiv
+        ? `/anima/gallery/pixiv/suggest?q=${encodeURIComponent(q)}`
+        : `/anima/danbooru/suggest?q=${encodeURIComponent(q)}`;
       try {
-        const response = await fetch(`/anima/danbooru/suggest?q=${encodeURIComponent(q)}`, { signal: this.suggestionController.signal });
+        const response = await fetch(endpoint, { signal: this.suggestionController.signal });
         const d = await response.json();
         if (requestId !== this.suggestionRequestId || !this.suggestions) return;
         const names = empty ? d.didYouMean : d.suggestions;
@@ -4130,9 +4142,13 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
 
         const label = document.createElement("span");
         label.className = "adg-suggestions-label";
-        label.textContent = details.length
-          ? (chineseQuery ? "中文匹配" : "智能提示")
-          : (empty ? "你是不是想搜" : "智能提示");
+        // P站 的候选来自 pixiv 官方联想，标明来源比笼统的"智能提示"有用 ——
+        // 用户据此明白为什么敲中文能搜出日文标签。
+        label.textContent = pixiv
+          ? (chineseQuery ? "P站 中文标签" : "P站 标签联想")
+          : (details.length
+            ? (chineseQuery ? "中文匹配" : "智能提示")
+            : (empty ? "你是不是想搜" : "智能提示"));
         this.suggestions.append(label);
 
         for (const choice of ordered) {
@@ -4154,10 +4170,14 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
             translation.className = "adg-suggestion-translation";
             arrow.className = "adg-suggestion-arrow";
             count.className = "adg-suggestion-count";
-            tag.textContent = target.replaceAll("_", " ");
+            // P站 的标签用真空格：不做「下划线 → 空格」替换。那是 Danbooru 的书写约定，
+            // 而 pixiv 的日文标签里下划线是有意义的字符，替换后会得到搜不到的标签。
+            tag.textContent = pixiv ? target : target.replaceAll("_", " ");
             translation.textContent = String(item.translation || "");
             arrow.textContent = translation.textContent ? " → " : "";
             count.textContent = Number(item.postCount) > 0 ? formatCount(item.postCount) : "";
+            // P站 这个数字是**标签热度 access_count**（量级 10^8），不是作品数 —— 别让它在界面上冒充 D站 的帖数。
+            if (pixiv && count.textContent) count.title = "Pixiv 标签热度（官网 access_count，非作品数）";
             // 本地索引的帖数是**快照值**，与 D 站实时值有偏差（实测 hatsune miku 低约 21%）。
             // 用一个小上标如实标注来源，别让快照数字冒充实时值；远程路径不带该字段，行为不变。
             if (item.count_is_snapshot && count.textContent) {
@@ -4166,7 +4186,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
             }
             button.append(...(chineseQuery ? [translation, arrow, tag, count] : [tag, arrow, translation, count]));
           } else {
-            button.textContent = target.replaceAll("_", " ");
+            button.textContent = pixiv ? target : target.replaceAll("_", " ");
           }
           button.onclick = () => {
             // 智能提示 = 词级替换：只替换光标所在标签（保留其余标签）；「你是不是想搜」整栏替换

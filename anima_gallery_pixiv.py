@@ -41,7 +41,7 @@ import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 import urllib.request
 
 from aiohttp import web
@@ -100,6 +100,48 @@ IMAGE_PROXY_CONCURRENCY = 3
 PENDING_VERIFIER_TTL = 600.0
 # access_token 提前 60s 视为过期（避免"刚好在用的时候失效"）
 TOKEN_EXPIRY_SKEW = 60.0
+
+# ---------- 搜索联想（网页端 /rpc/cps.php，即 pixiv 搜索框下拉的数据源） ----------
+# 官网实现（2026-09-28 从 pixiv 主 bundle 模块 799 反解，前端只做了一次转手，没有额外加工）：
+#     fetchWithQuery("/rpc/cps.php", {}, {keyword}, {cache:"no-cache", signal}) → {candidates}
+# 三个关键事实（均实测）：
+#   ① **不需要登录、不需要 cookie**：匿名直连就返回完整候选（与 App API 的 search/illust 不同，
+#      所以联想可以在未登录时照常给，不必等用户配 token）；
+#   ② `lang` 决定候选的取向：`zh` 时既做「中文译名 → 日文 tag」反查（裙子 → ドレス/スカート），
+#      又给每个候选附上 `tag_translation`；不传 lang 时只做「前缀 / 罗马字」匹配且多数无译名；
+#   ③ 上游是**网页接口**，请求头要用浏览器 UA（App UA 实测也通，但语义上属于另一条线，不混用）。
+PIXIV_SUGGEST_URL = "https://www.pixiv.net/rpc/cps.php"
+PIXIV_SUGGEST_LANGS = ("zh", "ja", "en")
+PIXIV_SUGGEST_DEFAULT_LANG = "zh"
+# 上游固定最多回 10 条（实测），所以 limit 只做「向下截断」，调大没有意义。
+PIXIV_SUGGEST_MAX_LIMIT = 10
+PIXIV_WEB_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+# 联想是「每敲一个字就打一次」的高频请求，TTL 给 5 分钟（标签热度分钟级不会变），
+# 键含 lang；上限 128 条，防抖失败时也不会把内存吃掉。
+PIXIV_SUGGEST_CACHE_TTL = 300.0
+PIXIV_SUGGEST_CACHE_MAX = 128
+_SUGGEST_ACCEPT_LANGUAGE = {
+    "zh": "zh-CN,zh;q=0.9",
+    "ja": "ja;q=0.9",
+    "en": "en-US,en;q=0.9",
+}
+
+# 单 tag 的语言表（`/ajax/search/tags/{tag}`）：一次给全 zh / zh_tw / en / ko / th / ms / romaji，
+# 且 **lang 参数不影响返回**（不带 lang 也是全语言表）—— 所以缓存键只需要 tag，与界面语言无关。
+#
+# 存在的理由（2026-09-28 用户实报后实测）：`/rpc/cps.php` 只在「翻译命中」时附 `tag_translation`，
+# 用户敲**日文原 tag**（哪怕敲全）时命中方式是 `prefix`，上游**一条译名都不给**
+#（实测 `初音ミク` 10 条候选译名数 = 0）。想让日文标签也显示中文，就只能拿这个端点补。
+PIXIV_TAG_INFO_URL = "https://www.pixiv.net/ajax/search/tags/{tag}"
+# 翻译是 Crowdin 上的稳定数据，按天缓存；上限 4096 条（一个 tag 一行，内存量级几百 KB）。
+PIXIV_TAG_TRANSLATION_CACHE_TTL = 86400.0
+PIXIV_TAG_TRANSLATION_CACHE_MAX = 4096
+# 补翻译的并发上限：与上游候选上限（10）取齐 —— 一轮就能全部发出去。
+# 实测（走代理到 pixiv，单条 ~600ms）：并发 8 时要分两轮、冷启动 ~2.4s；一轮发完降到 ~1.2s。
+PIXIV_TRANSLATION_FILL_WORKERS = PIXIV_SUGGEST_MAX_LIMIT
 
 
 # ---------- 连通性：与 D 站同语义的代理解析（PROXY_CONFIG=auto → env → 系统代理 → 端口探测） ----------
@@ -1250,6 +1292,216 @@ def search_illusts(
     return items, next_cursor
 
 
+# ---------- 搜索联想（网页端 /rpc/cps.php，pixiv 搜索框下拉的数据源） ----------
+_suggest_cache: OrderedDict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = OrderedDict()
+_suggest_cache_lock = threading.Lock()
+
+
+def _suggest_cache_get(key: tuple[str, str]) -> list[dict[str, Any]] | None:
+    now = time.monotonic()
+    with _suggest_cache_lock:
+        expired = [k for k, (expires_at, _rows) in _suggest_cache.items() if expires_at <= now]
+        for k in expired:
+            _suggest_cache.pop(k, None)
+        hit = _suggest_cache.get(key)
+        if hit is None:
+            return None
+        _suggest_cache.move_to_end(key)
+        return hit[1]
+
+
+def _suggest_cache_put(key: tuple[str, str], rows: list[dict[str, Any]]) -> None:
+    with _suggest_cache_lock:
+        _suggest_cache[key] = (time.monotonic() + PIXIV_SUGGEST_CACHE_TTL, rows)
+        _suggest_cache.move_to_end(key)
+        while len(_suggest_cache) > PIXIV_SUGGEST_CACHE_MAX:
+            _suggest_cache.popitem(last=False)
+
+
+def _access_count(value: Any) -> int:
+    """上游 `access_count` 给的是**字符串**（"2372238226"）—— 统一成 int，坏值按 0。"""
+    try:
+        return int(str(value).strip() or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+# ---------- 单 tag 语言表（给联想候选补翻译用） ----------
+_translation_cache: OrderedDict[str, tuple[float, dict[str, str]]] = OrderedDict()
+_translation_cache_lock = threading.Lock()
+
+
+def _translation_cache_get(tag: str) -> dict[str, str] | None:
+    now = time.monotonic()
+    with _translation_cache_lock:
+        expired = [k for k, (expires_at, _row) in _translation_cache.items() if expires_at <= now]
+        for k in expired:
+            _translation_cache.pop(k, None)
+        hit = _translation_cache.get(tag)
+        if hit is None:
+            return None
+        _translation_cache.move_to_end(tag)
+        return hit[1]
+
+
+def _translation_cache_put(tag: str, row: dict[str, str]) -> None:
+    with _translation_cache_lock:
+        _translation_cache[tag] = (time.monotonic() + PIXIV_TAG_TRANSLATION_CACHE_TTL, row)
+        _translation_cache.move_to_end(tag)
+        while len(_translation_cache) > PIXIV_TAG_TRANSLATION_CACHE_MAX:
+            _translation_cache.popitem(last=False)
+
+
+def tag_translation(tag: str) -> dict[str, str]:
+    """单个标签的语言表：`{"zh": …, "zh_tw": …, "en": …, "romaji": …}`（没有的键是空串）。
+
+    查不到 / 网络失败一律回空 dict —— 补翻译是**锦上添花**，它失败不该让整条联想链路报错。
+    """
+    word = str(tag or "").strip()
+    if not word:
+        return {}
+    cached = _translation_cache_get(word)
+    if cached is not None:
+        return cached
+    try:
+        # ⚠️ 刻意**不走 `_pixiv_request`**：它每次调用都会跑一遍代理活性探测
+        #    （6 个候选端口 × 0.5s 超时）。本机是 TUN 模式、不监听本地代理端口，
+        #    实测**每次白花 513ms**；而一次联想要发 11 个请求（1 次 cps + 10 次补翻译），
+        #    只有第一个请求需要选路 —— 补翻译这 10 个直接复用会话里已配好的代理。
+        #    代价：补翻译不再享受「代理中途挂掉自动切换」，但它本就允许失败（见调用方）。
+        response = _pixiv_session.get(
+            PIXIV_TAG_INFO_URL.format(tag=quote(word, safe="")),
+            headers={
+                "User-Agent": PIXIV_WEB_USER_AGENT,
+                "Accept": "application/json, text/plain, */*",
+                "Referer": PIXIV_REFERER,
+            },
+            # 并发跑，整体耗时≈最慢的那一条 —— 单条超时要比搜索主干更紧，
+            # 别让一个卡住的 tag 把整屏联想的等待时间拖到 15s。
+            timeout=(4, 10),
+        )
+        payload = response.json() if response.status_code == 200 else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+    body = payload.get("body") if isinstance(payload, dict) else None
+    table = body.get("tagTranslation") if isinstance(body, dict) else None
+    row = table.get(word) if isinstance(table, dict) else None
+    entry = {
+        key: str((row or {}).get(key) or "").strip()
+        for key in ("zh", "zh_tw", "en", "romaji")
+    }
+    _translation_cache_put(word, entry)
+    return entry
+
+
+def _fill_missing_translations(details: list[dict[str, Any]]) -> None:
+    """就地给缺译名的候选补翻译（并发查单 tag 语言表）。
+
+    为什么必须有（2026-09-28 用户实报「输入日文原 tag 时不会翻译」后实测）：
+    `/rpc/cps.php` **只在翻译命中时**附 `tag_translation` —— 用户敲中文/英文译名时命中方式
+    是 `tag_translation`，所以带译名；敲**日文原 tag**（哪怕完整敲出 `初音ミク`）时命中方式是
+    `prefix`，上游 10 条候选**一条译名都不给**。想显示翻译，只能拿单 tag 语言表补。
+
+    取值优先级 `zh` → `en`：中文界面优先中文，没中文给英文；**刻意不用 `romaji` 兜底** ——
+    罗马字（`hatsunemikuseitannseinisennjuuroku`）不是翻译，塞进「tag → 译文」那一栏会误导，
+    这类标签就让译文栏空着。英文另存 `translationEn` 供前端按需使用。
+
+    整段异常静默：补翻译失败只让候选少个译名，不能让联想整体失败。
+    """
+    missing = [row["tag"] for row in details if not row.get("translation")]
+    if not missing:
+        return
+    try:
+        with ThreadPoolExecutor(max_workers=min(PIXIV_TRANSLATION_FILL_WORKERS, len(missing))) as pool:
+            entries = list(pool.map(tag_translation, missing))
+    except Exception:  # noqa: BLE001
+        return
+    found = dict(zip(missing, entries))
+    for row in details:
+        if row.get("translation"):
+            continue
+        entry = found.get(row["tag"]) or {}
+        row["translation"] = entry.get("zh") or entry.get("en") or ""
+        row["translationEn"] = entry.get("en") or ""
+
+
+def suggest_tags(
+    keyword: str,
+    *,
+    lang: str = PIXIV_SUGGEST_DEFAULT_LANG,
+    limit: int = PIXIV_SUGGEST_MAX_LIMIT,
+    force: bool = False,
+) -> list[dict[str, Any]]:
+    """P站 搜索联想：`GET /rpc/cps.php?keyword=&lang=` → 归一后的候选列表。
+
+    返回项字段与 D 站 `/anima/danbooru/suggest` 的 `suggestionDetails` **对齐**，这样前端
+    不用为 P站 另写一套渲染：
+
+        {"tag": 日文标签, "translation": 译名, "postCount": 标签热度, "match": 命中方式}
+
+    ⚠️ `postCount` 装的是 `access_count`（pixiv 的标签热度，量级 10^8），**不是帖子数**。
+    字段名沿用只为复用渲染，语义差异由前端的 title 说明 —— 别在 UI 上把它当帖数讲。
+
+    走 `_pixiv_request`：代理 / 直连 / SNI 绕行三条路径的兜底与搜索主干完全一致
+    （`www.pixiv.net` 已在 SNI_BYPASS_HOSTS 白名单内）。
+    """
+    word = str(keyword or "").strip()
+    if not word:
+        return []
+    lang = lang if lang in PIXIV_SUGGEST_LANGS else PIXIV_SUGGEST_DEFAULT_LANG
+    size = _bounded_int(limit, PIXIV_SUGGEST_MAX_LIMIT, 1, PIXIV_SUGGEST_MAX_LIMIT)
+    key = (word, lang)
+    if not force:
+        cached = _suggest_cache_get(key)
+        if cached is not None:
+            return cached[:size]
+
+    response = _pixiv_request(
+        "GET",
+        PIXIV_SUGGEST_URL,
+        params={"keyword": word, "lang": lang},
+        headers={
+            "User-Agent": PIXIV_WEB_USER_AGENT,
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": _SUGGEST_ACCEPT_LANGUAGE.get(lang, PIXIV_SUGGEST_DEFAULT_LANG),
+            "Referer": PIXIV_REFERER,
+        },
+        timeout=(6, 15),
+    )
+    if response.status_code != 200:
+        raise PixivError(f"P站 联想接口返回 HTTP {response.status_code}")
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise PixivError("P站 联想接口返回的不是 JSON") from error
+
+    rows = payload.get("candidates") if isinstance(payload, dict) else None
+    details: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        tag = str(row.get("tag_name") or "").strip()
+        # 去重：同一个标签可能既以「译名命中」又以「前缀命中」出现（实测会重复）
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        details.append({
+            "tag": tag,
+            "translation": str(row.get("tag_translation") or "").strip(),
+            "postCount": _access_count(row.get("access_count")),
+            "match": str(row.get("type") or "").strip(),
+        })
+    details = details[:size]
+    # ⚠️ 补翻译必须在**写缓存之前**：缓存里要存「带译名」的完整结果，否则下一次命中缓存
+    #    仍然是一个译名都没有的版本。（缓存命中路径拿到的 dict 与缓存共用，就地补进去同样有效。）
+    _fill_missing_translations(details)
+    if not force:
+        _suggest_cache_put(key, details)
+    return details
+
+
 # ---------- GallerySource 协议实现（duck typing：不 import 协议层模块） ----------
 class _Capabilities(dict):
     """capabilities 的兼容载体：既能当属性读（`source.capabilities["tags"]`），
@@ -1581,6 +1833,54 @@ async def anima_gallery_pixiv_search(request: web.Request) -> web.Response:
     })
 
 
+async def anima_gallery_pixiv_suggest(request: web.Request) -> web.Response:
+    """`GET /anima/gallery/pixiv/suggest?q=&lang=&limit=` → P站 标签联想候选。
+
+    回包结构**刻意与 D 站 `/anima/danbooru/suggest` 逐字段对齐**（suggestions /
+    suggestionDetails / didYouMean / rewrites）—— 前端因此只需换 URL、不换渲染，
+    这也是「P站 联想与 D站 联想观感一致」的实现基础。
+
+    只取查询串的**最后一个词**（与 D 站同一约定）：框里已经敲了 `1girl ` 时，
+    要联想的是正在输入的那个词，不是整串。
+    """
+    raw = str(request.query.get("q", "") or request.query.get("keyword", "")).strip()
+    tokens = raw.split()
+    term = tokens[-1] if tokens else ""
+    if not term:
+        return web.json_response({
+            "source": PIXIV_SOURCE_ID, "suggestions": [], "suggestionDetails": [],
+            "didYouMean": [], "rewrites": [],
+        })
+    try:
+        details = await _run_in_thread(
+            suggest_tags,
+            term,
+            lang=request.query.get("lang", PIXIV_SUGGEST_DEFAULT_LANG),
+            limit=request.query.get("limit", PIXIV_SUGGEST_MAX_LIMIT),
+            force=request.query.get("force", "").lower() in {"1", "true", "yes"},
+        )
+    except PixivError as error:
+        # 联想失败只回空候选：前端据此静默收起浮层（不弹错、不打断输入）。
+        return _json_error(
+            str(error), status=502,
+            suggestions=[], suggestionDetails=[], didYouMean=[], rewrites=[],
+        )
+    except Exception as error:  # noqa: BLE001
+        return _json_error(
+            f"P站 联想异常：{type(error).__name__}: {error}", status=502,
+            suggestions=[], suggestionDetails=[], didYouMean=[], rewrites=[],
+        )
+    return web.json_response({
+        "source": PIXIV_SOURCE_ID,
+        "suggestions": [str(row["tag"]) for row in details],
+        "suggestionDetails": details,
+        "didYouMean": [],
+        "rewrites": [],
+        "lang": str(request.query.get("lang", PIXIV_SUGGEST_DEFAULT_LANG)),
+        "logged_in": logged_in(),
+    })
+
+
 async def anima_gallery_pixiv_image(request: web.Request) -> web.Response:
     """图片代理：必须带 Referer，否则 i.pximg.net 403（§5.4）。"""
     image_url = request.query.get("url", "").strip()
@@ -1677,6 +1977,7 @@ def register_routes() -> list[str]:
         ("get", "/anima/gallery/pixiv/auth/status", anima_gallery_pixiv_auth_status),
         ("post", "/anima/gallery/pixiv/logout", anima_gallery_pixiv_logout),
         ("get", "/anima/gallery/pixiv/search", anima_gallery_pixiv_search),
+        ("get", "/anima/gallery/pixiv/suggest", anima_gallery_pixiv_suggest),
         ("get", "/anima/gallery/pixiv/image", anima_gallery_pixiv_image),
         ("get", "/anima/gallery/pixiv/diag", anima_gallery_pixiv_diag),
     )
