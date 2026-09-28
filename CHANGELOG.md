@@ -8,6 +8,265 @@
 
 用户可在节点工具栏「🔄 更新」检查到新版本。
 
+## [2.24.1] - 2026-09-28
+
+### 修复
+
+- **「我的收藏」抢搜索框、抢计数标签额度**（用户实报："为什么收藏栏目是进搜索框，占用筛选词条，
+  导致显示不出来"）。上一版把 `ordfav:<账号>` **写进搜索框**，两个后果叠加：
+  ① 它直接**替换掉用户自己的筛选词**；
+  ② `FREE_METATAGS` 里**没有 `ordfav`**，于是它被当成普通计数标签参与 `countedSearchTerms()`，
+  和你自己的标签抢那 2 个名额（Member 等级），超限后触发自动降级/丢弃逻辑
+  ⇒ **界面上什么都显示不出来**。
+  现在改成**独立模式开关**：点工具条「我的收藏」只切换模式，**搜索框一个字都不动**，
+  `ordfav:<账号>` 在 `search()` 里发请求时自动拼在最前面 —— 于是它可以和你的筛选词**并用**
+  （如「我的收藏 + 1girl」）。同时把 `ordfav` 加入 `FREE_METATAGS_THAT_STILL_COUNT`
+  （与 `order` 同级）：D站 服务端确实算它一个计数槽，所以限额判断要如实参与，
+  超限时给明确提示，而不是静默失败。按钮改为**开关态**（高亮 = 正在看收藏），换源自动退出该模式。
+
+### 升级须知
+
+- 生效方式：`web/js` 改动 **Ctrl+F5**。
+- 回归：`tests/test_gallery_favorites.py` 增加断言 —— 入口必须是模式开关、**不得**碰 `queryInput`、
+  `ordfav` 必须在计数集合里（10 passed）。
+
+## [2.24.0] - 2026-09-28
+
+### 新增
+
+- **D站 收藏读写**（Issue #3「TK多重画廊收藏问题」：*收藏了图片之后没有找到存放的地方*）。
+  旧版的 ★ 只是**本地 localStorage 描边**（全文件没有任何地方读它做筛选/排序），2026-09-21 连同按钮
+  一起被移除 —— "找不到存放的地方"是结构性的。现在做成**真正的 D站 收藏**：
+
+  - **写**：卡片上的 **★ / ☆** 直接写回 D站 账号（`POST /favorites`，取消时先查收藏记录 id 再
+    `DELETE /favorites/<id>`）。**不做乐观更新** —— 只有后端确认成功才改图标，不会出现
+    "看着收藏了其实没写进去"。写请求有连点保护，失败时把 D站 的原因（收藏上限 / 重复 / 权限）
+    翻成人话显示在状态栏。
+  - **读**：工具条新增 **「★ 我的收藏」**，一键跳到 `ordfav:<账号>` —— 展示、分页、**无限滚动**、
+    缩略图代理、浮层**全部复用既有搜索链路**（不需要另写一套渲染）。按钮上直接显示收藏总数。
+  - **状态**：启动 / 换源 / 改账号后自动拉一次收藏集合，卡片据此显示 ★/☆；切到非 D站 图源会清空
+    （别的源的 post id 不是 D站 的 post id）。
+  - **未登录**：读接口返回 `logged_in:false` 让界面给"去登录"引导（而不是一个红错误），
+    写接口返回 401 + 可读提示。**凭证只留服务端**，任何响应都不含 api_key。
+
+  > 设计要点：Danbooru 的收藏本质就是 `ordfav:<login>` 这个"计数标签搜索"，
+  > 所以"看收藏"与"搜索"是同一条链路；新增的只有"写"这一小块。
+
+### 升级须知
+
+- 生效方式：`web/js`、`web/css` 改动 **Ctrl+F5**；`.py` 改动本机已由 tk-hotreload 自动重载
+  （其它机器需重启 ComfyUI）。
+- 收藏是**你 D站 账号的真实收藏**（会出现在 danbooru.donmai.us 上），不是本地副本。
+  免费账号上限 200 条，超过时状态栏会给出提示。
+- 新增回归 `tests/test_gallery_favorites.py`（10 条：真接口 / 记录 id / 未登录引导 / 不泄露 key /
+  复用搜索链路 / 缓存失效 / 非乐观更新 / 换源清空 / 两个入口 / 主题变量）。
+
+## [2.23.2] - 2026-09-27
+
+### 修复
+
+- **yande.re / konachan.net / safebooru 的翻页根本没生效**（真机实测：`page=1/2/3` 返回**完全相同**的
+  id）—— 这是"加载不到新图片"的**主因**：前端在 `pageMode()` 分支发的是 `page`，而这三个源的
+  路由**只读 `cursor`** ⇒ 每次都拿第 1 页 ⇒ 追加时全是重复 ⇒ 判定"到底了"不再请求。
+  修法：路由在 `cursor` 为空时**回退读 `page`**（moebooru 的 cursor 语义就是 1 基页码，直接等价；
+  safebooru 的 cursor 是 **pid（0 基）**，回退时 `pid = page - 1`）。
+  同时回包补发下划线键 `next_cursor`（前端只读这个，此前只发驼峰 `nextCursor` ⇒ 游标是死字段）。
+- **无限滚动死锁：一页填不满 ⇒ 没有滚动条 ⇒ 滚不动 ⇒ 永远加载不了**。
+  用户实报：「滚动不会触发画布放大缩小了，但是同样也不会滚动画廊，从而也无法加载新的图片」。
+  上一版只由 `scroll` 事件驱动加载，而**内容没超出容器时根本不会产生滚动条**，`scroll` 永不触发
+  ⇒ 加载链启动不了（用户截图那种"一页 30 张、底部大片空白"正是这个状态）。
+  现在新增**不依赖滚动事件**的自动入口：`scheduleScrollFill()`（渲染收尾调用）→
+  `autoFillByScroll()` → 判据与滚动加载**同源**（`scrollNeedsMore()`：剩余滚动距离 ≤ 600px）→
+  继续 `appendNextBatch()`，直到填满容器 / 上游到底 / 撞上硬闸（轮次上限 + 30s/4 批）。
+  自动补满链（`scheduleAutoFill`）在无限滚动模式下**整条让位**，两条链不会同时打上游。
+
+### 升级须知
+
+- 生效方式：`web/js` 改动 **Ctrl+F5**，无需重启 ComfyUI。
+- 回归：`tests/test_gallery_infinite_scroll.py` 新增「没有滚动条也要能启动加载」用例（10 passed）。
+
+## [2.23.1] - 2026-09-27
+
+### 修复
+
+- **画廊滚轮仍被画布抢走**（用户实报："滚动只会变成缩放画布比例，无法真正滚动"）：
+  上一版只在 `.adg-grid` 上挂了 `wheel` + `stopPropagation`（capture），**对 ComfyUI 无效**。
+  查 ComfyUI 1.48.7 前端打包源码（`assets/settingStore-*.js`）后确认：判定发生在**画布容器**
+  上（Vue `@wheel` → `handleWheel`），条件是
+
+  ```js
+  wheelCapturedByFocusedElement = e => {
+    const t = e.target?.closest('[data-capture-wheel="true"]');
+    const n = document.activeElement;
+    return !!(t && n && t.contains(n));      // 两个条件缺一不可
+  }
+  shouldForwardWheelEvent = e => !wheelCapturedByFocusedElement(e) || isCanvasGestureWheel(e);
+  ```
+
+  不满足就把 wheel 交给 `forwardEventToCanvas()` 做画布缩放。现在按**官方约定**实现：
+  网格打 `data-capture-wheel="true"` + `tabIndex = -1`，鼠标移入网格时聚焦它
+  （**正在编辑输入框时不抢焦点**，否则鼠标滑过画廊会把光标从提示词框里踢出去），
+  并补 `.adg-grid:focus { outline: none }` 避免多一圈描边。
+- ⚠️ **Ctrl/Cmd+滚轮与横向滚轮仍归画布** —— 那是 ComfyUI 的画布手势白名单
+  （`isCanvasGestureWheel`），属官方语义，不是缺陷。
+
+### 升级须知
+
+- 生效方式：`web/js`、`web/css` 改动 **Ctrl+F5** 强刷即可，无需重启 ComfyUI。
+- 回归：`tests/test_gallery_infinite_scroll.py` 的滚轮用例已改写为"必须走官方约定"
+  （钉住 `data-capture-wheel` + 可聚焦 + 移入聚焦 + 不抢输入焦点），防止再退回
+  "加个 stopPropagation 以为就好了"。
+
+## [2.23.0] - 2026-09-27
+
+### 新增
+
+- **画廊改为无限滚动**（滚到底自动加载，不再翻页）：节点设置里新增「滚动方式」
+  （无限滚动 / 分页），**默认无限滚动**，分页器**保留**可随时切回。配套改动：
+  - **滚轮直接滚动画廊** —— 此前鼠标停在画廊上滚不动，只能去拖右侧那条滚动条
+    （ComfyUI 画布把 `wheel` 拿去做缩放/平移了，现在在网格上拦截）。
+  - 分页位换成「已加载 N 张 · 继续滚动加载 / 已到底」+ 一个「回到顶部」。
+  - **上限回收**：列表最多保留最近 300 张，避免滚久了 DOM 无限膨胀
+    （选中态与提示词编辑按 id 存，回收不影响它们）。
+  - 与「自动补满」划清分工：自动补满只负责**首屏一次**，之后全部交给滚动加载 ——
+    两条链共用同一套取数（`appendNextBatch()`），不会同时打上游。
+
+### 修复
+
+- **大节点「底部大片空白、最右列稀疏」**（用户实报）：真根因是 `gallerySearchParams()` 对**所有**
+  页码分页源硬发 `limit = 30`，自适应张数完全不参与 ⇒ **节点越宽越填不满**。现在只有 **P站**
+  保持 30（后端 `page` 换算写死 `(page-1)*30`），yande.re / konachan.net / safebooru
+  改按节点尺寸取自适应值（后端各自 clamp ≤100）。
+  离线复算（真实帖子宽高 + 同一套算法，判据同 `gridUnderfilled()`）：
+
+  | 节点宽 | 列数 | 视口高 | 改前（limit=30） | 改后（自适应） | 再补一轮 |
+  |---|---|---|---|---|---|
+  | 780 | 6 | 800 | 89.4% | **114.1%** | 191.2% |
+  | 1200 | 9 | 800 | 51.7% | **99.1%** | 130.8% |
+  | 1580 | 12 | 800 | 35.8% | 71.1% | 89.3% |
+  | 1400 | 11 | 945 | 33.6% | 65.0% | 83.8% |
+
+- **补图链「被拦下就永久停手」**：请求在途 / 30s 窗口 / 用户拖过尺寸后的 1.5s 静默期，
+  原先都是「拦下即 return，**没有任何重试**」⇒ 撞上任意一道就永远停在半屏。
+  现在改为**有界重试**（拦下时按"还要等多久"排一次延迟重试），30s/4 批硬闸保持不变。
+
+### 升级须知
+
+- **无破坏性变更**：节点端口与旧工作流不变。想用回旧的分页器：节点设置 → 「滚动方式」→ 分页。
+- 生效方式：`web/js`、`web/css` 改动 **Ctrl+F5** 强刷即可，无需重启 ComfyUI。
+- 新增回归 `tests/test_gallery_infinite_scroll.py`（8 条：两链共用取数 / 模式门控 / 滚动位置保持 /
+  分页器保留 / 上限回收 / 滚轮拦截 / 样式变量 / 自动补满让位）。
+
+## [2.22.2] - 2026-09-27
+
+### 修复
+
+- **Prompt Cards 联想补全后不补逗号**（用户实测：「①区打 1gi 选 1girl，结果只有 1girl，
+  还得手动补逗号」）：片段模型的分隔符是「挂在**下一个片段之前**」（`separatorBefore`），
+  而**末尾**分隔符不属于任何后续片段 —— `splitPromptPieces()` 在循环结束后对残余分隔符调
+  `push("")`，被判空丢弃 ⇒ 用户手打的尾逗号、①区联想补的 `", "`、②区追加后的尾逗号，
+  只要经过一次 `serializePromptPieces()`（`_commitPromptPieces` / `_ensurePromptPiecesInSync`
+  都会走）就凭空消失。现在给最后一片段加 `trailingSeparator`（split / serialize / normalize
+  三处），并在 ①区 `_applySuggest()`、②区 `_appendResolvedText()` 里显式补尾逗号
+  （末尾是换行时不补，以免破坏多行分段）。
+- 同一根因顺带修好：用户**手动**在提示词末尾打的逗号也不再被吞。
+
+### 升级须知
+
+- 生效方式：`web/js` 改动 **Ctrl+F5** 强刷即可，无需重启 ComfyUI。
+- 新增回归 5 条（`tests/cards_widget_logic.test.js`：尾逗号往返不丢 / 无尾分隔符不多补 /
+  末尾换行照旧保留 / 尾分隔符挂位）。
+
+## [2.22.1] - 2026-09-27
+
+### 优化
+
+- **画廊节点「一次选多张」改为并发下载**（`anima_danbooru_gallery.py` 的 `get_selected_data()`）：
+  原先逐张串行，每张约 1 秒的固定开销（代理握手 / DNS+TLS / 首字节，与分辨率无关）被完整叠加。
+  现在用线程池并发（默认 **6 路**，`ANIMA_SELECT_DOWNLOAD_WORKERS` 可调，设 1 退回串行对照排查），
+  输出顺序与串行版**逐项一致**（`pool.map` 保序 ⇒ prompt 与图片不会错配）。
+  实测 6 张：**0.60s → 0.24s（2.53×）**（D站 预览图；P站 每张固定开销更大，收益更明显）。
+- **原图落盘缓存**：同一 URL 重复出图不再重下（调参时最常见的用法）。按 URL 的 sha256 落盘，
+  总容量上限 2GB（超限按 LRU 淘汰）、单文件 >64MB 不入缓存（yande.re 有 169MB 的原图）、
+  写入走「临时文件 + 原子替换」；`ANIMA_IMAGE_CACHE=0` 可整体关闭，`ANIMA_IMAGE_CACHE_DIR` 可换目录。
+  缓存落在 `data/image_cache/`（纯运行时数据，不入库、不随包发布）。
+- **第三方图源取图不再被全局锁串行化**：原先靠「临时改 `_danbooru_session.headers` +
+  `_gallery_header_lock`」传 P站 Referer 等必需请求头，那把锁会让**所有**第三方取图排成一条队 ——
+  并发下载对 P站/C站 会完全无效。现在请求头走 per-request `extra_headers`
+  （`_danbooru_get_image` 新增该参数），全局头锁已删除。
+
+### 修复
+
+- 代理失败重试路径里的 `session.proxies.clear()/update()` 改为**整体原子赋值** ——
+  两步之间并发的取图线程会读到空代理（= 直连），与 `_apply_danbooru_proxy()` 的既有约定对齐。
+
+### 升级须知
+
+- 本轮**无破坏性变更**：节点端口、旧工作流与既有行为全部保持兼容
+  （含「全部下载失败即抛错、绝不静默输出黑图」这条语义）。
+- 对照排查用开关：`ANIMA_SELECT_DOWNLOAD_WORKERS=1` 退回串行；怀疑缓存干扰取图时 `ANIMA_IMAGE_CACHE=0`。
+- 生效方式：`.py` 改动需重启 ComfyUI（本机已装 `tk-hotreload` 热重载器，保存即生效）。
+
+## [2.22.0] - 2026-09-27
+
+### 新增
+
+- **多源画廊新增三个图源：Safebooru / yande.re / Konachan.net**（`anima_gallery_safebooru.py`、
+  `anima_gallery_moebooru.py`）。三者**都不需要 API key**，走公开 API：Safebooru 属 gelbooru-dapi 系；
+  yande.re 与 Konachan.net 由**同一套 moebooru 骨架**服务（两家 `post.json` 键名实测同构）。
+  加上原有的 D站 / C站 / P站，**一个画廊节点共 6 个图源**。
+- **前端图源下拉不再需要改代码**：原先的硬白名单降级为**排序偏好 + 兜底文案**，
+  后端注册什么图源界面就显示什么（新增图源只落后端一行即可）。
+- **AnimaDex 角色浮窗**（**不是图源**）：画廊工具条「角色」按钮打开浮窗，内置 **36,488 个本地角色**
+  （随包 `anima_animadex.json.gz`，2.77 MB，100% 带触发词与预览图），支持**中英双语联想**、
+  收藏 / 最近两个页签、**作品可搜索筛选**（3,702 个作品）、键盘导航；点选后把基础提示词写进
+  **节点 Prompt 输出**（`selection_data.role_prompt`），配合 `prompt_settings` 关掉原有角色类别即可**换人物**。
+  后端 `anima_animadex.py` + 前端 `web/js/anima_animadex_panel.js`，路由
+  `/anima/animadex/{search,suggest,facets,status,refresh,image}`。
+  **选词拼接不走 LLM** —— 离线、确定、毫秒级。
+- **画廊搜索联想提速**：新增本地标签索引 `anima_tag_index.py`（20.6 万标签前缀索引 + 中文 2-gram 倒排），
+  联想从 **835 ms 降到 1~2 ms**（`hatsune_miku` 1046 ms → 1~2 ms；`蓝档` 32 ms → 2 ms）。
+  配套修掉每次请求全量重探 6 个代理端口的问题（30 s 缓存 + 首个活端口即返回，实测省下 512 ms/请求）。
+
+### 变更
+
+- **工具条低占位改造**：随机发现的 3 档按钮 + 「换一批」共 **4 个按钮 → 1 个下拉 + 1 个按钮**；
+  设置类 4 个常驻按钮收进「设置 ▾」菜单（复用项目既有 `PortalDropdown`）。
+  工具条高度 **7 行 → 5 行（250 px → 188 px）**。
+
+### 修复
+
+- **AnimaDex 作品筛选 `limit` 形同虚设**：`series_facets()` 硬编码 `min(200, …)` 且路由默认 200、
+  前端不传 limit ⇒ 3,702 个作品只放出 200 个（94% 选不到）。已改为全量返回（防呆上限 5000），
+  端到端复验 `sum(count) = 36,488`。
+- **浮窗联想下拉 ↓ 键原地不动**：取模公式漏 `cursor + 1`（-1 起按 ↓ 不移动），已修。
+
+### 升级须知
+
+- 本轮**无破坏性变更**：节点、端口与旧工作流均保持兼容。
+- 新图源（Safebooru / yande.re / Konachan.net）**无需任何密钥**，装上即可用。
+- `konachan.com` / `anime-pictures.net` / `waifu.im` 在本机出口被 Cloudflare 挑战页拦下（`Just a moment...`），
+  属**出口 IP 信誉**问题而非站点不可用，故本轮接的是全年龄镜像 `konachan.net`；换网络环境可再评估。
+- 生效方式：`web/js`、`web/css` 改动 **Ctrl+F5** 即可；`.py` 改动需重启 ComfyUI（或使用本机热重载器）。
+
+## [2.21.0] - 2026-09-26
+
+### 移除
+
+- **`TK 光影提示词` 节点（`AnimaTKLightingPrompt`）整体移除**：删除 `anima_lighting_prompt.py`
+  与其 `__init__.py` 注册（导入 + 两张映射表合并项），并同步清掉 README / `docs/FEATURES.md`
+  的节点说明与 `tests/test_lighting_prompt.py`。
+
+  光影预设改由 Prompt 库 / Prompt Cards 承载，插件不再内置光影词表。
+
+### 升级须知
+
+- **这是破坏性变更**：旧工作流里已放置的 `AnimaTKLightingPrompt` 节点在升级后会成为
+  **缺失节点（红框）**，其 `lighting_prompt` 连线一并失效。请把该路输入改为 Prompt 库 /
+  Prompt Cards 输出的提示词串，再删除缺失节点。
+- 节点侧面板（`web/js`）与该节点无关，无需改动；面板开发目录 `civitai` 侧同步删除了
+  该节点文件、测试与 `scripts/release.mjs` 的发布文件清单条目。
+
 ## [2.20.0] - 2026-09-21
 
 > 本版四项功能来自一份**外部贡献补丁**（`adg-gallery-fixes`）。合并前做了两路独立审查，

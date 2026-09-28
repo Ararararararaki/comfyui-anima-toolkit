@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import asyncio
 import atexit
 import base64
+import hashlib
 import io
 import json
 import os
@@ -18,8 +19,8 @@ import subprocess
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
+from typing import Any, NamedTuple
 from urllib.parse import urlencode, urlparse
 import urllib.request
 
@@ -183,35 +184,124 @@ def _proxy_candidates() -> list[dict[str, str]]:
     return candidates
 
 
+# 主路径的探测结果缓存：(单调时间, 选中的代理 server 或 ""=直连, 选中的请求头键)
+# ⚠️ 2026-09-26 实测补上：原先只有 _fallback_proxy() 有缓存，主路径每次请求都全量重探，
+# 而 pool.map 必须等最慢的那个死端口吃满 0.5s 超时 —— 本机 5 个死端口 ⇒ **每个请求白付 512ms**
+# （实测三轮 512.7/511.9/511.2ms）。英文联想因此长期卡在 835~1113ms，与「搜索很慢」的用户体感同源。
+_PROXY_PICK_LOCK = threading.Lock()
+_PROXY_PICK_CACHE: dict[str, Any] = {"stamp": 0.0, "server": None, "proxies": None}
+_PROXY_PICK_TTL = 30.0
+#: 首轮探测的等待上限：只等「第一个活下来的」，不给死端口留满超时。
+#: 死端口在 Windows 上 connect 直接吃满 timeout（实测 506~513ms），必须避免 let 它拖住整条链路。
+_PROXY_FIRST_HIT_WAIT = 0.25
+
+
+def _probe_first_alive(candidates: list[dict[str, str]]) -> dict[str, str] | None:
+    """**并发滚动探测**：全部候选同时开探，谁先活着返回谁，不等其它 future。
+
+    历史（2026-09-27 实测更正）：上一版是**串行 for + 0.25s 超时**，注释声称「零等待」，
+    但那只在活代理恰好排首位时成立（本机 7890 排首位，所以没暴露）。实测反例：
+      · 6 个候选全死 → `_apply_danbooru_proxy()` 冷路径 **2076ms**（串行累加 1524ms
+        + 失败后再全量 `pool.map` 兜底 540ms）；
+      · 活端口排最后 → **1538ms**。
+    对照：本函数并发版在两种场景都≈**254ms**（= 单个候选的探测耗时）。
+    且活端口排首位时仍保留**≈2ms**：先扫一遍「已完成的 future」，命中即返回 ——
+    本机 7890 是 0.3ms 完成，所以首轮扫描就命中，不会被后面 250ms 才失败的死端口拖住。
+    （⚠️ 不能用 `as_completed` 直接取第一个结果：它按**完成先后**而非**候选优先级**迭代，
+    死端口 250ms 完成、活端口 0.3ms 完成时反而先撞上死端口，实测让首位场景退化成 266ms。）
+
+    返回顺序仍按候选优先级：取「已完成的 future 里候选下标最小且活着」的那个；
+    若多个几乎同时完成，同样按下标取最小者（保持「按优先级选路」的原语义）。
+    """
+    if not candidates:
+        return None
+    servers = [c.get("https") or c.get("http") or "" for c in candidates]
+    pool: ThreadPoolExecutor | None = None
+    try:
+        pool = ThreadPoolExecutor(max_workers=min(len(servers), 8))
+        submitted: list[tuple[int, Any]] = [
+            (index, pool.submit(_probe_proxy_alive, server, _PROXY_FIRST_HIT_WAIT))
+            for index, server in enumerate(servers)
+            if server
+        ]
+        # 每轮等「下一个完成的」就重扫一遍已完成集合（按候选优先级取最小下标），
+        # 于是活端口 0.3ms 完成时首轮即返回，而全死场景只等到 ~250ms 就收口。
+        # +0.03s 是给「探测本体（urlparse + socket）在超时之外的开销」留的收口余量。
+        deadline = time.monotonic() + _PROXY_FIRST_HIT_WAIT + 0.03
+        done: set[Any] = set()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                newly, _ = futures_wait(
+                    [future for _index, future in submitted],
+                    timeout=remaining,
+                    return_when=FIRST_COMPLETED,
+                )
+            except Exception:
+                break
+            done |= newly
+            for index, future in sorted(submitted, key=lambda item: item[0]):
+                if future in done:
+                    try:
+                        if future.result():
+                            return candidates[index]
+                    except Exception:
+                        pass
+            if not newly:
+                break
+    except Exception:
+        return None
+    finally:
+        # ⚠️ 必须 `wait=False`：`with ThreadPoolExecutor(...)` 的 `__exit__` 会 join 所有
+        # worker，于是「2ms 就返回」仍会被 6 个死端口各自的 250ms 拖满 —— 实测 258ms，
+        # 正好把本函数的收益全部吃掉。死端口的探测线程在后台自然收尾即可（进程级 daemon）。
+        if pool is not None:
+            pool.shutdown(wait=False)
+    return None
+
+
 def _apply_danbooru_proxy() -> None:
     """每次请求前按当前环境实时解析代理（不再重启时一次性固化）。
 
-    策略：在所有候选代理里挑「活着」的第一个（TCP 活性探测，0.4s×并行），
+    策略：在所有候选代理里挑「活着」的第一个（TCP 活性探测，并发滚动，见 `_probe_first_alive`），
     全部探测失败才直连。这样即使 Clash 系统代理开关被关/指向死端口/重启瞬间，
-    也能自动落到可用的本地代理；探测结果 30s 缓存避免每次请求重复探测。
+    也能自动落到可用的本地代理。
+
+    缓存（2026-09-26 实测修复）：选路结果 30s 内复用 —— 见 `_PROXY_PICK_CACHE` 上方注释。
+    原先该缓存只落在 `_fallback_proxy()`，主路径每次请求重探，白付 ~512ms/请求。
+
+    2026-09-27 两处修正（冷审查实测）：
+      ① `_direct_blocked` 判定**提到缓存检查之前**。原先它在缓存之后，于是「直连被判死」
+         这个更强的信号会被 30s 缓存压住 —— 缓存里若存着「直连(空 dict)」的选路结果，
+         接下来 30s 内每次请求都照旧直连，正是「直连被墙」重复发生的来源。
+      ② session 代理改成**整体原子赋值**（`proxies = dict(chosen)`），不再
+         `clear()` 后再 `update()` —— 那两步之间并发的画廊缩略图请求会读到空代理 = 直连。
     """
     global _direct_blocked
+    now = time.monotonic()
     if _direct_blocked:
-        # 直连曾失败：只用探测到的活代理，绝不直连
+        # 直连曾失败：只用探测到的活代理，绝不直连。**先于缓存判定**（见 docstring ①）。
         fb = _fallback_proxy()
         if fb:
-            _danbooru_session.proxies.clear()
-            _danbooru_session.proxies.update(fb)
+            _danbooru_session.proxies = dict(fb)  # 原子赋值（见 docstring ②）
+            return
+    with _PROXY_PICK_LOCK:
+        cached = _PROXY_PICK_CACHE
+        if cached["proxies"] is not None and now - float(cached["stamp"]) < _PROXY_PICK_TTL:
+            _danbooru_session.proxies = dict(cached["proxies"])  # 原子赋值（见 docstring ②）
             return
     candidates = _proxy_candidates()
-    if candidates:
-        servers = [c["https"] for c in candidates]
-        try:
-            with ThreadPoolExecutor(max_workers=min(len(servers), 8)) as pool:
-                alive = list(pool.map(_probe_proxy_alive, servers))
-        except Exception:
-            alive = [False] * len(servers)
-        for proxies, ok in zip(candidates, alive):
-            if ok:
-                _danbooru_session.proxies.clear()
-                _danbooru_session.proxies.update(proxies)
-                return
-    _danbooru_session.proxies.clear()  # 全部不可达 → 直连（可能被墙，重试链会兜底）
+    picked = _probe_first_alive(candidates)
+    # 注意：`_probe_first_alive` 已是**并发滚动**探测（全部候选同时开探），
+    # 它的 None 就是「所有候选都死了」的完整结论，无需再做一次全量 `pool.map` 兜底 ——
+    # 旧代码那一步会让全死场景多付 ~540ms（实测总 2076ms）。
+    chosen: dict[str, str] = dict(picked) if picked else {}
+    # 原子赋值（空 dict = 直连，语义同旧 clear()）；不再 clear()+update() 两步。
+    _danbooru_session.proxies = dict(chosen)
+    with _PROXY_PICK_LOCK:
+        _PROXY_PICK_CACHE.update({"stamp": now, "proxies": chosen, "server": chosen.get("https") or ""})
 
 
 # ---------- Danbooru 账号（上限按账号等级：Member=2、Gold=6、Platinum+=不限；登录后限流更宽） ----------
@@ -239,6 +329,163 @@ def _load_account() -> dict[str, str]:
 def _registered() -> bool:
     acc = _load_account()
     return bool(acc.get("username") and acc.get("api_key"))
+
+
+# ---------- D站 收藏读写（2026-09-27）----------------------------------------------
+# 背景：画廊旧版的「★ 收藏」是**纯本地 localStorage 描边**（全文件没有任何地方读它做筛选/排序），
+# 2026-09-21 被整体移除；用户实报"收藏了图片却找不到存放的地方"。现在做成**真正的 D站 收藏**：
+#
+#   读（列表）→ 标签搜索 `ordfav:<login>`：**完全复用既有搜索链路**，分页 / 无限滚动 /
+#                缩略图代理 / 浮层全部白送 —— 画廊只需要多一个"我的收藏"入口。
+#   读（状态）→ `GET /posts?tags=ordfav:<login>&limit=N` 拿回收藏的 post_id 集合，
+#                卡片据此显示已收藏态（**一次请求**，不逐张查）。
+#   读（总数）→ `GET /counts/posts.json?tags=ordfav:<login>`（`/posts.json` 不回 total）。
+#   写        → `POST /favorites`（表单 post_id + Basic Auth）/ `DELETE /favorites/<record_id>`。
+#                ⚠️ 取消收藏用的是**收藏记录 id**（不是 post_id），所以要先查出来。
+#
+# ⚠️ 凭据只从 data/danbooru_account.json 读；绝不进日志、绝不回给前端（只回 logged_in/username）。
+_DANBOORU_API_ROOT = "https://danbooru.donmai.us"
+_DANBOORU_FAVORITES_MINE = "/posts.json"      # ordfav: 搜索（读列表 + 读状态集合）
+_DANBOORU_FAVORITES_WRITE = "/favorites.json"  # POST 新增 / DELETE /favorites/<id>
+_DANBOORU_FAVORITE_COUNTS = "/counts/posts.json"
+FAVORITES_STATE_LIMIT = 200   # 状态集合一次最多拉多少张（够覆盖一屏到几十屏）
+_danbooru_identity_lock = threading.Lock()
+_danbooru_identity_cache: dict[str, Any] | None = None
+
+
+def _danbooru_auth() -> tuple[str, str] | None:
+    """本机凭证；未登录返回 None（**不抛异常** —— 调用方据此给"请先登录"的友好提示）。"""
+    acc = _load_account()
+    username = str(acc.get("username") or "").strip()
+    api_key = str(acc.get("api_key") or "").strip()
+    if not username or not api_key:
+        return None
+    return username, api_key
+
+
+def _danbooru_request(method: str, path: str, *, params: Any = None, data: Any = None,
+                      auth: tuple[str, str] | None = None, timeout: int = 20) -> requests.Response:
+    """带代理探测 + 换路重试的 D站 请求。
+
+    为什么不复用 `_danbooru_json()`：它只做 GET、且不支持 Basic Auth / 表单体 ——
+    收藏的写路径两者都要。换路逻辑与它保持一致（有代理 → 试直连；已直连 → 试兜底代理），
+    代理一律**整体原子赋值**（并发取图线程不能读到空 proxies）。
+    """
+    _apply_danbooru_proxy()
+    kwargs: dict[str, Any] = {"timeout": (6, timeout)}
+    if params is not None:
+        kwargs["params"] = params
+    if data is not None:
+        kwargs["data"] = data
+    if auth is not None:
+        kwargs["auth"] = auth
+    try:
+        resp = _danbooru_session.request(method, _DANBOORU_API_ROOT + path, **kwargs)
+    except (requests.Timeout, requests.ConnectionError) as first:
+        if _danbooru_session.proxies:
+            _danbooru_session.proxies = {}
+        else:
+            _mark_direct_blocked()
+            fb = _fallback_proxy()
+            if fb:
+                _danbooru_session.proxies = dict(fb)
+        try:
+            resp = _danbooru_session.request(method, _DANBOORU_API_ROOT + path, **kwargs)
+        except (requests.Timeout, requests.ConnectionError) as second:
+            raise RuntimeError(f"连不上 D站：{second}") from second
+        del first
+    return resp
+
+
+def _danbooru_identity(force: bool = False) -> dict[str, Any]:
+    """当前账号的 `{id, name, level, favorite_count, favorite_limit}`（进程内缓存）。
+
+    写收藏要先知道 **user_id**（查询自己的收藏记录时按 user_id 过滤），
+    总数/上限则用来在界面上说清"还剩多少条可用"。
+    """
+    global _danbooru_identity_cache
+    auth = _danbooru_auth()
+    if auth is None:
+        return {}
+    with _danbooru_identity_lock:
+        if _danbooru_identity_cache is not None and not force:
+            return _danbooru_identity_cache
+    try:
+        resp = _danbooru_request("GET", "/profile.json", auth=auth, timeout=15)
+        if resp.status_code != 200:
+            return {}
+        data = resp.json()
+    except (RuntimeError, ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    identity = {
+        "id": int(data.get("id") or 0),
+        "name": str(data.get("name") or ""),
+        "level": str(data.get("level_string") or ""),
+        "favorite_count": int(data.get("favorite_count") or 0),
+        "favorite_limit": int(data.get("favorite_limit") or 0),
+    }
+    with _danbooru_identity_lock:
+        _danbooru_identity_cache = identity
+    return identity
+
+
+def _clear_danbooru_identity() -> None:
+    """切换账号 / 改凭证后必须清缓存（否则会拿旧账号的 user_id 去写收藏）。"""
+    global _danbooru_identity_cache
+    with _danbooru_identity_lock:
+        _danbooru_identity_cache = None
+
+
+def _favorite_write_error(status: int, body: str) -> str:
+    """把 D站 收藏接口的失败翻成人话（上限 / 重复 / 权限）。"""
+    text = (body or "").strip()
+    lowered = text.lower()
+    if "favorite limit" in lowered or "limit reached" in lowered or "maximum" in lowered:
+        return "收藏已达 D站 账号上限（免费账号 200 条）：先在 D站 网站清理一些，或提升账号等级"
+    if "already" in lowered or "taken" in lowered:
+        return "这张图已经在你的 D站 收藏里了"
+    if not text:
+        return f"D站 拒绝这次操作（HTTP {status}）"
+    return f"D站 拒绝这次操作（HTTP {status}）：{text[:160]}"
+
+
+def _favorite_ids_for_user(login: str, limit: int = FAVORITES_STATE_LIMIT) -> list[str]:
+    """当前账号收藏的 post_id 列表（按 ordfav 搜索，最近优先）。
+
+    走的是**普通 posts.json 搜索**（与画廊其它请求同一条路），所以它天然继承代理/重试/风控行为。
+    """
+    try:
+        resp = _danbooru_request("GET", _DANBOORU_FAVORITES_MINE,
+                                 params={"tags": f"ordfav:{login}", "limit": str(limit), "page": "1"}, timeout=25)
+        if resp.status_code != 200:
+            return []
+        rows = resp.json()
+    except (RuntimeError, ValueError, TypeError):
+        return []
+    if not isinstance(rows, list):
+        return []
+    ids: list[str] = []
+    for row in rows:
+        if isinstance(row, dict) and row.get("id") is not None:
+            ids.append(str(row["id"]))
+    return ids
+
+
+def _favorite_total(login: str) -> int:
+    """收藏总数（`/counts/posts.json`；拿不到返回 -1，调用方显示"未知"）。"""
+    try:
+        resp = _danbooru_request("GET", _DANBOORU_FAVORITE_COUNTS, params={"tags": f"ordfav:{login}"}, timeout=15)
+        if resp.status_code != 200:
+            return -1
+        payload = resp.json()
+        counts = payload.get("counts") if isinstance(payload, dict) else None
+        if isinstance(counts, dict) and counts.get("posts") is not None:
+            return int(counts["posts"])
+    except (RuntimeError, ValueError, TypeError):
+        return -1
+    return -1
 
 
 def _account_params() -> dict[str, str]:
@@ -541,15 +788,23 @@ class _DanbooruBrowser:
 
     def _warm(self) -> None:
         page = self._page
-        page.goto("https://danbooru.donmai.us/", wait_until="domcontentloaded", timeout=60000)
         try:
-            page.wait_for_function(
-                "() => (document.title || '').includes('Danbooru') && document.readyState === 'complete'",
-                timeout=45000,
-            )
-        except Exception:
-            print("[多重画廊·风控网关] 浏览器校验未完全就绪，继续尝试")
-        self._last_warm = time.time()
+            page.goto("https://danbooru.donmai.us/", wait_until="domcontentloaded", timeout=60000)
+            try:
+                page.wait_for_function(
+                    "() => (document.title || '').includes('Danbooru') && document.readyState === 'complete'",
+                    timeout=45000,
+                )
+            except Exception:
+                print("[多重画廊·风控网关] 浏览器校验未完全就绪，继续尝试")
+        finally:
+            # ⚠️ 无论成功失败都必须记账。这是 2026-09-21 用户实报「P站 栏目选某些图片后
+            #    节点一直卡住不继续」的两条根因之一：
+            #    原来 `self._last_warm` 只在整个 _warm 走完后才赋值，而 `page.goto` **不在 try 内**
+            #    ⇒ goto 超时（60s）抛异常时这一行被跳过 ⇒ `time.time() - self._last_warm`
+            #    永远 > _WARM_INTERVAL_SECONDS ⇒ **下一次取图又重跑一遍 warm**（60s + 45s）。
+            #    一张图 60s、十张图就是十分钟，用户看到的就是"卡住不动"。
+            self._last_warm = time.time()
 
     def _run(self, script: str, argument: Any) -> Any:
         with self._lock:
@@ -562,9 +817,12 @@ class _DanbooruBrowser:
 
     def json(self, url: str, params: dict[str, Any]) -> Any:
         full = url + "?" + urlencode(params)
+        # 同 bytes()：evaluate 层没有超时，必须 JS 自带（见那里的说明）
         result = self._run(
-            "async (u) => { const r = await fetch(u, {headers: {'Accept':'application/json'}}); "
-            "const t = await r.text(); return {s: r.status, t}; }",
+            "async (u) => { const c = new AbortController(); const timer = setTimeout(() => c.abort(), 20000); "
+            "try { const r = await fetch(u, {headers: {'Accept':'application/json'}, signal: c.signal}); "
+            "const t = await r.text(); return {s: r.status, t}; } "
+            "finally { clearTimeout(timer); } }",
             full,
         )
         status = _safe_get(result, "s", 0)
@@ -574,12 +832,21 @@ class _DanbooruBrowser:
         raise RuntimeError(f"D站 搜索失败（HTTP {status}）：{text[:240]}")
 
     def bytes(self, url: str) -> tuple[bytes, str]:
+        # ⚠️ 超时必须由 JS 自己带（AbortController），因为 **Playwright 的
+        #    `page.set_default_timeout()` 不作用于 `page.evaluate`** ——
+        #    实测 `inspect.signature(Page.evaluate)` 只有 (self, expression, arg)，没有 timeout 参数，
+        #    所以下面 `_run` 里那句 set_default_timeout(25000) 对本次求值是**无效兜底**。
+        #    原先裸写 `await fetch(u)`：一旦 CDN 出现半开连接 / 极慢响应，JS 永不 settle
+        #    ⇒ Python 侧永久阻塞在该 evaluate ⇒ 节点永不返回。
+        #    这正是 2026-09-21 用户实报「一直卡在画廊节点不继续」的另一条根因。
         result = self._run(
-            "async (u) => { const r = await fetch(u); "
+            "async (u) => { const c = new AbortController(); const timer = setTimeout(() => c.abort(), 20000); "
+            "try { const r = await fetch(u, {signal: c.signal}); "
             "const b = await r.arrayBuffer(); const d = new Uint8Array(b); "
             "const CH = 65536; const parts = []; "
             "for (let i = 0; i < d.length; i += CH) { parts.push(String.fromCharCode.apply(null, d.subarray(i, i + CH))); } "
-            "return {s: r.status, ct: r.headers.get('content-type') || '', b64: btoa(parts.join(''))}; }",
+            "return {s: r.status, ct: r.headers.get('content-type') || '', b64: btoa(parts.join(''))}; } "
+            "finally { clearTimeout(timer); } }",
             url,
         )
         status = _safe_get(result, "s", 0)
@@ -683,29 +950,48 @@ def _danbooru_json(url: str, params: dict[str, Any], timeout: int = 20) -> Any:
     raise RuntimeError(CF_BLOCKED_MSG)
 
 
-def _danbooru_get_image(url: str, timeout: int = 30) -> tuple[bytes, str]:
-    """下载 Danbooru 图片/视频字节（requests 优先，连接 6s 快速失败 + 换路重试 + 浏览器网关兜底）。"""
+def _danbooru_get_image(url: str, timeout: int = 30, allow_browser: bool = True,
+                        extra_headers: dict[str, str] | None = None) -> tuple[bytes, str]:
+    """下载 Danbooru 图片/视频字节（requests 优先，连接 6s 快速失败 + 换路重试 + 浏览器网关兜底）。
+
+    ``extra_headers``（2026-09-27 新增）：本次请求**专属**的请求头（如 P站 的 Referer）。
+    走 requests 的 per-request headers —— 与 session 默认头合并、request 优先，因此
+    **不再需要**改 `_danbooru_session.headers`，也就不需要那把把第三方图源取图串行化的全局锁。
+    第三方图源一律配合 ``allow_browser=False`` 使用（网关对它们必然 403，见下）。
+
+    ``allow_browser=False``：**禁用内置浏览器网关兜底**，第三方图源（P站/C站）必须这样调。
+    理由：网关是一个停在 ``danbooru.donmai.us`` 的页面，从它发起
+    ``fetch("https://i.pximg.net/...")`` 属**跨域**请求，浏览器会带上
+    ``Referer: https://danbooru.donmai.us/``，而 P站 CDN 校验 Referer 必须含 pixiv.net
+    （见本文件顶部的「取图铁律」）⇒ **必然 403**。也就是说网关对第三方图源既不可能成功，
+    又要白付一次 warm（最坏 60s + 45s），纯属有害无益。
+    """
     global _browser_working
-    if _browser_working:
-        got = _browser_bytes_or_none(url)
+    # allow_browser=False 时让每次调用都直接拿到 None（等价于"网关不可用"）：
+    # 第三方图源因此只走 requests 的两条路，失败就如实报错，不再空等网关。
+    browser = _browser_bytes_or_none if allow_browser else (lambda _u: None)
+    if allow_browser and _browser_working:
+        got = browser(url)
         if got is not None:
             return got
         _browser_working = False
     _apply_danbooru_proxy()
+    # ⚠️ 并发安全（2026-09-27）：代理一律**整体原子赋值**，不再 clear()/update() 两步 ——
+    # 两步之间并发的取图线程会读到空 proxies（= 直连），与 `_apply_danbooru_proxy` 同一约定。
     try:
-        resp = _danbooru_session.get(url, timeout=(6, timeout))
+        resp = _danbooru_session.get(url, headers=extra_headers, timeout=(6, timeout))
     except (requests.Timeout, requests.ConnectionError) as error:
         if _danbooru_session.proxies:
-            _danbooru_session.proxies.clear()
+            _danbooru_session.proxies = {}
         else:
             _mark_direct_blocked()
             fb = _fallback_proxy()
             if fb:
-                _danbooru_session.proxies.update(fb)
+                _danbooru_session.proxies = dict(fb)
         try:
-            resp = _danbooru_session.get(url, timeout=(6, timeout))
+            resp = _danbooru_session.get(url, headers=extra_headers, timeout=(6, timeout))
         except (requests.Timeout, requests.ConnectionError):
-            got = _browser_bytes_or_none(url)
+            got = browser(url)
             if got is not None:
                 _browser_working = True
                 return got
@@ -714,7 +1000,7 @@ def _danbooru_get_image(url: str, timeout: int = 30) -> tuple[bytes, str]:
     if not _resp_is_cf(resp):
         resp.raise_for_status()
         return resp.content, resp.headers.get("Content-Type", "application/octet-stream").split(";", 1)[0]
-    got = _browser_bytes_or_none(url)
+    got = browser(url)
     if got is not None:
         _browser_working = True
         return got
@@ -833,6 +1119,69 @@ def _suggestion_details(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+# ---------- 本地标签索引快路径（2026-09-26）----------
+# 为什么不直接用 _tag_translation：那个走的是 D 站词典的一种取法；本地索引的 zh 字段
+# 来自 anima_alias_index（36,480 角色 + 3,702 作品 + 131,913 标签的汉字别名），
+# 命中率更高且零网络。两者都拿不到时留空串，前端本来就会退化成只显示英文标签。
+def _local_suggest(term: str, limit: int = 20) -> list[dict[str, Any]]:
+    """用本地索引出候选；索引不可用/无命中时返回空列表（调用方落回远程路径）。
+
+    只读已建好的索引（`get_index(build=False)`），**绝不在请求路径里建索引**：
+    索引未就绪时立刻返回 []，让调用方落回既有远程路径（~300ms），用户不必等；
+    建索引由预热线程负责（`__init__.py` 已挂 `anima_tag_index.warm_async()`）。
+
+    返回结构对齐前端契约：tag / translation / postCount / category，
+    另带 count_is_snapshot=True 标明帖数是本地快照值（与 D 站实时值有偏差）。
+    """
+    cleaned = str(term or "").strip()
+    if not cleaned:
+        return []
+    try:
+        from .anima_tag_index import get_index
+    except ImportError:  # 独立运行（pytest / 探针）时的顶层导入
+        try:
+            from anima_tag_index import get_index  # type: ignore[no-redef]
+        except ImportError:
+            return []
+    try:
+        # ⚠️ 2026-09-27 修：必须 build=False（只读、不构建）。
+        # 上一轮已把本函数挪进 run_in_executor（事件循环不再冻结：心跳 2696ms → 186ms），
+        # 但**用户仍要等**——实测冷进程首个中文请求 2616ms，线上运行实例更慢
+        # （首请求 13.87s；/anima/animadex/status 里 build_ms=20.9s，同一索引本地独立测仅 1143ms）。
+        # 「不冻结事件循环」≠「用户不用等」：build=True 是在请求路径里同步建索引。
+        # 实测语义（本机）：索引已存在 → 返回对象 0.003ms；未建好 → 返回 None，不触发构建。
+        # 故此处取不到就立即返回 []（上方 except 已覆盖异常），调用方落回远程路径 ~300ms。
+        index = get_index(build=False)
+    except Exception:
+        return []
+    if index is None:
+        return []
+    try:
+        rows = index.suggest(cleaned, limit=limit)
+    except Exception:
+        return []
+
+    details: list[dict[str, Any]] = []
+    for row in rows:
+        tag = str(row.get("tag") or "").strip()
+        if not tag:
+            continue
+        slug = _normalize_tag_slug(tag)
+        translation = str(row.get("zh") or "").strip() or _tag_translation(slug) or ""
+        detail: dict[str, Any] = {
+            "tag": slug,
+            "translation": translation,
+            "postCount": int(row.get("count") or 0),
+            "category": "general",
+            "count_is_snapshot": True,
+        }
+        series = str(row.get("series") or "").strip()
+        if series:
+            detail["series"] = series
+        details.append(detail)
+    return details
+
+
 def _normalize_tag_slug(value: Any) -> str:
     """Danbooru 内部标签格式：小写、空格转下划线。"""
     text = str(value or "").strip().lower()
@@ -848,27 +1197,101 @@ def _normalize_zh_text(value: Any) -> str:
     return re.sub(r"[\s\u3000]+", "", str(value or "").strip().lower())
 
 
+class _ZhIndex(NamedTuple):
+    """中文反查索引：一次遍历建好、整体发布，读者不会看到半成品。"""
+
+    source: dict[str, str]  # 建索引时的词典对象；身份不一致即视为失效需重建
+    exact: dict[str, Any]  # 归一化译文 -> tag | [tag, ...]（按词典原始顺序，保留重复项）
+    entries: list[tuple[str, str, str]]  # (tag, 归一化译文, 原始译文)，仅英文 tag，供子串扫描
+    cjk_entries: list[tuple[str, str, str]]  # 同上，但 tag 与译文都含中文的反向记录
+
+
+_zh_index_lock = threading.Lock()
+_zh_index: _ZhIndex | None = None
+
+
+def _build_zh_index(translations: dict[str, str]) -> _ZhIndex:
+    """遍历一次词典，预建「归一化译文 -> 标签」反向索引与子串扫描列表。
+
+    词典在进程内是只读常量（_load_translations 只加载一次），故索引可常驻。
+    归一化结果与原串逐字相同时直接复用原对象，避免为 40 万条目再复制一份字符串。
+    """
+    exact: dict[str, Any] = {}
+    entries: list[tuple[str, str, str]] = []
+    cjk_entries: list[tuple[str, str, str]] = []
+    for raw_tag, raw_zh in translations.items():
+        tag = _normalize_tag_slug(raw_tag)
+        if not tag:
+            continue
+        zh = _normalize_zh_text(raw_zh)
+        if not zh:
+            continue
+        tag_key = raw_tag if tag == raw_tag else tag
+        zh_key = raw_zh if zh == raw_zh else zh
+        if not any("\u4e00" <= char <= "\u9fff" for char in tag_key):
+            # 子串联想只考虑英文标签；tag 含中文的是反向记录，一律不参与。
+            entries.append((tag_key, zh, raw_zh))
+        elif any("\u4e00" <= char <= "\u9fff" for char in zh):
+            # 反向记录通常译文是英文，只有这类条目还可能命中「片段匹配」。
+            cjk_entries.append((tag_key, zh, raw_zh))
+        bucket = exact.get(zh_key)
+        if bucket is None:
+            exact[zh_key] = tag_key
+        elif isinstance(bucket, list):
+            bucket.append(tag_key)
+        else:
+            exact[zh_key] = [bucket, tag_key]
+    return _ZhIndex(translations, exact, entries, cjk_entries)
+
+
+def _zh_index_snapshot() -> _ZhIndex:
+    """惰性取索引：首次用到才构建，之后复用；词典为空时索引同样为空，不抛异常。"""
+    global _zh_index
+    translations = _load_translations()
+    index = _zh_index
+    if index is not None and index.source is translations:
+        return index
+    with _zh_index_lock:
+        index = _zh_index
+        if index is not None and index.source is translations:
+            return index
+        built = _build_zh_index(translations)
+        _zh_index = built
+        return built
+
+
+def _zh_exact_tags(index: _ZhIndex, query: str) -> tuple[str, ...] | list[str]:
+    """取反向索引条目：单个标签存裸串（省一次 list 分配），多个标签存 list。"""
+    bucket = index.exact.get(query)
+    if bucket is None:
+        return ()
+    if isinstance(bucket, str):
+        return (bucket,)
+    return bucket
+
+
 def _local_zh_tag_candidates(text: str, limit: int = 8) -> list[str]:
     """从本地 Danbooru 中文词典反查标签；优先整句，随后才做较长中文片段匹配。"""
     query = _normalize_zh_text(text)
     if not query:
         return []
-    translations = _load_translations()
+    index = _zh_index_snapshot()
     exact: list[str] = []
     fragments: list[tuple[int, str]] = []
     seen: set[str] = set()
-    for raw_tag, raw_zh in translations.items():
-        tag = _normalize_tag_slug(raw_tag)
-        zh = _normalize_zh_text(raw_zh)
-        if not tag or not zh or tag in seen:
+    for tag in _zh_exact_tags(index, query):
+        if not tag or tag in seen:
             continue
-        if zh == query:
-            exact.append(tag)
-            seen.add(tag)
-        elif len(zh) >= 2 and zh in query and any("\u4e00" <= ch <= "\u9fff" for ch in zh):
-            fragments.append((len(zh), tag))
+        exact.append(tag)
+        seen.add(tag)
     if exact:
         return exact[:limit]
+    # 走到这里说明一个整句命中都没有，seen 必然为空、字典序也不影响下面的排序结果，
+    # 故直接扫两份列表即可（含中文 tag 且译文也含中文的少数条目在 cjk_entries 里补全）。
+    for bucket in (index.entries, index.cjk_entries):
+        for tag, zh, _raw_zh in bucket:
+            if len(zh) >= 2 and zh in query and any("\u4e00" <= ch <= "\u9fff" for ch in zh):
+                fragments.append((len(zh), tag))
     fragments.sort(key=lambda item: (-item[0], item[1]))
     return [tag for _, tag in fragments[:limit]]
 
@@ -880,15 +1303,13 @@ def _local_zh_exact_tag_candidates(text: str, limit: int = 8) -> list[str]:
         return []
     result: list[str] = []
     seen: set[str] = set()
-    for raw_tag, raw_zh in _load_translations().items():
-        tag = _normalize_tag_slug(raw_tag)
+    for tag in _zh_exact_tags(_zh_index_snapshot(), query):
         if not tag or tag in seen or any("\u4e00" <= char <= "\u9fff" for char in tag):
             continue
-        if _normalize_zh_text(raw_zh) == query:
-            seen.add(tag)
-            result.append(tag)
-            if len(result) >= limit:
-                break
+        seen.add(tag)
+        result.append(tag)
+        if len(result) >= limit:
+            break
     return result
 
 
@@ -909,16 +1330,12 @@ def _local_zh_tag_search(text: str, limit: int = 24) -> list[tuple[str, str]]:
 
     matches: list[tuple[int, int, str, str]] = []
     seen: set[str] = set()
-    for raw_tag, raw_zh in _load_translations().items():
-        tag = _normalize_tag_slug(raw_tag)
-        zh_display = str(raw_zh or "").strip()
-        zh = _normalize_zh_text(zh_display)
-        # 词典同时保存英文→中文和中文→英文，反向记录不能作为双语候选。
-        if not tag or tag in seen or not zh or any("\u4e00" <= char <= "\u9fff" for char in tag):
-            continue
-        if query not in zh or not any("\u4e00" <= char <= "\u9fff" for char in zh):
+    # 索引里的 entries 已排除 tag 含中文的反向记录，与原循环里那层过滤等价。
+    for tag, zh, raw_zh in _zh_index_snapshot().entries:
+        if tag in seen or query not in zh or not any("\u4e00" <= char <= "\u9fff" for char in zh):
             continue
         seen.add(tag)
+        zh_display = str(raw_zh or "").strip()
         # 以中文前缀优先；长度仅用于稳定排序，最终仍按 D 站帖数排序。
         matches.append((0 if zh.startswith(query) else 1, len(zh), tag, zh_display))
     matches.sort(key=lambda item: (item[0], item[1], item[2]))
@@ -1066,9 +1483,10 @@ def _is_allowed_danbooru_url(url: str) -> bool:
 # ---------- 多源画廊：D站 之外的新图源（C站/P站…）也要能取到字节 ----------
 # 背景（PLAN §5.7）：节点下载路径原来只认 donmai.us，于是 C站/P站 的图被一律拒掉，
 # 「images 输出端口能直接给出可用于反推的图」这条就断了。这里**只新增**一条分支：
-# URL 属于协议层认识的图源时，借道 D站 既有的会话/代理探测/重试/网关机制取字节，
+# URL 属于协议层认识的图源时，借道 D站 既有的会话/代理探测/重试机制取字节，
 # 并附加该源声明的必需请求头（P站 的 Referer 缺了 i.pximg.net 直接 403）。
-_gallery_header_lock = threading.Lock()
+# 2026-09-27：原先那把 `_gallery_header_lock` 全局锁已删除 —— 它把第三方图源取图**串行化**，
+# 与「一次选多张、并发下载」直接冲突；额外头改走 per-request（见 `_gallery_get_image`）。
 
 
 def _gallery_image_headers(url: str) -> dict[str, str] | None:
@@ -1105,30 +1523,179 @@ def _gallery_image_headers(url: str) -> dict[str, str] | None:
 
 
 def _gallery_get_image(image_url: str, headers: dict[str, str] | None = None) -> tuple[bytes, str]:
-    """取第三方图源图片：代理探测/换路重试/浏览器网关兜底**全部沿用 D站那一套**。
+    """取第三方图源图片：代理探测/换路重试/超时**全部沿用 D站那一套**，只是不借浏览器网关。
 
-    做法是把额外请求头临时挂到同一个 `_danbooru_session` 上，借道 `_danbooru_get_image()`
-    跑完既有流程再还原 —— 因此 `_danbooru_get_image()` 与 `_apply_danbooru_proxy()` 一行都不用改。
-    锁把「改头 → 取图 → 还原」串起来，避免并发请求读到别人的头（窗口最长 = 一次取图超时）。
+    2026-09-27 改造（取图性能轮）：原先的做法是「临时改 `_danbooru_session.headers` +
+    全局锁 `_gallery_header_lock` 把『改头 → 取图 → 还原』串起来」。那把锁的代价是
+    **第三方图源的所有取图被串行化** —— 节点一次选 10 张 P站 图时，并发下载会被它排成一条队，
+    改造形同虚设。现在额外头直接交给 `_danbooru_get_image(extra_headers=...)`
+    （requests 的 per-request headers 与 session 默认头合并、request 优先），
+    **锁与「改头窗口」一并删除**，第三方图源可以真正并发取图。
     """
     extra = {str(key): str(value) for key, value in (headers or {}).items() if key and value is not None}
-    # 非 D站 CDN（Cloudflare 系）对非浏览器 UA 不友好；本分支统一用浏览器 UA，
-    # D站 自己的 UA 不受影响（只在这次取图的窗口内生效，用完还原）。
+    # 非 D站 CDN（Cloudflare 系）对非浏览器 UA 不友好；本分支统一用浏览器 UA
+    # （D站 自己的 UA 不受影响：它走不带 extra_headers 的另一条路）。
     extra.setdefault(
         "User-Agent",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
     )
-    with _gallery_header_lock:
-        previous = {name: _danbooru_session.headers.get(name) for name in extra}
-        _danbooru_session.headers.update(extra)
+    # ⚠️ allow_browser=False —— 第三方图源**不得**借道 D站 浏览器网关：
+    # 网关页面停在 danbooru.donmai.us，从它 fetch i.pximg.net 是跨域且 Referer 不对，
+    # 必然 403；同时还要白付一次 warm（最坏 60s+45s）。详见 _danbooru_get_image 的说明。
+    return _danbooru_get_image(image_url, allow_browser=False, extra_headers=extra)
+
+
+# ---------- 原图落盘缓存（2026-09-27，取图性能轮）------------------------------------
+# 为什么做：P站 经代理只有约 312KB/s，且每张还有约 1 秒固定开销（与分辨率无关，见
+# HANDOFF-2026-09-25）。反复跑同一批图（调参时最常见的用法）等于把同一批字节重下一遍。
+# 设计取舍：
+#   * 缓存的是**下载到的原始字节**（不是解码后的张量）—— 解码是纯 CPU、PIL 很快，
+#     而字节可以直接复用；视频帖仍每次抽帧（占比极小，不值得再缓存一份 PNG）。
+#   * 键 = URL 的 sha256 前缀；扩展名由响应 Content-Type 决定，读盘时反推回 Content-Type。
+#   * 单文件 > 64MB 不入缓存（yande.re 有 169MB 的原图，缓存它只会挤爆上限）；
+#     总容量超 2GB 时按 mtime 从旧到新淘汰（命中会刷新 mtime ⇒ 天然 LRU）。
+#   * 写盘走「临时文件 + os.replace」原子替换 —— 并发读到的永远是完整文件。
+#   * `ANIMA_IMAGE_CACHE=0` 可整体关掉；`ANIMA_IMAGE_CACHE_DIR` 可换目录（测试用）。
+IMAGE_CACHE_ENV = "ANIMA_IMAGE_CACHE"
+IMAGE_CACHE_DIR_ENV = "ANIMA_IMAGE_CACHE_DIR"
+IMAGE_CACHE_DIR_NAME = "image_cache"
+IMAGE_CACHE_MAX_BYTES = 2 * 1024 ** 3
+IMAGE_CACHE_MAX_FILE_BYTES = 64 * 1024 ** 2
+IMAGE_CACHE_PRUNE_INTERVAL = 60.0
+_IMAGE_EXT_BY_CONTENT_TYPE = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/avif": ".avif",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+}
+_IMAGE_CONTENT_TYPE_BY_EXT = {ext: ctype for ctype, ext in _IMAGE_EXT_BY_CONTENT_TYPE.items()}
+_image_cache_lock = threading.Lock()
+_image_cache_last_prune = 0.0
+
+
+def _image_cache_enabled() -> bool:
+    """默认开启；`ANIMA_IMAGE_CACHE=0/false/off/no` 关闭（排查取图问题时用）。"""
+    return str(os.environ.get(IMAGE_CACHE_ENV, "") or "").strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _image_cache_dir() -> Path:
+    override = str(os.environ.get(IMAGE_CACHE_DIR_ENV, "") or "").strip()
+    if override:
+        return Path(override)
+    return Path(__file__).with_name("data") / IMAGE_CACHE_DIR_NAME
+
+
+def _image_cache_key(url: str) -> str:
+    return hashlib.sha256(str(url or "").encode("utf-8")).hexdigest()[:40]
+
+
+def _image_cache_read(url: str) -> tuple[bytes, str] | None:
+    """命中则返回 `(bytes, content_type)`；任何 IO 异常都按「未命中」处理（绝不打断取图）。"""
+    key = _image_cache_key(url)
+    try:
+        for path in _image_cache_dir().glob(f"{key}.*"):
+            if path.suffix.lower() == ".part":
+                continue
+            try:
+                data = path.read_bytes()
+            except OSError:
+                continue
+            if not data:
+                continue
+            try:
+                os.utime(path, None)  # LRU：命中即刷新 mtime
+            except OSError:
+                pass
+            return data, _IMAGE_CONTENT_TYPE_BY_EXT.get(path.suffix.lower(), "application/octet-stream")
+    except OSError:
+        return None
+    return None
+
+
+def _image_cache_prune(now: float) -> None:
+    """超上限时按 mtime 从旧到新淘汰；60s 节流，避免每次写入都全目录 stat。"""
+    global _image_cache_last_prune
+    with _image_cache_lock:
+        if now - _image_cache_last_prune < IMAGE_CACHE_PRUNE_INTERVAL:
+            return
+        _image_cache_last_prune = now
+    directory = _image_cache_dir()
+    try:
+        entries: list[tuple[float, int, Path]] = []
+        for path in directory.iterdir():
+            try:
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+            except OSError:
+                continue
+            entries.append((stat.st_mtime, stat.st_size, path))
+    except OSError:
+        return
+    total = sum(size for _mtime, size, _path in entries)
+    if total <= IMAGE_CACHE_MAX_BYTES:
+        return
+    for _mtime, size, path in sorted(entries):
         try:
-            return _danbooru_get_image(image_url)
-        finally:
-            for name, value in previous.items():
-                if value is None:
-                    _danbooru_session.headers.pop(name, None)
-                else:
-                    _danbooru_session.headers[name] = value
+            path.unlink()
+        except OSError:
+            continue
+        total -= size
+        if total <= IMAGE_CACHE_MAX_BYTES:
+            break
+
+
+def _image_cache_write(url: str, data: bytes, content_type: str) -> None:
+    if not data or len(data) > IMAGE_CACHE_MAX_FILE_BYTES:
+        return
+    ctype = str(content_type or "").split(";", 1)[0].strip().lower()
+    ext = _IMAGE_EXT_BY_CONTENT_TYPE.get(ctype)
+    if ext is None:
+        return  # 类型不认识就不缓存：宁可不缓存，也不写一个扩展名骗人的文件
+    key = _image_cache_key(url)
+    directory = _image_cache_dir()
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        tmp = directory / f"{key}{ext}.part"
+        tmp.write_bytes(data)
+        os.replace(tmp, directory / f"{key}{ext}")
+    except OSError:
+        return
+    _image_cache_prune(time.monotonic())
+
+
+def _cached_image_fetch(url: str, fetcher) -> tuple[bytes, str]:
+    """落盘缓存包住任意的取图函数：命中即回，未命中则取回并写盘。"""
+    if not _image_cache_enabled():
+        return fetcher()
+    hit = _image_cache_read(url)
+    if hit is not None:
+        return hit
+    data, content_type = fetcher()
+    _image_cache_write(url, data, content_type)
+    return data, content_type
+
+
+# ---------- 一次选多张时的下载并发度（2026-09-27）------------------------------------
+# 为什么是 6：P站 经代理约 312KB/s，且每张有约 1 秒固定开销。并发太高容易被 CDN/风控盯上、
+# 也吃满带宽；6 路足以把「固定开销」重叠掉，是观感改善最明显的一档。
+# `ANIMA_SELECT_DOWNLOAD_WORKERS` 可覆盖（夹到 1~16；设 1 = 退回串行，便于对照排查）。
+SELECT_DOWNLOAD_WORKERS = 6
+SELECT_DOWNLOAD_WORKERS_ENV = "ANIMA_SELECT_DOWNLOAD_WORKERS"
+
+
+def _select_download_workers() -> int:
+    try:
+        value = int(str(os.environ.get(SELECT_DOWNLOAD_WORKERS_ENV, "") or "").strip() or 0)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        value = SELECT_DOWNLOAD_WORKERS
+    return max(1, min(value, 16))
 
 
 def _load_translations() -> dict[str, str]:
@@ -1322,6 +1889,132 @@ async def anima_danbooru_account_status(request: web.Request) -> web.Response:
     })
 
 
+# ---------- D站 收藏（2026-09-27）：读状态 + 写（收藏 / 取消收藏） ----------
+
+@PromptServer.instance.routes.get("/anima/danbooru/favorites")
+async def anima_danbooru_favorites_state(request: web.Request) -> web.Response:
+    """当前账号的收藏状态：`{logged_in, username, user_id, total, favorite_limit, ids, query_tag}`。
+
+    前端拿它做三件事：① 卡片按 `ids` 显示已收藏态；② 「我的收藏」入口的跳转标签
+    （`query_tag = ordfav:<username>`，直接复用既有搜索链路）；③ 收藏上限提示。
+
+    ⚠️ **未登录也返回 200**（`logged_in=false`），让界面能给"去登录"的引导 ——
+    把未登录当 4xx 会让前端只能显示一个红错误，体验差且难区分"没登录"与"请求失败"。
+    """
+    auth = _danbooru_auth()
+    if auth is None:
+        return web.json_response({
+            "logged_in": False, "username": "", "user_id": 0, "level": "",
+            "favorite_count": 0, "favorite_limit": 0, "total": 0, "ids": [], "partial": False,
+            "query_tag": "",
+            "tip": "未登录 D站：在节点设置里填用户名与 API key 后即可收藏",
+        })
+    username = auth[0]
+    try:
+        state_limit = max(1, min(int(request.query.get("limit", FAVORITES_STATE_LIMIT)), 1000))
+    except (TypeError, ValueError):
+        state_limit = FAVORITES_STATE_LIMIT
+
+    def _collect() -> dict[str, Any]:
+        # 三个请求都同步，合并到一次 executor 调用里跑，别在事件循环上排队
+        return {
+            "identity": _danbooru_identity(),
+            "ids": _favorite_ids_for_user(username, state_limit),
+            "total": _favorite_total(username),
+        }
+
+    snapshot = await asyncio.get_running_loop().run_in_executor(None, _collect)
+    identity = snapshot.get("identity") or {}
+    ids = list(snapshot.get("ids") or [])
+    total = int(snapshot.get("total") or -1)
+    known_total = total if total >= 0 else len(ids)
+    favorite_count = int(identity.get("favorite_count") or 0) or known_total
+    return web.json_response({
+        "logged_in": True,
+        "username": username,
+        "user_id": int(identity.get("id") or 0),
+        "level": identity.get("level") or "",
+        "favorite_count": favorite_count,
+        "favorite_limit": int(identity.get("favorite_limit") or 0),
+        "total": known_total,
+        "ids": ids,
+        # ids 是"最近 N 张"的窗口：拉满了就说明可能还有更早的收藏没覆盖到
+        "partial": len(ids) >= state_limit,
+        "query_tag": f"ordfav:{username}",
+    })
+
+
+@PromptServer.instance.routes.post("/anima/danbooru/favorite")
+async def anima_danbooru_favorite_toggle(request: web.Request) -> web.Response:
+    """收藏 / 取消收藏一张图，**写回 D站 账号**。
+
+    body: `{"post_id": 123, "action": "add" | "remove"}`（action 缺省 = add）。
+    成功返回 `{ok, favorite, post_id}`；失败返回 `{ok:false, error}` + 4xx/5xx。
+    """
+    try:
+        body = await request.json()
+    except (ValueError, AttributeError):
+        return web.json_response({"ok": False, "error": "body 必须是 JSON"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"ok": False, "error": "body 必须是对象"}, status=400)
+    try:
+        post_id = int(body.get("post_id"))
+    except (TypeError, ValueError):
+        return web.json_response({"ok": False, "error": "post_id 必须是整数"}, status=400)
+    action = str(body.get("action") or "add").strip().lower()
+    if action not in {"add", "remove"}:
+        return web.json_response({"ok": False, "error": "action 只能是 add 或 remove"}, status=400)
+    auth = _danbooru_auth()
+    if auth is None:
+        return web.json_response(
+            {"ok": False, "error": "未登录 D站 账号：先在节点设置里填用户名与 API key"}, status=401)
+
+    def _write() -> dict[str, Any]:
+        if action == "add":
+            resp = _danbooru_request("POST", _DANBOORU_FAVORITES_WRITE,
+                                     data={"post_id": str(post_id)}, auth=auth, timeout=20)
+            if resp.status_code in (200, 201):
+                return {"ok": True, "favorite": True}
+            return {"ok": False, "error": _favorite_write_error(resp.status_code, resp.text)}
+        # 取消收藏：**DELETE 用的是收藏记录 id（不是 post_id）** ⇒ 先查记录
+        user_id = int((_danbooru_identity() or {}).get("id") or 0)
+        if not user_id:
+            return {"ok": False, "error": "拿不到 D站 账号 id（确认已登录且网络可用）后重试"}
+        resp = _danbooru_request(
+            "GET", _DANBOORU_FAVORITES_WRITE,
+            params={"search[user_id]": str(user_id), "search[post_id]": str(post_id), "limit": "1"},
+            auth=auth, timeout=20)
+        if resp.status_code != 200:
+            return {"ok": False, "error": _favorite_write_error(resp.status_code, resp.text)}
+        try:
+            rows = resp.json()
+        except ValueError:
+            rows = []
+        record = None
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict) and row.get("id") is not None:
+                    record = row
+                    break
+        if record is None:
+            # 本来就没收藏 ⇒ 幂等成功（用户连点两次不该报错）
+            return {"ok": True, "favorite": False}
+        resp = _danbooru_request("DELETE", f"/favorites/{int(record['id'])}.json", auth=auth, timeout=20)
+        if resp.status_code in (200, 204):
+            return {"ok": True, "favorite": False}
+        return {"ok": False, "error": _favorite_write_error(resp.status_code, resp.text)}
+
+    try:
+        result = await asyncio.get_running_loop().run_in_executor(None, _write)
+    except RuntimeError as error:
+        return web.json_response({"ok": False, "error": str(error)}, status=502)
+    if not result.get("ok"):
+        return web.json_response({"ok": False, "error": result.get("error") or "收藏失败"}, status=400)
+    # 写成功：清掉身份缓存，让下一次 /favorites 拿到刷新后的计数
+    _clear_danbooru_identity()
+    return web.json_response({"ok": True, "favorite": bool(result.get("favorite")), "post_id": post_id})
+
+
 @PromptServer.instance.routes.get("/anima/danbooru/diag")
 async def anima_danbooru_diag(request: web.Request) -> web.Response:
     """诊断：暴露运行进程的代理解析/环境/requests 状态 + 代理/直连实测（供排查"全部超时"）。"""
@@ -1383,6 +2076,35 @@ async def anima_danbooru_suggest(request: web.Request) -> web.Response:
     if not query:
         return web.json_response({"suggestions": [], "suggestionDetails": [], "didYouMean": [], "rewrites": []})
     term = query[-1]
+
+    # ★ 2026-09-26 本地索引快路径：命中即返回，不再远程往返。
+    # 实测依据（.scratch/gallery-refactor-20260926/probe_local_index_perf.py）：
+    #   英文前缀 0.00~0.04ms / 中文前缀 0.01~0.10ms / 中文子串(47万对) 15~19ms；
+    #   而远程路径英文实测 326~418ms（代理选路白付已另行修掉 512ms）。
+    # 返回结构与原路径**逐字段一致**（suggestions / suggestionDetails / didYouMean / rewrites），
+    # 前端无需改动。帖数来自本地快照，故 details 里带 count_is_snapshot=True 供界面如实标注。
+    #
+    # ⚠️ 2026-09-27 修（冷审查实测）：本快路径原先在事件循环里**同步**执行，冷启动实测
+    # **2696ms**（其中建索引 2391ms；另有 _load_translations 首次读 17.11MB 的
+    # danbooru_tags_zh.json）。预热线程未跑完时，首个联想请求会把整个 PromptServer
+    # 事件循环冻住 ~2.7s（进度推送与其它请求全卡）。同文件旧路径早已用 run_in_executor
+    # 保护（见下方 `fetch` 的 await），新快路径绕过了它 —— 现在补回同样的保护。
+    local_term = raw_term.lstrip("-~")
+    try:
+        local = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: _local_suggest(local_term, limit=20)
+        )
+    except Exception:
+        local = []
+    if local:
+        names = [row["tag"] for row in local]
+        return web.json_response({
+            "suggestions": names,
+            "suggestionDetails": local,
+            "didYouMean": names[:3],
+            "rewrites": names[:3],
+            "source": "local_index",
+        })
 
     def fetch():
         # 中文片段先查本地双语词典，再逐个向 D 站取帖数，效果与 D 站搜索框的
@@ -1513,6 +2235,131 @@ async def anima_danbooru_fuzzy(request: web.Request) -> web.Response:
     })
 
 
+# ---------- P站 作品 → D站 帖子 反查（2026-09-21） ----------
+# 由来：P站 的 tag 是画师自由打的日文/多语言词，模型理解不了，所以 P站 页面原本不输出 prompt。
+# 但 D站 收录了大量 P站 作品、且帖子自带 `pixiv_id` —— 于是可以「拿 P站 作品 id 反查 D站 帖子」，
+# 直接把 D站 的规范标签当 prompt 用：不必翻译、不必 WD14 反推（反推还会误判污染提示词）。
+# 实测（2026-09-21）：`pixiv_id:>0` 可用；多值 `pixiv_id:a,b,c` 一次能查多个；
+# 一个 pixiv_id 常对应多个 D站 帖子（原图/差分/重复上传），且 tag 数远多于 P站 自己的标签。
+PIXIV_MATCH_MAX_IDS = 60      # 单次最多反查多少个作品（P站 一页 30 张 → 通常 1 批就够）
+PIXIV_MATCH_BATCH_IDS = 30    # 每个上游请求塞多少个 pixiv_id（多值查询，实测可行）
+PIXIV_MATCH_MAX_POSTS = 200   # 每个 pixiv_id 最多取回多少候选帖子，用于消歧
+
+
+def _pixiv_match_payload(post: dict[str, Any], pixiv_id: str) -> dict[str, Any]:
+    """把命中的 D站 帖子裁成前端要的形状：字段名与 D站 posts 一致，
+    于是前端可以直接把它喂进既有的 rawPromptGroups（按 tag_string_<类别> 分组），不必另写一套。"""
+    return {
+        "pixiv_id": pixiv_id,
+        "post_id": post.get("id"),
+        "tag_count": post.get("tag_count"),
+        "rating": post.get("rating"),
+        "score": post.get("score"),
+        "fav_count": post.get("fav_count"),
+        "file_ext": post.get("file_ext"),
+        "source_url": f"https://danbooru.donmai.us/posts/{post.get('id')}",
+        "tag_string": post.get("tag_string"),
+        "tag_string_general": post.get("tag_string_general"),
+        "tag_string_character": post.get("tag_string_character"),
+        "tag_string_copyright": post.get("tag_string_copyright"),
+        "tag_string_artist": post.get("tag_string_artist"),
+        "tag_string_meta": post.get("tag_string_meta"),
+    }
+
+
+# pixiv 的原始图片 URL 形如 `.../79828064_p2.jpg` —— 用它把 D站 帖子对回 pixiv 的页号
+_PIXIV_PAGE_RE = re.compile(r"_(p\d+)(?=[._]|$)", re.IGNORECASE)
+
+
+def _pixiv_source_page(post: dict[str, Any]) -> int | None:
+    """从 D站 帖子的 `source` 里解析 pixiv 页号（`.../79828064_p0.jpg` → 0）；拿不到返回 None。
+
+    2026-09-21 实测：多页作品被逐页上传到 D站 时，source 会保留 `_pN` 且与 pixiv 页序一致
+    （#3842827→p0、#3842830→p1、#3842833→p2）。有它才能把「页 → 帖子」精确对上。
+    """
+    for candidate in str(post.get("source") or "").split():
+        match = _PIXIV_PAGE_RE.search(candidate)
+        if not match:
+            continue
+        try:
+            return int(match.group(1)[1:])
+        except ValueError:
+            continue
+    return None
+
+
+def _match_pixiv_ids(pixiv_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """反查 pixiv 作品 id → D站 帖子，**按页归并**。
+
+    回包：`{pixiv_id: {"pages": {"0": 帖子, "1": 帖子, ...}, "root": 帖子}}`
+
+    ⚠️ 为什么必须按页（2026-09-21 修的真实 bug）：一个 pixiv 多页作品在 D站 常有多个帖子
+    （逐页上传并连成父子链），而 `pixiv_id` 本身**不区分页码**。早先的实现是「多命中取 tag 最多」——
+    那等于随便挑一页、再把它套到该作品的所有页上：首页于是可能带出后几页的 NSFW 标签（提示词污染）。
+    现在：能解析出 `_pN` 就按页各就各位；同一页有多条（真差分）才按 tag 最多消歧；
+    解析不出页号的帖子只作为 `root` 兜底（该页在 D站 没有独立帖子时使用）。
+    """
+    matches: dict[str, dict[str, Any]] = {}
+    wanted = set(pixiv_ids)
+    for start in range(0, len(pixiv_ids), PIXIV_MATCH_BATCH_IDS):
+        chunk = pixiv_ids[start:start + PIXIV_MATCH_BATCH_IDS]
+        data = _danbooru_json(DANBOORU_POSTS_URL, {
+            "tags": "pixiv_id:" + ",".join(chunk),
+            "limit": PIXIV_MATCH_MAX_POSTS,
+        })
+        if not isinstance(data, list):
+            continue
+        for post in data:
+            if not isinstance(post, dict):
+                continue
+            pixiv_id = _safe_get(post, "pixiv_id", None)
+            pixiv_id = str(pixiv_id).strip() if pixiv_id is not None else ""
+            if not pixiv_id or pixiv_id not in wanted:
+                continue
+            entry = matches.setdefault(pixiv_id, {"pages": {}, "root": None})
+            payload = _pixiv_match_payload(post, pixiv_id)
+            page = _pixiv_source_page(post)
+            if page is not None:
+                payload["page"] = page
+                current = entry["pages"].get(str(page))
+                # 同一页出现多条 = 真差分（同一页的不同版本）——这时"取 tag 最多"才是对的
+                if current is None or int(payload.get("tag_count") or 0) > int(current.get("tag_count") or 0):
+                    entry["pages"][str(page)] = payload
+            # 根帖（parent_id 为空）= 该页在 D站 没有独立帖子时的兜底
+            if not _safe_get(post, "parent_id", None):
+                root = entry["root"]
+                if root is None or int(payload.get("tag_count") or 0) > int(root.get("tag_count") or 0):
+                    entry["root"] = payload
+    return matches
+
+
+@PromptServer.instance.routes.get("/anima/danbooru/pixiv_match")
+async def anima_danbooru_pixiv_match(request: web.Request) -> web.Response:
+    """P站 作品 id → D站 帖子（供 P站 画廊把作品标签升级成 Danbooru 规范标签）。
+
+    参数：`ids=149884381,148075989`（逗号分隔，最多 PIXIV_MATCH_MAX_IDS 个）。
+    回包：`{"matches": {"<pixiv_id>": {"pages": {"0": 帖子, ...}, "root": 帖子}}, "requested": N}` ——
+    按页归并（见 `_match_pixiv_ids` 的说明）；未收录的作品不出现在 matches 里。
+    """
+    ids: list[str] = []
+    for token in str(request.query.get("ids", "")).replace("，", ",").split(","):
+        text = token.strip()
+        if text.isdigit() and text not in ids:
+            ids.append(text)
+    if not ids:
+        return web.json_response({"matches": {}, "requested": 0})
+    ids = ids[:PIXIV_MATCH_MAX_IDS]
+    try:
+        matches = await asyncio.get_running_loop().run_in_executor(None, _match_pixiv_ids, ids)
+    except requests.Timeout:
+        return web.json_response({"error": "D站 反查超时：请确认 Clash/代理已开启后重试"}, status=504)
+    except requests.RequestException as error:
+        return web.json_response({"error": _friendly_danbooru_error(error)}, status=502)
+    except (TypeError, ValueError) as error:
+        return web.json_response({"error": f"D站 反查回包异常：{error}"}, status=502)
+    return web.json_response({"matches": matches, "requested": len(ids)})
+
+
 class DanbooruGallery:
     """将画廊的用户选择转换为 ComfyUI 可连接的图像和提示词列表，并输出结构化元数据。"""
 
@@ -1545,14 +2392,18 @@ class DanbooruGallery:
     def _download_image(image_url: str) -> torch.Tensor:
         if _is_allowed_danbooru_url(image_url):
             # requests 优先，被风控时自动切内置浏览器网关（见 _danbooru_get_image）
-            image_bytes, content_type = _danbooru_get_image(image_url)
+            # 2026-09-27：外层套落盘缓存 —— 同一 URL 重复出图不再重下（见 _cached_image_fetch）
+            image_bytes, content_type = _cached_image_fetch(image_url, lambda: _danbooru_get_image(image_url))
         else:
             # 多源画廊（C站/P站…）：协议层认这个 URL 才走新分支；不认识则维持原拒绝语义
+            # ⚠️ 校验必须在缓存之前：未知主机一律拒绝，绝不因为"缓存里有"就放行
             gallery_headers = _gallery_image_headers(image_url)
             if gallery_headers is None:
                 raise ValueError("不允许的图片 URL：既不是 D站（donmai.us），也不属于任何已装配图源")
             # ⚠️ 必须附加该源的 images_headers()：P站 i.pximg.net 缺 Referer 直接 403
-            image_bytes, content_type = _gallery_get_image(image_url, gallery_headers)
+            image_bytes, content_type = _cached_image_fetch(
+                image_url, lambda: _gallery_get_image(image_url, gallery_headers)
+            )
         # D站 动画帖是 mp4：PIL 打不开 → 用 ffmpeg 抽首帧当图，避免"下载失败/黑图"
         if _looks_like_video(image_url, content_type, image_bytes):
             image_bytes = _extract_video_frame(image_bytes)
@@ -1630,20 +2481,28 @@ class DanbooruGallery:
             image_selection_list = payload.get("image_selections", prompt_selection_list) if isinstance(payload, dict) else []
             prompt_settings = self._prompt_settings(payload.get("prompt_settings")) if isinstance(payload, dict) else None
             prompt_output_enabled = payload.get("prompt_output_enabled", True) is not False if isinstance(payload, dict) else True
+            # AnimaDex 角色词（2026-09-26）：浮窗选中的角色，**写进 prompts 输出**而不是搜索框。
+            # 这样配合 prompt_settings 关掉原有的「角色/作品」类别，它就成为唯一的角色来源
+            # —— 即 YG 要的「换人物」：关掉原角色词、浮窗选新角色，输出直接变成新角色。
+            role_prompt = str(payload.get("role_prompt") or "").strip() if isinstance(payload, dict) else ""
         except (TypeError, ValueError, json.JSONDecodeError):
             prompt_selection_list = []
             image_selection_list = []
             prompt_settings = None
             prompt_output_enabled = True
+            role_prompt = ""
         if not isinstance(prompt_selection_list, list):
             prompt_selection_list = []
         if not isinstance(image_selection_list, list) or not image_selection_list:
             return ([self._empty_image()], [""], "{}")
 
-        images: list[torch.Tensor] = []
-        prompts: list[str] = []
-        metadata: list[dict] = []
-        failures: list[str] = []
+        # ── 并发下载（2026-09-27，取图性能轮）─────────────────────────────────────
+        # 原先是**串行** `for` 循环逐张下载：选 10 张时，每张约 1 秒的固定开销
+        # （代理握手 + DNS/TLS + 首字节，与分辨率无关，见 HANDOFF-2026-09-25 实测）
+        # 被完整叠加；改成并发后这些固定开销互相重叠。
+        # 保序靠 `pool.map`（按输入顺序返回）+ 下面按 jobs 顺序组装：images / prompts /
+        # metadata / failures 的相对顺序与串行版**逐项一致**（下游按 index 对齐的前提）。
+        jobs: list[tuple[int, dict, str, str]] = []
         for index, image_selection in enumerate(image_selection_list):
             if not isinstance(image_selection, dict):
                 continue
@@ -1651,15 +2510,39 @@ class DanbooruGallery:
             if not isinstance(prompt_selection, dict):
                 prompt_selection = image_selection
             prompt = str(prompt_selection.get("prompt", "")) if prompt_output_enabled else ""
-            image_url = str(image_selection.get("image_url", ""))
+            # AnimaDex 角色词**前置**拼接：它代表「人物」，按 Anima/Danbooru 习惯人物词在最前。
+            # 受同一个 prompt_output_enabled 约束（总开关关掉就什么都不输出，语义一致）；
+            # 想只保留它，用 prompt_settings 把原图的各类别关掉即可。
+            if prompt_output_enabled and role_prompt:
+                prompt = f"{role_prompt}, {prompt}" if prompt else role_prompt
+            jobs.append((index, prompt_selection, prompt, str(image_selection.get("image_url", ""))))
+
+        def _fetch(job: tuple[int, dict, str, str]):
+            _index, _prompt_selection, _prompt, image_url = job
             try:
-                images.append(self._download_image(image_url))
+                return job, self._download_image(image_url), None
+            except Exception as error:  # noqa: BLE001 —— 单张失败不影响其余（与原串行版语义一致）
+                return job, None, error
+
+        workers = min(_select_download_workers(), len(jobs)) if len(jobs) > 1 else 1
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                fetched = list(pool.map(_fetch, jobs))
+        else:
+            fetched = [_fetch(job) for job in jobs]
+
+        images: list[torch.Tensor] = []
+        prompts: list[str] = []
+        metadata: list[dict] = []
+        failures: list[str] = []
+        for (_index, prompt_selection, prompt, image_url), image, error in fetched:
+            output_selection = {**prompt_selection, "image_url": image_url, "prompt": prompt, "prompt_output_enabled": prompt_output_enabled}
+            if error is None:
+                images.append(image)
                 prompts.append(prompt)
-                output_selection = {**prompt_selection, "image_url": image_url, "prompt": prompt, "prompt_output_enabled": prompt_output_enabled}
                 metadata.append(self._selection_meta(output_selection, ok=True))
-            except Exception as error:
+            else:
                 failures.append(f"[{prompt[:24] or image_url[:48]}] {error}")
-                output_selection = {**prompt_selection, "image_url": image_url, "prompt": prompt, "prompt_output_enabled": prompt_output_enabled}
                 metadata.append(self._selection_meta(output_selection, ok=False, error=str(error)))
         if not images:
             # 不再静默输出黑图：全部下载失败 → 抛错，ComfyUI 队列停止，杜绝"图生图出黑屏"

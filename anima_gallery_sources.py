@@ -546,7 +546,14 @@ def _split_search_result(result: Any) -> tuple[list[dict[str, Any]], str | None]
 # ---------- 适配器容错加载 ----------
 
 # 内置图源模块名（均与 `anima_gallery_sources` 同级）；**缺失/导入失败绝不允许影响插件加载**。
-BUILTIN_ADAPTER_MODULES: tuple[str, ...] = ("anima_gallery_civitai", "anima_gallery_pixiv")
+# 2026-09-26 新增：safebooru（gelbooru-dapi 系）、moebooru（**一套骨架服务 yande.re 与
+# konachan.net 两家**，两者 post.json 键名实测同构）。
+BUILTIN_ADAPTER_MODULES: tuple[str, ...] = (
+    "anima_gallery_civitai",
+    "anima_gallery_pixiv",
+    "anima_gallery_safebooru",
+    "anima_gallery_moebooru",
+)
 # 适配器此刻**正在被导入中**（它自己 import 了本模块 → 本模块又在加载它）。
 # 这种重入场景（ai_verify 会「先塞 sys.modules 再 exec」）下模块里的 SOURCE 还没定义，
 # 不能当成错误、也不能就此放弃：稍后由适配器自注册或 `ensure_adapters_loaded()` 补加载。

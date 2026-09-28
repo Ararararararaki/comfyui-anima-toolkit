@@ -1,6 +1,11 @@
 import { app } from "/scripts/app.js";
 import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRatings } from "./anima_danbooru_filter_controls.js";
 import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
+// 2026-09-26 低占位改造：复用项目既有的 portal 下拉菜单（同一个组件已服务于「分级/筛选/全部分类」），
+// 把低频的设置类操作收进一个「设置 ▾」菜单，工具条从 7 行压到 4 行。
+import { PortalDropdown } from "./anima_dropdown_menu.js";
+// AnimaDex 角色浮窗（2026-09-26）：浮窗形态的提示词素材源，**不是图源**（YG 明确要求）。
+import { AnimaDexPanel } from "./anima_animadex_panel.js";
 
 (() => {
   const NODE_NAME = "DanbooruGallery";
@@ -12,7 +17,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   // 每个画廊节点各存一份（key = 前缀 + 节点 id）。别的节点里的归类从来没被迁移过
   // ⇒ 用户更新后会看到"我分类里的图片少了好几张"（2026-09-20 实报）。
   const OTHERS_MIGRATED_KEY = `${STORAGE_KEY_PREFIX}categories_migrated_others`;
-  const FAVORITES_STORAGE_KEY = "anima_danbooru_gallery_favorites_v1";
+  // ⚠️ 卡片上的「★ 收藏」功能已于 2026-09-21 移除（用户裁决：与分类功能重合且无使用入口）。
+  //    实测它当时**只有装饰作用**：全文件没有任何地方读 favorites 做筛选/排序，
+  //    入库时的 `isFavorite: false` 是硬编码常量、与这个按钮无关，唯一效果是卡片描边变黄。
+  //    旧数据（localStorage 的 anima_danbooru_gallery_favorites_v1）留着不清理，无害。
   // 搜索历史：**每节点一份**（前缀 + nodeId，与 settings 一致），值形如
   //   { "danbooru": ["1girl solo", …], "civitai": […], "pixiv": […] }
   const SEARCH_HISTORY_KEY_PREFIX = "anima_danbooru_gallery_search_history_v1_";
@@ -26,6 +34,25 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
    * ⚠️ 只用于判重 —— 显示与实际搜索都用用户输入的**原文**。
    */
   function searchHistoryKeyOf(value) {
+    return String(value || "").trim().toLowerCase().replace(/[_+]+/g, " ").replace(/\s+/g, " ");
+  }
+  /**
+   * 标签使用次数（自适应联想排序；思路参考 a1111-sd-webui-tagcomplete 的 adaptive sorting）。
+   * 值形如 `{"hatsune miku": 3}` —— 用户**实际选用过**的标签在后续联想里靠前。
+   * ⚠️ **全局一份**（不分节点、不分图源）：用词习惯是人的属性；且它只写 localStorage、
+   *    不随工作流走（与搜索历史同理），分享工作流不会把别人的联想顺序带偏。
+   */
+  const TAG_USAGE_STORAGE_KEY = "anima_danbooru_gallery_tag_usage_v1";
+  /** 只留使用次数最高的这么多条 —— 防 localStorage 无限膨胀（300 条 × ~30 字符 ≈ 10KB） */
+  const TAG_USAGE_LIMIT = 300;
+  /** 单个标签键的最大长度 —— 防手改 localStorage 塞进超长键 */
+  const TAG_USAGE_ITEM_MAX = 64;
+  /**
+   * 标签的**计数键**：下划线 / 加号与空格等价、大小写不敏感。
+   * 为什么必须归一化：联想候选给的是 `hatsune_miku`，而用户回车敲的是 `hatsune miku` ——
+   * 不归一化就成了两笔互不相干的计数，"自适应"当场失效。
+   */
+  function tagUsageKeyOf(value) {
     return String(value || "").trim().toLowerCase().replace(/[_+]+/g, " ").replace(/\s+/g, " ");
   }
   // localStorage 只适合记住浏览器偏好；工作流本身也必须带上画廊设置，
@@ -61,7 +88,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   // （与后端 count_restricted_search_tags 一致：order 不在后端 FREE_METATAGS 里）。
   // 历史上这两件事共用一个 Set，导致 countedSearchTerms 把 order 当免费 → 计数永不超限
   // →「自动移除排序」分支与其提示条变成死代码（tests/test_danbooru_gallery_interactions.py 长期红）。
-  const FREE_METATAGS_THAT_STILL_COUNT = new Set(["order"]);
+  const FREE_METATAGS_THAT_STILL_COUNT = new Set(["order", "ordfav"]);
   const DANBOORU_TAG_LIMIT = 2;
   /**
    * 筛选面板独占管理的 token 前缀（顺序即用户可能手打的形态）。
@@ -120,7 +147,36 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   // capabilities / §5.5 密钥 / §5.7 P站用途。前端**只按契约里的路由名 fetch**，不猜后端实现。
   // D站 继续走老路由 /anima/danbooru/posts（page 分页），一个字节都不改。
   const DANBOORU_SOURCE_ID = "danbooru";
-  const GALLERY_SOURCE_ORDER = Object.freeze([DANBOORU_SOURCE_ID, "civitai", "pixiv"]);
+  /**
+   * 图源**排序偏好**（2026-09-26 由「硬白名单」降级为「偏好 + 兜底」）。
+   *
+   * ⚠️ 改这一行的历史原因（真实架构债）：此前它叫硬白名单，`loadGallerySources()` 里写着
+   *    `if (!GALLERY_SOURCE_ORDER.includes(id)) continue;` —— 后端**可插拔**地注册了新图源
+   *    （适配器一落 `BUILTIN_ADAPTER_MODULES` 就出现在 `/anima/gallery/sources`），
+   *    前端却把它**静默丢弃**：加了图源、界面上下拉里根本不出现，且没有任何报错。
+   *    现在后端返回什么就展示什么，本数组只决定**排序**与**兜底文案**。
+   *    新增图源**不需要**再改前端 —— 只有想调整显示顺序时才动它。
+   */
+  const GALLERY_SOURCE_PREFERRED_ORDER = Object.freeze([DANBOORU_SOURCE_ID, "civitai", "pixiv"]);
+  /** 兜底文案用（保序语义的兼容别名；不要再拿它做白名单过滤）。 */
+  const GALLERY_SOURCE_ORDER = GALLERY_SOURCE_PREFERRED_ORDER;
+
+  /**
+   * 图源 id 是否**已知**（模块级版本）。
+   *
+   * ⚠️ 必须存在模块级函数：`normalizeGallerySettings()` 是模块作用域函数、没有 `this`，
+   *    而能力表 `this.gallerySources` 只有实例拿得到 —— 因此这里只认「兜底表 ∪ 偏好表」，
+   *    实例侧再由 `WangGallery.isKnownSource()` 叠上后端能力表（2026-09-26 真机踩过：
+   *    在模块级函数里写 `this.isKnownSource(...)` 会直接抛
+   *    `Cannot read properties of undefined (reading 'isKnownSource')`，
+   *    而静态测试与 node --check 都发现不了 —— 只有真机加载才暴露）。
+   */
+  function isKnownSourceId(value) {
+    const id = String(value || "").trim().toLowerCase();
+    if (!id) return false;
+    if (Object.prototype.hasOwnProperty.call(GALLERY_SOURCE_FALLBACK, id)) return true;
+    return GALLERY_SOURCE_PREFERRED_ORDER.includes(id);
+  }
   /**
    * /anima/gallery/sources 未就绪或请求失败时的兜底（另两个 agent 并行实现后端）。
    * 数值与 PLAN §5.3 钉死的 capabilities 一致：C站 tags=false / prompt=true / nsfw=true；
@@ -151,6 +207,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   const GALLERY_LOCAL_QUERY_HINT_SHORT = "关键词只在当页内过滤";
   /** 同上，搜索框占位文案 —— 按能力分支，**不按源名硬编码** */
   const GALLERY_LOCAL_QUERY_PLACEHOLDER = "关键词（上游不支持检索：只在已取回的当页内过滤）";
+  // C站 开了「无限加载」之后，上面那套「只在当页内过滤」的说法就过时了：搜索范围是后台已加载的整池。
+  const CIVITAI_POOL_QUERY_PLACEHOLDER = "关键词（在后台已加载的内容里筛选，改词无需重新加载）";
+  const CIVITAI_POOL_QUERY_HINT = "已开启 C站 无限加载：关键词在后台**已加载的全部内容**里筛选（跨页生效），"
+    + "改词或重新搜索都不会再去请求上游；想搜得更宽就点分页条上的「加载更多」。";
+  const CIVITAI_POOL_QUERY_HINT_SHORT = "关键词在已加载内容里筛（跨页）";
   /** C站 search 的参数值域（契约：查询参数由各源自定义，前端按源给控件） */
   const CIVITAI_NSFW_OPTIONS = Object.freeze([
     ["", "不限"],
@@ -188,6 +249,17 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
    * （发 48 也只会回 30 条，用户看到的"每页张数"跟设置里选的完全不符）。
    */
   const GALLERY_PAGE_SIZE = 30;
+  /**
+   * 页码分页源里**只有 P站**受上面那条约束（后端 page↔offset 写死 `(page-1)*30`）。
+   * yande.re / konachan.net / safebooru 的 `page` 与 `limit` 是**相互独立**的参数
+   * （moebooru `post.json` 与 gelbooru-dapi 都如此，后端 MAX_LIMIT=100），
+   * 所以它们可以按节点尺寸发自适应张数 —— 2026-09-27 修「底部大片空白」时确立。
+   */
+  const GALLERY_PAGE_LIMIT_MAX = 100;
+  // C站「无限加载」池（2026-09-21）：档位必须与后端 anima_gallery_civitai.POOL_TARGET_OPTIONS 一致 ——
+  // C站 图片接口单页上限就是 200 条，所以每一档正好对应 1~5 次请求。
+  const CIVITAI_POOL_TARGET_OPTIONS = Object.freeze([200, 400, 600, 800, 1000]);
+  const CIVITAI_POOL_TARGET_DEFAULT = 200;
   /** 分页条上最多渲染几个「批次 chip」（更早的折叠成「…」，避免翻几十批后按钮铺满一行） */
   const GALLERY_CURSOR_CHIP_MAX = 10;
 
@@ -372,6 +444,56 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     });
   }
 
+  // `@` 角色联想：一次向后端要多少条、最终显示多少条。
+  // ⚠️ 要 60 而不是 8 是**实测逼出来的**：后端排序是「前缀命中 → 中缀命中 → 热度降序」，
+  //    打 `@miku` 时前 13 名全是 mikuma / mikumo / mikura 这类前缀角色，**Hatsune Miku 排在第 14 位**
+  //    （count 103500，全库最热之一）—— 只取 8 条的话用户根本看不到初音未来。
+  //    多要一些（60 条实测 10ms / 27KB）在前端按词边界重排，再只显示 8 条（见 rankCharacterSuggestions）。
+  const AT_SUGGEST_FETCH_LIMIT = 60;
+  const AT_SUGGEST_LIMIT = 8;
+  // 角色联想浮层的宽度下限。搜索框本身可能只有 280px 宽，而一行要装
+  // 「中文名 → English (作品) + 帖数」—— 实测窄宽度下英文名被 ellipsis 截成 `H...`，
+  // 而英文名正是用户要的东西（它就是 tag）。只对角色模式生效（见 positionSuggestions）。
+  const AT_SUGGEST_MIN_WIDTH = 340;
+
+  /**
+   * `@` 角色联想的触发检测（2026-09-27）。
+   *
+   * 判据 = 光标前**最后一个** `@` 之后的文本（不含空格）。取「最后一个」而不是「以 `@` 开头」，
+   * 是为了让 `1girl @miku` 这种「已经写了别的标签再打 `@`」也能用 —— 实际使用中这比行首触发更常见。
+   * `@` 后出现空格即视为该片段已写完（`@miku 1girl`）⇒ 返回 null，交回标签联想，不弹角色。
+   *
+   * 返回 `{ start, end, query }`（`[start, end)` 就是待替换的 `@xxx` 片段）；null = 不是 `@` 场景。
+   */
+  function atTokenAt(raw, pos) {
+    const str = String(raw ?? "");
+    const caret = Math.max(0, Math.min(str.length, Number.isFinite(pos) ? pos : str.length));
+    const before = str.slice(0, caret);
+    const mark = before.lastIndexOf("@");
+    if (mark < 0) return null;
+    const query = before.slice(mark + 1);
+    if (query.includes(" ")) return null;
+    return { start: mark, end: caret, query };
+  }
+
+  /**
+   * 把 `@xxx` 片段整体替换成角色 trigger（`hatsune miku, vocaloid`）—— 而不是把 `@` 留在框里。
+   *
+   * ⚠️ 结束位置要**从 token.end 一直吃到空格/串尾**：用户可能把光标停在 `@mi|ku` 中间
+   * （那时 end 只到光标处），若只替换 `[start, end)` 就会剩下 `ku` 这种尾巴，拼出
+   * `hatsune miku, vocaloidku`。吃整个词元才是「把 @ 片段换成角色」的本意。
+   *
+   * 返回 null = 输入框在联想显示期间被改动过（`start` 处已不是 `@`）⇒ 调用方退回按词替换。
+   */
+  function replaceAtToken(raw, token, replacement) {
+    const str = String(raw ?? "");
+    const start = Math.max(0, Math.min(str.length, Number(token?.start) || 0));
+    if (str[start] !== "@") return null;
+    let end = Math.max(start, Math.min(str.length, Number(token?.end) || start));
+    while (end < str.length && str[end] !== " ") end++;
+    return str.slice(0, start) + replacement + str.slice(end);
+  }
+
   // 搜索栏按空格分词的词级替换：点击补全建议时只替换光标所在的那一个标签，
   // 保留其余标签与空格（光标在词后/词中/空白处均正确处理；空栏 = 直接填入）。
   function replaceWordAt(raw, pos, replacement) {
@@ -467,6 +589,44 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
     return best.width;
   }
+
+  /**
+   * P站 取图尺寸档 —— 管的是**喂给节点执行**的那张图，不是画廊缩略图。
+   *
+   * 为什么需要它（2026-09-25 实测，经 Clash 7890 同一张 832×1216）：
+   *   原图 784KB / 1.08s · 1200px 850KB / 1.11s · 540px 40KB / 0.45s；
+   * 而对 6688×3764 的 PNG 原图，原图 27.7MB / 47s，降到 1200px 是亚秒级。
+   * 差距来自 P站 CDN 经代理只有约 312KB/s（D站 同条件 1296KB/s）。
+   * 默认 original = 本设置引入前的行为（零回归）。
+   */
+  const DG_IMAGE_SIZE_TIERS = Object.freeze([
+    { id: "original", label: "原图", note: "最清晰 · 最慢" },
+    { id: "master", label: "1200px", note: "长边≤1200 · 快得多" },
+    { id: "thumb", label: "540px", note: "最快 · 适合试跑" },
+  ]);
+
+  /** 档位归一化：非法值一律回 original（= 本设置引入前的行为） */
+  function clampImageSize(value) {
+    return DG_IMAGE_SIZE_TIERS.some((tier) => tier.id === value) ? value : "original";
+  }
+
+  /**
+   * 由 P站 的 preview（540px）URL 推导其它尺寸档。三种形态只差前缀与文件名后缀：
+   *   原图   : https://i.pximg.net/img-original/img/…/X_p0.jpg
+   *   1200px : https://i.pximg.net/img-master/img/…/X_p0_master1200.jpg   ← 抹掉 `/c/WxH` 前缀
+   *   540px  : https://i.pximg.net/c/540x540_70/img-master/img/…/X_p0_master1200.jpg
+   * `item.preview_url` 就是第三条（见 anima_gallery_pixiv.illust_to_item），所以 1200px
+   * 不必另拼 URL —— 把 `/c/<W>x<H>[_Q]/` 抹掉即可（真机实测 200 / 850KB）。
+   * 非 pximg 域名或拿不到 preview 时返回空串，由调用方原样退回原图，绝不猜别的源。
+   */
+  function pixivSizedUrl(previewUrl, size) {
+    const preview = String(previewUrl || "");
+    if (!preview || !/^https:\/\/[^/]*pximg\.net\//i.test(preview)) return "";
+    if (size === "thumb") return preview;
+    if (size === "master") return preview.replace(/\/c\/\d+x\d+(?:_\d+)?\//i, "/");
+    return "";
+  }
+
   /** 竖图盒比上限（h/w）：超过按上限截断，渲染层用 object-fit:contain 完整嵌入 */
   const DG_CLAMP_MAX_ASPECT = 2.2;
   /** 盒比（h/w）≤ 此值 → 跨 2 列；≤ 再下一档 → 跨 3 列 */
@@ -504,6 +664,21 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   /** 「高度显著增大」的阈值：至少 +120px 且 ≥15%，与 450ms 防抖一起挡住拖拽抖动 */
   const DG_TALLER_MIN_DELTA = 120;
   const DG_TALLER_MIN_RATIO = 1.15;
+
+  // ---------- 无限滚动（2026-09-27）----------
+  /** 距底部多少像素就预取下一批（提前量，避免用户真的滚到底才开始转圈） */
+  const DG_SCROLL_PREFETCH_PX = 600;
+  /**
+   * 无限滚动下**保留在列表里的最大张数**（上限回收）。
+   * 不回收的话 DOM 会随滚动无限膨胀 —— 本项目是「全量重排 + 绝对定位」，每追加一批都要
+   * 重建全部卡片 + O(n) 重写 style。300 张时单次布局仍在几十毫秒量级，够用且不卡。
+   * ⚠️ 回收**不丢选中记录**：选中态与提示词编辑按 id 存在 `promptEdits` / `selectionOrder` 里。
+   */
+  const DG_LOADED_POSTS_MAX = 300;
+  /** 无限滚动模式下每批固定取多少张（**不要**用自适应值：那等于"每滚一屏发一次请求"） */
+  const DG_SCROLL_BATCH_MIN = 24;
+  /** 滚动方式：`infinite` = 滚到底自动加载（默认）；`pager` = 旧的分页器 */
+  const GALLERY_SCROLL_MODES = Object.freeze(["infinite", "pager"]);
 
   // ---------- 随机发现（产品向）----------
   // 裸 order:random 是「全库随机」，实测返回的多是无人点赞的冷门帖（score 个位数、有没有人贴都不知道），
@@ -557,6 +732,22 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     return Math.max(DG_MIN_AUTO_COUNT, Math.min(DG_MAX_PER_REQUEST, count));
   }
 
+  /** C站「无限加载」池设置：`enabled=false` = 完全走原有单页路径，档位非法一律回默认 200 */
+  function normalizeCivitaiPool(value) {
+    const saved = value && typeof value === "object" ? value : {};
+    const target = Number(saved.target);
+    return {
+      enabled: saved.enabled === true,
+      target: CIVITAI_POOL_TARGET_OPTIONS.includes(target) ? target : CIVITAI_POOL_TARGET_DEFAULT,
+    };
+  }
+
+  /** P站「匹配 D站」设置：auto = 进入 P站 后自动批量反查（默认关闭 = P站 行为与改动前一致） */
+  function normalizePixivMatch(value) {
+    const saved = value && typeof value === "object" ? value : {};
+    return { auto: saved.auto === true };
+  }
+
   function normalizeGallerySettings(saved) {
     const source = saved && typeof saved === "object" ? saved : {};
     return {
@@ -566,6 +757,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       gridHeight: Number.isFinite(source.gridHeight) ? Math.max(360, Math.min(1200, source.gridHeight)) : 620,
       // 缩略图大小（目标列宽 pt）：缺省 116 = 旧行为；档位 116/150/190/240/330
       thumbWidth: clampThumbWidth(source.thumbWidth),
+      // P站 取图尺寸（喂给节点执行的图）：缺字段 = original ⇒ 老工作流恢复后行为不变
+      imageSize: clampImageSize(source.imageSize),
       categories: Array.isArray(source.categories) ? source.categories : [],
       postCategories: source.postCategories && typeof source.postCategories === "object" ? source.postCategories : {},
       presets: Array.isArray(source.presets) ? source.presets.map(normalizePreset).filter((preset) => preset.name) : [],
@@ -580,9 +773,21 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       lastQuery: typeof source.lastQuery === "string" ? source.lastQuery : "",
       // 多源画廊：当前图源 + 各源自己的筛选 + 各源各自的搜索框内容。
       // 注意 D站 的筛选仍住在 filters/rating 里（老工作流恢复后不变），这里只放新源的东西。
-      source: GALLERY_SOURCE_ORDER.includes(source.source) ? source.source : DANBOORU_SOURCE_ID,
+      source: isKnownSourceId(source.source) ? String(source.source) : DANBOORU_SOURCE_ID,
       sourceFilters: normalizeSourceFilters(source.sourceFilters),
       sourceQueries: normalizeSourceQueries(source.sourceQueries),
+      // C站「无限加载」池：缺字段 = 关闭（老工作流恢复后行为与改动前逐字节一致）
+      civitaiPool: normalizeCivitaiPool(source.civitaiPool),
+      // P站「匹配 D站」：缺字段 = 关闭（不自动反查）
+      pixivMatch: normalizePixivMatch(source.pixivMatch),
+      // 滚动方式（2026-09-27）：`infinite` = 滚到底自动加载（默认）；`pager` = 旧分页器。
+      // 缺字段 = infinite（用户明确要求"就不用页数的方式了"），非法值一律回默认。
+      galleryScrollMode: GALLERY_SCROLL_MODES.includes(source.galleryScrollMode)
+        ? String(source.galleryScrollMode)
+        : "infinite",
+      // 「我的收藏」模式开关（2026-09-28）：独立于搜索框 —— 开启时由 search() 自动拼
+      // `ordfav:<账号>`，搜索框里用户自己的筛选词原样保留。缺字段 = 关。
+      favoritesOnly: source.favoritesOnly === true,
     };
   }
 
@@ -634,14 +839,25 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.suggestionRequestId = 0;
       this.suggestionTimer = null;
       this.suggestionController = null;
+      // `@` 角色联想当前锚定的 `@xxx` 片段（`{ start, end, query }`）；null = 当前不是角色联想态。
+      this.characterToken = null;
       this.positionSuggestionsHandler = () => this.positionSuggestions();
       this.selectionWidget = null;
+      // AnimaDex 角色词（浮窗写入 → 拼进节点的 prompts 输出；空串 = 不参与）
+      this.animadexRolePrompt = "";
       this.queryWidget = null;
       this.queryInput = null;
+      // D站 收藏（2026-09-27，Issue #3）：ids = 当前账号已收藏的 post_id 集合（决定卡片 ★/☆）；
+      // favoriteMeta = `/anima/danbooru/favorites` 的原始响应（logged_in / query_tag / 上限 / 总数）；
+      // favoriteBusy = 正在写的那几张（连点保护，写操作不能并发两次）。
+      this.favoriteIds = new Set();
+      this.favoriteMeta = null;
+      this.favoriteTotal = 0;
+      this.favoriteBusy = new Set();
+      this.favoriteButton = null;
       // 记录多选卡片的实际点击顺序；不能用 DOM 顺序代替，因为翻页/筛选后的显示顺序可能不同。
       this.selectionOrder = [];
       this.dialogId = `anima-danbooru-dialog-${node.id}`;
-      this.favorites = this.loadFavorites();
       this.translationCache = new Map();
       this.presetNoteHydration = null;
       this.tooltip = null;
@@ -667,6 +883,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 渲染后自动补满（2026-09-16 用户真机反馈："还是填充不满节点，用一半以上的空位"）：
       // 首屏 / 翻页 / 换源 渲染完就先检查一次「填满没有」，不再只等用户纵向拉大节点。
       this.autoFillTimer = null;
+      this.autoFillRetryTimer = null; // 被闸门拦下后的**有界重试**定时器（2026-09-27，见 scheduleAutoFillRetry）
+      // 无限滚动（2026-09-27）
+      this._scrollLoading = false;      // 追加请求在途（与 fillMoreBusy 联合互斥）
+      this._scrollFillTimer = null;     // 渲染后「还需要更多图吗」的延时检查（见 scheduleScrollFill）
+      this._scrollRafPending = false;   // 滚动回调的 rAF 节流标记
+      this._infiniteScrollBound = false;
+      this._gridScrollHandler = null;
+      this._gridEnterHandler = null;   // 鼠标移入网格时聚焦它（"滚轮归画廊"的官方条件之一）
       this.autoFillRounds = 0;       // 本轮结果集内已自动补了几次（上限 DG_AUTO_FILL_MAX_ROUNDS）
       // 补图的目标可视高：**一经确定就在本轮结果集内锁死**。
       // 为什么不每轮重读 grid.clientHeight：新前端布局器会按 DOM 内容把节点撑高，
@@ -731,6 +955,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 折叠回「一作品一张卡」后其余页存在 groups 里，点卡片「全部页」再展开（见 foldPixivPages）。
       this.pixivPageGroups = null;   // Map<illust_id, post[]>：本批结果里各多页作品的全部页
       this.pixivDetail = null;       // 非 null = 正在看某个作品的全部页（纯展示层覆盖）
+      // C站「无限加载」池（仅 civitai + 设置开启时使用；关闭时这两个字段全程为空/0，不参与任何原有路径）
+      //   posts = 已加载的全部内容（后端按档位预取累积），展示的是它按「每页数量」切出来的一段。
+      this.sourcePool = null;        // { posts, cursor, exhausted, fingerprint }
+      this.poolPageIndex = 0;        // 池内当前展示到第几段（0 起）
+      // P站「匹配 D站」：illust_id → D站帖子形状（含 tag_string_*，可直接喂 rawPromptGroups）。
+      // 命中的作品，其卡片会输出该 D站 帖子的规范标签作为 prompt（见 postHasPrompt / rawPromptGroups）。
+      this.pixivMatches = new Map();
+      this.pixivMatchBusy = new Set();  // 正在反查的 illust_id（防重复请求）
       this.diffReturnBtn = null;
     }
 
@@ -743,7 +975,58 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     activeSourceId() {
       const id = String(this.settings?.source || "");
-      return GALLERY_SOURCE_ORDER.includes(id) ? id : DANBOORU_SOURCE_ID;
+      return this.isKnownSource(id) ? id : DANBOORU_SOURCE_ID;
+    }
+
+    /**
+     * 是否为**已知图源**（2026-09-26）。
+     *
+     * 判据顺序 = 后端能力表 → 兜底表 → 偏好顺序表。之所以要有这个统一入口：
+     * 原先 7 处各写一遍 `GALLERY_SOURCE_ORDER.includes(...)`，既让新图源静默失效，
+     * 又让「后端已注册但前端没跟上」这种状态到处不一致。收敛到一处后，新增图源零改动。
+     */
+    isKnownSource(sourceId) {
+      const id = String(sourceId || "").trim().toLowerCase();
+      if (!id) return false;
+      // 实例侧多一层：后端能力表（动态注册的图源只有它才知道）
+      if (this.gallerySources?.has?.(id)) return true;
+      // 静态部分复用模块级函数，避免两处各写一套后漂移
+      return isKnownSourceId(id);
+    }
+
+    /** 图源下拉/切换的**展示顺序**：偏好表打头，其余按后端返回顺序接在后面。 */
+    orderedSourceIds() {
+      const seen = new Set();
+      const out = [];
+      for (const id of GALLERY_SOURCE_PREFERRED_ORDER) {
+        if (this.isKnownSource(id)) { out.push(id); seen.add(id); }
+      }
+      for (const id of this.gallerySources?.keys?.() || []) {
+        if (!seen.has(id)) { out.push(id); seen.add(id); }
+      }
+      return out;
+    }
+
+    /**
+     * 按当前已知图源**重建下拉选项**（2026-09-26）。
+     *
+     * 调用时机：`loadGallerySources()` 异步返回之后。build() 里同步构建的那一次只可能拿到
+     * 兜底表（D站/C站/P站），后端动态注册的新图源必须靠这次重建才会出现在界面上。
+     * 保留当前选中值（重建后仍选中同一个源），避免重建把用户的源选择重置掉。
+     */
+    rebuildSourceOptions() {
+      const select = this.sourceSelect;
+      if (!select) return;
+      const previous = select.value || this.activeSourceId();
+      const ids = this.orderedSourceIds();
+      // 内容一致就跳过，避免无谓的 DOM 抖动（切源时不希望下拉闪一下）
+      const current = [...select.options].map((opt) => opt.value);
+      if (current.length === ids.length && current.every((id, i) => id === ids[i])) return;
+      select.replaceChildren();
+      for (const id of ids) {
+        select.append(new Option(this.sourceEntry(id)?.label || id, id));
+      }
+      select.value = ids.includes(previous) ? previous : this.activeSourceId();
     }
 
     sourceEntry(sourceId = null) {
@@ -781,6 +1064,51 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       return this.sourceCapabilities(sourceId).page_numbers;
     }
 
+    /** 该源是否 P站 —— 唯一受「每页固定 30」约束的页码源（后端 page↔offset 写死） */
+    isPixivSource(sourceId = null) {
+      return String(sourceId || this.activeSourceId()) === "pixiv";
+    }
+
+    /**
+     * 页码分页源的**每页张数**（2026-09-27）。
+     *
+     * 原先 `gallerySearchParams()` 对所有页码源**硬发** `GALLERY_PAGE_SIZE = 30`，
+     * `resolveLimit()` / `dgComputeAutoCount()` 完全不参与 ⇒ 节点越宽越填不满
+     * （离线复算、视口 800px：780 宽 6 列填 52.7%、1200 宽 9 列 33.3%、1580 宽 12 列 23.2%），
+     * 用户实报的「底部大片空白 + 最右列明显稀疏」正是这个。
+     *
+     * 现在：P站 保持 30（后端 `page` 换算写死 `(page-1)*30`，发别的值只会让"页码=批次"错位），
+     * 其余页码源（yande.re / konachan.net / safebooru）用自适应值，后端各自 clamp 到 100。
+     */
+    galleryPageLimit(sourceId = null) {
+      if (this.isPixivSource(sourceId)) return GALLERY_PAGE_SIZE;
+      const limit = Number(this.resolveLimit());
+      const base = limit > 0 ? limit : GALLERY_PAGE_SIZE;
+      return Math.max(DG_MIN_AUTO_COUNT, Math.min(GALLERY_PAGE_LIMIT_MAX, base));
+    }
+
+    /**
+     * 是否「无限滚动」模式（2026-09-27）。
+     * 只在**页码分页的源**上生效（D站 / P站）：C站 的游标批次条与「无限加载池」本身已经是
+     * "加载更多"形态，叠加会语义打架；P站 作品详情与本地分类浏览是有限集合，也不适用。
+     */
+    scrollMode() {
+      return this.settings.galleryScrollMode === "infinite"
+        && this.pageMode()
+        && !this.pixivDetail
+        && !this.settings.activeCategory;
+    }
+
+    /**
+     * 无限滚动每批取多少张（**固定值**，不是自适应值）。
+     * 自适应值等于"刚好一屏" ⇒ 滚一屏就得发一次请求；固定 24~48 张能让一次请求覆盖好几屏。
+     */
+    resolveAppendLimit() {
+      const limit = Number(this.resolveLimit());
+      const base = limit > 0 ? limit : DG_SCROLL_BATCH_MIN;
+      return Math.max(DG_SCROLL_BATCH_MIN, Math.min(GALLERY_PAGE_LIMIT_MAX, base));
+    }
+
     /** 分页条 / 状态栏里的「第几批」：页码模式的源显示页码，游标模式的源显示批号 */
     galleryBatchLabel() {
       return this.pageMode()
@@ -801,14 +1129,17 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           const data = await response.json();
           const list = Array.isArray(data?.sources) ? data.sources : [];
           const map = new Map();
-          for (const id of GALLERY_SOURCE_ORDER) map.set(id, GALLERY_SOURCE_FALLBACK[id]);
+          // 先放兜底表（保证 D站 一定在：它不在 /anima/gallery/sources 回包里）
+          for (const id of GALLERY_SOURCE_PREFERRED_ORDER) map.set(id, GALLERY_SOURCE_FALLBACK[id]);
+          // 后端返回什么就收什么 —— **不再按白名单过滤**（那会让新图源静默消失，见上方注释）。
           for (const row of list) {
             const id = String(row?.id || "").trim();
-            if (!GALLERY_SOURCE_ORDER.includes(id)) continue;
+            if (!id) continue;
+            const fallback = GALLERY_SOURCE_FALLBACK[id];
             map.set(id, {
               id,
-              label: String(row?.label || GALLERY_SOURCE_FALLBACK[id].label),
-              capabilities: { ...GALLERY_SOURCE_FALLBACK[id].capabilities, ...(row?.capabilities || {}) },
+              label: String(row?.label || fallback?.label || id),
+              capabilities: { ...(fallback?.capabilities || {}), ...(row?.capabilities || {}) },
             });
           }
           this.gallerySources = map;
@@ -845,9 +1176,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const params = new URLSearchParams();
       if (this.pageMode(sourceId)) {
         params.set("page", String(Math.max(1, Number(this.page) || 1)));
-        // P站 上游固定 30 条/页、page 换算写死 (page-1)*30（与 limit 无关）——
-        // 发别的 limit 只会让"页码 = 批次"的语义错位，所以这里就是 30。
-        params.set("limit", String(GALLERY_PAGE_SIZE));
+        // ⚠️ 2026-09-27 修「底部大片空白」：原先这里对所有页码源硬发 limit=30，
+        // 自适应张数完全不参与 ⇒ 节点越宽越填不满（见 galleryPageLimit 的说明）。
+        // P站 必须保持 30（后端 page↔offset 写死），其余页码源发自适应值。
+        params.set("limit", String(this.galleryPageLimit(sourceId)));
       } else {
         params.set("cursor", String(this.cursorStack[this.cursorStack.length - 1] ?? ""));
         params.set("limit", String(this.resolveLimit()));
@@ -864,6 +1196,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         if (f.nsfw) params.set("nsfw", String(f.nsfw));
         params.set("sort", String(f.sort || "Newest"));
       }
+      // C站「无限加载」池：告诉后端本轮要预取多少条（不发 = 后端 pool_target 默认 0 = 原有单页行为）
+      if (this.poolMode()) params.set("pool_target", String(this.settings.civitaiPool.target));
       return params;
     }
 
@@ -1238,7 +1572,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     sourceIdFromPostKey(postKey) {
       const text = String(postKey || "");
       const source = text.includes(":") ? text.split(":")[0].toLowerCase() : "";
-      return GALLERY_SOURCE_ORDER.includes(source) ? source : "";
+      return this.isKnownSource(source) ? source : "";
     }
 
     /** 分类浏览：读**该图源**的后端本地快照并复用既有的 item→post 映射，不再回查任何图源。 */
@@ -1370,6 +1704,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.settings.lastQuery = query;
       this.saveSettings();
       this.setQuery(query);
+      // ★ C站 池模式：池已按同一套上游筛选建好 → **就在本池内重新筛**，不发任何请求。
+      //   这是「搜索范围 = 已加载的全部内容」与「改关键词零请求」的落点；
+      //   池不存在、或上游筛选（排序 / NSFW / 时间 / 作者）变了 → 落到下面正常请求去重建池。
+      if (this.poolMode() && this.sourcePool && this.sourcePool.fingerprint === this.poolFingerprint()) {
+        if (resetPage) this.poolPageIndex = 0;
+        this.applyPoolView();
+        this.setStatus(this.poolStatusText());
+        return;
+      }
       if (!query && sourceId === "pixiv") {
         // Pixiv 搜索必须有词（契约只有 search/illust，没有匿名兜底列表）→ 明确提示，
         // 而不是发一个必然失败的请求。
@@ -1408,10 +1751,23 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           throw error;
         }
         const items = Array.isArray(data?.items) ? data.items : [];
-        this.nextCursor = data?.next_cursor == null || data.next_cursor === "" ? null : String(data.next_cursor);
-        this.posts = items
+        const nextCursorValue = data?.next_cursor == null || data.next_cursor === "" ? null : String(data.next_cursor);
+        const incoming = items
           .map((item) => this.galleryItemToPost(item, sourceId))
           .filter((post) => post.preview_file_url || post.large_file_url);
+        // ★ C站 池模式：这一轮拿到的内容**并入池**（而不是替换展示源），展示交给 poolVisiblePosts 切片。
+        //   池模式的关键词筛选全在池内做，所以不参与下面的「排除标签 / pixiv 多页折叠」链路。
+        if (this.poolMode()) {
+          const rebuild = !this.sourcePool || this.sourcePool.fingerprint !== this.poolFingerprint();
+          this.accumulatePool(incoming, { nextCursor: nextCursorValue, reset: rebuild });
+          if (resetPage) this.poolPageIndex = 0;
+          this.nextCursor = this.sourcePool.cursor;
+          this.applyPoolView();
+          this.setStatus(this.poolStatusText());
+          return;
+        }
+        this.nextCursor = nextCursorValue;
+        this.posts = incoming;
         // 折叠**前**的条数（= 含 P站 多页作品展开出来的每一条）：下面那条「缺图已跳过」要拿它比，
         // 否则被折叠掉的页会被误报成缺图。
         const loadedCount = this.posts.length;
@@ -1431,6 +1787,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const foldedCount = beforeFold - this.posts.length;
         this.syncReturnButton();
         this.renderPosts();
+        // P站：设置里开了「自动关联」就把本批作品一次批量反查 D站（1 次请求），命中的就地刷成已匹配
+        void this.autoMatchPixiv(this.posts);
         this.renderPagination();
         const batch = this.cursorStack.length;
         // 记账：本批带回了几张（分页条的「已浏览 K 张」就是这些批次累加，见 galleryBrowsedCount）
@@ -1480,6 +1838,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     /** cursor 分页：前进压栈（next_cursor），后退弹栈后重查 —— 契约只有 next_cursor，没有 prev */
     async stepGalleryCursor(delta) {
+      // C站 池模式：翻页 = 切池里已有的一段（不够才补），与上游 cursor 栈无关
+      if (this.poolMode()) return this.stepPoolPage(delta);
       if (delta > 0) {
         if (!this.nextCursor) return;
         this.cursorStack.push(this.nextCursor);
@@ -1509,7 +1869,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     async switchGallerySource(nextId) {
       const id = String(nextId || "");
-      if (!GALLERY_SOURCE_ORDER.includes(id) || id === this.activeSourceId()) return;
+      if (!this.isKnownSource(id) || id === this.activeSourceId()) return;
       // 差分组是 D站 的查询语义（parent:<id>），换源后必须退出，否则「← 返回」会把 D站 的词带到别的源。
       // ⚠️ 顺序要紧（独立审查抓到的 S1）：**先取出要保存的搜索词、再退出差分组**。差分组期间搜索框里
       //    是临时的 `parent:<id>`，直接把它记进 sourceQueries[previous]，那个栏目下次被切回时搜索框
@@ -1538,6 +1898,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // ★ 分类库**按图源分区** ⇒ 换源必须重新拉该源的分类与归属
       //   （否则 D站 的分类会留在 P站 的下拉里 —— 用户实报"分类还不是独立的"）
       await this.loadCategoryLibrary();
+      // D站 收藏状态也跟着源走（2026-09-27，Issue #3）：切到 D站 填充 ★/☆，
+      // 切到别的源由 refreshFavorites 内部清空（避免显示不属于该源的收藏态）。
+      void this.refreshFavorites();
       this.filterControls?.refresh();
       const restored = String(this.settings.sourceQueries[id] || "");
       this.setQuery(restored);
@@ -1564,10 +1927,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (this.queryInput) {
         // 搜索框文案按 capabilities.query 走（不按源名硬编码）：
         // C站 实测上游 /api/v1/images 忽略全部关键词参数，只能"本页过滤"→ 必须说清楚。
+        // C站 开了「无限加载」时，那套「只在当页内过滤」的说明就过时了 → 换成池的说法
+        const poolQuery = this.poolMode();
         this.queryInput.placeholder = caps.query
           ? (GALLERY_SOURCE_PLACEHOLDERS[sourceId] || GALLERY_SOURCE_PLACEHOLDERS[DANBOORU_SOURCE_ID])
-          : GALLERY_LOCAL_QUERY_PLACEHOLDER;
-        this.queryInput.title = caps.query ? "" : GALLERY_LOCAL_QUERY_HINT;
+          : (poolQuery ? CIVITAI_POOL_QUERY_PLACEHOLDER : GALLERY_LOCAL_QUERY_PLACEHOLDER);
+        this.queryInput.title = caps.query ? "" : (poolQuery ? CIVITAI_POOL_QUERY_HINT : GALLERY_LOCAL_QUERY_HINT);
         this.queryInput.dataset.queryMode = caps.query ? "server" : "local";
       }
       if (this.queryRow) this.queryRow.dataset.queryMode = caps.query ? "server" : "local";
@@ -1663,9 +2028,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       show(pixivTarget, id === "pixiv");
       show(pixivSort, id === "pixiv");
       if (hint) {
+        const poolQuery = this.poolMode();
         hint.hidden = caps.query;
-        hint.textContent = caps.query ? "" : GALLERY_LOCAL_QUERY_HINT_SHORT;
-        hint.title = caps.query ? "" : GALLERY_LOCAL_QUERY_HINT;
+        hint.textContent = caps.query ? "" : (poolQuery ? CIVITAI_POOL_QUERY_HINT_SHORT : GALLERY_LOCAL_QUERY_HINT_SHORT);
+        hint.title = caps.query ? "" : (poolQuery ? CIVITAI_POOL_QUERY_HINT : GALLERY_LOCAL_QUERY_HINT);
         hint.dataset.queryMode = caps.query ? "server" : "local";
       }
       if (this.sourceFilterHost) {
@@ -1703,7 +2069,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       //     "pixiv"/"civitai"，就会被当成对应图源，归类报"目标分类不存在"。）
       if (active === DANBOORU_SOURCE_ID) return active;
       const id = String(post?.source || "");
-      return GALLERY_SOURCE_ORDER.includes(id) ? id : active;
+      return this.isKnownSource(id) ? id : active;
     }
 
     postImageUrl(post) {
@@ -1757,10 +2123,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
      * 网格几何。列数优先由「上次布局算出的列步长」反推 —— 垂直滚动条出现后 clientWidth
      * 会比 layout 时小十几像素，直接除会让卡片宽出容器、产生横向滚动条（实测 rightEdge 1295 > 1283）。
      */
-    gridMetrics() {
+    gridMetrics(precomputedStyle = null) {
       if (!this.grid) return { width: 780, cols: 3, cardWidth: 240, usable: 756 };
       const width = this.grid.clientWidth || 780;
-      const style = getComputedStyle(this.grid);
+      // 允许调用方把**刚取过的** computed style 传进来：applyMasonryLayout 为了 paddingTop/
+      // paddingLeft 已经 getComputedStyle 过一次，而这里只差 paddingLeft/Right —— 同一次布局里
+      // 重复取值等于白多一次样式重算（且它落在每页 48 张图的重排路径上）。
+      // 只在确认两次取值之间**没有写过样式**时才可复用，见 applyMasonryLayout 的调用点。
+      const style = precomputedStyle || getComputedStyle(this.grid);
       const padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
       // ⚠️ 这个下限保护必须**原样保留**（§4.1 第一处保险）：首帧 clientWidth=0 时 usable 退化成
       //    DG_MIN_PT ⇒ cols=1，配合 dgSpanFor 的 Math.min(2, cols) 与布局侧的 !isFinite(top) 兜底，
@@ -1812,7 +2182,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.lastColStep = 0;
       }
       this._lastLayoutUsable = rawUsable;
-      const { usable, cols } = this.gridMetrics();
+      // 复用上面刚取的 gridStyle：此处到取值之间只写过 JS 字段（lastColStep/_lastLayoutUsable），
+      // 没有任何 DOM 样式写入 ⇒ 样式没有失效，不必再 getComputedStyle 一次。
+      const { usable, cols } = this.gridMetrics(gridStyle);
       const padTop = parseFloat(gridStyle.paddingTop) || 0;
       const colStep = (usable - DG_GAP * (cols - 1)) / cols + DG_GAP;
       const cardWidth = (usable - DG_GAP * (cols - 1)) / cols;
@@ -1936,10 +2308,19 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     /**
      * 把网格高度应用到节点。**所有程序化改尺寸都必须走这里** ——
      * 记下时刻，供 noteExternalResize() 区分「用户拖动」与「我们自己改的」。
+     *
+     * ⚠️ 调用方只剩**用户显式操作**（设置面板改高度）。初始化路径（build / onConfigure）
+     * 已经全部改走 syncGridHeightFromNode()：它们只记录、不改尺寸 —— 尺寸真源是 node.size[1]。
      */
     setGridHeight(height) {
       this.programmaticResizeAt = Date.now();
       if (this.domSizeSync) {
+        // ⚠️ 必须先**解锁区间**再改尺寸。setBounds 一旦被调用过（用户拖动过节点就会，
+        //    见 onResize 里的 setBounds(nowHeight, nowHeight)），min/max 就被钉成 [h,h]，
+        //    于是 setContentHeight 内部的 clamp(height, min, max) 会把任何目标高度夹回 h
+        //    ⇒ 设置面板的「画廊高度」输入框**静默失效**（实测：拖过节点后再输入新高度没反应）。
+        //    一次把 min/max 都设成目标值即可解锁；随后 setContentHeight 写 size 并复位区间。
+        this.domSizeSync.setBounds?.(height, height);
         this.domSizeSync.setContentHeight(height);
         return;
       }
@@ -1948,7 +2329,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.root.style.minHeight = "0px";
         this.root.style.maxHeight = "none";
       }
-      this.node?.setSize?.([Math.max(360, this.node.size?.[0] || 780), height + 95]);
+      // 宽度下限与 anima_dom_widget_size_sync.js 的 getNodeWidth 对齐（那里是 280）：
+      // 原先这里写 360，两处不一致 ⇒ 窄节点（用户拖到 300 宽）走这条 fallback 时会被
+      // 悄悄撑到 360。真正该决定宽度的是用户/工作流，这里只是兜底，不该顺手改宽。
+      this.node?.setSize?.([Math.max(280, this.node.size?.[0] || 780), height + 95]);
       this.node?.graph?.setDirtyCanvas?.(true, true);
     }
 
@@ -1996,9 +2380,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           //    否则「补图撑大节点 → 列数变化 → 重置 → 再补」就是死循环。
           const keepRounds = this.autoFillRounds;
           const keepTarget = this._autoFillTarget;
+          // ⚠️ 「池子已取空」也必须一起保回来：search(resetPage) 内部会把它清成 false，
+          //    不清回来就会拿同一个**已知取空**的游标再打一次上游接口（有硬闸兜底不会死循环，
+          //    但纯属白打一轮）。列数变化不是新结果集，这三项都该原样保留。
+          const keepExhausted = this.fillMoreExhausted;
           this.search({ resetPage: true });
           this.autoFillRounds = keepRounds;
           this._autoFillTarget = keepTarget;
+          this.fillMoreExhausted = keepExhausted;
           return;
         }
         // 纵向拉大 ⇒ 补图填满（追加，不重置用户已翻到的位置）
@@ -2040,7 +2429,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
      * 末批（无更多）与「取回来的全是重复」都记进 fillMoreExhausted，之后不再打接口。
      */
     async fillMoreForHeight() {
-      if (this.disposed || this.fillMoreBusy || this.fillMoreExhausted) return;
+      if (this.disposed || this.fillMoreExhausted) return;
       // 本地分类浏览（activeCategory）是**有限的本地集合**（按 id 回查已归类图片）：没有"下一页"可补，
       // 而补图走的是 search()，它开头就会清掉 activeCategory ⇒ 用户会被静默踢出分类视图。
       if (this.settings.activeCategory) return;
@@ -2052,6 +2441,28 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       //    真正的闸门是下面的 gridUnderfilled()：一屏放得下就一张都不多取。
       if (!this.posts.length) return;
       if (!this.gridUnderfilled()) return;
+      const appended = await this.appendNextBatch();
+      if (!appended) return;
+      this.renderPosts();
+      this.renderPagination();
+      this.setStatus(`${this.sourceLabel()}：已补到 ${this.posts.length} 张（填满本屏）`);
+    }
+
+    /**
+     * **追加下一批**（纯数据动作；2026-09-27 从 `fillMoreForHeight()` 里抽出）。
+     *
+     * 取数 → 去重合并 → 空页/全重复判到底 → 失败回滚。抽出来的唯一目的是让**两条链共用同一实现**：
+     *   · 自动补满（首屏没填满 / 节点拉大）—— `fillMoreForHeight()`
+     *   · 无限滚动（滚到底）—— `loadNextPageForScroll()`
+     * 否则两条链各写一套翻页逻辑，就会同时打上游（后端画廊并发只有 3，重复请求很贵）。
+     *
+     * 返回是否**真的**追加到了新内容（false = 已到底 / 被守卫拦下 / 失败 ⇒ 调用方不必渲染）。
+     */
+    async appendNextBatch() {
+      if (this.disposed || this.fillMoreBusy || this.fillMoreExhausted) return;
+      if (this.settings.activeCategory) return;
+      if (this.pixivDetail) return;
+      if (!this.posts.length) return;
       // 游标模式的源：契约只有 next_cursor，没有它就到底了；页码模式的源由后端按 page 换算 offset
       if (!this.pageMode() && !this.nextCursor) {
         this.fillMoreExhausted = true;
@@ -2079,16 +2490,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           // 空页 / 全是重复 ⇒ 池子取光了，别再打接口
           this.fillMoreExhausted = true;
           this.posts = before;
-        } else {
-          this.posts = merged;
-          // 把两批的多页作品分组并起来（同 id 以新批为准）：否则早批卡片的「全部页」点了没反应
-          const groups = new Map(keepPixivGroups || []);
-          for (const [id, pages] of (this.pixivPageGroups || new Map())) groups.set(id, pages);
-          this.pixivPageGroups = groups.size ? groups : null;
-          this.setStatus(`${this.sourceLabel()}：已补到 ${merged.length} 张（填满本屏）`);
+          return false;
         }
-        this.renderPosts();
-        this.renderPagination();
+        this.posts = merged;
+        // 把两批的多页作品分组并起来（同 id 以新批为准）：否则早批卡片的「全部页」点了没反应
+        const groups = new Map(keepPixivGroups || []);
+        for (const [id, pages] of (this.pixivPageGroups || new Map())) groups.set(id, pages);
+        this.pixivPageGroups = groups.size ? groups : null;
+        this.trimLoadedPosts();
+        return true;
       } catch (error) {
         // 补图失败不该打断用户：恢复原结果集（连同多页分组），把原因写在状态栏
         this.posts = before;
@@ -2096,9 +2506,147 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.renderPosts();
         this.renderPagination();
         this.setStatus(`补图失败：${error?.message || "未知错误"}`, "error");
+        return false;
       } finally {
         this.fillMoreBusy = false;
       }
+    }
+
+    /**
+     * 无限滚动的**上限回收**：只保留最近 DG_LOADED_POSTS_MAX 张。
+     * 只动数据不动 DOM —— `renderPosts()` 是全量重建，下次渲染自然收敛到上限。
+     * ⚠️ 回收不丢选中记录（选中态/提示词编辑按 id 存在 promptEdits / selectionOrder 里），
+     * 但 `querySelectorAll(".adg-card.is-selected")` 这类"从 DOM 取选中"的写法会漏掉被回收的卡。
+     */
+    trimLoadedPosts() {
+      const max = DG_LOADED_POSTS_MAX;
+      if (!Array.isArray(this.posts) || this.posts.length <= max) return;
+      this.posts = this.posts.slice(this.posts.length - max);
+    }
+
+    /**
+     * 滚到底时加载下一批（无限滚动入口，2026-09-27）。
+     *
+     * 与自动补满的**分工**：这里**不带** `gridUnderfilled()` 判据（滚到底就是要加载），
+     * 但共用同一套取数与去重（`appendNextBatch()`），并复用 `fillMoreBusy` 互斥锁 ——
+     * 否则"滚动加载"与"自动补满"会同时打上游（后端画廊并发只有 3）。
+     */
+    async loadNextPageForScroll() {
+      if (this.disposed || this._scrollLoading || this.fillMoreBusy || this.fillMoreExhausted) return;
+      if (!this.scrollMode() || !this.posts.length) return;
+      this._scrollLoading = true;
+      try {
+        const appended = await this.appendNextBatch();
+        if (!appended) return;
+        this.renderPosts({ preserveScroll: true });
+        this.renderPagination();
+      } finally {
+        this._scrollLoading = false;
+      }
+    }
+
+    /**
+     * 内容还没超出容器（或已滚到底）⇒ 需要更多图。
+     * 滚动加载与「首屏没有滚动条」两条路径**共用这一个判据**（`remaining <= 预取提前量`）。
+     */
+    scrollNeedsMore() {
+      const grid = this.grid;
+      if (!grid) return false;
+      const remaining = grid.scrollHeight - grid.scrollTop - grid.clientHeight;
+      return remaining <= DG_SCROLL_PREFETCH_PX;
+    }
+
+    /**
+     * 渲染后检查「还需要更多图吗」（2026-09-27）。
+     *
+     * ⚠️ 这是无限滚动**唯一的自动入口**，存在的理由很具体：**一页填不满容器时根本没有滚动条**，
+     * 用户滚不动 ⇒ `scroll` 事件永不触发 ⇒ 加载链永远启动不了。用户实测原话：
+     * 「滚动不会触发画布放大缩小了，但是同样也不会滚动画廊，从而也无法加载新的图片」——
+     * 就是这条死锁。所以不能只靠滚动事件驱动。
+     */
+    scheduleScrollFill() {
+      if (!this.scrollMode() || this.disposed || this._scrollFillTimer) return;
+      this._scrollFillTimer = setTimeout(() => {
+        this._scrollFillTimer = null;
+        void this.autoFillByScroll();
+      }, 120);   // 等布局稳定：applyMasonryLayout 由 rAF 调度
+    }
+
+    /** 自动（非用户滚动）继续加载：受**轮次上限 + 30s/4 批时间窗**双重约束 */
+    async autoFillByScroll() {
+      if (!this.scrollMode() || this.disposed) return;
+      if (this._scrollLoading || this.fillMoreBusy || this.fillMoreExhausted) return;
+      if (!this.posts.length) return;
+      if (this.autoFillRounds >= DG_AUTO_FILL_MAX_ROUNDS_CAP) return;
+      if (!this.scrollNeedsMore()) return;
+      const now = Date.now();
+      if (!this._autoFillWindowAt || now - this._autoFillWindowAt > DG_AUTO_FILL_WINDOW_MS) {
+        this._autoFillWindowAt = now;
+        this._autoFillWindowCount = 0;
+      }
+      if (this._autoFillWindowCount >= DG_AUTO_FILL_MAX_PER_WINDOW) return;
+      this._autoFillWindowCount += 1;
+      this.autoFillRounds += 1;
+      await this.loadNextPageForScroll();
+    }
+
+    /**
+     * 绑定网格的滚动行为（2026-09-27）。
+     *
+     * ① **滚轮归画廊**：ComfyUI 前端（1.48.7）用 `wheelCapturedByFocusedElement()` 判定 ——
+     *    `e.target.closest('[data-capture-wheel="true"]')` **且** `document.activeElement`
+     *    落在该元素内，两个条件缺一不可；不满足就把 wheel 转发给画布做缩放。
+     *    ⚠️ 上一版只挂了 `wheel` + `stopPropagation`，**两个条件一个都没满足** ⇒ 用户实测
+     *    "滚动只会变成缩放画布比例"。现在改为：网格打 `data-capture-wheel`（见 build）+
+     *    鼠标移入即聚焦网格，让 activeElement 落进来。
+     *    ⚠️ 正在编辑输入框时**不抢焦点** —— 否则鼠标滑过画廊会把光标从提示词框里踢出去。
+     *    （Ctrl/Cmd+滚轮与横向滚轮仍归画布，那是官方的画布手势白名单。）
+     *
+     * ② **滚到底预取**：滚动容器就是 `.adg-grid` 自己（CSS `flex:1 1 0%; height:0; overflow-y:auto`），
+     *    与懒加载 observer 的 `root: this.grid` 是同一个。不用"哨兵 div"：grid 内全是
+     *    `position:absolute` 的卡片，哨兵会被覆盖，还要和 `.adg-grid-notice` 抢位。
+     */
+    setupInfiniteScroll() {
+      if (!this.grid || this._infiniteScrollBound) return;
+      this._infiniteScrollBound = true;
+      this._gridEnterHandler = () => {
+        const grid = this.grid;
+        if (!grid || this.disposed) return;
+        const active = document.activeElement;
+        const editing = active && active !== grid && active !== document.body
+          && (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName || ""));
+        if (editing) return;   // 别把光标从用户正在编辑的输入框里踢走
+        try {
+          grid.focus({ preventScroll: true });
+        } catch {
+          grid.focus();
+        }
+      };
+      this.grid.addEventListener("pointerenter", this._gridEnterHandler);
+      this._gridScrollHandler = () => {
+        if (this._scrollRafPending) return;
+        this._scrollRafPending = true;
+        const run = () => {
+          this._scrollRafPending = false;
+          if (this.disposed || !this.grid || !this.scrollMode()) return;
+          const remaining = this.grid.scrollHeight - this.grid.scrollTop - this.grid.clientHeight;
+          if (remaining <= DG_SCROLL_PREFETCH_PX) void this.loadNextPageForScroll();
+        };
+        if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+        else setTimeout(run, 16);
+      };
+      this.grid.addEventListener("scroll", this._gridScrollHandler, { passive: true });
+    }
+
+    /** 解绑网格滚动监听（dispose 用） */
+    teardownInfiniteScroll() {
+      if (this.grid) {
+        if (this._gridScrollHandler) this.grid.removeEventListener("scroll", this._gridScrollHandler);
+        if (this._gridEnterHandler) this.grid.removeEventListener("pointerenter", this._gridEnterHandler);
+      }
+      this._gridScrollHandler = null;
+      this._gridEnterHandler = null;
+      this._infiniteScrollBound = false;
     }
 
     /**
@@ -2109,11 +2657,41 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
      */
     scheduleAutoFill() {
       if (this.autoFillTimer || this.disposed) return;
+      // 无限滚动模式（2026-09-27）：整条自动补满链让位给 `scheduleScrollFill()` ——
+      // 后者用**同一个判据**（内容没超出容器就继续加载）覆盖了"首屏填满"，而且能在
+      // 「一页填不满、压根没有滚动条」时也启动（那正是滚动加载启动不了的原因）。
+      // 两条链同时跑会一起打上游（后端画廊并发只有 3）。
+      if (this.scrollMode()) return;
       // 等一拍：applyMasonryLayout 由 rAF 调度，且同一帧里可能刚触发过一次「自动收缩」
       this.autoFillTimer = setTimeout(() => {
         this.autoFillTimer = null;
         void this.autoFillIfUnderfilled();
       }, 80);
+    }
+
+    /**
+     * **有界重试**（2026-09-27）：补图被闸门拦下时排一次延迟重试。
+     *
+     * 修的是什么：`autoFillIfUnderfilled()` 里的 busy / 30s 窗口 / 1.5s grace 原先都是
+     * 「拦下就 return，**没有任何重试**」—— 撞上任意一道就**永久停手**，用户对着半屏空白干瞪眼，
+     * 这正是「节点拉大了却一直填不满」里那个确定性的缺陷（另两个候选拦点是运行时的，未埋点确认）。
+     *
+     * 安全边界（与 2026-09-16「节点无限变大」血案相邻，必须守住）：
+     * ① 只排**一个**定时器（`autoFillRetryTimer` 去重），不会自我复制；
+     * ② 延迟夹在 [120ms, 5s]，最长也就等到下一个窗口；
+     * ③ **不动**时间窗硬闸（`DG_AUTO_FILL_WINDOW_MS` / `DG_AUTO_FILL_MAX_PER_WINDOW`）——
+     *    它不受任何重置影响，30s 内最多 4 批，是防"补图→撑大→列数变化→再补"死循环的最后一道；
+     * ④ 只重置**轮次预算**（那是"本轮结果集"的软预算，被 grace/窗口打断后本来就该重新计）。
+     */
+    scheduleAutoFillRetry(delayMs) {
+      if (this.disposed || this.autoFillRetryTimer) return;
+      const delay = Math.max(120, Math.min(5000, Math.round(Number(delayMs) || 0)));
+      this.autoFillRetryTimer = setTimeout(() => {
+        this.autoFillRetryTimer = null;
+        if (this.disposed || !this.posts.length) return;
+        this.autoFillRounds = 0;
+        void this.autoFillIfUnderfilled();
+      }, delay);
     }
 
     /** 补图的目标可视高 = 判定那一刻的**真实视口**，随后锁死。
@@ -2125,7 +2703,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     async autoFillIfUnderfilled() {
-      if (this.disposed || this.fillMoreBusy || this.fillMoreExhausted) return;
+      if (this.disposed || this.fillMoreExhausted) return;
+      // 上一批还在飞：等它收尾再判 —— 原先这里是直接 return（**没有任何重试**），
+      // 于是撞上"请求在途"这一次机会就永久停手（2026-09-27 修，见 scheduleAutoFillRetry）
+      if (this.fillMoreBusy) { this.scheduleAutoFillRetry(250); return; }
       // 分类浏览不补图（有限本地集合 + 补图会静默退出分类视图，理由见 fillMoreForHeight 顶部）
       if (this.settings.activeCategory) return;
       // P站 作品详情也不补图（理由同上：作品的全部页已铺满，补图只会把人踢出详情）
@@ -2149,9 +2730,17 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this._autoFillWindowAt = now;
         this._autoFillWindowCount = 0;
       }
-      if (this._autoFillWindowCount >= DG_AUTO_FILL_MAX_PER_WINDOW) return;
+      if (this._autoFillWindowCount >= DG_AUTO_FILL_MAX_PER_WINDOW) {
+        // 30s 窗口用尽：等下一个窗口再补一次（硬闸语义不变，只是不再"永久停手"）
+        this.scheduleAutoFillRetry(DG_AUTO_FILL_WINDOW_MS - (now - this._autoFillWindowAt) + 200);
+        return;
+      }
       // ⓪ 用户刚动过尺寸 → 静默 1.5s：绝不和用户的手抢尺寸（见 DG_USER_RESIZE_GRACE_MS）
-      if (this.userResizedAt && now - this.userResizedAt < DG_USER_RESIZE_GRACE_MS) return;
+      if (this.userResizedAt && now - this.userResizedAt < DG_USER_RESIZE_GRACE_MS) {
+        // 让开这 1.5s，之后自动接着补（原先直接 return ⇒ 这次补图机会被永久丢掉）
+        this.scheduleAutoFillRetry(DG_USER_RESIZE_GRACE_MS - (now - this.userResizedAt) + 100);
+        return;
+      }
       // 游标模式的源：契约只有 next_cursor，没有它就到底了
       if (!this.pageMode() && !this.nextCursor) {
         this.fillMoreExhausted = true;
@@ -2327,6 +2916,147 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       }
     }
 
+    /**
+     * 拉取 D站 账号的收藏状态（2026-09-27，Issue #3「收藏了图片却找不到存放的地方」）。
+     *
+     * 数据源是后端 `/anima/danbooru/favorites`：它内部用 `ordfav:<账号>` 搜索拿最近 200 个
+     * post_id，卡片据此显示已收藏态；`query_tag` 就是「我的收藏」入口要跳转的标签 ——
+     * 于是**看收藏完全复用既有搜索链路**（分页 / 无限滚动 / 缩略图代理 / 浮层一律不用改）。
+     * 非 D站 图源不请求：其它源没有"我的 D站 收藏"这个概念。
+     */
+    async refreshFavorites() {
+      if (!this.isDanbooruSource()) {
+        // 切到非 D站 图源时必须**清空**：别的源的 post id 不是 D站 的 post id，
+        // 留着旧集合会让卡片显示错误的 ★（换源是本方法唯一的清理时机）。
+        this.favoriteIds = new Set();
+        this.favoriteMeta = null;
+        this.favoriteTotal = 0;
+        this.settings.favoritesOnly = false;   // 收藏模式是 D站 专属，换源即退出
+        this.syncFavoriteStatus();
+        return null;
+      }
+      try {
+        const response = await fetch("/anima/danbooru/favorites?limit=200");
+        if (!response.ok) return null;
+        const data = await response.json();
+        if (this.disposed) return null;
+        this.favoriteMeta = data && typeof data === "object" ? data : null;
+        this.favoriteIds = new Set((this.favoriteMeta?.ids || []).map((id) => String(id)));
+        this.favoriteTotal = Number(this.favoriteMeta?.total) || this.favoriteIds.size;
+        this.syncFavoriteStatus();
+        return this.favoriteMeta;
+      } catch {
+        return null;
+      }
+    }
+
+    /** 工具条「我的收藏」按钮的文字 / 提示跟着刷新（总数 + 上限剩余） */
+    syncFavoriteStatus() {
+      const button = this.favoriteButton;
+      if (!button) return;
+      const meta = this.favoriteMeta;
+      if (!meta?.logged_in) {
+        button.textContent = "☆ 我的收藏";
+        button.title = "未登录 D站：在节点设置里填用户名与 API key 后可用";
+        button.classList.remove("is-favorited");
+        return;
+      }
+      const used = Number(meta.favorite_count) || 0;
+      const cap = Number(meta.favorite_limit) || 0;
+      const remaining = cap > 0 ? `（还可收藏 ${Math.max(0, cap - used)} 张）` : "";
+      // 按钮是**开关**：高亮 = 当前正在看收藏（2026-09-28 改为独立模式，不再写搜索框）
+      const active = this.settings.favoritesOnly === true;
+      button.textContent = `${active ? "★" : "☆"} 我的收藏${this.favoriteTotal ? ` ${this.favoriteTotal}` : ""}`;
+      button.title = active
+        ? `正在看「我的收藏」（点一下退出）；搜索框里的筛选词会一起生效`
+        : `只看 D站 账号「${meta.username}」的收藏${remaining}（不影响搜索框里的筛选词）`;
+      button.classList.toggle("is-favorited", active);
+    }
+
+    /**
+     * 切换「我的收藏」模式（2026-09-28 重做）。
+     *
+     * ⚠️ 上一版把 `ordfav:<账号>` **写进搜索框**，两个后果（用户实报"占用筛选词条、显示不出来"）：
+     *   ① 它替换掉用户自己的筛选词；
+     *   ② 它被当成普通计数标签参与 `countedSearchTerms()`，与用户的词抢那 2 个名额，
+     *      超限后触发自动降级/丢弃逻辑 ⇒ 界面什么都显示不出来。
+     * 现在改成**独立模式开关**：搜索框保持用户输入不动，`ordfav:` 在发请求时由 `search()` 自动拼上；
+     * 计数集合里按"占 1 槽"如实登记（D站 服务端确实算它一个槽）⇒ 超限时给提示，而不是静默失败。
+     */
+    openMyFavorites() {
+      const meta = this.favoriteMeta;
+      if (!this.settings.favoritesOnly && !meta?.logged_in) {
+        this.setStatus("未登录 D站 账号：先在节点设置里填用户名与 API key 才能看收藏", "error");
+        return;
+      }
+      if (!String(meta?.query_tag || "")) return;
+      this.settings.favoritesOnly = !this.settings.favoritesOnly;
+      this.saveSettings();
+      this.syncFavoriteStatus();
+      this.setStatus(this.settings.favoritesOnly
+        ? `★ 已进入「我的收藏」（D站 共 ${this.favoriteTotal} 张；搜索框里的筛选词会一起生效）`
+        : "已退出「我的收藏」，回到普通搜索");
+      void this.search({ resetPage: true });
+    }
+
+    /** 收藏 / 取消收藏一张图（**写回 D站 账号**）。button 用来就地改图标，不重绘整页。 */
+    async toggleFavorite(post, button = null) {
+      const meta = this.favoriteMeta;
+      if (!meta?.logged_in) {
+        this.setStatus("未登录 D站 账号：先在节点设置里填用户名与 API key 后再收藏", "error");
+        return;
+      }
+      const postId = String(post?.id ?? "");
+      const numericId = Number(postId);
+      if (!postId || !Number.isFinite(numericId)) return;
+      if (this.favoriteBusy.has(postId)) return;   // 连点保护：写操作不能并发两次
+      const wasFavorited = this.favoriteIds.has(postId);
+      this.favoriteBusy.add(postId);
+      if (button) { button.disabled = true; button.textContent = "…"; }
+      try {
+        const response = await fetch("/anima/danbooru/favorite", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ post_id: numericId, action: wasFavorited ? "remove" : "add" }),
+        });
+        let data = {};
+        try {
+          data = await response.json();
+        } catch {
+          data = {};
+        }
+        if (!response.ok || !data?.ok) {
+          this.setStatus(String(data?.error || `收藏失败（HTTP ${response.status}）`), "error");
+          if (button) this.paintFavoriteButton(button, postId);
+          return;
+        }
+        if (data.favorite) this.favoriteIds.add(postId);
+        else this.favoriteIds.delete(postId);
+        // 只有真的发生了变化才动总数（幂等返回不算）
+        if (Boolean(data.favorite) !== wasFavorited) {
+          this.favoriteTotal = Math.max(this.favoriteIds.size, this.favoriteTotal + (data.favorite ? 1 : -1));
+        }
+        if (button) this.paintFavoriteButton(button, postId);
+        this.syncFavoriteStatus();
+        this.setStatus(data.favorite ? `已收藏到 D站 账号（#${postId}）` : `已从 D站 收藏移除（#${postId}）`, "success");
+      } catch (error) {
+        this.setStatus(`收藏失败：${error?.message || "网络错误"}`, "error");
+        if (button) this.paintFavoriteButton(button, postId);
+      } finally {
+        this.favoriteBusy.delete(postId);
+        if (button) button.disabled = false;
+      }
+    }
+
+    /** 按当前集合画 ★ / ☆（只在写成功后调用 —— 不做乐观更新，避免"看着成功其实没写进去"） */
+    paintFavoriteButton(button, postId) {
+      if (!button) return;
+      const favorited = this.favoriteIds.has(String(postId));
+      button.textContent = favorited ? "★" : "☆";
+      button.title = favorited ? "已收藏在你的 D站 账号里 —— 点一下取消收藏" : "收藏到 D站 账号";
+      button.classList.toggle("is-favorited", favorited);
+    }
+
     async refreshAccount() {
       try {
         const d = await (await fetch("/anima/danbooru/account")).json();
@@ -2352,9 +3082,30 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.renderPresetOptions();
       void this.hydratePresetNotes();
       this.updatePromptOutputButton();
-      this.applyGridHeight();
+      // ⚠️ 这里**不再** applyGridHeight()：refreshSettingsUI 的职责是「把 settings 刷进面板 UI」，
+      //    不是「把 settings 灌进节点尺寸」。它挂在 onConfigure（工作流载入）路径上，原来会用
+      //    settings.gridHeight 覆盖掉**工作流里保存的节点尺寸** —— 用户实报的「节点大小被动改变」
+      //    正是这条（此刻 userResizedAt 仍是 0，所有"用户已手动改过尺寸"的守卫都还没生效）。
+      //    现在尺寸真源只有一个：node.size[1]；settings.gridHeight 降级为它的记录副本。
+      this.syncGridHeightFromNode();
       // 工作流里保存的图源要恢复成对应的控件可见性（P站 隐藏提示词类控件等）
       this.applySourceCapabilities();
+    }
+
+    /**
+     * 把「节点当前高度」反写进 settings.gridHeight —— **只记录，绝不改尺寸**。
+     *
+     * 尺寸真源唯一：`node.size[1]`（用户拖出来的、或工作流里保存的那个）。
+     * settings.gridHeight 只剩两个用途：① 设置面板输入框的显示值；② 节点尺寸异常时的兜底。
+     * 反向（settings → 尺寸）**只允许发生在用户显式改设置面板时**，见 applyGridHeight()。
+     *
+     * 95 = 节点 chrome（标题栏/端口等）高度，与下方 installDOMWidgetSizeSync 的
+     * `nodeChromeHeight: 95`、以及 onResize 里 `size[1] - 95` 是同一个值。
+     */
+    syncGridHeightFromNode() {
+      const raw = Math.round((Number(this.node?.size?.[1]) || 0) - 95);
+      if (!(raw > 0)) return;
+      this.settings.gridHeight = Math.max(360, Math.min(1200, raw));
     }
 
     loadWorkflowSettings() {
@@ -2383,6 +3134,25 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       }
     }
 
+    /**
+     * 轻量持久化：只写 localStorage，**不碰 node.properties、不标脏画布**。
+     *
+     * 用于 search() 这类**高频**路径（用户搜索 / 翻页 / 自动补图 / 列数变化重取 / 随机发现）：
+     * 它们只改 `lastQuery` 这种"本机 UI 便利状态"，对节点在画布上的显示毫无影响，
+     * 也不该跟着工作流走 —— 重开工作流并不会自动重搜一次，带过去只是白白撑大 properties。
+     *
+     * 与 saveSettings() 的分工：凡是改了**要跟工作流走**的（分类 / 预设 / 筛选 / 档位 / 开关）
+     * 一律仍走 saveSettings()；只有纯 UI 状态才走这里。
+     * ⚠️ 这里的**不标脏**才是收益主体：`setDirtyCanvas(true, true)` 会让下一帧整块画布重绘，
+     *    而它原先挂在每一次搜索/翻页/补图上（这些操作一步都没改画布内容）。
+     *
+     * ⚠️ localStorage 仍写**全量**（含 postCategories）：后端虽是分类真源，但后端不可用时
+     *    这份本机副本是唯一兜底，不能为了省序列化把它扔掉。
+     */
+    saveUiState() {
+      try { localStorage.setItem(this.settingsKey(), JSON.stringify(this.settings)); } catch {}
+    }
+
     // 重建工具栏「搜索预设」下拉选项（保存/删除预设后调用）
     renderPresetOptions() {
       if (!this.presetSelect) return;
@@ -2401,18 +3171,6 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 用户在设置面板里指定高度 = 明确意图 → 本次结果集内不要再自动收缩
       this.userResizedAt = Date.now();
       this.setGridHeight(height);
-    }
-
-    loadFavorites() {
-      try {
-        return new Set(JSON.parse(localStorage.getItem(FAVORITES_STORAGE_KEY) || "[]").map(String));
-      } catch {
-        return new Set();
-      }
-    }
-
-    saveFavorites() {
-      localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify([...this.favorites]));
     }
 
     // ── 搜索历史（需求 2026-09-21：记录最近几次搜索、点一下就重新用）──
@@ -2434,7 +3192,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const raw = JSON.parse(localStorage.getItem(this.searchHistoryKey()) || "{}");
         if (!raw || typeof raw !== "object") return {};
         const out = {};
-        for (const source of GALLERY_SOURCE_ORDER) {
+        for (const source of this.orderedSourceIds()) {
           const list = raw[source];
           if (!Array.isArray(list)) continue;
           // 只收**字符串**并限长：手改过 localStorage 的话，`[{"a":1}]` 会渲染成可点的
@@ -2517,9 +3275,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.suggestionController?.abort();
       this.suggestionController = null;
       this.suggestionRequestId += 1;
+      // 历史与角色联想互斥（同一个容器）：进历史就丢掉 `@` 锚点
+      this.characterToken = null;
 
       const items = this.searchHistoryFor();
-      suggestions.classList.remove("is-localized");
+      this.resetSuggestionMode();
       suggestions.replaceChildren();
 
       const head = document.createElement("div");
@@ -2620,6 +3380,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         // ⚠️ 必须在这里就取原文：`search()` 内部会用 setQuery(lastQuery) 把输入框改写成规范化结果
         //（小写、丢掉 order:、截断到 8 个标签），到那时"用户输入的原文"已经没了。
         this.recordSearchHistory(text);
+        // 自适应联想排序的**唯一记录点**：用户明确选用过的标签记一次（点候选 / 回车 / 点历史都算）。
+        // 与历史同理，翻页补图换源不走这里 —— 那些不是"用户的一次选用"。
+        this.recordTagUsage(text);
       }
       this.hideSuggestions();
       if (this.grid) this.grid.scrollTop = 0;
@@ -2634,13 +3397,87 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.submitSearch(text);
     }
 
-    toggleFavorite(postId) {
-      const id = String(postId || "");
-      if (!id) return false;
-      if (this.favorites.has(id)) this.favorites.delete(id);
-      else this.favorites.add(id);
-      this.saveFavorites();
-      return this.favorites.has(id);
+    // ── 标签使用次数（自适应联想排序，需求 2026-09-27）──
+    // 只记「**选用**」不记「看见」：入口只有 submitSearch（回车 / 点联想候选 / 点 prompt 标签 /
+    // 点历史 / 预设），翻页、补图、换源重搜这些状态驱动的搜索一律不记（它们不走 submitSearch）。
+    // 与搜索历史的差别：历史是**每节点 + 按图源**分桶（那是"本地检索记录"），
+    // 用词习惯则全局一份 —— 同一个人的 D站 用词不该因为换节点而清零。
+
+    /** 读出全部计数；任何坏数据都退化成空对象，绝不阻塞联想 */
+    loadTagUsage() {
+      try {
+        const raw = JSON.parse(localStorage.getItem(TAG_USAGE_STORAGE_KEY) || "{}");
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+        const out = {};
+        for (const [key, value] of Object.entries(raw)) {
+          const name = String(key).trim().slice(0, TAG_USAGE_ITEM_MAX);
+          const count = Math.floor(Number(value));
+          // `__proto__` 单独挡掉：手改过的 localStorage 用它能在赋值时改原型链
+          if (!name || name === "__proto__" || !Number.isFinite(count) || count <= 0) continue;
+          out[name] = count;
+        }
+        return out;
+      } catch {
+        return {};
+      }
+    }
+
+    /** 写入并**按次数降序截断到 TAG_USAGE_LIMIT** —— 上限在这里收口，别指望调用方记得 */
+    saveTagUsage(usage) {
+      try {
+        const entries = Object.entries(usage || {})
+          .filter(([, count]) => Number(count) > 0)
+          .sort((a, b) => Number(b[1]) - Number(a[1]))
+          .slice(0, TAG_USAGE_LIMIT);
+        localStorage.setItem(TAG_USAGE_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)));
+      } catch {
+        /* 配额满：自适应排序是可选优化，写不进去也不该影响搜索本身 */
+      }
+    }
+
+    /**
+     * 记一次「标签被选用」。接受单个标签或整串查询 —— 整串按**逗号 / 换行**拆成标签逐个计数
+     * （⚠️ 不按空格拆：D站 的 `hatsune miku` 本身就是一个含空格的标签）。
+     * 含 `:` 的 metatag（`age:` / `order:` / `rating:`）不是联想候选，跳过不记。
+     */
+    recordTagUsage(value) {
+      const tokens = Array.isArray(value) ? value : String(value ?? "").split(/[,，\n]/);
+      const hits = [];
+      for (const token of tokens) {
+        const raw = String(token ?? "").trim();
+        if (!raw) continue;
+        const hasColon = raw.includes(":");
+        const wrapped = /^[([]/.test(raw);   // 带括号 = A1111 权重写法 `(tag:1.2)` / `[tag]`
+        const cleaned = raw
+          .replace(/^[([]+/, "").replace(/[)\]]+$/, "")   // 剥掉 `( )` / `[ ]` 外壳
+          .replace(/:\s*[\d.]+$/, "")                     // 剥掉权重后缀 `tag:1.2`
+          .trim();
+        // ⚠️ 无括号却含 `:` 的是 metatag（`age:18` / `rating:safe` / `order:score`）——
+        //    不是联想候选，记了只会白占 300 名额（且剥掉权重后还会退化成 `age` 这种脏键）。
+        if (!cleaned || (hasColon && !wrapped) || cleaned.includes(":")) continue;
+        const key = tagUsageKeyOf(cleaned).slice(0, TAG_USAGE_ITEM_MAX);
+        if (key) hits.push(key);
+      }
+      if (!hits.length) return;
+      const usage = this.loadTagUsage();
+      for (const key of hits) usage[key] = (Number(usage[key]) || 0) + 1;
+      this.saveTagUsage(usage);
+    }
+
+    /**
+     * 按使用次数**稳定**重排联想候选：次数降序；同次数（含全部未用过的）保持后端给的原始顺序。
+     * ⚠️ 稳定性是硬要求 —— 显式用原索引做次级比较，不依赖引擎的稳定排序实现：
+     *    未用过的候选若被打乱，等于"每次联想的顺序都在跳"，比不排序更糟。
+     */
+    sortSuggestionsByUsage(choices) {
+      const usage = this.loadTagUsage();
+      return choices
+        .map((item, index) => {
+          const tag = item && typeof item === "object" ? (item.tag || item.query) : item;
+          return { item, index, count: Number(usage[tagUsageKeyOf(tag)]) || 0 };
+        })
+        .sort((a, b) => (b.count - a.count) || (a.index - b.index))
+        .map((entry) => entry.item);
     }
 
     setStatus(message, tone = "") {
@@ -2657,10 +3494,22 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.suggestionController?.abort();
       this.suggestionController = null;
       this.suggestionRequestId += 1;
+      // 收起即退出角色联想态：下次输入要按**当时**的光标重新判定，不能沿用旧锚点
+      //（旧锚点的 start 可能已不在 `@` 上 —— replaceAtToken 会校验并退回按词替换）。
+      this.characterToken = null;
       if (!this.suggestions) return;
       this.suggestions.textContent = "";
-      this.suggestions.classList.remove("is-localized");
+      this.resetSuggestionMode();
       this.suggestions.style.display = "none";
+    }
+
+    /**
+     * 浮层换内容前必须清掉上一轮的模式类。
+     * ⚠️ 少了这一步，一次 `@` 角色联想之后，标签联想的横排 chip 会被残留的 `is-characters`
+     *    竖排规则改写（反之同样串味）—— 两者共用同一个 `.adg-suggestions` 容器。
+     */
+    resetSuggestionMode() {
+      this.suggestions?.classList.remove("is-localized", "is-characters");
     }
 
     positionSuggestions() {
@@ -2668,13 +3517,36 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const suggestions = this.suggestions;
       if (!input || !suggestions || suggestions.style.display === "none") return;
       const rect = input.getBoundingClientRect();
+      let width = rect.width;
+      let left = rect.left;
+      // 角色联想一行要装「中文名 → English (作品) + 帖数」，而搜索框可能只有 280px 宽 ——
+      // 实测英文名会被 ellipsis 截成 `H...`，可它正是用户要看的东西（它就是 tag）。
+      // 所以只给角色模式加宽度下限，并把左边界钳回视口内（变宽后可能顶出右边缘）；
+      // **标签联想的定位逻辑原样不动**（需求：非 `@` 场景保持原行为）。
+      if (suggestions.classList.contains("is-characters")) {
+        width = Math.max(width, AT_SUGGEST_MIN_WIDTH);
+        left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+      }
       suggestions.style.top = `${Math.round(rect.bottom + 3)}px`;
-      suggestions.style.left = `${Math.round(rect.left)}px`;
-      suggestions.style.width = `${Math.round(rect.width)}px`;
+      suggestions.style.left = `${Math.round(left)}px`;
+      suggestions.style.width = `${Math.round(width)}px`;
     }
 
     scheduleSuggestions(value) {
       const query = String(value ?? "");
+      // ── `@` 角色联想（AnimaDex）—— 优先级最高，且**先于图源守卫** ──
+      // 它查的是 AnimaDex 角色库（独立数据源，与当前画廊图源无关），三个图源都给：用户显式敲
+      // `@` 就是要角色，此时不该被「非 D站 没有标签词典」那条守卫吞掉（那条只管标签联想）。
+      const input = this.queryInput;
+      const caret = input && document.activeElement === input
+        ? (input.selectionStart ?? query.length)
+        : query.length;
+      const atToken = atTokenAt(query, caret);
+      if (atToken) {
+        this.scheduleCharacterSuggestions(atToken);
+        return;
+      }
+      this.characterToken = null;
       // 空查询 = 显示「最近搜索」（占用联想浮层的位置）。
       // 历史是本地数据、与图源无关，所以这条要放在 D站 守卫**之前**判：
       // 三个图源都有搜索框 —— C站 的 `capability.query=false` 只是把它切到"页内本地过滤"模式
@@ -2696,6 +3568,143 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       }, 180);
     }
 
+    /**
+     * `@` 角色联想（2026-09-27）：与标签联想**共用**同一套防抖 / 取消 / 竞态丢弃机制
+     *（suggestionTimer / suggestionController / suggestionRequestId），所以两者天然互斥、
+     * 不会互相覆盖 —— 别为它另起一套，否则会出现两条联想同时往一个容器里写。
+     */
+    scheduleCharacterSuggestions(token) {
+      this.characterToken = token;
+      if (this.suggestionTimer) clearTimeout(this.suggestionTimer);
+      this.suggestionTimer = setTimeout(() => {
+        this.suggestionTimer = null;
+        this.fetchCharacterSuggestions(String(token?.query ?? ""));
+      }, 180);
+    }
+
+    /**
+     * 角色候选的**词边界 + 热度重排**（2026-09-27 实测逼出来的，见 AT_SUGGEST_FETCH_LIMIT 的注释）。
+     *
+     * 后端只按「前缀 / 中缀 / 作品名」定级，不看词边界，于是 `@miku` 会给出一整屏 mikuma / mikumo / mikura。
+     * 这里按「用户真正在找什么」重新定级 —— **只改顺序，不增删候选**：
+     *   强命中（0）= 名称按空格 / 下划线分词后含**完整词**（`@miku` → `Hatsune Miku`）、
+     *               或某字段**以查询开头**（`@初音` → `初音未来`、`@hatsune` → `Hatsune Miku`）、
+     *               或某字段与查询**完全相等**（`@hatsune_miku`）；
+     *   其余（1）  = 后端命中的中缀 / 作品名命中（`@vocaloid` 这类作品查询全落这里）。
+     *
+     * ⚠️ 档内**一律按热度降序**，不设"精确度高于热度"的更细档位 —— 实测教训：把「中文名恰好等于
+     *    查询」单列一档会让 `@初音` 的首候选变成某个叫「初音」的冷门角色（count 58），而真正的
+     *    「初音未来」（count 103500）被压到第 3。中文场景下"名字完全相等"远不如"更热"可信。
+     */
+    rankCharacterSuggestions(items, query) {
+      const key = String(query ?? "").trim().toLowerCase();
+      if (!key) return items;
+      const rankOf = (item) => {
+        const values = [item?.name, item?.slug, item?.zh].map((v) => String(v ?? "").trim().toLowerCase());
+        const strong = values.some((value) => value === key
+          || value.startsWith(key)
+          || value.split(/[\s_]+/).filter(Boolean).includes(key));
+        return strong ? 0 : 1;
+      };
+      return items
+        .map((item, index) => ({ item, index, rank: rankOf(item) }))
+        .sort((a, b) => (a.rank - b.rank)
+          || (Number(b.item?.count || 0) - Number(a.item?.count || 0))
+          || (a.index - b.index))
+        .map((entry) => entry.item);
+    }
+
+    async fetchCharacterSuggestions(query) {
+      if (!this.suggestions) return;
+      this.suggestionController?.abort();
+      this.suggestionController = new AbortController();
+      const requestId = ++this.suggestionRequestId;
+      try {
+        // 用 `/anima/animadex/search` 而**不是** `/suggest`：suggest 只回
+        // slug/name/zh/series/count/thumb，**不带 trigger**，而选中后要把它替换成 trigger
+        //（`hatsune miku, vocaloid`）—— 缺 trigger 就得在点击时再补一次请求（多一次往返 + 一个
+        // 失败分支）。search 的 results 一次给全（trigger/name/zh/series/count）。
+        // 空查询（刚敲下 `@`）= 热度榜，正好当「这里有角色库」的提示。
+        const url = `/anima/animadex/search?q=${encodeURIComponent(String(query ?? "").trim())}&limit=${AT_SUGGEST_FETCH_LIMIT}`;
+        const response = await fetch(url, { signal: this.suggestionController.signal });
+        const data = await response.json();
+        if (requestId !== this.suggestionRequestId || !this.suggestions) return;
+        // 多要少显示：先按词边界重排，再截到 8 条（理由见 AT_SUGGEST_FETCH_LIMIT 与 rankCharacterSuggestions）。
+        const results = this.rankCharacterSuggestions(
+          Array.isArray(data?.results) ? data.results : [],
+          query,
+        ).slice(0, AT_SUGGEST_LIMIT);
+        const suggestions = this.suggestions;
+        suggestions.replaceChildren();
+        this.resetSuggestionMode();
+        suggestions.style.display = results.length ? "flex" : "none";
+        if (!results.length) return;
+        // 竖排列表（CSS 见 .adg-suggestions.is-characters）：与标签联想的横排 chip 不同，
+        // 「中文名 → English (作品)」一行的信息量撑不起 chip 宽度。
+        suggestions.classList.add("is-characters");
+        // ⚠️ 顺序同 fetchSuggestions：先 display 再 position（positionSuggestions 首行是
+        //    「display === 'none' 就 return」，反了会让首次显示落在视口左上角）。
+        this.positionSuggestions();
+
+        const label = document.createElement("span");
+        label.className = "adg-suggestions-label";
+        label.textContent = "角色 · AnimaDex";
+        suggestions.append(label);
+
+        for (const item of results) {
+          const trigger = String(item?.trigger || "").trim();
+          const english = String(item?.name || item?.slug || "").replaceAll("_", " ").trim();
+          const chinese = String(item?.zh || "").trim();
+          const series = String(item?.series || "").trim();
+          // trigger 缺失（旧索引 / 脏数据）时退回英文名：宁可填个近似标签，也不要往框里插空串。
+          const value = trigger || english;
+          if (!value) continue;
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "adg-char-suggestion";
+          button.dataset.trigger = value;
+          button.title = `插入 ${value}`;
+          // 与标签候选同样的防抢：ComfyUI 画布 / 节点激活面罩会吃掉这几帧的点击
+          button.onpointerdown = (event) => event.stopPropagation();
+          button.onmousedown = (event) => event.stopPropagation();
+          const name = document.createElement("span");
+          name.className = "adg-char-name";
+          // 有中文名就「中文名 → English」，没有就只给英文（AnimaDex 的中文表不覆盖全部角色）
+          name.textContent = chinese || english;
+          const arrow = document.createElement("span");
+          arrow.className = "adg-char-arrow";
+          arrow.textContent = chinese ? "→" : "";
+          const en = document.createElement("span");
+          en.className = "adg-char-en";
+          en.textContent = chinese ? english : "";
+          const seriesEl = document.createElement("span");
+          seriesEl.className = "adg-char-series";
+          seriesEl.textContent = series ? `(${series})` : "";
+          const count = document.createElement("span");
+          count.className = "adg-char-count";
+          count.textContent = Number(item?.count) > 0 ? formatCount(item.count) : "";
+          button.append(name, arrow, en, seriesEl, count);
+          button.onclick = () => this.applyCharacterSuggestion(value);
+          suggestions.append(button);
+        }
+      } catch { /* 角色库未就绪 / 请求被取消：静默，别打扰搜索框输入 */ }
+    }
+
+    /**
+     * 点角色候选 = 把 `@xxx` 片段换成 trigger，再走**与回车 / 点标签候选完全相同**的提交路径
+     *（submitSearch 负责填框、记历史、收起浮层、滚回顶部、发起搜索）—— 不另写一条提交流程。
+     */
+    applyCharacterSuggestion(value) {
+      const input = this.queryInput;
+      const raw = input?.value ?? this.queryWidget?.value ?? "";
+      const cursor = input?.selectionStart ?? raw.length;
+      // 锚点优先用**此刻**的光标重新判定（用户可能移动过光标），判不出来再退回显示联想时的记录值；
+      // replaceAtToken 返回 null = 该片段已被改动，退回「按光标所在词替换」，绝不把 `@` 留在框里。
+      const token = atTokenAt(raw, cursor) || this.characterToken;
+      const replaced = token ? replaceAtToken(raw, token, value) : null;
+      this.submitSearch(replaced != null ? replaced : replaceWordAt(raw, cursor, value));
+    }
+
     // 同步搜索框内容到 DOM 输入 + 隐藏的序列化 widget（两者始终一致）
     setQuery(value) {
       const v = String(value ?? "");
@@ -2703,6 +3712,32 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (this.queryWidget) this.queryWidget.value = v;
       if (this.queryInput && document.activeElement === this.queryInput) this.scheduleSuggestions(v);
       else this.hideSuggestions();
+    }
+
+    /**
+     * AnimaDex 浮窗的插入动作（2026-09-26 修正版）。
+     *
+     * ⚠️ 修正记录：初版把角色词写进了**搜索框** —— 那是理解偏了。YG 要的是
+     * 「输出的字符串里是 animadex，这样我关闭节点的角色作品等 prompt 输出，就可以实现替换角色」，
+     * 即写进**节点的 prompts 输出**。故这里改为：
+     *   ① 记到 `animadexRolePrompt`（**替换**语义：再选一个角色就换掉上一个）；
+     *   ② 立刻重写 `selection_data`，让下游拿到的 prompt 就是新角色；
+     *   ③ 状态栏回显，避免"改了没反应"。
+     */
+    applyAnimadexInsert(text) {
+      const value = String(text || "").trim();
+      if (!value) return;
+      this.animadexRolePrompt = value;
+      this.updateSelection();
+      this.setStatus(`AnimaDex 角色词已写入 Prompt 输出：${value}`, "success");
+    }
+
+    /** 清除 AnimaDex 角色词（回到「只输出图片自带 prompt」的状态）。 */
+    clearAnimadexRolePrompt() {
+      if (!this.animadexRolePrompt) return;
+      this.animadexRolePrompt = "";
+      this.updateSelection();
+      this.setStatus("已清除 AnimaDex 角色词", "success");
     }
 
     currentQuery() {
@@ -2798,6 +3833,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.queryInput.value = this.queryWidget.value ?? "";
       }
       let query = this.currentQuery();
+      // 「我的收藏」模式（2026-09-28）：`ordfav:<账号>` 拼在**最前面**，而**不写进搜索框** ——
+      // 用户的筛选词原样保留，两者一起生效（D站 侧 ordfav 与普通标签可以并用，各占一个计数槽）。
+      // 刻意放在 `countedSearchTerms()` **之前**：它确实占槽，必须参与限额判断，
+      // 否则会静默超限（服务端 400）而前端毫不知情。
+      if (this.settings.favoritesOnly) {
+        const favTag = String(this.favoriteMeta?.query_tag || "");
+        if (favTag) query = query ? `${favTag} ${query}` : favTag;
+      }
       if (!query) {
         this.posts = [];
         this.renderPosts();
@@ -2838,7 +3881,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this._autoFillTarget = 0;   // 新结果集 = 新目标，重新按当前尺寸评估
       }
       this.settings.lastQuery = normalizeTags(this.queryWidget?.value || "");
-      this.saveSettings();
+      // 高频路径：只落 localStorage。这里改的是"本机搜索框回填值"，与画布显示无关，
+      // 不该写 properties、更不该 setDirtyCanvas 标脏整块画布（见 saveUiState 注释）。
+      this.saveUiState();
       this.setQuery(this.settings.lastQuery);
 
       this.controller?.abort();
@@ -3033,10 +4078,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const names = empty ? d.didYouMean : d.suggestions;
         const details = !empty && Array.isArray(d.suggestionDetails) ? d.suggestionDetails : [];
         const choices = details.length ? details : (Array.isArray(names) ? names : []);
+        // 自适应排序：用户实际选用过的标签靠前（**稳定** —— 没用过的保持后端原序，见 sortSuggestionsByUsage）
+        const ordered = this.sortSuggestionsByUsage(choices);
         const rewrites = Array.isArray(d.rewrites) ? d.rewrites : [];
         const chineseQuery = [...String(q)].some((char) => /[\u4e00-\u9fff]/.test(char));
         this.suggestions.textContent = "";
-        this.suggestions.classList.toggle("is-localized", details.length > 0);
+        this.resetSuggestionMode();
+        if (details.length) this.suggestions.classList.add("is-localized");
         this.suggestions.style.display = choices.length ? "flex" : "none";
         if (!choices.length) return;
         this.positionSuggestions();
@@ -3048,7 +4096,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           : (empty ? "你是不是想搜" : "智能提示");
         this.suggestions.append(label);
 
-        for (const choice of choices) {
+        for (const choice of ordered) {
           const item = choice && typeof choice === "object" ? choice : { tag: choice };
           const target = String(item.tag || item.query || "").trim();
           if (!target) continue;
@@ -3071,6 +4119,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             translation.textContent = String(item.translation || "");
             arrow.textContent = translation.textContent ? " → " : "";
             count.textContent = Number(item.postCount) > 0 ? formatCount(item.postCount) : "";
+            // 本地索引的帖数是**快照值**，与 D 站实时值有偏差（实测 hatsune miku 低约 21%）。
+            // 用一个小上标如实标注来源，别让快照数字冒充实时值；远程路径不带该字段，行为不变。
+            if (item.count_is_snapshot && count.textContent) {
+              count.title = `本地快照帖数（非 D 站实时值）`;
+              count.classList.add("is-snapshot");
+            }
             button.append(...(chineseQuery ? [translation, arrow, tag, count] : [tag, arrow, translation, count]));
           } else {
             button.textContent = target.replaceAll("_", " ");
@@ -3107,6 +4161,21 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       } catch { /* 模糊接口失败则不打扰，保留原有“你是不是想搜”提示 */ }
     }
 
+    /**
+     * 喂给**节点执行**的图片 URL —— 设置里的「取图尺寸（P站）」在这里生效。
+     *
+     * ⚠️ 只影响送到节点的地址：画廊缩略图仍用 540px，卡片菜单里的「下载原图」
+     *    仍走 post.full_url ⇒ 想要原图随时能单独下，不必为此把整批拖慢。
+     * 非 P站（或拿不到 preview）一律原样返回原图，不猜别的源。
+     */
+    effectiveImageUrl(card) {
+      const full = String(card?.dataset?.imageUrl || "");
+      const size = clampImageSize(this.settings?.imageSize);
+      if (size === "original" || !full) return full;
+      if (String(card?.dataset?.source || "") !== "pixiv") return full;
+      return pixivSizedUrl(card?.dataset?.previewUrl, size) || full;
+    }
+
     selectionFromCard(card) {
       const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
       let promptGroups = {};
@@ -3115,7 +4184,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       try { tags = card.dataset.tags ? JSON.parse(card.dataset.tags) : []; } catch { tags = []; }
       const promptOutputEnabled = this.settings.promptOutputEnabled !== false;
       return {
-        image_url: card.dataset.imageUrl || "",
+        image_url: this.effectiveImageUrl(card),
         prompt: promptOutputEnabled ? (card.dataset.prompt || "") : "",
         post_id: card.dataset.postId || "",
         tags: Array.isArray(tags) ? tags : [],
@@ -3153,12 +4222,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 老节点/恢复工作流时可能没有点击记录：保留 DOM 顺序作为一次性兜底，
       // 之后这些卡片也会进入明确的顺序记录。
       const orderedKeys = [];
+      // O(1) 去重：原实现用 `orderedKeys.includes(key)`，选满 n 张时退化成 O(n²)
+      // （`selectionOrder` 本身可能含重复项，所以这里的去重语义必须保留）。
+      const seenKeys = new Set();
       for (const key of this.selectionOrder) {
-        if (cardsByKey.has(key) && !orderedKeys.includes(key)) orderedKeys.push(key);
+        if (cardsByKey.has(key) && !seenKeys.has(key)) { seenKeys.add(key); orderedKeys.push(key); }
       }
       for (const card of selectedCards) {
         const key = this.selectionKey(card);
-        if (key && !orderedKeys.includes(key)) orderedKeys.push(key);
+        if (key && !seenKeys.has(key)) { seenKeys.add(key); orderedKeys.push(key); }
       }
       this.selectionOrder = orderedKeys;
       return orderedKeys
@@ -3172,6 +4244,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         prompt_settings: this.promptOutputSettings(),
         selections: [selection],
         image_selections: [{ image_url: selection.image_url }],
+        // 批量入队会逐张走这里，而 updateSelection() 走的是含 role_prompt 的那条路径。
+        // 少了这个字段，AnimaDex 选好的角色词在整批任务上**静默失效**（只有单张流程正常）。
+        role_prompt: String(this.animadexRolePrompt || ""),
       });
     }
 
@@ -3179,7 +4254,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const selected = this.selectedGallerySelections();
       const imageSelections = selected.map((selection) => ({ image_url: selection.image_url }));
       const promptOutputEnabled = this.settings.promptOutputEnabled !== false;
-      const value = JSON.stringify({ prompt_output_enabled: promptOutputEnabled, prompt_settings: this.promptOutputSettings(), selections: selected, image_selections: imageSelections });
+      const value = JSON.stringify({ prompt_output_enabled: promptOutputEnabled, prompt_settings: this.promptOutputSettings(), selections: selected, image_selections: imageSelections, role_prompt: String(this.animadexRolePrompt || "") });
       this.selectionWidget.value = value;
       this.selectionWidget.callback?.(value);
       this.node.graph?.change?.();
@@ -3471,6 +4546,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         ? "关闭后即使下游连线，节点也不会输出正向 Prompt"
         : "已关闭 Prompt 输出，点击恢复节点正向 Prompt 输出";
       this.promptOutputBtn.classList.toggle("is-disabled", !enabled);
+      // 2026-09-26：把开关状态同步到「设置 ▾」触发按钮的摘要上 ——
+      // 菜单收纳的代价是「状态看不见了」，这里补回来：关掉 Prompt 输出时触发按钮直接显示
+      // 「设置 · Prompt 关」，不必展开菜单才发现（低占位不等于低信息）。
+      if (this.settingsDropdown?.setSummary) {
+        this.settingsDropdown.setSummary(enabled ? "设置" : "设置 · Prompt 关", enabled ? 0 : 1);
+      }
     }
 
     rawPromptGroups(post) {
@@ -3482,6 +4563,18 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         groups[category].push(clean);
         seen.add(clean);
       };
+      // P站 作品已匹配 D站 → 用 D站 帖子的规范标签（字段名与 posts 完全一致，同一套解析直接复用）。
+      // 这条必须放在最前：匹配的意义就是拿 D站 标签取代 pixiv 那套模型不认识的词。
+      const matched = this.pixivMatchOf(post);
+      if (matched) {
+        for (const category of PROMPT_CATEGORY_ORDER) {
+          for (const tag of String(matched[`tag_string_${category}`] || "").split(" ")) add(category, tag);
+        }
+        if (Object.values(groups).every((tags) => tags.length === 0)) {
+          for (const tag of String(matched.tag_string || "").split(" ")) add("general", tag);
+        }
+        return groups;
+      }
       // C站（capabilities.prompt=true、tags=false）：回包里带的是别人写好的**整段提示词**
       // （PLAN §5.2 的 item.prompt）。这里把它拆成词条喂进现有的分组链路，
       // 于是既有的悬停浮层 / Prompt 编辑器 / 入库弹窗都能直接复用，不必新造一套 UI。
@@ -3505,6 +4598,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     postHasPrompt(post) {
       const sourceId = this.postSourceId(post);
       if (sourceId === DANBOORU_SOURCE_ID) return true;
+      // P站 作品一旦匹配到 D站 帖子，就有规范 prompt 可用（这才是模型认识的那套标签）
+      if (this.pixivMatchOf(post)) return true;
       // 用「明确声明 false 才禁用」的语义：capabilities 尚未拉到时不要误伤 C站（prompt=true）
       return this.sourceCapabilities(sourceId)?.prompt !== false;
     }
@@ -3925,6 +5020,307 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       return this.pixivDetail?.pages?.length ? this.pixivDetail.pages : this.posts;
     }
 
+    // ──────────────────────── C站「无限加载」池 ────────────────────────
+    // 由来（2026-09-21）：C站 的图片接口忽略 query，关键词只能在本地筛；而原实现每批只取当页
+    //（设置里最多 48 张）—— 于是「搜索」实际上只在那 24~48 条里找，基本等于没有。
+    // 这里把「取数」与「展示」拆开：后端按档位预取一整池，展示只切池里的一段，
+    // 搜索则在**整池**上筛 —— 跨页生效，且改关键词零请求。
+    // 开关关闭时 poolMode() 恒为 false，以下分支一个都不会进入。
+
+    /** 是否处于 C站池模式（图源是 C站 且设置里开了「无限加载」） */
+    poolMode() {
+      return this.activeSourceId() === "civitai" && this.settings.civitaiPool?.enabled === true;
+    }
+
+    /** 池模式下「一页」切多少张：跟随设置里的每页数量；自适应档位回退到 GALLERY_PAGE_SIZE */
+    poolPageSize() {
+      const configured = Number(this.settings.limit) || 0;
+      return configured > 0 ? configured : GALLERY_PAGE_SIZE;
+    }
+
+    /** 池的上游参数指纹：排序 / NSFW / 时间 / 作者 变了就得重建池；关键词**不在**其中（那是本地筛的事） */
+    poolFingerprint() {
+      return JSON.stringify(this.gallerySourceFilters("civitai") || {});
+    }
+
+    /** 池内关键词过滤：与后端 `_item_matches` 同源语义（prompt / 负面词 / 作者 三处「全词命中」AND） */
+    poolFilterPosts(posts) {
+      const terms = String(this.gallerySourceQuery() || "").toLowerCase().replace(/，/g, " ").split(/\s+/).filter(Boolean);
+      if (!terms.length) return posts;
+      return posts.filter((post) => {
+        const meta = post?.meta && typeof post.meta === "object" ? post.meta : {};
+        const haystack = [post?.prompt, post?.negative_prompt, meta.username]
+          .map((value) => String(value || "")).join(" ").toLowerCase();
+        return terms.every((term) => haystack.includes(term));
+      });
+    }
+
+    /** 池内已被关键词筛出的条数（分页与状态栏都用它） */
+    poolFilteredCount() {
+      return this.poolFilterPosts(this.sourcePool?.posts || []).length;
+    }
+
+    /** 池模式下当前该展示的卡片：整池 → 按关键词筛 → 按页切一段 */
+    poolVisiblePosts() {
+      const filtered = this.poolFilterPosts(this.sourcePool?.posts || []);
+      const size = this.poolPageSize();
+      // ⚠️ `poolPageIndex` 会**超出**过滤结果的页数：搜索态下关键词一改、或翻过头，
+      //    匹配数可能只剩一两页 —— 此时 slice 越界返回空数组，表现就是「卡片全部消失、
+      //    整页空白」，而分页条因为用了 min() 仍显示"第 N/M 批"，显示与内容脱节
+      //（2026-09-21 真机实报：搜索态点「下一批」翻过头、或点「加载更多」后页面保持空白，
+      //  必须手动点一次「搜索」才恢复 —— 因为那次带 resetPage，会把下标归零）。
+      // 所以这里必须夹回有效范围，并**同步写回状态**，让分页条与实际切片保持一致。
+      const pages = Math.max(1, Math.ceil(filtered.length / size));
+      const index = Math.min(Math.max(0, this.poolPageIndex || 0), pages - 1);
+      if (index !== this.poolPageIndex) this.poolPageIndex = index;
+      const start = index * size;
+      return filtered.slice(start, start + size);
+    }
+
+    /**
+     * 把新拿到的内容并入池（按 id 去重、保持上游顺序）。
+     * `reset=true` = 重建池（首批 / 换了档位 / 换了上游筛选），旧池整个丢掉。
+     */
+    accumulatePool(posts, { nextCursor = null, reset = false } = {}) {
+      if (reset || !this.sourcePool) {
+        this.sourcePool = { posts: [], cursor: null, exhausted: false, fingerprint: this.poolFingerprint() };
+        this.poolPageIndex = 0;
+      }
+      const seen = new Set(this.sourcePool.posts.map((post) => String(post.id)));
+      for (const post of posts) {
+        const key = String(post.id);
+        if (key && !seen.has(key)) {
+          seen.add(key);
+          this.sourcePool.posts.push(post);
+        }
+      }
+      this.sourcePool.cursor = nextCursor || null;
+      if (!nextCursor) this.sourcePool.exhausted = true;
+    }
+
+    /** 池模式：把展示源切成当前页并重渲染（翻页 / 改词 / 补池后都走它） */
+    applyPoolView() {
+      this.posts = this.poolVisiblePosts();
+      this.renderPosts();
+      this.renderPagination();
+    }
+
+    /** 池模式的状态栏文案：搜索态说清「已累计加载 N 条 + 筛出 M 条」 */
+    poolStatusText() {
+      const pool = this.sourcePool;
+      if (!pool) return "";
+      const loaded = pool.posts.length;
+      const query = String(this.gallerySourceQuery() || "").trim();
+      if (!query) {
+        return `C站 已加载 ${loaded} 条${pool.exhausted ? "（上游已到底）" : ""} · 第 ${(this.poolPageIndex || 0) + 1} 批`;
+      }
+      return `C站 关键词本地筛选：本次已累计加载 ${loaded} 条，按『${query}』筛出 ${this.poolFilteredCount()} 条`
+        + (pool.exhausted ? "" : "（可点「加载更多」继续往后加载）");
+    }
+
+    /**
+     * 池模式下的翻页：优先切池里已有的一段；要看的这段还没加载到、且上游还有 → 补「一页」的量。
+     * 这是「直接浏览」（没有关键词）的行为；搜索态看到底时由分页条上的「加载更多」补一个档位。
+     */
+    async stepPoolPage(delta) {
+      const pool = this.sourcePool;
+      if (!pool) return;
+      const next = (this.poolPageIndex || 0) + (delta > 0 ? 1 : -1);
+      if (next < 0) return;
+      const size = this.poolPageSize();
+      // ⚠️ 补池判据必须用**过滤后**的条数，不能用池内总条数：搜索态下池里也许有 200 条，
+      //    但匹配的只有 20 条 —— 按池总长判断会以为"还有得翻"，于是翻出空白页。
+      if (delta > 0 && (next + 1) * size > this.poolFilteredCount() && !pool.exhausted) {
+        await this.growPool({ target: size });
+      }
+      this.poolPageIndex = next;
+      this.applyPoolView();
+      this.setStatus(this.poolStatusText());
+    }
+
+    /**
+     * 补池：从池尾游标继续往后拉 `target` 条（浏览态传「一页数量」，搜索态「加载更多」传设置档位）。
+     * 刻意复用 `gallerySearchParams` 构参 —— 上游筛选（排序 / NSFW / 时间 / 作者）与首批完全一致。
+     */
+    async growPool({ target = 0 } = {}) {
+      const pool = this.sourcePool;
+      if (!this.poolMode() || !pool || !pool.cursor) return false;
+      const sourceId = "civitai";
+      const amount = Math.max(1, Number(target) || this.settings.civitaiPool.target);
+      const parameters = this.gallerySearchParams(sourceId, this.gallerySourceQuery());
+      parameters.set("cursor", pool.cursor);      // 从池尾继续，而不是从当前展示页
+      parameters.set("pool_target", String(amount));
+      try {
+        this.setStatus(`正在后台加载 ${amount} 条…`);
+        const response = await fetch(`/anima/gallery/${encodeURIComponent(sourceId)}/search?${parameters}`);
+        const data = await this.readGalleryResponse(response);
+        if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+        const items = Array.isArray(data?.items) ? data.items : [];
+        const incoming = items
+          .map((item) => this.galleryItemToPost(item, sourceId))
+          .filter((post) => post.preview_file_url || post.large_file_url);
+        const nextCursor = data?.next_cursor == null || data.next_cursor === "" ? null : String(data.next_cursor);
+        this.accumulatePool(incoming, { nextCursor });
+        return true;
+      } catch (error) {
+        this.setStatus(`后台加载失败：${error?.message || "未知错误"}`, "error");
+        return false;
+      }
+    }
+
+    /**
+     * 显式重建池：丢掉现有池，按当前档位与上游筛选重新拉一遍（池模式下的「强制刷新」）。
+     * 为什么需要它：池模式下改关键词**不会**重建池（那是本地筛，正是省请求的地方），
+     * 于是「我想重新取一遍」就没有入口了 —— 排序/NSFW/时间/作者变化会自动重建，其余情况点这个按钮。
+     */
+    async rebuildPool() {
+      if (!this.poolMode()) return;
+      this.sourcePool = null;
+      this.poolPageIndex = 0;
+      this.setStatus(`正在重建池（档位 ${this.settings.civitaiPool.target} 条）…`);
+      // 池已置空 ⇒ searchGallerySource 入口的「池内短路」不会命中，这里会真的去请求
+      await this.searchGallerySource({ resetPage: true });
+    }
+
+    // ──────────────────────── P站 作品 → D站 帖子 匹配 ────────────────────────
+    // P站 标签模型不认识，而 D站 收录了大量 P站 作品、帖子自带 pixiv_id。
+    // 于是「按作品 id 反查 D站 帖子、用它的规范标签当 prompt」—— 不翻译、不 WD14 反推。
+    // 默认关闭；手动入口是卡片上的「匹配D站」按钮，成功即变灰 + 绿字「已匹配」（防重复请求）。
+
+    /** pixiv 作品 id：多页作品在 meta.illust_id；单页作品就是它自己的 id（适配器不加页码后缀） */
+    pixivIllustId(post) {
+      const meta = post?.meta && typeof post.meta === "object" ? post.meta : {};
+      return String(meta.illust_id || post?.id || "").split("_p")[0];
+    }
+
+    /** pixiv 页号（0 起）：适配器写在 meta.page；详情页的卡片 id 形如 `<illust_id>_p2` 也能兜底 */
+    pixivPageOf(post) {
+      const meta = post?.meta && typeof post.meta === "object" ? post.meta : {};
+      const fromMeta = Number(meta.page);
+      if (Number.isFinite(fromMeta) && fromMeta >= 0) return fromMeta;
+      const match = String(post?.id || "").match(/_p(\d+)$/);
+      return match ? Number(match[1]) : 0;
+    }
+
+    /**
+     * 该 **页** 对应到哪个 D站 帖子（其它图源 / 未匹配 → null）。
+     * 后端按页归并返回 `{pages: {"0": 帖子, ...}, root: 帖子}`：首页取 p0 那贴、第二页取 p1 那贴 ——
+     * 这样首页**不会**被后几页的 NSFW 标签污染（2026-09-21 修：早先整个作品共用一条帖子的标签）。
+     * 该页在 D站 没有独立帖子时，退到 `root` 兜底。
+     */
+    pixivMatchOf(post) {
+      if (this.postSourceId(post) !== "pixiv") return null;
+      const illustId = this.pixivIllustId(post);
+      const entry = illustId ? this.pixivMatches.get(illustId) : null;
+      if (!entry) return null;
+      const pages = entry.pages && typeof entry.pages === "object" ? entry.pages : null;
+      if (pages) {
+        return pages[String(this.pixivPageOf(post))] || entry.root || null;
+      }
+      // 兼容上一版的扁平回包（单条帖子）：当成 root 用，免得半更新状态下取不到
+      return entry.post_id ? entry : null;
+    }
+
+    /** 批量反查并写回 pixivMatches（值 = `{pages, root}`）；返回一个代表条目供手工路径反馈 */
+    async fetchPixivMatches(illustIds) {
+      const pending = [...new Set(illustIds)].filter((id) => id && !this.pixivMatches.has(id));
+      if (!pending.length) return null;
+      const response = await fetch(`/anima/danbooru/pixiv_match?ids=${encodeURIComponent(pending.join(","))}`);
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+      const matches = data?.matches && typeof data.matches === "object" ? data.matches : {};
+      let first = null;
+      for (const [id, entry] of Object.entries(matches)) {
+        this.pixivMatches.set(String(id), entry);
+        // 反馈用的代表：优先第 0 页，其次 root（调用方只拿它显示"匹配到哪一贴"）
+        const sample = entry?.pages?.["0"] || entry?.root || null;
+        if (!first && sample) first = sample;
+      }
+      return first;
+    }
+
+    /** 匹配成功后**就地**刷新这张卡的 prompt 相关字段（不重建网格 → 不丢选中状态） */
+    refreshCardPrompt(card, post) {
+      if (!card || !post) return;
+      const result = this.buildPromptForPost(post);
+      card.dataset.prompt = result.prompt;
+      card.dataset.tags = JSON.stringify(result.tags);
+      card.dataset.promptGroups = JSON.stringify(result.groups);
+      card.dataset.promptParts = JSON.stringify(splitPromptParts(result.prompt));
+    }
+
+    /** 把一张卡的「匹配D站」按钮切成成功态（变灰 + 绿字，防重复请求） */
+    markMatchButton(button) {
+      if (!button) return;
+      button.disabled = true;
+      button.textContent = "已匹配";
+      button.classList.add("is-matched");
+    }
+
+    /** 手工「匹配D站」：只反查这一张；未收录时按钮恢复可点，允许以后重试 */
+    async matchPixivPost(post, button) {
+      const illustId = this.pixivIllustId(post);
+      if (!illustId || this.pixivMatches.has(illustId) || this.pixivMatchBusy.has(illustId)) return;
+      this.pixivMatchBusy.add(illustId);
+      if (button) { button.disabled = true; button.textContent = "匹配中…"; }
+      try {
+        const found = await this.fetchPixivMatches([illustId]);
+        if (found) {
+          this.markMatchButton(button);
+          this.refreshCardPrompt(button?.closest?.(".adg-card"), post);
+          // 提示里报的是**当前页**对应的那贴（不是代表条目）——用户点的就是这一页
+          const mine = this.pixivMatchOf(post) || found;
+          this.setStatus(`已匹配到 D站 #${mine.post_id}（P站 第 ${this.pixivPageOf(post) + 1} 页 · ${mine.tag_count} 个 Danbooru 标签）—— 输出将使用它`, "success");
+          return;
+        }
+        if (button) {
+          button.disabled = false;
+          button.textContent = "匹配D站";
+          button.title = "Danbooru 未收录这个 pixiv 作品（或尚未收录）；收录后可再点一次";
+        }
+        this.setStatus("D站 未收录这个 pixiv 作品，暂时拿不到 Danbooru 标签", "error");
+      } catch (error) {
+        if (button) { button.disabled = false; button.textContent = "匹配D站"; }
+        this.setStatus(`匹配失败：${error?.message || "未知错误"}`, "error");
+      } finally {
+        this.pixivMatchBusy.delete(illustId);
+      }
+    }
+
+    /**
+     * 自动关联（设置开关开启、且当前是 P站）：对本批结果**一次**批量反查，命中的就地刷成已匹配。
+     * 刻意不重建网格 —— 用户可能已经选中了几张，重建会丢选中状态。
+     */
+    async autoMatchPixiv(posts) {
+      if (this.settings.pixivMatch?.auto !== true) return;
+      if (this.activeSourceId() !== "pixiv") return;
+      const ids = (posts || [])
+        .filter((post) => this.postSourceId(post) === "pixiv")
+        .map((post) => this.pixivIllustId(post));
+      if (!ids.length) return;
+      try {
+        const before = new Set(this.pixivMatches.keys());
+        await this.fetchPixivMatches(ids);
+        const added = [...this.pixivMatches.keys()].filter((id) => !before.has(id));
+        if (!added.length) return;
+        let updated = 0;
+        for (const card of this.grid?.querySelectorAll(".adg-card") || []) {
+          const cardId = String(card.dataset.postId || "").split("_p")[0];
+          if (!this.pixivMatches.has(cardId)) continue;
+          const post = (this.posts || []).find((item) => String(item.id) === String(card.dataset.postId));
+          if (post) this.refreshCardPrompt(card, post);
+          this.markMatchButton([...card.querySelectorAll(".adg-card-actions button")]
+            .find((button) => button.textContent === "匹配D站" || button.textContent === "匹配中…"));
+          updated += 1;
+        }
+        if (updated) {
+          this.setStatus(`P站：已自动匹配 ${updated} 个作品的 Danbooru 标签（输出将使用它们）`, "success");
+        }
+      } catch (error) {
+        this.setStatus(`P站 自动匹配失败：${error?.message || "未知错误"}`, "error");
+      }
+    }
+
     /**
      * 进入 P站 作品详情 = 展开该作品的全部页，等价于 Pixiv 网页点进 /artworks/<id>。
      * **只在展示层覆盖**（不动 this.posts / 光标栈 / 页码），所以「← 返回」不需要重新请求。
@@ -3989,7 +5385,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       target.apply();
     }
 
-    renderPosts() {
+    renderPosts({ preserveScroll = false } = {}) {
       // 浮层收尾 —— **只收可交互浮层（D站）**：C站 浮层的生命周期必须保持改动前那样
       // （一直留到鼠标离开），否则就成了"仅 D站"之外的行为变化（独立审计抓到的外溢）。
       // 这里**无条件**收：下面会 replaceChildren 整体重建全部卡片，浮层指向的那张卡必然失效
@@ -3997,11 +5393,18 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // ⚠️ 不要改成"判断卡片 isConnected"：那样求值时旧卡片还在文档里，守卫恒为 false（死代码）。
       if (this.tooltip?.classList.contains("is-danbooru")) this.hidePromptTooltip();
       if (!this.grid) return;
+      // 2026-09-27（无限滚动）：追加时**必须保住滚动位置** —— replaceChildren() 会把 scrollTop
+      // 归零，用户"滚到底触发加载"的那一刻会被弹回顶部。这是追加路径唯一必做的防跳。
+      const keepScrollTop = preserveScroll ? this.grid.scrollTop : 0;
       this.imageLoadObserver?.disconnect();
       this.grid.replaceChildren();
       this.grid.style.minHeight = "";
-      this.lastCols = 0;
-      this.lastColStep = 0;
+      if (!preserveScroll) {
+        // ⚠️ 追加路径**不要**重置列基准：`lastColStep` 是抗「滚动条出现/消失造成的十几像素」
+        //    的反推基准（见 applyMasonryLayout 注释），追加时列宽根本没变，重置只会让卡片宽度抖一下。
+        this.lastCols = 0;
+        this.lastColStep = 0;
+      }
       this.failedImageCount = 0;
       // 新一批结果 → 允许重新评估一次自动收缩。
       this.shrunkTotal = null;
@@ -4037,8 +5440,6 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const categoryClass = dgCardCategoryClass(post);
         if (categoryClass) card.classList.add(categoryClass);
         const postId = String(post.id || "");
-        const isFavorite = this.favorites.has(postId);
-        card.classList.toggle("is-favorite", isFavorite);
         card.dataset.imageUrl = imageUrl;
         const promptResult = this.buildPromptForPost(post);
         const promptEdit = this.promptEdits.get(String(post.id || ""));
@@ -4097,6 +5498,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         preview.decoding = "async";
         preview.alt = `${isGallerySource ? this.sourceLabel(postSourceId) : "Danbooru"} #${post.id || ""}`;
         const previewUrl = post.preview_file_url || imageUrl;
+        // 取图尺寸档靠它推导 1200px（见 pixivSizedUrl）：preview 本身就是 540px 那条 CDN URL
+        card.dataset.previewUrl = previewUrl;
         const imageWidth = Number(post.image_width);
         const imageHeight = Number(post.image_height);
         if (imageWidth > 0 && imageHeight > 0) {
@@ -4114,7 +5517,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           card.classList.add("is-image-failed");
           this.failedImageCount = (this.failedImageCount || 0) + 1;
         };
-        preview.onload = () => this.scheduleMasonryLayout();
+        // ⚠️ 只有**元数据缺宽高**时才需要 onload 兜底重排：布局只按 post 元数据算盒高
+        //    （cardAspect 读的是 image_width/height，不是图片的渲染尺寸），元数据齐全时
+        //    上面已预设 width/height/aspectRatio，盒子尺寸在摆放时就已定死，图片解码**不会**
+        //    改变布局（applyMasonryLayout 末尾有同一条结论）。原先无条件重排 ⇒ 一页最多 48 张图
+        //    陆续到达 = 最多 48 次全量重排（每次 querySelectorAll + getComputedStyle + 逐卡写
+        //    5 处 style）；rAF 只合并同一帧内的多次调用，而图片是陆续到达的，合并不掉。
+        if (!(imageWidth > 0 && imageHeight > 0)) {
+          preview.onload = () => this.scheduleMasonryLayout();
+        }
         const caption = document.createElement("span");
         caption.className = "adg-caption";
         const isVid = this.isVideoPost(post);
@@ -4158,6 +5569,19 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           return button;
         };
         addAction("预览", "预览图片", () => this.openImagePreview(post));
+        // ★ 收藏（2026-09-27，Issue #3）：**真写 D站 账号**（POST /favorites），不再是本地描边。
+        //   只有 D站 图源才给这个按钮 —— 别的源的 post id 不是 D站 的 post id，收藏没有意义。
+        //   已收藏态来自 this.favoriteIds（启动与换源时由 refreshFavorites() 填充）。
+        if (!isGallerySource) {
+          const favorited = this.favoriteIds.has(String(post.id));
+          const favButton = addAction(
+            favorited ? "★" : "☆",
+            favorited ? "已收藏在你的 D站 账号里 —— 点一下取消收藏" : "收藏到 D站 账号",
+            () => void this.toggleFavorite(post, favButton),
+          );
+          favButton.classList.toggle("is-favorited", favorited);
+          favButton.classList.add("adg-fav-action");
+        }
         // D站 差分（父子级）作品：parent_id / has_active_children 是 D站 posts.json 自带字段，
         // 点「差分」把搜索词换成 parent:<根帖id>，一次拿到「父帖 + 全部直接子帖」。
         // 张数接口不回（post.children 是空串），所以按钮不带数量，只给关系本身。
@@ -4174,11 +5598,29 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         if (pageCount > 1 && !this.pixivDetail) {
           addAction("全部页", `查看该作品全部 ${pageCount} 页（相当于 P站 作品详情页）`, () => this.openPixivPages(post));
         }
+        // P站 卡片：把该作品匹配到 D站 帖子（命中后用它更全的 Danbooru 标签作为 Prompt）。
+        // 成功后按钮变灰 + 绿字「已匹配」—— 既是状态显示，也避免用户误触重复发起请求。
+        if (postSourceId === "pixiv") {
+          const matchedPost = this.pixivMatchOf(post);
+          const matchButton = addAction(
+            matchedPost ? "已匹配" : "匹配D站",
+            matchedPost
+              ? `已匹配到 D站 #${matchedPost.post_id}（本页 · ${matchedPost.tag_count} 个标签）：输出使用该帖的 Danbooru 标签`
+              : "在 Danbooru 按 pixiv 作品 id 反查同款作品；命中后用它更全的规范标签作为 Prompt",
+            () => this.matchPixivPost(post, matchButton),
+          );
+          if (matchedPost) {
+            matchButton.disabled = true;
+            matchButton.classList.add("is-matched");
+          }
+        }
         // capabilities.prompt=false 的图源（P站）没有提示词可看/可入库 → 不收这两个按钮，
         // 否则点下去只会得到空内容（项目 UI 规范：不要留点了没反应的控件）。
         const promptActionsApplicable = postCaps.prompt || !isGallerySource;
         const promptAction = addAction("Prompt", "查看、编辑和复制 Prompt", () => this.openPromptEditor(card, post));
-        const libraryAction = addAction("入库", "分类 / 入库：在同一弹窗中分别选择本地分类和 Prompt 入库，可只执行其中一项", () => this.saveToPromptLibrary(post, { includeLocalCategory: true }));
+        // tooltip 压到一行：原 30+ 字挂在 9px 的小按钮上，既读不完也把按钮撑得难看；
+        // 具体两项操作在弹窗里自解释（那里有 intro 与折叠区）。文案锚点「入库」二字不动。
+        const libraryAction = addAction("入库", "入库 / 归类这张图", () => this.saveToPromptLibrary(post, { includeLocalCategory: true }));
         if (!promptActionsApplicable) {
           promptAction.hidden = true;
           libraryAction.hidden = true;
@@ -4190,18 +5632,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         //   而且该按钮在 prompt=false 的图源（P站）会被隐藏 ⇒ P站 根本没法归类。
         //   分类是**本地**属性，与图源有没有 prompt 无关，所以这个按钮永远显示。
         addAction("分类", "把这张图归入本地分类（跨画廊节点共享）", () => this.openCategoryPicker([this.postKeyOf(post)]));
-        const favoriteButton = addAction(isFavorite ? "★" : "☆", isFavorite ? "取消收藏" : "收藏", () => {
-          const next = this.toggleFavorite(post.id);
-          card.classList.toggle("is-favorite", next);
-          favoriteButton.classList.toggle("is-favorite", next);
-          favoriteButton.textContent = next ? "★" : "☆";
-          favoriteButton.title = next ? "取消收藏" : "收藏";
-          favoriteButton.setAttribute("aria-label", next ? "取消收藏" : "收藏");
-          favoriteButton.setAttribute("aria-pressed", next ? "true" : "false");
-        });
-        favoriteButton.classList.toggle("is-favorite", isFavorite);
-        favoriteButton.setAttribute("aria-label", isFavorite ? "取消收藏" : "收藏");
-        favoriteButton.setAttribute("aria-pressed", isFavorite ? "true" : "false");
+        // ★ 收藏按钮已于 2026-09-21 移除：它只有装饰作用（描边变黄），没有任何读取入口
+        //   （无"只看收藏"筛选、无排序、入库时的 isFavorite 是硬编码常量），且与上面的
+        //   「分类」功能重合。用户裁决：去除。
         // 分类徽章：已归类的卡片左上角显示分类名
         const catId = this.settings.postCategories[this.postKeyOf(post)];
         if (catId) {
@@ -4298,8 +5731,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (rendered.length && this.failedImageCount >= rendered.length) {
         this.appendGridNotice(`本页 ${this.failedImageCount} 张预览全部加载失败 —— 检查 Clash 代理，或点工具条「刷新」绕过缓存重试`);
       }
+      // 追加路径：把滚动位置还回去（否则"滚到底触发加载"时会被弹回顶部）
+      if (preserveScroll) this.grid.scrollTop = keepScrollTop;
       // 渲染完立即检查「填满没有」：首屏 / 翻页 / 换源 / 换筛选都要（见 scheduleAutoFill）
       this.scheduleAutoFill();
+      // 无限滚动：内容还没超出容器（= 没有滚动条、滚不动）时也要继续加载 —— 否则
+      // 「一页填不满 ⇒ 滚不动 ⇒ scroll 永不触发 ⇒ 永远加载不了」就是死锁（2026-09-27 用户实测）
+      this.scheduleScrollFill();
     }
 
     pageWindow() {
@@ -4307,8 +5745,38 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       return Array.from({ length: 5 }, (_, index) => start + index);
     }
 
+    /**
+     * 无限滚动模式的分页位（2026-09-27）：显示「已加载 N 张」+ 是否到底 + 一个回到顶部。
+     * 不显示页码 —— 无限滚动下 `this.page` 会一路涨到几十，显示"第 37 页"只会让用户困惑。
+     */
+    renderInfiniteScrollHint() {
+      const bar = this.pagination;
+      if (!bar) return;
+      bar.replaceChildren();
+      const count = document.createElement("span");
+      count.className = "adg-scroll-count";
+      count.textContent = this.fillMoreExhausted
+        ? `已加载 ${this.posts.length} 张 · 已到底`
+        : `已加载 ${this.posts.length} 张 · 继续滚动加载`;
+      bar.append(count);
+      const top = document.createElement("button");
+      top.type = "button";
+      top.className = "adg-scroll-top";
+      top.textContent = "回到顶部";
+      top.onclick = () => { if (this.grid) this.grid.scrollTop = 0; };
+      bar.append(top);
+    }
+
     renderPagination() {
       if (!this.pagination) return;
+      // 无限滚动模式（2026-09-27）：分页位换成「已加载 N 张 · 继续滚动加载 / 已到底」。
+      // ⚠️ 早退放在**最前面**，下面那套页码 / 游标批次条**原文一字不动** —— 设置里切回
+      //    `pager` 即可原样使用，而且 tests/test_gallery_multisource_ui.py 是按本函数
+      //    切片做字符串断言的（页码段必须还在）。
+      if (this.scrollMode()) {
+        this.renderInfiniteScrollHint();
+        return;
+      }
       this.pagination.replaceChildren();
       if (this.settings.activeCategory) {
         const badge = document.createElement("span");
@@ -4326,6 +5794,70 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         badge.textContent = `P站 作品 #${this.pixivDetail.illustId} · 全部 ${this.pixivDetail.pages.length} 页`;
         badge.title = "正在看单个作品的全部页；点搜索框旁的「← 返回」回到搜索结果";
         this.pagination.append(badge);
+        return;
+      }
+      // C站「无限加载」池：分页基于**池内已过滤内容**，与上游 cursor 无关。
+      // 浏览态翻页优先切池、不够才补一页；搜索态看到底时给「加载更多」（补一个设置档位再筛）。
+      if (this.poolMode() && this.sourcePool) {
+        const size = this.poolPageSize();
+        const filtered = this.poolFilteredCount();
+        const pages = Math.max(1, Math.ceil(filtered / size));
+        const index = Math.min(this.poolPageIndex || 0, pages - 1);
+        const previous = document.createElement("button");
+        previous.type = "button";
+        previous.className = "adg-cursor-step";
+        previous.textContent = "‹ 上一批";
+        previous.disabled = index <= 0;
+        previous.title = previous.disabled ? "已经是第一批" : "回到池里的上一批（不重新请求）";
+        previous.onclick = () => { void this.stepPoolPage(-1); };
+        const label = document.createElement("span");
+        label.className = "adg-cursor-batch";
+        label.textContent = `第 ${index + 1}/${pages} 批 · 本批 ${this.posts.length} 张 · 已加载 ${this.sourcePool.posts.length} 条`
+          + (this.sourcePool.exhausted ? " · 上游已到底" : "");
+        label.title = "「已加载」= 后台池里累积的条数；搜索与翻页都在这个池里进行";
+        const next = document.createElement("button");
+        next.type = "button";
+        next.className = "adg-cursor-step";
+        next.textContent = "下一批 ›";
+        next.disabled = index >= pages - 1 && this.sourcePool.exhausted;
+        next.title = next.disabled ? "没有更多了" : "优先切池里已加载的内容，不够时自动补";
+        next.onclick = () => { void this.stepPoolPage(1); };
+        this.pagination.append(previous, label, next);
+        // 搜索态：已经把池内符合条件的内容看到底了，但上游还有 → 给一个明确的「加载更多」
+        const searching = String(this.gallerySourceQuery() || "").trim().length > 0;
+        if (searching && index >= pages - 1 && !this.sourcePool.exhausted && this.sourcePool.cursor) {
+          const more = document.createElement("button");
+          more.type = "button";
+          // ⚠️ 必须带 adg-cursor-step：`.adg-pagination button` 是固定 24px 宽，
+          //    不带这个类的中文按钮会被压成竖排（一个字一行，白占三行高度）
+          more.className = "adg-cursor-step";
+          more.textContent = "加载更多";
+          more.title = `再往后加载 ${this.settings.civitaiPool.target} 条，然后在本池内重新筛选`;
+          more.onclick = async () => {
+            more.disabled = true;
+            const ok = await this.growPool({ target: this.settings.civitaiPool.target });
+            if (ok) {
+              this.applyPoolView();
+              this.setStatus(this.poolStatusText());
+            } else {
+              more.disabled = false;
+            }
+          };
+          this.pagination.append(more);
+        }
+        // 显式「重建池」：池模式下的强制刷新。改关键词**不会**重建池（那是本地筛，省请求的地方），
+        // 所以想重新从上游取一遍就得有这个入口（排序/NSFW/时间/作者变化时会自动重建，无需点它）。
+        const rebuild = document.createElement("button");
+        rebuild.type = "button";
+        // 同上：中文按钮必须带 adg-cursor-step，否则被 24px 固定宽压成竖排文字
+        rebuild.className = "adg-cursor-step";
+        rebuild.textContent = "重建池";
+        rebuild.title = `丢掉当前已加载的 ${this.sourcePool.posts.length} 条，按档位 ${this.settings.civitaiPool.target} 条重新从上游拉取`;
+        rebuild.onclick = () => {
+          rebuild.disabled = true;
+          void this.rebuildPool();
+        };
+        this.pagination.append(rebuild);
         return;
       }
       // 分页形态**按 capabilities.page_numbers 分支**（不再按源名硬编码）：
@@ -4419,9 +5951,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       content.className = "adg-prompt-settings adg-save-options";
       const intro = document.createElement("div");
       intro.className = "adg-prompt-settings-tip";
+      // 文案收敛（2026-09-21）：原首句 40 字，把"怎么操作"写成了正文，而下面那两个
+      // checkbox 与折叠区本身已自解释。压到一行，信息量不减。
       intro.textContent = includeLocalCategory
-        ? "可在同一弹窗中分别勾选本地分类和 Prompt 入库；两项可同时执行，也可只执行其中一项。"
-        : "选择本次入库的 Prompt 库分类，以及要写入 Prompt 和双语卡片的 D 站标签类别。不会修改全局 Prompt 设置。";
+        ? "两项操作可任选其一，也可同时执行。"
+        : "选择 Prompt 库分类与要写入的 D 站标签类别；不改动全局 Prompt 设置。";
       content.append(intro);
 
       let saveLibraryInput = null;
@@ -4452,9 +5986,22 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         assignLocalCategoryInput = makeAction("写入本地分类", Boolean(localCategoryId));
         content.append(actionTitle, actionRow);
 
+        // ── 旧路径折叠（2026-09-21）──
+        // 「本地分类 / 新建分类 / 标签快捷新建」这一整套，卡片上已经有独立入口
+        // （renderPosts 里的「分类」按钮；下面 4231-4235 那处注释也写明归类入口已从弹窗搬出）。
+        // 留在弹窗里 = 同一件事两个入口，还把弹窗撑到 26 个控件、一屏看不完。
+        // 默认折叠，需要时展开；功能一个不删（用户 2026-09-21 裁决：折叠而非删除）。
+        const legacyGroup = document.createElement("details");
+        legacyGroup.className = "adg-save-legacy-group";
+        const legacySummary = document.createElement("summary");
+        legacySummary.textContent = "本地分类 / 快捷新建（也可用卡片上的「分类」按钮）";
+        legacyGroup.append(legacySummary);
+
         const localTitle = document.createElement("div");
         localTitle.className = "adg-prompt-settings-title";
-        localTitle.textContent = "本地分类（勾选“写入本地分类”后生效）";
+        // 「勾选…后生效」这个条件说明交给上面那个 checkbox 自己表达（它就在同一屏内），
+        // 标题里不再嵌套另一个控件的文案。
+        localTitle.textContent = "本地分类";
         localCategorySelect = document.createElement("select");
         localCategorySelect.className = "adg-save-category-select";
         localCategorySelect.setAttribute("aria-label", "本地分类");
@@ -4492,13 +6039,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           localCategoryNameInput.value = "";
         };
         localNewRow.append(localCategoryNameInput, localNewButton);
-        content.append(localTitle, localCategorySelect, localNewRow);
+        legacyGroup.append(localTitle, localCategorySelect, localNewRow);
         // 保留原“分类”按钮的快捷能力：点当前图片标签即可新建并选中本地分类。
         const tagChoices = this.postTags(post).slice(0, 10);
         if (tagChoices.length) {
           const tagTitle = document.createElement("div");
           tagTitle.className = "adg-prompt-settings-tip";
-          tagTitle.textContent = "从本图标签快速新建分类：";
+          tagTitle.textContent = "快速新建：";
           const tagWrap = document.createElement("div");
           tagWrap.className = "adg-category-tags";
           for (const tag of tagChoices) {
@@ -4517,8 +6064,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             };
             tagWrap.append(tagButton);
           }
-          content.append(tagTitle, tagWrap);
+          legacyGroup.append(tagTitle, tagWrap);
         }
+        content.append(legacyGroup);
       }
 
       const libraryTitle = document.createElement("div");
@@ -4656,6 +6204,21 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       excludeInput.addEventListener("input", () => { if (!promptDirty) refreshPreview(); });
       promptInput.addEventListener("input", () => { promptDirty = true; refreshPreview(); });
 
+      // ── 就地错误反馈（2026-09-21）──
+      // 此前校验失败只调 setStatus()，而状态栏在**节点内部**，被 z-index:100000 的弹窗遮罩
+      // 完全盖住 ⇒ 用户看到的现象是「点『应用』毫无反应」。这里在弹窗内补一条 role="alert"，
+      // 与 setStatus 并存（后者仍供关闭弹窗后回看，语义不变）。
+      const errorBox = document.createElement("div");
+      errorBox.className = "adg-dialog-error";
+      errorBox.setAttribute("role", "alert");
+      errorBox.hidden = true;
+      const showError = (message) => {
+        errorBox.textContent = message;
+        errorBox.hidden = false;
+        try { errorBox.scrollIntoView({ block: "nearest" }); } catch {}
+      };
+      content.append(errorBox);
+
       return new Promise((resolve) => {
         refreshPreview();
         this.openDialog({
@@ -4667,6 +6230,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             const assignLocalCategory = assignLocalCategoryInput ? assignLocalCategoryInput.checked : false;
             if (!saveToLibrary && !assignLocalCategory) {
               this.setStatus("至少选择“存入 Prompt 库”或“写入本地分类”其中一项", "error");
+              showError("至少勾选一项：存入 Prompt 库 / 写入本地分类");
               return false;
             }
             const localCategoryId = localCategorySelect?.value || "";
@@ -4678,12 +6242,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             const selectedCategories = PROMPT_CATEGORY_ORDER.filter((category) => categoryInputs.get(category)?.checked);
             if (!selectedCategories.length) {
               this.setStatus("至少选择一个 Prompt 类别", "error");
+              showError("至少保留一个 Prompt 类别");
               return false;
             }
             const excludePattern = excludeInput.value.trim();
             if (excludePattern) {
               try { new RegExp(excludePattern, "i"); } catch (error) {
                 this.setStatus(`排除正则无效：${error.message || error}`, "error");
+                showError(`排除正则无效：${error.message || error}`);
                 excludeInput.focus();
                 return false;
               }
@@ -4699,6 +6265,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             const promptText = (promptDirty ? promptInput.value : generated.prompt).trim();
             if (!promptText && !previewResult?.allParts?.length) {
               this.setStatus("排除规则过滤后没有可保存的 Prompt", "error");
+              showError("排除规则过滤后没有可保存的 Prompt（检查上面的排除正则）");
               promptInput.focus();
               return false;
             }
@@ -5008,6 +6575,61 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (galleryExtra && this.tooltip === tooltip) {
         tooltip.append(galleryExtra);
         this.positionTooltip(); // 又长高了，同一个锚点再算一次
+      }
+      // P站 已匹配 D站：顶部提示（b）+ 横线分割后并列 Danbooru 标签（c）。
+      // 卡片 id 可能是 `<illust_id>_p<页>`，按 `_p` 截断回作品 id 再查匹配表。
+      const cardPostId = String(card?.dataset?.postId || "");
+      const cardIllustId = cardPostId.split("_p")[0];
+      const cardEntry = cardIllustId ? this.pixivMatches.get(cardIllustId) : null;
+      // 浮层也必须**按页**取：作品详情里每张卡是不同页，取错页就会显示别的页的标签
+      const cardPage = Number((cardPostId.match(/_p(\d+)$/) || [])[1] || 0);
+      const matched = cardEntry
+        ? ((cardEntry.pages && cardEntry.pages[String(cardPage)]) || cardEntry.root || (cardEntry.post_id ? cardEntry : null))
+        : null;
+      if (matched && this.tooltip === tooltip) {
+        const danbooruTags = PROMPT_CATEGORY_ORDER
+          .flatMap((category) => String(matched[`tag_string_${category}`] || "").split(" "))
+          .filter(Boolean);
+        // 顺带把 D站 标签的中文也取来（本地词典，几乎瞬时）——这样下半区也带翻译小字
+        await this.ensureTagTranslations(danbooruTags);
+        if (this.tooltip !== tooltip) return;
+        const note = document.createElement("div");
+        note.className = "adg-prompt-tooltip-note";
+        note.textContent = `已匹配 D站 #${matched.post_id}（${matched.tag_count} 个标签）：`
+          + "分隔线以下是该帖的 Danbooru 规范标签，也正是实际输出的 Prompt（上半区仍是 pixiv 自己的标签）。";
+        tooltip.prepend(note);
+        // 横线分割：直接复用 .adg-prompt-tooltip-extra 的 border-top，不新增样式
+        const danbooru = document.createElement("section");
+        danbooru.className = "adg-prompt-tooltip-extra";
+        const heading = document.createElement("div");
+        heading.className = "adg-prompt-tooltip-category";
+        heading.textContent = `D站 #${matched.post_id} 的标签（${matched.tag_count} 个）`;
+        danbooru.append(heading);
+        for (const category of PROMPT_CATEGORY_ORDER) {
+          const values = String(matched[`tag_string_${category}`] || "").split(" ").filter(Boolean);
+          if (!values.length) continue;
+          const section = document.createElement("section");
+          section.className = "adg-prompt-tooltip-section";
+          const categoryLabel = document.createElement("div");
+          categoryLabel.className = "adg-prompt-tooltip-category";
+          categoryLabel.textContent = PROMPT_CATEGORY_LABELS[category] || category;
+          section.append(categoryLabel, ...values.map((tag) => {
+            const line = document.createElement("div");
+            line.className = "adg-prompt-tooltip-line";
+            const name = document.createElement("span");
+            name.textContent = tag.replace(/_/g, " ");
+            line.append(name);
+            const zh = String(this.translationCache.get(tag) || "").trim();
+            if (zh && zh !== tag) {
+              line.append(Object.assign(document.createElement("small"), { textContent: zh }));
+            }
+            // 刻意**不加** .is-searchable：这些是 Danbooru 标签，点了拿去搜 pixiv 语义不对
+            return line;
+          }));
+          danbooru.append(section);
+        }
+        tooltip.append(danbooru);
+        this.positionTooltip(); // 内容又长了，同一个锚点再算一次
       }
     }
 
@@ -5790,7 +7412,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       setTimeout(() => nameInput.focus(), 50);
     }
 
-    openDialog({ title, content, onApply, onCancel, showApply = true }) {
+    openDialog({ title, content, onApply, onCancel, showApply = true, applyLabel = "应用" }) {
       this.removeDialog();
       const overlay = document.createElement("div");
       overlay.id = this.dialogId;
@@ -5800,6 +7422,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       dialog.setAttribute("role", "dialog");
       dialog.setAttribute("aria-modal", "true");
       const heading = document.createElement("h3");
+      // 无障碍：模态必须能被读出标题。此前只有 role/aria-modal，屏幕阅读器只会念「对话框」。
+      heading.id = `${this.dialogId}-title`;
+      dialog.setAttribute("aria-labelledby", heading.id);
       heading.textContent = title;
       const actions = document.createElement("div");
       actions.className = "adg-dialog-actions";
@@ -5816,7 +7441,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const apply = document.createElement("button");
         apply.type = "button";
         apply.className = "primary";
-        apply.textContent = "应用";
+        // ⚠️ 默认值必须**保持「应用」**：tests/verify_tk_prompt_output.py 断言设置弹窗的
+        //    footerButtons === ["取消","应用"]。要按场景改文案的调用方传 applyLabel 即可，
+        //    绝不能改默认值（改了会挂测试，且会让所有复用它的弹窗一起变）。
+        apply.textContent = applyLabel;
         apply.onclick = () => {
           if (onApply?.() === false) return;
           this.removeDialog();
@@ -5826,7 +7454,48 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       dialog.append(heading, content, actions);
       overlay.append(dialog);
       overlay.addEventListener("mousedown", (event) => { if (event.target === overlay) close(); });
+      // ── 键盘可达性（2026-09-21）：模态对话框三件套 ──
+      // 此前**完全没有** keydown 处理：习惯性按 Esc 关不掉，Tab 会一路跑到背后的画布上。
+      // 监听挂在 overlay 上而不是 document：overlay 是 position:fixed inset:0 的全屏层，
+      // 移除它时监听随之消失，不需要额外的解绑与泄漏防护。
+      const FOCUSABLE = "button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
+      const focusables = () => [...dialog.querySelectorAll(FOCUSABLE)]
+        .filter((el) => !el.disabled && el.getClientRects().length > 0);
+      overlay.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          close();
+          return;
+        }
+        if (event.key !== "Tab") return;
+        const items = focusables();
+        if (!items.length) return;
+        const first = items[0];
+        const last = items[items.length - 1];
+        // 焦点还没进来（刚打开就按 Tab）或已跑到弹窗外 ⇒ 拉回弹窗内
+        if (!dialog.contains(document.activeElement)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus();
+          return;
+        }
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      });
       document.body.append(overlay);
+      // 初始焦点：优先落到第一个真正的输入控件，没有才退到首个可聚焦元素。
+      // 用 rAF 排到下一帧（与文件里既有的补焦点写法一致），并复查仍在文档里。
+      requestAnimationFrame(() => {
+        if (!overlay.isConnected) return;
+        const preferred = dialog.querySelector("input:not([type='hidden']), select, textarea")
+          || focusables()[0];
+        try { preferred?.focus?.({ preventScroll: true }); } catch {}
+      });
     }
 
     /**
@@ -6182,20 +7851,44 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 所以文案必须写明，否则用户会以为"设了 12 就永远只有 12 张"。
       [12, 24, 48].forEach((limit) => {
         const option = new Option(String(limit), String(limit), false, limit === this.settings.limit);
-        // 页码模式的源（P站）上游固定每页 GALLERY_PAGE_SIZE 条 → 48 档根本拿不到，
+        // 页码分页里**只有 P站**上游固定每页 GALLERY_PAGE_SIZE 条 → 48 档根本拿不到，
         // 禁用 + 写明原因，而不是留一个选了也不生效的假选项。
-        if (limit > GALLERY_PAGE_SIZE && this.pageMode()) {
+        // （yande.re / konachan.net / safebooru 的 page 与 limit 相互独立，能吃 48 档 —— 2026-09-27）
+        if (limit > GALLERY_PAGE_SIZE && this.isPixivSource()) {
           option.disabled = true;
-          option.textContent = `${limit}（该源每页固定 ${GALLERY_PAGE_SIZE}，不可用）`;
+          option.textContent = `${limit}（P站每页固定 ${GALLERY_PAGE_SIZE}，不可用）`;
         }
         select.append(option);
       });
       select.title = this.pageMode()
         ? `自适应 = 按节点宽高算出刚好填满的张数；固定档位 = 至少 N 张（不足一屏会自动补满）。`
-          + `当前图源用页码分页、上游每页固定 ${GALLERY_PAGE_SIZE} 张，所以 ${GALLERY_PAGE_SIZE} 以上的档位不可用。`
+          + (this.isPixivSource()
+            ? `P站 上游每页固定 ${GALLERY_PAGE_SIZE} 张，所以 ${GALLERY_PAGE_SIZE} 以上的档位不可用。`
+            : `当前图源用页码分页，但 page 与 limit 相互独立，各档位都能生效。`)
         : "自适应 = 按节点宽高算出刚好填满的图片数量；固定档位 = 至少 N 张（不足一屏会自动补满，"
           + "实际张数可能多于所选值）；拖动节点改变大小后会自动重算";
       pageLabel.append(select);
+      // 滚动方式（2026-09-27）：无限滚动（滚到底自动加载，默认）/ 分页器。
+      // 只在页码分页的源（D站/P站）有意义 —— C站 等本来就是"加载更多"形态（见 scrollMode()）。
+      const scrollLabel = document.createElement("label");
+      scrollLabel.className = "adg-field";
+      scrollLabel.textContent = "滚动方式";
+      const scrollSelect = document.createElement("select");
+      scrollSelect.add(new Option("无限滚动（滚到底自动加载）", "infinite", false, this.settings.galleryScrollMode === "infinite"));
+      scrollSelect.add(new Option("分页（显示页码）", "pager", false, this.settings.galleryScrollMode === "pager"));
+      scrollSelect.title = "无限滚动 = 滚到底自动加载下一批（推荐，不再有页码）；"
+        + "分页 = 旧的分页器，可用页码跳转。只对页码分页的图源（D站/P站）生效。";
+      scrollSelect.onchange = () => {
+        this.settings.galleryScrollMode = GALLERY_SCROLL_MODES.includes(scrollSelect.value)
+          ? scrollSelect.value
+          : "infinite";
+        this.saveSettings();
+        this.renderPagination();
+        // 切到无限滚动时立刻判一次要不要预取（否则要等用户先滚一下才有反应）
+        if (this.scrollMode()) void this.loadNextPageForScroll();
+      };
+      scrollLabel.append(scrollSelect);
+      pageLabel.after(scrollLabel);
       const heightLabel = document.createElement("label");
       heightLabel.className = "adg-field";
       heightLabel.textContent = "画廊高度（px）";
@@ -6222,9 +7915,84 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         + `实际卡宽会≥档位、且不超过 ${DG_MAX_PT}px（列数有下限保护，窄节点不会被撑出巨图）。`
         + "只影响网格排版，不改变节点尺寸。默认「小 116px」= 旧行为。";
       thumbLabel.append(thumbSelect);
-      viewGrid.append(pageLabel, heightLabel, thumbLabel);
+      const sizeLabel = document.createElement("label");
+      sizeLabel.className = "adg-field";
+      sizeLabel.textContent = "取图尺寸（P站）";
+      const sizeSelect = document.createElement("select");
+      for (const tier of DG_IMAGE_SIZE_TIERS) {
+        sizeSelect.add(new Option(
+          `${tier.label}（${tier.note}）`,
+          tier.id,
+          false,
+          tier.id === clampImageSize(this.settings.imageSize),
+        ));
+      }
+      sizeSelect.title = "只影响**喂给节点执行**的 P站 图。原图最清晰但最慢："
+        + "P站 原图常 2–27MB、CDN 经代理约 312KB/s，单张可达数十秒；"
+        + "1200px / 540px 体积小一个量级，批量取图快数倍。"
+        + "画廊缩略图与卡片菜单的「下载原图」都不受影响 —— 想要原图随时能单独下。"
+        + "改档位会刷新网格，需重新选图。";
+      sizeLabel.append(sizeSelect);
+      viewGrid.append(pageLabel, heightLabel, thumbLabel, sizeLabel);
       viewSection.append(viewTitle, viewGrid);
       content.append(viewSection);
+
+      // ── C站 无限加载（仅 C站 生效；关闭时该图源行为与改动前逐字节相同）──
+      const poolSection = document.createElement("section");
+      poolSection.className = "adg-settings-section adg-civitai-pool";
+      const poolTitle = document.createElement("div");
+      poolTitle.className = "adg-settings-title";
+      poolTitle.textContent = "C站 无限加载";
+      // 开关与功能名同行（.adg-settings-switch），不单开一行 —— 否则两个开关叠起来很占纵向空间
+      const poolEnableLabel = document.createElement("label");
+      const poolEnable = document.createElement("input");
+      poolEnable.type = "checkbox";
+      poolEnable.checked = this.settings.civitaiPool.enabled;
+      poolEnableLabel.append(poolEnable, document.createTextNode("开启"));
+      const poolHead = document.createElement("div");
+      poolHead.className = "adg-settings-switch";
+      poolHead.append(poolTitle, poolEnableLabel);
+      const poolTargetLabel = document.createElement("label");
+      poolTargetLabel.className = "adg-settings-switch";
+      poolTargetLabel.textContent = "后台加载档位";
+      const poolTargetSelect = document.createElement("select");
+      for (const option of CIVITAI_POOL_TARGET_OPTIONS) {
+        poolTargetSelect.add(new Option(
+          `${option} 条（${option / 200} 次请求）`, String(option), false, option === this.settings.civitaiPool.target));
+      }
+      poolTargetSelect.title = "后台目标加载量。C站 单页最多 200 条，所以每档正好 1~5 次请求（批间隔 1 秒）。";
+      poolTargetLabel.append(poolTargetSelect);
+      const poolTip = document.createElement("div");
+      poolTip.className = "adg-settings-help";
+      poolTip.textContent = "C站 上游不支持关键词检索：关键词只在已加载的内容里筛。"
+        + "开启后按上方档位在后台预取（每批 200 条、间隔 1 秒），搜索即覆盖已加载的全部内容、改词不再请求；"
+        + "翻页优先用池里的内容，不够才补。";
+      poolSection.append(poolHead, poolTargetLabel, poolTip);
+      content.append(poolSection);
+
+      // ── P站 匹配 D站（用 Danbooru 的规范标签替代 pixiv 标签）──
+      const matchSection = document.createElement("section");
+      matchSection.className = "adg-settings-section adg-pixiv-match";
+      const matchTitle = document.createElement("div");
+      matchTitle.className = "adg-settings-title";
+      matchTitle.textContent = "P站 匹配 D站";
+      // 同上：开关与功能名同行
+      const matchAutoLabel = document.createElement("label");
+      const matchAuto = document.createElement("input");
+      matchAuto.type = "checkbox";
+      matchAuto.checked = this.settings.pixivMatch.auto;
+      matchAutoLabel.append(matchAuto, document.createTextNode("自动关联"));
+      const matchHead = document.createElement("div");
+      matchHead.className = "adg-settings-switch";
+      matchHead.append(matchTitle, matchAutoLabel);
+      const matchTip = document.createElement("div");
+      matchTip.className = "adg-settings-help";
+      matchTip.textContent = "P站 标签模型不认识，故默认不输出 Prompt。"
+        + "Danbooru 收录了大量 P站 作品且帖子自带作品 id：开启后按 id 反查，命中就用该帖更全的 Danbooru 标签当 Prompt。"
+        + "代价：每批多 1 次 D站 请求；未收录的仍不输出；反查是作品级的（多页共用一组标签）。"
+        + "卡片上也可单张「匹配D站」。";
+      matchSection.append(matchHead, matchTip);
+      content.append(matchSection);
 
       // ── 排除标签（搜索结果不含这些标签；每个占 1 个计数槽）──
       const excludeSection = document.createElement("section");
@@ -6315,6 +8083,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           ? `✓ 已登录 Danbooru（账号等级上限 ${this.tagLimit()} 个计数标签；Gold 及以上为 6）`
           : "ℹ 未登录：最多 2 个计数标签。登录后上限按账号等级计算（Member 仍为 2，Gold 为 6，Platinum 及以上不限）。";
         accountSection.prepend(status);
+        // 顺手刷新收藏状态（2026-09-27，Issue #3）：刚登录 / 改过凭证后，
+        // 卡片上的 ★/☆ 与工具条的收藏计数都必须跟上。
+        void this.refreshFavorites();
       });
       const userLabel = document.createElement("label");
       userLabel.className = "adg-field";
@@ -6373,9 +8144,24 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         onApply: () => {
           this.settings.limit = Number(select.value);
           this.settings.gridHeight = Math.max(360, Math.min(1200, Number(heightInput.value) || 620));
+          // C站「无限加载」：开关或档位变了就**丢掉旧池**（旧池是按旧档位/旧上游筛选建的）
+          const poolNext = normalizeCivitaiPool({
+            enabled: poolEnable.checked,
+            target: Number(poolTargetSelect.value),
+          });
+          if (poolNext.enabled !== this.settings.civitaiPool.enabled
+              || poolNext.target !== this.settings.civitaiPool.target) {
+            this.sourcePool = null;
+          }
+          this.settings.civitaiPool = poolNext;
+          // P站 匹配 D站：开关变化不需要丢弃已有匹配（匹配是作品级的、与设置无关）
+          this.settings.pixivMatch = normalizePixivMatch({ auto: matchAuto.checked });
           // 缩略图档位：setThumbWidth 只改设置 + 丢列步长反推基准，**不碰节点尺寸**；
           // 让新档位生效走的是下面既有的 applyGridHeight() + search(resetPage) 两条原有行为。
           this.setThumbWidth(Number(thumbSelect.value));
+          // P站 取图尺寸：只改设置本身；下面 search({resetPage:true}) 会重建网格，
+          // 已选中的卡片随之清空（与缩略图档位同样的既有行为），需重新选图。
+          this.settings.imageSize = clampImageSize(sizeSelect.value);
           this.saveSettings();
           this.applyGridHeight();
           this.search({ resetPage: true });
@@ -6384,6 +8170,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     build() {
+      // 重入守卫：重复 build 会**双绑** 5 个 window/document 级监听（见 dispose 的移除清单），
+      // 而 dispose 只摘一次 ⇒ 监听泄漏，且此后每次松手/滚动都要多跑一遍别人的处理器。
+      // 当前唯一调用点已被 `_animaDanbooruGallery` 标志挡着，现存代码不会触发；这里是第二道，
+      // 防的是将来新增调用点。dispose 后也一并挡住（那时 disposed=true，DOM 已拆）。
+      if (this.root || this.disposed) return;
       this.filterControls?.destroy();
       const root = document.createElement("section");
       root.className = "anima-danbooru-gallery";
@@ -6463,6 +8254,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         group.append(button);
         return button;
       };
+      // ★ 我的收藏入口（2026-09-27，Issue #3）：跳转 `ordfav:<账号>`，展示 / 分页 / 无限滚动
+      //   全部复用既有搜索链路。放在「筛选操作」组 —— 语义上它就是"只看我收藏的"。
+      this.favoriteButton = addAction(
+        "☆ 我的收藏",
+        "查看 D站 账号的收藏（未登录时会提示去登录）",
+        () => this.openMyFavorites(),
+        filterGroup,
+      );
+      this.favoriteButton.classList.add("adg-fav-entry");
       // ── 图源下拉（D站 / C站 / P站）──
       // 注意：这个容器用**新类名** adg-source-picker，不占 .adg-toolbar-group ——
       // tests/verify_tk_prompt_output.py 断言分组数恰为 4，新增分组会把它弄红。
@@ -6474,8 +8274,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const select = document.createElement("select");
         select.className = "adg-source-select";
         select.setAttribute("aria-label", "图源");
-        for (const id of GALLERY_SOURCE_ORDER) {
-          select.append(new Option(GALLERY_SOURCE_FALLBACK[id].label, id));
+        for (const id of this.orderedSourceIds()) {
+          select.append(new Option(this.sourceEntry(id)?.label || id, id));
         }
         select.value = this.activeSourceId();
         select.onchange = () => { void this.switchGallerySource(select.value); };
@@ -6485,45 +8285,123 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         mainGroup.append(picker);
       }
       addAction("搜索", "按上方标签搜索", () => this.submitSearch(this.queryInput?.value ?? this.queryWidget?.value ?? ""), mainGroup).className = "adg-primary-action";
-      // ── 随机发现：order:random + 质量地板。三档质量让用户挑口味，而不是给一个
-      //    「随机」开关把没人贴过的冷门图倒进来（见 RANDOM_QUALITY_TIERS 注释）。
+      // ── 随机发现：order:random + 质量地板。
+      //
+      // 2026-09-26 低占位改造：原先 3 个档位各占一个按钮 + 「换一批」，共 4 个按钮挤在工具条
+      // 一行里（实测占掉约 4 个按钮宽度，把设置/Prompt 等挤到换行）。改为**一个紧凑下拉 +
+      // 一个「换一批」**，占位从 4 按钮降到 ~1.8 按钮宽，信息量不减（档位的 hint 进 title）。
+      //
+      // ⚠️ 两个引用契约必须保留（tests/test_gallery_multisource_ui.py:99-100 断言）：
+      //    · `randomTierButtonList` —— 仍是由按钮组成的数组，遍历 `.hidden = !isDanbooru`；
+      //      改成下拉后，数组里放的是 `[选择器容器, 换一批按钮]` 这类可置 hidden 的元素。
+      //    · `randomReshuffleBtn` —— 仍是「换一批」按钮本身。
       {
         const tierButtons = [];
+        const randomWrap = document.createElement("span");
+        randomWrap.className = "adg-random-group";
+
+        const tierSelect = document.createElement("select");
+        tierSelect.className = "adg-random-tier";
+        tierSelect.setAttribute("aria-label", "随机发现档位");
+        tierSelect.append(new Option("随机发现", ""));
         for (const tier of RANDOM_QUALITY_TIERS) {
-          const btn = addAction(tier.label, `随机发现：${tier.hint}（再点一次退出随机）`, () => {
-            if (this.settings.randomQuality === tier.id) void this.exitRandom();
-            else void this.discoverRandom(tier.id);
-          }, mainGroup);
-          btn.className = "adg-random-btn";
-          btn.dataset.tier = tier.id;
-          tierButtons.push(btn);
+          const opt = new Option(tier.label, tier.id);
+          opt.title = tier.hint;
+          tierSelect.append(opt);
         }
+        tierSelect.title = "随机发现：选一个档位进入随机浏览（再选回「随机发现」退出）";
+        tierSelect.onchange = () => {
+          const picked = tierSelect.value;
+          if (!picked) void this.exitRandom();
+          else void this.discoverRandom(picked);
+        };
+        randomWrap.append(tierSelect);
+
         const reshuffleBtn = addAction("换一批", "重新随机一次，并避开本档已看过的图", () => {
           void this.discoverRandom(this.settings.randomQuality || "good", { reshuffle: true });
-        }, mainGroup);        reshuffleBtn.className = "adg-random-reshuffle";
+        }, randomWrap);
+        reshuffleBtn.className = "adg-random-reshuffle";
+
+        mainGroup.append(randomWrap);
+
         this.randomTierButtons = () => {
-          for (const btn of tierButtons) btn.classList.toggle("active", this.settings.randomQuality === btn.dataset.tier);
           const on = Boolean(this.settings.randomQuality);
-          // 工具栏按钮的禁用样式由 .is-disabled 承载（CSS 里没有 :disabled 规则）
+          tierSelect.value = on ? this.settings.randomQuality : "";
           reshuffleBtn.disabled = !on;
           reshuffleBtn.classList.toggle("is-disabled", !on);
           reshuffleBtn.title = on ? "重新随机一次，并避开本档已看过的图" : "先选一个随机档位";
+          tierSelect.classList.toggle("active", on);
         };
         this.randomTierButtons();
         // 随机发现是 order:random + D站 评分地板：换源时整组隐藏（capabilities 驱动）
+        tierButtons.push(randomWrap);
         this.randomTierButtonList = tierButtons;
         this.randomReshuffleBtn = reshuffleBtn;
+        this.randomTierSelect = tierSelect;
       }
-      addAction("设置", "设置画廊显示、排除标签和 Danbooru 登录", () => this.openSettings(), mainGroup);
-      this.promptSettingsBtn = addAction("Prompt设置", "控制 Prompt 输出类别与格式", () => this.openPromptSettings(), mainGroup);
-      this.promptOutputBtn = addAction("", "", () => {
-        const enabled = this.setPromptOutputEnabled(this.settings.promptOutputEnabled === false);
-        this.setStatus(enabled ? "Prompt 输出已开启" : "Prompt 输出已关闭：下游将收到空 Prompt", "success");
-      }, mainGroup);
-      this.updatePromptOutputButton();
-      this.galleryBatchBtn = addAction("批量入队", "将选中的画廊卡片按显示顺序拆成独立任务，逐张执行", () => this.startGalleryBatch(), mainGroup);
-      this.galleryBatchBtn.className = "adg-batch-queue";
-      this.galleryBatchBtn.disabled = true;
+      // ── AnimaDex 角色浮窗入口（2026-09-26）──────────────────────────────────
+      // 只占 1 个按钮宽（低占位）：点开是浮窗，用来把角色基础词加进搜索框 ——
+      // 这是「换人物」最顺手的路径（查到角色 → 点一下 → 搜索框就是那个角色的词）。
+      // ⚠️ 它不是图源：不注册进 /anima/gallery/sources，也不参与图源下拉。
+      this.animadexPanel = new AnimaDexPanel({
+        onInsert: (text) => this.applyAnimadexInsert(text),
+      });
+      mainGroup.append(this.animadexPanel.buildTrigger());
+
+      // ── 设置类操作收进「设置 ▾」菜单（2026-09-26 低占位高能效改造）──────────────
+      //
+      // 改前：画廊设置 / Prompt设置 / Prompt 输出 / 批量入队 各占一个按钮，工具条被撑到 7 行
+      //（实测截图：7425 行附近那段）。这四件都是**低频**操作，不该常驻占位。
+      // 改后：一个「设置 ▾」菜单收纳它们，工具条省下 2 行；触发按钮上带**状态摘要**
+      //（如「设置 · Prompt 关」），信息量不减反增（关掉 Prompt 输出这种事不该靠翻菜单才发现）。
+      //
+      // ⚠️ 引用契约保持不变（tests/test_gallery_multisource_ui.py:134-135 断言）：
+      //    `this.promptSettingsBtn` / `this.promptOutputBtn` 仍指向真实 `<button>` 元素
+      //    （只是住进了菜单），故 `applySourceCapabilities()` 里那两行 `.hidden = !promptApplicable`
+      //    一字不改仍然有效。`this.galleryBatchBtn` 同理（verify_danbooru_gallery_batch.py 依赖它）。
+      {
+        // 持久容器：PortalDropdown.close() 只做 menu.remove()，容器本身存活，下次打开被重新 append。
+        const settingsMenuBody = document.createElement("div");
+        settingsMenuBody.className = "adg-settings-menu-body";
+
+        const settingsDropdown = new PortalDropdown({
+          label: "设置",
+          title: "画廊设置 / Prompt 输出 / 批量入队",
+          menuClass: "adg-settings-menu",
+          content: () => settingsMenuBody,
+        });
+        mainGroup.append(settingsDropdown.element);
+        this.settingsDropdown = settingsDropdown;
+
+        // 菜单项统一在点击后收起菜单（避免菜单挡住随后的设置弹窗）
+        const dismissThen = (fn) => () => { settingsDropdown.close(); fn(); };
+
+        this.settingsMenuBtn = addAction(
+          "画廊设置",
+          "设置画廊显示、排除标签和 Danbooru 登录",
+          dismissThen(() => this.openSettings()),
+          settingsMenuBody,
+        );
+        this.promptSettingsBtn = addAction(
+          "Prompt设置",
+          "控制 Prompt 输出类别与格式",
+          dismissThen(() => this.openPromptSettings()),
+          settingsMenuBody,
+        );
+        this.promptOutputBtn = addAction("", "", () => {
+          const enabled = this.setPromptOutputEnabled(this.settings.promptOutputEnabled === false);
+          this.setStatus(enabled ? "Prompt 输出已开启" : "Prompt 输出已关闭：下游将收到空 Prompt", "success");
+        }, settingsMenuBody);
+        this.updatePromptOutputButton();
+        this.galleryBatchBtn = addAction(
+          "批量入队",
+          "将选中的画廊卡片按显示顺序拆成独立任务，逐张执行",
+          dismissThen(() => this.startGalleryBatch()),
+          settingsMenuBody,
+        );
+        this.galleryBatchBtn.className = "adg-batch-queue";
+        this.galleryBatchBtn.disabled = true;
+      }
       this.filterControls = new GalleryFilterControls({
         readSettings: () => this.settings,
         commit: (patch, { search = false, render = false } = {}) => {
@@ -6601,6 +8479,16 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.galleryBatchPanel = galleryBatchPanel;
       const grid = document.createElement("div");
       grid.className = "adg-grid";
+      // ★ 滚轮归画廊（2026-09-27 修，ComfyUI 1.48.7 前端实测）：
+      //   ComfyUI 的判定是 `e.target.closest('[data-capture-wheel="true"]')`
+      //   **且** `document.activeElement` 落在该元素内 —— **两个条件缺一不可**，
+      //   否则普通纵向滚轮会被 `forwardEventToCanvas()` 转发给画布做缩放
+      //   （用户实报："滚动只会变成缩放画布比例，无法真正滚动"）。
+      //   所以：① 打上官方约定属性；② `tabIndex = -1` 让它能被**程序化聚焦**（不进 Tab 序列）；
+      //   ③ 鼠标移入时聚焦它（见 setupInfiniteScroll），使 activeElement 落在里面。
+      //   ⚠️ Ctrl/Cmd+滚轮与横向滚轮**仍归画布**（`isCanvasGestureWheel` 白名单），这是官方语义。
+      grid.dataset.captureWheel = "true";
+      grid.tabIndex = -1;
       // ★ 联想浮层**必须单例**：它挂在 document.body 上（fixed 定位），而构建面板会被
       //   多次调用（节点重绘 / 面板重建）。旧代码每次都 append 一个新 div，而销毁只在
       //   teardown 里做 —— 于是 body 下会堆着若干"上一代"浮层：`this.suggestions` 只指
@@ -6625,7 +8513,17 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.status = status;
       this.grid = grid;
       this.setupImageLoading();
-      this.applyGridHeight();
+      // 无限滚动 + 滚轮拦截（2026-09-27）：滚轮拦截是**无条件**的（否则鼠标停在画廊上滚不动，
+      // 用户只能去拖右侧滚动条）；滚到底预取只在 scrollMode() 下生效。
+      this.setupInfiniteScroll();
+      // ⚠️ 这里**不再** applyGridHeight()。build() 跑在 onNodeCreated 里，此刻
+      //    installDOMWidgetSizeSync 还没执行（在本函数更下方才装），domSizeSync 仍是 null
+      //    ⇒ setGridHeight() 只能走 fallback 直接 node.setSize(...)，**宽度和高度一起改**
+      //    （窄节点会被 Math.max(360, w) 撑到 360 宽），而且绕开了 setBounds 的区间钉死
+      //    与 setContentHeight 的 clamp —— 用户实报的「新建节点后尺寸自己变了」就是这条。
+      //    正确的初始化在下方：lockedHeight 直接取「节点当前高度」，即工作流保存的/默认的尺寸。
+      //    这里只把 settings.gridHeight 同步成节点真实高度（只记录，不改尺寸）。
+      this.syncGridHeightFromNode();
       // 分类库（唯一真源在后端，跨节点共享）：抓工作流里的旧数据 → 拉后端 → 迁移。
       // 异步执行、不阻塞首屏；失败也只是"分类暂时用工作流缓存"。
       this.initCategoryLibrary();
@@ -6634,6 +8532,16 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 不穿透到被其他节点遮住的画廊，避免误触别的节点。
       const recoverPointer = (event) => {
         if (!this.root?.isConnected) return;
+        // ⚡ 把「事件目标的节点归属」判据提到 hit-test **之前** —— 判据一字未改，只是提前。
+        //    target 不属于任何节点时（点画布空白、拖画布框选、点 ComfyUI 自己的工具栏/菜单，
+        //    这些才是绝大多数 mouseup）下面无论如何都会在同一个判据处 return，
+        //    但那时 `elementsFromPoint`（hit-test + 强制布局刷新）与两轮 `closest`
+        //    （命中栈常有 10~40 个元素）已经白跑完了 —— 而这笔开销每次松手都要付。
+        //    closest 是纯树遍历、**不读布局**，所以这次预筛本身几乎免费。
+        const earlyTargetNode = (event.target instanceof Element
+          ? event.target.closest?.("[data-node-id]")?.dataset.nodeId
+          : undefined) ?? null;
+        if (!earlyTargetNode) return;
         const stack = document.elementsFromPoint(event.clientX, event.clientY);
         // Portal/Modal 自己拥有该坐标的交互权。recoverPointer 只负责修复
         // LiteGraph 面罩遮住的“节点内控件”，不能穿过任何外部浮层。
@@ -6648,9 +8556,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         //    旧写法会一路往下找到**下面的画廊节点本身**，于是判定为“同一个节点”而放行 →
         //    补发点击 → 穿透到同坐标下的卡片，参考图被换成用户没想选的图。
         //    现在要求目标本身落在本节点内（含节点激活面罩），否则一律不补发。
-        const targetNode = (event.target instanceof Element
-          ? event.target.closest?.("[data-node-id]")?.dataset.nodeId
-          : undefined) ?? null;
+        //    （上面的 earlyTargetNode 预筛已经保证它非空，这里直接复用同一个值。）
+        const targetNode = earlyTargetNode;
         if (!targetNode || (candidateNode && targetNode !== candidateNode)) return;
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -6669,11 +8576,19 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 拿不到就用契约兜底表，界面不会因为后端没就绪而缺控件或报错。
       this.applySourceCapabilities();
       void this.loadGallerySources().then(() => {
-        if (!this.disposed && this.root) this.applySourceCapabilities();
+        if (this.disposed || !this.root) return;
+        // ⚠️ 必须**重建下拉**（2026-09-26 真机踩到）：下拉是在 build() 里同步构建的，
+        //    而本请求在 build() 返回之后才发起 ⇒ 异步回来后若不重建，下拉永远只有兜底表
+        //    那 3 个源，后端新注册的图源（safebooru / yandere / konachan…）在界面上根本不出现。
+        //    这是「后端可插拔、前端看不见」的另一半真凶（另一半是原先的 includes 白名单过滤）。
+        this.rebuildSourceOptions();
+        this.applySourceCapabilities();
       });
       // 密钥/授权状态也预热一次：换源到 P站 时要立刻知道"模块没装"还是"没登录"（见 switchGallerySource）
       void this.refreshGallerySecretState();
       this.accountReady = this.refreshAccount();
+      // D站 收藏状态（2026-09-27，Issue #3）：与账号一起预热，卡片一上来就能显示正确的 ★/☆
+      void this.refreshFavorites();
       this.initialSearchTimer = setTimeout(async () => {
         this.initialSearchTimer = null;
         try { await this.accountReady; } catch {}
@@ -6714,6 +8629,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         clearTimeout(this.autoFillTimer);
         this.autoFillTimer = null;
       }
+      if (this.autoFillRetryTimer) {
+        clearTimeout(this.autoFillRetryTimer);
+        this.autoFillRetryTimer = null;
+      }
+      if (this._scrollFillTimer) {
+        clearTimeout(this._scrollFillTimer);
+        this._scrollFillTimer = null;
+      }
+      this.teardownInfiniteScroll();
       if (this.grid) this.grid.style.minHeight = "";
       window.removeEventListener("resize", this.positionSuggestionsHandler);
       document.removeEventListener("scroll", this.positionSuggestionsHandler, true);
@@ -6813,7 +8737,20 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             // ② 拖动结束后再持久化（写工作流属性 + 标记改动，需要节流）
             clearTimeout(uiRef.gridHeightCommitTimer);
             uiRef.gridHeightCommitTimer = setTimeout(() => {
-              const height = Number(uiRef.grid?.clientHeight) || 0;
+              // ⚠️⚠️ 这里必须记「内容区高度」，**不是** grid.clientHeight。
+              //     两者的语义与数值都不同：settings.gridHeight 是 setContentHeight() 的入参
+              //     （= node.size[1] - chrome），而 .adg-grid 只是 root 的最后一个子元素 ——
+              //     它上面还有 queryrow / toolbar / 分页 / info / 状态栏，实测占掉约 190px。
+              //     真机实测（2026-09-21，节点 2000×720）：
+              //       node.size[1] = 720 → 内容区可用 625（720-95），而 grid.clientHeight = 434。
+              //     原实现写的是后者 ⇒ settings.gridHeight 被记成 434，于是下一次
+              //     applyGridHeight()（设置面板「应用」）按 434 调 setContentHeight ⇒
+              //     node.size[1] = 434 + 95 = 529，**比用户设定的 720 矮 191px**。
+              //     这正是「被动改变节点尺寸」中最隐蔽的一条：它不在拖动时发作，而在用户
+              //     下一次动设置面板时发作，看起来就像"节点自己变矮了"。
+              //     getContentHeight() = clamp(size[1] - chrome, min, max)，而此刻区间正是
+              //     setBounds(nowHeight, nowHeight) 刚钉的 [size[1]-95, size[1]-95] ⇒ 自洽。
+              const height = Math.round(Number(uiRef.domSizeSync?.getContentHeight?.()) || 0);
               if (!(height > 0)) return;
               if (Math.abs(height - (Number(uiRef.settings?.gridHeight) || 0)) > 2) {
                 uiRef.settings.gridHeight = height;

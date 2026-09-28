@@ -13,6 +13,9 @@ data/prompt_library.json.bak
 data/tag_category_index.cache
 # 自建分类索引的 pickle 缓存（运行时生成；索引本体 data/tag_taxonomy.tsv.gz 才随包发布）
 data/tag_taxonomy.cache
+# 取图落盘缓存（2026-09-27 起，anima_danbooru_gallery._cached_image_fetch）：
+# 按 URL 存原图字节的纯运行时数据，随机器长，绝不随包发布
+data/image_cache/
 # 用户自己保存的 Tag Getter 预设快照（运行时生成，跟着机器走，不发布）
 data/tag_presets.json
 # 图源密钥：C站 API key / P站 OAuth token。只存本机 —— **绝不进仓库、不打日志、界面只回掩码**。
@@ -52,6 +55,8 @@ _bak_*/
 docs/HANDOFF.md
 # 内部会话交接（含本机路径/用户习惯等，不适合随包发布）
 docs/HANDOFF-*.md
+# 归档区：2026-09-26 整理的旧交接与已实施完的方案/审计（索引见 docs/archive/README.md）
+docs/archive/
 docs/aegis/
 tests/verify_danbooru_dropdown.py
 
@@ -79,3 +84,13 @@ panel/vite.config.ts.timestamp-*.mjs
 # 竞品拆解报告（开发调研材料，不是用户文档）
 /Danbooru-Gallery-竞品拆解报告.md
 
+
+# 临时探针/日志（子代理与手工调试常把文件放在仓库根，带 .scratch_ 前缀）
+# 2026-09-27 追加：此前只忽略 `.scratch/` 目录，根目录的 `.scratch_*.py` / `.scratch_*.log`
+# 不在覆盖范围，实测 `git status` 里以 `??` 出现 —— 有误提交风险。
+.scratch_*
+
+# 仓库根的状态真源与单轮交接（开发材料，只在本地保留；此前只忽略 docs/HANDOFF-*.md，
+# 2026-09-27 的会话把这两份写在了仓库根，实测以 `??` 出现 —— 有误推送风险）
+/CURRENT-STATE.md
+/HANDOFF-*.md

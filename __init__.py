@@ -42,6 +42,13 @@ from .anima_3d_body_camera import (
     NODE_CLASS_MAPPINGS as BODY_CAMERA_NODE_CLASS_MAPPINGS,
     NODE_DISPLAY_NAME_MAPPINGS as BODY_CAMERA_NODE_DISPLAY_NAME_MAPPINGS,
 )
+# 统一翻译设置（2026-09-23）：翻译相关配置集中到 data/translate_settings.json，
+# 取值优先级为「设置文件 > 环境变量 > 源码常量」，未配置时行为与改造前一致。
+from .anima_translate_settings import (
+    get_setting as _translate_setting,
+    provider_fallback_order as _translate_fallback_order,
+    register_routes as _register_translate_setting_routes,
+)
 from .anima_prompt_batch import (
     NODE_CLASS_MAPPINGS as BATCH_NODE_CLASS_MAPPINGS,
     NODE_DISPLAY_NAME_MAPPINGS as BATCH_NODE_DISPLAY_NAME_MAPPINGS,
@@ -61,10 +68,6 @@ from .anima_danbooru_tag_getter import (
 from .anima_prompt_saver import (
     NODE_CLASS_MAPPINGS as PROMPT_SAVER_NODE_CLASS_MAPPINGS,
     NODE_DISPLAY_NAME_MAPPINGS as PROMPT_SAVER_NODE_DISPLAY_NAME_MAPPINGS,
-)
-from .anima_lighting_prompt import (
-    NODE_CLASS_MAPPINGS as LIGHTING_PROMPT_NODE_CLASS_MAPPINGS,
-    NODE_DISPLAY_NAME_MAPPINGS as LIGHTING_PROMPT_NODE_DISPLAY_NAME_MAPPINGS,
 )
 from .anima_preset_latent import (
     NODE_CLASS_MAPPINGS as PRESET_LATENT_NODE_CLASS_MAPPINGS,
@@ -152,6 +155,34 @@ try:
 except Exception as _gallery_warmup_error:  # noqa: BLE001
     print(f"[画廊预热] 预热器不可用（画廊/面板不受影响，退回按需触发）：{_gallery_warmup_error}")
 
+# 画廊标签索引（anima_tag_index）：联想/搜索用的**本地**索引（英文标签 20.6 万 + 中文别名 23.5 万对）。
+# 2026-09-26 新增。为什么在这里预热：建索引实测约 1.2~1.8s，若留给首次查询，用户输入中文时
+# 会白等（改前实测冷启动首查 3.5~9.6s）。放后台线程预热后，首次联想即为稳态的毫秒级。
+#
+# ⚠️ 与上面两处同一套纪律：整体 try/except —— 索引建不起来只等于「联想退回远程路径」，
+# 绝不能让插件加载失败；且**只预热不阻塞**（线程 daemon，import 完成即返回）。
+try:
+    from .anima_tag_index import warm_async as _tag_index_warm_async
+
+    _TAG_INDEX_WARM_THREAD = _tag_index_warm_async()
+    if _TAG_INDEX_WARM_THREAD is not None:
+        print("[画廊标签索引] 已启动后台预热（首次联想无需等待建索引）")
+except Exception as _tag_index_error:  # noqa: BLE001
+    print(f"[画廊标签索引] 预热不可用（联想退回远程路径，功能不受影响）：{_tag_index_error}")
+
+# AnimaDex 角色库（anima_animadex）：**浮窗**用的提示词素材源（不是图源，不进 /anima/gallery/sources）。
+# 2026-09-26 新增。数据 = 随包的 anima_animadex.json.gz（2.77 MB / 36,488 角色，100% 带 trigger 与预览图）。
+# 预热理由同标签索引：解析 gzip + 建索引实测约 3~5s（含复用别名索引的角色中文名），
+# 留给首次打开浮窗就会白等，故后台线程预热。
+try:
+    from .anima_animadex import warm_async as _animadex_warm_async
+
+    _ANIMADEX_WARM_THREAD = _animadex_warm_async()
+    if _ANIMADEX_WARM_THREAD is not None:
+        print("[AnimaDex] 已启动后台预热（首次打开角色浮窗无需等待建索引）")
+except Exception as _animadex_error:  # noqa: BLE001
+    print(f"[AnimaDex] 预热不可用（浮窗功能不受影响，首次打开时按需构建）：{_animadex_error}")
+
 # 合并所有节点的注册表（ComfyUI 通过 __init__.py 顶层这两个变量发现所有节点）
 NODE_CLASS_MAPPINGS = {
     **NODE_CLASS_MAPPINGS,
@@ -162,7 +193,6 @@ NODE_CLASS_MAPPINGS = {
     **STRING_ROUTER_NODE_CLASS_MAPPINGS,
     **DANBOORU_TAG_GETTER_NODE_CLASS_MAPPINGS,
     **PROMPT_SAVER_NODE_CLASS_MAPPINGS,
-    **LIGHTING_PROMPT_NODE_CLASS_MAPPINGS,
     **PRESET_LATENT_NODE_CLASS_MAPPINGS,
     **LATENT_SWITCH_NODE_CLASS_MAPPINGS,
     **DANBOORU_NODE_CLASS_MAPPINGS,
@@ -181,7 +211,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **STRING_ROUTER_NODE_DISPLAY_NAME_MAPPINGS,
     **DANBOORU_TAG_GETTER_NODE_DISPLAY_NAME_MAPPINGS,
     **PROMPT_SAVER_NODE_DISPLAY_NAME_MAPPINGS,
-    **LIGHTING_PROMPT_NODE_DISPLAY_NAME_MAPPINGS,
     **PRESET_LATENT_NODE_DISPLAY_NAME_MAPPINGS,
     **LATENT_SWITCH_NODE_DISPLAY_NAME_MAPPINGS,
     **DANBOORU_NODE_DISPLAY_NAME_MAPPINGS,
@@ -200,7 +229,7 @@ WEB_DIRECTORY = "./web"
 # 从根上消掉「两个地方要一起改」这个失败模式；读失败（打包丢文件等）才回落到内置值。
 # 更新链（_is_update_release_path / 更新 ZIP 校验）本来就要求包里带 VERSION，
 # 所以这个文件在真实安装里一定存在。
-_FALLBACK_VERSION = "2.20.0"
+_FALLBACK_VERSION = "2.24.1"
 try:
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"), encoding="utf-8") as _vf:
         __version__ = _vf.read().strip() or _FALLBACK_VERSION
@@ -250,6 +279,8 @@ def _detect_proxy():
     """探测本地代理端口（Clash 7890 / 7897 / V2ray 10809）是否可用，返回地址或 None"""
     import socket
     candidates = [
+        # 设置面板里填的代理优先；留空再读环境变量与本机常见端口
+        _translate_setting("proxy"),
         os.environ.get("ANIMA_PROXY"),
         "http://127.0.0.1:7890",
         "http://127.0.0.1:7897",
@@ -349,9 +380,24 @@ class DeepLXManager:
         self.process: subprocess.Popen | None = None
         self._start_lock: asyncio.Lock | None = None
 
+    # ── 三级取值：设置文件 > 环境变量 > 源码常量 ──
+    # 源码里的默认路径（E:\1gongju\DeepLX\...）只是本机安装位置，别的用户必然对不上，
+    # 因此设置面板可覆盖；未配置时逐级回退，行为与改造前完全一致。
+    def configured_exe(self) -> str:
+        return str(_translate_setting("deeplx.exe_path") or os.environ.get("DEEPLX_EXE") or self.exe or "").strip()
+
+    def configured_log(self) -> str:
+        return str(_translate_setting("deeplx.log_path") or os.environ.get("DEEPLX_LOG") or self.log_path or "").strip()
+
+    def configured_port(self) -> int:
+        try:
+            return int(_translate_setting("deeplx.port", self.port))
+        except (TypeError, ValueError):
+            return self.port
+
     def _listening_sync(self) -> bool:
         try:
-            with socket.create_connection(("127.0.0.1", self.port), timeout=0.4):
+            with socket.create_connection(("127.0.0.1", self.configured_port()), timeout=0.4):
                 return True
         except OSError:
             return False
@@ -360,7 +406,7 @@ class DeepLXManager:
         """发现同名 DeepLX 进程，避免只依赖本实例的 Popen 引用。"""
         if os.name != "nt":
             return []
-        image_name = os.path.basename(os.environ.get("DEEPLX_EXE") or self.exe)
+        image_name = os.path.basename(self.configured_exe())
         if not image_name:
             return []
         try:
@@ -401,7 +447,7 @@ class DeepLXManager:
     def _start_sync(self) -> bool:
         if self._listening_sync():
             return True
-        exe = os.environ.get("DEEPLX_EXE", self.exe).strip()
+        exe = self.configured_exe()
         if not exe or not os.path.isfile(exe):
             return False
         if self.process is not None and self.process.poll() is None:
@@ -419,7 +465,7 @@ class DeepLXManager:
         proxy = os.environ.get("DEEPLX_PROXY", "").strip() or _detect_proxy()
         if proxy:
             args.extend(["-proxy", proxy])
-        log_path = os.environ.get("DEEPLX_LOG", self.log_path).strip() or os.devnull
+        log_path = self.configured_log() or os.devnull
         try:
             log_dir = os.path.dirname(log_path)
             if log_dir:
@@ -461,14 +507,14 @@ class DeepLXManager:
         existing_pids = self._existing_pids_sync()
         process_running = managed_running or bool(existing_pids)
         return {
-            "installed": bool(os.path.isfile(os.environ.get("DEEPLX_EXE") or self.exe)),
+            "installed": bool(os.path.isfile(self.configured_exe())),
             "listening": listening,
             "process_running": process_running,
             "managed": managed_running,
             "pid": self.process.pid if managed_running else (existing_pids[0] if existing_pids else None),
-            "port": self.port,
-            "exe": os.environ.get("DEEPLX_EXE") or self.exe,
-            "log": os.environ.get("DEEPLX_LOG") or self.log_path,
+            "port": self.configured_port(),
+            "exe": self.configured_exe(),
+            "log": self.configured_log(),
         }
 
     def _stop_managed_sync(self) -> bool:
@@ -1457,6 +1503,20 @@ _BAIDU_TRANSLATE_CONFIG_PATH = os.path.join(PLUGIN_DIR, "data", "translation_pro
 _BAIDU_CONFIG_LOCK = threading.Lock()
 
 
+# ── DashScope 取值（设置文件 > 环境变量 > 内置默认）──
+def _dashscope_key() -> str:
+    return str(_translate_setting("dashscope.api_key") or _get_env("DASHSCOPE_API_KEY") or "").strip()
+
+
+def _dashscope_base() -> str:
+    return str(_translate_setting("dashscope.base_url") or _get_env("DASHSCOPE_BASE_URL")
+               or "https://dashscope.aliyuncs.com/compatible-mode/v1").strip()
+
+
+def _dashscope_model() -> str:
+    return str(_translate_setting("dashscope.model") or _get_env("DASHSCOPE_MODEL") or "qwen-turbo").strip()
+
+
 class TranslationProviderError(RuntimeError):
     """可分类的 provider 错误；保留旧调用方可理解的字符串。"""
 
@@ -1725,10 +1785,12 @@ def _provider_configured(provider: str) -> bool:
         from .anima_local_llm import is_ready as _llm_ready
         return _llm_ready()
     if provider == "deeplx":
-        exe = os.environ.get("DEEPLX_EXE") or _DEEPLX_MANAGER.exe
-        return os.path.isfile(exe)
+        # 与 DeepLXManager.configured_exe() 同一套取值（设置 > 环境变量 > 源码常量）：
+        # 否则用户在「翻译设置」里填的自定义 exe 会被这里判成「未配置」，
+        # 表现为面板显示 DeepLX 已安装/在监听，却永远不参与自动回退链。
+        return os.path.isfile(_DEEPLX_MANAGER.configured_exe())
     if provider == "dashscope":
-        return bool(_get_env("DASHSCOPE_API_KEY"))
+        return bool(_dashscope_key())
     if provider == "baidu":
         config = _load_baidu_config()
         return bool(config["appid"] and config["api_key"])
@@ -1854,7 +1916,14 @@ def _provider_order_for(source: str) -> list[str]:
         # 词典 > 本地 LLM（已加载）> 网络源；health 只在其内部比较。
         local_rank = 0 if provider == "local" else (1 if provider == "local_llm" else 2)
         return (cooling, local_rank, health_rank, -success_rate, failures, latency, _TRANSLATE_ORDER.index(provider))
-    return sorted((p for p in _TRANSLATE_ORDER if _provider_configured(p)), key=sort_key)
+    # 「翻译设置」里勾选的源才参与自动回退（默认全选，链与旧行为完全一致）；
+    # 关掉自动回退时只用第一个可用源，不再串到后面的源。
+    allowed = set(_translate_fallback_order())
+    candidates = [provider for provider in _TRANSLATE_ORDER if provider in allowed and _provider_configured(provider)]
+    ordered = sorted(candidates, key=sort_key)
+    if _translate_setting("allow_fallback") is False and ordered:
+        return ordered[:1]
+    return ordered
 
 
 def _translation_quality(source_text: str, translated_text: str, source_lang: str, target_lang: str) -> dict[str, object]:
@@ -2081,12 +2150,11 @@ async def _translate_via(source: str, text: str, src_lang: str, dst_lang: str) -
         raise TranslationProviderError("Google 返回空", "empty_output")
 
     if source == "dashscope":
-        key = _get_env("DASHSCOPE_API_KEY")
+        key = _dashscope_key()
         if not key:
-            raise RuntimeError("未配置 DASHSCOPE_API_KEY")
-        base = (_get_env("DASHSCOPE_BASE_URL") or
-                "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
-        model = _get_env("DASHSCOPE_MODEL") or "qwen-turbo"
+            raise RuntimeError("未配置 DashScope API Key（可在「翻译设置 → 服务配置」里填写）")
+        base = _dashscope_base().rstrip("/")
+        model = _dashscope_model()
         payload = {
             "model": model,
             "messages": [
@@ -2355,6 +2423,80 @@ async def anima_translate_glossary_get(request):
 @PromptServer.instance.routes.post("/anima/translate/deeplx/restart")
 async def anima_translate_deeplx_restart(request):
     return web.json_response(await _DEEPLX_MANAGER.restart())
+
+
+def _translate_settings_state() -> dict[str, object]:
+    """统一设置面板要展示的实时状态（只读；任何一步失败都不能影响设置读写）。"""
+    state: dict[str, object] = {
+        "providers": {provider: _provider_snapshot(provider) for provider in _TRANSLATE_ORDER},
+        "deeplx": _DEEPLX_MANAGER.status_sync(),
+        "baidu": _baidu_config_snapshot(),
+    }
+    try:
+        from .anima_local_llm import TRANSLATORS_DIR as _translators_dir
+        from .anima_local_llm import state_snapshot as _llm_state
+        state["local_llm"] = {**_llm_state(), "models_dir": _translators_dir}
+    except Exception:
+        pass
+    return state
+
+
+# 统一翻译设置：GET|POST /anima/translate/settings（读写 data/translate_settings.json）
+_register_translate_setting_routes(PromptServer.instance.routes, _translate_settings_state)
+
+
+@PromptServer.instance.routes.get("/anima/translate/glossary/list")
+async def anima_translate_glossary_list(request):
+    """用户词典列表（旧接口只能按词查单条，前端无法浏览/纠错）。"""
+    _ensure_translation_db()
+    try:
+        limit = int(request.query.get("limit") or 500)
+    except (TypeError, ValueError):
+        limit = 500
+    limit = max(1, min(2000, limit))
+    with sqlite3.connect(_TRANSLATION_DB_PATH, timeout=5) as db:
+        rows = db.execute(
+            "SELECT glossary_key, source_text, translated_text, tag_text, source_language, target_language, timestamp"
+            " FROM prompt_glossary ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        total = db.execute("SELECT COUNT(*) FROM prompt_glossary").fetchone()[0]
+    entries = [
+        {
+            "id": row[0],
+            "source_text": row[1],
+            "translated_text": row[2],
+            "tag_text": row[3],
+            "source_language": row[4],
+            "target_language": row[5],
+            "timestamp": row[6],
+        }
+        for row in rows
+    ]
+    return web.json_response({"ok": True, "entries": entries, "total": int(total or 0)})
+
+
+@PromptServer.instance.routes.delete("/anima/translate/glossary")
+async def anima_translate_glossary_delete(request):
+    """按 id（glossary_key）删除一条用户词典条目。"""
+    key = str(request.query.get("id") or "").strip()
+    if not key:
+        return web.json_response({"ok": False, "error": "缺少 id 参数"}, status=400)
+    _ensure_translation_db()
+    with sqlite3.connect(_TRANSLATION_DB_PATH, timeout=5) as db:
+        cursor = db.execute("DELETE FROM prompt_glossary WHERE glossary_key = ?", (key,))
+        removed = cursor.rowcount
+    return web.json_response({"ok": True, "removed": max(0, int(removed or 0))})
+
+
+@PromptServer.instance.routes.post("/anima/translate/cache/clear")
+async def anima_translate_cache_clear(request):
+    """清空翻译缓存表（机翻结果缓存，删掉只是下次重新请求）。"""
+    _ensure_translation_db()
+    with sqlite3.connect(_TRANSLATION_DB_PATH, timeout=5) as db:
+        cursor = db.execute("DELETE FROM translation_cache")
+        removed = cursor.rowcount
+    return web.json_response({"ok": True, "removed": max(0, int(removed or 0))})
 
 
 @PromptServer.instance.routes.get("/api/translate")

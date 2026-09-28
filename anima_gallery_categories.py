@@ -110,8 +110,25 @@ class CategoryStoreError(Exception):
     """数据层可预期的错误（路由层据此回 400）。"""
 
 
+_MONOTONIC_MS_LOCK = threading.Lock()
+_LAST_MS = 0
+
+
 def _now_ms() -> int:
-    return int(time.time() * 1000)
+    """毫秒时间戳，且**同进程内严格单调递增**。
+
+    连续操作（同一毫秒内多次归类/建类）若都拿到同一个毫秒值，list_posts 按
+    updatedAt 倒序时相等元素会保持原插入顺序，「最近归类的排最前」就不成立
+    （test_category_browse_is_sorted_by_update_time 捕获的正是这个：同一毫秒内
+    连续归类三张，最新的那张反而排在最后）。
+    """
+    global _LAST_MS
+    with _MONOTONIC_MS_LOCK:
+        now = int(time.time() * 1000)
+        if now <= _LAST_MS:
+            now = _LAST_MS + 1
+        _LAST_MS = now
+        return now
 
 
 def _clean_text(value: Any, limit: int = 200) -> str:
