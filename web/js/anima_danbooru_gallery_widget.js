@@ -88,7 +88,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
   // （与后端 count_restricted_search_tags 一致：order 不在后端 FREE_METATAGS 里）。
   // 历史上这两件事共用一个 Set，导致 countedSearchTerms 把 order 当免费 → 计数永不超限
   // →「自动移除排序」分支与其提示条变成死代码（tests/test_danbooru_gallery_interactions.py 长期红）。
-  const FREE_METATAGS_THAT_STILL_COUNT = new Set(["order"]);
+  const FREE_METATAGS_THAT_STILL_COUNT = new Set(["order", "ordfav"]);
   const DANBOORU_TAG_LIMIT = 2;
   /**
    * 筛选面板独占管理的 token 前缀（顺序即用户可能手打的形态）。
@@ -785,6 +785,9 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       galleryScrollMode: GALLERY_SCROLL_MODES.includes(source.galleryScrollMode)
         ? String(source.galleryScrollMode)
         : "infinite",
+      // 「我的收藏」模式开关（2026-09-28）：独立于搜索框 —— 开启时由 search() 自动拼
+      // `ordfav:<账号>`，搜索框里用户自己的筛选词原样保留。缺字段 = 关。
+      favoritesOnly: source.favoritesOnly === true,
     };
   }
 
@@ -2928,6 +2931,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
         this.favoriteIds = new Set();
         this.favoriteMeta = null;
         this.favoriteTotal = 0;
+        this.settings.favoritesOnly = false;   // 收藏模式是 D站 专属，换源即退出
         this.syncFavoriteStatus();
         return null;
       }
@@ -2960,26 +2964,39 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       const used = Number(meta.favorite_count) || 0;
       const cap = Number(meta.favorite_limit) || 0;
       const remaining = cap > 0 ? `（还可收藏 ${Math.max(0, cap - used)} 张）` : "";
-      button.textContent = `★ 我的收藏${this.favoriteTotal ? ` ${this.favoriteTotal}` : ""}`;
-      button.title = `查看 D站 账号「${meta.username}」的收藏${remaining}`;
-      button.classList.add("is-favorited");
+      // 按钮是**开关**：高亮 = 当前正在看收藏（2026-09-28 改为独立模式，不再写搜索框）
+      const active = this.settings.favoritesOnly === true;
+      button.textContent = `${active ? "★" : "☆"} 我的收藏${this.favoriteTotal ? ` ${this.favoriteTotal}` : ""}`;
+      button.title = active
+        ? `正在看「我的收藏」（点一下退出）；搜索框里的筛选词会一起生效`
+        : `只看 D站 账号「${meta.username}」的收藏${remaining}（不影响搜索框里的筛选词）`;
+      button.classList.toggle("is-favorited", active);
     }
 
-    /** 跳到「我的收藏」：把搜索词换成 `ordfav:<账号>` —— 展示 / 分页 / 无限滚动全部复用现成链路 */
+    /**
+     * 切换「我的收藏」模式（2026-09-28 重做）。
+     *
+     * ⚠️ 上一版把 `ordfav:<账号>` **写进搜索框**，两个后果（用户实报"占用筛选词条、显示不出来"）：
+     *   ① 它替换掉用户自己的筛选词；
+     *   ② 它被当成普通计数标签参与 `countedSearchTerms()`，与用户的词抢那 2 个名额，
+     *      超限后触发自动降级/丢弃逻辑 ⇒ 界面什么都显示不出来。
+     * 现在改成**独立模式开关**：搜索框保持用户输入不动，`ordfav:` 在发请求时由 `search()` 自动拼上；
+     * 计数集合里按"占 1 槽"如实登记（D站 服务端确实算它一个槽）⇒ 超限时给提示，而不是静默失败。
+     */
     openMyFavorites() {
       const meta = this.favoriteMeta;
-      if (!meta?.logged_in) {
+      if (!this.settings.favoritesOnly && !meta?.logged_in) {
         this.setStatus("未登录 D站 账号：先在节点设置里填用户名与 API key 才能看收藏", "error");
         return;
       }
-      const tag = String(meta.query_tag || "");
-      if (!tag) return;
-      const current = String(this.queryInput?.value ?? this.queryWidget?.value ?? "").trim();
-      if (current === tag) {
-        this.setStatus(`已经在「我的收藏」里了（D站 共 ${this.favoriteTotal} 张）`);
-        return;
-      }
-      this.submitSearch(tag);
+      if (!String(meta?.query_tag || "")) return;
+      this.settings.favoritesOnly = !this.settings.favoritesOnly;
+      this.saveSettings();
+      this.syncFavoriteStatus();
+      this.setStatus(this.settings.favoritesOnly
+        ? `★ 已进入「我的收藏」（D站 共 ${this.favoriteTotal} 张；搜索框里的筛选词会一起生效）`
+        : "已退出「我的收藏」，回到普通搜索");
+      void this.search({ resetPage: true });
     }
 
     /** 收藏 / 取消收藏一张图（**写回 D站 账号**）。button 用来就地改图标，不重绘整页。 */
@@ -3816,6 +3833,14 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
         this.queryInput.value = this.queryWidget.value ?? "";
       }
       let query = this.currentQuery();
+      // 「我的收藏」模式（2026-09-28）：`ordfav:<账号>` 拼在**最前面**，而**不写进搜索框** ——
+      // 用户的筛选词原样保留，两者一起生效（D站 侧 ordfav 与普通标签可以并用，各占一个计数槽）。
+      // 刻意放在 `countedSearchTerms()` **之前**：它确实占槽，必须参与限额判断，
+      // 否则会静默超限（服务端 400）而前端毫不知情。
+      if (this.settings.favoritesOnly) {
+        const favTag = String(this.favoriteMeta?.query_tag || "");
+        if (favTag) query = query ? `${favTag} ${query}` : favTag;
+      }
       if (!query) {
         this.posts = [];
         this.renderPosts();
