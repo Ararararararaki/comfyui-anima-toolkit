@@ -204,6 +204,13 @@ def _merge_trigger_words(incoming: dict) -> int:
         with open(tmp_path, "w", encoding="utf-8") as fh:
             json.dump({"loras": current, "updatedAt": int(time.time())}, fh, ensure_ascii=False, indent=0)
         os.replace(tmp_path, TRIGGER_WORDS_PATH)
+        # 写盘成功即刷新缓存，不依赖 mtime 变化：Windows 上同一时间粒度内的连续写盘
+        # 拿到的 getmtime 可能完全相同（实测连续三次写盘恒为 1790154571.132568），
+        # 只比对 mtime 会让紧随其后的读取命中陈旧缓存 —— 表现为「节点刚推送的触发词
+        # 在本次执行里读不到」（test_batch_lora_trigger_words 的持久表优先级用例）。
+        with _TRIGGER_WORDS_LOCK:
+            _TRIGGER_WORDS_CACHE["mtime"] = -1.0
+            _TRIGGER_WORDS_CACHE["map"] = dict(current)
     except Exception as exc:  # noqa: BLE001
         print(f"[AnimaBatchLoRA] 触发词表写入失败: {exc}")
     return len(current)
