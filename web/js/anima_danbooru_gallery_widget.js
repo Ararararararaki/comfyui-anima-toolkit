@@ -844,6 +844,14 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       this.animadexRolePrompt = "";
       this.queryWidget = null;
       this.queryInput = null;
+      // D站 收藏（2026-09-27，Issue #3）：ids = 当前账号已收藏的 post_id 集合（决定卡片 ★/☆）；
+      // favoriteMeta = `/anima/danbooru/favorites` 的原始响应（logged_in / query_tag / 上限 / 总数）；
+      // favoriteBusy = 正在写的那几张（连点保护，写操作不能并发两次）。
+      this.favoriteIds = new Set();
+      this.favoriteMeta = null;
+      this.favoriteTotal = 0;
+      this.favoriteBusy = new Set();
+      this.favoriteButton = null;
       // 记录多选卡片的实际点击顺序；不能用 DOM 顺序代替，因为翻页/筛选后的显示顺序可能不同。
       this.selectionOrder = [];
       this.dialogId = `anima-danbooru-dialog-${node.id}`;
@@ -1887,6 +1895,9 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       // ★ 分类库**按图源分区** ⇒ 换源必须重新拉该源的分类与归属
       //   （否则 D站 的分类会留在 P站 的下拉里 —— 用户实报"分类还不是独立的"）
       await this.loadCategoryLibrary();
+      // D站 收藏状态也跟着源走（2026-09-27，Issue #3）：切到 D站 填充 ★/☆，
+      // 切到别的源由 refreshFavorites 内部清空（避免显示不属于该源的收藏态）。
+      void this.refreshFavorites();
       this.filterControls?.refresh();
       const restored = String(this.settings.sourceQueries[id] || "");
       this.setQuery(restored);
@@ -2900,6 +2911,133 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
         this.gridResizeObserver = new ResizeObserver(() => this.handleGridResize());
         this.gridResizeObserver.observe(this.grid);
       }
+    }
+
+    /**
+     * 拉取 D站 账号的收藏状态（2026-09-27，Issue #3「收藏了图片却找不到存放的地方」）。
+     *
+     * 数据源是后端 `/anima/danbooru/favorites`：它内部用 `ordfav:<账号>` 搜索拿最近 200 个
+     * post_id，卡片据此显示已收藏态；`query_tag` 就是「我的收藏」入口要跳转的标签 ——
+     * 于是**看收藏完全复用既有搜索链路**（分页 / 无限滚动 / 缩略图代理 / 浮层一律不用改）。
+     * 非 D站 图源不请求：其它源没有"我的 D站 收藏"这个概念。
+     */
+    async refreshFavorites() {
+      if (!this.isDanbooruSource()) {
+        // 切到非 D站 图源时必须**清空**：别的源的 post id 不是 D站 的 post id，
+        // 留着旧集合会让卡片显示错误的 ★（换源是本方法唯一的清理时机）。
+        this.favoriteIds = new Set();
+        this.favoriteMeta = null;
+        this.favoriteTotal = 0;
+        this.syncFavoriteStatus();
+        return null;
+      }
+      try {
+        const response = await fetch("/anima/danbooru/favorites?limit=200");
+        if (!response.ok) return null;
+        const data = await response.json();
+        if (this.disposed) return null;
+        this.favoriteMeta = data && typeof data === "object" ? data : null;
+        this.favoriteIds = new Set((this.favoriteMeta?.ids || []).map((id) => String(id)));
+        this.favoriteTotal = Number(this.favoriteMeta?.total) || this.favoriteIds.size;
+        this.syncFavoriteStatus();
+        return this.favoriteMeta;
+      } catch {
+        return null;
+      }
+    }
+
+    /** 工具条「我的收藏」按钮的文字 / 提示跟着刷新（总数 + 上限剩余） */
+    syncFavoriteStatus() {
+      const button = this.favoriteButton;
+      if (!button) return;
+      const meta = this.favoriteMeta;
+      if (!meta?.logged_in) {
+        button.textContent = "☆ 我的收藏";
+        button.title = "未登录 D站：在节点设置里填用户名与 API key 后可用";
+        button.classList.remove("is-favorited");
+        return;
+      }
+      const used = Number(meta.favorite_count) || 0;
+      const cap = Number(meta.favorite_limit) || 0;
+      const remaining = cap > 0 ? `（还可收藏 ${Math.max(0, cap - used)} 张）` : "";
+      button.textContent = `★ 我的收藏${this.favoriteTotal ? ` ${this.favoriteTotal}` : ""}`;
+      button.title = `查看 D站 账号「${meta.username}」的收藏${remaining}`;
+      button.classList.add("is-favorited");
+    }
+
+    /** 跳到「我的收藏」：把搜索词换成 `ordfav:<账号>` —— 展示 / 分页 / 无限滚动全部复用现成链路 */
+    openMyFavorites() {
+      const meta = this.favoriteMeta;
+      if (!meta?.logged_in) {
+        this.setStatus("未登录 D站 账号：先在节点设置里填用户名与 API key 才能看收藏", "error");
+        return;
+      }
+      const tag = String(meta.query_tag || "");
+      if (!tag) return;
+      const current = String(this.queryInput?.value ?? this.queryWidget?.value ?? "").trim();
+      if (current === tag) {
+        this.setStatus(`已经在「我的收藏」里了（D站 共 ${this.favoriteTotal} 张）`);
+        return;
+      }
+      this.submitSearch(tag);
+    }
+
+    /** 收藏 / 取消收藏一张图（**写回 D站 账号**）。button 用来就地改图标，不重绘整页。 */
+    async toggleFavorite(post, button = null) {
+      const meta = this.favoriteMeta;
+      if (!meta?.logged_in) {
+        this.setStatus("未登录 D站 账号：先在节点设置里填用户名与 API key 后再收藏", "error");
+        return;
+      }
+      const postId = String(post?.id ?? "");
+      const numericId = Number(postId);
+      if (!postId || !Number.isFinite(numericId)) return;
+      if (this.favoriteBusy.has(postId)) return;   // 连点保护：写操作不能并发两次
+      const wasFavorited = this.favoriteIds.has(postId);
+      this.favoriteBusy.add(postId);
+      if (button) { button.disabled = true; button.textContent = "…"; }
+      try {
+        const response = await fetch("/anima/danbooru/favorite", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ post_id: numericId, action: wasFavorited ? "remove" : "add" }),
+        });
+        let data = {};
+        try {
+          data = await response.json();
+        } catch {
+          data = {};
+        }
+        if (!response.ok || !data?.ok) {
+          this.setStatus(String(data?.error || `收藏失败（HTTP ${response.status}）`), "error");
+          if (button) this.paintFavoriteButton(button, postId);
+          return;
+        }
+        if (data.favorite) this.favoriteIds.add(postId);
+        else this.favoriteIds.delete(postId);
+        // 只有真的发生了变化才动总数（幂等返回不算）
+        if (Boolean(data.favorite) !== wasFavorited) {
+          this.favoriteTotal = Math.max(this.favoriteIds.size, this.favoriteTotal + (data.favorite ? 1 : -1));
+        }
+        if (button) this.paintFavoriteButton(button, postId);
+        this.syncFavoriteStatus();
+        this.setStatus(data.favorite ? `已收藏到 D站 账号（#${postId}）` : `已从 D站 收藏移除（#${postId}）`, "success");
+      } catch (error) {
+        this.setStatus(`收藏失败：${error?.message || "网络错误"}`, "error");
+        if (button) this.paintFavoriteButton(button, postId);
+      } finally {
+        this.favoriteBusy.delete(postId);
+        if (button) button.disabled = false;
+      }
+    }
+
+    /** 按当前集合画 ★ / ☆（只在写成功后调用 —— 不做乐观更新，避免"看着成功其实没写进去"） */
+    paintFavoriteButton(button, postId) {
+      if (!button) return;
+      const favorited = this.favoriteIds.has(String(postId));
+      button.textContent = favorited ? "★" : "☆";
+      button.title = favorited ? "已收藏在你的 D站 账号里 —— 点一下取消收藏" : "收藏到 D站 账号";
+      button.classList.toggle("is-favorited", favorited);
     }
 
     async refreshAccount() {
@@ -5406,6 +5544,19 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
           return button;
         };
         addAction("预览", "预览图片", () => this.openImagePreview(post));
+        // ★ 收藏（2026-09-27，Issue #3）：**真写 D站 账号**（POST /favorites），不再是本地描边。
+        //   只有 D站 图源才给这个按钮 —— 别的源的 post id 不是 D站 的 post id，收藏没有意义。
+        //   已收藏态来自 this.favoriteIds（启动与换源时由 refreshFavorites() 填充）。
+        if (!isGallerySource) {
+          const favorited = this.favoriteIds.has(String(post.id));
+          const favButton = addAction(
+            favorited ? "★" : "☆",
+            favorited ? "已收藏在你的 D站 账号里 —— 点一下取消收藏" : "收藏到 D站 账号",
+            () => void this.toggleFavorite(post, favButton),
+          );
+          favButton.classList.toggle("is-favorited", favorited);
+          favButton.classList.add("adg-fav-action");
+        }
         // D站 差分（父子级）作品：parent_id / has_active_children 是 D站 posts.json 自带字段，
         // 点「差分」把搜索词换成 parent:<根帖id>，一次拿到「父帖 + 全部直接子帖」。
         // 张数接口不回（post.children 是空串），所以按钮不带数量，只给关系本身。
@@ -7907,6 +8058,9 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
           ? `✓ 已登录 Danbooru（账号等级上限 ${this.tagLimit()} 个计数标签；Gold 及以上为 6）`
           : "ℹ 未登录：最多 2 个计数标签。登录后上限按账号等级计算（Member 仍为 2，Gold 为 6，Platinum 及以上不限）。";
         accountSection.prepend(status);
+        // 顺手刷新收藏状态（2026-09-27，Issue #3）：刚登录 / 改过凭证后，
+        // 卡片上的 ★/☆ 与工具条的收藏计数都必须跟上。
+        void this.refreshFavorites();
       });
       const userLabel = document.createElement("label");
       userLabel.className = "adg-field";
@@ -8075,6 +8229,15 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
         group.append(button);
         return button;
       };
+      // ★ 我的收藏入口（2026-09-27，Issue #3）：跳转 `ordfav:<账号>`，展示 / 分页 / 无限滚动
+      //   全部复用既有搜索链路。放在「筛选操作」组 —— 语义上它就是"只看我收藏的"。
+      this.favoriteButton = addAction(
+        "☆ 我的收藏",
+        "查看 D站 账号的收藏（未登录时会提示去登录）",
+        () => this.openMyFavorites(),
+        filterGroup,
+      );
+      this.favoriteButton.classList.add("adg-fav-entry");
       // ── 图源下拉（D站 / C站 / P站）──
       // 注意：这个容器用**新类名** adg-source-picker，不占 .adg-toolbar-group ——
       // tests/verify_tk_prompt_output.py 断言分组数恰为 4，新增分组会把它弄红。
@@ -8399,6 +8562,8 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       // 密钥/授权状态也预热一次：换源到 P站 时要立刻知道"模块没装"还是"没登录"（见 switchGallerySource）
       void this.refreshGallerySecretState();
       this.accountReady = this.refreshAccount();
+      // D站 收藏状态（2026-09-27，Issue #3）：与账号一起预热，卡片一上来就能显示正确的 ★/☆
+      void this.refreshFavorites();
       this.initialSearchTimer = setTimeout(async () => {
         this.initialSearchTimer = null;
         try { await this.accountReady; } catch {}

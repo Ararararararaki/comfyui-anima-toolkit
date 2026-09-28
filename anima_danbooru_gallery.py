@@ -331,6 +331,163 @@ def _registered() -> bool:
     return bool(acc.get("username") and acc.get("api_key"))
 
 
+# ---------- D站 收藏读写（2026-09-27）----------------------------------------------
+# 背景：画廊旧版的「★ 收藏」是**纯本地 localStorage 描边**（全文件没有任何地方读它做筛选/排序），
+# 2026-09-21 被整体移除；用户实报"收藏了图片却找不到存放的地方"。现在做成**真正的 D站 收藏**：
+#
+#   读（列表）→ 标签搜索 `ordfav:<login>`：**完全复用既有搜索链路**，分页 / 无限滚动 /
+#                缩略图代理 / 浮层全部白送 —— 画廊只需要多一个"我的收藏"入口。
+#   读（状态）→ `GET /posts?tags=ordfav:<login>&limit=N` 拿回收藏的 post_id 集合，
+#                卡片据此显示已收藏态（**一次请求**，不逐张查）。
+#   读（总数）→ `GET /counts/posts.json?tags=ordfav:<login>`（`/posts.json` 不回 total）。
+#   写        → `POST /favorites`（表单 post_id + Basic Auth）/ `DELETE /favorites/<record_id>`。
+#                ⚠️ 取消收藏用的是**收藏记录 id**（不是 post_id），所以要先查出来。
+#
+# ⚠️ 凭据只从 data/danbooru_account.json 读；绝不进日志、绝不回给前端（只回 logged_in/username）。
+_DANBOORU_API_ROOT = "https://danbooru.donmai.us"
+_DANBOORU_FAVORITES_MINE = "/posts.json"      # ordfav: 搜索（读列表 + 读状态集合）
+_DANBOORU_FAVORITES_WRITE = "/favorites.json"  # POST 新增 / DELETE /favorites/<id>
+_DANBOORU_FAVORITE_COUNTS = "/counts/posts.json"
+FAVORITES_STATE_LIMIT = 200   # 状态集合一次最多拉多少张（够覆盖一屏到几十屏）
+_danbooru_identity_lock = threading.Lock()
+_danbooru_identity_cache: dict[str, Any] | None = None
+
+
+def _danbooru_auth() -> tuple[str, str] | None:
+    """本机凭证；未登录返回 None（**不抛异常** —— 调用方据此给"请先登录"的友好提示）。"""
+    acc = _load_account()
+    username = str(acc.get("username") or "").strip()
+    api_key = str(acc.get("api_key") or "").strip()
+    if not username or not api_key:
+        return None
+    return username, api_key
+
+
+def _danbooru_request(method: str, path: str, *, params: Any = None, data: Any = None,
+                      auth: tuple[str, str] | None = None, timeout: int = 20) -> requests.Response:
+    """带代理探测 + 换路重试的 D站 请求。
+
+    为什么不复用 `_danbooru_json()`：它只做 GET、且不支持 Basic Auth / 表单体 ——
+    收藏的写路径两者都要。换路逻辑与它保持一致（有代理 → 试直连；已直连 → 试兜底代理），
+    代理一律**整体原子赋值**（并发取图线程不能读到空 proxies）。
+    """
+    _apply_danbooru_proxy()
+    kwargs: dict[str, Any] = {"timeout": (6, timeout)}
+    if params is not None:
+        kwargs["params"] = params
+    if data is not None:
+        kwargs["data"] = data
+    if auth is not None:
+        kwargs["auth"] = auth
+    try:
+        resp = _danbooru_session.request(method, _DANBOORU_API_ROOT + path, **kwargs)
+    except (requests.Timeout, requests.ConnectionError) as first:
+        if _danbooru_session.proxies:
+            _danbooru_session.proxies = {}
+        else:
+            _mark_direct_blocked()
+            fb = _fallback_proxy()
+            if fb:
+                _danbooru_session.proxies = dict(fb)
+        try:
+            resp = _danbooru_session.request(method, _DANBOORU_API_ROOT + path, **kwargs)
+        except (requests.Timeout, requests.ConnectionError) as second:
+            raise RuntimeError(f"连不上 D站：{second}") from second
+        del first
+    return resp
+
+
+def _danbooru_identity(force: bool = False) -> dict[str, Any]:
+    """当前账号的 `{id, name, level, favorite_count, favorite_limit}`（进程内缓存）。
+
+    写收藏要先知道 **user_id**（查询自己的收藏记录时按 user_id 过滤），
+    总数/上限则用来在界面上说清"还剩多少条可用"。
+    """
+    global _danbooru_identity_cache
+    auth = _danbooru_auth()
+    if auth is None:
+        return {}
+    with _danbooru_identity_lock:
+        if _danbooru_identity_cache is not None and not force:
+            return _danbooru_identity_cache
+    try:
+        resp = _danbooru_request("GET", "/profile.json", auth=auth, timeout=15)
+        if resp.status_code != 200:
+            return {}
+        data = resp.json()
+    except (RuntimeError, ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    identity = {
+        "id": int(data.get("id") or 0),
+        "name": str(data.get("name") or ""),
+        "level": str(data.get("level_string") or ""),
+        "favorite_count": int(data.get("favorite_count") or 0),
+        "favorite_limit": int(data.get("favorite_limit") or 0),
+    }
+    with _danbooru_identity_lock:
+        _danbooru_identity_cache = identity
+    return identity
+
+
+def _clear_danbooru_identity() -> None:
+    """切换账号 / 改凭证后必须清缓存（否则会拿旧账号的 user_id 去写收藏）。"""
+    global _danbooru_identity_cache
+    with _danbooru_identity_lock:
+        _danbooru_identity_cache = None
+
+
+def _favorite_write_error(status: int, body: str) -> str:
+    """把 D站 收藏接口的失败翻成人话（上限 / 重复 / 权限）。"""
+    text = (body or "").strip()
+    lowered = text.lower()
+    if "favorite limit" in lowered or "limit reached" in lowered or "maximum" in lowered:
+        return "收藏已达 D站 账号上限（免费账号 200 条）：先在 D站 网站清理一些，或提升账号等级"
+    if "already" in lowered or "taken" in lowered:
+        return "这张图已经在你的 D站 收藏里了"
+    if not text:
+        return f"D站 拒绝这次操作（HTTP {status}）"
+    return f"D站 拒绝这次操作（HTTP {status}）：{text[:160]}"
+
+
+def _favorite_ids_for_user(login: str, limit: int = FAVORITES_STATE_LIMIT) -> list[str]:
+    """当前账号收藏的 post_id 列表（按 ordfav 搜索，最近优先）。
+
+    走的是**普通 posts.json 搜索**（与画廊其它请求同一条路），所以它天然继承代理/重试/风控行为。
+    """
+    try:
+        resp = _danbooru_request("GET", _DANBOORU_FAVORITES_MINE,
+                                 params={"tags": f"ordfav:{login}", "limit": str(limit), "page": "1"}, timeout=25)
+        if resp.status_code != 200:
+            return []
+        rows = resp.json()
+    except (RuntimeError, ValueError, TypeError):
+        return []
+    if not isinstance(rows, list):
+        return []
+    ids: list[str] = []
+    for row in rows:
+        if isinstance(row, dict) and row.get("id") is not None:
+            ids.append(str(row["id"]))
+    return ids
+
+
+def _favorite_total(login: str) -> int:
+    """收藏总数（`/counts/posts.json`；拿不到返回 -1，调用方显示"未知"）。"""
+    try:
+        resp = _danbooru_request("GET", _DANBOORU_FAVORITE_COUNTS, params={"tags": f"ordfav:{login}"}, timeout=15)
+        if resp.status_code != 200:
+            return -1
+        payload = resp.json()
+        counts = payload.get("counts") if isinstance(payload, dict) else None
+        if isinstance(counts, dict) and counts.get("posts") is not None:
+            return int(counts["posts"])
+    except (RuntimeError, ValueError, TypeError):
+        return -1
+    return -1
+
+
 def _account_params() -> dict[str, str]:
     acc = _load_account()
     if acc.get("username") and acc.get("api_key"):
@@ -1730,6 +1887,132 @@ async def anima_danbooru_account_status(request: web.Request) -> web.Response:
         "username": acc.get("username", ""),
         "tag_limit": await _account_tag_limit_async(),
     })
+
+
+# ---------- D站 收藏（2026-09-27）：读状态 + 写（收藏 / 取消收藏） ----------
+
+@PromptServer.instance.routes.get("/anima/danbooru/favorites")
+async def anima_danbooru_favorites_state(request: web.Request) -> web.Response:
+    """当前账号的收藏状态：`{logged_in, username, user_id, total, favorite_limit, ids, query_tag}`。
+
+    前端拿它做三件事：① 卡片按 `ids` 显示已收藏态；② 「我的收藏」入口的跳转标签
+    （`query_tag = ordfav:<username>`，直接复用既有搜索链路）；③ 收藏上限提示。
+
+    ⚠️ **未登录也返回 200**（`logged_in=false`），让界面能给"去登录"的引导 ——
+    把未登录当 4xx 会让前端只能显示一个红错误，体验差且难区分"没登录"与"请求失败"。
+    """
+    auth = _danbooru_auth()
+    if auth is None:
+        return web.json_response({
+            "logged_in": False, "username": "", "user_id": 0, "level": "",
+            "favorite_count": 0, "favorite_limit": 0, "total": 0, "ids": [], "partial": False,
+            "query_tag": "",
+            "tip": "未登录 D站：在节点设置里填用户名与 API key 后即可收藏",
+        })
+    username = auth[0]
+    try:
+        state_limit = max(1, min(int(request.query.get("limit", FAVORITES_STATE_LIMIT)), 1000))
+    except (TypeError, ValueError):
+        state_limit = FAVORITES_STATE_LIMIT
+
+    def _collect() -> dict[str, Any]:
+        # 三个请求都同步，合并到一次 executor 调用里跑，别在事件循环上排队
+        return {
+            "identity": _danbooru_identity(),
+            "ids": _favorite_ids_for_user(username, state_limit),
+            "total": _favorite_total(username),
+        }
+
+    snapshot = await asyncio.get_running_loop().run_in_executor(None, _collect)
+    identity = snapshot.get("identity") or {}
+    ids = list(snapshot.get("ids") or [])
+    total = int(snapshot.get("total") or -1)
+    known_total = total if total >= 0 else len(ids)
+    favorite_count = int(identity.get("favorite_count") or 0) or known_total
+    return web.json_response({
+        "logged_in": True,
+        "username": username,
+        "user_id": int(identity.get("id") or 0),
+        "level": identity.get("level") or "",
+        "favorite_count": favorite_count,
+        "favorite_limit": int(identity.get("favorite_limit") or 0),
+        "total": known_total,
+        "ids": ids,
+        # ids 是"最近 N 张"的窗口：拉满了就说明可能还有更早的收藏没覆盖到
+        "partial": len(ids) >= state_limit,
+        "query_tag": f"ordfav:{username}",
+    })
+
+
+@PromptServer.instance.routes.post("/anima/danbooru/favorite")
+async def anima_danbooru_favorite_toggle(request: web.Request) -> web.Response:
+    """收藏 / 取消收藏一张图，**写回 D站 账号**。
+
+    body: `{"post_id": 123, "action": "add" | "remove"}`（action 缺省 = add）。
+    成功返回 `{ok, favorite, post_id}`；失败返回 `{ok:false, error}` + 4xx/5xx。
+    """
+    try:
+        body = await request.json()
+    except (ValueError, AttributeError):
+        return web.json_response({"ok": False, "error": "body 必须是 JSON"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"ok": False, "error": "body 必须是对象"}, status=400)
+    try:
+        post_id = int(body.get("post_id"))
+    except (TypeError, ValueError):
+        return web.json_response({"ok": False, "error": "post_id 必须是整数"}, status=400)
+    action = str(body.get("action") or "add").strip().lower()
+    if action not in {"add", "remove"}:
+        return web.json_response({"ok": False, "error": "action 只能是 add 或 remove"}, status=400)
+    auth = _danbooru_auth()
+    if auth is None:
+        return web.json_response(
+            {"ok": False, "error": "未登录 D站 账号：先在节点设置里填用户名与 API key"}, status=401)
+
+    def _write() -> dict[str, Any]:
+        if action == "add":
+            resp = _danbooru_request("POST", _DANBOORU_FAVORITES_WRITE,
+                                     data={"post_id": str(post_id)}, auth=auth, timeout=20)
+            if resp.status_code in (200, 201):
+                return {"ok": True, "favorite": True}
+            return {"ok": False, "error": _favorite_write_error(resp.status_code, resp.text)}
+        # 取消收藏：**DELETE 用的是收藏记录 id（不是 post_id）** ⇒ 先查记录
+        user_id = int((_danbooru_identity() or {}).get("id") or 0)
+        if not user_id:
+            return {"ok": False, "error": "拿不到 D站 账号 id（确认已登录且网络可用）后重试"}
+        resp = _danbooru_request(
+            "GET", _DANBOORU_FAVORITES_WRITE,
+            params={"search[user_id]": str(user_id), "search[post_id]": str(post_id), "limit": "1"},
+            auth=auth, timeout=20)
+        if resp.status_code != 200:
+            return {"ok": False, "error": _favorite_write_error(resp.status_code, resp.text)}
+        try:
+            rows = resp.json()
+        except ValueError:
+            rows = []
+        record = None
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict) and row.get("id") is not None:
+                    record = row
+                    break
+        if record is None:
+            # 本来就没收藏 ⇒ 幂等成功（用户连点两次不该报错）
+            return {"ok": True, "favorite": False}
+        resp = _danbooru_request("DELETE", f"/favorites/{int(record['id'])}.json", auth=auth, timeout=20)
+        if resp.status_code in (200, 204):
+            return {"ok": True, "favorite": False}
+        return {"ok": False, "error": _favorite_write_error(resp.status_code, resp.text)}
+
+    try:
+        result = await asyncio.get_running_loop().run_in_executor(None, _write)
+    except RuntimeError as error:
+        return web.json_response({"ok": False, "error": str(error)}, status=502)
+    if not result.get("ok"):
+        return web.json_response({"ok": False, "error": result.get("error") or "收藏失败"}, status=400)
+    # 写成功：清掉身份缓存，让下一次 /favorites 拿到刷新后的计数
+    _clear_danbooru_identity()
+    return web.json_response({"ok": True, "favorite": bool(result.get("favorite")), "post_id": post_id})
 
 
 @PromptServer.instance.routes.get("/anima/danbooru/diag")

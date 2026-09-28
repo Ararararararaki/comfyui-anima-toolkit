@@ -378,6 +378,13 @@
 .adg-pagination button.adg-cursor-chip { width: auto; min-width: 0; padding: 3px 7px; font-size: 11px; white-space: nowrap; }
 .adg-pagination button.active { border-color: var(--adg-go, #a895ff); background: var(--adg-tint-strong, #6758c9); color: var(--adg-fg, #fff); }
 .adg-pagination button.active:disabled { opacity: .8; }
+/* D站 收藏（2026-09-27，Issue #3）：★ = 已收藏在你的 D站 账号里，☆ = 未收藏。
+   颜色跟随宿主主题变量（浅色主题下也读得清）。 */
+.adg-card-actions button.adg-fav-action.is-favorited,
+.adg-toolbar button.adg-fav-entry.is-favorited {
+  color: var(--adg-go, #a895ff);
+  border-color: var(--adg-go, #a895ff);
+}
 /* 无限滚动模式的分页位（2026-09-27）：显示「已加载 N 张 · 继续滚动加载 / 已到底」+ 回到顶部。
    ⚠️ 必须覆盖 .adg-pagination button 的固定 24px 宽 —— 否则按钮里的中文会被挤成竖排文字
    （与上面 .adg-cursor-step 同一个坑）。 */
