@@ -5,6 +5,7 @@
 
 (function () {
   // TK 节点统一黑白灰主题：只覆盖外框/控件/状态色，不改各节点单卡或单行布局。
+  // 多重画廊由自己的 CSS 跟随宿主主题；不能用这里的深色 !important 覆盖其浅色/选中态。
   function installMonochromeTheme() {
     if (document.getElementById("anima-monochrome-theme")) return;
     const style = document.createElement("style");
@@ -28,7 +29,6 @@
       .anima-cam-ui,
       .anima-tw-widget,
       .anima-preset-latent,
-      .anima-danbooru-gallery,
       .tk-cards-ui {
         color: var(--anima-mono-text) !important;
         background: var(--anima-mono-bg) !important;
@@ -42,7 +42,6 @@
       .anima-cam-ui button,
       .anima-tw-widget button,
       .anima-preset-latent button,
-      .anima-danbooru-gallery button,
       .tk-cards-ui button {
         background: var(--anima-mono-surface-2) !important;
         background-image: none !important;
@@ -58,7 +57,6 @@
       .anima-cam-ui button:hover,
       .anima-tw-widget button:hover,
       .anima-preset-latent button:hover,
-      .anima-danbooru-gallery button:hover,
       .tk-cards-ui button:hover {
         background: #303538 !important;
         border-color: var(--anima-mono-line-strong) !important;
@@ -70,7 +68,6 @@
       .anima-batch-ui .anima-batch-start-btn,
       .anima-tw-widget .atw-toolbar button,
       .anima-preset-latent button.is-active,
-      .anima-danbooru-gallery .primary,
       .tk-cards-ui .tk-cards-btn-main {
         background: var(--anima-mono-active) !important;
         border-color: var(--anima-mono-active) !important;
@@ -87,8 +84,6 @@
       .anima-cam-ui select,
       .anima-tw-widget input,
       .anima-preset-latent input,
-      .anima-danbooru-gallery input,
-      .anima-danbooru-gallery select,
       .tk-cards-ui input,
       .tk-cards-ui select,
       .tk-cards-ui textarea {
@@ -105,7 +100,6 @@
       .anima-batch-ui .anima-batch-report,
       .anima-tw-widget .atw-card,
       .anima-preset-latent .apl-item,
-      .anima-danbooru-gallery .adg-card,
       .tk-cards-ui .tk-cards-card,
       .tk-cards-ui .tk-cards-lib-item {
         background: var(--anima-mono-surface) !important;
@@ -118,7 +112,6 @@
       .anima-batch-ui .anima-batch-group:hover,
       .anima-batch-ui .anima-batch-file:hover,
       .anima-tw-widget .atw-card:hover,
-      .anima-danbooru-gallery .adg-card:hover,
       .tk-cards-ui .tk-cards-card:hover,
       .tk-cards-ui .tk-cards-lib-item:hover {
         background: var(--anima-mono-surface-2) !important;
@@ -135,8 +128,7 @@
       .anima-batch-ui .anima-batch-hint,
       .anima-cam-ui .anima-cam-state,
       .anima-tw-widget .atw-empty,
-      .anima-preset-latent .apl-hint,
-      .anima-danbooru-gallery .adg-status { color: var(--anima-mono-muted) !important; }
+      .anima-preset-latent .apl-hint { color: var(--anima-mono-muted) !important; }
 
       .anima-cam-ui .anima-cam-canvas,
       .anima-cam-ui .anima-cam-track { background: var(--anima-mono-surface) !important; background-image: none !important; border-color: var(--anima-mono-line) !important; box-shadow: none !important; }
@@ -148,8 +140,6 @@
       .anima-tw-widget .atw-modal,
       .anima-preset-latent .apl-modal,
       .anima-preset-latent .apl-modal-backdrop,
-      .anima-danbooru-gallery .adg-dialog,
-      .anima-danbooru-gallery .adg-dialog-overlay,
       .tk-cards-ui .tk-cards-overlay-box {
         background: var(--anima-mono-surface) !important;
         background-image: none !important;

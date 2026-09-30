@@ -6,6 +6,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 import { PortalDropdown } from "./anima_dropdown_menu.js";
 // AnimaDex 角色浮窗（2026-09-26）：浮窗形态的提示词素材源，**不是图源**（YG 明确要求）。
 import { AnimaDexPanel } from "./anima_animadex_panel.js";
+import { GallerySelectionControls } from "./anima_gallery_selection_controls.js";
+import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover_preview.js";
 
 (() => {
   const NODE_NAME = "DanbooruGallery";
@@ -2060,6 +2062,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
         hint.dataset.queryMode = caps.query ? "server" : "local";
       }
       if (this.sourceFilterHost) {
+        this.sourceFilterHost.hidden = ![...this.sourceFilterHost.children].some((element) => !element.hidden);
         this.sourceFilterHost.title = id === "civitai"
           ? "C站筛选：分级（None/Soft/Mature/X，匿名也可读）与排序（上游只认 Newest/Oldest/Most */Random）"
           : "P站筛选：匹配方式与排序（标签与 Danbooru 词库不通用）";
@@ -2656,6 +2659,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       };
       this.grid.addEventListener("pointerenter", this._gridEnterHandler);
       this._gridScrollHandler = () => {
+        this.hidePromptTooltip();
         if (this._scrollRafPending) return;
         this._scrollRafPending = true;
         const run = () => {
@@ -4271,6 +4275,18 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       if (selected) this.selectionOrder.push(key);
     }
 
+    setLoadedCardsSelected(selected) {
+      if (!this.grid) return;
+      for (const card of this.grid.querySelectorAll(".adg-card")) {
+        if (card.classList.contains("is-selected") === selected) continue;
+        card.classList.toggle("is-selected", selected);
+        card.querySelector(".adg-card-select")?.setAttribute("aria-pressed", String(selected));
+        this.rememberCardSelection(card, selected);
+      }
+      if (!selected) this.selectionOrder = [];
+      this.updateSelection();
+    }
+
     selectedGallerySelections() {
       if (!this.grid) return [];
       const selectedCards = [...this.grid.querySelectorAll(".adg-card.is-selected")];
@@ -4328,6 +4344,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
     }
 
     updateGalleryBatchControls(selectedCount = null) {
+      this.hoverPreview?.setSelected(!!this.tooltipCard?.classList.contains("is-selected"));
       if (!this.galleryBatchBtn) return;
       const count = selectedCount == null ? this.selectedGallerySelections().length : selectedCount;
       const state = this.galleryBatchState?.state || "";
@@ -4337,6 +4354,12 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       this.galleryBatchBtn.title = active
         ? "当前已有画廊批次运行中，请先完成、暂停或取消"
         : "将选中的画廊卡片按点击顺序拆成独立任务，逐张执行";
+      this.selectionControls?.update({
+        selectedCount: count,
+        loadedCount: this.grid?.querySelectorAll(".adg-card").length || 0,
+        queueDisabled: this.galleryBatchBtn.disabled,
+        queueTitle: this.galleryBatchBtn.title,
+      });
     }
 
     async readGalleryBatchResponse(response) {
@@ -5530,7 +5553,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       if (posts !== this.posts) this.rememberPostsForCategory(posts);
       if (!posts.length) {
         // 浮层收尾：下面 replaceChildren 会重建全部卡片，浮层指向的那张卡必然失效
-        if (this.tooltip?.classList.contains("is-danbooru")) this.hidePromptTooltip();
+        this.hidePromptTooltip();
         this.imageLoadObserver?.disconnect();
         this.grid.replaceChildren();
         this.grid.style.minHeight = "";
@@ -5542,6 +5565,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
         empty.className = "adg-empty";
         empty.textContent = "没有可显示的图片";
         this.grid.append(empty);
+        this.updateGalleryBatchControls();
         return;
       }
       // 布局按「本页实际渲染的卡片」下标对齐（见 applyMasonryLayout 读 this._layoutPosts），
@@ -5573,7 +5597,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
         // 数据侧回收（trimLoadedPosts）砍掉的开头若干张：DOM 跟着删，位置由锚点补偿。
         // 浮层只在**真删了卡**时收 —— 纯追加时浮层那张卡还在文档里，收掉只会让滚动中悬停的浮层闪一下。
         if (dropCards > 0) {
-          if (this.tooltip?.classList.contains("is-danbooru")) this.hidePromptTooltip();
+          this.hidePromptTooltip();
           const stale = [...this.grid.querySelectorAll(".adg-card")];
           for (let i = 0; i < dropCards && i < stale.length; i += 1) stale[i].remove();
         }
@@ -5581,10 +5605,8 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
         //    disconnect 就永远不会加载（它们只设了 dataset.src，只等 IO 回调）。
         this.shrunkTotal = null;   // 新一批结果 → 允许重新评估一次自动收缩
       } else {
-        // 浮层收尾 —— **只收可交互浮层（D站）**：C站 浮层的生命周期必须保持改动前那样
-        // （一直留到鼠标离开），否则就成了"仅 D站"之外的行为变化（独立审计抓到的外溢）。
-        // ⚠️ 不要改成"判断卡片 isConnected"：那样求值时旧卡片还在文档里，守卫恒为 false（死代码）。
-        if (this.tooltip?.classList.contains("is-danbooru")) this.hidePromptTooltip();
+        // 所有图源现在共用图片/提示词浮层；重建卡片前统一清理旧浮层和待显示定时器。
+        this.hidePromptTooltip();
         this.imageLoadObserver?.disconnect();
         this.grid.replaceChildren();
         this.grid.style.minHeight = "";
@@ -5670,6 +5692,10 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
         const previewUrl = post.preview_file_url || imageUrl;
         // 取图尺寸档靠它推导 1200px（见 pixivSizedUrl）：preview 本身就是 540px 那条 CDN URL
         card.dataset.previewUrl = previewUrl;
+        const hoverUrl = postSourceId === "pixiv" && !this.isVideoPost(post)
+          ? (pixivSizedUrl(previewUrl, "1200") || galleryHoverImageUrl(post, postSourceId, previewUrl))
+          : galleryHoverImageUrl(post, postSourceId, previewUrl);
+        card.dataset.hoverImageUrl = hoverUrl ? this.imageProxyUrl(hoverUrl, post.md5, postSourceId) : "";
         const imageWidth = Number(post.image_width);
         const imageHeight = Number(post.image_height);
         if (imageWidth > 0 && imageHeight > 0) {
@@ -5708,7 +5734,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
           selectButton.prepend(badge);
         }
         selectButton.addEventListener("click", (event) => {
-          const multi = event.ctrlKey || event.metaKey || event.shiftKey;
+          const multi = this.selectionControls?.multiple || event.ctrlKey || event.metaKey || event.shiftKey;
           const wasSelected = card.classList.contains("is-selected");
           if (multi) {
             // Ctrl/Shift + 点击：切换该卡选中状态（不清其他）→ 多选用于批量归类/批量选择
@@ -5865,6 +5891,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
           // 浮层已经是这张卡的（鼠标从浮层移回来）→ 只取消隐藏、**不要重建**：
           // 重建会让占位文案闪一下、锚点被重置导致位置跳，反复进出时就是肉眼可见的闪烁。
           if (this.tooltip && this.tooltipCard === card) return;
+          // 穿过其它卡片去浮层时保持原预览；只有在新卡上停够延迟才换图。
           // 悬停 PROMPT_TOOLTIP_SHOW_DELAY 才弹（不是一进入就弹）：快速划过一串卡片不该弹一堆浮层
           this.tooltipHoverPoint = { clientX: event.clientX, clientY: event.clientY };
           this.scheduleShowPromptTooltip(card);
@@ -5876,18 +5903,14 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
           this.tooltipHoverPoint = { clientX: event.clientX, clientY: event.clientY };
           // 浮层若被 renderPosts 收掉（补图 / 筛选 / 分类都会重建卡片）而光标仍停在**同一张卡**上，
           // mouseenter 不会再触发 ⇒ 这里补排一次显示；否则要"移出再移入"才会重新弹（审查指出的 N1）。
-          if (!this.tooltip && !this.tooltipShowTimer) this.scheduleShowPromptTooltip(card);
+          if (!this.tooltip && !this.tooltipShowTimer && this.tooltipDismissedCard !== card) this.scheduleShowPromptTooltip(card);
         });
         card.addEventListener("mouseleave", () => {
+          if (this.tooltipDismissedCard === card) this.tooltipDismissedCard = null;
           // 还没弹出来就离开了 → 取消这次悬停，别让浮层在光标走了之后才蹦出来
           this.cancelShowPromptTooltip();
-          // D站 的浮层可交互（鼠标能移进去），必须**延迟**隐藏：鼠标从卡片移到浮层上要穿过
-          // 卡片外的一瞬，而浮层是 body 子元素、卡片收不到它的事件，只能靠这条延迟窗口把两者
-          // 接起来（浮层的 mouseenter 会取消它）。
-          // ⚠️ 其它图源（C站）保持**即时**隐藏 —— 它们与 D站 共用同一个浮层函数，但浮层没有
-          //    .is-danbooru（仍是 pointer-events: none），鼠标本来就进不去，延迟只会让它白挂。
-          if (this.isPromptTooltipInteractiveCard(card)) this.scheduleHidePromptTooltip();
-          else this.hidePromptTooltip();
+          // 大图与提示词共用可移入浮层；所有图源都给跨越间隙的鼠标留出隐藏延迟。
+          if (this.tooltip) this.scheduleHidePromptTooltip();
         });
         this.grid.append(card);
         this.observePreviewImage(preview);
@@ -5912,6 +5935,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       // 无限滚动：内容还没超出容器（= 没有滚动条、滚不动）时也要继续加载 —— 否则
       // 「一页填不满 ⇒ 滚不动 ⇒ scroll 永不触发 ⇒ 永远加载不了」就是死锁（2026-09-27 用户实测）
       this.scheduleScrollFill();
+      this.updateGalleryBatchControls();
     }
 
     pageWindow() {
@@ -6625,8 +6649,8 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
      * 而不是 this.settings.source —— 卡片自带来源，切源时 switchGallerySource 会 renderPosts
      * 重建全部卡片，行为因此天然跟随，不需要额外的清理代码（也别把这个判据缓存进实例字段）。
      * · D站 / P站：主文本都是**真标签**，点一下就能直接拿去检索；
-     * · C站 不可交互：它的「标签」是别人写好的整段提示词拆出来的自然语言分句，
-     *   且上游 /api/v1/images 忽略关键词参数 —— 点了搜不出东西，保持 pointer-events: none。
+     * · C站 标签不可搜索：它的「标签」是整段提示词拆出的自然语言分句，
+     *   且上游 /api/v1/images 忽略关键词参数；图片预览按钮仍可操作。
      * ⚠️ 返回 true 会让浮层带上 `.is-danbooru` 类（CSS 里那句 `pointer-events: auto` 的开关）；
      *    类名是历史遗留（原本只有 D站），语义其实就是「可交互浮层」。
      */
@@ -6657,15 +6681,17 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
     }
 
     async showPromptTooltip(card, event) {
+      if (!card.isConnected || this.tooltipDismissedCard === card) return;
       let tags = [];
       // 标签源：P站 走 hoverTags —— 它的 dataset.tags 恒为空（P站 标签不是 prompt，
       // buildPromptForPost 会把 tags 短路掉，见 renderPosts 里写 hoverTags 的注释）；
       // 其余图源没有 hoverTags，行为与改动前完全一致。
       try { tags = JSON.parse(card.dataset.hoverTags || card.dataset.tags || "[]"); } catch { tags = []; }
-      // 无标签的卡片（D站 偶有、C站 未给提示词时）：先收掉可能还挂着的旧浮层再退出。
+      // 无图片、无标签的卡片：先收掉可能还挂着的旧浮层再退出。
       // 否则「移出卡片 A（已排 280ms 隐藏）→ 移进无标签卡 B」会取消隐藏定时器并把 A 的浮层
       // 留在屏幕上（还跟着光标跑、吃点击）。
-      if (!tags.length) { this.hidePromptTooltip(); return; }
+      const hoverImageUrl = card.dataset.hoverImageUrl;
+      if (!tags.length && !hoverImageUrl) { this.hidePromptTooltip(); return; }
       // 这个浮层是否可交互（D站 / P站 = 可移入 + 标签可点）。只算一次，下面各分支复用。
       const interactive = this.isPromptTooltipInteractiveCard(card);
       // P站 的官方标签翻译；其余图源恒为空表（浮层小字退回本地词典那条老路）
@@ -6689,29 +6715,59 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       for (const category of PROMPT_CATEGORY_ORDER) addGroup(category, promptGroups[category]);
       const ungrouped = tags.filter((tag) => !seen.has(promptCardKey(tag)));
       if (ungrouped.length) addGroup("general", ungrouped);
-      if (!grouped.length) grouped.push({ category: "general", tags });
+      if (!grouped.length && tags.length) grouped.push({ category: "general", tags });
       const groupedTags = grouped.flatMap(({ tags: values }) => values);
       this.hidePromptTooltip();
-      const tooltip = document.createElement("div");
-      tooltip.className = "adg-prompt-tooltip";
-      // 只有 D站 的浮层可交互（CSS: .adg-prompt-tooltip.is-danbooru { pointer-events: auto }）。
-      // D站 与 C站 共用同一个浮层元素，C站 没有这个类 ⇒ 保持 pointer-events: none、不吃点击。
+      const galleryExtra = this.buildGalleryTooltipExtra(card);
+      if (hoverImageUrl) {
+        const thumbnail = card.querySelector(".adg-card-select img");
+        this.hoverPreview = new GalleryHoverPreview({
+          title: `${this.sourceLabel(card.dataset.source || DANBOORU_SOURCE_ID)} #${card.dataset.postId}${card.dataset.video === "1" ? " · 视频封面" : ""}`,
+          imageUrl: hoverImageUrl,
+          thumbnailUrl: thumbnail?.currentSrc || thumbnail?.src || "",
+          aspectRatio: thumbnail?.naturalHeight ? thumbnail.naturalWidth / thumbnail.naturalHeight : 1,
+          hasDetails: !!(tags.length || galleryExtra),
+          selected: card.classList.contains("is-selected"),
+          onSelect: () => {
+            if (!card.isConnected) return;
+            card.querySelector(".adg-card-select")?.click();
+            this.hoverPreview?.setSelected(card.classList.contains("is-selected"));
+          },
+          onClose: dismissed => this.hidePromptTooltip({ dismissed }),
+          onExpand: () => {
+            const post = this.displayPosts().find(value => this.postKeyOf(value) === card.dataset.postKey);
+            this.hidePromptTooltip({ dismissed: true });
+            if (post) this.openImagePreview(post);
+          },
+        });
+      }
+      const tooltip = this.hoverPreview?.element || document.createElement("div");
+      if (!this.hoverPreview) tooltip.className = "adg-prompt-tooltip";
+      const content = this.hoverPreview?.details || tooltip;
+      // 图片预览在所有源都可移入；只有 D站 / P站 的真实标签可以点击检索。
       if (interactive) tooltip.classList.add("is-danbooru");
-      tooltip.textContent = "正在加载双语 Prompt…";
+      if (tags.length) content.textContent = "正在加载双语 Prompt…";
       document.body.append(tooltip);
       this.tooltip = tooltip;
       this.tooltipCard = card;   // 供 mouseenter 判断「浮层已经是这张卡的」，避免来回移动时重建闪烁
-      if (interactive) {
+      if (interactive || this.hoverPreview) {
         // 鼠标移进浮层 → 取消卡片 mouseleave 排下的延迟隐藏，这样才能停留、滚动、点标签。
         tooltip.addEventListener("mouseenter", () => this.cancelHidePromptTooltip());
         tooltip.addEventListener("mouseleave", () => this.scheduleHidePromptTooltip());
+        tooltip.addEventListener("focusin", () => this.cancelHidePromptTooltip());
+        tooltip.addEventListener("focusout", event => {
+          if (!tooltip.contains(event.relatedTarget)) this.scheduleHidePromptTooltip();
+        });
         // 标签点击走**容器级委托**：浮层内容会被 replaceChildren 整体重建，逐个标签绑会丢。
         tooltip.addEventListener("click", (clickEvent) => this.handlePromptTooltipClick(clickEvent));
       }
       this.positionTooltip(event);
       await this.ensureTagTranslations(groupedTags);
-      if (this.tooltip !== tooltip) return;
-      tooltip.replaceChildren(...grouped.map(({ category, tags: values }) => {
+      if (this.tooltip !== tooltip || !card.isConnected) {
+        if (this.tooltip === tooltip) this.hidePromptTooltip();
+        return;
+      }
+      content.replaceChildren(...grouped.map(({ category, tags: values }) => {
         const section = document.createElement("section");
         section.className = "adg-prompt-tooltip-section";
         const heading = document.createElement("div");
@@ -6745,9 +6801,8 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       // 否则按"正在加载"的小尺寸定位出来的坐标，会被大面板直接撑到画廊上并溢出视口。
       this.positionTooltip();
       // 画廊源（C站/P站）的补充信息（负面提示词 / 采样参数 / 作者·收藏）追加在**同一个浮层**里。
-      const galleryExtra = this.buildGalleryTooltipExtra(card);
       if (galleryExtra && this.tooltip === tooltip) {
-        tooltip.append(galleryExtra);
+        content.append(galleryExtra);
         this.positionTooltip(); // 又长高了，同一个锚点再算一次
       }
       // P站 已匹配 D站：顶部提示（b）+ 横线分割后并列 Danbooru 标签（c）。
@@ -6766,12 +6821,15 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
           .filter(Boolean);
         // 顺带把 D站 标签的中文也取来（本地词典，几乎瞬时）——这样下半区也带翻译小字
         await this.ensureTagTranslations(danbooruTags);
-        if (this.tooltip !== tooltip) return;
+        if (this.tooltip !== tooltip || !card.isConnected) {
+          if (this.tooltip === tooltip) this.hidePromptTooltip();
+          return;
+        }
         const note = document.createElement("div");
         note.className = "adg-prompt-tooltip-note";
         note.textContent = `已匹配 D站 #${matched.post_id}（${matched.tag_count} 个标签）：`
           + "分隔线以下是该帖的 Danbooru 规范标签，也正是实际输出的 Prompt（上半区仍是 pixiv 自己的标签）。";
-        tooltip.prepend(note);
+        content.prepend(note);
         // 横线分割：直接复用 .adg-prompt-tooltip-extra 的 border-top，不新增样式
         const danbooru = document.createElement("section");
         danbooru.className = "adg-prompt-tooltip-extra";
@@ -6802,7 +6860,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
           }));
           danbooru.append(section);
         }
-        tooltip.append(danbooru);
+        content.append(danbooru);
         this.positionTooltip(); // 内容又长了，同一个锚点再算一次
       }
     }
@@ -6876,6 +6934,10 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
      */
     positionTooltip(event) {
       if (!this.tooltip) return;
+      if (this.hoverPreview && this.tooltipCard?.isConnected) {
+        this.hoverPreview.position(this.tooltipCard, this.root);
+        return;
+      }
       // 记住锚点：内容异步加载完（"正在加载双语 Prompt…" → 真面板）尺寸会变，
       // 那时必须用**同一个锚点**重新定位，否则会以小尺寸算出的位置承载大尺寸内容，
       // 直接盖住画廊并溢出视口。锚点只在这里被写入，且只在浮层创建时由外部传点进来 ——
@@ -6912,6 +6974,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
      * 于是光标得以腾出来移进浮层点标签，这正是 2.19 想给却给不了的能力。
      */
     scheduleShowPromptTooltip(card) {
+      if (!card.isConnected || this.tooltipDismissedCard === card) return;
       this.cancelShowPromptTooltip();
       this.tooltipShowTimer = setTimeout(() => {
         this.tooltipShowTimer = null;
@@ -6932,17 +6995,22 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       return { clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
     }
 
-    hidePromptTooltip() {
+    hidePromptTooltip({ dismissed = false } = {}) {
+      if (dismissed) this.tooltipDismissedCard = this.tooltipCard?.matches(":hover") ? this.tooltipCard : null;
       this.cancelShowPromptTooltip();
       this.cancelHidePromptTooltip();
+      this.hoverPreview?.dispose();
+      this.hoverPreview = null;
       this.tooltip?.remove();
       this.tooltip = null;
       this.tooltipCard = null;
+      this.tooltipAnchor = null;
     }
 
-    /** 延迟隐藏（只被 D站 的可交互浮层路径调用）：给鼠标留出从卡片移到浮层上的时间窗口 */
+    /** 给所有图源留出从卡片移到大图/提示词浮层的时间窗口。 */
     scheduleHidePromptTooltip() {
       this.cancelHidePromptTooltip();
+      if (this.tooltip?.contains(document.activeElement)) return;
       this.tooltipHideTimer = setTimeout(() => {
         this.tooltipHideTimer = null;
         this.hidePromptTooltip();
@@ -6959,13 +7027,14 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
      * 浮层里的标签被点击 → 直接用该标签重新搜索。
      * 只对**可交互浮层**成立（D站 / P站，见 isPromptTooltipInteractiveCard）：两边的标签都是真标签，
      * 点了能直接拿去检索（D站 走 /anima/danbooru/posts，P站 走 /anima/gallery/pixiv/search）。
-     * C站 的「标签」是自然语言分句且上游忽略关键词 → 浮层不可交互，走不到这里。
+     * C站 标签是自然语言分句且上游忽略关键词，不能用来搜索。
      */
     handlePromptTooltipClick(event) {
+      if (event.target?.closest?.(".adg-hover-header, .adg-hover-media")) return;
       const line = event.target?.closest?.(".adg-prompt-tooltip-line.is-searchable");
       if (!line || !this.tooltip?.contains(line)) {
         // 点在浮层空白处 = 一个明确的「收起」手势（否则浮层只能等鼠标移开 280ms 才消失）。
-        if (this.tooltip?.contains(event.target)) this.hidePromptTooltip();
+        if (this.tooltip?.contains(event.target)) this.hidePromptTooltip({ dismissed: true });
         return;
       }
       const rawTag = String(line.dataset.tag || "").trim();
@@ -8358,6 +8427,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       const queryInput = document.createElement("input");
       queryInput.className = "adg-query";
       queryInput.type = "text";
+      queryInput.setAttribute("aria-label", "画廊搜索标签");
       queryInput.placeholder = "标签（多个用空格分隔，回车直接搜）如：1girl long hair…";
       queryInput.value = this.settings.lastQuery || "";
       // 让搜索框能被正常点击聚焦：ComfyUI 在捕获阶段会把点击/焦点抢给节点容器，
@@ -8458,7 +8528,9 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
         this.sourceSelect = select;
         mainGroup.append(picker);
       }
-      addAction("搜索", "按上方标签搜索", () => this.submitSearch(this.queryInput?.value ?? this.queryWidget?.value ?? ""), mainGroup).className = "adg-primary-action";
+      const searchButton = addAction("搜索", "搜索当前图源", () => this.submitSearch(this.queryInput?.value ?? this.queryWidget?.value ?? ""), queryRow);
+      searchButton.className = "adg-primary-action";
+      queryInput.after(searchButton);
       // ── 随机发现：order:random + 质量地板。
       //
       // 2026-09-26 低占位改造：原先 3 个档位各占一个按钮 + 「换一批」，共 4 个按钮挤在工具条
@@ -8614,7 +8686,6 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
           .map((c) => c.dataset.postId).filter(Boolean);
         if (ids.length) this.openCategoryPicker(ids);
       };
-      categoryGroup.append(batchCatBtn);
       this.batchCatBtn = batchCatBtn;
       addAction("＋类", "新建分类（点选弹层）", () => this.openCategoryPicker([]), categoryGroup);
       const preset = document.createElement("select"); preset.title = "搜索预设";
@@ -8642,9 +8713,12 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       pagination.className = "adg-pagination";
       paginationRow.append(pagination);
       this.pagination = pagination;
-      const info = document.createElement("div");
-      info.className = "adg-info";
-      info.textContent = "图片操作在卡片悬浮工具条。";
+      this.selectionControls = new GallerySelectionControls({
+        onSelectAll: () => this.setLoadedCardsSelected(true),
+        onClear: () => this.setLoadedCardsSelected(false),
+        onQueue: () => void this.startGalleryBatch(),
+        categoryAction: batchCatBtn,
+      });
       const status = document.createElement("div");
       status.className = "adg-status";
       const galleryBatchPanel = document.createElement("div");
@@ -8679,10 +8753,11 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
       this.canvasDismissHandler = (event) => {
         if (!(event.target instanceof HTMLCanvasElement)) return;
         this.hideSuggestions();
+        this.hidePromptTooltip();
       };
       window.addEventListener("pointerdown", this.canvasDismissHandler, true);
       window.addEventListener("wheel", this.canvasDismissHandler, { capture: true, passive: true });
-      root.append(queryRow, toolbar, paginationRow, info, status, galleryBatchPanel, grid);
+      root.append(queryRow, toolbar, paginationRow, this.selectionControls.element, status, galleryBatchPanel, grid);
       this.root = root;
       this.status = status;
       this.grid = grid;

@@ -1976,7 +1976,7 @@ async def anima_danbooru_favorite_toggle(request: web.Request) -> web.Response:
             if resp.status_code in (200, 201):
                 return {"ok": True, "favorite": True}
             return {"ok": False, "error": _favorite_write_error(resp.status_code, resp.text)}
-        # 取消收藏：**DELETE 用的是收藏记录 id（不是 post_id）** ⇒ 先查记录
+        # 先确认当前账号的收藏是否存在；Danbooru DELETE 路径使用 post_id。
         user_id = int((_danbooru_identity() or {}).get("id") or 0)
         if not user_id:
             return {"ok": False, "error": "拿不到 D站 账号 id（确认已登录且网络可用）后重试"}
@@ -1999,7 +1999,7 @@ async def anima_danbooru_favorite_toggle(request: web.Request) -> web.Response:
         if record is None:
             # 本来就没收藏 ⇒ 幂等成功（用户连点两次不该报错）
             return {"ok": True, "favorite": False}
-        resp = _danbooru_request("DELETE", f"/favorites/{int(record['id'])}.json", auth=auth, timeout=20)
+        resp = _danbooru_request("DELETE", f"/favorites/{post_id}.json", auth=auth, timeout=20)
         if resp.status_code in (200, 204):
             return {"ok": True, "favorite": False}
         return {"ok": False, "error": _favorite_write_error(resp.status_code, resp.text)}

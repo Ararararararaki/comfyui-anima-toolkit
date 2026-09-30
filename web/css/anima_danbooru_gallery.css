@@ -13,7 +13,7 @@
   border: 1px solid var(--adg-line, rgba(255, 255, 255, .1));
   border-radius: 8px;
   color: var(--adg-fg, #d9d9de);
-  background: rgba(20, 20, 26, .78);
+  background: var(--comfy-menu-bg, var(--comfy-input-bg, #202028));
   font: 12px/1.35 system-ui, sans-serif;
   /* ── 2026-09-15 视觉基线（用户要求：现代、平滑、去 AI 感、**不发光**）──
      ① 自绘控件颜色一律桥接到宿主主题变量（浅色主题下硬编码灰阶不可读）；
@@ -21,7 +21,7 @@
      ③ 过渡统一 150ms + 同一条缓动；hover 只做 ≤2px 位移或底色微亮。
      变量名刻意避开弹层主题块已有的 --adg-text/--adg-muted/--adg-accent，防止互相污染。 */
   --adg-fg: var(--fg-color, #d9d9de);
-  --adg-fg-soft: var(--descrip-text, #9b9a95);
+  --adg-fg-soft: var(--descrip-text, color-mix(in srgb, var(--fg-color, #d9d9de) 65%, var(--comfy-menu-bg, var(--comfy-input-bg, #202028))));
   --adg-line: var(--border-color, rgba(255, 255, 255, .12));
   --adg-input-bg: var(--comfy-input-bg, #17171d);
   --adg-go: var(--p-primary-color, #d0c9bb);
@@ -37,7 +37,7 @@
   --adg-shadow-float: 0 10px 24px rgba(0, 0, 0, .34);
 }
 
-.adg-toolbar { display: flex; min-width: 0; max-width: 100%; flex-wrap: wrap; gap: 8px; align-items: center; padding: 2px 0; }
+.adg-toolbar { display: flex; min-width: 0; max-width: 100%; flex-wrap: wrap; gap: 6px; align-items: center; }
 /* ⚠️ 2026-09-15 浏览器实测踩到：`.adg-dropdown-trigger { display: inline-flex }`（类选择器）
    会盖掉 UA 样式表的 `[hidden] { display: none }`（属性选择器）—— 于是换源时**被隐藏的
    D站 分级/筛选下拉照样显示在工具条上**（JS 里 el.hidden === true，视觉上却还在）。
@@ -93,12 +93,13 @@
    它不再是 first-child，因此改挂一个显式的新类（只加类，不动原选择器）。 */
 .adg-toolbar .adg-primary-action { border-color: var(--adg-go, #a895ff); background: var(--adg-tint-strong, rgba(255, 255, 255, .1)); font-weight: 650; }
 .adg-toolbar-presets select { min-width: 140px; max-width: 220px; }
+.adg-toolbar-main { border-color: transparent; background: transparent; padding-left: 0; }
 
 /* ── 图源下拉（D站 / C站 / P站）──
    刻意**不用** .adg-toolbar-group：tests/verify_tk_prompt_output.py 断言分组数恰为 4。 */
 .adg-source-picker { display: inline-flex; flex: 0 0 auto; min-width: 0; align-items: center; gap: 2px; padding-left: 4px; color: var(--adg-fg-soft, #9b9a95); }
 .adg-source-picker .adg-source-icon { flex: 0 0 auto; opacity: .8; }
-.adg-source-select { max-width: 96px; font-weight: 650; }
+.adg-source-select { max-width: 132px; font-weight: 650; }
 .adg-source-picker[data-source="civitai"] .adg-source-icon,
 .adg-source-picker[data-source="pixiv"] .adg-source-icon { color: var(--adg-go, #a895ff); opacity: 1; }
 
@@ -556,6 +557,37 @@
       （tests/test_danbooru_gallery_prompt_tooltip.py:27、tests/test_gallery_multisource_ui.py:297），
       把含该字符串的规则插到 443 行之前会让切片提前结束、丢掉 .adg-card-actions 的断言 → 假红。 */
 .adg-prompt-tooltip.is-danbooru { pointer-events: auto; }
+.adg-prompt-tooltip.adg-hover-preview {
+  pointer-events: auto;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  gap: 0; padding: 0; overflow: hidden;
+  color: var(--fg-color, #d9d9de);
+  background: var(--comfy-menu-bg, var(--comfy-input-bg, #202028));
+  border-color: var(--border-color, rgba(128,128,128,.3));
+  border-radius: 10px;
+  --adg-fg: var(--fg-color, #d9d9de);
+  --adg-fg-soft: var(--descrip-text, var(--fg-color, #d9d9de));
+  --adg-line: var(--border-color, rgba(128,128,128,.3));
+  --adg-tint: rgba(128,128,128,.08);
+  --adg-tint-strong: rgba(128,128,128,.16);
+  --adg-accent: var(--p-primary-color, #8b7bff);
+}
+.adg-hover-header { display: flex; align-items: center; gap: 6px; min-height: 38px; padding: 6px 9px; border-bottom: 1px solid var(--adg-line); }
+.adg-hover-header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.adg-hover-header button { flex: 0 0 auto; padding: 4px 7px; border: 1px solid var(--adg-line); border-radius: 5px; color: inherit; background: var(--adg-tint); font: inherit; cursor: pointer; }
+.adg-hover-header button:hover, .adg-hover-header button:focus-visible { background: var(--adg-tint-strong); border-color: var(--adg-accent); }
+.adg-hover-body { display: flex; min-width: 0; min-height: 0; height: min(480px, calc(100vh - 80px)); }
+.adg-hover-media { position: relative; flex: 1 1 54%; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 0; cursor: pointer; background: var(--comfy-input-bg, #17171d); }
+.adg-hover-media.is-selected, .adg-hover-media:focus-visible { outline: 2px solid var(--adg-accent); outline-offset: -2px; }
+.adg-hover-media img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.adg-hover-image-note { position: absolute; bottom: 8px; left: 8px; right: 8px; padding: 5px; border-radius: 5px; color: var(--adg-fg); background: var(--comfy-menu-bg, var(--comfy-input-bg, #202028)); font-size: 10px; }
+.adg-hover-details { flex: 1 1 46%; min-width: 0; overflow: auto; overscroll-behavior: contain; padding: 9px; border-left: 1px solid var(--adg-line); }
+.adg-hover-details[hidden] { display: none; }
+.adg-hover-details .adg-prompt-tooltip-section { margin-bottom: 7px; }
+.adg-hover-preview:is(.is-compact, .is-landscape) .adg-hover-body { flex-direction: column; }
+.adg-hover-preview:is(.is-compact, .is-landscape) .adg-hover-media { flex: 1 1 65%; }
+.adg-hover-preview:is(.is-compact, .is-landscape) .adg-hover-details { flex: 0 1 35%; border-left: 0; border-top: 1px solid var(--adg-line); }
 /* 点一下 = 按该标签重新搜索（只加在 D站 的标签上，见 widget 的 is-searchable） */
 .adg-prompt-tooltip-line.is-searchable { cursor: pointer; }
 .adg-prompt-tooltip-line.is-searchable:hover { border-color: var(--adg-accent, #8b7bff); background: var(--adg-tint-strong, rgba(139,123,255,.18)); }
@@ -763,7 +795,41 @@
 .adg-icon { flex: 0 0 auto; vertical-align: middle; }
 
 /* 顶部搜索框（DOM 输入，回车直接搜索） */
-.adg-queryrow { flex: none; display: flex; }
+.adg-queryrow { flex: none; display: flex; gap: 6px; align-items: stretch; }
+.adg-queryrow .adg-primary-action {
+  flex: 0 0 auto;
+  padding: 6px 16px;
+  border: 1px solid var(--adg-go);
+  border-radius: var(--adg-r-sm);
+  color: var(--adg-fg);
+  background: color-mix(in srgb, var(--adg-go) 18%, var(--adg-input-bg));
+  font: 650 12px/1.35 system-ui, sans-serif;
+  cursor: pointer;
+}
+.adg-queryrow .adg-primary-action:hover { background: color-mix(in srgb, var(--adg-go) 28%, var(--adg-input-bg)); }
+.adg-queryrow .adg-primary-action:focus-visible { outline: 2px solid var(--adg-go); outline-offset: 2px; }
+
+/* Selection actions replace the old passive hint, keeping the grid's vertical space. */
+.adg-selection-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; padding-top: 2px; }
+.adg-selection-bar [hidden] { display: none; }
+.adg-selection-bar button {
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid var(--adg-line);
+  border-radius: var(--adg-r-sm);
+  color: var(--adg-fg);
+  background: var(--adg-input-bg);
+  font: 11px/1.35 system-ui, sans-serif;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.adg-selection-bar button:hover:not(:disabled) { border-color: var(--adg-go); background: var(--adg-tint-strong); }
+.adg-selection-bar button:focus-visible { outline: 2px solid var(--adg-go); outline-offset: 1px; }
+.adg-selection-bar button:disabled { opacity: .45; cursor: not-allowed; }
+.adg-selection-bar .adg-selection-mode[aria-pressed="true"],
+.adg-selection-bar .adg-selection-queue { border-color: var(--adg-go); background: color-mix(in srgb, var(--adg-go) 14%, var(--adg-input-bg)); }
+.adg-selection-summary { flex: 1 1 auto; color: var(--adg-fg-soft); font-size: 11px; }
+.adg-selection-actions { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
 
 /* 组件容器提升层级：新 ComfyUI 前端会在节点内容上叠一层 bg-component-node-background，
    否则该面罩会拦截点击（点搜索框变成选节点/弹 Value）。 */

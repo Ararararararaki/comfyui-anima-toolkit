@@ -61,6 +61,11 @@ from typing import Any
 
 from aiohttp import web
 
+try:
+    from .services.gallery_stream import open_image_stream, search_with_warnings
+except ImportError:
+    from services.gallery_stream import open_image_stream, search_with_warnings
+
 try:  # 包内导入（ComfyUI 运行时）
     from .anima_gallery_sources import (
         SOURCE_IMAGE_HOSTS,
@@ -522,9 +527,7 @@ async def safebooru_search(request: web.Request) -> web.Response:
     except (TypeError, ValueError):
         limit = DEFAULT_LIMIT
     filters = {"rating": request.query.get("rating", "")}
-    items, next_cursor = SOURCE.search(query, cursor, limit, **filters)
-    # 失败原因由 search() 写进 last_warnings；items 非空时维持既有「warnings 为空」契约
-    warnings = list(getattr(SOURCE, "last_warnings", []) or []) if not items else []
+    items, next_cursor, warnings = await search_with_warnings(SOURCE, query, cursor, limit, **filters)
     if not items and not warnings:
         warnings = ["该图源无结果或请求失败（网络/标签无效）"]
     return web.json_response({
@@ -554,13 +557,13 @@ async def safebooru_image(request: web.Request) -> web.StreamResponse:
         return web.json_response({"error": "该主机不属于本图源"}, status=403)
     limit_mb = MAX_IMAGE_BYTES // (1024 * 1024)
     try:
-        upstream = _open_for_stream(url, read_timeout=IMAGE_READ_TIMEOUT)
+        upstream = await open_image_stream(_open_for_stream, url, read_timeout=IMAGE_READ_TIMEOUT)
     except UpstreamError as error:
         return web.json_response({"error": f"取图失败：{error.reason}"}, status=error.status or 502)
     except Exception as error:  # noqa: BLE001
         return web.json_response({"error": f"取图失败：{type(error).__name__}: {error}"}, status=502)
 
-    with upstream:
+    async with upstream:
         content_type = (upstream.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         declared = str(upstream.headers.get("Content-Length") or "").strip()
         if declared.isdigit() and int(declared) > MAX_IMAGE_BYTES:
@@ -568,7 +571,7 @@ async def safebooru_image(request: web.Request) -> web.StreamResponse:
                 {"error": f"取图失败：该图 {int(declared) / (1024 * 1024):.1f}MB 超过 {limit_mb}MB 上限"},
                 status=502)
         try:
-            first = upstream.read(min(65536, MAX_IMAGE_BYTES + 1))
+            first = await upstream.read(min(65536, MAX_IMAGE_BYTES + 1))
         except Exception as error:  # noqa: BLE001 —— 首块读取失败（可读原因照常给）
             reason, _ = _classify_error(error, IMAGE_READ_TIMEOUT)
             return web.json_response({"error": f"取图失败：{reason}"}, status=502)
@@ -594,7 +597,7 @@ async def safebooru_image(request: web.Request) -> web.StreamResponse:
         try:
             await stream.write(first)
             while True:
-                chunk = upstream.read(65536)  # 分块读 → 分块写：内存占用恒定为块大小
+                chunk = await upstream.read(65536)  # 后台读一块 → 前台写一块，保留背压和恒定内存
                 if not chunk:
                     break
                 total += len(chunk)
