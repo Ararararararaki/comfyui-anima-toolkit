@@ -8,7 +8,7 @@
 
 <p align="center"><img src="screenshots/icon.png" width="140" alt="TK Toolkit"></p>
 
-当前发布版本: **2.24.2**。
+当前发布版本: **2.25.0**。
 
 ## 安装
 
@@ -65,6 +65,8 @@ Registry 页面在 <https://registry.comfy.org/nodes/anima-toolkit>。依赖见 
 3. 点「扫描文件夹（含子目录）」选 LoRA 根目录。扫描会保留相对路径，比如 `anima base/style.safetensors`。
 4. 点「子目录建分类」，按一级子目录名自动建分类并把 LoRA 归进去。更深层的目录按它的一级目录归类，直接放在根目录的文件不归类。
 5. 想要 C 站信息就点「全部匹配」，之后能看触发词、预览图、返图、分类和权重，也能发回 ComfyUI。
+
+节点中 LoRA 名称右侧的铅笔可以编辑触发词。每行填一段提示词，保存后，点击名称复制、工具栏「全部触发词」和节点的 `trigger_words` 输出都会使用自定义词；同一个本地 LoRA 在其他节点也会同步使用。保存空白可停用该 LoRA 的触发词，「恢复自动」重新使用自动提取结果。编辑框支持 `Ctrl+Enter` 保存和 `Esc` 取消。
 
 浏览器不支持目录权限 API 的时候，工具箱会自动退回文件夹选择的方式。用 Chrome 或 Edge 从 localhost 访问体验最完整。
 

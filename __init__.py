@@ -229,7 +229,7 @@ WEB_DIRECTORY = "./web"
 # 从根上消掉「两个地方要一起改」这个失败模式；读失败（打包丢文件等）才回落到内置值。
 # 更新链（_is_update_release_path / 更新 ZIP 校验）本来就要求包里带 VERSION，
 # 所以这个文件在真实安装里一定存在。
-_FALLBACK_VERSION = "2.24.2"
+_FALLBACK_VERSION = "2.25.0"
 try:
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"), encoding="utf-8") as _vf:
         __version__ = _vf.read().strip() or _FALLBACK_VERSION
@@ -586,6 +586,7 @@ async def _proxy(url, request):
 # ── LoRA info cache (SHA256 → Civitai data, 5 min TTL) ──
 _LORA_INFO_CACHE: dict[str, tuple[float, dict]] = {}
 _LORA_INFO_TTL = 300
+_LORA_INFO_INFLIGHT: dict[str, asyncio.Task] = {}
 
 # 文件 SHA256 缓存：path -> (mtime, size, sha256)。LoRA 文件不变时避免重复全文件哈希
 # （大文件哈希很慢，重复查询 /anima/lora/info 会反复阻塞线程池）。
@@ -715,17 +716,34 @@ async def lora_info(request):
     if cached and cached[0] > now:
         return web.json_response(cached[1])
 
+    # 多节点、弹窗和悬停可能同时查同一文件。共享在途任务，避免重复哈希和上游请求。
+    task = _LORA_INFO_INFLIGHT.get(name)
+    if task is None:
+        async def lookup():
+            try:
+                return await _resolve_lora_info(name)
+            finally:
+                _LORA_INFO_INFLIGHT.pop(name, None)
+        task = asyncio.create_task(lookup())
+        _LORA_INFO_INFLIGHT[name] = task
+    # 关闭一个弹窗只取消它自己的等待，不中断其他节点正在使用的查询。
+    result = await asyncio.shield(task)
+    return web.json_response(result, status=500 if "error" in result else 200)
+
+
+async def _resolve_lora_info(name):
+
     # Find file
     lora_path = _find_lora_path(name)
     if lora_path is None:
-        return web.json_response({"name": name, "trainedWords": [], "modelName": None, "previewUrl": None, "source": "not_found"})
+        return {"name": name, "trainedWords": [], "modelName": None, "previewUrl": None, "source": "not_found"}
 
     # Compute SHA256 (run in thread pool so large files don't block the event loop)
     try:
         loop = asyncio.get_event_loop()
         sha256 = await loop.run_in_executor(None, _sha256_file, lora_path)
     except Exception as e:
-        return web.json_response({"error": f"SHA256 failed: {e}"}, status=500)
+        return {"error": f"SHA256 failed: {e}"}
 
     # Query Civitai API
     try:
@@ -753,9 +771,9 @@ async def lora_info(request):
     except Exception as e:
         result = {"name": name, "trainedWords": [], "modelName": None, "previewUrl": None, "source": f"error_{e}"}
 
-    _LORA_INFO_CACHE[name] = (now + _LORA_INFO_TTL, result)
+    _LORA_INFO_CACHE[name] = (time.time() + _LORA_INFO_TTL, result)
     _cleanup_cache(_LORA_INFO_CACHE, _LORA_INFO_TTL)
-    return web.json_response(result)
+    return result
 
 
 # 下载进度：progressId -> {done, total, status, filename, ...}（供前端进度条轮询）

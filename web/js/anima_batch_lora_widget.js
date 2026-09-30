@@ -1,4 +1,5 @@
 // Anima Batch LoRA Widget — 中文界面 + 桥接自动加载 + 触发词复制
+import { triggerOverrides, openTriggerWordEditor } from "./anima_lora_trigger_overrides.js";
 import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
 (function () {
@@ -565,6 +566,17 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.loraWidget = loraWidget;
       this.loras = this._parse(loraWidget.value || "");
       this.triggerWordMap = {};
+      this._unsubscribeTriggers = triggerOverrides.subscribe(changed => {
+        if (this.loras.some(l => changed.includes(normalizeLoraName(l.name)))) {
+          this._updateTwStatus();
+          this.listEl?.querySelectorAll(".trigger-edit").forEach(button => {
+            const custom = triggerOverrides.entry(button.dataset.loraName)?.hasOverride;
+            button.classList.toggle("is-custom", !!custom);
+            button.title = custom ? "编辑自定义触发词" : "编辑触发词";
+          });
+        }
+        this._manualRefresh?.();
+      });
       this.loraInfoMap = {}; // name -> {previewUrl, modelName, creator}（悬停预览用）
       // this.meta 是否已是从后端完整读到的快照：只有快照才能安全提交 loraMeta 单键
       // （后端按键级合并，loraMeta 值非空会整键替换 → 残缺基线会把后端其他偏好覆盖掉）
@@ -913,7 +925,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           .bm-modal .bm-list::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,0.18); }
 
           /* ── TK Toolkit 同款表面层：中性灰阶、透明底色、精确微动效 ── */
-          .bm-overlay { position:fixed !important; inset:0 !important; z-index:9999 !important; display:flex !important; align-items:center; justify-content:center; background:radial-gradient(ellipse at 50% 0%,rgba(30,29,27,.78),rgba(5,5,5,.90) 62%,rgba(2,2,2,.96)) !important; backdrop-filter:blur(14px) saturate(78%); }
+          .bm-overlay { position:fixed !important; inset:0 !important; z-index:9999 !important; display:flex !important; align-items:center; justify-content:center; background:radial-gradient(ellipse at 50% 0%,rgba(30,29,27,.78),rgba(5,5,5,.90) 62%,rgba(2,2,2,.96)) !important; backdrop-filter:none; }
           .bm-modal { --bm-fg:#eeeae3; --bm-fg-muted:#a9a39a; --bm-fg-subtle:rgba(238,234,227,.56); --bm-accent:#e6dfd3; --bm-accent-ink:#1d1a16; --bm-line:rgba(238,234,227,.13); --bm-line-hover:rgba(238,234,227,.27); --bm-surface:rgba(238,234,227,.055); --bm-surface-hover:rgba(238,234,227,.105); --bm-danger:#d18b82; position:relative !important; display:flex !important; flex-direction:column !important; box-sizing:border-box !important; width:min(1180px,calc(100vw - 32px)) !important; max-width:1180px !important; height:min(88vh,820px) !important; max-height:88vh !important; padding:0 !important; overflow:hidden !important; color:var(--bm-fg) !important; background:linear-gradient(180deg,rgba(22,21,19,.93),rgba(10,10,9,.97)) !important; border:1px solid var(--bm-line) !important; border-radius:18px !important; box-shadow:0 0 0 1px rgba(255,255,255,.035),0 24px 70px rgba(0,0,0,.68),0 0 80px rgba(0,0,0,.24),inset 0 1px 0 rgba(255,255,255,.08) !important; font-family:"Inter","Geist Sans",system-ui,sans-serif !important; transform:scale(var(--bm-scale,1)) !important; transform-origin:center center !important; }
           .bm-modal::before { content:""; position:absolute; inset:0; pointer-events:none; background:radial-gradient(600px 180px at 28% 0%,rgba(255,255,255,.065),transparent 72%); opacity:.8; }
           .bm-header { position:relative; z-index:1; display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:64px; padding:12px 16px 11px; border-bottom:1px solid rgba(238,234,227,.10); background:rgba(255,255,255,.018); }
@@ -961,7 +973,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           .bm-img-fallback.is-missing { color:var(--bm-danger); }
           .bm-badge { position:absolute !important; top:9px !important; left:9px !important; z-index:3; align-items:center; justify-content:center; width:22px !important; height:22px !important; border:1px solid rgba(29,26,22,.25); border-radius:50% !important; background:var(--bm-accent) !important; color:var(--bm-accent-ink) !important; box-shadow:0 4px 12px rgba(0,0,0,.28) !important; }
           .bm-card-actions { position:absolute; top:8px; right:8px; z-index:3; display:flex; gap:4px; }
-          .bm-card-actions button, .bm-li-actions button { display:inline-flex !important; align-items:center; justify-content:center; width:25px !important; height:25px !important; padding:0 !important; border:1px solid rgba(238,234,227,.20) !important; border-radius:8px !important; background:rgba(17,16,14,.70) !important; color:var(--bm-fg-muted) !important; box-shadow:0 4px 12px rgba(0,0,0,.26),inset 0 1px 0 rgba(255,255,255,.08) !important; backdrop-filter:blur(8px); cursor:pointer; transition:transform .18s cubic-bezier(.16,1,.3,1),background .18s ease,border-color .18s ease,color .18s ease !important; }
+          .bm-card-actions button, .bm-li-actions button { display:inline-flex !important; align-items:center; justify-content:center; width:25px !important; height:25px !important; padding:0 !important; border:1px solid rgba(238,234,227,.20) !important; border-radius:8px !important; background:rgba(17,16,14,.70) !important; color:var(--bm-fg-muted) !important; box-shadow:0 4px 12px rgba(0,0,0,.26),inset 0 1px 0 rgba(255,255,255,.08) !important; backdrop-filter:none; cursor:pointer; transition:transform .18s cubic-bezier(.16,1,.3,1),background .18s ease,border-color .18s ease,color .18s ease !important; }
           .bm-card-actions button:hover, .bm-li-actions button:hover { transform:translateY(-1px); border-color:var(--bm-line-hover) !important; background:rgba(238,234,227,.16) !important; color:var(--bm-fg) !important; }
           .bm-card-actions button:active, .bm-li-actions button:active { transform:scale(.94); }
           .bm-card-actions .bm-catbtn.is-active { border-color:rgba(230,223,211,.55) !important; color:var(--bm-accent) !important; background:rgba(230,223,211,.17) !important; }
@@ -995,6 +1007,18 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           .bm-catpicker button { display:flex !important; align-items:center; gap:7px; width:100% !important; min-height:30px; margin:0 0 3px !important; padding:6px 8px !important; border:1px solid transparent !important; border-radius:8px !important; background:transparent !important; color:var(--bm-fg-muted) !important; font-size:10px !important; text-align:left; transition:background .18s ease,border-color .18s ease,color .18s ease,transform .18s ease !important; }
           .bm-catpicker button.is-active { border-color:rgba(230,223,211,.22) !important; background:rgba(230,223,211,.13) !important; color:var(--bm-accent) !important; }
           .bm-catpicker button:hover { transform:translateX(2px); background:var(--bm-surface-hover) !important; border-color:var(--bm-line) !important; color:var(--bm-fg) !important; }
+          /* Scrolling thumbnails must not create dozens of blur/shadow/filter layers. */
+          .bm-overlay-enter, .bm-modal-enter { animation:none !important; }
+          .bm-list { contain:layout paint; overscroll-behavior:contain; }
+          .bm-card, .bm-card:hover, .bm-card.is-selected, .bm-li, .bm-li:hover, .bm-li.is-selected { box-shadow:none !important; filter:none !important; transition:border-color .15s ease,background .15s ease !important; }
+          .bm-card:hover, .bm-li:hover { transform:none !important; }
+          .bm-card *, .bm-li * { text-shadow:none !important; }
+          .bm-card:hover .bm-thumb-img { transform:none !important; filter:none !important; }
+          .bm-card-actions button, .bm-li-actions button { box-shadow:none !important; background:var(--comfy-menu-bg,var(--comfy-input-bg)) !important; }
+          .anima-lora-widget .trigger-edit {flex:0 0 22px; width:22px; height:22px; padding:3px; border:1px solid transparent; border-radius:5px; background:transparent; color:var(--descrip-text); opacity:.55; cursor:pointer; display:inline-flex; align-items:center; justify-content:center;}
+          .anima-lora-widget .lora-row:hover .trigger-edit, .anima-lora-widget .trigger-edit:focus-visible {opacity:1; border-color:var(--border-color);}
+          .anima-lora-widget .trigger-edit.is-custom {opacity:1; color:var(--p-primary-color);}
+          .anima-lora-widget .trigger-edit:focus-visible {outline:2px solid var(--p-primary-color); outline-offset:2px;}
           @media (max-width:760px) { .bm-header { align-items:flex-start; flex-direction:column; } .bm-header-actions { width:100%; justify-content:flex-start; } .bm-body { gap:10px; padding-inline:10px; } .bm-sidebar { width:116px !important; flex-basis:116px; } }
           @media (prefers-reduced-motion:reduce) { .bm-overlay-enter,.bm-modal-enter,.bm-card,.bm-li,.bm-header-actions button,.bm-batchbar button,.bm-thumb-img { animation:none !important; transition-duration:.01ms !important; } }
         `;
@@ -1203,12 +1227,41 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.node.onRemoved = function () {
         if (ui._bridgeTimer) { clearInterval(ui._bridgeTimer); ui._bridgeTimer = null; }
         if (ui._updateTimer) { clearInterval(ui._updateTimer); ui._updateTimer = null; }
+        ui._unsubscribeTriggers?.();
+        ui._triggerEditor?.close(true);
         ui._loraInputResizeObserver?.disconnect();
         ui._loraInputResizeObserver = null;
         ui.domSizeSync?.dispose();
         ui.domSizeSync = null;
         if (typeof origRemoved === "function") return origRemoved.apply(this, arguments);
       };
+    }
+
+    _effectiveWords(name, fallback = this.triggerWordMap[name]) {
+      return triggerOverrides.words(name, fallback);
+    }
+
+    _loadTriggerOverrides(names, refresh = false) { return triggerOverrides.load(names, refresh); }
+
+    async _copyLoraWords(name) {
+      try {
+        await this._loadTriggerOverrides([name], true);
+        let words = this._effectiveWords(name);
+        if (!Array.isArray(words)) {
+          await new Promise(resolve => this._fetchTw(name, resolve));
+          words = this._effectiveWords(name);
+        }
+        if (words?.length) { copyText(words.join(", ") + ","); showToast("已复制触发词"); }
+        else showToast(triggerOverrides.entry(name)?.hasOverride ? "已自定义为空触发词" : "该 LoRA 无触发词");
+      } catch (error) { showToast("读取触发词失败：" + error.message); }
+    }
+
+    _editTriggerWords(anchor, name) {
+      this._triggerEditor?.close();
+      document.querySelectorAll(".anima-tw-popover").forEach(el => el.remove());
+      this._triggerEditor = openTriggerWordEditor(anchor, name,
+        () => Array.isArray(this.triggerWordMap[name]) ? Promise.resolve(this.triggerWordMap[name]) : new Promise(resolve => this._fetchTw(name, resolve)),
+        {onClose: () => { this._triggerEditor = null; }});
     }
 
     // ── trigger_words 总开关 ──
@@ -1252,9 +1305,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       let active = 0;
       let known = 0;
       for (const l of this.loras || []) {
-        if (l.disabled) continue;
+        if (l.disabled || (l.weight === 0 && (l.clipWeight ?? l.weight) === 0)) continue;
         active++;
-        const words = this.triggerWordMap[l.name];
+        const words = this._effectiveWords(l.name);
         if (Array.isArray(words) && words.length) known++;
       }
       return { active, known, enabled: true };
@@ -1377,7 +1430,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     _fetchTw(name, onDone) {
-      fetch("/anima/lora/info?name=" + encodeURIComponent(name))
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
+      return fetch("/anima/lora/info?name=" + encodeURIComponent(name), {signal: controller.signal})
         .then((r) => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           return r.json();
@@ -1407,35 +1462,30 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           this.triggerWordMap[name] = null;
           console.error("[Anima] 获取触发词失败:", name, e);
           showToast("❌ 获取失败，请确认 ComfyUI 已重启: " + e.message);
-        });
+          onDone && onDone(null); // Release callers waiting to copy/edit after a failed lookup.
+        }).finally(() => clearTimeout(timer));
     }
 
     // ── 一键复制已启用 LoRA 的所有触发词（英文逗号连接，句末带逗号匹配后续提示词） ──
     async _copyAllTriggerWords() {
-      const enabled = this.loras.filter((l) => !l.disabled);
+      const enabled = this.loras.filter(l => !l.disabled && (l.weight !== 0 || (l.clipWeight ?? l.weight) !== 0));
       if (!enabled.length) { showToast("当前没有启用的 LoRA"); return; }
-      const parts = [];
-      for (const l of enabled) {
-        let tw = this.triggerWordMap[l.name];
-        if (!Array.isArray(tw)) {
-          // 未查询过 → 现查（复用 /anima/lora/info）
-          try {
-            const resp = await fetch("/anima/lora/info?name=" + encodeURIComponent(l.name));
-            const data = await resp.json();
-            const src = data.source || "";
-            if (data.error || src.startsWith("error") || src.startsWith("http")) throw new Error(src);
-            tw = data.trainedWords || [];
-            this.triggerWordMap[l.name] = tw;
-          } catch {
-            this.triggerWordMap[l.name] = null;
-            tw = null;
+      try {
+        await this._loadTriggerOverrides(enabled.map(l => l.name), true);
+        const parts = [];
+        for (const l of enabled) {
+          let words = this._effectiveWords(l.name);
+          if (!Array.isArray(words)) {
+            await new Promise(resolve => this._fetchTw(l.name, resolve));
+            words = this._effectiveWords(l.name);
           }
+          if (words?.length) parts.push(...words);
         }
-        if (tw && tw.length) parts.push(tw.join(", "));
-      }
-      if (!parts.length) { showToast("这些 LoRA 都没有触发词"); return; }
-      copyText(parts.join(", ") + ",");
-      showToast(`已复制 ${parts.length} 个 LoRA 的触发词（逗号连接）`);
+        const seen = new Set();
+        const unique = parts.filter(word => { const key = word.trim().toLowerCase(); if (!key || seen.has(key)) return false; seen.add(key); return true; });
+        if (!unique.length) { showToast("这些 LoRA 都没有触发词"); return; }
+        copyText(unique.join(", ") + ","); showToast("已复制全部触发词");
+      } catch (error) { showToast("读取触发词失败：" + error.message); }
     }
 
     // 加载工作流/同步后自动提取所有 LoRA 的触发词，逐个更新行内提示，不重渲染整个列表
@@ -1451,6 +1501,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     // ── 渲染 LoRA 卡片 ──
     _render(listEl) {
+      this._loadTriggerOverrides(this.loras.map(l => l.name)).catch(error => console.warn("[TK] 自定义触发词读取失败", error));
       this._updateTwStatus();
       listEl.innerHTML = "";
       if (!this.loras.length) {
@@ -1511,59 +1562,30 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         name.textContent = l.name; // 完整名，CSS ellipsis 兜底截断
         name.title = l.name; // 原生悬浮提示完整名（兜底，不依赖弹窗逻辑）
         let tooltipTimer = null;
+        let hovering = false;
         name.onmouseenter = () => {
+          hovering = true;
           clearTimeout(tooltipTimer);
-          const doShow = () => {
-            const ww = this.triggerWordMap[l.name];
-            if (ww !== undefined && ww !== null) {
-              this._showTwTooltip(name, l.name, "hover");
-            } else {
-              // 懒加载（undefined=未查过，null=上次失败，都重新查）
-              this._fetchTw(l.name, (tw) => {
-                this._showTwTooltip(name, l.name, "hover");
-              });
-            }
-          };
-          tooltipTimer = setTimeout(doShow, 400);
+          tooltipTimer = setTimeout(async () => {
+            try {
+              await this._loadTriggerOverrides([l.name]);
+              if (!Array.isArray(this._effectiveWords(l.name))) await new Promise(resolve => this._fetchTw(l.name, resolve));
+              if (hovering && name.isConnected && !this._triggerEditor) this._showTwTooltip(name, l.name, "hover");
+            } catch (error) { console.warn("[TK] 触发词预览失败", error); }
+          }, 400);
         };
         name.onmouseleave = () => {
-          clearTimeout(tooltipTimer);
-          document.querySelectorAll(".anima-tw-popover").forEach((el) => el.remove());
+          hovering = false; clearTimeout(tooltipTimer);
+          document.querySelectorAll(".anima-tw-popover").forEach(el => el.remove());
         };
-        name.onclick = (e) => {
-          e.stopPropagation();
-          const ww = this.triggerWordMap[l.name];
-          if (ww && ww.length) {
-            // 有触发词 → 复制
-            copyText(ww.join(", ") + ",");
-            showToast(`已复制触发词: ${ww[0]}${ww.length > 1 ? " 等" + ww.length + "个" : ""}`);
-          } else if (ww === null) {
-            // 上次查询失败 → 重试
-            showToast("⏳ 重新获取触发词...");
-            this._fetchTw(l.name, (tw) => {
-              if (tw.length) {
-                copyText(tw.join(", ") + ",");
-                showToast(`已复制触发词: ${tw[0]}${tw.length > 1 ? " 等" + tw.length + "个" : ""}`);
-              } else {
-                showToast("该 LoRA 无触发词");
-              }
-            });
-          } else if (Array.isArray(ww)) {
-            // 已确认无触发词
-            showToast("该 LoRA 无触发词");
-          } else {
-            // 还没加载过，先加载看有没有触发词
-            showToast("⏳ 获取触发词...");
-            this._fetchTw(l.name, (tw) => {
-              if (tw.length) {
-                copyText(tw.join(", ") + ",");
-                showToast(`已复制触发词: ${tw[0]}${tw.length > 1 ? " 等" + tw.length + "个" : ""}`);
-              } else {
-                showToast("该 LoRA 无触发词");
-              }
-            });
-          }
-        };
+        name.onclick = e => { e.stopPropagation(); this._copyLoraWords(l.name); };
+        const edit = document.createElement("button");
+        edit.type = "button"; edit.className = "trigger-edit";
+        edit.dataset.loraName = l.name; edit.innerHTML = svgIcon("edit", 11);
+        edit.setAttribute("aria-label", "编辑 " + l.name + " 的触发词");
+        edit.title = triggerOverrides.entry(l.name)?.hasOverride ? "编辑自定义触发词" : "编辑触发词";
+        edit.classList.toggle("is-custom", !!triggerOverrides.entry(l.name)?.hasOverride);
+        edit.onclick = e => { e.stopPropagation(); this._editTriggerWords(edit, l.name); };
 
         // ── 触发词预览（小字灰显）已按用户要求移除：卡片不显示触发词（悬停预览图仍保留） ──
 
@@ -1675,7 +1697,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         metaBadge.innerHTML = _cats ? svgIcon("tag", 9) + esc(_cats) : ""; // 使用次数已按用户要求移除，仅保留分类标签
         metaBadge.style.cssText = "font-size:9px;color:#8A8F98;opacity:0.85;white-space:nowrap;flex-shrink:0;display:inline-flex;align-items:center;gap:2px;";
 
-        row.append(dragArea, toggle, name, metaBadge, weightGroup, del);
+        row.append(dragArea, toggle, name, edit, metaBadge, weightGroup, del);
         listEl.appendChild(row);
         } catch (err) {
           // 单行渲染失败只跳过该行,避免"列表已清空但渲染中断"导致整体空白
@@ -2095,6 +2117,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       urlBtn?.addEventListener("click", () => {
         showBatchDownloadDialog(() => {
           fetch("/anima/loras").then((r) => r.json()).then((d) => {
+            if (closed) return;
             allLoras = (d.loras || []).map((l) => ({ ...l }));
             totalEl.textContent = `共 ${allLoras.length} 个`;
             renderSidebar();
@@ -2113,6 +2136,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       let mode = "grid";
       let batchMode = false;
       let curFilter = "all";
+      let closed = false;
+      let matchedLoras = [];
       const selected = new Set();
       if (!this._imgCache) this._imgCache = {};
       // HTML 转义：本地文件名插入 innerHTML 前必须转义，防属性注入与标签注入
@@ -2137,7 +2162,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       };
       const loraMeta = (name) => meta.loraMeta[name] || { categories: [], favorite: false, pinned: false, count: 0 };
       const ensureMeta = (name) => meta.loraMeta[name] || (meta.loraMeta[name] = { categories: [], favorite: false, pinned: false, count: 0 });
-      const bumpCount = (name) => { const em = ensureMeta(name); em.count = (em.count || 0) + 1; saveMeta(); };
+      const bumpCount = (name, persist = true) => { const em = ensureMeta(name); em.count = (em.count || 0) + 1; if (persist) saveMeta(); };
       // C 站匹配请求：可取消 + 10s 超时，避免慢请求占满浏览器连接池导致二次打开列表加载不出
       const _infoControllers = new Set();
       const getInfo = (name) => {
@@ -2149,24 +2174,36 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           .catch(() => null)
           .finally(() => { clearTimeout(timer); _infoControllers.delete(ctrl); });
       };
-      // 并发限制：一次进入视口的 30-40 张卡片若同时请求 /anima/lora/info（后端每文件全量 SHA256），
-      // 会瞬间打满后端 CPU/IO；用简单信号量限到 4 个并发
+      // 同一文件只保留一个排队/在途查询；关闭后不再启动队列中的任务。
       let _infoConcurrent = 0;
       const _infoQueue = [];
+      const _infoPending = new Map();
       const MAX_INFO_CONCURRENT = 4;
-      const getInfoQueued = (name) => new Promise((resolve) => {
+      const getInfoQueued = (name) => {
+        if (closed) return Promise.resolve(null);
+        if (this._imgCache[name]) return Promise.resolve(this._imgCache[name]);
+        if (_infoPending.has(name)) return _infoPending.get(name);
+        let finish;
+        const pending = new Promise((resolve) => { finish = resolve; });
+        _infoPending.set(name, pending);
         const run = () => {
+          if (closed) { finish(null); _infoPending.delete(name); return; }
           _infoConcurrent++;
           getInfo(name)
-            .finally(() => {
-              _infoConcurrent--;
-              if (_infoQueue.length) _infoQueue.shift()();
+            .then((info) => {
+              if (!closed && info && ["civitai", "not_on_civitai", "not_found"].includes(info.source)) this._imgCache[name] = info;
+              finish(closed ? null : info);
             })
-            .then(resolve, resolve);
+            .finally(() => {
+              _infoPending.delete(name);
+              _infoConcurrent--;
+              if (!closed && _infoQueue.length) _infoQueue.shift().run();
+            });
         };
-        if (_infoConcurrent >= MAX_INFO_CONCURRENT) _infoQueue.push(run);
+        if (_infoConcurrent >= MAX_INFO_CONCURRENT) _infoQueue.push({ run, cancel: () => finish(null) });
         else run();
-      });
+        return pending;
+      };
       // ── 打开 C 站：有 modelId 直接进模型页；没有（懒加载未完成或未匹配到）则占位窗口 + 现查，
       //    确无匹配才回退名称搜索——避免"点 🔗 永远进搜索页"（9532e96 重构遗留）
       const openCivitai = (name, getMid) => {
@@ -2175,6 +2212,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         showToast("⏳ 正在获取 C 站链接…");
         const w = window.open("", "_blank");
         getInfoQueued(name).then((info) => {
+          if (closed) { if (w && !w.closed) w.close(); return; }
           const m = info && info.modelId;
           if (m) {
             if (w && !w.closed) w.location.href = "https://civitai.com/models/" + m;
@@ -2195,17 +2233,22 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // C 站图片走后端代理（浏览器无代理无法直连 image.civitai.com）；卡片用 400px 小图省流量
       // （白名单代理逻辑为类级方法 this._imgProxy，_browseModal 与 _showTwTooltip 共用）
 
+      const manualRefresh = () => { if (!closed && searchInput.value) renderCurrent(); };
+      this._manualRefresh = manualRefresh;
       const getMatched = () => {
         const q = searchInput.value || "";
+        const addedNames = new Set(this.loras.map((l) => l.name.toLowerCase()));
+        const k = sortEl.value;
         return allLoras
           .map((l) => {
             const m = loraMeta(l.name);
             if (curFilter === "__uncategorized__") { if ((m.categories || []).length) return null; }
             else if (curFilter !== "all" && meta.categories.includes(curFilter) && !m.categories.includes(curFilter)) return null;
             const info = this._imgCache[l.name] || this.loraInfoMap[l.name] || null;
-            const searchIndex = loraSearchIndex(l, m, info);
-            if (!matchesLoraSearch(searchIndex, q)) return null;
-            return { l, m, searchScore: loraSearchScore(searchIndex, q) };
+            const effective = this._effectiveWords?.(l.name, info?.trainedWords);
+            const searchIndex = q ? loraSearchIndex(l, m, {...info, trainedWords: effective}) : null;
+            if (q && !matchesLoraSearch(searchIndex, q)) return null;
+            return { l, m, searchScore: q ? loraSearchScore(searchIndex, q) : 0 };
           })
           .filter(Boolean)
           .sort((a, b) => {
@@ -2214,11 +2257,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             // 有搜索词时先显示更精确的名称/中文名命中结果。
             if (a.searchScore !== b.searchScore) return b.searchScore - a.searchScore;
             // 已添加到节点的 LoRA 置顶
-            const addedA = this.loras.some((e) => e.name.toLowerCase() === left.name.toLowerCase()) ? 1 : 0;
-            const addedB = this.loras.some((e) => e.name.toLowerCase() === right.name.toLowerCase()) ? 1 : 0;
+            const addedA = addedNames.has(left.name.toLowerCase()) ? 1 : 0;
+            const addedB = addedNames.has(right.name.toLowerCase()) ? 1 : 0;
             if (addedA !== addedB) return addedB - addedA;
-            const k = sortEl.value;
-            if (k === "usage") return (right.m.count || 0) - (left.m.count || 0);
+            if (k === "usage") return (b.m.count || 0) - (a.m.count || 0);
             if (k === "size") return (right.size || 0) - (left.size || 0);
             if (k === "date") return (right.lastModified || 0) - (left.lastModified || 0);
             return left.name.localeCompare(right.name, "zh");
@@ -2253,10 +2295,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           const name = img.dataset.loraName;
           getInfoQueued(name).then((info) => {
             if (!info) return;
-            this._imgCache[name] = info;
-            if (img.isConnected === false) return;
+            if (closed || img.isConnected === false) return;
             if (info.previewUrl) {
-              img.innerHTML = `<img class="bm-thumb-img" src="${this._imgProxy(info.previewUrl)}" onerror="this.style.display='none'">`;
+              img.innerHTML = `<img class="bm-thumb-img" decoding="async" src="${this._imgProxy(info.previewUrl)}" onerror="this.style.display='none'">`;
             } else {
               img.innerHTML = `<span class="bm-img-fallback ${info.source === "not_on_civitai" ? "is-missing" : ""}">${info.source === "not_on_civitai" ? svgIcon("x", 24) : svgIcon("image", 24)}</span>`;
             }
@@ -2293,8 +2334,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
       const paintThumb = (imgEl, name) => {
         const cached = this._imgCache[name];
-        if (cached && cached.previewUrl) {
-          imgEl.innerHTML = `<img class="bm-thumb-img" src="${this._imgProxy(cached.previewUrl)}" onerror="this.style.display='none'">`;
+        if (cached) {
+          imgEl.innerHTML = cached.previewUrl
+            ? `<img class="bm-thumb-img" decoding="async" src="${this._imgProxy(cached.previewUrl)}" onerror="this.style.display='none'">`
+            : `<span class="bm-img-fallback ${cached.source === "not_on_civitai" ? "is-missing" : ""}">${svgIcon(cached.source === "not_on_civitai" ? "x" : "image", 24)}</span>`;
         } else {
           io.observe(imgEl);
         }
@@ -2307,6 +2350,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const card = document.createElement("div");
         card.className = "bm-card";
         if (added) card.classList.add("is-added");
+        if (selected.has(l.name)) card.classList.add("is-selected");
         card.dataset.name = l.name;
         card.title = l.name; // 本地文件名悬停可见（卡片不再显示"本地:"行）
         const left = (idx % cols) * (ITEM_W + GAP);
@@ -2371,12 +2415,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           if (existing) {
             this.loras = this.loras.filter((e2) => e2.name.toLowerCase() !== l.name.toLowerCase());
             this._commit(); this._render(this.listEl);
+            card.classList.remove("is-added");
             if (badge) badge.style.display = "none";
             showToast("已移除: " + l.name);
           } else {
             this.loras.push({ name: l.name, weight: 1.0, disabled: this._prefDisabled(l.name) });
             bumpCount(l.name);
             this._commit(); this._render(this.listEl);
+            card.classList.add("is-added");
             if (badge) badge.style.display = "flex";
             showToast("已添加: " + l.name);
           }
@@ -2394,6 +2440,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const row = document.createElement("div");
         row.className = "bm-li";
         if (added) row.classList.add("is-added");
+        if (selected.has(l.name)) row.classList.add("is-selected");
         row.dataset.name = l.name;
         row.style.cssText = "cursor:pointer;";
         row.innerHTML = `
@@ -2441,12 +2488,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           if (existing) {
             this.loras = this.loras.filter((e2) => e2.name.toLowerCase() !== l.name.toLowerCase());
             this._commit(); this._render(this.listEl);
+            row.classList.remove("is-added");
             if (badge) badge.innerHTML = "";
             showToast("已移除: " + l.name);
           } else {
             this.loras.push({ name: l.name, weight: 1.0, disabled: this._prefDisabled(l.name) });
             bumpCount(l.name);
             this._commit(); this._render(this.listEl);
+            row.classList.add("is-added");
             if (badge) badge.innerHTML = svgIcon("check", 12);
             showToast("已添加: " + l.name);
           }
@@ -2460,27 +2509,67 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // ── 网格虚拟滚动 ──
       let contentEl = null;
       let cols = 1;
+      const visibleCards = new Map();
+      // Keep a bounded set of recent rows for reverse scrolling, including decoded images.
+      // Indices belong to matchedLoras; filtering/sorting must clear this pool.
+      const recentCards = new Map();
+      const MAX_RECENT_CARDS = 128;
+      let gridFrame = null;
+      let listFrame = null;
+      let renderGeneration = 0;
+      let gridWindow = "";
       const paintGrid = () => {
-        const matched = getMatched();
+        if (closed || mode !== "grid" || !contentEl) return;
+        const matched = matchedLoras;
         if (!matched.length) {
           contentEl.innerHTML = `<div class="bm-empty">${svgIcon("search", 22)}<strong>没有匹配的 LoRA</strong><span>试试名称、路径、作者或触发词</span></div>`;
           contentEl.style.height = "100%";
           return;
         }
-        cols = Math.max(1, Math.floor((listEl.clientWidth + GAP) / (ITEM_W + GAP)));
+        // Read geometry before writing styles to avoid forced layout on every scroll frame.
+        const width = listEl.clientWidth, st = listEl.scrollTop, vh = listEl.clientHeight;
+        const oldCols = cols;
+        cols = Math.max(1, Math.floor((width + GAP) / (ITEM_W + GAP)));
         const rows = Math.max(1, Math.ceil(matched.length / cols));
-        contentEl.style.height = rows * ROW_H + "px";
-        contentEl.innerHTML = "";
-        const st = listEl.scrollTop;
-        const vh = listEl.clientHeight;
-        const rStart = Math.max(0, Math.floor(st / ROW_H) - 2);
-        const rEnd = Math.min(rows - 1, Math.ceil((st + vh) / ROW_H) + 2);
-        for (let r = rStart; r <= rEnd; r++) {
-          for (let c = 0; c < cols; c++) {
-            const idx = r * cols + c;
-            if (idx >= matched.length) break;
-            contentEl.appendChild(buildCard(matched[idx], idx, cols));
+        const height = rows * ROW_H + "px";
+        if (contentEl.style.height !== height) contentEl.style.height = height;
+        // One buffered row is enough for the next frame; extra rows cost image paint/layout.
+        const rStart = Math.max(0, Math.floor(st / ROW_H) - 1);
+        const rEnd = Math.min(rows - 1, Math.ceil((st + vh) / ROW_H) + 1);
+        const nextWindow = `${cols}:${rStart}:${rEnd}`;
+        if (gridWindow === nextWindow) return;
+        gridWindow = nextWindow;
+        const first = rStart * cols, last = Math.min(matched.length - 1, (rEnd + 1) * cols - 1);
+        for (const [idx, card] of visibleCards) {
+          if (idx < first || idx > last) {
+            io.unobserve(card.querySelector(".bm-img"));
+            card.remove(); visibleCards.delete(idx);
+            recentCards.set(idx, card);
+            if (recentCards.size > MAX_RECENT_CARDS) recentCards.delete(recentCards.keys().next().value);
+          } else if (cols !== oldCols) {
+            card.style.left = (idx % cols) * (ITEM_W + GAP) + "px";
+            card.style.top = Math.floor(idx / cols) * ROW_H + "px";
           }
+        }
+        let nextCard = contentEl.firstElementChild;
+        for (let idx = first; idx <= last; idx++) {
+          let card = visibleCards.get(idx);
+          if (!card) {
+            card = recentCards.get(idx);
+            if (card) {
+              recentCards.delete(idx);
+              card.style.left = (idx % cols) * (ITEM_W + GAP) + "px";
+              card.style.top = Math.floor(idx / cols) * ROW_H + "px";
+              card.classList.toggle("is-selected", selected.has(matched[idx].name));
+              card.classList.toggle("is-added", this.loras.some(l => l.name.toLowerCase() === matched[idx].name.toLowerCase()));
+            } else card = buildCard(matched[idx], idx, cols);
+            visibleCards.set(idx, card); contentEl.insertBefore(card, nextCard);
+            // An in-flight lookup may have completed while the card was detached.
+            const img = card.querySelector(".bm-img"), info = this._imgCache[matched[idx].name];
+            if (!info) io.observe(img);
+            else if (!img.querySelector("img")) { applyInfo(card, info); paintThumb(img, matched[idx].name); }
+          }
+          nextCard = card.nextElementSibling;
         }
       };
       const renderGrid = () => {
@@ -2496,23 +2585,33 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const renderListMode = () => {
         listEl.style.display = "block";
         listEl.innerHTML = "";
-        const matched = getMatched();
+        const matched = matchedLoras;
         if (!matched.length) {
           listEl.innerHTML = `<div class="bm-empty">${svgIcon("search", 22)}<strong>没有匹配的 LoRA</strong><span>试试名称、路径、作者或触发词</span></div>`;
           return;
         }
         // 分片渲染：每帧最多 60 行，避免数百行一次性同步构建阻塞主线程
         const CHUNK = 60;
+        const generation = renderGeneration;
         let i = 0;
         const step = () => {
+          listFrame = null;
+          if (closed || generation !== renderGeneration || mode !== "list") return;
           const end = Math.min(i + CHUNK, matched.length);
           for (; i < end; i++) listEl.appendChild(buildListRow(matched[i]));
-          if (i < matched.length) requestAnimationFrame(step);
+          if (i < matched.length) listFrame = requestAnimationFrame(step);
         };
         step();
       };
 
       const renderCurrent = () => {
+        if (closed) return;
+        renderGeneration++;
+        if (listFrame !== null) cancelAnimationFrame(listFrame);
+        if (gridFrame !== null) cancelAnimationFrame(gridFrame);
+        listFrame = gridFrame = null;
+        io.disconnect(); visibleCards.clear(); recentCards.clear(); contentEl = null; gridWindow = "";
+        matchedLoras = getMatched();
         listEl.scrollTop = 0;
         if (mode === "grid") renderGrid();
         else renderListMode();
@@ -2521,11 +2620,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const updateBatchBar = () => {
         if (batchMode) {
           batchBar.style.display = "block";
-          batchBar.innerHTML = `<button class="bm-batch-add" type="button">${svgIcon("plus", 13)}<span>添加选中（${selected.size}）</span></button>`;
-          batchBar.querySelector(".bm-batch-add").onclick = () => {
+          if (!batchBar.querySelector(".bm-batch-add")) batchBar.innerHTML = `<button class="bm-batch-add" type="button">${svgIcon("plus", 13)}<span></span></button>`;
+          const addBtn = batchBar.querySelector(".bm-batch-add");
+          addBtn.querySelector("span").textContent = `添加选中（${selected.size}）`;
+          addBtn.onclick = () => {
             const toAdd = Array.from(selected).filter((n) => !this.loras.some((e) => e.name.toLowerCase() === n.toLowerCase()));
             if (!toAdd.length) { showToast("没有新的 LoRA 可添加"); return; }
-            toAdd.forEach((n) => { this.loras.push({ name: n, weight: 1.0, disabled: this._prefDisabled(n) }); bumpCount(n); });
+            toAdd.forEach((n) => { this.loras.push({ name: n, weight: 1.0, disabled: this._prefDisabled(n) }); bumpCount(n, false); });
+            saveMeta();
             this._commit(); this._render(this.listEl);
             showToast(`✅ 已添加 ${toAdd.length} 个 LoRA`);
             selected.clear(); updateBatchBar(); renderCurrent();
@@ -2539,6 +2641,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // ── 拖拽框选（选中后右键可批量添加分类） ──
       this._bmSelected = selected;
       let dragBox = { active: false, startX: 0, startY: 0, rect: null, boxed: false };
+      let dragFrame = null;
+      let dragPointer = null;
       const onBMDown = (e) => {
         const target = e.target;
         if (!listEl.contains(target)) return;
@@ -2553,7 +2657,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         dragBox.rect.style.cssText = `position:fixed;left:${e.clientX}px;top:${e.clientY}px;width:0;height:0;z-index:999999;background:rgba(230,223,211,0.10);border:2px dashed rgba(230,223,211,0.62);pointer-events:none;border-radius:8px`;
         document.body.appendChild(dragBox.rect);
       };
-      const onBMMove = (e) => {
+      const paintBMDrag = (e) => {
         if (!dragBox.active || !dragBox.rect) return;
         const l = Math.min(dragBox.startX, e.pageX), t = Math.min(dragBox.startY, e.pageY);
         const r = Math.max(dragBox.startX, e.pageX), b = Math.max(dragBox.startY, e.pageY);
@@ -2581,8 +2685,21 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           updateBatchBar();
         }
       };
+      const onBMMove = (e) => {
+        if (!dragBox.active) return;
+        dragPointer = { pageX: e.pageX, pageY: e.pageY };
+        if (dragFrame !== null) return;
+        dragFrame = requestAnimationFrame(() => {
+          dragFrame = null;
+          if (dragPointer) paintBMDrag(dragPointer);
+        });
+      };
       const onBMUp = () => {
         if (!dragBox.active) return;
+        if (dragFrame !== null) cancelAnimationFrame(dragFrame);
+        dragFrame = null;
+        if (dragPointer) paintBMDrag(dragPointer);
+        dragPointer = null;
         dragBox.active = false;
         document.body.style.userSelect = "";
         document.body.style.webkitUserSelect = "";
@@ -2597,6 +2714,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 拖拽中途失焦（切屏/alt-tab/切标签页）或鼠标离开页面 → mouseup 不派发，
       // 需手动清理残留选框，否则虚线框会永久滞留页面。
       const cancelBMDrag = () => {
+        if (dragFrame !== null) cancelAnimationFrame(dragFrame);
+        dragFrame = null; dragPointer = null;
         if (!dragBox.active) return;
         dragBox.active = false;
         document.body.style.userSelect = "";
@@ -2614,6 +2733,16 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
       // ── 事件 ──
       const closeModal = () => {
+        if (closed) return;
+        closed = true;
+        if (this._manualRefresh === manualRefresh) this._manualRefresh = null;
+        renderGeneration++;
+        clearTimeout(_searchTimer);
+        if (gridFrame !== null) cancelAnimationFrame(gridFrame);
+        if (listFrame !== null) cancelAnimationFrame(listFrame);
+        _infoQueue.splice(0).forEach((job) => job.cancel());
+        _infoPending.clear(); visibleCards.clear(); recentCards.clear(); contentEl = null;
+        cancelBMDrag();
         // 释放资源：断开图片观察器、取消在途 C 站匹配请求（避免占满连接池导致二次打开列表加载不出）、恢复拖拽选中态、清理分类弹层
         io.disconnect();
         _infoControllers.forEach((c) => c.abort());
@@ -2662,7 +2791,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         _searchTimer = setTimeout(renderCurrent, 150);
       };
       sortEl.onchange = () => renderCurrent();
-      listEl.addEventListener("scroll", () => { if (mode === "grid") paintGrid(); });
+      listEl.addEventListener("scroll", () => {
+        if (closed || mode !== "grid" || gridFrame !== null) return;
+        gridFrame = requestAnimationFrame(() => { gridFrame = null; paintGrid(); });
+      }, { passive: true });
       // 分辨率自适应：以 1080p 为基准等比放大弹窗（2K≈1.33x、4K 封顶 2x），低分屏保持 1:1。
       // transform 视觉缩放：布局盒/虚拟滚动/内部滚动条不动，字号与卡片观感随分辨率同步变大。
       const fitModalScale = () => {
@@ -2679,7 +2811,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         fetch("/anima/loras").then((r) => r.json()).catch(() => ({ loras: [] })),
         this._fetchMeta(),
       ]).then(([lData, mData]) => {
+        if (closed) return;
         allLoras = (lData.loras || []).map((l) => ({ ...l }));
+        this._loadTriggerOverrides?.(allLoras.map(l => l.name), true).catch(error => console.warn("[TK] 自定义触发词读取失败", error));
         // 只有后端确有数据时才整体替换；失败/空结果保留当前 this.meta（含之前加载的旧值），防止空 meta 覆盖后端
         const hasBackendMeta = mData && typeof mData === "object" && (
           (Array.isArray(mData.categories) && mData.categories.length) ||
@@ -2823,7 +2957,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         items = '<span class="tw-empty">空组</span>';
       } else {
         items = loras.map((l) => {
-          const tw = (l.trigger_words && l.trigger_words.length) ? l.trigger_words : this.triggerWordMap[l.name];
+          const tw = this._effectiveWords(l.name, l.trigger_words?.length ? l.trigger_words : this.triggerWordMap[l.name]);
           const weight = (l.weight ?? 1);
           const wordHtml = (tw !== undefined && tw !== null && tw.length)
             ? `<div style="display:flex;flex-wrap:wrap;gap:2px;margin:3px 0 6px;">${tw.map((x) => `<span class="tw-word" data-copy="${esc(x)}">${esc(x)}</span>`).join("")}</div>`
@@ -2870,7 +3004,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
       const escAttr = (s) => esc(s);
 
-      const words = this.triggerWordMap[loraName];
+      if (this._triggerEditor) return;
+      const words = this._effectiveWords(loraName);
       const info = this.loraInfoMap[loraName];
       const popover = document.createElement("div");
       popover.className = "anima-tw-popover";
@@ -2902,7 +3037,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       }
 
       const safeName = esc(loraName);
-      popover.innerHTML = `${previewHtml}<div class="tw-title" style="font-size:11px;color:#EDEDEF;font-weight:600;">${safeName}</div>${metaHtml}<div class="tw-title">触发词</div><div style="display:flex;flex-wrap:wrap;gap:2px;">${wordHtml}</div>`;
+      popover.innerHTML = `${previewHtml}<div class="tw-title" style="font-size:11px;color:#EDEDEF;font-weight:600;">${safeName}</div>${metaHtml}<div class="tw-title">${triggerOverrides.entry(loraName)?.hasOverride ? "自定义触发词" : "触发词"}</div><div style="display:flex;flex-wrap:wrap;gap:2px;">${wordHtml}</div>`;
       document.body.appendChild(popover);
 
       // 定位

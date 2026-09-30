@@ -17,6 +17,7 @@ from aiohttp import web
 from server import PromptServer
 from . import anima_thumbs
 from . import anima_gallery
+from .services.lora_trigger_overrides import TriggerOverrideStore
 
 # ── In-memory bridge data (shared with __init__.py via HTTP API) ──
 BRIDGE_DATA: dict = {}
@@ -150,6 +151,87 @@ def _list_lora_entries() -> list[dict]:
 TRIGGER_WORDS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "lora_trigger_words.json")
 _TRIGGER_WORDS_LOCK = threading.Lock()
 _TRIGGER_WORDS_CACHE: dict = {"mtime": -1.0, "map": {}}
+TRIGGER_OVERRIDE_STORE = TriggerOverrideStore(os.path.join(os.path.dirname(__file__), "data", "lora_trigger_overrides.json"))
+
+
+def _trigger_identity_catalog():
+    """Strict registered filenames only: never share overrides via fuzzy basenames."""
+    catalog = {}
+    roots = [os.path.normcase(os.path.abspath(root)) for root in folder_paths.get_folder_paths("loras")]
+    for filename in folder_paths.get_filename_list("loras"):
+        full = folder_paths.get_full_path("loras", filename)
+        if not full:
+            continue
+        absolute = os.path.normcase(os.path.abspath(full))
+        root = next((root for root in roots if _within_root(absolute, root)), None)
+        if root is None:
+            continue
+        root_id = hashlib.sha256(root.encode("utf-8")).hexdigest()[:24]
+        normalized = _normalize_lora_name(filename)
+        identity = {"key": root_id + ":" + normalized, "filename": str(filename).replace("\\", "/")}
+        for alias in {normalized, _lora_stem(normalized)}:
+            catalog.setdefault(alias, []).append(identity)
+    return catalog
+
+
+def _within_root(path, root):
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
+def _trigger_identity(name, catalog):
+    candidates = catalog.get(_normalize_lora_name(name), [])
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _effective_trigger_words(index, name, overrides, catalog):
+    identity = _trigger_identity(name, catalog) if overrides else None
+    if identity and identity["key"] in overrides:
+        return overrides[identity["key"]]["words"]  # An explicitly empty list suppresses automatic words.
+    return _lookup_trigger_words(index, name)
+
+
+def _resolved_lora_syntax(lora_syntax):
+    text = str(lora_syntax or "").strip()
+    if not text:
+        with BRIDGE_LOCK:
+            text = BRIDGE_DATA.get("loras", "")
+        if not text:
+            try:
+                with open(BRIDGE_PATH, encoding="utf-8") as source:
+                    text = json.load(source).get("loras", "")
+            except (OSError, ValueError):
+                pass
+    return text
+
+
+def _output_trigger_text(activated):
+    index = _build_trigger_index()
+    overrides = TRIGGER_OVERRIDE_STORE.read()["entries"]
+    catalog = _trigger_identity_catalog() if overrides else {}
+    seen, words = set(), []
+    for entry in activated:
+        for word in _effective_trigger_words(index, entry["name"], overrides, catalog):
+            clean = word.strip()
+            if clean and clean.casefold() not in seen:
+                seen.add(clean.casefold())
+                words.append(clean)
+    return ", ".join(words)
+
+
+def _override_response(names, data=None):
+    data = data if data is not None else TRIGGER_OVERRIDE_STORE.read()
+    catalog, index = _trigger_identity_catalog(), _build_trigger_index()
+    resolved = {}
+    for name in names:
+        identity = _trigger_identity(name, catalog)
+        override = data["entries"].get(identity["key"]) if identity else None
+        resolved[name] = {"editable": identity is not None, "hasOverride": override is not None,
+                          "words": override["words"] if override is not None else None,
+                          "automaticWords": _lookup_trigger_words(index, name)}
+    return {"revision": data.get("revision", "empty"), "loras": resolved}
 
 
 def _load_trigger_words() -> dict:
@@ -320,20 +402,16 @@ class AnimaBatchLoRALoader:
     RETURN_NAMES = ("MODEL", "CLIP", "trigger_words")
     FUNCTION = "load_loras"
 
+    @classmethod
+    def IS_CHANGED(cls, lora_syntax="", output_trigger_words=True, **kwargs):
+        if not output_trigger_words:
+            return "trigger-output-disabled"
+        entries = _parse_lora_syntax(_resolved_lora_syntax(lora_syntax))
+        activated = [e for e in entries if e["model_strength"] != 0 or e["clip_strength"] != 0]
+        return hashlib.sha256(_output_trigger_text(activated).encode("utf-8")).hexdigest()
+
     def load_loras(self, model, lora_syntax, clip=None, output_trigger_words=True):
-        # Priority: input lora_syntax > in-memory bridge > bridge file (backward compat)
-        text = lora_syntax.strip()
-        if not text:
-            with BRIDGE_LOCK:
-                if BRIDGE_DATA:
-                    text = BRIDGE_DATA.get("loras", "")
-            if not text:
-                try:
-                    if os.path.exists(BRIDGE_PATH):
-                        with open(BRIDGE_PATH, "r", encoding="utf-8") as f:
-                            text = json.load(f).get("loras", "")
-                except Exception:
-                    pass
+        text = _resolved_lora_syntax(lora_syntax)
 
         entries = _parse_lora_syntax(text)
         # 激活 = 权重非 0 的条目：禁用项由前端以 <lora:name:0.00> 写入，0 权重项不加载也不取触发词
@@ -341,11 +419,7 @@ class AnimaBatchLoRALoader:
 
         # 触发词输出：只覆盖本节点「激活」的 LoRA，且与加载成功与否无关
         # （文件缺失/加载失败但被激活的 LoRA，其触发词同样应带出去）。
-        trigger_words = []
-        if output_trigger_words:
-            tw_index = _build_trigger_index()
-            for entry in activated:
-                trigger_words.extend(_lookup_trigger_words(tw_index, entry["name"]))
+        trigger_text = _output_trigger_text(activated) if output_trigger_words else ""
 
         for entry in activated:
             lora_path = _find_lora_path(entry["name"])
@@ -363,15 +437,6 @@ class AnimaBatchLoRALoader:
             except Exception as e:
                 print(f"[Anima] Failed to load {entry['name']}: {e}")
 
-        # Deduplicate trigger words preserving order
-        seen = set()
-        unique_tw = []
-        for w in trigger_words:
-            wl = w.strip().lower()
-            if wl and wl not in seen:
-                seen.add(wl)
-                unique_tw.append(w.strip())
-        trigger_text = ", ".join(unique_tw)
         return (model, clip if clip is not None else model, trigger_text)
 
 
@@ -421,6 +486,41 @@ async def get_lora_trigger_words(request):
         {"total": len(store), "loras": store, "path": TRIGGER_WORDS_PATH},
         dumps=lambda o: json.dumps(o, ensure_ascii=False, separators=(",", ":")),
     )
+
+
+# Manual overrides are independent of automatic metadata and bridge writes.
+@PromptServer.instance.routes.get("/anima/lora_trigger_overrides")
+async def get_lora_trigger_overrides(request):
+    try:
+        names = json.loads(request.query.get("names", "[]"))
+        if not isinstance(names, list) or len(names) > 2000 or any(not isinstance(n, str) or len(n) > 1024 for n in names):
+            raise ValueError("LoRA 名称列表无效")
+        return web.json_response(await asyncio.to_thread(_override_response, names))
+    except (ValueError, TypeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except OSError:
+        return web.json_response({"error": "无法读取自定义触发词，请检查文件权限"}, status=500)
+
+
+@PromptServer.instance.routes.post("/anima/lora_trigger_overrides")
+async def save_lora_trigger_override(request):
+    try:
+        body = await request.json()
+        if not isinstance(body, dict) or not isinstance(body.get("name"), str):
+            raise ValueError("缺少 LoRA 名称")
+        if body.get("action", "save") not in ("save", "reset"):
+            raise ValueError("无效操作")
+        def update():
+            identity = _trigger_identity(body["name"], _trigger_identity_catalog())
+            if not identity:
+                raise ValueError("无法唯一匹配本地 LoRA，请使用完整相对路径及扩展名")
+            data = TRIGGER_OVERRIDE_STORE.update(identity["key"], identity, body.get("words"), reset=body.get("action") == "reset")
+            return _override_response([body["name"]], data)
+        return web.json_response(await asyncio.to_thread(update))
+    except (ValueError, TypeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except OSError:
+        return web.json_response({"error": "保存失败，请检查自定义触发词文件权限"}, status=500)
 
 
 # ── Bridge status endpoint ──
