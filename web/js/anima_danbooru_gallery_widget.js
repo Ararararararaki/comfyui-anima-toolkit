@@ -8,6 +8,7 @@ import { PortalDropdown } from "./anima_dropdown_menu.js";
 import { AnimaDexPanel } from "./anima_animadex_panel.js";
 import { GallerySelectionControls } from "./anima_gallery_selection_controls.js";
 import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover_preview.js";
+import { installGalleryBrowser } from "./anima_gallery_browser.js";
 
 (() => {
   const NODE_NAME = "DanbooruGallery";
@@ -1847,7 +1848,7 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
           this.setStatus(`首次搜索响应异常，正在自动重试（${attempt}/2）…`);
           await new Promise((resolve) => setTimeout(resolve, 250 + retryCount * 500));
           if (currentRequest !== this.requestId) return;
-          return this.searchGallerySource({ resetPage: false, retryCount: attempt });
+          return this.searchGallerySource({ resetPage: false, retryCount: attempt, append });
         }
         if (append) {
           // 追加模式：把失败交给 appendNextBatch 的 catch（它恢复原结果集 + 写状态栏）。
@@ -1900,6 +1901,8 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
     async switchGallerySource(nextId) {
       const id = String(nextId || "");
       if (!this.isKnownSource(id) || id === this.activeSourceId()) return;
+      this.saveBrowseProgress?.();
+      this.cancelBrowseRequest?.();
       // 差分组是 D站 的查询语义（parent:<id>），换源后必须退出，否则「← 返回」会把 D站 的词带到别的源。
       // ⚠️ 顺序要紧（独立审查抓到的 S1）：**先取出要保存的搜索词、再退出差分组**。差分组期间搜索框里
       //    是临时的 `parent:<id>`，直接把它记进 sourceQueries[previous]，那个栏目下次被切回时搜索框
@@ -1917,7 +1920,7 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
       this.saveSettings();
       this.resetGalleryCursor();
       this.page = 1;
-      this.posts = [];
+      // Keep the old cards until the next source has a successful result.
       // 换源必须退出 P站 作品详情：否则在"P站 模块未装"之类**提前 return** 的路径上，
       // 网格会一直显示上一个源的作品页（审查指出的问题 3）。
       this.pixivDetail = null;
@@ -1928,13 +1931,13 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
       // ★ 分类库**按图源分区** ⇒ 换源必须重新拉该源的分类与归属
       //   （否则 D站 的分类会留在 P站 的下拉里 —— 用户实报"分类还不是独立的"）
       await this.loadCategoryLibrary();
+      if (id !== this.activeSourceId() || this.disposed) return;
       // D站 收藏状态也跟着源走（2026-09-27，Issue #3）：切到 D站 填充 ★/☆，
       // 切到别的源由 refreshFavorites 内部清空（避免显示不属于该源的收藏态）。
       void this.refreshFavorites();
       this.filterControls?.refresh();
       const restored = String(this.settings.sourceQueries[id] || "");
       this.setQuery(restored);
-      this.renderPosts();
       this.renderPagination();
       this.setStatus(`已切换到${this.sourceLabel(id)}${this.sourceCapabilities(id).login ? "（需要授权，见设置→图源密钥）" : ""}`);
       // P站 后端模块没装时不发这个必然失败的请求（状态来自 /anima/gallery/secrets 的 pixiv.available）
@@ -2226,9 +2229,25 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
 
       // 数据侧只读一次：卡片下标必须与 renderPosts 记录的「实际渲染列表」一致
       const posts = this._layoutPosts || this.posts || [];
+      for (const marker of this.grid.querySelectorAll(".adg-page-boundary")) marker.remove();
+      let previousPage = null;
       for (let i = 0; i < cards.length; i++) {
         const card = cards[i];
         const post = posts[i];
+        const browsePage = this.browseActive?.() ? this._browsePostPages?.get(this.postKeyOf(post)) : null;
+        if (browsePage && browsePage !== previousPage) {
+          const pageTop = Math.max(...colHeights);
+          colHeights.fill(pageTop + 28);
+          const marker = document.createElement("div");
+          marker.className = "adg-page-boundary";
+          marker.dataset.page = String(browsePage);
+          marker.textContent = `第 ${browsePage} ${this.browseState.pageNumbers ? "页" : "批"}`;
+          Object.assign(marker.style, {position:"absolute", top:`${Math.round(padTop + pageTop)}px`, left:`${padLeft}px`, width:`${usable}px`, height:"24px", fontSize:"11px", color:"var(--descrip-text, var(--fg-color))", borderBottom:"1px solid var(--border-color)", display:"flex", alignItems:"center"});
+          this.grid.append(marker);
+          previousPage = browsePage;
+        }
+        if (browsePage) card.dataset.browsePage = String(browsePage);
+        else delete card.dataset.browsePage;
         const aspect = this.cardAspect(post);
         let span = dgSpanFor(aspect, cols);
         // 兜底：span 任何情况下都不得超出列数，否则下面「找起点」循环一次都不执行，
@@ -2263,6 +2282,8 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
       }
       total = Math.max(0, total - DG_GAP);
       this._layoutTotal = total;
+      const continuation = this.grid.querySelector(".adg-browse-continuation");
+      if (continuation && padTop + total >= (parseFloat(continuation.style.top) || 0)) continuation.remove();
       // 最矮列：用户眼里的「填满」由最短的那一列决定 —— 最长列会掩盖参差（见 gridUnderfilled）
       this._layoutMinCol = Number.isFinite(minCol) ? Math.max(0, minCol - DG_GAP) : total;
       // 实测平均卡高（每列张数 ≈ 卡片数 / 列数）→ 下一次算张数别再用 fallback 比例猜
@@ -2667,7 +2688,9 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
         this._scrollRafPending = true;
         const run = () => {
           this._scrollRafPending = false;
-          if (this.disposed || !this.grid || !this.scrollMode()) return;
+          if (this.disposed || !this.grid) return;
+          this.updateBrowseVisible?.();
+          if (!this.scrollMode()) return;
           const remaining = this.grid.scrollHeight - this.grid.scrollTop - this.grid.clientHeight;
           if (remaining <= DG_SCROLL_PREFETCH_PX) void this.loadNextPageForScroll();
         };
@@ -3424,7 +3447,7 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
         this.recordTagUsage(text);
       }
       this.hideSuggestions();
-      if (this.grid) this.grid.scrollTop = 0;
+      this.saveBrowseProgress?.();
       void this.search({ resetPage: true }).catch((error) => {
         // 不打断 UI，但也别把错误吞干净 —— 这几个入口原本会把失败冒到 console
         console.warn("[画廊] 搜索失败:", error);
@@ -4044,7 +4067,7 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
           this.setStatus(`首次搜索响应异常，正在自动重试（${attempt}/2）…`);
           await new Promise((resolve) => setTimeout(resolve, 250 + retryCount * 500));
           if (currentRequest !== this.requestId) return;
-          return this.search({ resetPage: false, force, skipFuzzy, retryCount: attempt });
+          return this.search({ resetPage: false, force, skipFuzzy, retryCount: attempt, append });
         }
         if (append) throw error;   // 追加模式：交给 appendNextBatch 的 catch 恢复（同上）
         this.posts = [];
@@ -5386,7 +5409,9 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
       if (!ids.length) return;
       try {
         const before = new Set(this.pixivMatches.keys());
+        const browseEpoch = this._browseEpoch;
         await this.fetchPixivMatches(ids);
+        if (this.disposed || browseEpoch !== this._browseEpoch || this.activeSourceId() !== "pixiv") return;
         const added = [...this.pixivMatches.keys()].filter((id) => !before.has(id));
         if (!added.length) return;
         let updated = 0;
@@ -5543,7 +5568,15 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
       for (const card of grid.querySelectorAll(".adg-card")) {
         if ((card.dataset.postKey || "") !== anchor.key) continue;
         const cardTop = parseFloat(card.style.top) || 0;
-        grid.scrollTop = Math.max(0, Math.round(cardTop - anchor.offset));
+        const desired = Math.max(0, Math.round(cardTop - anchor.offset));
+        // The saved card may be near a page end. Reserve only scroll space until
+        // the next whole page arrives, so the browser cannot clamp its offset.
+        if (this.browseActive?.() && desired > grid.scrollHeight - grid.clientHeight) {
+          let tail = grid.querySelector(".adg-browse-continuation");
+          if (!tail) {tail=document.createElement("div");tail.className="adg-browse-continuation";tail.setAttribute("aria-hidden","true");grid.append(tail);}
+          Object.assign(tail.style,{position:"absolute",left:"0",top:`${desired + grid.clientHeight + 2}px`,width:"1px",height:"1px",pointerEvents:"none"});
+        }
+        grid.scrollTop = desired;
         return true;
       }
       return false;
@@ -5647,7 +5680,7 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
         const postId = String(post.id || "");
         card.dataset.imageUrl = imageUrl;
         const promptResult = this.buildPromptForPost(post);
-        const promptEdit = this.promptEdits.get(String(post.id || ""));
+        const promptEdit = this.promptEdits.get(this.postKeyOf(post)) || this.promptEdits.get(String(post.id || ""));
         const promptText = promptEdit ? String(promptEdit.prompt || "") : promptResult.prompt;
         const promptTags = promptEdit && Array.isArray(promptEdit.tags) ? promptEdit.tags : promptResult.tags;
         card.dataset.prompt = promptText;
@@ -5763,6 +5796,7 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
               other.querySelector(".adg-card-select")?.setAttribute("aria-pressed", "false");
             });
             this.selectionOrder = [];
+            this._browseSelected?.clear();
             card.classList.toggle("is-selected", !wasSelected);
             selectButton.setAttribute("aria-pressed", !wasSelected ? "true" : "false");
             this.rememberCardSelection(card, !wasSelected);
@@ -6360,7 +6394,7 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
         replaceUnderscores: current.replaceUnderscores,
         escapeBrackets: current.escapeBrackets,
       });
-      const savedEdit = this.promptEdits.get(String(post.id || ""));
+      const savedEdit = this.promptEdits.get(this.postKeyOf(post)) || this.promptEdits.get(String(post.id || ""));
       promptInput.value = savedEdit ? String(savedEdit.prompt || "") : this.buildPromptForPost(post, selectedSettings(), excludeInput.value).prompt;
       content.append(promptContentTitle, promptInput);
 
@@ -7148,7 +7182,7 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
 
     async openPromptEditor(card, post) {
       const prompt = card.dataset.prompt ?? this.postPrompt(post);
-      const savedEdit = this.promptEdits.get(String(post.id || ""));
+      const savedEdit = this.promptEdits.get(this.postKeyOf(post)) || this.promptEdits.get(String(post.id || ""));
       let storedParts = Array.isArray(savedEdit?.allParts) ? savedEdit.allParts : [];
       let storedExcluded = Array.isArray(savedEdit?.excluded) ? savedEdit.excluded : [];
       let storedTranslations = savedEdit?.translations;
@@ -7221,7 +7255,7 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
             allParts: result.allParts,
             excluded: result.excludedParts,
           };
-          this.promptEdits.set(String(post.id || ""), edit);
+          this.promptEdits.set(this.postKeyOf(post), edit);
           card.dataset.prompt = edit.prompt;
           card.dataset.tags = JSON.stringify(edit.tags);
           card.dataset.promptParts = JSON.stringify(edit.allParts);
@@ -8127,16 +8161,14 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
         : "自适应 = 按节点宽高算出刚好填满的图片数量；固定档位 = 至少 N 张（不足一屏会自动补满，"
           + "实际张数可能多于所选值）；拖动节点改变大小后会自动重算";
       pageLabel.append(select);
-      // 滚动方式（2026-09-27）：无限滚动（滚到底自动加载，默认）/ 分页器。
-      // 只在页码分页的源（D站/P站）有意义 —— C站 等本来就是"加载更多"形态（见 scrollMode()）。
+      // 所有搜索源共用浏览模式；C站以已访问游标批次定位。
       const scrollLabel = document.createElement("label");
       scrollLabel.className = "adg-field";
       scrollLabel.textContent = "滚动方式";
       const scrollSelect = document.createElement("select");
-      scrollSelect.add(new Option("无限滚动（滚到底自动加载）", "infinite", false, this.settings.galleryScrollMode === "infinite"));
+      scrollSelect.add(new Option("连续浏览＋页码定位", "infinite", false, this.settings.galleryScrollMode === "infinite"));
       scrollSelect.add(new Option("分页（显示页码）", "pager", false, this.settings.galleryScrollMode === "pager"));
-      scrollSelect.title = "无限滚动 = 滚到底自动加载下一批（推荐，不再有页码）；"
-        + "分页 = 旧的分页器，可用页码跳转。只对页码分页的图源（D站/P站）生效。";
+      scrollSelect.title = "连续浏览可滚动加载，也可直接定位页码；分页每次只显示一页。切换保留正在看的图片。";
       scrollSelect.onchange = () => {
         this.settings.galleryScrollMode = GALLERY_SCROLL_MODES.includes(scrollSelect.value)
           ? scrollSelect.value
@@ -8147,7 +8179,6 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
         if (this.scrollMode()) void this.loadNextPageForScroll();
       };
       scrollLabel.append(scrollSelect);
-      pageLabel.after(scrollLabel);
       const heightLabel = document.createElement("label");
       heightLabel.className = "adg-field";
       heightLabel.textContent = "画廊高度（px）";
@@ -8192,7 +8223,7 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
         + "画廊缩略图与卡片菜单的「下载原图」都不受影响 —— 想要原图随时能单独下。"
         + "改档位会刷新网格，需重新选图。";
       sizeLabel.append(sizeSelect);
-      viewGrid.append(pageLabel, heightLabel, thumbLabel, sizeLabel);
+      viewGrid.append(pageLabel, scrollLabel, heightLabel, thumbLabel, sizeLabel);
       viewSection.append(viewTitle, viewGrid);
       content.append(viewSection);
 
@@ -8219,13 +8250,13 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
         poolTargetSelect.add(new Option(
           `${option} 条（${option / 200} 次请求）`, String(option), false, option === this.settings.civitaiPool.target));
       }
-      poolTargetSelect.title = "后台目标加载量。C站 单页最多 200 条，所以每档正好 1~5 次请求（批间隔 1 秒）。";
+      poolTargetSelect.title = "C站 单次后台预取最多 600 条，按固定批次浏览；历史 800 / 1000 档位沿用 600 条上限。";
       poolTargetLabel.append(poolTargetSelect);
       const poolTip = document.createElement("div");
       poolTip.className = "adg-settings-help";
       poolTip.textContent = "C站 上游不支持关键词检索：关键词只在已加载的内容里筛。"
-        + "开启后按上方档位在后台预取（每批 200 条、间隔 1 秒），搜索即覆盖已加载的全部内容、改词不再请求；"
-        + "翻页优先用池里的内容，不够才补。";
+        + "开启后每次最多预取 600 条并在池内筛选，匹配结果按固定批次浏览；"
+        + "可定位已访问的批次，改词自动接着该搜索上次的位置看。";
       poolSection.append(poolHead, poolTargetLabel, poolTip);
       content.append(poolSection);
 
@@ -8669,6 +8700,7 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
         commit: (patch, { search = false, render = false } = {}) => {
           if (patch.rating) patch.rating = normalizeRatings(patch.rating);
           if (patch.filters) patch.filters = normalizeFilters(patch.filters);
+          this.saveBrowseProgress?.();
           Object.assign(this.settings, patch);
           this.saveSettings();
           // 分类切换 = 本地浏览模式（按 id 全量拉取），不走通用渲染/搜索
@@ -8698,8 +8730,8 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
       batchCatBtn.disabled = true;
       batchCatBtn.title = "先点选多张卡片，再批量归入同一分类";
       batchCatBtn.onclick = () => {
-        const ids = [...this.grid.querySelectorAll(".adg-card.is-selected")]
-          .map((c) => c.dataset.postId).filter(Boolean);
+        const ids = this._browseSelected ? this.selectionOrder.filter(key => this._browseSelected.has(key))
+          : [...this.grid.querySelectorAll(".adg-card.is-selected")].map(c => c.dataset.postId).filter(Boolean);
         if (ids.length) this.openCategoryPicker(ids);
       };
       this.batchCatBtn = batchCatBtn;
@@ -8928,6 +8960,8 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
     link.href = new URL("../css/anima_danbooru_gallery.css", import.meta.url).href;
     document.head.append(link);
   }
+
+  installGalleryBrowser(DanbooruGalleryUI, app);
 
   app.registerExtension({
     name: "Anima.DanbooruGallery",
