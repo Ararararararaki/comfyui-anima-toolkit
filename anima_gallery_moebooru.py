@@ -72,8 +72,10 @@ from aiohttp import web
 
 try:
     from .services.gallery_stream import open_image_stream, search_with_warnings
+    from .services.booru_suggestions import suggest_response
 except ImportError:
     from services.gallery_stream import open_image_stream, search_with_warnings
+    from services.booru_suggestions import suggest_response
 
 try:  # 包内导入（ComfyUI 运行时）
     from .anima_gallery_sources import (
@@ -512,6 +514,16 @@ def _source_for(source_id: str) -> MoebooruSource | None:
 
 
 # ---------- 路由 ----------
+
+@routes.get("/anima/gallery/yandere/suggest")
+async def yandere_suggest(request: web.Request) -> web.Response:
+    return await suggest_response(request, "yandere", _http_get)
+
+
+@routes.get("/anima/gallery/konachan/suggest")
+async def konachan_suggest(request: web.Request) -> web.Response:
+    return await suggest_response(request, "konachan", _http_get)
+
 
 @routes.get("/anima/gallery/yandere/search")
 async def yandere_search(request: web.Request) -> web.Response:

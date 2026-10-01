@@ -8,7 +8,7 @@
 
 <p align="center"><img src="screenshots/icon.png" width="140" alt="TK Toolkit"></p>
 
-当前发布版本: **2.26.0**。
+当前发布版本: **2.27.0**。
 
 ## 安装
 
@@ -39,6 +39,8 @@ Registry 页面在 <https://registry.comfy.org/nodes/anima-toolkit>。依赖见 
 | 想一次跑一批不同提示词 | TK 批量提示词：多组提示词串行出图，每组可以有自己的机位 |
 
 ## 最近更新
+
+2.27.0 给 Safebooru、yande.re 和 Konachan.net 加了各自官网的标签联想。输入标签片段后用上下键选择，Tab 或 Enter 补全，再按 Enter 搜索；多个标签用空格组合，光标放在哪个词里就补全哪个词。候选显示该图源的数量和可用分类，输入 `rating:`、`width:`、`score:` 或排序语法也有提示。
 
 2.26.0 把画廊的连续浏览和页码定位放在一起：往下滚会继续加载，输入页码能直接跳过去，跳页后可回到刚才的位置。宽节点展开定位控件，窄节点点「定位」；设置里仍可切换独立分页模式。
 

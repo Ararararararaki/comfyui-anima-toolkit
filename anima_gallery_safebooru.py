@@ -63,8 +63,10 @@ from aiohttp import web
 
 try:
     from .services.gallery_stream import open_image_stream, search_with_warnings
+    from .services.booru_suggestions import suggest_response
 except ImportError:
     from services.gallery_stream import open_image_stream, search_with_warnings
+    from services.booru_suggestions import suggest_response
 
 try:  # 包内导入（ComfyUI 运行时）
     from .anima_gallery_sources import (
@@ -507,6 +509,11 @@ SOURCE_IMAGE_HOSTS.setdefault(SAFEEBOORU_SOURCE_ID, IMAGE_HOSTS)
 
 
 # ---------- 路由（与 C站 / P站 适配器同写法）----------
+
+@routes.get("/anima/gallery/safebooru/suggest")
+async def safebooru_suggest(request: web.Request) -> web.Response:
+    return await suggest_response(request, "safebooru", _http_get)
+
 
 @routes.get("/anima/gallery/safebooru/search")
 async def safebooru_search(request: web.Request) -> web.Response:

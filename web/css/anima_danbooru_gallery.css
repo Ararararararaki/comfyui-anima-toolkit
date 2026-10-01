@@ -1402,3 +1402,16 @@
   border: 1px solid var(--adg-border, #34383c); border-radius: 5px;
 }
 .adg-animadex-lang:hover { color: #fff; border-color: var(--adg-accent, #7d5cff); }
+
+/* Native booru tag search: website-style rows, with host theme colors. */
+.adg-suggestions.is-booru { flex-direction: column; flex-wrap: nowrap; gap: 2px; box-sizing: border-box; overflow-y: auto; overflow-x: hidden; padding: 5px; color: var(--fg-color); background: var(--comfy-input-bg); border-color: var(--border-color); }
+.adg-suggestions.is-booru .adg-booru-heading { padding: 3px 6px; font-size: 11px; color: var(--descrip-text); }
+.adg-suggestions.is-booru button.adg-booru-choice { display: flex; align-items: baseline; gap: 8px; width: 100%; margin: 0; padding: 6px; border: 1px solid transparent; border-radius: 5px; background: transparent; text-align: left; color: inherit; font-size: 12px; line-height: 1.35; }
+.adg-suggestions.is-booru .adg-booru-choice:hover, .adg-suggestions.is-booru .adg-booru-choice.is-active { border-color: var(--p-primary-color); background: color-mix(in srgb, var(--p-primary-color) 12%, var(--comfy-input-bg)); }
+.adg-booru-tag { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adg-booru-kind, .adg-booru-count { flex: 0 0 auto; font-size: 10px; color: var(--descrip-text); }
+.adg-booru-count { font-variant-numeric: tabular-nums; }
+.adg-booru-choice[data-category="character"] .adg-booru-tag { color: var(--p-green-500, var(--p-primary-color)); }
+.adg-booru-choice[data-category="artist"] .adg-booru-tag { color: var(--p-red-400, var(--p-primary-color)); }
+.adg-booru-choice[data-category="copyright"] .adg-booru-tag { color: var(--p-purple-400, var(--p-primary-color)); }
+.adg-booru-hint { padding: 3px 6px; font-size: 10px; color: var(--descrip-text); line-height: 1.4; white-space: normal; }

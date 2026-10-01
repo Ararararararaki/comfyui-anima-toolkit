@@ -9,6 +9,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
 import { GallerySelectionControls } from "./anima_gallery_selection_controls.js";
 import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover_preview.js";
 import { installGalleryBrowser } from "./anima_gallery_browser.js";
+import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
 
 (() => {
   const NODE_NAME = "DanbooruGallery";
@@ -8962,6 +8963,7 @@ import { installGalleryBrowser } from "./anima_gallery_browser.js";
   }
 
   installGalleryBrowser(DanbooruGalleryUI, app);
+  installGalleryTagSearch(DanbooruGalleryUI);
 
   app.registerExtension({
     name: "Anima.DanbooruGallery",
