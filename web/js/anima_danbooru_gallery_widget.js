@@ -957,6 +957,9 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
       // 折叠回「一作品一张卡」后其余页存在 groups 里，点卡片「全部页」再展开（见 foldPixivPages）。
       this.pixivPageGroups = null;   // Map<illust_id, post[]>：本批结果里各多页作品的全部页
       this.pixivDetail = null;       // 非 null = 正在看某个作品的全部页（纯展示层覆盖）
+      // 进详情**之前**那一刻的滚动锚点。无限滚动模式下搜索结果没有「页码」可回，
+      // 「← 返回」只能靠它把视口钉回当初那张卡（见 openPixivPages / closePixivPages）。
+      this.pixivReturnAnchor = null;
       // C站「无限加载」池（仅 civitai + 设置开启时使用；关闭时这两个字段全程为空/0，不参与任何原有路径）
       //   posts = 已加载的全部内容（后端按档位预取累积），展示的是它按「每页数量」切出来的一段。
       this.sourcePool = null;        // { posts, cursor, exhausted, fingerprint }
@@ -5412,6 +5415,9 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
       const illustId = String(post?.meta?.illust_id || "");
       const pages = this.pixivPageGroups?.get(illustId);
       if (!illustId || !pages?.length) return;
+      // ⚠️ 锚点必须在 `grid.scrollTop = 0` **之前**抓。无限滚动模式（2026-10-01 起 P站 默认）
+      //    下搜索结果没有「页码」可以回，位置只能靠这个锚点还原 —— 详见 closePixivPages。
+      this.pixivReturnAnchor = this.captureScrollAnchor();
       this.pixivDetail = { illustId, pages: pages.slice() };
       if (this.grid) this.grid.scrollTop = 0;
       this.syncReturnButton();
@@ -5423,9 +5429,19 @@ import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover
     /** 离开 P站 作品详情：只收状态 + 重渲染（搜索结果本身从未被动过，不必重搜） */
     closePixivPages() {
       if (!this.pixivDetail) return;
+      // 用后即清：下一次进详情会重新抓，留着旧锚点只会在别的路径上误用
+      const anchor = this.pixivReturnAnchor;
+      this.pixivReturnAnchor = null;
       this.pixivDetail = null;
       this.syncReturnButton();
+      // ⚠️ 这里**刻意不传 `preserveScroll`**：它的锚点取自「当前 DOM」，而此刻 DOM 还是详情那组
+      //    页（postKey 与搜索结果对不上），拿它恢复必然落空、退化成数值兜底再被 clamp 回 0 ——
+      //    那正是"返回后跳回搜索结果最顶端"的由来。要回的是详情**之前**那一刻，所以用当时抓下
+      //    的 anchor 手动还原。renderPosts 内部布局是同步做完的（applyMasonryLayout 写 style.top），
+      //    因此在它返回后立刻读 top 有效；后续异步的补图 / 滚动预取会各自走 preserveScroll，
+      //    以"我已经恢复好的位置"为基准，不会把视口抢回去。
       this.renderPosts();
+      if (anchor) this.restoreScrollAnchor(anchor);
       this.renderPagination();
       this.setStatus(`${this.sourceLabel(this.activeSourceId())}：${this.posts.length} 张 · ${this.galleryBatchLabel()}`);
     }
