@@ -1415,3 +1415,9 @@
 .adg-booru-choice[data-category="artist"] .adg-booru-tag { color: var(--p-red-400, var(--p-primary-color)); }
 .adg-booru-choice[data-category="copyright"] .adg-booru-tag { color: var(--p-purple-400, var(--p-primary-color)); }
 .adg-booru-hint { padding: 3px 6px; font-size: 10px; color: var(--descrip-text); line-height: 1.4; white-space: normal; }
+
+.adg-pixiv-manual { padding: 8px 0; border-top: 1px solid var(--adg-border); }
+.adg-pixiv-manual summary { cursor: pointer; color: var(--adg-muted); font-size: 11px; }
+.adg-pixiv-manual[open] summary { margin-bottom: 8px; color: var(--adg-text); }
+.adg-pixiv-manual .adg-settings-inline-row { margin: 8px 0; }
+.adg-source-secrets [hidden] { display: none !important; }

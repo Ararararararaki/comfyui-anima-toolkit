@@ -1700,6 +1700,56 @@ def _register_route(method: str, path: str, handler: Any) -> bool:
         return False
 
 
+try:
+    from .services.pixiv_login import LoginSessions, find_browser, local_request
+except ImportError:
+    from services.pixiv_login import LoginSessions, find_browser, local_request
+
+_pixiv_login_sessions = globals().get("_pixiv_login_sessions") or LoginSessions()
+
+
+async def anima_gallery_pixiv_login_capabilities(request):
+    local = local_request(request)
+    available = bool(local and find_browser())
+    return web.json_response({"available": available, "local": local, "message": (
+        "点一次登录，在弹出窗口完成 P站 登录即可自动授权。" if available else
+        "自动登录需要在 ComfyUI 本机通过 localhost 或 127.0.0.1 打开，并安装 Chrome / Edge。可使用手动授权。"
+    )})
+
+
+async def anima_gallery_pixiv_login_start(request):
+    if not local_request(request):
+        return _auth_error("自动登录仅支持 ComfyUI 本机的同源页面，请使用手动授权。", 403)
+    verifier = generate_code_verifier()
+    try:
+        status = await _pixiv_login_sessions.start(
+            build_auth_url(code_challenge_for(verifier)), verifier, exchange_auth_code)
+    except RuntimeError as error:
+        return _auth_error(str(error), 409)
+    return web.json_response(status)
+
+
+async def anima_gallery_pixiv_login_session(request):
+    if not local_request(request):
+        return _auth_error("请在 ComfyUI 本机打开登录界面。", 403)
+    try:
+        body = await request.json()
+        sid = body.get("session_id", "") if isinstance(body, dict) else ""
+        if not isinstance(sid, str) or not sid or len(sid) > 128:
+            return _auth_error("登录记录无效，请重新点击登录。")
+        if body.get("cancel") is True:
+            status = await _pixiv_login_sessions.cancel(sid)
+        else:
+            status = _pixiv_login_sessions.status(sid)
+    except (ValueError, AttributeError):
+        return _auth_error("登录请求无效。")
+    except RuntimeError as error:
+        return _auth_error(str(error), 409)
+    if not status:
+        return _auth_error("登录记录已失效，请重新点击登录。", 404)
+    return web.json_response(status)
+
+
 async def anima_gallery_pixiv_auth_url(request: web.Request) -> web.Response:
     """生成 PKCE 授权链接。
 
@@ -1974,6 +2024,9 @@ def register_routes() -> list[str]:
     routes = (
         ("get", "/anima/gallery/pixiv/auth/url", anima_gallery_pixiv_auth_url),
         ("post", "/anima/gallery/pixiv/auth/code", anima_gallery_pixiv_auth_code),
+        ("get", "/anima/gallery/pixiv/login/capabilities", anima_gallery_pixiv_login_capabilities),
+        ("post", "/anima/gallery/pixiv/login/start", anima_gallery_pixiv_login_start),
+        ("post", "/anima/gallery/pixiv/login/session", anima_gallery_pixiv_login_session),
         ("get", "/anima/gallery/pixiv/auth/status", anima_gallery_pixiv_auth_status),
         ("post", "/anima/gallery/pixiv/logout", anima_gallery_pixiv_logout),
         ("get", "/anima/gallery/pixiv/search", anima_gallery_pixiv_search),

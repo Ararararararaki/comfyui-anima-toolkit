@@ -229,7 +229,7 @@ WEB_DIRECTORY = "./web"
 # 从根上消掉「两个地方要一起改」这个失败模式；读失败（打包丢文件等）才回落到内置值。
 # 更新链（_is_update_release_path / 更新 ZIP 校验）本来就要求包里带 VERSION，
 # 所以这个文件在真实安装里一定存在。
-_FALLBACK_VERSION = "2.27.0"
+_FALLBACK_VERSION = "2.28.0"
 try:
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"), encoding="utf-8") as _vf:
         __version__ = _vf.read().strip() or _FALLBACK_VERSION
@@ -2666,10 +2666,44 @@ def _save_meta(data: dict):
                     pass
 
 
+
+def _merge_and_save_meta(incoming, replace_keys):
+    """Run the locked disk transaction in a worker so saves never stall the server loop."""
+    # 读-改-写必须持有同一把锁；否则面板和节点的并发 POST 会互相覆盖。
+    with META_LOCK:
+        current = _load_meta()
+        merged = {**current, **incoming}
+        skipped = []
+        # ③ 空值护栏：空的 incoming 不许覆盖非空的 current
+        for key, value in incoming.items():
+            if not _is_empty_meta_value(value):
+                continue
+            if _is_empty_meta_value(current.get(key)):
+                continue  # 旧值本来也是空（或不存在），照常写入
+            if key in replace_keys:
+                continue  # __replace 显式声明允许清空
+            merged[key] = current[key]
+            skipped.append(key)
+        merged.pop("__replace", None)
+        # 落盘前归一化（与读路径同一函数、幂等；旧数据的带扩展名 key 在保存时被清理）
+        _normalize_meta_keys(merged)
+        # saved：值确实变了的键（被护栏跳过的键值不变，自然不入列）
+        saved = [k for k in incoming if k not in current or current[k] != merged.get(k)]
+
+        try:
+            if saved:
+                _save_meta(merged)
+        except Exception as e:
+            # 写入失败：原文件保持不变（见 _save_meta），端点回 500 —— 绝不允许半写完的文件
+            return {"ok": False, "error": f"meta 写入失败: {e}"}
+
+    return {"ok": True, "skipped": sorted(skipped), "saved": sorted(saved)}
+
+
 @PromptServer.instance.routes.get("/anima/meta")
 async def get_meta(request):
     """Get LoRA metadata (categories / favorite / pinned)."""
-    return web.json_response(_load_meta())
+    return web.json_response(await asyncio.to_thread(_load_meta))
 
 
 @PromptServer.instance.routes.post("/anima/meta")
@@ -2711,31 +2745,5 @@ async def set_meta(request):
     if isinstance(incoming.get("categories"), list):
         incoming["categories"] = [str(c).strip() for c in incoming["categories"] if str(c).strip()]
 
-    # 读-改-写必须持有同一把锁；否则面板和节点的并发 POST 会互相覆盖。
-    with META_LOCK:
-        current = _load_meta()
-        merged = {**current, **incoming}
-        skipped = []
-        # ③ 空值护栏：空的 incoming 不许覆盖非空的 current
-        for key, value in incoming.items():
-            if not _is_empty_meta_value(value):
-                continue
-            if _is_empty_meta_value(current.get(key)):
-                continue  # 旧值本来也是空（或不存在），照常写入
-            if key in replace_keys:
-                continue  # __replace 显式声明允许清空
-            merged[key] = current[key]
-            skipped.append(key)
-        merged.pop("__replace", None)
-        # 落盘前归一化（与读路径同一函数、幂等；旧数据的带扩展名 key 在保存时被清理）
-        _normalize_meta_keys(merged)
-        # saved：值确实变了的键（被护栏跳过的键值不变，自然不入列）
-        saved = [k for k in incoming if k not in current or current[k] != merged.get(k)]
-
-        try:
-            _save_meta(merged)
-        except Exception as e:
-            # 写入失败：原文件保持不变（见 _save_meta），端点回 500 —— 绝不允许半写完的文件
-            return web.json_response({"ok": False, "error": f"meta 写入失败: {e}"}, status=500)
-
-    return web.json_response({"ok": True, "skipped": sorted(skipped), "saved": sorted(saved)})
+    result = await asyncio.to_thread(_merge_and_save_meta, incoming, replace_keys)
+    return web.json_response(result, status=200 if result["ok"] else 500)

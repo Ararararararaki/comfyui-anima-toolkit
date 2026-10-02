@@ -7840,7 +7840,7 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
     pixivStatusText(info = {}) {
       if (info.error) return `读取失败：${info.error}`;
       if (info.available === false) return "后端未安装 P站 模块（anima_gallery_pixiv.py）—— 该图源不可用";
-      if (info.logged_in) return "已授权（refresh_token 已存 data/pixiv_token.json）";
+      if (info.logged_in) return "已登录：授权已保存在本机，下次无需重复操作";
       return "未授权：P站 没有匿名搜索，必须先授权一次";
     }
 
@@ -8026,94 +8026,229 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
         civitaiTest.textContent = "测试";
       };
 
-      // ── P站（OAuth 2.0 + PKCE：拿授权 URL → 用户粘 code 回来）──
+      // P站：本机自动登录优先，手动授权用于远程或未安装浏览器的环境。
       const pixiv = this.makeSecretStatusRow("P站 登录");
       const pixivRow = document.createElement("div");
       pixivRow.className = "adg-settings-inline-row";
+      const pixivAuto = document.createElement("button");
+      pixivAuto.type = "button";
+      pixivAuto.className = "primary adg-settings-inline-button";
+      pixivAuto.textContent = "一键登录 P站";
+      pixivAuto.disabled = true;
+      const pixivCancel = document.createElement("button");
+      pixivCancel.type = "button";
+      pixivCancel.className = "adg-settings-inline-button";
+      pixivCancel.textContent = "取消登录";
+      pixivCancel.hidden = true;
+      const pixivLink = document.createElement("div");
+      pixivLink.className = "adg-settings-help";
+      pixivLink.setAttribute("role", "status");
+      pixivLink.setAttribute("aria-live", "polite");
+      pixivLink.textContent = "1. 点一键登录  2. 在弹出的窗口登录 P站  3. 返回这里自动完成，无需按 F12。";
+      const pixivManual = document.createElement("details");
+      pixivManual.className = "adg-pixiv-manual";
+      const summary = document.createElement("summary");
+      summary.textContent = "手动授权 / 远程访问";
+      const manualGuide = document.createElement("div");
+      manualGuide.className = "adg-settings-help";
+      manualGuide.textContent = "先点打开授权页。登录前按 F12 → Network（网络）→ 勾选 Preserve log（保留日志）。完成登录后，搜索筛选 code=，点最后的 callback / login 请求，在 Headers（标头）复制 Request URL（请求网址），整条粘贴到下面即可。授权链接每次不同，请使用本次打开的页面；10 分钟内完成。";
+      const manualRow = document.createElement("div");
+      manualRow.className = "adg-settings-inline-row";
       const pixivAuth = document.createElement("button");
       pixivAuth.type = "button";
-      pixivAuth.className = "primary adg-settings-inline-button";
-      pixivAuth.textContent = "去授权";
-      pixivAuth.title = "在新标签页打开 Pixiv 授权页；授权后把回调地址里的 code 粘回下面的输入框";
+      pixivAuth.className = "adg-settings-inline-button";
+      pixivAuth.textContent = "打开授权页";
+      const pixivOpen = document.createElement("a");
+      pixivOpen.className = "adg-settings-help";
+      pixivOpen.textContent = "授权页未弹出？点击这里打开";
+      pixivOpen.target = "_blank";
+      pixivOpen.rel = "noopener noreferrer";
+      pixivOpen.hidden = true;
       const pixivCode = document.createElement("input");
       pixivCode.className = "adg-settings-input";
       pixivCode.autocomplete = "off";
-      pixivCode.placeholder = "粘贴授权后拿到的 code（或完整回调地址）";
+      pixivCode.spellcheck = false;
+      pixivCode.setAttribute("aria-label", "P站授权回调地址或 code");
+      pixivCode.placeholder = "粘贴完整请求网址（也支持 code）";
       const pixivSubmit = document.createElement("button");
       pixivSubmit.type = "button";
       pixivSubmit.className = "adg-settings-inline-button";
       pixivSubmit.textContent = "完成授权";
-      const pixivLink = document.createElement("span");
-      pixivLink.className = "adg-settings-help";
-      pixivRow.append(pixivAuth, pixivCode, pixivSubmit);
-      section.append(pixiv.row, pixivRow, pixivLink);
+      manualRow.append(pixivAuth, pixivCode, pixivSubmit);
+      pixivManual.append(summary, manualGuide, manualRow, pixivOpen);
+      pixivRow.append(pixivAuto, pixivCancel);
+      section.append(pixiv.row, pixivRow, pixivLink, pixivManual);
 
+      let autoAvailable = false;
+      let sessionId = "";
+      let pollTimer = 0;
+      let opening = false;
+      let expiresAt = 0;
+      let manualBusy = false;
       const syncPixiv = (state = this.gallerySecretState) => {
         const info = state?.pixiv || {};
         const available = info.available !== false;
         pixiv.dot.classList.toggle("is-on", Boolean(info.logged_in));
         pixiv.dot.classList.toggle("is-off", !info.logged_in);
         pixiv.text.textContent = this.pixivStatusText(info);
-        // 模块没装 → 授权按钮没有意义，禁用而不是让人点了报错
         pixivAuth.disabled = !available;
         pixivSubmit.disabled = !available;
         pixivCode.disabled = !available;
-        pixivAuth.title = available
-          ? "在新标签页打开 Pixiv 授权页；授权后把回调地址里的 code 粘回下面的输入框"
-          : "后端没有 anima_gallery_pixiv.py，P站 图源不可用";
+        if (opening || sessionId || manualBusy) pixivAuth.disabled = pixivSubmit.disabled = pixivCode.disabled = true;
+        pixivAuto.disabled = !available || !autoAvailable || opening || manualBusy || Boolean(sessionId);
+        pixivAuto.textContent = info.logged_in ? "重新登录 P站" : "一键登录 P站";
+        pixivAuth.title = available ? "先打开本次授权页面，登录后按上方步骤粘贴回调地址" : "后端没有 anima_gallery_pixiv.py，P站 图源不可用";
         if (this.sourceSelect) {
           const option = [...this.sourceSelect.options].find((o) => o.value === "pixiv");
           if (option) option.title = available ? "" : "后端未安装 P站 模块";
         }
       };
+      const sessionRequest = async (id, cancel = false) => {
+        const response = await fetch("/anima/gallery/pixiv/login/session", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: id, cancel }),
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok) {
+          const error = new Error(data?.error || "HTTP " + response.status);
+          error.status = response.status;
+          throw error;
+        }
+        return data;
+      };
+      const finish = () => {
+        clearTimeout(pollTimer);
+        sessionId = "";
+        pixivCancel.hidden = true;
+        syncPixiv();
+      };
+      const poll = async () => {
+        const id = sessionId;
+        if (!id) return;
+        if (!section.isConnected) {
+          finish();
+          void sessionRequest(id, true).catch(() => {});
+          return;
+        }
+        try {
+          const data = await sessionRequest(id);
+          if (id !== sessionId) return;
+          pixivLink.textContent = String(data.message || "等待登录…");
+          if (["opening", "waiting", "exchanging"].includes(data.state)) {
+            pixivCancel.disabled = data.state === "exchanging";
+            pollTimer = setTimeout(poll, 1000);
+            return;
+          }
+          finish();
+          if (data.state === "success") {
+            syncPixiv(await this.refreshGallerySecretState());
+            this.setStatus("P站登录成功，可以开始搜索", "success");
+          } else { this.setStatus(String(data.message || "请重新登录"), "error"); }
+        } catch (error) {
+          if (id !== sessionId) return;
+          if ([400, 403, 404].includes(error?.status) || Date.now() > expiresAt + 60000) {
+            finish();
+            pixivLink.textContent = "登录记录已失效，请重新点击登录。";
+            void sessionRequest(id, true).catch(() => {});
+            return;
+          }
+          pixivLink.textContent = "连接暂时中断，正在重试：" + (error?.message || "未知错误");
+          pollTimer = setTimeout(poll, 2000);
+        }
+      };
+      pixivAuto.onclick = async () => {
+        opening = true;
+        syncPixiv();
+        pixivLink.textContent = "正在打开独立登录窗口…";
+        try {
+          const response = await fetch("/anima/gallery/pixiv/login/start", { method: "POST" });
+          const data = await response.json().catch(() => null);
+          if (!response.ok || !data?.session_id) throw new Error(data?.error || "HTTP " + response.status);
+          sessionId = String(data.session_id);
+          expiresAt = Number(data.expires_at || Date.now() / 1000 + 600) * 1000;
+          pixivCancel.disabled = false;
+          pixivCancel.hidden = false;
+          pixivLink.textContent = "请在弹出的窗口登录 P站，完成后会自动返回结果。此窗口不使用已有浏览器的登录资料。";
+          void poll();
+        } catch (error) {
+          pixivLink.textContent = "自动登录暂不可用：" + (error?.message || "未知错误");
+          pixivManual.open = true;
+        } finally { opening = false; syncPixiv(); }
+      };
+      pixivCancel.onclick = async () => {
+        const id = sessionId;
+        pixivCancel.disabled = true;
+        try {
+          const data = await sessionRequest(id, true);
+          if (id !== sessionId) return;
+          pixivLink.textContent = String(data.message || "已取消登录");
+          finish();
+        } catch (error) { pixivLink.textContent = String(error?.message || "取消失败，请稍后重试"); }
+        finally { pixivCancel.disabled = false; }
+      };
+      void fetch("/anima/gallery/pixiv/login/capabilities").then(async (response) => {
+        const data = await response.json().catch(() => null);
+        if (!section.isConnected) return;
+        autoAvailable = response.ok && Boolean(data?.available);
+        if (!autoAvailable) {
+          pixivLink.textContent = data?.message || "当前后端不支持自动登录，请更新插件或使用手动授权。";
+          pixivManual.open = true;
+        }
+        syncPixiv();
+      }).catch(() => { pixivLink.textContent = "自动登录检测失败，可重开设置重试，或使用手动授权。"; pixivManual.open = true; });
       this.pixivVerifier = "";
       pixivAuth.onclick = async () => {
-        pixivAuth.disabled = true;
+        // Reserve the popup during the click; opening it after await is often blocked.
+        const popup = window.open("about:blank", "_blank");
+        if (popup) popup.opener = null;
+        manualBusy = true;
+        syncPixiv();
         try {
           const response = await fetch("/anima/gallery/pixiv/auth/url");
           const data = await response.json().catch(() => null);
-          if (!response.ok || !data?.url) throw new Error(data?.error || `HTTP ${response.status}`);
-          // PKCE verifier 由后端持有也行；若它回传了就带回去（契约字段 verifier_hint）
+          if (!response.ok || !data?.url) throw new Error(data?.error || "HTTP " + response.status);
           this.pixivVerifier = String(data?.verifier || data?.verifier_hint || "");
-          window.open(String(data.url), "_blank", "noopener,noreferrer");
-          pixivLink.textContent = "已打开授权页：登录 Pixiv 后把地址栏里的 code（或回调整条 URL）粘到上面输入框，点「完成授权」。";
-          pixivCode.focus();
+          pixivOpen.href = String(data.url);
+          pixivOpen.hidden = false;
+          if (popup) popup.location.replace(String(data.url));
+          pixivLink.textContent = "请按手动授权中的步骤登录，并粘贴整条回调网址。本次链接有效期 10 分钟。";
         } catch (error) {
-          pixivLink.textContent = `获取授权地址失败：${error?.message || "未知错误"}`;
-          this.setStatus(`P站 授权失败：${error?.message || "未知错误"}`, "error");
-        }
-        pixivAuth.disabled = false;
+          popup?.close();
+          pixivLink.textContent = "获取授权地址失败：" + (error?.message || "未知错误");
+        } finally { manualBusy = false; syncPixiv(); }
       };
       pixivSubmit.onclick = async () => {
         const raw = pixivCode.value.trim();
         if (!raw) { pixivCode.focus(); return; }
-        // 用户可能整条回调 URL 粘进来 → 取出 code 参数
         let code = raw;
-        try {
-          const parsed = new URL(raw);
-          code = parsed.searchParams.get("code") || raw;
-        } catch { /* 不是 URL，就当 code 用 */ }
-        pixivSubmit.disabled = true;
+        try { code = new URL(raw).searchParams.get("code") || raw; } catch {}
+        if (!this.pixivVerifier) {
+          pixivLink.textContent = "请先点「打开授权页」，再使用这次登录取得的回调地址。";
+          return;
+        }
+        manualBusy = true;
+        syncPixiv();
         pixivSubmit.textContent = "授权中…";
         try {
           const response = await fetch("/anima/gallery/pixiv/auth/code", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
+            method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ code, verifier: this.pixivVerifier || "" }),
           });
           const data = await response.json().catch(() => null);
-          if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+          if (!response.ok || data?.ok === false) throw new Error(data?.error || "HTTP " + response.status);
           pixivCode.value = "";
-          const state = await this.refreshGallerySecretState();
-          syncPixiv(state);
-          const ok = data?.ok !== false && state.pixiv.logged_in;
-          this.setStatus(`P站 授权：${data?.message || (ok ? "成功" : "未确认登录状态")}`, ok ? "success" : "error");
-        } catch (error) {
-          this.setStatus(`P站 授权失败：${error?.message || "未知错误"}`, "error");
-        }
-        pixivSubmit.disabled = false;
-        pixivSubmit.textContent = "完成授权";
+          this.pixivVerifier = "";
+          syncPixiv(await this.refreshGallerySecretState());
+          pixivLink.textContent = String(data?.message || "P站授权成功，可以开始搜索。");
+          this.setStatus(pixivLink.textContent, "success");
+        } catch (error) { pixivLink.textContent = "P站授权失败：" + (error?.message || "未知错误"); }
+        finally { manualBusy = false; pixivSubmit.textContent = "完成授权"; syncPixiv(); }
       };
+      pixivCode.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.isComposing && !pixivSubmit.disabled) {
+          event.preventDefault(); event.stopPropagation(); pixivSubmit.click();
+        }
+      });
 
       syncCivitai();
       syncPixiv();

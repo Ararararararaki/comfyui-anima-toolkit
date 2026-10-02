@@ -28,11 +28,16 @@ let _localStoreUnsubscribe: (() => void) | null = null
 // 若每次都全量重建列表 DOM（数千卡片）会把主线程反复打满 —— 表现为弹窗/滚动期间
 // 页面接近无响应。这里做 250ms 尾沿节流：短风暴合并成每 250ms 最多一次重渲染。──
 let _renderTimer: ReturnType<typeof setTimeout> | null = null
+function isLocalManagerActive(): boolean {
+  const section = document.getElementById('sectionLocal')
+  return Boolean(section && !section.classList.contains('section-hidden'))
+}
+
 function scheduleRenderLocalView(): void {
-  if (_renderTimer !== null) return
+  if (!isLocalManagerActive() || _renderTimer !== null) return
   _renderTimer = setTimeout(() => {
     _renderTimer = null
-    renderLocalView()
+    if (isLocalManagerActive()) renderLocalView()
   }, 250)
 }
 
@@ -265,10 +270,11 @@ function initDragSelect() {
 
 
 export async function initLocalManager() {
+  if (_initDone) return
   const store = useLocalModelStore.getState()
   store.loadFromCache()
   store.rebuildTagFreq()
-  renderLocalView()
+  if (isLocalManagerActive()) renderLocalView()
   bindLocalEvents()
   if (!_localStoreUnsubscribe) {
     _localStoreUnsubscribe = useLocalModelStore.subscribe((state, previous) => {
@@ -282,13 +288,17 @@ export async function initLocalManager() {
   // 自定义预览图独立于扫描缓存保存，启动时异步恢复，避免大图阻塞首次打开。
   loadLocalLoraPreviews().then(previewImages => {
     useLocalModelStore.setState({ previewImages })
-    renderSidebarList(useLocalModelStore.getState())
-    renderDetail(useLocalModelStore.getState())
+    if (isLocalManagerActive()) {
+      renderSidebarList(useLocalModelStore.getState())
+      renderDetail(useLocalModelStore.getState())
+    }
   })
   // 与节点 /anima/meta 双向分类同步：启动时拉取后端分类合并到本地（无变化不重渲染）
   useLocalModelStore.getState().loadBackendMeta().then((changed) => {
-    if (changed) renderSidebarList(useLocalModelStore.getState())
+    if (changed && isLocalManagerActive()) renderSidebarList(useLocalModelStore.getState())
   })
+  // The saved initial tab is activated before this module is initialized. Catch up once ready.
+  if (isLocalManagerActive()) void activateLocalManager().catch(() => showToast('自动扫描失败，请点扫描文件夹重试'))
 }
 
 /** 激活流程并发守卫：快速反复切页时，上一次激活流程没走完就不再叠加 */
@@ -319,18 +329,17 @@ async function activateLocalManagerInner() {
     if (changed) scheduleRenderLocalView()
   })
   const store = useLocalModelStore.getState()
-  if (store.dirHandle) return
+  if (store.scanStatus === 'scanning') return
   // ⚠️ 自动扫描统一节流（2026-09-10 二次修复）：此前只在「句柄失效」分支判节流，
   // 「首次使用」分支（files=0）漏判 —— 扫描进行中 files 仍为 0，快速切页每次激活
   // 都重新 scanIncremental（CDP 实测 10 次往返产生 59 个后端扫描请求）。
   if (Date.now() - _lastAutoScanAt < AUTO_SCAN_THROTTLE_MS) return
-  _lastAutoScanAt = Date.now()
+  _lastAutoScanAt = Date.now() // Reserve this eligible scan once; do not test this timestamp again.
   const hasCache = store.files.length > 0
   if (hasCache) {
-    const restored = await store.loadDirHandle()
+    const restored = Boolean(store.dirHandle) || await store.loadDirHandle()
     if (restored) {
-      const throttled = Date.now() - _lastAutoScanAt < AUTO_SCAN_THROTTLE_MS
-      const newCount = throttled ? 0 : await store.detectNewFiles()
+      const newCount = await store.detectNewFiles()
       _lastAutoScanAt = Date.now()
       if (newCount > 0) {
         // 自动增量扫描：用户痛点——新下载的 LoRA 必须手动重选目录扫描才会出现。
@@ -338,22 +347,21 @@ async function activateLocalManagerInner() {
         store.setNewFileCount(newCount)
         showToast(`📁 发现 ${newCount} 个新 LoRA 文件，自动扫描中…`)
         await store.scanIncremental()
-        renderLocalView()
+        if (isLocalManagerActive()) renderLocalView()
       } else {
         showToast('🔄 已恢复上次扫描会话')
       }
     } else {
       // 句柄已失效（页面刷新后的常态）：静默回退后端扫描，全程无需交互、不弹任何对话框。
       // ⚠️ 后端扫描是全目录遍历，反复切页不能反复跑 —— 受 5 分钟节流约束。
-      if (Date.now() - _lastAutoScanAt >= AUTO_SCAN_THROTTLE_MS) {
-        _lastAutoScanAt = Date.now()
-        showToast('🔄 已恢复缓存数据，后台同步中…')
-        void store.scanIncremental().then(() => renderLocalView())
-      }
+      showToast('已恢复缓存数据，后台同步中…')
+      await store.scanIncremental()
+      if (isLocalManagerActive()) renderLocalView()
     }
   } else {
     // 首次使用（无缓存）：静默扫一次（预设路径 → 上次路径 → ComfyUI loras 目录）
-    void store.scanIncremental().then(() => renderLocalView())
+    await store.scanIncremental()
+    if (isLocalManagerActive()) renderLocalView()
   }
 }
 

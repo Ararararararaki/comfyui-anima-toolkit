@@ -192,7 +192,6 @@ function currentParams(): ModelFetchParams {
 export async function initLoraExplorer() {
   bindGridRefreshEvents()
   initFavorites()
-  initFavorites()
   initPromptDB() // Initialize IndexedDB prompt library
 
   // 立即渲染默认页面（force=true 确保即使 store.section 已匹配也触发渲染）
