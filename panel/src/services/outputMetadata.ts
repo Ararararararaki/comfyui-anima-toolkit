@@ -1,6 +1,9 @@
 // ── 元数据解析服务 ──
 // 支持 ComfyUI、A1111/Forge、Fooocus 等格式
 
+import { parseGraphPrompt } from './outputGraph'
+import type { PromptStage, PromptStatus } from '../types/outputs'
+
 export interface ParsedMetadata {
   model: string
   seed: string
@@ -16,12 +19,10 @@ export interface ParsedMetadata {
   negativePrompt: string
   workflowJson: string
   raw: Record<string, string>
-}
-
-// 判断文本是否纯 <lora:...> 标签（LoRA 序列节点文本，不是有效 prompt）
-function isPureLoraText(text: string): boolean {
-  if (!text) return false
-  return text.replace(/<lora:[^>]*>/gi, '').trim().length === 0
+  parserVersion?: number
+  promptStages?: PromptStage[]
+  promptStatus?: PromptStatus
+  promptWarnings?: string[]
 }
 
 export async function decompressZlibAsync(data: Uint8Array): Promise<string> {
@@ -66,7 +67,7 @@ export async function decompressZlibAsync(data: Uint8Array): Promise<string> {
 /**
  * 解析器版本：解析逻辑变更时递增，Outputs 借此自动失效旧的元数据缓存并重新解析。
  */
-export const PARSER_VERSION = 6
+export const PARSER_VERSION = 7
 
 /**
  * 安全 JSON 解析：ComfyUI 的 json.dumps 会把 NaN/Infinity 原样写入（如 is_changed:[NaN]），
@@ -90,367 +91,28 @@ export function safeParseJSON(str: string): any | null {
 }
 
 export function parseComfyUIWorkflow(workflow: any): Partial<ParsedMetadata> {
-  const result: Partial<ParsedMetadata> = {
-    raw: { workflow: JSON.stringify(workflow) },
-  }
-
+  const result: Partial<ParsedMetadata> = { raw: { workflow: JSON.stringify(workflow) }, parserVersion: PARSER_VERSION }
   if (!workflow || typeof workflow !== 'object') return result
-
-  // 归一化节点列表：UI format（nodes 数组）/ API format（nodeId 键对象）
-  const iterNodes: any[] = workflow.nodes || (Array.isArray(workflow) ? workflow : typeof workflow === 'object' ? Object.entries(workflow).map(([k, v]) => ({ id: k, ...(v as any) })) : [])
-
-  // 构建 node_id → node 映射（同时注册 string / number 键，兼容 UI format 数字 id 与 API format 字符串 id）
-  const nodeMap = new Map<any, any>()
-  for (const n of iterNodes) {
-    if (n && typeof n === 'object' && n.id !== undefined) {
-      nodeMap.set(n.id, n)
-      const numId = Number(n.id)
-      if (!isNaN(numId)) nodeMap.set(numId, n)
+  const parsed = parseGraphPrompt(workflow)
+  const { samplerInputs, ...prompts } = parsed
+  Object.assign(result, prompts)
+  const inputs = samplerInputs || {}
+  for (const [source, target] of Object.entries({ seed: 'seed', noise_seed: 'noiseSeed', steps: 'steps', cfg: 'cfg', sampler_name: 'sampler', scheduler: 'scheduler', denoise: 'denoise' })) {
+    if (inputs[source] !== undefined && !Array.isArray(inputs[source])) (result as any)[target] = String(inputs[source])
+  }
+  const nodes: any[] = workflow.nodes || (Array.isArray(workflow) ? workflow : Object.entries(workflow).map(([id, node]) => ({ id, ...(node as object) })))
+  for (const node of nodes) {
+    const type = String(node?.class_type || node?.type || '')
+    const nodeInputs = node?.inputs && !Array.isArray(node.inputs) ? node.inputs : {}
+    if (/CheckpointLoader|DiffusionModelLoader|UNETLoader/.test(type)) {
+      const name = nodeInputs.ckpt_name || nodeInputs.unet_name || node.widgets_values?.find((value: unknown) => typeof value === 'string' && /\.(safetensors|ckpt|pt|bin)$/i.test(value))
+      if (typeof name === 'string') result.model = name
+    }
+    if (/VAELoader/.test(type)) {
+      const name = nodeInputs.vae_name || node.widgets_values?.[0]
+      if (typeof name === 'string') result.vae = name
     }
   }
-
-  // 构建 link 映射：link_id → { to_node, to_slot }
-  const linkMap = new Map<number, { toNode: number; toSlot: number }>()
-  const links = workflow.links
-  if (Array.isArray(links)) {
-    for (const lnk of links) {
-      if (Array.isArray(lnk) && lnk.length >= 5) {
-        linkMap.set(lnk[0], { toNode: lnk[3], toSlot: lnk[4] })
-      }
-    }
-  }
-
-  // 判断 CLIPTextEncode 节点的输出连接到哪个输入槽位（positive / negative）
-  function getPromptRole(nodeId: number): 'positive' | 'negative' | 'unknown' {
-    const n = nodeMap.get(nodeId)
-    if (!n) return 'unknown'
-    const outputs = n.outputs
-    if (!Array.isArray(outputs)) return 'unknown'
-    for (const output of outputs) {
-      const linkIds: number[] = output?.links?.filter((l: any) => l !== null) || []
-      for (const lid of linkIds) {
-        const link = linkMap.get(lid)
-        if (!link) continue
-        const targetNode = nodeMap.get(link.toNode)
-        if (!targetNode) continue
-        const inputs = targetNode.inputs
-        if (Array.isArray(inputs)) {
-          const slot = inputs[link.toSlot]
-          if (slot?.name === 'positive') return 'positive'
-          if (slot?.name === 'negative') return 'negative'
-        }
-        // 某些格式 inputs 是对象 { positive: {...}, negative: {...} }
-        if (inputs && typeof inputs === 'object' && !Array.isArray(inputs)) {
-          // 遍历输入键名
-          for (const [key, val] of Object.entries(inputs)) {
-            if (val && typeof val === 'object' && (val as any).link === lid) {
-              if (key === 'positive') return 'positive'
-              if (key === 'negative') return 'negative'
-            }
-          }
-        }
-      }
-    }
-    return 'unknown'
-  }
-
-  // 追踪 KSampler 对正/负向 prompt 的引用
-  const posRefs = new Map<string, string>() // nodeId → 'positive' | 'negative'
-
-  // 判断文本是否为负面 prompt（启发式）
-  function isNegativeText(t: string): boolean {
-    const lower = t.toLowerCase()
-    // nsfw 常出现在正向 NSFW 提示词中，不作为负面判断词
-    const badWords = ['worst quality', 'low quality', 'score_1', 'score_2', 'score_3', 'bad anatomy', 'bad proportions', 'extra limbs', 'extra fingers', 'missing fingers', 'ugly', 'blurry', 'jpeg artifacts', 'lowres', 'cropped', 'watermark']
-    // 保守：需命中至少 2 个负面词才判负，避免把含 nsfw 的正向提示词误判为负向
-    let hits = 0
-    for (const w of badWords) { if (lower.includes(w)) hits++ }
-    return hits >= 2
-  }
-
-  // ── 正片文本提取（泛化版，2026-08-20）──
-  // 不依赖具体节点型号：按「内容字段白名单 + 配置字段黑名单 + 节点类别」沿 KSampler.positive 链路通用取文本，
-  // 覆盖任意型号的拼接/组装节点（Text Concatenate、String Combiner、Prompt Builder…）、叶节点（Primitive/String/textbox…）、
-  // 以及"文本来自其输入链路"的透传/过滤节点（Danbooru Tag Sorter、Clean Tags、Tag Mapper…）。
-  const _TEXT_KEY_RE = /(text|prompt|caption|description|tags|keyword|string|content|value|nl_prompt|extra_tags|subtitle|quality|style|character|background|general|identity|rating|aspect_ratio|length)$/i
-  const _CONFIG_KEY_RE = /^(delimiter|separator|clean_whitespace|seed|width|height|steps|cfg|sampler_name|scheduler|denoise|device|type|model|clip|unet|vae|batch_size|anything|preset|roll|pos_x|pos_y|pos_z|excel_file|category_mapping|new_category_order|regex_blacklist|tag_blacklist|validation|is_comment|force_reload|config|settings|json|data_json|schema)$/i
-  const _LEAF_CT_RE = /^(primitive|string|multiline|textbox|keyword|property|single.?line|text.?input)/i
-const _JOIN_CT_RE = /(concat|combine|concatenate|joining|join|assemble|merge|compose|builder|section|smith|text.?comb)/i
-
-const _cleanTags = (t: string) => t.split(/[\r\n]+/).join(', ').replace(/,\s*,/g, ',').trim()
-const _isContentKey = (k: string) => !_CONFIG_KEY_RE.test(k) && _TEXT_KEY_RE.test(k)
-
-/** TK Prompt Cards 的正面 prompt：API 格式在 inputs.positive，UI 格式在 widgets_values[0]。 */
-function getTkPromptCardsPositive(node: any): string {
-  const inputs = node?.inputs
-  if (inputs && !Array.isArray(inputs) && typeof inputs.positive === 'string') return inputs.positive
-  if (Array.isArray(node?.widgets_values) && typeof node.widgets_values[0] === 'string') return node.widgets_values[0]
-  return ''
-}
-
-  function getNodeText(node: any, visited = new Set<string>()): string {
-    const inputs = node.inputs || {}
-    const ct = (node.class_type || node.type || '').toLowerCase()
-    const nodeId = node.id !== undefined ? String(node.id) : ''
-    // 进入即标记自己（防环）。注意：不能在组装分支里"先标记孩子再递归"，
-    // 否则像 DanbooruTagSorter 这类"文本来自其输入链路"的节点会在自身递归段被判 visited 而整支丢失。
-    if (nodeId && visited.has(nodeId)) return ''
-    if (nodeId) visited.add(nodeId)
-
-    if (ct === 'tkpromptcards') return getTkPromptCardsPositive(node)
-
-    // 兼容旧版 WeiLinPromptUI 等节点：正/负 prompt 直接存放在 inputs.positive/negative，
-    // 不是标准的 text/prompt 字段，不能交给通用内容字段白名单，否则历史 PNG 会丢正面 prompt。
-    for (const key of ['positive', 'negative']) {
-      const value = inputs[key]
-      if (typeof value === 'string' && value.trim().length > 3) return _cleanTags(value)
-    }
-
-    const resolveSource = (v: any): string => {
-      if (typeof v === 'string' && v.length > 3) return v
-      if (!Array.isArray(v) || v.length === 0) return ''
-      const srcVal = v[0]
-      if (typeof srcVal !== 'number' && (typeof srcVal !== 'string' || isNaN(Number(srcVal)))) return ''
-      const srcNode = nodeMap.get(srcVal) || nodeMap.get(Number(srcVal))
-      if (!srcNode || srcNode === node) return ''
-      return getNodeText(srcNode, visited)
-    }
-
-    // 1) 内容字段直读（多个同类字段按序聚合，如 preview_text + prompt_text）
-    //    注意：只要存在数组链接输入，就可能是"混合型组装"（部分分区字面量、部分分区链接）——此时不提前短路，交给下面的组装分支全量聚合。
-    const hasLinkInput = Object.values(inputs).some((v) => Array.isArray(v) && v.length > 0)
-    const direct: string[] = []
-    for (const [k, v] of Object.entries(inputs)) if (typeof v === 'string' && _isContentKey(k) && v.length > 3) direct.push(v)
-    if (direct.length && !hasLinkInput) return _cleanTags(direct.join(', '))
-
-    // 2) 生态特例：TK D站画廊把选中 prompt 存在 selection_data JSON（多选逗号连接，供拼接节点注入）
-    if (ct.includes('danboorugallery')) {
-      const sd = inputs.selection_data
-      if (typeof sd === 'string') {
-        try {
-          const data = JSON.parse(sd)
-          const list = data?.selections
-          if (Array.isArray(list)) {
-            const ps = list.map((s: any) => (s && typeof s === 'object' ? String(s.prompt || '') : '')).filter(Boolean)
-            if (ps.length) return ps.join(', ')
-          }
-        } catch { /* 非 JSON 忽略 */ }
-      }
-    }
-
-    // 3) 通用字符串叶节点：PrimitiveStringMultiline / String / textbox 等
-    if (_LEAF_CT_RE.test(ct)) {
-      for (const k of ['value', 'string', 'contents', 'content', 'data', 'text']) {
-        const v = inputs[k]
-        if (typeof v === 'string' && v.length > 3) return v
-      }
-    }
-
-    // 4) 组装/拼接节点：把非配置输入按字段顺序聚合（值可为字面量或数组链接）
-    //    兼容没进正则的"类 Prompt Builder"节点：≥2 个非配置输入即按组装处理；字符串仅当 key 属内容白名单。
-    const contentInputs = Object.entries(inputs).filter(
-      ([k, v]) =>
-        !_CONFIG_KEY_RE.test(k) &&
-        ((Array.isArray(v) && v.length > 0) || (typeof v === 'string' && _isContentKey(k) && v.length > 3)),
-    )
-    if (_JOIN_CT_RE.test(ct) || contentInputs.length >= 2) {
-      const parts: string[] = []
-      for (const [k, v] of contentInputs) {
-        const t = resolveSource(v)
-        if (t) parts.push(_cleanTags(t))
-      }
-      const joined = _cleanTags(parts.join(', '))
-      if (joined.length > 3) return joined
-    }
-
-    // 5) widgets_values（UI format fallback）
-    if (Array.isArray(node.widgets_values)) {
-      for (const w of node.widgets_values) if (typeof w === 'string' && w.length > 5) return w
-    }
-
-    // 6) 兜底：剩余的内容输入——数组链接（透传/过滤类：Danbooru Tag Sorter / Clean Tags → 上游文本），
-    //    以及 key 属内容白名单的字符串（如 CLIP 的 text；单内容串+黑名单数组链接时第 4 步不触发，这里补上）。
-    //    config/settings 等非内容 key 的字符串一律跳过，绝不进正片。
-    for (const [k, v] of Object.entries(inputs)) {
-      if (_CONFIG_KEY_RE.test(k)) continue
-      if (typeof v === 'string' && v.length > 3 && _isContentKey(k)) return v
-      if (!Array.isArray(v) || v.length === 0) continue
-      const t = resolveSource(v)
-      if (t) return t
-    }
-    return ''
-  }
-
-  // 判断节点是否为文本节点
-  function isTextNode(node: any): boolean {
-    const ct = node.class_type || node.type || ''
-    if (String(ct).toLowerCase() === 'tkpromptcards') return Boolean(getTkPromptCardsPositive(node).trim())
-    if (ct === 'CLIPTextEncode' || ct === 'WeiLinPromptUI' || ct === 'TextConcatenate' || ct === 'Text Concatenate') return true
-    // 带有文本输入字段的节点
-    const inputs = node.inputs || {}
-    if (inputs.text && typeof inputs.text === 'string' && inputs.text.length > 5) return true
-    if (inputs.prompt && typeof inputs.prompt === 'string' && inputs.prompt.length > 5) return true
-    if (inputs.prompt_text && typeof inputs.prompt_text === 'string' && inputs.prompt_text.length > 5) return true
-    if (inputs.preview_text && typeof inputs.preview_text === 'string' && inputs.preview_text.length > 5) return true
-    if (inputs.positive && typeof inputs.positive === 'string' && inputs.positive.length > 5) return true
-    if (inputs.negative && typeof inputs.negative === 'string' && inputs.negative.length > 5) return true
-    return false
-  }
-
-  // 收集所有文本节点
-  const textNodes: { node: any; text: string }[] = []
-
-  for (const n of iterNodes) {
-    if (!n || typeof n !== 'object') continue
-
-    const ct = n.class_type || n.type || ''
-    if (ct.includes('KSampler')) {
-      const inputs = n.inputs || {}
-      if (Array.isArray(inputs)) {
-        // UI format: inputs = [{name: "seed", value: 42}, {name: "positive", link: 3}, ...]
-        for (const entry of inputs) {
-          if (!entry || typeof entry !== 'object') continue
-          if (entry.name === 'seed' && entry.value !== undefined) result.seed = String(entry.value)
-          if (entry.name === 'steps' && entry.value !== undefined) result.steps = String(entry.value)
-          if (entry.name === 'cfg' && entry.value !== undefined) result.cfg = String(entry.value)
-          if (entry.name === 'sampler_name' && entry.value !== undefined) result.sampler = String(entry.value)
-          if (entry.name === 'scheduler' && entry.value !== undefined) result.scheduler = String(entry.value)
-          if (entry.name === 'denoise' && entry.value !== undefined) result.denoise = String(entry.value)
-          if (entry.name === 'noise_seed' && entry.value !== undefined) result.noiseSeed = String(entry.value)
-          if (entry.name === 'positive' && entry.link !== undefined) {
-            // link entry.link → find (fromNode) in links array
-            if (Array.isArray(links)) {
-              for (const lnk of links) {
-                if (Array.isArray(lnk) && lnk.length >= 5 && lnk[0] === entry.link) {
-                  posRefs.set(String(lnk[1]), 'positive')
-                  break
-                }
-              }
-            }
-          }
-          if (entry.name === 'negative' && entry.link !== undefined) {
-            if (Array.isArray(links)) {
-              for (const lnk of links) {
-                if (Array.isArray(lnk) && lnk.length >= 5 && lnk[0] === entry.link) {
-                  posRefs.set(String(lnk[1]), 'negative')
-                  break
-                }
-              }
-            }
-          }
-        }
-      } else {
-        // 标准对象格式 (API format)
-        if (inputs.seed !== undefined) result.seed = String(inputs.seed)
-        if (inputs.steps !== undefined) result.steps = String(inputs.steps)
-        if (inputs.cfg !== undefined) result.cfg = String(inputs.cfg)
-        if (inputs.sampler_name) result.sampler = String(inputs.sampler_name)
-        if (inputs.scheduler) result.scheduler = String(inputs.scheduler)
-        if (inputs.denoise !== undefined) result.denoise = String(inputs.denoise)
-        if (inputs.noise_seed !== undefined) result.noiseSeed = String(inputs.noise_seed)
-        if (Array.isArray(inputs.positive)) posRefs.set(String(inputs.positive[0]), 'positive')
-        if (Array.isArray(inputs.negative)) posRefs.set(String(inputs.negative[0]), 'negative')
-      }
-    }
-    if (ct.includes('CheckpointLoader') || ct.includes('DiffusionModelLoader') || ct.includes('UNETLoader')) {
-      // 底模：CheckpointLoader→ckpt_name，UNETLoader/DiffusionModelLoader→unet_name
-      const key = ct.includes('UNETLoader') || ct.includes('DiffusionModelLoader') ? 'unet_name' : 'ckpt_name'
-      let name: any = n.inputs?.[key]
-      if (Array.isArray(name) && name.length) {
-        // API 数组链接 [srcId, slot] → 递归源节点（loader 的输出可能是链接）
-        const src = nodeMap.get(name[0]) || nodeMap.get(Number(name[0]))
-        name = src && (src.inputs?.ckpt_name || src.inputs?.unet_name)
-        if (!name && src && Array.isArray(src.widgets_values)) {
-          name = src.widgets_values.find((w: any) => typeof w === 'string' && /\.(safetensors|ckpt|pt|bin)$/i.test(w)) || ''
-        }
-      }
-      if (name && typeof name === 'string') result.model = String(name)
-    }
-    if (ct.includes('VAELoader')) {
-      if (n.inputs?.vae_name) result.vae = String(n.inputs.vae_name)
-    }
-    // 收集文本节点
-    if (isTextNode(n)) {
-      const text = getNodeText(n)
-      if (text) {
-        textNodes.push({ node: n, text })
-      }
-    }
-  }
-
-  // posRefs 迭代回溯：posRefs 节点无文本时沿 inputs 链路上溯，直到找到有文本的节点
-  let refsAdded = true
-  while (refsAdded) {
-    refsAdded = false
-    for (const [nodeIdStr, role] of [...posRefs]) {
-      const nodeId = Number(nodeIdStr)
-      if (isNaN(nodeId)) continue
-      if (textNodes.some(tn => String(tn.node.id) === nodeIdStr)) continue // 已有文本，不需回溯
-      const n = nodeMap.get(nodeId)
-      if (!n) continue
-      const inputs = n.inputs
-      if (!Array.isArray(inputs)) continue
-      for (const entry of inputs) {
-        if (!entry || entry.link === undefined) continue
-        if (!Array.isArray(links)) break
-        for (const lnk of links) {
-          if (!Array.isArray(lnk) || lnk.length < 5 || lnk[0] !== entry.link) continue
-          const srcId = String(lnk[1])
-          if (!posRefs.has(srcId)) {
-            posRefs.set(srcId, role)
-            refsAdded = true
-          }
-          break
-        }
-      }
-    }
-  }
-
-  // posRefs 迭代回溯：posRefs 节点无文本时沿 inputs 链路上溯，直到找到有文本的节点
-  // 确定每个文本节点是正/负向。权威引用（KSampler/链路）优先，启发式仅补漏，
-  // 防止 CR Prompt Text、PreviewAny 等旁路文本覆盖已确定的真实 prompt。
-  let authoritativePrompt = false
-  let authoritativeNegative = false
-  for (const { node, text } of textNodes) {
-    const nodeId = node.id !== undefined ? String(node.id) : ''
-    let assigned = ''
-    // 1. KSampler 引用
-    const ref = nodeId ? posRefs.get(nodeId) : undefined
-    if (ref === 'positive') { if (!isPureLoraText(text)) { result.prompt = text; authoritativePrompt = true } assigned = 'posRefs→positive' }
-    else if (ref === 'negative') { result.negativePrompt = text; authoritativeNegative = true; assigned = 'posRefs→negative' }
-    // 2. 链路追踪（UI format）
-    if (!assigned && node.id !== undefined && linkMap.size > 0) {
-      const role = getPromptRole(node.id)
-      if (role === 'positive') { if (!isPureLoraText(text)) { result.prompt = text; authoritativePrompt = true } assigned = 'linkTrace→positive' }
-      else if (role === 'negative') { result.negativePrompt = text; authoritativeNegative = true; assigned = 'linkTrace→negative' }
-    }
-    // 2.b 正向链路：文本节点的输出 → 下游节点 → 查 posRefs
-    if (!assigned && node.id !== undefined && posRefs.size > 0) {
-      const outputs = node.outputs
-      if (Array.isArray(outputs)) {
-        for (const output of outputs) {
-          const linkIds: number[] = output?.links?.filter((l: any) => l !== null) || []
-          for (const lid of linkIds) {
-            const link = linkMap.get(lid)
-            if (!link) continue
-            const dnRef = posRefs.get(String(link.toNode))
-            if (dnRef === 'positive') { if (!isPureLoraText(text)) { result.prompt = text; authoritativePrompt = true } assigned = 'posRefsFwd→positive'; break }
-            if (dnRef === 'negative') { result.negativePrompt = text; authoritativeNegative = true; assigned = 'posRefsFwd→negative'; break }
-          }
-          if (assigned) break
-        }
-      }
-    }
-    // 3. 启发式判定（仅当无权威结果时补漏；无权威时保留"后者覆盖"旧行为）
-    if (!assigned) {
-      if (isNegativeText(text)) {
-        if (!authoritativeNegative) { result.negativePrompt = text; assigned = 'heuristic→negative' }
-      } else {
-        if (!authoritativePrompt && !isPureLoraText(text)) { result.prompt = text; assigned = 'heuristic→positive' }
-      }
-    }
-  }
-
   return result
 }
 
@@ -845,16 +507,8 @@ export async function parseOutputMetadata(
     if (workflow) {
       const parsed = parseComfyUIWorkflow(workflow)
       const workflowJson = workflowData || promptData || ''
-      // 正片兜底（2026-08-20）：API(prompt) chunk 里正片由其他节点注入/拼接时可能取不全或取不到，
-      // 此时改用 workflow(UI) chunk 再解一次补正片（只补 prompt/negativePrompt，参数仍以 API 为准）。
-      if (!parsed.prompt && workflowData && parseSrc !== workflowData) {
-        const altWf = safeParseJSON(workflowData)
-        if (altWf) {
-          const altParsed = parseComfyUIWorkflow(altWf)
-          if (altParsed.prompt) parsed.prompt = altParsed.prompt
-          if (!parsed.negativePrompt && altParsed.negativePrompt) parsed.negativePrompt = altParsed.negativePrompt
-        }
-      }
+      // API prompt records the executed graph. A different UI graph must not
+      // silently replace an incomplete result from that execution.
       return {
         model: parsed.model || '',
         seed: parsed.seed || '',
@@ -870,6 +524,10 @@ export async function parseOutputMetadata(
         negativePrompt: parsed.negativePrompt || '',
         workflowJson,
         raw,
+        parserVersion: PARSER_VERSION,
+        promptStages: parsed.promptStages,
+        promptStatus: parsed.promptStatus,
+        promptWarnings: parsed.promptWarnings,
       }
     }
   }
@@ -890,6 +548,10 @@ export async function parseOutputMetadata(
       negativePrompt: parsed.negativePrompt || '',
       workflowJson: '',
       raw,
+      parserVersion: PARSER_VERSION,
+      promptStatus: parsed.prompt ? 'complete' : 'missing',
+      promptStages: [],
+      promptWarnings: [],
     }
   }
 
@@ -909,6 +571,10 @@ export async function parseOutputMetadata(
       negativePrompt: parsed.negativePrompt || '',
       workflowJson: '',
       raw,
+      parserVersion: PARSER_VERSION,
+      promptStatus: parsed.prompt ? 'complete' : 'missing',
+      promptStages: [],
+      promptWarnings: [],
     }
   }
 

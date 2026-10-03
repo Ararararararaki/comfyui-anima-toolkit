@@ -15,12 +15,17 @@ import zlib
 
 from PIL import Image
 
+try:
+    from .services.output_metadata import parse_output_metadata
+except ImportError:  # standalone pure-module tests / development tools
+    from services.output_metadata import parse_output_metadata
+
 INDEX_VERSION = 1
 # 解析语义版本：**改动提取逻辑时必须 +1** —— 索引里记着上一轮的 parserVersion，
 # 不一致时增量更新会放弃复用旧条目、全量重解析一次（否则老图永远停在旧语义上，
 # 而它们的 mtime/size 没变，_entry_unchanged 会一直判定"可复用"）。
 # 2（2026-09-17）：正向提示词从「只取最长候选」改为「拼接全部候选 + 标签级保序去重」。
-PARSER_VERSION = 2
+PARSER_VERSION = 3
 _HEAD_BYTES = 4 * 1024 * 1024  # tEXt 在 IDAT 之前，读头部即可覆盖绝大多数图
 
 # 与前端 isNegativeText 相同的保守负面词表（命中≥2 判负，仅用于 hasPrompt 启发式）
@@ -409,18 +414,8 @@ def parse_comfy_summary(wf) -> dict:
     for key in ("seed", "steps", "cfg", "sampler", "scheduler"):
         val = fields.get(key)
         out[key] = "" if val is None else str(val)
-    texts = [t for t in _extract_text_nodes(wf) if not _looks_negative(t)]
-    # ⚠️ 这里**不再对拼接结果做判负**（2026-09-17）：拼接体比任何单段都长，
-    #    用"命中≥2 个负面词"去判整条，会把只是偶发含 1~2 个负面词的**正向**提示词整条丢掉。
-    #    负面链的段已经在 _join_positive_texts 内部按更严的阈值（≥3）逐段挡掉了；
-    #    若所有候选段都被挡掉，拼接结果本就是空串，自然落到下面的兜底分支。
-    traced = _collect_positive_candidates(wf)
-    if traced:
-        out["prompt"] = traced
-        out["hasPrompt"] = True
-    elif texts:
-        out["prompt"] = texts[0]
-        out["hasPrompt"] = True
+    out.update(parse_output_metadata(wf))
+    out["hasPrompt"] = bool(out["prompt"])
     return out
 
 
@@ -462,13 +457,15 @@ def parse_a1111_summary(parameters: str) -> dict:
         elif key == "model":
             out["model"] = val
     out["loras"] = [m.group(1) for m in _LORA_TAG_RE.finditer(prompt_part)]
+    out.update(negativePrompt=negative_part, promptStages=[],
+               promptStatus="complete" if out["prompt"] else "missing", promptWarnings=[])
     return out
 
 
-def build_entry(abs_path: str, rel_path: str) -> dict:
+def build_entry(abs_path: str, rel_path: str, *, raw=None, stat=None) -> dict:
     """单张图的摘要条目（按钮/卡片/筛选所需 + 布局宽高）。"""
-    stat = os.stat(abs_path)
-    raw = read_text_chunks(abs_path)
+    stat = stat if stat is not None else os.stat(abs_path)
+    raw = raw if raw is not None else read_text_chunks(abs_path)
     prompt_data = raw.get("prompt", "")
     workflow_data = raw.get("workflow", "")
     parameters = raw.get("parameters", "")
@@ -480,7 +477,8 @@ def build_entry(abs_path: str, rel_path: str) -> dict:
         "width": 0,
         "height": 0,
         "model": "", "seed": "", "steps": "", "cfg": "", "sampler": "", "scheduler": "",
-        "prompt": "", "hasPrompt": False,
+        "prompt": "", "hasPrompt": False, "negativePrompt": "",
+        "promptStages": [], "promptStatus": "missing", "promptWarnings": [],
         "loras": [], "hasWorkflow": False,
     }
 
@@ -499,13 +497,15 @@ def build_entry(abs_path: str, rel_path: str) -> dict:
     if src is not None:
         summary = parse_comfy_summary(src)
         entry["hasWorkflow"] = bool(workflow_data or prompt_data)
-        entry.update({k: summary[k] for k in ("model", "seed", "steps", "cfg", "sampler", "scheduler", "prompt", "loras")})
+        entry.update({k: summary[k] for k in ("model", "seed", "steps", "cfg", "sampler", "scheduler", "prompt", "loras",
+                                                        "negativePrompt", "promptStages", "promptStatus", "promptWarnings")})
         entry["hasPrompt"] = bool(entry["prompt"])
         if not summary["hasWorkflow"] and not workflow_data and prompt_data:
             entry["hasWorkflow"] = True
     elif parameters:
         summary = parse_a1111_summary(parameters)
-        entry.update({k: summary[k] for k in ("model", "seed", "steps", "cfg", "sampler", "scheduler", "prompt", "loras", "hasWorkflow")})
+        entry.update({k: summary[k] for k in ("model", "seed", "steps", "cfg", "sampler", "scheduler", "prompt", "loras", "hasWorkflow",
+                                                        "negativePrompt", "promptStages", "promptStatus", "promptWarnings")})
     else:
         entry["hasWorkflow"] = bool(workflow_data or prompt_data)
         entry["loras"] = _extract_loras({}) or []
@@ -523,21 +523,33 @@ def build_entry(abs_path: str, rel_path: str) -> dict:
 # ── 增量索引构建 ──
 
 def scan_output_files(output_root: str) -> list:
-    """遍历 output 目录（跳过隐藏文件/目录），返回 (rel, abs, mtime, size) 列表。"""
+    """Enumerate images with cached DirEntry stat data; preserve walk order/ties."""
     out = []
-    for dirpath, dirnames, filenames in os.walk(output_root):
-        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-        for name in filenames:
-            if name.startswith(".") or not name.lower().endswith((".png", ".webp", ".jpg", ".jpeg")):
-                continue
-            full = os.path.join(dirpath, name)
-            try:
-                st = os.stat(full)
-            except OSError:
-                continue
-            rel = os.path.relpath(full, output_root).replace("\\", "/")
-            out.append((rel, full, st.st_mtime, st.st_size))
-    out.sort(key=lambda x: x[2], reverse=True)  # 新图在前，建库先处理它们
+    stack = [(output_root, "")]
+    while stack:
+        directory, prefix = stack.pop()
+        subdirs = []
+        try:
+            with os.scandir(directory) as iterator:
+                for entry in iterator:
+                    name = entry.name
+                    if name.startswith("."):
+                        continue
+                    try:
+                        if entry.is_dir():
+                            if not entry.is_symlink():
+                                subdirs.append((entry.path, prefix + name + "/"))
+                            continue
+                        if not name.lower().endswith((".png", ".webp", ".jpg", ".jpeg")):
+                            continue
+                        stat = entry.stat()
+                    except OSError:
+                        continue
+                    out.append((prefix + name, entry.path, stat.st_mtime, stat.st_size))
+        except OSError:
+            continue
+        stack.extend(reversed(subdirs))
+    out.sort(key=lambda item: item[2], reverse=True)
     return out
 
 
@@ -546,10 +558,11 @@ def build_index(output_root: str, index_path: str, progress_cb=None) -> dict:
     index = load_index(index_path)
     old_entries = index.get("entries", {}) if isinstance(index.get("entries"), dict) else {}
     files = scan_output_files(output_root)
+    parser_stale = index.get("parserVersion") != PARSER_VERSION
     entries: dict = {}
     for i, (rel, full, mtime, size) in enumerate(files):
         old = old_entries.get(rel)
-        if old and abs(old.get("mtime", -1) - mtime) < 0.001 and old.get("size") == size:
+        if not parser_stale and old and abs(old.get("mtime", -1) - mtime) < 0.001 and old.get("size") == size:
             entries[rel] = old
         else:
             try:
@@ -772,13 +785,17 @@ def parse_full(abs_path: str, rel_path: str) -> dict:
     prompt_data = raw.get("prompt", "")
     workflow_data = raw.get("workflow", "")
     parameters = raw.get("parameters", "")
-    entry = build_entry(abs_path, rel_path)
+    stat = os.stat(abs_path)
+    entry = build_entry(abs_path, rel_path, raw=raw, stat=stat)
     return {
         "imageId": rel_path.replace("\\", "/"),
         "model": entry["model"], "seed": entry["seed"], "steps": entry["steps"],
         "cfg": entry["cfg"], "sampler": entry["sampler"], "scheduler": entry.get("scheduler", ""),
         "vae": "", "clipSkip": 0,
-        "prompt": entry["prompt"], "negativePrompt": "",
+        "prompt": entry["prompt"], "negativePrompt": entry.get("negativePrompt", ""),
+        "promptStages": entry.get("promptStages", []), "promptStatus": entry.get("promptStatus", "missing"),
+        "promptWarnings": entry.get("promptWarnings", []), "parserVersion": PARSER_VERSION,
+        "mtime": entry["mtime"], "size": entry["size"],
         "workflowJson": workflow_data or prompt_data or "",
         "rawMetadata": raw,
         "loras": entry["loras"], "hasWorkflow": entry["hasWorkflow"], "lorasExtracted": True,

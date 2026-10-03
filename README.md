@@ -8,7 +8,7 @@
 
 <p align="center"><img src="screenshots/icon.png" width="140" alt="TK Toolkit"></p>
 
-当前发布版本: **2.28.1**。
+当前发布版本: **2.28.2**。
 
 ## 安装
 

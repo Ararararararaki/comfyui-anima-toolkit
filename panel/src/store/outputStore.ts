@@ -1,8 +1,9 @@
 import { create } from 'zustand'
 import type { OutputFile, OutputMetadata, OutputViewMode, OutputSortKey, OutputFilterKey, OutputScanStatus } from '../types/outputs'
 import { outputsDb } from '../db/outputsDb'
-import { extractLorasFromWorkflow } from '../services/outputMetadata'
+import { extractLorasFromWorkflow, PARSER_VERSION } from '../services/outputMetadata'
 import { nativeStorageEnabled, nativeUpdateOutput } from '../services/nativeStorage'
+import { metadataForFile, metadataPathKey, metadataMatches, outputRootIdentity, type ImageSnapshot } from '../services/outputIdentity'
 
 const PAGE_SIZE = 50
 
@@ -46,6 +47,7 @@ interface OutputState {
    * 用版本号代替 size，内容一变就必然重建（图片节点有 capture/restore，不会重新请求）。
    */
   metadataVersion: number
+  metadataParserVersion: number
 
   // 视图
   viewMode: OutputViewMode
@@ -114,7 +116,7 @@ interface OutputState {
    * 按需读取**单张**图片的元数据（2026-09-10：不再有全库预载）。
    * opts.loras = true 时从同一条 DB 记录里顺带提取 LoRA（一次读盘覆盖卡片所有信息）。
    */
-  loadMetadata: (id: string, opts?: { loras?: boolean }) => Promise<OutputMetadata | null>
+  loadMetadata: (id: string, opts?: { loras?: boolean; snapshot?: ImageSnapshot }) => Promise<OutputMetadata | null>
   putMetadata: (meta: OutputMetadata) => void
   putMetadataBatch: (metas: OutputMetadata[]) => void
   removeMetadata: (ids: string[]) => void
@@ -190,7 +192,7 @@ export class MetadataReadTimeoutError extends Error {
  * 条件：先前确实提取过 + 两次都带工作流 + 工作流指纹一致（说明内容没变）。
  */
 function canReuseLoras(prev: OutputMetadata | undefined, next: OutputMetadata): boolean {
-  return !!prev?.lorasExtracted && !!prev.workflowFingerprint && prev.workflowFingerprint === next.workflowFingerprint
+  return !!prev?.lorasExtracted && prev.metadataIdentity === next.metadataIdentity && !!prev.workflowFingerprint && prev.workflowFingerprint === next.workflowFingerprint
 }
 
 /**
@@ -225,6 +227,7 @@ const _metaInflight = new Map<string, Promise<OutputMetadata | null>>()
 export const useOutputStore = create<OutputState>((set, get) => ({
   dirHandle: null,
   rootPath: '',
+  metadataParserVersion: PARSER_VERSION,
   currentPath: '',
 
   files: [],
@@ -256,7 +259,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   scanStatus: 'idle',
   scanProgress: { done: 0, total: 0 },
 
-  setDirHandle: (dirHandle) => set({ dirHandle }),
+  setDirHandle: (dirHandle) => set({ dirHandle, metadataParserVersion: PARSER_VERSION }),
   setFiles: (files) => {
     set({ files })
     get().applyFilters()
@@ -445,13 +448,18 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   },
 
   loadMetadata: async (id, opts) => {
-    const cached = get().metadataCache.get(id)
+    const snapshot = opts?.snapshot
+    const matches = get().files.filter(f => f.id === id)
+    const file = snapshot?.file ?? (matches.length === 1 ? matches[0] : undefined)
+    if (!file) return null
+    const cached = metadataForFile(get().metadataCache, file, snapshot?.root ?? outputRootIdentity(get().rootPath, get().dirHandle), snapshot?.parserVersion ?? get().metadataParserVersion)
+    const key = snapshot?.key ?? id
     // 内存命中且不追加 LoRA 需求（或该条已提取过）→ 直接返回，绝不回 DB
     const wantLoras = !!opts?.loras && !!cached?.hasWorkflow && !cached.lorasExtracted
     if (META_DBG) console.log('[meta-dbg] loadMetadata', id, { wantLorasOpt: !!opts?.loras, cached: !!cached, hasWf: cached?.hasWorkflow, extracted: cached?.lorasExtracted, wantLoras, earlyReturn: !!(cached && !wantLoras) })
     if (cached && !wantLoras) return cached
     // 并发去重：同一 id 的多个请求（连点、可见区批量加载）共享同一个 Promise
-    const inflight = _metaInflight.get(id)
+    const inflight = _metaInflight.get(key)
     if (inflight) {
       if (META_DBG) console.log('[meta-dbg] reuse inflight', id)
       return inflight
@@ -467,7 +475,8 @@ export const useOutputStore = create<OutputState>((set, get) => ({
           }),
         ])
         if (META_DBG) console.log('[meta-dbg] db read done', id, { found: !!meta, wfLen: meta ? String(meta.workflowJson || '').length : -1 })
-        if (!meta) return null
+        if (!meta || (snapshot ? !metadataMatches(meta, snapshot) : !metadataForFile(new Map([[id, meta]]), file, outputRootIdentity(get().rootPath, get().dirHandle), get().metadataParserVersion))) return null
+        if (snapshot && (!get().files.some(f => f.path === snapshot.path && f.mtime === snapshot.mtime && f.size === snapshot.size) || outputRootIdentity(get().rootPath, get().dirHandle) !== snapshot.root)) return null
         const slim = slimMeta(meta)
         if (opts?.loras) {
           // ⚠️ 只对这一张卡的工作流做 JSON.parse（历史上的做法是全库遍历解析，秒级到分钟级）
@@ -482,14 +491,15 @@ export const useOutputStore = create<OutputState>((set, get) => ({
         set(s => {
           const next = new Map(s.metadataCache)
           next.set(id, slim)
+          if (slim.sourceIdentity) next.set(metadataPathKey(slim.sourceIdentity.root, slim.sourceIdentity.path), slim)
           return { metadataCache: next, metadataVersion: s.metadataVersion + 1 }
         })
         return meta
       } finally {
-        _metaInflight.delete(id)
+        _metaInflight.delete(key)
       }
     })()
-    _metaInflight.set(id, task)
+    _metaInflight.set(key, task)
     return task
   },
 
@@ -508,6 +518,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     if (META_DBG) console.log('[meta-dbg] putMetadata', meta.imageId, { reuse: canReuseLoras(prev, slim), prevExtracted: prev?.lorasExtracted, incomingExtracted: meta.lorasExtracted, fpSame: !!prev && prev.workflowFingerprint === slim.workflowFingerprint })
     const next = new Map(s.metadataCache)
     next.set(meta.imageId, slim)
+    if (slim.sourceIdentity) next.set(metadataPathKey(slim.sourceIdentity.root, slim.sourceIdentity.path), slim)
     return { metadataCache: next, metadataVersion: s.metadataVersion + 1 }
   }),
   putMetadataBatch: (metas) => set(s => {
@@ -530,6 +541,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
         slim.lorasExtracted = resolvedLorasExtracted(prev, slim, m)
       }
       next.set(m.imageId, slim)
+      if (slim.sourceIdentity) next.set(metadataPathKey(slim.sourceIdentity.root, slim.sourceIdentity.path), slim)
     }
     if (META_DBG) console.log('[meta-dbg] batch', { total: metas.length, reuse: dbgReuse })
     return { metadataCache: next, metadataVersion: s.metadataVersion + 1 }
@@ -538,8 +550,9 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     if (ids.length === 0) return {}
     const next = new Map(s.metadataCache)
     let changed = false
-    for (const id of ids) {
-      if (next.delete(id)) changed = true
+    const removedIds = new Set(ids)
+    for (const [key, meta] of next) {
+      if (removedIds.has(meta.imageId) && next.delete(key)) changed = true
     }
     return changed ? { metadataCache: next, metadataVersion: s.metadataVersion + 1 } : {}
   }),
@@ -591,7 +604,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
 
     // 搜索
     if (searchQuery) {
-      filtered = filtered.filter(f => matchSearch(f, searchQuery, metadataCache.get(f.id) || null))
+      filtered = filtered.filter(f => matchSearch(f, searchQuery, metadataForFile(metadataCache, f, outputRootIdentity(get().rootPath, get().dirHandle), get().metadataParserVersion)))
     }
 
     // 高级筛选
@@ -599,7 +612,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     if (hasAdvanced) {
       const periodStart = filterQuickPeriod ? getPeriodStart(filterQuickPeriod) : 0
       filtered = filtered.filter(f => {
-        const meta = metadataCache.get(f.id)
+        const meta = metadataForFile(metadataCache, f, outputRootIdentity(get().rootPath, get().dirHandle), get().metadataParserVersion)
 
         // 快捷时间段
         if (filterQuickPeriod && f.mtime < periodStart) return false

@@ -40,6 +40,7 @@ import copy
 import functools
 import importlib
 import os
+import re
 import threading
 import time
 
@@ -85,6 +86,7 @@ _STOP = threading.Event()   # 仅供测试/卸载时优雅停线程
 
 _LAST_RELS: set = set()            # 上一轮探测到的图片相对路径集合（变化判据 + 推导新增）
 _LAST_ROOT_MTIME_NS = 0            # 输出目录自身的 mtime（扁平结构下新增文件会改它）
+_PARSER_SIGNATURE_CACHE = {"sig": None, "stale": False}
 _RUNTIME = {"idlePolls": 0, "intervalSec": 0.0}
 _LAST_ACCEPT_AT = 0.0
 _REQ_STATS = {"accepted": 0, "rejected": 0, "lastReason": "", "lastAt": 0.0}
@@ -215,6 +217,33 @@ def _probe(root: str):
     except OSError:
         root_mtime_ns = 0
     return rels, root_mtime_ns
+
+
+def _index_parser_is_stale(index_path: str, gallery) -> bool:
+    """Check the small index header once per file/version signature.
+
+    Parser updates must run even when no image was added. Reading only the
+    header avoids reparsing a multi-megabyte index on every idle heartbeat.
+    """
+    expected = getattr(gallery, "PARSER_VERSION", None)
+    if expected is None or not index_path:
+        return False
+    try:
+        stat = os.stat(index_path)
+        signature = (index_path, stat.st_mtime_ns, stat.st_size, expected)
+    except OSError:
+        return True
+    if signature == _PARSER_SIGNATURE_CACHE["sig"]:
+        return bool(_PARSER_SIGNATURE_CACHE["stale"])
+    try:
+        with open(index_path, "rb") as handle:
+            head = handle.read(4096).decode("utf-8", "replace")
+        match = re.search(r'"parserVersion"\s*:\s*(\d+)', head)
+        stale = not match or int(match.group(1)) != expected
+    except (OSError, ValueError):
+        stale = True
+    _PARSER_SIGNATURE_CACHE.update(sig=signature, stale=stale)
+    return stale
 
 
 def _should_run(reason: str, rels: set, root_mtime_ns: int) -> bool:
@@ -382,11 +411,12 @@ def _run_once_inner(reason: str):
         return ({"skipped": True, "mode": "idle", "reason": "empty-output",
                  "scanned": 0, "signature": [0, root_mtime_ns]}, None)
 
-    if not _should_run(reason, rels, root_mtime_ns):
+    gallery = _plugin_module("anima_gallery")
+    parser_stale = gallery is not None and _index_parser_is_stale(index_path, gallery)
+    if not _should_run(reason, rels, root_mtime_ns) and not parser_stale:
         return ({"skipped": True, "mode": "idle", "reason": "unchanged",
                  "scanned": len(rels), "signature": [len(rels), root_mtime_ns]}, None)
 
-    gallery = _plugin_module("anima_gallery")
     if gallery is None or not hasattr(gallery, "scan_output_files"):
         # 探测不依赖 anima_gallery（自己枚举目录），这里只是"这个模块是不是我们要的那个"的体检
         return ({"skipped": True, "mode": "degraded", "reason": "gallery-module-missing",
@@ -417,7 +447,7 @@ def _run_once_inner(reason: str):
     with _STATUS_LOCK:
         _LAST_RELS = rels
         _LAST_ROOT_MTIME_NS = root_mtime_ns
-    payload = {"mode": "incremental", "reason": reason or "poll",
+    payload = {"mode": "incremental", "reason": reason or "poll", "parserChanged": parser_stale,
                "scanned": len(rels), "signature": [len(rels), root_mtime_ns],
                "indexPath": index_path}
     if isinstance(updated, dict):

@@ -2,9 +2,9 @@
 
 import { useOutputStore } from '../store/outputStore'
 import { deleteFiles, renameFile, batchFavorite, batchRate } from '../services/outputService'
-import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, buildDirTreeFromPaths, reparseAllMetadata, ensureMetadataFresh } from '../services/outputScanner'
+import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, buildDirTreeFromPaths, reparseAllMetadata, ensureMetadataFresh, readImageMetadata } from '../services/outputScanner'
 import { restoreAllFromDb } from '../services/outputManifest'
-import { preloadThumbnailsFromDb, probeBackendThumbs, backendThumbsEnabled, animaThumbUrl, probeGalleryIndex, galleryIndexEnabled, galleryEntries, galleryIndexBuiltAt, galleryParserVersion, fetchGalleryMeta } from '../services/outputThumbnail'
+import { preloadThumbnailsFromDb, probeBackendThumbs, backendThumbsEnabled, animaThumbUrl, probeGalleryIndex, galleryIndexEnabled, galleryEntries, galleryIndexBuiltAt, galleryParserVersion, galleryIndexParserVersion, galleryOutputRoot, fetchGalleryMeta } from '../services/outputThumbnail'
 import { probeGalleryStatus, galleryStatusAvailable, galleryStatusBusy } from '../services/galleryStatus'
 import { hashPath } from '../services/outputManifest'
 import { outputsDb } from '../db/outputsDb'
@@ -13,13 +13,13 @@ import { esc, escAttr, showToast, copyText, icon, attachSearchClear, debounce } 
 import { confirmModal, promptModal } from '../components/Modal'
 import type { OutputFile, OutputMetadata, OutputDir, OutputScanStatus } from '../types/outputs'
 import type { PromptEntry } from '../types'
-import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow } from '../services/outputMetadata'
+import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow, parseOutputMetadata, PARSER_VERSION } from '../services/outputMetadata'
+import { createImageSnapshot, bindMetadata, backendMetadataMatches, metadataForFile, metadataMatches, outputRootIdentity, promptBody, imageRevision, createMetadataLoader, type ImageSnapshot } from '../services/outputIdentity'
 import { extractPngTextChunks, injectPngTextChunks } from '../services/pngChunks'
 import { applyExportMetadata, isExportMetadataNoop } from '../utils/imageMetadata'
 import { useExportMetadataStore, exportMetadataOptions } from '../store/exportMetadata'
 import { VirtualScroll, type VirtualScrollItemStyle } from '../components/VirtualScroll'
 import { MasonryVirtualScroll } from '../components/MasonryVirtualScroll'
-import { ensureAllMetadata, countMetadataMissing } from '../services/outputMetadataIndex'
 import { ImageNodeCache } from '../components/ImageNodeCache'
 import { computeMasonryLayout } from '../components/masonry'
 import { initOutputDragSelection, type OutputGridGeometry } from './outputDragSelection'
@@ -47,6 +47,63 @@ let _focusMode = false
 // 当前预览的原图 Blob URL（切换/关闭时 revoke，避免反复预览累积大图内存）
 let _previewBlobUrl = ''
 let _nativeOutputs = false
+let _sourceKey = ''
+let _sourceEpoch = 0
+let _previewToken = 0
+let _detailToken = 0
+let _copyToken = 0
+let _currentPreviewSnapshot: ImageSnapshot | null = null
+const _thumbnailRevisions = new Map<string, string>()
+
+function currentImageSource() {
+  const state = useOutputStore.getState()
+  const source = galleryIndexEnabled() ? 'gallery' : _nativeOutputs ? 'native' : 'directory'
+  const root = source === 'gallery' ? galleryOutputRoot() : outputRootIdentity(state.rootPath, state.dirHandle)
+  const key = JSON.stringify([source, root])
+  if (key !== _sourceKey) {
+    _sourceKey = key
+    _sourceEpoch++
+    _outputImageNodes.clear()
+    _thumbnailRevisions.clear()
+    useOutputStore.getState().invalidateThumbnails()
+  }
+  return { source, root, parserVersion: source === 'gallery' ? galleryParserVersion() : PARSER_VERSION, epoch: _sourceEpoch }
+}
+
+function imageSnapshot(fileOrId: OutputFile | string, path?: string): ImageSnapshot | null {
+  const state = useOutputStore.getState()
+  const matches = typeof fileOrId === 'string' ? state.files.filter(f => f.id === fileOrId && (path == null || f.path === path)) : [fileOrId]
+  const file = matches.length === 1 ? matches[0] : undefined
+  if (!file) return null
+  const { source, root, parserVersion, epoch } = currentImageSource()
+  return createImageSnapshot(file, source, root, parserVersion, epoch)
+}
+
+function snapshotIsCurrent(snapshot: ImageSnapshot): boolean {
+  const current = currentImageSource()
+  return current.epoch === snapshot.epoch && current.source === snapshot.source && current.root === snapshot.root
+    && current.parserVersion === snapshot.parserVersion
+    && useOutputStore.getState().files.some(f => f.path === snapshot.path && f.mtime === snapshot.mtime && f.size === snapshot.size)
+}
+
+function snapshotFromElement(el: HTMLElement): ImageSnapshot | null {
+  const card = el.closest<HTMLElement>('.outputs-card, .outputs-list-card')
+  if (card?.dataset.path == null) return null
+  const snapshot = imageSnapshot(card.dataset.id || '', card.dataset.path)
+  if (!snapshot) return null
+  const version = card.querySelector<HTMLImageElement>('img[data-file-version]')?.dataset.fileVersion
+  const expected = card.classList.contains('outputs-list-card') ? JSON.stringify([snapshot.root, snapshot.path, snapshot.mtime, snapshot.size]) : imageRevision(snapshot)
+  return version === expected ? snapshot : null
+}
+
+function cachedImageMetadata(file: OutputFile): OutputMetadata | null {
+  const source = currentImageSource()
+  return metadataForFile(useOutputStore.getState().metadataCache, file, source.root, source.parserVersion)
+}
+function cachedImageThumbnail(file: OutputFile): string {
+  const snapshot = imageSnapshot(file)
+  return snapshot && _thumbnailRevisions.get(file.path) === imageRevision(snapshot) ? useOutputStore.getState().thumbMemory.get(file.path) || '' : ''
+}
 
 async function refreshNativeOutputs() {
   await nativeScanOutputs()
@@ -70,7 +127,7 @@ async function refreshNativeOutputs() {
       negativePrompt: meta.negativePrompt || '', workflowJson: meta.workflowJson || '', rawMetadata: meta.rawMetadata || {},
     } satisfies OutputMetadata]
   })
-  useOutputStore.setState({ dirHandle: null, rootPath: 'TK SQLite · ComfyUI/output', files, metadataCache: new Map() })
+  useOutputStore.setState({ dirHandle: null, rootPath: 'TK SQLite · ComfyUI/output', metadataParserVersion: PARSER_VERSION, files, metadataCache: new Map() })
   useOutputStore.getState().putMetadataBatch(metadata)
   useOutputStore.getState().applyFilters()
   renderNativeDirTree(page.total)
@@ -85,24 +142,7 @@ function renderNativeDirTree(total: number) {
  * 下载工作流 .json（ComfyUI 用 Load 或拖入画布导入最稳妥，替代复制——画布 Ctrl+V 易误导）
  */
 async function downloadOutputWorkflow(meta: OutputMetadata | undefined, baseName: string) {
-  let workflowJson = meta?.workflowJson || ''
-  // Gallery 索引模式：摘要条目不含 workflowJson，点击时向后端按需取完整元数据
-  if (!workflowJson && meta && galleryIndexEnabled()) {
-    const file = useOutputStore.getState().files.find(f => f.id === meta.imageId)
-    if (file) {
-      const full = await fetchGalleryMeta(file.path)
-      if (full && typeof full.workflowJson === 'string' && full.workflowJson) {
-        workflowJson = full.workflowJson
-        // 回写缓存（保留摘要指纹与已提取 LoRA，避免覆盖丢失）
-        useOutputStore.getState().putMetadata({
-          ...meta, ...(full as object), imageId: meta.imageId,
-          workflowJson: '', rawMetadata: (full.rawMetadata as Record<string, string>) || {},
-          workflowFingerprint: galleryFingerprint(file.mtime, file.size),
-          lorasExtracted: true,
-        } as OutputMetadata)
-      }
-    }
-  }
+  const workflowJson = meta?.workflowJson || ''
   if (!workflowJson) { showToast('该图片无工作流数据'); return }
   try {
     const safeName = (baseName || 'workflow').replace(/\.png$/i, '').replace(/[\\/:*?"<>|]/g, '_')
@@ -134,7 +174,27 @@ async function downloadOutputWorkflow(meta: OutputMetadata | undefined, baseName
  *      取到后**落 IDB + 回写内存**：同一张再取就是零请求
  *   ③ 都没有 → 调用方自行回落内存摘要（prompt/loras 至少有）
  */
-const _fullMetaInflight = new Map<string, Promise<OutputMetadata | null>>()
+const getImageMetadata = createMetadataLoader({
+  read: id => outputsDb.metadata.get(id),
+  write: meta => outputsDb.metadata.put(meta),
+  publish: meta => useOutputStore.getState().putMetadata(meta),
+  isCurrent: snapshotIsCurrent,
+  fetch: async snapshot => {
+    if (snapshot.source === 'gallery') {
+      const full = await fetchGalleryMeta(snapshot.path)
+      if (!full || !backendMetadataMatches(full, snapshot)) return null
+      return bindMetadata(normalizeGalleryMeta(full, snapshot.file, snapshot.file.id), snapshot)
+    }
+    if (snapshot.source === 'directory') {
+      const dh = useOutputStore.getState().dirHandle
+      return dh ? readImageMetadata(dh, snapshot) : null
+    }
+    const blob = await getFileBlob(snapshot.file.id, snapshot)
+    if (!blob || !snapshotIsCurrent(snapshot)) return null
+    const meta = await parseOutputMetadata(await blob.blob.arrayBuffer(), snapshot.file.extension)
+    return meta ? bindMetadata({ ...meta, imageId: snapshot.file.id, rawMetadata: meta.raw, loras: extractLorasFromWorkflow(meta.workflowJson, meta.raw), lorasExtracted: true }, snapshot) : null
+  },
+})
 
 /**
  * gallery 条目的内容指纹：**带后端解析器版本**。
@@ -163,49 +223,28 @@ function normalizeGalleryMeta(full: Record<string, unknown>, file: OutputFile, f
     loras: Array.isArray(full.loras) ? full.loras as string[] : [],
     hasWorkflow: !!full.hasWorkflow || !!text(full.workflowJson),
     lorasExtracted: true,
+    identity: full.identity as OutputMetadata['identity'],
+    parserVersion: Number(full.parserVersion) || 0,
+    promptStages: full.promptStages as OutputMetadata['promptStages'],
+    promptStatus: full.promptStatus as OutputMetadata['promptStatus'],
+    promptWarnings: Array.isArray(full.promptWarnings) ? full.promptWarnings.map(String) : [],
     // 与 gallery 摘要同款指纹：同一张图不会因"摘要 → 完整版"的写入把已提取结果判成变了
     workflowFingerprint: galleryFingerprint(file.mtime, file.size),
   }
 }
 
-async function loadFullOutputMeta(fileId: string): Promise<OutputMetadata | null> {
-  if (!fileId) return null
-  const state = useOutputStore.getState()
-  const file = state.files.find(f => f.id === fileId)
-  // ① IndexedDB：完整记录（有 workflowJson 才算完整，摘要版不会进 DB）
-  try {
-    const row = await outputsDb.metadata.get(fileId)
-    if (row?.workflowJson) {
-      // 新鲜度校验：gallery 回填的记录带 `g<parserVersion>:…` 指纹，指纹一致才算可用。
-      // 后端解析器换代时图没变、指纹变 → 视为过期，重新向后端取（否则一直拿旧语义的 prompt）。
-      const fresh = !galleryIndexEnabled() || !file
-        || row.workflowFingerprint === galleryFingerprint(file.mtime, file.size)
-      if (fresh) return row
-    } else if (row && !galleryIndexEnabled()) {
-      // 没有 workflow 也要留意：native/句柄模式下"无工作流"是合法结论，此时直接返回它
-      return row
-    }
-  } catch { /* DB 读失败：继续走 gallery 回退 */ }
-  // ② Gallery 后端按需补全（并发去重：连点/多入口同时取同一张只发一次请求）
-  if (!galleryIndexEnabled()) return state.metadataCache.get(fileId) ?? null
-  const inflight = _fullMetaInflight.get(fileId)
-  if (inflight) return inflight
-  const task = (async (): Promise<OutputMetadata | null> => {
-    // 用外层取到的 file（同一次调用内 store.files 不会变；重名遮蔽只会让人误读）
-    if (!file) return null
-    const full = await fetchGalleryMeta(file.path)
-    if (!full) return null
-    const record = normalizeGalleryMeta(full, file, fileId)
-    if (!record.workflowJson) return null
-    // 落 IDB：下次（含页面刷新后）零请求；失败不影响本次返回
-    void outputsDb.metadata.put(record).catch(() => { /* 存储失败：仅失去持久化 */ })
-    // 回写内存（走 store 的合并逻辑，保留摘要里已有的 loras 与已提取标记）
-    useOutputStore.getState().putMetadata(record)
-    return record
-  })()
-  _fullMetaInflight.set(fileId, task)
-  void task.then(() => { _fullMetaInflight.delete(fileId) }, () => { _fullMetaInflight.delete(fileId) })
-  return task
+async function loadFullOutputMeta(fileId: string, snapshot?: ImageSnapshot | null): Promise<OutputMetadata | null> {
+  return getImageMetadata(snapshot === undefined ? imageSnapshot(fileId) : snapshot)
+}
+
+async function copyOutputPrompt(snapshot: ImageSnapshot | null): Promise<void> {
+  const token = ++_copyToken
+  const meta = await getImageMetadata(snapshot)
+  if (token !== _copyToken || !snapshot || !snapshotIsCurrent(snapshot)) return
+  const text = promptBody(meta)
+  if (!text) { showToast(meta?.promptStatus === 'ambiguous' ? '无法确定本图对应的生成分支，暂不能可靠复制' : '未取得可靠 Prompt，请重试'); return }
+  const ok = await writeClipboard(text)
+  if (token === _copyToken) showToast(ok ? (meta?.promptStatus === 'partial' ? '已复制已解析的 Prompt；部分连接无法解析' : 'Prompt 已复制到剪贴板') : '复制失败：浏览器拒绝了剪贴板访问')
 }
 
 /**
@@ -746,17 +785,17 @@ function scheduleFullMetadataWarmup(): void {
   const token = ++_fullMetaWarmToken
   const run = () => {
     if (token !== _fullMetaWarmToken) return
-    let ids = Array.from(document.querySelectorAll<HTMLElement>('.outputs-card[data-id], .outputs-list-card[data-id]'))
-      .map(el => el.dataset.id || '')
-      .filter(Boolean)
+    let snapshots = Array.from(document.querySelectorAll<HTMLElement>('.outputs-card[data-id], .outputs-list-card[data-id]'))
+      .map(el => snapshotFromElement(el))
+      .filter((s): s is ImageSnapshot => !!s)
       .slice(0, FULL_META_WARM_MAX)
     // 还没有卡片 DOM（面板刚启动、用户尚未切到 Outputs）→ 用 store 里最新的这批：
     // 用户马上要看的多半就是刚生成的那几张，这样"点进来"时东西已经在手上（零等待）。
-    if (ids.length === 0) {
-      ids = useOutputStore.getState().filteredFiles.slice(0, FULL_META_WARM_MAX).map(f => f.id)
+    if (snapshots.length === 0) {
+      snapshots = useOutputStore.getState().filteredFiles.slice(0, FULL_META_WARM_MAX).map(f => imageSnapshot(f)).filter((s): s is ImageSnapshot => !!s)
     }
-    if (ids.length === 0) return
-    void runFullMetadataWarm(ids, token)
+    if (snapshots.length === 0) return
+    void runFullMetadataWarm(snapshots, token)
   }
   const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback
   if (typeof idle === 'function') idle(run, { timeout: 3000 })
@@ -764,13 +803,13 @@ function scheduleFullMetadataWarmup(): void {
 }
 
 /** 并发受控地把这一屏的完整元数据补齐（token 失效即停：用户已切走/又进了一次栏目）。 */
-async function runFullMetadataWarm(ids: string[], token: number): Promise<void> {
+async function runFullMetadataWarm(snapshots: ImageSnapshot[], token: number): Promise<void> {
   let cursor = 0
   const worker = async (): Promise<void> => {
     while (token === _fullMetaWarmToken) {
-      const id = ids[cursor++]
-      if (!id) return
-      try { await loadFullOutputMeta(id) } catch { /* 静默：单张失败不影响其余 */ }
+      const snapshot = snapshots[cursor++]
+      if (!snapshot) return
+      try { await getImageMetadata(snapshot) } catch { /* 静默：单张失败不影响其余 */ }
     }
   }
   await Promise.all(Array.from({ length: FULL_META_WARM_CONCURRENCY }, () => worker()))
@@ -1017,7 +1056,9 @@ function updateFilterPanel() {
       _filterOptModels.clear()
       _filterOptLoras.clear()
     }
+    const source = currentImageSource()
     for (const [id, meta] of s.metadataCache) {
+      if (!meta.sourceIdentity || meta.sourceIdentity.root !== source.root || meta.sourceIdentity.parserVersion !== source.parserVersion) continue
       if (_filterOptDoneIds.has(id)) continue
       _filterOptDoneIds.add(id)
       if (meta.model) _filterOptModels.add(meta.model)
@@ -1130,14 +1171,15 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
       const s = useOutputStore.getState()
       const f = files[index]
       if (!f) return ''
-      const meta = s.metadataCache.get(f.id)
+      const meta = cachedImageMetadata(f)
       // 传「布局实际使用的盒子比例」（极端比例已被上下限截断），而不是原图比例：
       // CSS 用 高度 = 宽度 ÷ 比例 反算高度，两者同源才能保证盒子高度与虚拟滚动
       // 的行几何严格一致（否则被截断的卡会比预算更高，压到下一行）。
       const boxAspect = layout.boxAspects[index]
       // thumbSrc 同步回填内存缩略图：虚拟滚动滚动时条目会被重建，
       // 若等 IntersectionObserver 异步回填会有几帧黑图闪烁
-      return renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined, undefined, backendThumbsEnabled() ? animaThumbUrl(f.path, 512) : (s.thumbMemory.get(f.path) || ''), boxAspect)
+      const snapshot = imageSnapshot(f)!
+      return renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined, imageRevision(snapshot), backendThumbsEnabled() ? animaThumbUrl(f.path, 512) + '&v=' + encodeURIComponent(imageRevision(snapshot)) : cachedImageThumbnail(f), boxAspect)
     }
 
     const getItemRect = (index: number) => ({
@@ -1155,7 +1197,7 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
     // 卡片 DOM 停在无「复制 LoRA 标签」按钮的旧 HTML 上（用户报的按钮消失/时有时无）。
     const vsSignature = [
       geom.cols, Math.round(geom.cardW), geom.gap,
-      files.length, files[0]?.id ?? '', files[files.length - 1]?.id ?? '',
+      files.length, currentImageSource().root, files.map(f => JSON.stringify([f.path, f.mtime, f.size])).join(','),
       state.selectedIds.size, state.metadataVersion ?? state.metadataCache.size, Math.round(layout.total),
     ].join('|')
 
@@ -1186,12 +1228,13 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
   } else {
     // ── 列表模式：保持原渲染（整表重建 + 加载更多），哨兵在滚动容器内驱动加载 ──
     destroyOutputsVS()
-    el.innerHTML = renderList(files, state.selectedIds, state.metadataCache)
+    el.innerHTML = renderList(files, state.selectedIds, state.metadataCache, currentImageSource().root, currentImageSource().parserVersion)
     // 同步回填已缓存的缩略图，避免重建 DOM 时图片从灰图重新闪烁
     for (const img of el.querySelectorAll('img[data-file-path]')) {
       const p = (img as HTMLImageElement).dataset.filePath
       if (p) {
-        const cached = state.thumbMemory.get(p)
+        const file = files.find(f => f.path === p)
+        const cached = file ? cachedImageThumbnail(file) : ''
         if (cached) (img as HTMLImageElement).src = cached
       }
     }
@@ -1220,7 +1263,7 @@ function syncCardMeta(card: HTMLElement, file: OutputFile, meta: OutputMetadata 
 
   const actionsEl = card.querySelector<HTMLElement>('.outputs-card-actions')
   if (!actionsEl) return
-  const hasPrompt = !!meta?.prompt
+  const hasPrompt = !!promptBody(meta)
   const hasLoras = !!meta?.loras?.length
   const hasWf = !!meta?.hasWorkflow
   const id = file.id
@@ -1401,31 +1444,20 @@ function bindOutputsEvents() {
     const copyBtn = target.closest('.outputs-copy-btn') as HTMLElement
     if (copyBtn) {
       const id = copyBtn.dataset.id
-      if (id) { copyImageToClipboard(id); return }
+      if (id) { copyImageToClipboard(id, snapshotFromElement(copyBtn)); return }
     }
 
     // 下载按钮
     const downloadBtn = target.closest('.outputs-download-btn') as HTMLElement
     if (downloadBtn) {
       const id = downloadBtn.dataset.id
-      if (id) { downloadImage(id); return }
+      if (id) { downloadImage(id, snapshotFromElement(downloadBtn)); return }
     }
 
     // 复制 Prompt 按钮
     const copyPromptBtn = target.closest('.outputs-copy-prompt-btn') as HTMLElement
     if (copyPromptBtn) {
-      const id = copyPromptBtn.dataset.id
-      if (id) {
-        // 按需读取**这一张**的元数据（内存 → 单条 DB 读），不再依赖「进页面时已全量预载」
-        const meta = await useOutputStore.getState().loadMetadata(id)
-        if (meta?.prompt) {
-          // 走带兜底的写入：剪贴板被拒/挂起时也要给用户一句话，而不是"点了没反应"
-          const ok = await writeClipboard(meta.prompt)
-          showToast(ok ? 'Prompt 已复制到剪贴板' : '⚠️ 复制失败：浏览器拒绝了剪贴板访问')
-        } else {
-          showToast('该图片无 Prompt')
-        }
-      }
+      await copyOutputPrompt(snapshotFromElement(copyPromptBtn))
       return
     }
 
@@ -1433,7 +1465,7 @@ function bindOutputsEvents() {
     const savePromptBtn = target.closest('.outputs-save-prompt-btn') as HTMLElement
     if (savePromptBtn) {
       const id = savePromptBtn.dataset.id
-      if (id) await saveOutputPromptToLibrary(id)
+      if (id) await saveOutputPromptToLibrary(id, snapshotFromElement(savePromptBtn))
       return
     }
 
@@ -1443,7 +1475,7 @@ function bindOutputsEvents() {
       const id = copyLoraBtn.dataset.id
       if (id) {
         // 完整 workflow（含权重）：IDB 优先，gallery 模式自动从后端按需补全（不再是"必须先点刷新"）
-        const full = await loadFullOutputMeta(id)
+        const full = await loadFullOutputMeta(id, snapshotFromElement(copyLoraBtn))
         if (full?.workflowJson) {
           const tags = extractLoraTagsFromWorkflow(full.workflowJson, full.rawMetadata)
           if (tags.length > 0) {
@@ -1465,8 +1497,9 @@ function bindOutputsEvents() {
       const id = dlWfBtn.dataset.id
       if (id) {
         // 完整 workflow：统一入口（IDB → gallery 后端按需）
-        const meta = await loadFullOutputMeta(id)
-        const file = useOutputStore.getState().files.find(f => f.id === id)
+        const snapshot = snapshotFromElement(dlWfBtn)
+        const meta = await loadFullOutputMeta(id, snapshot)
+        const file = snapshot?.file
         await downloadOutputWorkflow(meta ?? undefined, file?.filename || 'workflow')
       }
       return
@@ -1477,7 +1510,7 @@ function bindOutputsEvents() {
     if (metaBtn) {
       const id = metaBtn.dataset.id
       if (id) {
-        openMetaPanel(id)
+        openMetaPanel(id, snapshotFromElement(metaBtn))
       }
       return
     }
@@ -1487,7 +1520,7 @@ function bindOutputsEvents() {
     if (previewBtn) {
       const id = previewBtn.dataset.id
       if (id) {
-        openPreview(id)
+        openPreview(id, snapshotFromElement(previewBtn))
       }
       return
     }
@@ -1803,6 +1836,8 @@ function bindOutputsEvents() {
 
   // 关闭 lightbox 时释放最后一张预览的原图 Blob URL
   document.querySelector('.lightbox .close')?.addEventListener('click', () => {
+    ++_previewToken
+    _currentPreviewSnapshot = null
     if (_previewBlobUrl) {
       URL.revokeObjectURL(_previewBlobUrl)
       _previewBlobUrl = ''
@@ -1845,8 +1880,10 @@ function bindOutputsEvents() {
 
     e.preventDefault()
 
+    const contextSnapshot = el ? snapshotFromElement(el) : null
+    const contextTarget = (id: string) => contextSnapshot?.file.id === id ? contextSnapshot : imageSnapshot(id)
     const groups = createOutputContextMenu(fileIds, {
-      onPreview: (id) => openPreview(id),
+      onPreview: (id) => openPreview(id, contextTarget(id)),
       onFavorite: (id) => {
         useOutputStore.getState().toggleFavorite(id)
         updateFavoriteUI(id)
@@ -1869,18 +1906,14 @@ function bindOutputsEvents() {
       },
       onCopyMetadata: async (id) => {
         // 按需读取这一张（内存未命中就单条回 DB），不再依赖全库预载
-        const meta = await useOutputStore.getState().loadMetadata(id)
+        const meta = await getImageMetadata(contextTarget(id))
         if (meta) {
           copyText(JSON.stringify(meta, null, 2))
           showToast('元数据已复制')
         }
       },
       onCopyPrompt: async (id) => {
-        const meta = await useOutputStore.getState().loadMetadata(id)
-        if (meta?.prompt) {
-          copyText(meta.prompt)
-          showToast('Prompt 已复制')
-        }
+        await copyOutputPrompt(contextTarget(id))
       },
       onRate: (id) => {
         showStarPicker(id)
@@ -1907,8 +1940,8 @@ function bindOutputsEvents() {
         await useOutputStore.getState().batchPin(ids)
         renderOutputsView()
       },
-      onCopyImage: (id) => { copyImageToClipboard(id) },
-      onDownloadImage: (id) => { downloadImage(id) },
+      onCopyImage: (id) => { copyImageToClipboard(id, contextTarget(id)) },
+      onDownloadImage: (id) => { downloadImage(id, contextTarget(id)) },
       onBatchCopyImage: (ids) => { copyImagesToClipboard(ids) },
       onBatchDownloadImage: (ids) => { downloadImagesAsZip(ids) },
       onSetCategory: (ids) => { showCategoryPicker(ids) },
@@ -2078,6 +2111,7 @@ function bindOutputsEvents() {
       debounce = setTimeout(() => {
         useOutputStore.getState().setSearchQuery(searchInput.value)
         renderOutputsView()
+        if (searchInput.value.trim()) ensureMetadataForGlobalFilter()
       }, 300)
     })
     attachSearchClear(searchInput, () => {
@@ -2096,7 +2130,7 @@ function bindOutputsEvents() {
         const filePath = img.dataset.filePath
         if (fileId && filePath) {
           loadImageThumbnail(img, fileId, filePath)
-          requestVisibleMetadata(fileId)   // 元数据按需：只读这一张（含 LoRA 提取）
+          requestVisibleMetadata(fileId, img.dataset.filePath)   // 元数据按需：只读这一张（含 LoRA 提取）
         }
         observer.unobserve(img)
       }
@@ -2115,7 +2149,7 @@ function bindOutputsEvents() {
         // 否则这些卡片拿不到 meta.loras，「复制 LoRA 标签」按钮永不出现（2026-09-11 修）。
         // requestVisibleMetadata 内部有「已提取/无需提取」早退与排队去重，可安全重复调用。
         dbgDirect++
-        if (id) requestVisibleMetadata(id)
+        if (id) requestVisibleMetadata(id, img.dataset.filePath)
         return
       }
       dbgObserved++
@@ -2295,7 +2329,7 @@ function setupInfiniteScroll() {
 /** 可见卡片元数据的并发上限：一屏十几张卡同时进屏时不至于把 IndexedDB 读取扎堆 */
 const VISIBLE_META_CONCURRENCY = 6
 let _visibleMetaRunning = 0
-const _visibleMetaQueue: string[] = []
+const _visibleMetaQueue: ImageSnapshot[] = []
 /** 已入队/已处理，避免滚动中反复排队 */
 const _metaQueued = new Set<string>()
 /** DB 读超时后的重试次数：兜底 IndexedDB 偶发悬挂，保证按钮最终能出现 */
@@ -2318,7 +2352,7 @@ function scheduleMetaRefresh(): void {
   _metaRefreshTimer = setTimeout(() => {
     _metaRefreshTimer = null
     const cost = Math.round(performance.now() - _metaRefreshStartedAt)
-    const loaded = useOutputStore.getState().metadataCache.size
+    const loaded = new Set(useOutputStore.getState().metadataCache.values()).size
     console.log(`[outputs] 元数据按需加载：本屏 ${_metaRefreshCount} 条，${cost}ms（缓存中共 ${loaded} 条；无全库读取）`)
     _metaRefreshStartedAt = 0
     _metaRefreshCount = 0
@@ -2332,14 +2366,14 @@ function scheduleMetaRefresh(): void {
       renderOutputsView()   // 列表模式无逐卡同步支持，保持全量重建
       return
     }
-    const byId = new Map(state.filteredFiles.map(f => [f.id, f]))
+    const byPath = new Map(state.filteredFiles.map(f => [f.path, f]))
     let synced = 0
     document.querySelectorAll<HTMLElement>('.outputs-card[data-id]').forEach(card => {
       const id = card.dataset.id
       if (!id) return
-      const file = byId.get(id)
+      const file = byPath.get(card.dataset.path || '')
       if (!file) return
-      syncCardMeta(card, file, state.metadataCache.get(id) ?? null)
+      syncCardMeta(card, file, cachedImageMetadata(file))
       synced++
     })
     updateFilterPanel()
@@ -2352,41 +2386,39 @@ function scheduleMetaRefresh(): void {
  * 由下方 IntersectionObserver 在图片进屏时调用 —— 「滚到哪读到哪」，
  * 不再有进入页面时的全库遍历；读到的结果进内存缓存，回滚不再重复读盘。
  */
-function requestVisibleMetadata(fileId: string): void {
-  if (!fileId) return
-  const cached = useOutputStore.getState().metadataCache.get(fileId)
+function requestVisibleMetadata(fileId: string, path?: string): void {
+  const snapshot = imageSnapshot(fileId, path)
+  if (!snapshot) return
+  const cached = cachedImageMetadata(snapshot.file)
   // ⚠️ 早退判据不能只看「有没有缓存」（2026-09-11 修）：条目可能已被全库元数据补齐
   // （ensureAllMetadata → putMetadataBatch）写成了未提取 LoRA 的瘦身版（loras=[]）。
   // 只看 has() 会导致这些条目被判为"已加载" → 永不补提取 → 「复制 LoRA 标签」按钮消失后不恢复。
   // 正确判据：已加载 **且**（无工作流可提 或 LoRA 已提取）。
-  if (cached && (!cached.hasWorkflow || cached.lorasExtracted)) {
+  if (cached && metadataMatches(cached, snapshot) && (!cached.hasWorkflow || cached.lorasExtracted)) {
     if (META_DBG) console.log('[meta-dbg] requestVisible skip', fileId, { hasWf: cached.hasWorkflow, extracted: cached.lorasExtracted })
     return
   }
-  if (_metaQueued.has(fileId)) return
+  if (_metaQueued.has(snapshot.key)) return
   if (META_DBG) console.log('[meta-dbg] requestVisible enqueue', fileId, { cached: !!cached, hasWf: cached?.hasWorkflow, extracted: cached?.lorasExtracted })
-  _metaQueued.add(fileId)
-  _visibleMetaQueue.push(fileId)
+  _metaQueued.add(snapshot.key)
+  _visibleMetaQueue.push(snapshot)
   void pumpVisibleMetadata()
 }
 
 async function pumpVisibleMetadata(): Promise<void> {
   while (_visibleMetaRunning < VISIBLE_META_CONCURRENCY && _visibleMetaQueue.length > 0) {
-    const id = _visibleMetaQueue.shift()!
+    const snapshot = _visibleMetaQueue.shift()!
+    const id = snapshot.key
     _visibleMetaRunning++
-    void useOutputStore.getState().loadMetadata(id, { loras: true })
+    void getImageMetadata(snapshot)
       .then(async () => {
         _metaRetry.delete(id)
         // ── Gallery 模式兜底（2026-09-17）：内存与 IDB 都没有这一条（典型场景：刚重命名 →
         //    id 变了、或索引尚未收录）时向后端要一次；再拿不到就写一条「已确认无元数据」，
         //    否则早退判据永远不成立 → 每次进屏都重新入队 → 又变成刷日志的空转循环。
-        if (!useOutputStore.getState().metadataCache.has(id) && galleryIndexEnabled()) {
-          const full = await loadFullOutputMeta(id)
-          if (!full) markMetadataUnavailable(id)
-        }
-        const c = useOutputStore.getState().metadataCache.get(id)
+        const c = cachedImageMetadata(snapshot.file)
         if (META_DBG) console.log('[meta-dbg] pumped', id, { loras: c?.loras?.length, extracted: c?.lorasExtracted, hasWf: c?.hasWorkflow })
-        if (useOutputStore.getState().metadataCache.has(id)) scheduleMetaRefresh()
+        if (c && snapshotIsCurrent(snapshot)) scheduleMetaRefresh()
       })
       .catch((err) => {
         if (META_DBG) console.log('[meta-dbg] pump ERROR', id, String(err && (err.stack || err.message || err)).slice(0, 300))
@@ -2396,7 +2428,7 @@ async function pumpVisibleMetadata(): Promise<void> {
           const n = _metaRetry.get(id) || 0
           if (n < META_MAX_RETRY) {
             _metaRetry.set(id, n + 1)
-            setTimeout(() => requestVisibleMetadata(id), 800 * (n + 1))
+            setTimeout(() => requestVisibleMetadata(snapshot.file.id, snapshot.path), 800 * (n + 1))
           } else if (META_DBG) {
             console.log('[meta-dbg] pump give up', id, { retries: n })
           }
@@ -2417,17 +2449,25 @@ async function pumpVisibleMetadata(): Promise<void> {
  */
 let _filterMetaToastShown = false
 function ensureMetadataForGlobalFilter(): void {
-  const missing = countMetadataMissing()
-  if (missing === 0) return
-  if (!_filterMetaToastShown) {
-    _filterMetaToastShown = true
-    showToast(`正在后台读取全部元数据以支持全局筛选（还有 ${missing} 张，可继续浏览）…`)
+  if (_filterMetaToastShown) return
+  _filterMetaToastShown = true
+  const pending = useOutputStore.getState().files.map(f => imageSnapshot(f)).filter((s): s is ImageSnapshot => !!s)
+  let cursor = 0
+  const worker = async () => {
+    while (cursor < pending.length) {
+      const snapshot = pending[cursor++]
+      if (!snapshotIsCurrent(snapshot)) break
+      await getImageMetadata(snapshot)
+      if (cursor % 20 === 0) await new Promise(resolve => setTimeout(resolve, 0))
+    }
   }
-  void ensureAllMetadata().then(() => {
+  showToast('正在后台按图片身份补齐筛选元数据，可继续浏览')
+  void Promise.all(Array.from({ length: VISIBLE_META_CONCURRENCY }, worker)).then(() => {
     _filterMetaToastShown = false
+    useOutputStore.getState().applyFilters()
     updateFilterPanel()
     renderOutputsView()
-    showToast('✅ 全部元数据已就绪，筛选/关联结果已刷新')
+    showToast('筛选元数据已刷新')
   })
 }
 
@@ -2514,16 +2554,19 @@ async function restoreOutputsFromDb(): Promise<boolean> {
           favorite: false, rating: 0, notes: '', tags: [], category: '', status: '', pinned: false,
           createdAt: Math.round((e.mtime || 0) * 1000),
         })
-        metas.push({
+        const summary = bindMetadata({
           imageId: id, model: e.model || '', seed: e.seed || '', steps: e.steps || '', cfg: e.cfg || '',
           sampler: e.sampler || '', scheduler: e.scheduler || '', vae: '', clipSkip: 0,
           prompt: e.prompt || '', negativePrompt: '', workflowJson: '', rawMetadata: {},
           loras: e.loras || [], hasWorkflow: !!e.hasWorkflow, lorasExtracted: true,
           workflowFingerprint: galleryFingerprint((e.mtime || 0) * 1000, e.size || 0),
-        })
+        }, createImageSnapshot(files[files.length - 1], 'gallery', galleryOutputRoot(), Number(e.parserVersion ?? galleryIndexParserVersion())))
+        // A manifest is only a summary. Actions/visible cards refresh it through the full endpoint.
+        delete summary.metadataIdentity
+        metas.push(summary)
       }
       useOutputStore.setState({
-        files, metadataCache: new Map(), metadataVersion: useOutputStore.getState().metadataVersion + 1,
+        files, rootPath: galleryOutputRoot(), dirHandle: null, metadataParserVersion: galleryParserVersion(), metadataCache: new Map(), metadataVersion: useOutputStore.getState().metadataVersion + 1,
         thumbMemory: new Map(),
       })
       useOutputStore.getState().putMetadataBatch(metas)
@@ -2619,12 +2662,17 @@ function updateScanProgress(status: OutputScanStatus, progress: { done: number; 
 }
 
 async function loadImageThumbnail(img: HTMLImageElement, fileId: string, filePath: string) {
+  const snapshot = imageSnapshot(fileId, filePath)
+  if (!snapshot) return
+  const version = img.dataset.fileVersion
+  const bound = () => img.isConnected && img.dataset.filePath === snapshot.path && img.dataset.fileId === snapshot.file.id && img.dataset.fileVersion === version && snapshotIsCurrent(snapshot)
   // ── 后端直供（插件 ≥2.5.1）：浏览器只解码 512px 小图 ──
   // 注意：/anima/thumb 只认 ComfyUI output 目录内的文件；用户用目录授权扫过其它目录时
   // 该端点会 404 —— onerror 后把该路径记入黑名单并回退旧管线（浏览器生成），会话内不再重试 URL。
   if (backendThumbsEnabled() && !_thumbUrlBlocked.has(filePath)) {
-    const url = animaThumbUrl(filePath, 512)
+    const url = animaThumbUrl(filePath, 512) + '&v=' + encodeURIComponent(imageRevision(snapshot))
     img.onerror = () => {
+      if (!bound()) return
       img.onerror = null
       _thumbUrlBlocked.add(filePath)
       void legacyThumbLoad(img, fileId, filePath)
@@ -2638,6 +2686,18 @@ async function loadImageThumbnail(img: HTMLImageElement, fileId: string, filePat
 
 /** 旧管线：内存 → IndexedDB → 目录授权读原图生成（后端端点不可用/不覆盖该路径时兜底） */
 async function legacyThumbLoad(img: HTMLImageElement, fileId: string, filePath: string) {
+  const snapshot = imageSnapshot(fileId, filePath)
+  if (!snapshot) return
+  const revision = imageRevision(snapshot)
+  const version = img.dataset.fileVersion
+  const bound = () => img.isConnected && img.dataset.filePath === snapshot.path && img.dataset.fileId === snapshot.file.id && img.dataset.fileVersion === version && snapshotIsCurrent(snapshot)
+  const assign = (dataUrl: string) => {
+    if (!dataUrl || !bound()) return
+    _thumbnailRevisions.set(filePath, revision)
+    useOutputStore.getState().setThumbMemory(filePath, dataUrl)
+    if (img.getAttribute('src') !== dataUrl) img.src = dataUrl
+    _outputImageNodes.remember(img)
+  }
   const dh = useOutputStore.getState().dirHandle
   if (_nativeOutputs) {
     // TK 原生模式：服务端对 /api/tk/output-file 是整文件回传（平均数 MB），
@@ -2646,36 +2706,32 @@ async function legacyThumbLoad(img: HTMLImageElement, fileId: string, filePath: 
     // 现在复用与目录模式相同的缩略图管线：内存 → IndexedDB → 下载一次并缩到 200px
     // 后回写缓存（管线内部限流 4 并发），二次进入直接命中缓存。
     try {
-      const mem = useOutputStore.getState().thumbMemory.get(filePath)
+      const mem = cachedImageThumbnail(snapshot.file)
       if (mem) {
-        if (img.getAttribute('src') !== mem) img.src = mem
-        _outputImageNodes.remember(img)
+        assign(mem)
         return
       }
 
       const thumbMod = await import('../services/outputThumbnail')
-      const cached = await thumbMod.getCachedThumbnail(filePath)
+      const cached = await thumbMod.getCachedThumbnail(filePath, revision)
       if (cached) {
-        useOutputStore.getState().setThumbMemory(filePath, cached)
-        if (img.getAttribute('src') !== cached) img.src = cached
-        _outputImageNodes.remember(img)
+        assign(cached)
         return
       }
 
       const res = await fetch(nativeOutputUrl(filePath))
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const blob = await res.blob()
+      if (!bound()) return
       const thumb = await thumbMod.createThumbnailFromBlob(blob, 200)
       if (thumb?.dataUrl) {
-        useOutputStore.getState().setThumbMemory(filePath, thumb.dataUrl)
-        if (img.getAttribute('src') !== thumb.dataUrl) img.src = thumb.dataUrl
-        _outputImageNodes.remember(img)
+        assign(thumb.dataUrl)
         return
       }
     } catch { /* 服务异常/超大图：下面退回原图，不阻塞其它图片 */ }
     // 兜底：缩略图不可得时退回原图 URL，保证不空着
-    if (!img.getAttribute('src')) img.src = nativeOutputUrl(filePath)
-    _outputImageNodes.remember(img)
+    if (bound() && !img.getAttribute('src')) img.src = nativeOutputUrl(filePath)
+    if (bound()) _outputImageNodes.remember(img)
     return
   }
   // 未授权目录（无句柄）时不再直接放弃：内存与 IndexedDB 里已有缓存的缩略图仍可展示，
@@ -2683,17 +2739,14 @@ async function legacyThumbLoad(img: HTMLImageElement, fileId: string, filePath: 
   // ——其余缩略图滚动到就按需取，既不卡启动也不缺图。
   if (!dh) {
     try {
-      const mem = useOutputStore.getState().thumbMemory.get(filePath)
+      const mem = cachedImageThumbnail(snapshot.file)
       if (mem) {
-        if (img.getAttribute('src') !== mem) img.src = mem
-        _outputImageNodes.remember(img)
+        assign(mem)
         return
       }
-      const cached = await import('../services/outputThumbnail').then(m => m.getCachedThumbnail(filePath))
+      const cached = await import('../services/outputThumbnail').then(m => m.getCachedThumbnail(filePath, revision))
       if (cached) {
-        useOutputStore.getState().setThumbMemory(filePath, cached)
-        if (img.getAttribute('src') !== cached) img.src = cached
-        _outputImageNodes.remember(img)
+        assign(cached)
       }
     } catch { /* 缓存不可用：保持灰底，不抛错、不影响其它图片 */ }
     return
@@ -2701,19 +2754,16 @@ async function legacyThumbLoad(img: HTMLImageElement, fileId: string, filePath: 
 
   try {
     // 内存缓存（同步）
-    const mem = useOutputStore.getState().thumbMemory.get(filePath)
+    const mem = cachedImageThumbnail(snapshot.file)
     if (mem) {
-      if (img.getAttribute('src') !== mem) img.src = mem
-      _outputImageNodes.remember(img)
+      assign(mem)
       return
     }
 
     // 尝试从 IndexedDB 缓存加载
-    const cached = await import('../services/outputThumbnail').then(m => m.getCachedThumbnail(filePath))
+    const cached = await import('../services/outputThumbnail').then(m => m.getCachedThumbnail(filePath, revision))
     if (cached) {
-      useOutputStore.getState().setThumbMemory(filePath, cached)
-      if (img.getAttribute('src') !== cached) img.src = cached
-      _outputImageNodes.remember(img)
+      assign(cached)
       return
     }
 
@@ -2721,16 +2771,15 @@ async function legacyThumbLoad(img: HTMLImageElement, fileId: string, filePath: 
     const current = await resolveDirEntry(dh, filePath)
     const fileHandle = await current.getFileHandle(filePath.split('/').pop()!)
     const file = await fileHandle.getFile()
+    if (!bound() || file.lastModified !== snapshot.mtime || file.size !== snapshot.size) return
 
-    const thumbnail = await import('../services/outputThumbnail').then(m => m.getThumbnail(file, filePath))
+    const thumbnail = await import('../services/outputThumbnail').then(m => m.getThumbnail(file, filePath, revision))
     if (thumbnail) {
-      useOutputStore.getState().setThumbMemory(filePath, thumbnail)
-      if (img.getAttribute('src') !== thumbnail) img.src = thumbnail
-      _outputImageNodes.remember(img)
+      assign(thumbnail)
     }
   } catch {
     // 加载失败，显示占位符
-    img.style.display = 'none'
+    if (bound()) img.style.display = 'none'
   }
 }
 
@@ -2750,26 +2799,29 @@ function navigatePreview(direction: number) {
   const state = useOutputStore.getState()
   const files = state.filteredFiles
   if (!_currentPreviewFileId || files.length === 0) return
-  const currentIdx = files.findIndex(f => f.id === _currentPreviewFileId)
+  const currentIdx = files.findIndex(f => f.path === _currentPreviewSnapshot?.path)
   if (currentIdx === -1) return
   const nextIdx = (currentIdx + direction + files.length) % files.length
   const nextFile = files[nextIdx]
   if (nextFile) {
-    openPreview(nextFile.id)
+    openPreview(nextFile.id, imageSnapshot(nextFile))
   }
 }
 
 // ── 图片复制与下载 ──
 
 /** 通过文件 ID 获取文件系统 File 对象 */
-async function getFileBlob(fileId: string): Promise<{ name: string; blob: Blob } | null> {
+async function getFileBlob(fileId: string, snapshot?: ImageSnapshot | null): Promise<{ name: string; blob: Blob } | null> {
   const dh = useOutputStore.getState().dirHandle
-  const file = useOutputStore.getState().files.find(f => f.id === fileId)
-  if (_nativeOutputs && file) {
+  const target = snapshot === undefined ? imageSnapshot(fileId) : snapshot
+  const file = target?.file
+  if (!target || !snapshotIsCurrent(target)) return null
+  if ((_nativeOutputs || galleryIndexEnabled()) && file) {
     try {
       const response = await fetch(nativeOutputUrl(file.path))
       if (!response.ok) return null
-      return { name: file.filename, blob: await response.blob() }
+      const blob = await response.blob()
+      return snapshotIsCurrent(target) ? { name: file.filename, blob } : null
     } catch { return null }
   }
   if (!dh || !file) return null
@@ -2777,7 +2829,7 @@ async function getFileBlob(fileId: string): Promise<{ name: string; blob: Blob }
     const current = await resolveDirEntry(dh, file.path)
     const handle = await current.getFileHandle(file.filename)
     const blob = await handle.getFile()
-    return { name: file.filename, blob }
+    return snapshotIsCurrent(target) && blob.lastModified === target.mtime && blob.size === target.size ? { name: file.filename, blob } : null
   } catch {
     return null
   }
@@ -2790,8 +2842,8 @@ async function getFileBlob(fileId: string): Promise<{ name: string; blob: Blob }
  *   · saveEditedImage 里读原图元数据以注入副本 —— 一旦被 strip 就静默破坏「副本保留工作流」
  *   · copyImagesToClipboard 的降级分支 —— 只取文件名，不碰字节
  */
-async function getExportBlob(fileId: string): Promise<{ name: string; blob: Blob } | null> {
-  const r = await getFileBlob(fileId)
+async function getExportBlob(fileId: string, snapshot?: ImageSnapshot | null): Promise<{ name: string; blob: Blob } | null> {
+  const r = await getFileBlob(fileId, snapshot)
   if (!r) return null
   return { name: r.name, blob: await applyExportMetadata(r.blob, exportMetadataOptions()) }
 }
@@ -2942,16 +2994,16 @@ async function compressImage(blob: Blob, maxDimension = 1920): Promise<Blob> {
 }
 
 /** 将 Outputs 图片的 Prompt 与压缩图片副本保存到 Prompt 库，脱离原文件后仍可查看。 */
-async function saveOutputPromptToLibrary(fileId: string): Promise<void> {
-  const state = useOutputStore.getState()
-  const file = state.files.find(f => f.id === fileId)
-  const meta = (await loadFullOutputMeta(fileId)) ?? state.metadataCache.get(fileId)
-  if (!file || !meta?.prompt.trim()) {
+async function saveOutputPromptToLibrary(fileId: string, snapshot?: ImageSnapshot | null): Promise<void> {
+  const target = snapshot === undefined ? imageSnapshot(fileId) : snapshot
+  const file = target?.file
+  const meta = await getImageMetadata(target)
+  if (!file || !promptBody(meta)) {
     showToast('该图片无 Prompt，无法保存')
     return
   }
 
-  const result = await getFileBlob(fileId)
+  const result = await getFileBlob(fileId, target)
   if (!result) {
     showToast('保存失败：找不到原图片')
     return
@@ -2959,6 +3011,7 @@ async function saveOutputPromptToLibrary(fileId: string): Promise<void> {
 
   try {
     const image = await blobToDataURL(await compressImage(result.blob))
+    if (!target || !snapshotIsCurrent(target) || !meta) return
     const loras = meta.workflowJson
       ? extractLoraTagsFromWorkflow(meta.workflowJson, meta.rawMetadata)
       : (meta.loras || [])
@@ -2996,8 +3049,8 @@ async function saveOutputPromptToLibrary(fileId: string): Promise<void> {
 }
 
 /** 复制单张图片到剪贴板 */
-async function copyImageToClipboard(fileId: string) {
-  const result = await getExportBlob(fileId)
+async function copyImageToClipboard(fileId: string, snapshot?: ImageSnapshot | null) {
+  const result = await getExportBlob(fileId, snapshot)
   if (!result) { showToast('复制失败：找不到文件'); return }
   try {
     const type = result.blob.type || 'image/png'
@@ -3098,8 +3151,8 @@ async function copyImagesToClipboard(ids: string[]) {
 }
 
 /** 下载单张图片 */
-async function downloadImage(fileId: string) {
-  const result = await getExportBlob(fileId)
+async function downloadImage(fileId: string, snapshot?: ImageSnapshot | null) {
+  const result = await getExportBlob(fileId, snapshot)
   if (!result) { showToast('下载失败：找不到文件'); return }
   const url = URL.createObjectURL(result.blob)
   const a = document.createElement('a')
@@ -3133,12 +3186,14 @@ async function downloadImagesAsZip(ids: string[]) {
 }
 
 /** 独立元数据弹窗（不放大图片，直接查看 prompt/参数/工作流） */
-async function openMetaPanel(fileId: string) {
-  const state = useOutputStore.getState()
-  const file = state.files.find(f => f.id === fileId)
+async function openMetaPanel(fileId: string, snapshot?: ImageSnapshot | null) {
+  const token = ++_detailToken
+  const target = snapshot === undefined ? imageSnapshot(fileId) : snapshot
+  const file = target?.file
   if (!file) return
   // 完整元数据（含 workflowJson）：统一入口 —— IDB 命中即用，gallery 模式自动从后端补全
-  const meta = (await loadFullOutputMeta(fileId)) ?? state.metadataCache.get(fileId) ?? null
+  const meta = await getImageMetadata(target)
+  if (token !== _detailToken || !target || !snapshotIsCurrent(target)) return
 
   const overlay = document.createElement('div')
   overlay.style.cssText = 'position:fixed;inset:0;background:radial-gradient(ellipse at top,rgba(10,10,15,0.85),rgba(2,2,3,0.95));z-index:99999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);'
@@ -3150,6 +3205,11 @@ async function openMetaPanel(fileId: string) {
 
   overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove() })
   panel.querySelector('#outputsMetaCloseBtn')?.addEventListener('click', () => overlay.remove())
+  panel.querySelector('#outputsMetaRetryBtn')?.addEventListener('click', async () => {
+    await getImageMetadata(target, true)
+    overlay.remove()
+    if (snapshotIsCurrent(target)) void openMetaPanel(fileId, target)
+  })
   panel.querySelector('#outputsMetaCopyWorkflowBtn')?.addEventListener('click', async () => {
     await downloadOutputWorkflow(meta ?? undefined, file?.filename || 'workflow')
   })
@@ -3173,6 +3233,7 @@ const EXT_MIME: Record<string, string> = {
 }
 
 let _editFileId = ''
+let _editSnapshot: ImageSnapshot | null = null
 let _editSrcImg: HTMLImageElement | null = null
 let _editBase: HTMLCanvasElement | null = null
 let _editCropping = false
@@ -3192,14 +3253,28 @@ async function resolveDirEntry(dirHandle: FileSystemDirectoryHandle, path: strin
 
 /** 懒加载原始图像，并初始化编辑基准画布（切图时重新加载并重置编辑状态） */
 async function ensureEditSrc(fileId: string): Promise<boolean> {
-  if (_editFileId === fileId && _editBase) return true
-  const blob = await getFileBlob(fileId)
-  if (!blob) return false
+  const target = _currentPreviewSnapshot?.file.id === fileId ? _currentPreviewSnapshot : imageSnapshot(fileId)
+  if (!target || !snapshotIsCurrent(target)) return false
+  if (_editSnapshot?.key === target.key && _editBase) return true
+  const blob = await getFileBlob(fileId, target)
+  if (!blob || !snapshotIsCurrent(target)) return false
   const url = URL.createObjectURL(blob.blob)
   const img = new Image()
-  await new Promise<void>((res, rej) => { img.onload = () => res(); img.onerror = () => rej(); img.src = url })
-  URL.revokeObjectURL(url)
+  let loaded = false
+  try {
+    loaded = await new Promise<boolean>(resolve => {
+      img.onload = () => resolve(true)
+      img.onerror = () => resolve(false)
+      img.src = url
+    })
+  } finally {
+    URL.revokeObjectURL(url)
+    img.onload = null
+    img.onerror = null
+  }
+  if (!loaded || !snapshotIsCurrent(target) || _currentPreviewSnapshot?.key !== target.key) return false
   _editFileId = fileId
+  _editSnapshot = target
   _editSrcImg = img
   _editBase = canvasFromImage(img)
   _editCropping = false
@@ -3323,6 +3398,7 @@ function confirmCrop() {
 function resetEdit() {
   _editSrcImg = null
   _editFileId = ''
+  _editSnapshot = null
   _editBase = null
   _editCropping = false
   const wrap = document.getElementById('lbEditWrap')
@@ -3336,9 +3412,10 @@ function resetEdit() {
 async function saveEditedImage() {
   if (!_editBase) { showToast('请先编辑再保存'); return }
   if (_saving) return
-  const file = useOutputStore.getState().files.find(f => f.id === _editFileId)
+  const target = _editSnapshot
+  const file = target?.file
   const dh = useOutputStore.getState().dirHandle
-  if (!file || !dh) { showToast('请先选择目录'); return }
+  if (!file || !dh || !target || !snapshotIsCurrent(target)) { showToast('图片来源已变化，请重新打开后保存'); return }
 
   // 仍处于裁剪模式且有选框时，先应用裁剪，确保保存结果与所见一致
   if (_editCropping) confirmCrop()
@@ -3359,7 +3436,7 @@ async function saveEditedImage() {
     if (ext !== 'png') {
       savedBlob = blob
     } else if (isExportMetadataNoop(exportMetadataOptions())) {
-      const original = await getFileBlob(_editFileId)
+      const original = await getFileBlob(target.file.id, target)
       const bytes = injectPngTextChunks(
         new Uint8Array(await blob.arrayBuffer()),
         original ? extractPngTextChunks(new Uint8Array(await original.blob.arrayBuffer())) : []
@@ -3371,6 +3448,7 @@ async function saveEditedImage() {
 
     const base = file.filename.replace(/\.[^.]+$/, '')
     const newName = `${base}_edited.${ext}`
+    if (!snapshotIsCurrent(target) || useOutputStore.getState().dirHandle !== dh) { showToast('图片来源已变化，副本尚未保存'); return }
     const dir = await resolveDirEntry(dh, file.path)
     const newHandle = await dir.getFileHandle(newName, { create: true })
     const writable = await newHandle.createWritable()
@@ -3382,20 +3460,22 @@ async function saveEditedImage() {
     const newPath = parts.length > 1 ? parts.slice(0, -1).concat(newName).join('/') : newName
     const newId = hashPath(newPath)
     // 按需取源文件元数据（内存未命中就单条回 DB），保证另存副本继承 Prompt/LoRA
-    const meta = await useOutputStore.getState().loadMetadata(_editFileId)
+    const meta = await getImageMetadata(target)
+    const written = await newHandle.getFile()
     const newFile: OutputFile = {
       id: newId, path: newPath, filename: newName, extension: ext,
-      size: savedBlob.size, mtime: Date.now(), width: cv.width, height: cv.height,
+      size: written.size, mtime: written.lastModified, width: cv.width, height: cv.height,
       favorite: false, rating: 0, notes: '', tags: [], category: '', status: '', pinned: false,
       createdAt: Date.now(),
     }
     await outputsDb.files.put(newFile)
     if (meta) {
-      const copyMeta = { ...meta, imageId: newId }
+      const copyMeta = bindMetadata({ ...meta, imageId: newId }, createImageSnapshot(newFile, target.source, target.root, target.parserVersion, target.epoch))
       await outputsDb.metadata.put(copyMeta)
       useOutputStore.getState().putMetadata(copyMeta)
     }
-    useOutputStore.setState(s => ({ files: [newFile, ...s.files.filter(f => f.id !== newId)] }))
+    if (!snapshotIsCurrent(target)) { showToast('副本已保存，原浏览目录已切换'); return }
+    useOutputStore.setState(s => ({ files: [newFile, ...s.files.filter(f => f.path !== newPath)] }))
     useOutputStore.getState().applyFilters()
     renderOutputsView()
 
@@ -3404,7 +3484,7 @@ async function saveEditedImage() {
 
     showToast(`✅ 已保存为 ${newName}`)
     // 切换预览到新副本，让用户立即看到编辑结果
-    openPreview(newId).catch(() => {})
+    if (_currentPreviewSnapshot?.key === target.key) openPreview(newId, imageSnapshot(newFile)).catch(() => {})
   } catch {
     showToast('⚠️ 保存失败')
   } finally {
@@ -3485,22 +3565,40 @@ function bindEditToolbar() {
   })
 }
 
-async function openPreview(fileId: string) {
-  // 切换预览前 revoke 上一个 Blob URL（含失败路径，避免泄漏大图 Blob）
-  if (_previewBlobUrl) {
-    URL.revokeObjectURL(_previewBlobUrl)
-    _previewBlobUrl = ''
-  }
-  _currentPreviewFileId = fileId
-  const file = useOutputStore.getState().files.find(f => f.id === fileId)
+function preparePreviewImage(url: string): Promise<boolean> {
+  return new Promise(resolve => {
+    const image = new Image()
+    let settled = false
+    const finish = (ready: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      image.onload = null
+      image.onerror = null
+      if (!ready) image.src = ''
+      resolve(ready)
+    }
+    const timer = setTimeout(() => finish(false), 15000)
+    image.onload = () => finish(true)
+    image.onerror = () => finish(false)
+    image.src = url
+  })
+}
+
+async function openPreview(fileId: string, snapshot?: ImageSnapshot | null) {
+  const token = ++_previewToken
+  const target = snapshot === undefined ? imageSnapshot(fileId) : snapshot
+  if (!target || !snapshotIsCurrent(target)) return
+  // Commit the visible identity only after the replacement image is ready.
+  const file = target.file
   if (!file) return
 
   // 预加载元数据到缓存（供「ℹ️ 元数据」按钮弹窗等使用）
-  await useOutputStore.getState().loadMetadata(fileId)
+  void getImageMetadata(target).catch(() => {})
 
   // 获取图片 URL
   const dh = useOutputStore.getState().dirHandle
-  if (!_nativeOutputs && !dh) return
+  if (!_nativeOutputs && !galleryIndexEnabled() && !dh) return
 
   let imgUrl = ''
   // 开关开启时预览也走「干净副本」——否则用户在预览界面「右键 → 图片另存为」拿到的仍是
@@ -3508,11 +3606,10 @@ async function openPreview(fileId: string) {
   // 关闭时保持原路径：native 模式零拷贝直连后端整文件、目录模式直接用原 File，
   // 既不动字节也不额外占内存。
   if (!isExportMetadataNoop(exportMetadataOptions())) {
-    const r = await getExportBlob(fileId)
-    if (!r) return
+    const r = await getExportBlob(fileId, target)
+    if (!r) { if (token === _previewToken) showToast('图片读取失败，保留当前预览，请重试'); return }
     imgUrl = URL.createObjectURL(r.blob)
-    _previewBlobUrl = imgUrl
-  } else if (_nativeOutputs) {
+  } else if (_nativeOutputs || galleryIndexEnabled()) {
     imgUrl = nativeOutputUrl(file.path)
   } else {
     try {
@@ -3521,11 +3618,25 @@ async function openPreview(fileId: string) {
       const fileHandle = await current.getFileHandle(file.filename)
       const f = await fileHandle.getFile()
       imgUrl = URL.createObjectURL(f)
-      _previewBlobUrl = imgUrl
     } catch {
       return
     }
   }
+
+  if (token !== _previewToken || !snapshotIsCurrent(target)) {
+    if (imgUrl.startsWith('blob:')) URL.revokeObjectURL(imgUrl)
+    return
+  }
+  const ready = await preparePreviewImage(imgUrl)
+  if (!ready || token !== _previewToken || !snapshotIsCurrent(target)) {
+    if (imgUrl.startsWith('blob:')) URL.revokeObjectURL(imgUrl)
+    if (!ready && token === _previewToken) showToast('图片加载失败，保留当前预览，请重试')
+    return
+  }
+  if (_previewBlobUrl) URL.revokeObjectURL(_previewBlobUrl)
+  _previewBlobUrl = imgUrl.startsWith('blob:') ? imgUrl : ''
+  _currentPreviewFileId = fileId
+  _currentPreviewSnapshot = target
 
   // 打开 lightbox
   const lightbox = document.getElementById('lightbox')
@@ -3536,7 +3647,7 @@ async function openPreview(fileId: string) {
   if (img) img.src = imgUrl
   if (counter) {
     const total = useOutputStore.getState().filteredFiles.length
-    const idx = useOutputStore.getState().filteredFiles.findIndex(f => f.id === fileId)
+    const idx = useOutputStore.getState().filteredFiles.findIndex(f => f.path === target.path)
     counter.textContent = total > 1 ? `${idx + 1}/${total}` : file.filename
   }
   if (lightbox) lightbox.classList.add('open')

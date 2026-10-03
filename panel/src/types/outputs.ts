@@ -19,8 +19,24 @@ export interface OutputFile {
   createdAt: number
 }
 
+export type PromptStatus = 'complete' | 'partial' | 'ambiguous' | 'missing'
+
+export interface PromptStage {
+  nodeId: string
+  label: string
+  prompt: string
+  negativePrompt: string
+}
+
 export interface OutputMetadata {
   imageId: string               // 关联 OutputFile.id
+  identity?: { path: string; root: string; mtime: number; size: number }
+  parserVersion?: number
+  promptStages?: PromptStage[]
+  promptStatus?: PromptStatus
+  promptWarnings?: string[]
+  metadataIdentity?: string
+  sourceIdentity?: { source: string; root: string; path: string; mtime: number; size: number; parserVersion: number }
   model: string
   seed: string
   steps: string

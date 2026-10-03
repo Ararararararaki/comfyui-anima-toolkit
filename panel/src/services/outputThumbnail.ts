@@ -150,13 +150,14 @@ async function _createThumbFromBlob(
 
 export async function getThumbnail(
   file: File,
-  fileId: string
+  fileId: string,
+  identity?: string
 ): Promise<string> {
   const id = hashPath(fileId)
 
   // 检查缓存
   const cached = await outputsDb.thumbnails.get(id)
-  if (cached) {
+  if (cached && (!identity || (cached as OutputThumbnail & { identity?: string }).identity === identity)) {
     // 更新访问顺序
     accessOrder = accessOrder.filter(k => k !== id)
     accessOrder.push(id)
@@ -169,12 +170,13 @@ export async function getThumbnail(
   if (!result.dataUrl) return ''
 
   // 保存到缓存
-  const thumbnail: OutputThumbnail = {
+  const thumbnail: OutputThumbnail & { identity?: string } = {
     id,
     dataUrl: result.dataUrl,
     width: result.width,
     height: result.height,
     createdAt: Date.now(),
+    identity,
   }
   await outputsDb.thumbnails.put(thumbnail)
 
@@ -207,10 +209,10 @@ export async function preloadThumbnailsFromDb(files: { path: string }[]): Promis
   return out
 }
 
-export async function getCachedThumbnail(fileId: string): Promise<string | null> {
+export async function getCachedThumbnail(fileId: string, identity?: string): Promise<string | null> {
   const id = hashPath(fileId)
   const cached = await outputsDb.thumbnails.get(id)
-  if (cached) {
+  if (cached && (!identity || (cached as OutputThumbnail & { identity?: string }).identity === identity)) {
     accessOrder = accessOrder.filter(k => k !== id)
     accessOrder.push(id)
     scheduleLruPersist()
@@ -280,6 +282,7 @@ export interface GalleryEntry {
   hasPrompt: boolean
   loras: string[]
   hasWorkflow: boolean
+  parserVersion?: number
 }
 
 let _galleryState: 'unknown' | 'ready' | 'no' = 'unknown'
@@ -290,6 +293,10 @@ let _galleryBuiltAt = 0
 // 后端**解析器语义版本**（manifest 顶层 parserVersion）。它变了 = 提取逻辑变了（同一张图能解析出
 // 不一样的结果），调用方必须据此让本地缓存失效 —— 图没变、mtime/size 没变，只有版本能区分。
 let _galleryParserVersion = 0
+let _galleryRoot = ''
+export function galleryOutputRoot(): string { return _galleryRoot }
+let _galleryIndexParserVersion = 0
+export function galleryIndexParserVersion(): number { return _galleryIndexParserVersion }
 
 export function galleryIndexEnabled(): boolean {
   return _galleryState === 'ready'
@@ -334,6 +341,8 @@ export async function probeGalleryIndex(force = false): Promise<boolean> {
           _galleryEntries = new Map(Object.entries(data.entries) as [string, GalleryEntry][])
           _galleryBuiltAt = Number(data.builtAt || 0)
           _galleryParserVersion = Number(data.parserVersion || 0)
+          _galleryIndexParserVersion = Number(data.indexParserVersion ?? data.parserVersion ?? 0)
+          _galleryRoot = String(data.outputRoot || '').replace(/\\/g, '/')
           _galleryState = 'ready'
           return true
         }

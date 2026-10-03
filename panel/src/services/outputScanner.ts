@@ -1,7 +1,7 @@
 import type { OutputFile, OutputMetadata, OutputDir } from '../types/outputs'
 import { outputsDb, ensureOutputsDbCompatible } from '../db/outputsDb'
 import { useOutputStore } from '../store/outputStore'
-import { parseOutputMetadata, PARSER_VERSION } from './outputMetadata'
+import { parseOutputMetadata, PARSER_VERSION, extractLorasFromWorkflow } from './outputMetadata'
 import { getThumbnail, deleteThumbnails, preloadThumbnailsFromDb } from './outputThumbnail'
 import {
   diffManifest,
@@ -13,6 +13,7 @@ import {
   resetDiffObserver,
 } from './outputManifest'
 import { showToast } from '../utils'
+import { createImageSnapshot, bindMetadata, outputRootIdentity, type ImageSnapshot } from './outputIdentity'
 
 /** 从已有 DB 记录恢复用户元数据（收藏/评分/标签等） */
 async function withUserMetadata(base: OutputFile): Promise<OutputFile> {
@@ -138,6 +139,22 @@ async function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
   })
 }
 
+/** Re-read only the requested image. Legacy rows without identity are never attributed to it. */
+export async function readImageMetadata(dirHandle: FileSystemDirectoryHandle, snapshot: ImageSnapshot): Promise<OutputMetadata | null> {
+  try {
+    const parts = snapshot.path.split('/')
+    let directory = dirHandle
+    for (const part of parts.slice(0, -1)) directory = await directory.getDirectoryHandle(part)
+    const handle = await directory.getFileHandle(parts[parts.length - 1])
+    const file = await handle.getFile()
+    if (file.lastModified !== snapshot.mtime || file.size !== snapshot.size) return null
+    const { meta } = await readAndParseMetadata(file, snapshot.file.extension, parseOutputMetadata)
+    const after = await handle.getFile()
+    if (!meta || after.lastModified !== snapshot.mtime || after.size !== snapshot.size) return null
+    return bindMetadata({ ...meta, imageId: snapshot.file.id, rawMetadata: meta.raw, loras: extractLorasFromWorkflow(meta.workflowJson, meta.raw), lorasExtracted: true }, snapshot)
+  } catch { return null }
+}
+
 async function getDimensionsByImage(dataUrl: string): Promise<{ width: number; height: number }> {
   return new Promise((resolve) => {
     const img = new Image()
@@ -185,7 +202,7 @@ async function processFile(
 
     // 检查是否已索引
     const existing = await outputsDb.files.get(id)
-    if (existing && existing.mtime === file.lastModified) {
+    if (existing && existing.path === path && existing.mtime === file.lastModified && existing.size === file.size) {
       return existing
     }
 
@@ -220,6 +237,7 @@ async function processFile(
     // 保存元数据
     if (meta) {
       const outputMeta: OutputMetadata = {
+        ...meta,
         imageId: id,
         model: meta.model || '',
         seed: meta.seed || '',
@@ -231,9 +249,10 @@ async function processFile(
         prompt: meta.prompt || '',
         negativePrompt: meta.negativePrompt || '',
         workflowJson: meta.workflowJson || '',
-        rawMetadata: {},
+        rawMetadata: meta.raw,
       }
-      await putMetadataQuotaSafe(outputMeta)
+      const state = useOutputStore.getState()
+      await putMetadataQuotaSafe(bindMetadata(outputMeta, createImageSnapshot(outputFile, 'directory', outputRootIdentity(state.rootPath, state.dirHandle), PARSER_VERSION)))
     }
 
     return outputFile
@@ -263,6 +282,7 @@ export async function reparseAllMetadata(dirHandle: FileSystemDirectoryHandle): 
       const { meta } = await readAndParseMetadata(file, ext, parseOutputMetadata)
       if (meta) {
         const outputMeta: OutputMetadata = {
+          ...meta,
           imageId: f.id,
           model: meta.model || '',
           seed: meta.seed || '',
@@ -274,10 +294,12 @@ export async function reparseAllMetadata(dirHandle: FileSystemDirectoryHandle): 
           prompt: meta.prompt || '',
           negativePrompt: meta.negativePrompt || '',
           workflowJson: meta.workflowJson || '',
-          rawMetadata: {},
+          rawMetadata: meta.raw,
         }
-        await putMetadataQuotaSafe(outputMeta)
-        useOutputStore.getState().putMetadata(outputMeta)
+        const state = useOutputStore.getState()
+        const bound = bindMetadata(outputMeta, createImageSnapshot(f, 'directory', outputRootIdentity(state.rootPath, dirHandle), PARSER_VERSION))
+        await putMetadataQuotaSafe(bound)
+        useOutputStore.getState().putMetadata(bound)
       }
     } catch {
       errors.push(f.filename)
@@ -301,7 +323,7 @@ const PARSER_VERSION_KEY = 'anima_output_parser_version'
  * 增量扫描按 mtime+size 跳过未变更文件，解析器升级后旧缓存不会自动刷新，
  * 故用版本号标记：不匹配时清空 metadata/缩略图缓存并强制重解析一次。
  */
-export async function ensureMetadataFresh(dirHandle: FileSystemDirectoryHandle | null): Promise<boolean> {
+export async function ensureMetadataFresh(_dirHandle: FileSystemDirectoryHandle | null): Promise<boolean> {
   try {
     const saved = localStorage.getItem(PARSER_VERSION_KEY)
     if (saved === String(PARSER_VERSION)) return false
@@ -310,19 +332,8 @@ export async function ensureMetadataFresh(dirHandle: FileSystemDirectoryHandle |
     return false
   }
 
-  // 清空旧缓存，避免读到解析逻辑变更前的错误结果
-  await outputsDb.metadata.clear()
-  await outputsDb.thumbnails.clear()
-  useOutputStore.setState({
-    metadataCache: new Map(),
-    metadataVersion: useOutputStore.getState().metadataVersion + 1,
-    thumbMemory: new Map(),
-  })
-
-  if (dirHandle) {
-    showToast('🔍 解析逻辑已升级，正在重新解析元数据…')
-    await reparseAllMetadata(dirHandle)
-  }
+  // Parser versions are checked on each image identity. Keep thumbnails and user records;
+  // visible images and explicit actions refresh metadata without an all-library startup task.
   return true
 }
 

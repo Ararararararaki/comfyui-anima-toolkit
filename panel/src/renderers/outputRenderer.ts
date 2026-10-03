@@ -4,6 +4,7 @@
 
 import { esc, escAttr } from '../utils'
 import type { OutputFile, OutputMetadata, OutputDir } from '../types/outputs'
+import { metadataForFile, promptBody } from '../services/outputIdentity'
 import { icon } from '../utils/icon'
 import { CLAMP_MAX_ASPECT } from '../components/masonry'
 
@@ -83,7 +84,7 @@ export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, i
   return `<div class="outputs-card ${isSelected ? 'selected' : ''}${file.status ? ` status-${file.status}` : ''}${masonry}${clampClass}" data-id="${escAttr(file.id)}" data-path="${escAttr(file.path)}"${sig ? ` data-sig="${escAttr(sig)}"` : ''}>
     <div class="outputs-card-img" style="--card-ar:${arValue}">
       ${st ? `<div class="outputs-card-status-tag" style="background:${st.color}">${st.label}</div>` : ''}
-      <img src="${escAttr(thumbSrc || '')}" data-file-id="${escAttr(file.id)}" data-file-path="${escAttr(file.path)}" data-file-version="${file.mtime}:${file.size}" alt="${esc(file.filename)}" loading="eager">
+      <img src="${escAttr(thumbSrc || '')}" data-file-id="${escAttr(file.id)}" data-file-path="${escAttr(file.path)}" data-file-version="${escAttr(sig || `${file.mtime}:${file.size}`)}" alt="${esc(file.filename)}" loading="eager">
       <div class="outputs-card-actions-top">
         ${file.pinned ? `<span class="outputs-card-pinned-icon">${icon('pin', 12)}</span>` : ''}
         <button class="outputs-card-category-icon ${file.category ? 'active' : ''}" data-id="${escAttr(file.id)}" title="${file.category ? `当前分类：${esc(file.category)}；点击修改` : '设置分类'}">${icon('folder', 14)}</button>
@@ -106,8 +107,8 @@ export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, i
       </div>
       <div class="outputs-card-date">${fmtDate(file.mtime)}</div>
       <div class="outputs-card-actions">
-        ${meta?.prompt ? `<button class="outputs-copy-prompt-btn" data-id="${escAttr(file.id)}" title="复制正面 Prompt">${icon('file-text', 12)}</button>` : ''}
-        ${meta?.prompt ? `<button class="outputs-save-prompt-btn" data-id="${escAttr(file.id)}" title="将 Prompt 和图片存入 Prompt 库">${icon('book', 12)}</button>` : ''}
+        ${promptBody(meta) ? `<button class="outputs-copy-prompt-btn" data-id="${escAttr(file.id)}" title="复制正面 Prompt">${icon('file-text', 12)}</button>` : ''}
+        ${promptBody(meta) ? `<button class="outputs-save-prompt-btn" data-id="${escAttr(file.id)}" title="将 Prompt 和图片存入 Prompt 库">${icon('book', 12)}</button>` : ''}
         ${meta?.loras?.length ? `<button class="outputs-copy-lora-btn" data-id="${escAttr(file.id)}" title="复制 LoRA 标签">${icon('tag', 12)}</button>` : ''}
         ${meta?.hasWorkflow ? `<button class="outputs-dl-wf-btn" data-id="${escAttr(file.id)}" title="下载工作流（保存 .json，拖入 ComfyUI 画布导入）">${icon('download', 12)}</button>` : ''}
         ${meta ? `<button class="outputs-meta-btn" data-id="${escAttr(file.id)}" title="查看元数据">${icon('info', 12)}</button>` : ''}
@@ -118,24 +119,24 @@ export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, i
 
 // ── 列表视图渲染 ──
 
-export function renderList(files: OutputFile[], selectedIds: Set<string>, metadataCache: Map<string, OutputMetadata>): string {
+export function renderList(files: OutputFile[], selectedIds: Set<string>, metadataCache: Map<string, OutputMetadata>, root?: string, parserVersion?: number): string {
   return `<div class="outputs-list">
-    ${files.map(f => renderListCard(f, selectedIds, metadataCache)).join('')}
+    ${files.map(f => renderListCard(f, selectedIds, metadataCache, root, parserVersion)).join('')}
   </div>`
 }
 
-function renderListCard(file: OutputFile, selectedIds: Set<string>, metadataCache: Map<string, OutputMetadata>): string {
-  const meta = metadataCache.get(file.id)
+function renderListCard(file: OutputFile, selectedIds: Set<string>, metadataCache: Map<string, OutputMetadata>, root?: string, parserVersion?: number): string {
+  const meta = metadataForFile(metadataCache, file, root, parserVersion)
   const isSelected = selectedIds.has(file.id)
   const st = file.status ? STATUS_DEFS[file.status] : null
-  return `<div class="outputs-list-card ${isSelected ? 'selected' : ''}" data-id="${escAttr(file.id)}">
+  return `<div class="outputs-list-card ${isSelected ? 'selected' : ''}" data-id="${escAttr(file.id)}" data-path="${escAttr(file.path)}">
     <div class="outputs-list-card-top">
       <input type="checkbox" class="outputs-list-chk" data-id="${escAttr(file.id)}" ${isSelected ? 'checked' : ''}>
       ${file.pinned ? `<span class="outputs-list-pinned">${icon('pin', 10)}</span>` : ''}
       ${st ? `<span class="outputs-list-status-dot" style="background:${st.color}" title="${st.label}"></span>` : ''}
     </div>
     <div class="outputs-list-card-img">
-      <img src="" data-file-id="${escAttr(file.id)}" data-file-path="${escAttr(file.path)}" alt="" loading="lazy">
+      <img src="" data-file-id="${escAttr(file.id)}" data-file-path="${escAttr(file.path)}" data-file-version="${escAttr(JSON.stringify([root || '', file.path, file.mtime, file.size]))}" alt="" loading="lazy">
     </div>
     <div class="outputs-list-card-body">
       <div class="outputs-list-card-name" title="${esc(file.filename)}">${esc(file.filename)}</div>
@@ -151,8 +152,8 @@ function renderListCard(file: OutputFile, selectedIds: Set<string>, metadataCach
         <button class="outputs-action-btn outputs-download-btn" data-id="${escAttr(file.id)}" title="下载">${icon('download', 14)}</button>
         <button class="outputs-action-btn outputs-preview-btn" data-id="${escAttr(file.id)}" title="预览">${icon('eye', 14)}</button>
         <button class="outputs-action-btn outputs-rename-btn" data-id="${escAttr(file.id)}" data-name="${escAttr(file.filename)}" title="重命名">${icon('edit3', 14)}</button>
-        ${meta?.prompt ? `<button class="outputs-action-btn outputs-copy-prompt-btn" data-id="${escAttr(file.id)}" title="复制正面 Prompt">${icon('file-text', 14)}</button>` : ''}
-        ${meta?.prompt ? `<button class="outputs-action-btn outputs-save-prompt-btn" data-id="${escAttr(file.id)}" title="将 Prompt 和图片存入 Prompt 库">${icon('book', 14)}</button>` : ''}
+        ${promptBody(meta) ? `<button class="outputs-action-btn outputs-copy-prompt-btn" data-id="${escAttr(file.id)}" title="复制正面 Prompt">${icon('file-text', 14)}</button>` : ''}
+        ${promptBody(meta) ? `<button class="outputs-action-btn outputs-save-prompt-btn" data-id="${escAttr(file.id)}" title="将 Prompt 和图片存入 Prompt 库">${icon('book', 14)}</button>` : ''}
         ${meta?.loras?.length ? `<button class="outputs-action-btn outputs-copy-lora-btn" data-id="${escAttr(file.id)}" title="复制 LoRA 标签">${icon('tag', 14)}</button>` : ''}
         ${meta?.hasWorkflow ? `<button class="outputs-action-btn outputs-dl-wf-btn" data-id="${escAttr(file.id)}" title="保存为 .json 文件，拖入 ComfyUI 画布即可导入">${icon('fileJson', 14)}</button>` : ''}
         ${meta ? `<button class="outputs-action-btn outputs-meta-btn" data-id="${escAttr(file.id)}" title="查看元数据">${icon('info', 14)}</button>` : ''}
@@ -201,9 +202,12 @@ export function renderMetadataPanel(meta: OutputMetadata | null, file: OutputFil
     <button class="outputs-meta-close-btn" id="outputsMetaCloseBtn" title="关闭面板">${icon('x', 14)}</button>
   </div>`
 
-  if (!meta) return `${header}<div class="outputs-meta-empty">无元数据</div>`
+  if (!meta) return `${header}<div class="outputs-meta-empty">元数据读取失败或未找到，请重试。<button id="outputsMetaRetryBtn" class="btn btn-sm">重试解析</button></div>`
 
   const workflowSection = hasWorkflow ? renderWorkflowSection(meta.workflowJson) : ''
+  const status = meta.promptStatus === 'partial' ? '部分连接无法解析，以下为已解析内容。' : meta.promptStatus === 'ambiguous' ? '无法确定本图对应的生成分支，暂不能可靠复制。' : meta.promptStatus === 'missing' ? '未找到可靠提示词。' : ''
+  const stages = meta.promptStages || []
+  const prompts = stages.length > 1 ? stages.map(stage => `<div class="outputs-meta-section"><h4>${esc(stage.label || `阶段 ${stage.nodeId}`)}</h4>${stage.prompt ? `<div class="outputs-meta-prompt" data-copy="${escAttr(stage.prompt)}">${esc(stage.prompt)}</div>` : ''}${stage.negativePrompt ? `<h4>负向提示词</h4><div class="outputs-meta-prompt" data-copy="${escAttr(stage.negativePrompt)}">${esc(stage.negativePrompt)}</div>` : ''}</div>`).join('') : `${meta.prompt ? `<div class="outputs-meta-section"><h4>正向提示词</h4><div class="outputs-meta-prompt"${promptBody(meta) ? ` data-copy="${escAttr(meta.prompt)}"` : ''}>${esc(meta.prompt)}</div></div>` : ''}${meta.negativePrompt ? `<div class="outputs-meta-section"><h4>负向提示词</h4><div class="outputs-meta-prompt" data-copy="${escAttr(meta.negativePrompt)}">${esc(meta.negativePrompt)}</div></div>` : ''}`
 
   return `
     ${header}
@@ -220,16 +224,8 @@ export function renderMetadataPanel(meta: OutputMetadata | null, file: OutputFil
       <div class="outputs-meta-row"><span>CFG</span><span>${esc(meta.cfg || '-')}</span></div>
       <div class="outputs-meta-row"><span>尺寸</span><span>${file.width} × ${file.height}</span></div>
     </div>
-    ${meta.prompt ? `
-    <div class="outputs-meta-section">
-      <h4>正向提示词</h4>
-      <div class="outputs-meta-prompt" data-copy="${escAttr(meta.prompt)}">${esc(meta.prompt)}</div>
-    </div>` : ''}
-    ${meta.negativePrompt ? `
-    <div class="outputs-meta-section">
-      <h4>负向提示词</h4>
-      <div class="outputs-meta-prompt" data-copy="${escAttr(meta.negativePrompt)}">${esc(meta.negativePrompt)}</div>
-    </div>` : ''}
+    ${status ? `<div class="outputs-meta-section">${esc(status)} <button id="outputsMetaRetryBtn">重试解析</button></div>` : ''}
+    ${prompts}
     ${workflowSection}
   `
 }

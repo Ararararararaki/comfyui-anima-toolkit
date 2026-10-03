@@ -11,6 +11,7 @@ import { bindUrlDownloadModal } from './downloadUrlModal'
 import { useOutputStore } from '../store/outputStore'
 import { ensureAllMetadata, isMetadataIndexComplete } from '../services/outputMetadataIndex'
 import { extractLorasFromWorkflow, decompressZlibAsync } from '../services/outputMetadata'
+import { metadataForFile, outputRootIdentity } from '../services/outputIdentity'
 
 // ── 搜索高亮工具 ──
 function highlightText(text: string, query: string): string {
@@ -500,15 +501,33 @@ function kickMetadataIndexForLocal(): void {
   })
 }
 
+// Keep generated content, not array references: scans may emit equivalent arrays.
+const _localRenderedHtml = new WeakMap<HTMLElement, string>()
+function setLocalHtml(el: HTMLElement, html: string): boolean {
+  if (_localRenderedHtml.get(el) === html) return false
+  el.innerHTML = html
+  _localRenderedHtml.set(el, html)
+  return true
+}
+
 export function renderLocalView() {
+  if (_renderTimer !== null) {
+    clearTimeout(_renderTimer)
+    _renderTimer = null
+  }
   const state = useLocalModelStore.getState()
   renderSidebarList(state)
-  renderHome(state)
-  renderDetail(state)
   updateStats(state)
-  // PNG 解析视图：gallery 页始终渲染（空态/数据态），标签统计同步（review blocking 修复）
-  renderGallery(state)
-  renderTagFreq(state.tagFreq)
+  switch (state.currentView || 'home') {
+    case 'home': renderHome(state); break
+    case 'detail': renderDetail(state); break
+    case 'gallery':
+      renderGallery(state)
+      renderTagFreq(state.tagFreq)
+      break
+    case 'prompt': renderPromptTab(state); break
+    case 'models': void renderModelsTab(); break
+  }
 }
 
 function renderFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalModelStore.getState>): string {
@@ -764,7 +783,7 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
   // ── 「按底模」面板 + 过滤（2026-09-11）：网格/列表都渲染，与分类筛选叠加 ──
   const baseModelSourceFiles = [...files]
   const bmPanel = $$('localBaseModelPanel')
-  if (bmPanel) bmPanel.innerHTML = renderBaseModelPanel(state, baseModelSourceFiles)
+  if (bmPanel) setLocalHtml(bmPanel, renderBaseModelPanel(state, baseModelSourceFiles))
   if (state.filterBaseModel) {
     files = files.filter(f => state.filterBaseModel === '__unmatched__'
       ? !(f.matched && f.matchData?.baseModel)
@@ -774,7 +793,7 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
   const categorySourceFiles = [...files]
   const categoryList = $$('localGridCategoryList')
   if (state.displayMode === 'grid') {
-    if (categoryList) categoryList.innerHTML = renderGridCategoryRail(state, categorySourceFiles)
+    if (categoryList) setLocalHtml(categoryList, renderGridCategoryRail(state, categorySourceFiles))
     if (state.filterCategory) {
       files = files.filter(f => {
         const assigned = state.modelCategories[stripExt(f.name)] || []
@@ -782,7 +801,7 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
       })
     }
   } else {
-    if (categoryList) categoryList.innerHTML = ''
+    if (categoryList) setLocalHtml(categoryList, '')
     if (state.filterCategory) {
       files = files.filter(f => {
         const assigned = state.modelCategories[stripExt(f.name)] || []
@@ -799,7 +818,8 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
   }
 
   if (files.length === 0) {
-    el.innerHTML = '<div class="empty-state empty-state-wide"><div class="big">' + icon('mailOpen', 28) + '</div><p class="empty-state-text">没有匹配的文件</p></div>'
+    disconnectGridObserver()
+    setLocalHtml(el, '<div class="empty-state empty-state-wide"><div class="big">' + icon('mailOpen', 28) + '</div><p class="empty-state-text">没有匹配的文件</p></div>')
     updateBatchBar(state)
     return
   }
@@ -866,9 +886,11 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
   }
 
   html += '</div>'
-  el.innerHTML = html
-  restoreScroll()
-  requestAnimationFrame(restoreScroll)
+  if (setLocalHtml(el, html)) {
+    disconnectGridObserver()
+    restoreScroll()
+    requestAnimationFrame(restoreScroll)
+  }
   updateBatchBar(state)
 }
 
@@ -891,13 +913,23 @@ function updateBatchBar(state: ReturnType<typeof useLocalModelStore.getState>) {
 // 滚动到底自动补齐，内容与全量渲染一致。
 const LOCAL_GRID_CHUNK = 150
 let _gridObserver: IntersectionObserver | null = null
+let _gridRenderEpoch = 0
 
 function disconnectGridObserver(): void {
+  _gridRenderEpoch++
   if (_gridObserver) { _gridObserver.disconnect(); _gridObserver = null }
 }
 
 function renderGridChunked(el: HTMLElement, files: LocalLoraFile[], state: ReturnType<typeof useLocalModelStore.getState>): void {
+  const cards = files.map(f => renderGridFileItem(f, state))
+  const signature = 'grid:' + cards.join('')
+  if (_localRenderedHtml.get(el) === signature) {
+    updateBatchBar(state)
+    return
+  }
   disconnectGridObserver()
+  const renderEpoch = _gridRenderEpoch
+  _localRenderedHtml.set(el, signature)
 
   // 恢复滚动位置：只渲染首片时内容高度可能低于原 scrollTop（被浏览器钳到 0 → 丢失浏览位置），
   // 按容器宽度估列数、每卡 ~340px 估算需要预渲染到原位置的卡数，再恢复 scrollTop。
@@ -918,11 +950,11 @@ function renderGridChunked(el: HTMLElement, files: LocalLoraFile[], state: Retur
       if (!entries.some(e => e.isIntersecting)) return
       const obs = _gridObserver
       if (obs) { obs.disconnect(); _gridObserver = null }
-      if (useLocalModelStore.getState().files !== state.files) return
+      if (_gridRenderEpoch !== renderEpoch) return
       listEl.querySelector('.local-grid-sentinel')?.remove()
       const to = Math.min(files.length, rendered + LOCAL_GRID_CHUNK)
       const frag = document.createElement('template')
-      frag.innerHTML = files.slice(rendered, to).map(f => renderGridFileItem(f, useLocalModelStore.getState())).join('')
+      frag.innerHTML = cards.slice(rendered, to).join('')
       listEl.appendChild(frag.content)
       rendered = to
       if (rendered < files.length) mountSentinel()
@@ -930,7 +962,7 @@ function renderGridChunked(el: HTMLElement, files: LocalLoraFile[], state: Retur
     _gridObserver.observe(s)
   }
 
-  el.innerHTML = `<div class="local-grid-card-list">${files.slice(0, rendered).map(f => renderGridFileItem(f, state)).join('')}</div>`
+  el.innerHTML = `<div class="local-grid-card-list">${cards.slice(0, rendered).join('')}</div>`
   if (rendered < files.length) mountSentinel()
   el.scrollTop = keepScroll
   requestAnimationFrame(() => { el.scrollTop = keepScroll })
@@ -1038,8 +1070,10 @@ function renderHome(state: ReturnType<typeof useLocalModelStore.getState>) {
   // Track how many outputs reference each local lora
   let outputWithLocalLora = 0
 
-  for (const meta of outputState.metadataCache.values()) {
-    const loras = meta.loras || []
+  const outputRoot = outputRootIdentity(outputState.rootPath, outputState.dirHandle)
+  for (const file of outputState.files) {
+    const meta = metadataForFile(outputState.metadataCache, file, outputRoot, outputState.metadataParserVersion)
+    const loras = meta?.loras || []
     if (loras.length === 0) continue
 
     // Check if any lora is local
@@ -1061,7 +1095,7 @@ function renderHome(state: ReturnType<typeof useLocalModelStore.getState>) {
     html += `<div class="empty-state"><div class="big">${icon('trendingUp', 28)}</div><p>暂无使用数据，扫描 Outputs 目录后自动生成</p></div>`
   }
 
-  el.innerHTML = html
+  setLocalHtml(el, html)
 }
 function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
   const empty = $$('detailEmpty')
@@ -1196,10 +1230,10 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
       </div>
     </div>`
 
-  content.innerHTML = html
-
-  // Load related output thumbnails eagerly
-  loadRelatedOutputThumbnails()
+  if (setLocalHtml(content, html)) {
+    // Existing image nodes survive equivalent metadata refreshes.
+    loadRelatedOutputThumbnails()
+  }
 }
 
 function renderRelatedOutputs(f: LocalLoraFile): string {
@@ -1207,18 +1241,11 @@ function renderRelatedOutputs(f: LocalLoraFile): string {
   const outputState = useOutputStore.getState()
   const matches: { id: string; filePath: string; mtime: number; meta: OutputMetadata | null }[] = []
 
-  for (const meta of outputState.metadataCache.values()) {
-    const loras = meta.loras || []
-    const match = loras.find(l => l.toLowerCase() === loraBase)
-    if (!match) continue
-
-    const file = outputState.files.find(f2 => f2.id === meta.imageId)
-    matches.push({
-      id: meta.imageId,
-      filePath: file?.path || meta.imageId,
-      mtime: file?.mtime || 0,
-      meta,
-    })
+  const outputRoot = outputRootIdentity(outputState.rootPath, outputState.dirHandle)
+  for (const file of outputState.files) {
+    const meta = metadataForFile(outputState.metadataCache, file, outputRoot, outputState.metadataParserVersion)
+    if (!meta || !(meta.loras || []).some(l => l.toLowerCase() === loraBase)) continue
+    matches.push({ id: file.id, filePath: file.path, mtime: file.mtime, meta })
   }
 
   if (matches.length === 0) {
@@ -1495,7 +1522,10 @@ function bindLocalEvents() {
       if (target) target.classList.add('active')
       if (view === 'home') renderHome(useLocalModelStore.getState())
       if (view === 'detail') renderDetail(useLocalModelStore.getState())
-      if (view === 'gallery') renderGallery(useLocalModelStore.getState())
+      if (view === 'gallery') {
+        renderGallery(useLocalModelStore.getState())
+        renderTagFreq(useLocalModelStore.getState().tagFreq)
+      }
       if (view === 'prompt') renderPromptTab(useLocalModelStore.getState())
       if (view === 'models') renderModelsTab()
     })

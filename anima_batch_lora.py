@@ -18,6 +18,9 @@ from server import PromptServer
 from . import anima_thumbs
 from . import anima_gallery
 from .services.lora_trigger_overrides import TriggerOverrideStore
+from .services.gallery_response import GalleryResponseCache, accepts_gzip
+
+_GALLERY_RESPONSE_CACHE = GalleryResponseCache()
 
 # ── In-memory bridge data (shared with __init__.py via HTTP API) ──
 BRIDGE_DATA: dict = {}
@@ -972,26 +975,51 @@ async def gallery_status(request):
 
 @PromptServer.instance.routes.get("/anima/gallery/manifest")
 async def gallery_manifest(request):
-    """全库元数据摘要（按钮/卡片/筛选所需）+ 构建状态。前端一次拉取。"""
-    # 预热器/后台增量更新写过盘后，内存索引可能已经过期 —— 先同步（没换代只花一次 stat）
+    """Gallery summary with encoding cached for a ready, immutable index generation."""
     await _gallery_sync_index_from_disk()
     with _GALLERY_LOCK:
-        if not _GALLERY_STATE["loaded"] and not _GALLERY_STATE["building"]:
-            index = anima_gallery.load_index(_gallery_index_path())
-            _GALLERY_STATE["index"] = index
-            _GALLERY_STATE["loaded"] = index.get("builtAt", 0) > 0
-            _GALLERY_STATE["sig"] = _gallery_index_sig()
+        needs_load = not _GALLERY_STATE["loaded"] and not _GALLERY_STATE["building"]
+    if needs_load:
+        loaded_index = await asyncio.to_thread(anima_gallery.load_index, _gallery_index_path())
+        with _GALLERY_LOCK:
+            if not _GALLERY_STATE["loaded"] and not _GALLERY_STATE["building"]:
+                _GALLERY_STATE["index"] = loaded_index
+                _GALLERY_STATE["loaded"] = loaded_index.get("builtAt", 0) > 0
+                _GALLERY_STATE["sig"] = _gallery_index_sig()
+    try:
+        output_root = os.path.abspath(folder_paths.get_output_directory()).replace("\\", "/")
+    except Exception:
+        output_root = ""
+    with _GALLERY_LOCK:
         index = _GALLERY_STATE["index"]
+        sig = _GALLERY_STATE["sig"]
+        cacheable = bool(_GALLERY_STATE["loaded"] and not _GALLERY_STATE["building"] and index)
         payload = {
             "building": _GALLERY_STATE["building"],
             "progress": _GALLERY_STATE["progress"],
-            "total": _GALLERY_STATE["total"],
             "builtAt": (index or {}).get("builtAt", 0),
             "total": (index or {}).get("total", 0),
+            "parserVersion": anima_gallery.PARSER_VERSION,
+            "indexParserVersion": (index or {}).get("parserVersion", 0),
+            "outputRoot": output_root,
         }
         if _GALLERY_STATE["loaded"] and index:
             payload["entries"] = index.get("entries", {})
-    return web.json_response(payload, dumps=lambda o: json.dumps(o, ensure_ascii=False, separators=(",", ":")))
+        generation = (id(index), sig, anima_gallery.PARSER_VERSION, output_root)
+
+    def is_current():
+        with _GALLERY_LOCK:
+            return (_GALLERY_STATE["index"] is index and _GALLERY_STATE["sig"] == sig
+                    and _GALLERY_STATE["loaded"] and not _GALLERY_STATE["building"])
+
+    raw, compressed = await _GALLERY_RESPONSE_CACHE.encode(payload, generation, cacheable, is_current)
+    headers = {"Vary": "Accept-Encoding"}
+    if accepts_gzip(request.headers.get("Accept-Encoding", "")):
+        headers["Content-Encoding"] = "gzip"
+        body = compressed
+    else:
+        body = raw
+    return web.Response(body=body, content_type="application/json", charset="utf-8", headers=headers)
 
 
 @PromptServer.instance.routes.get("/anima/gallery/fresh")
@@ -1103,10 +1131,29 @@ async def gallery_meta(request):
     abs_path = await asyncio.to_thread(anima_thumbs.resolve_within_root, root, rel)
     if not abs_path:
         return web.json_response({"error": "文件不存在或不在 output 目录内"}, status=404)
+    def read_metadata():
+        before = os.stat(abs_path)
+        canonical_rel = os.path.relpath(abs_path, root).replace("\\", "/")
+        meta = anima_gallery.parse_full(abs_path, canonical_rel)
+        after = os.stat(abs_path)
+        if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
+            return None
+        meta["imageId"] = canonical_rel
+        meta["identity"] = {
+            "path": canonical_rel,
+            "root": os.path.abspath(root).replace("\\", "/"),
+            "mtime": after.st_mtime,
+            "size": after.st_size,
+        }
+        meta["parserVersion"] = anima_gallery.PARSER_VERSION
+        return meta
+
     try:
-        meta = await asyncio.to_thread(anima_gallery.parse_full, abs_path, rel)
+        meta = await asyncio.to_thread(read_metadata)
     except Exception as exc:
         return web.json_response({"error": f"解析失败: {exc}"}, status=500)
+    if meta is None:
+        return web.json_response({"error": "图片在读取期间已更新，请重试"}, status=409)
     return web.json_response(meta, dumps=lambda o: json.dumps(o, ensure_ascii=False, separators=(",", ":")))
 
 
