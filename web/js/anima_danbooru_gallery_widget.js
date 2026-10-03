@@ -772,8 +772,10 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
       promptOutput: normalizePromptOutputSettings(source.promptOutput),
       promptOutputEnabled: source.promptOutputEnabled !== false,
       promptExcludePattern: typeof source.promptExcludePattern === "string" ? source.promptExcludePattern.slice(0, 500) : "",
-      // 随机发现档位（""=未启用；hot/good/fresh 见 RANDOM_QUALITY_TIERS）
+      // 随机发现档位及进入前的筛选；退出后恢复，不把质量门槛留在普通搜索中。
       randomQuality: RANDOM_QUALITY_TIERS.some((t) => t.id === source.randomQuality) ? source.randomQuality : "",
+      randomPreviousFilters: source.randomPreviousFilters && typeof source.randomPreviousFilters === "object"
+        ? normalizeFilters(source.randomPreviousFilters) : null,
       lastQuery: typeof source.lastQuery === "string" ? source.lastQuery : "",
       // 多源画廊：当前图源 + 各源自己的筛选 + 各源各自的搜索框内容。
       // 注意 D站 的筛选仍住在 filters/rating 里（老工作流恢复后不变），这里只放新源的东西。
@@ -915,8 +917,6 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
       this._layoutPosts = null;
       this.failedImageCount = 0;
       this.renderedPostCount = 0;
-      this._randomTrimmed = false;
-      this._randomPoolExhausted = false;
       this.randomTierButtons = null; // 由工具条注入：随机档位按钮的状态刷新回调
       this.randomHistory = new Map(); // query → 已看过的 post id（随机发现去重，避免翻来覆去同几张）
       this.registered = false; // 是否已登录 Danbooru
@@ -2876,78 +2876,66 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
       this.randomHistory.set(key, seen.slice(-RANDOM_HISTORY_MAX));
     }
 
-    /**
-     * 一键随机发现：order:random + 质量地板（分数/时间窗），可选「换一批」避开已看过的。
-     * 产品意图：用户要的是「有灵感的高质量惊喜」，不是「全库随手捞一张没人贴过的冷门图」。
-     */
-    async discoverRandom(tierId = null, { reshuffle = false } = {}) {
+    /** 随机始终保留当前标签范围；没有结果也不扩大为全库随机。 */
+    async discoverRandom(tierId = null) {
       const tier = RANDOM_QUALITY_TIERS.find((t) => t.id === tierId)
         || RANDOM_QUALITY_TIERS.find((t) => t.id === this.settings.randomQuality)
         || RANDOM_QUALITY_TIERS[1];
-      const prevQuality = this.settings.randomQuality;
-      const prevFilters = this.settings.filters;
-      const historyKey = this.randomHistoryKey();
-      // 「换一批」：先记住换之前池子里已经看过哪些，用来判断这次是不是真的换出了新图
-      const seenBefore = reshuffle ? new Set(this.randomHistory.get(historyKey) || []) : null;
+      if (!this.settings.randomQuality) this.settings.randomPreviousFilters = { ...this.settings.filters };
       this.settings.randomQuality = tier.id;
       this.settings.filters = normalizeFilters({
         ...this.settings.filters,
         order: "random",
         minScore: tier.minScore,
         minFavs: tier.minFavs,
-        // 时间窗会把随机池掐死（实测 miku_day + score:>100 从 31 结果掉到 0），这里显式清空；
-        // 真需要时间范围由后端慢排序兜底的 age:<1week 负责。
-        age: "",
-        ageDays: "",
       });
-      if (reshuffle) {
-        // 「换一批」：清掉随机历史，让同一档位能给出新的一批
-        this.randomHistory.delete(this.randomHistoryKey());
-      }
       this.saveSettings();
       this.filterControls?.refresh();
       this.randomTierButtons?.();
       this.setStatus(`随机发现：${tier.label}（${tier.hint}）…`);
       // force：随机排序若命中后端 30s 缓存会给出完全相同的一批，失去「随机」的意义
       await this.search({ resetPage: true, force: true });
-      // 内容标签 ∩ 随机池 可能是空集（实测 miku_day + score:>100 + 近 30 天 = 0 结果，
-      // miku_day 是「星期几」标签、几乎不会有高分帖）。随机发现的语义是「探索」，
-      // 这时自动退化为「纯质量地板随机」并明确告知，而不是给用户一个空网格。
-      if (!this.posts.length && normalizeTags(stripFilterOwnedTokens(this.queryWidget?.value || ""))) {
-        this._randomTrimmed = true;
-        this.setStatus(`随机发现：${tier.label} —— 当前标签在该质量档下没有结果，已忽略标签只看随机…`);
-        await this.search({ resetPage: true, force: true });
+      // 搜索控制器负责提交/错误提示。这里不在 await 后回滚或重试，
+      // 避免用户已关闭随机、换词或换源时，旧操作再次修改当前状态。
+    }
+
+    /** 清理随机拥有的筛选，同步模式；不发请求，供工具条和筛选菜单共同使用。 */
+    clearRandomMode({ restoreFilters = true } = {}) {
+      if (!this.settings.randomQuality && this.settings.filters.order !== "random") return false;
+      const tier = RANDOM_QUALITY_TIERS.find((t) => t.id === this.settings.randomQuality);
+      const previous = this.settings.randomPreviousFilters;
+      const filters = { ...this.settings.filters };
+      // 只恢复随机档位接管的字段；浏览期间调整的尺寸、时间等筛选继续保留。
+      for (const key of restoreFilters && tier ? ["order", "minScore", "minFavs"] : ["order"]) {
+        const assigned = key === "order" ? "random" : (tier?.[key] || "");
+        if (filters[key] === assigned) filters[key] = previous?.[key] || "";
       }
-      if (!this.posts.length && (this.settings.randomQuality !== prevQuality)) {
-        // 连纯随机也空（档位太苛刻）→ 回滚设置，避免用户卡在空网格里
-        this.settings.randomQuality = prevQuality;
-        this.settings.filters = prevFilters;
-        this.saveSettings();
-        this.filterControls?.refresh();
-        this.randomTierButtons?.();
-        this.setStatus(`随机发现失败：${tier.label} 没有返回结果，可换一档或检查代理（D站 可能被 Cloudflare 风控）`, "error");
-        return;
-      }
-      // 「换一批」把池子取光了：这一页跟上一页完全是同一批（如 miku_day + score:>100 全站仅 31 张，
-      // 一页 48 就把池子拿完）。与其假装换过，不如明说并建议换档/加标签。
-      if (reshuffle && seenBefore && this.posts.length) {
-        const fresh = this.posts.filter((p) => !seenBefore.has(String(p.id || ""))).length;
-        if (!fresh) {
-          this._randomPoolExhausted = true;
-          this.setStatus(`「${tier.label}」这一档能给的都看过了（本页 ${this.posts.length} 张全部重复）——换个档位、加个标签，或用筛选面板缩小范围`);
-        }
-      }
+      if (filters.order === "random") filters.order = "";
+      this.settings.randomQuality = "";
+      this.settings.randomPreviousFilters = null;
+      this.settings.filters = normalizeFilters(filters);
+      this.randomTierButtons?.();
+      return true;
     }
 
     /** 退出随机发现（回到普通搜索） */
     async exitRandom() {
-      if (!this.settings.randomQuality) return;
-      this.settings.randomQuality = "";
-      this.settings.filters = normalizeFilters({ ...this.settings.filters, order: "" });
+      if (!this.clearRandomMode()) return;
       this.saveSettings();
       this.filterControls?.refresh();
       this.randomTierButtons?.();
       await this.search({ resetPage: true });
+    }
+
+    applySearchPreset(preset) {
+      this.clearRandomMode();
+      this.setQuery(preset.query);
+      this.settings.rating = normalizeRatings(preset.rating);
+      this.settings.filters = normalizeFilters(preset.filters);
+      this.saveSettings();
+      this.filterControls?.refresh();
+      this.randomTierButtons?.();
+      this.submitSearch(preset.query);
     }
 
     /** 本次请求实际要几张 */
@@ -3142,6 +3130,7 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
     refreshSettingsUI() {
       this.setQuery(this.settings.lastQuery || "");
       this.filterControls?.refresh();
+      this.randomTierButtons?.();
       this.renderPresetOptions();
       void this.hydratePresetNotes();
       this.updatePromptOutputButton();
@@ -3891,7 +3880,7 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
       this.pixivPageGroups = null;
       this.syncReturnButton();
       this._droppedOrder = false;
-      this._randomTrimmed = false;
+      this._randomPageShuffle = false;
       // 工作流恢复/外部修改时，确保输入框与序列化 widget 一致（widget 是权威值）
       if (this.queryInput && this.queryWidget && String(this.queryInput.value) !== String(this.queryWidget.value ?? "")) {
         this.queryInput.value = this.queryWidget.value ?? "";
@@ -3912,14 +3901,14 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
         return;
       }
       let counted = countedSearchTerms(query);
-      // 计数槽超限时的取舍：**随机发现模式下保留 order:random**（用户点的就是它），
-      // 改为丢弃内容标签；普通模式下优先保内容标签、自动降级排序（旧行为）。
-      if (counted > this.tagLimit() && this.settings.randomQuality) {
-        this._randomTrimmed = true;
-        query = query.split(/\s+/).filter((t) => /^order:/.test(t) || /^(rating|age|score|favcount|mpixels|ratio|filetype):/.test(t)).join(" ");
+      // 随机排序占一个 D站 搜索槽。槽位不足时只去掉上游排序，
+      // 保留全部标签与筛选，并在返回页内打乱；绝不改成全库随机。
+      if (counted > this.tagLimit() && this.settings.filters.order === "random") {
+        this._randomPageShuffle = true;
+        query = query.split(/\s+/).filter((t) => !/^order:random$/i.test(t)).join(" ");
         counted = countedSearchTerms(query);
       }
-      if (counted > this.tagLimit() && this.settings.filters.order) {
+      if (counted > this.tagLimit() && this.settings.filters.order && !this._randomPageShuffle) {
         // 匿名搜索最多 2 个计数标签，而排序会占 1 个；内容标签/分级/筛选才是用户意图，
         // 因此超限时优先保留这些、只自动降级排序（改用默认最新）而不是死路报错。
         const droppedOrder = this.settings.filters.order;
@@ -4007,10 +3996,16 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
           unavailableCount += 1;
           return false;
         });
+        if (this._randomPageShuffle) {
+          for (let i = this.posts.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [this.posts[i], this.posts[j]] = [this.posts[j], this.posts[i]];
+          }
+        }
         if (!rawPosts.length) {
           this.fetchSuggestions(this.queryWidget?.value || query, true);
           // 精确搜索无结果 → 模糊纠错（把近似标签替换成真实标签）自动重搜一次
-          if (!skipFuzzy) await this.fuzzyRetry(query, append);
+          if (!skipFuzzy && this.settings.filters.order !== "random") await this.fuzzyRetry(query, append);
         } else if (!this.posts.length) {
           this.setStatus(`该页 ${rawPosts.length} 张全部被排除标签过滤（${excludeTags.join("、")}），请调整排除标签`, "error");
         }
@@ -4037,13 +4032,8 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
         const exclNotice = excludeTags.length ? `已排除 ${excludeTags.map(displayExcludeTag).join("、")} ${excludedCount} 张` : "";
         const tier = this.settings.randomQuality ? RANDOM_QUALITY_TIERS.find((t) => t.id === this.settings.randomQuality) : null;
         if (tier) notices.push(`${tier.label}（${tier.hint}）`);
-        if (this._randomTrimmed) notices.push("为保住随机排序已忽略内容标签");
+        if (this._randomPageShuffle) notices.push(`本页随机：已保留全部标签（D站 当前限 ${this.tagLimit()} 个搜索槽，随机排序另占 1 槽）`);
         this.setStatus(`${source}：${this.posts.length} 张 · 第 ${this.page} 页` + (exclNotice ? `（${exclNotice}）` : "") + (notices.length ? `（${notices.join("；")}）` : ""));
-        // 换一批把池子取光了：search 的常规状态文案刚写上去，这里覆盖成明确提示
-        if (this._randomPoolExhausted) {
-          this._randomPoolExhausted = false;
-          this.setStatus(`这一档能给的都看过了（本页 ${this.posts.length} 张全部重复）——换个档位、加个标签，或用筛选面板缩小范围`);
-        }
       } catch (error) {
         if (timedOut) {
           this.posts = [];
@@ -7626,13 +7616,7 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
           if (preset.noteManual) pick.dataset.manual = "1";
           pick.append(name, meta);
           pick.onclick = () => {
-            this.setQuery(preset.query);
-            this.settings.rating = normalizeRatings(preset.rating);
-            this.settings.filters = normalizeFilters(preset.filters);
-            this.saveSettings();
-            this.filterControls.refresh();
-            // 预设是「查询 + 筛选」的复合动作：筛选上面已经设好，查询本身走用户搜索的统一收口（含记历史）
-            this.submitSearch(preset.query);
+            this.applySearchPreset(preset);
             this.removeDialog();
           };
           const ops = document.createElement("span");
@@ -8732,13 +8716,17 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
         const tierSelect = document.createElement("select");
         tierSelect.className = "adg-random-tier";
         tierSelect.setAttribute("aria-label", "随机发现档位");
-        tierSelect.append(new Option("随机发现", ""));
+        tierSelect.append(new Option("随机关闭", ""));
+        const filterRandomOption = new Option("标签随机", "filter-random");
+        filterRandomOption.disabled = true;
+        filterRandomOption.hidden = true;
+        tierSelect.append(filterRandomOption);
         for (const tier of RANDOM_QUALITY_TIERS) {
           const opt = new Option(tier.label, tier.id);
           opt.title = tier.hint;
           tierSelect.append(opt);
         }
-        tierSelect.title = "随机发现：选一个档位进入随机浏览（再选回「随机发现」退出）";
+        tierSelect.title = "在当前标签范围内随机浏览；选「随机关闭」或点关闭恢复普通搜索";
         tierSelect.onchange = () => {
           const picked = tierSelect.value;
           if (!picked) void this.exitRandom();
@@ -8746,19 +8734,25 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
         };
         randomWrap.append(tierSelect);
 
-        const reshuffleBtn = addAction("换一批", "重新随机一次，并避开本档已看过的图", () => {
-          void this.discoverRandom(this.settings.randomQuality || "good", { reshuffle: true });
+        const reshuffleBtn = addAction("换一批", "重新随机当前标签范围；搜索槽不足时打乱本页", () => {
+          if (!this.settings.randomQuality && this.settings.filters.order === "random") void this.search({ resetPage: true, force: true });
+          else void this.discoverRandom(this.settings.randomQuality || "good");
         }, randomWrap);
         reshuffleBtn.className = "adg-random-reshuffle";
+        const exitBtn = addAction("关闭随机", "退出随机发现，恢复进入前的普通搜索筛选", () => { void this.exitRandom(); }, randomWrap);
+        exitBtn.className = "adg-random-exit";
 
         mainGroup.append(randomWrap);
 
         this.randomTierButtons = () => {
-          const on = Boolean(this.settings.randomQuality);
-          tierSelect.value = on ? this.settings.randomQuality : "";
+          const filterRandom = !this.settings.randomQuality && this.settings.filters.order === "random";
+          const on = Boolean(this.settings.randomQuality) || filterRandom;
+          filterRandomOption.hidden = !filterRandom;
+          tierSelect.value = filterRandom ? "filter-random" : (this.settings.randomQuality || "");
           reshuffleBtn.disabled = !on;
           reshuffleBtn.classList.toggle("is-disabled", !on);
-          reshuffleBtn.title = on ? "重新随机一次，并避开本档已看过的图" : "先选一个随机档位";
+          reshuffleBtn.title = on ? "重新随机当前标签范围；搜索槽不足时打乱本页" : "先选一个随机档位";
+          exitBtn.hidden = !on;
           tierSelect.classList.toggle("active", on);
         };
         this.randomTierButtons();
@@ -8838,6 +8832,7 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
           if (patch.filters) patch.filters = normalizeFilters(patch.filters);
           this.saveBrowseProgress?.();
           Object.assign(this.settings, patch);
+          if (patch.filters && this.settings.randomQuality && patch.filters.order !== "random") this.clearRandomMode({ restoreFilters: false });
           this.saveSettings();
           // 分类切换 = 本地浏览模式（按 id 全量拉取），不走通用渲染/搜索
           if (patch.activeCategory !== undefined) {
@@ -8880,13 +8875,7 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
         if (preset.value === "") return;
         const p = this.settings.presets[Number(preset.value)];
         if (!p) return;
-        this.setQuery(p.query);
-        this.settings.rating = normalizeRatings(p.rating);
-        this.settings.filters = normalizeFilters(p.filters);
-        this.saveSettings();
-        this.filterControls.refresh();
-        // 同预设管理器：筛选已经设好，查询走统一收口（含记历史）
-        this.submitSearch(p.query);
+        this.applySearchPreset(p);
         preset.value = "";
       };
       presetGroup.append(preset);
