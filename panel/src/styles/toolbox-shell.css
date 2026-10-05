@@ -1,0 +1,309 @@
+/* Shared app frame: the local categories can occupy the lower part of this
+   same rail while the active page stays in the content column. */
+:root {
+  --toolbox-sidebar-width: 200px;
+  --toolbox-content-header-height: 48px;
+}
+
+body {
+  padding-left: var(--toolbox-sidebar-width);
+}
+
+.toolbox-sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 200;
+  width: var(--toolbox-sidebar-width);
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 12px 12px 10px;
+  border-right: 1px solid var(--border);
+  background: var(--surface, var(--bg2));
+  color: var(--text);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-hover) transparent;
+}
+
+.toolbox-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  margin: 0 2px 14px;
+}
+
+.toolbox-brand-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.toolbox-brand-icon svg { width: 18px; height: 18px; }
+
+.toolbox-brand-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.toolbox-brand-copy strong { color: var(--text); font-size: 14px; font-weight: 700; }
+.toolbox-brand-copy small { margin-top: 3px; color: var(--text2); font-size: 11px; }
+
+.toolbox-sidebar .main-tabs {
+  display: flex;
+  order: 0;
+  width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.toolbox-sidebar .main-tab {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.3;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
+  transform: none;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.toolbox-sidebar .main-tab > svg { width: 17px; height: 17px; flex: 0 0 17px; }
+.toolbox-sidebar .main-tab > span:first-of-type { overflow: hidden; text-overflow: ellipsis; }
+.toolbox-sidebar .main-tab .badge-tab { margin-left: auto; }
+
+.toolbox-sidebar .main-tab:hover {
+  border-color: var(--border-hover);
+  background: var(--bg4);
+  color: var(--text);
+  transform: none;
+}
+
+.toolbox-sidebar .main-tab.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: none;
+  transform: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.toolbox-sidebar .main-tab.active::after { content: none; }
+
+.toolbox-sidebar .main-tab:focus-visible,
+.toolbox-sidebar .theme-dot:focus-visible,
+.toolbox-header-actions .settings-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.toolbox-local-category-slot {
+  display: none;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  margin: 14px 0 10px;
+  padding-top: 12px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  scrollbar-width: thin;
+}
+
+.toolbox-sidebar[data-active-section="local"] .toolbox-local-category-slot:not(:empty) {
+  display: flex;
+}
+
+.toolbox-sidebar-footer {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+  padding: 12px 2px 2px;
+  border-top: 1px solid var(--border);
+}
+
+.toolbox-theme-label { color: var(--text2); font-size: 11px; font-weight: 600; }
+
+.toolbox-sidebar .theme-switcher {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.toolbox-sidebar .theme-dot {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  transform: none;
+  box-shadow: none;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.toolbox-sidebar .theme-dot:hover {
+  border-color: var(--border-hover);
+  background: var(--bg4);
+  transform: none;
+}
+
+.toolbox-sidebar .theme-dot.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  transform: none;
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+/* design-system.css gives the drinkit theme's original 11px dots their own
+   filled-button treatment. The shell uses larger buttons with a separate swatch. */
+html[data-theme] .toolbox-sidebar .theme-dot { background: transparent; box-shadow: none; }
+html[data-theme] .toolbox-sidebar .theme-dot:hover { background: var(--bg4); }
+html[data-theme] .toolbox-sidebar .theme-dot.active {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+.theme-dot-swatch {
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--border-hover);
+  border-radius: 50%;
+  background: var(--color-primary, var(--accent));
+}
+
+.theme-dot[data-theme="mono"] .theme-dot-swatch { background: #171717; }
+.theme-dot[data-theme="mono-light"] .theme-dot-swatch { background: #fff; }
+
+#contentHeader {
+  position: sticky;
+  z-index: 100;
+  top: 0;
+  height: var(--toolbox-content-header-height);
+  min-height: var(--toolbox-content-header-height);
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface, var(--bg));
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+#contentHeader .header-inner {
+  display: flex;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  flex-wrap: nowrap;
+}
+
+#contentHeader .toolbox-page-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.2;
+  letter-spacing: -.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#contentHeader .toolbox-page-title::after { content: none; }
+
+.toolbox-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.toolbox-header-actions .settings-btn {
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  place-items: center;
+}
+
+@media (max-width: 900px) {
+  :root { --toolbox-sidebar-width: 64px; }
+
+  .toolbox-sidebar { align-items: center; padding: 10px 7px 8px; }
+  .toolbox-brand { justify-content: center; margin: 0 0 14px; }
+  .toolbox-brand-copy { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .toolbox-sidebar .main-tabs { align-items: center; }
+  .toolbox-sidebar .main-tab { width: 48px; min-height: 44px; justify-content: center; padding: 8px; }
+  .toolbox-sidebar .main-tab > span:first-of-type { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .toolbox-sidebar .main-tab .badge-tab { position: absolute; top: 1px; right: 1px; margin: 0; padding: 0 3px; font-size: 9px; }
+  .toolbox-sidebar .theme-switcher { flex-direction: column; gap: 5px; }
+  .toolbox-sidebar .theme-dot { width: 34px; height: 34px; min-width: 34px; min-height: 34px; }
+  .toolbox-theme-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .toolbox-sidebar-footer { align-items: center; width: 100%; }
+  .toolbox-local-category-slot { width: 100%; }
+}
+
+@media (max-width: 540px) {
+  :root { --toolbox-sidebar-width: 56px; }
+  .toolbox-sidebar { padding-right: 5px; padding-left: 5px; }
+  .toolbox-sidebar .main-tab { width: 44px; }
+  #contentHeader { padding-right: 10px; padding-left: 12px; }
+  #contentHeader .toolbox-page-title { font-size: 14px; }
+  .toolbox-header-actions { gap: 6px; }
+  .toolbox-header-actions .build-time { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toolbox-sidebar .main-tab,
+  .toolbox-sidebar .theme-dot { transition: none; }
+}

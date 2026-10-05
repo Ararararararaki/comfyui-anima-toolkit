@@ -6,8 +6,9 @@ export class TriggerOverrideClient {
     this.entries = new Map();
     this.names = new Map();
     this.pending = new Map();
+    this.epochs = new Map();
+    this.loadedEpochs = new Map();
     this.listeners = new Set();
-    this.generation = 0;
   }
   entry(name) { return this.entries.get(normalize(name)); }
   words(name, automatic) {
@@ -31,13 +32,29 @@ export class TriggerOverrideClient {
       const key = normalize(name);
       if (JSON.stringify(this.entries.get(key)) !== JSON.stringify(value)) changed.push(key);
       this.entries.set(key, value);
+      this.loadedEpochs.set(key, this.epochs.get(key) || 0);
     }
     if (changed.length) for (const listener of this.listeners) listener(changed);
   }
+  _signature(names) {
+    return JSON.stringify([...new Set(names.map(normalize))].sort().map(key => [key, this.epochs.get(key) || 0]));
+  }
   async load(names, refresh = false) {
-    const needed = [...new Set(names)].filter(name => {
-      const key = normalize(name); this.names.set(key, name);
-      return refresh || !this.entries.has(key);
+    const unique = new Map();
+    for (const name of names) {
+      const key = normalize(name);
+      if (!key) continue;
+      this.names.set(key, name);
+      if (!unique.has(key)) unique.set(key, name);
+    }
+    const requested = [...unique.values()];
+    if (refresh) for (const name of requested) {
+      const key = normalize(name);
+      this.epochs.set(key, (this.epochs.get(key) || 0) + 1);
+    }
+    const needed = requested.filter(name => {
+      const key = normalize(name);
+      return this.loadedEpochs.get(key) !== (this.epochs.get(key) || 0);
     });
     if (!needed.length) return;
     // Keep requests short enough for servers with an 8 KB URL limit.
@@ -51,27 +68,39 @@ export class TriggerOverrideClient {
     if (chunk.length) chunks.push(chunk);
     await Promise.all(chunks.map(async names => {
       const url = "/anima/lora_trigger_overrides?names=" + encodeURIComponent(JSON.stringify(names));
-      if (this.pending.has(url)) return this.pending.get(url);
-      const generation = this.generation;
-      const promise = this._request(url).then(async data => {
-        // A slow read started before a save must not overwrite its confirmed result.
-        if (generation === this.generation) this._apply(data);
+      const signature = this._signature(names);
+      const pending = this.pending.get(url);
+      if (pending?.signature === signature) return pending.promise;
+      let promise;
+      promise = this._request(url).then(async data => {
+        // Panel saves arrive via BroadcastChannel while a node read may still be in flight.
+        // Only apply a response for the current per-file epoch; otherwise wait for the fresh read.
+        if (signature === this._signature(names)) this._apply(data);
         else {
-          this.pending.delete(url);
-          await this.load(names, true);
+          const latest = this.pending.get(url);
+          if (latest && latest.signature !== signature) await latest.promise;
+          else if (!names.every(name => this.loadedEpochs.get(normalize(name)) === (this.epochs.get(normalize(name)) || 0))) {
+            await this.load(names, true);
+          }
         }
-      }).finally(() => { if (this.pending.get(url) === promise) this.pending.delete(url); });
-      this.pending.set(url, promise);
+      }).finally(() => {
+        if (this.pending.get(url)?.promise === promise) this.pending.delete(url);
+      });
+      this.pending.set(url, {signature, promise});
       return promise;
     }));
-    if (needed.some(name => !this.entries.has(normalize(name)))) throw new Error("自定义触发词响应不完整");
+    if (needed.some(name => this.loadedEpochs.get(normalize(name)) !== (this.epochs.get(normalize(name)) || 0))) {
+      throw new Error("自定义触发词响应不完整");
+    }
   }
   async save(name, words, reset = false) {
     const data = await this._request("/anima/lora_trigger_overrides", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({name, words, action: reset ? "reset" : "save"}),
     });
-    this.generation++;
+    const key = normalize(name);
+    this.names.set(key, name);
+    this.epochs.set(key, (this.epochs.get(key) || 0) + 1);
     this._apply(data);
     return data;
   }

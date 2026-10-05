@@ -104,6 +104,13 @@ from .anima_prompt_expander import (
 from . import anima_local_llm  # 本地 LLM 翻译 provider（手动启用；load/unload/status 路由在模块内注册）
 from . import anima_prompt_library  # Prompt 库服务端镜像（浏览器 IndexedDB 的持久化兜底）
 
+# Record actual encoder/sampler inputs for new PNGs; incompatible hosts keep generating.
+try:
+    from . import anima_prompt_provenance as _prompt_provenance
+    _PROMPT_PROVENANCE_INFO = _prompt_provenance.install()
+except Exception as _prompt_provenance_error:
+    print(f"[TK 提示词来源] 记录模块不可用（图片生成不受影响）：{_prompt_provenance_error}")
+
 # 多源画廊：协议层（anima_gallery_sources）导入时会**容错**加载各图源适配器
 # （anima_gallery_civitai / anima_gallery_pixiv），路由由适配器自注册。
 # 这里只做一件事：包一层 try/except —— 任何一个图源缺失（并行开发中）或导入失败，
@@ -229,7 +236,7 @@ WEB_DIRECTORY = "./web"
 # 从根上消掉「两个地方要一起改」这个失败模式；读失败（打包丢文件等）才回落到内置值。
 # 更新链（_is_update_release_path / 更新 ZIP 校验）本来就要求包里带 VERSION，
 # 所以这个文件在真实安装里一定存在。
-_FALLBACK_VERSION = "2.28.2"
+_FALLBACK_VERSION = "2.29.0"
 try:
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"), encoding="utf-8") as _vf:
         __version__ = _vf.read().strip() or _FALLBACK_VERSION

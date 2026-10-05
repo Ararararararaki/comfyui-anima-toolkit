@@ -18,6 +18,38 @@ const TEXT_INPUT = /^(text(?:_[a-z0-9]+)?|prompt(?:_text)?|positive|negative|str
 const dedup = (values: string[]) => [...new Set(values.map(value => value.trim()).filter(Boolean))]
 const join = (values: string[]) => dedup(values).join(', ')
 
+/**
+ * **已证实的显示缓存型节点**（语义防护，不是"通用提取算法"）。
+ *
+ * 这类节点的序列化字段只是"上一次前端预览的显示状态"，**不是**本次执行
+ * 真正喂给下游的文本，因此不能作为提示词来源。
+ *
+ * 约束（2026-10-04 owner 明确）：
+ *  · 判据**只有 class 名 + 该节点的执行语义**；
+ *  · **不得**按字段名（`tags`/`text`）做宽泛规则 —— 那会把任意合法自定义
+ *    文本节点的 TEXT/STRING 输入误判成显示缓存；
+ *  · **不得**按字符串内容（"看起来像占位符/节点名"）猜测提示词；
+ *  · 名单只收**已被实测确认**的节点，新增需有实测依据，不得凭名字推测，
+ *    也不得为个别工作流加特例；
+ *  · 未来做通用方案时应按**实际执行数据 + 类型 + 槽位**追踪，不在本名单里堆节点。
+ *
+ * 依据（owner 审计 WD14 运行时实现）：WD14Tagger 的 INPUT_TYPES 与 tag() 只有
+ * image/model/threshold/character_threshold/exclude_tags/replace_underscore/
+ * trailing_comma；序列化出的 `tags` 是前端显示状态，tag() 只是
+ * `return ui.tags, result`，不持久化本次真实结果 → 保存值可能过期
+ * （0423 实测不含用户实际角色词）。
+ */
+const DISPLAY_CACHE_TEXT_NODES = [
+  /^WD14Tagger\b/i,          // 打标器：tags 是前端显示状态，不持久化本次结果
+  /^easy\s*showAnything$/i,  // 纯显示节点：text 是上次预览留痕
+]
+
+/** 该节点类型是否属于已证实的显示缓存型（只按 class 名） */
+function isRuntimeOnlyTextNode(type: string): boolean {
+  const name = String(type || '').trim()
+  return DISPLAY_CACHE_TEXT_NODES.some(pattern => pattern.test(name))
+}
+
 function ref(value: unknown): Ref | null {
   return Array.isArray(value) && value.length === 2 && (typeof value[0] === 'string' || typeof value[0] === 'number') && Number.isInteger(value[1])
     ? { nodeId: String(value[0]), outputSlot: value[1] } : null
@@ -88,7 +120,8 @@ export function parseGraphPrompt(workflow: unknown): GraphPromptResult {
   const graph = normalize(workflow)
   const warnings: string[] = []
   const warn = (message: string) => { if (!warnings.includes(message)) warnings.push(message) }
-  const isSampler = (node: GraphNode) => /sampler|upscal/i.test(node.type) && ('positive' in node.inputs || 'positive_cond' in node.inputs || 'guider' in node.inputs || 'conditioning' in node.inputs)
+  const isSampler = (node: GraphNode) => !(node.type.toLowerCase() === 'ultimatesdupscale' && node.inputs.mode_type === 'None' && node.inputs.seam_fix_mode === 'None')
+    && /sampler|upscal/i.test(node.type) && ('positive' in node.inputs || 'positive_cond' in node.inputs || 'guider' in node.inputs || 'conditioning' in node.inputs)
   const savers = [...graph.values()].filter(node => /saveimage/i.test(node.type) && node.raw.mode !== 2 && node.raw.mode !== 4 && Object.keys(node.inputs).some(key => IMAGE_INPUTS.has(key)))
   let imageAmbiguous = false
   const stages: GraphNode[] = []
@@ -99,7 +132,7 @@ export function parseGraphPrompt(workflow: unknown): GraphPromptResult {
     if (activeImages.has(node.id) || activeImages.size > 256) { warn('图片生成链包含循环或超过解析上限'); return }
     activeImages.add(node.id)
     const edges = Object.entries(node.inputs).filter(([name, value]) => ref(value) && (IMAGE_INPUTS.has(name) || ['IMAGE', 'LATENT'].includes(node.inputTypes[name])))
-    const known = isSampler(node) || /saveimage/i.test(node.type) || new Set(['vaedecode', 'vaedecodetiled', 'vaeencode', 'vaeencodetiled', 'vaeencodeforinpaint', 'latentupscale', 'latentupscaleby', 'imagescale', 'imagescaleby', 'reroute', 'imageblend', 'imagecompositemasked', 'latentcomposite', 'latentcompositemasked']).has(node.type.toLowerCase())
+    const known = isSampler(node) || /saveimage/i.test(node.type) || new Set(['vaedecode', 'vaedecodetiled', 'vaeencode', 'vaeencodetiled', 'vaeencodeforinpaint', 'latentupscale', 'latentupscaleby', 'imagescale', 'imagescaleby', 'reroute', 'imageblend', 'imagecompositemasked', 'latentcomposite', 'latentcompositemasked', 'ultimatesdupscale']).has(node.type.toLowerCase())
     if (!known && edges.length > 1) {
       imageAmbiguous = true
       warn('无法确定图像分流节点的实际输入分支')
@@ -148,6 +181,13 @@ export function parseGraphPrompt(workflow: unknown): GraphPromptResult {
   }
   function nodeText(source: Ref, node: GraphNode, role: 'positive' | 'negative', next: Set<string>): string[] {
     const type = node.type.toLowerCase()
+    // ── 运行期文本节点：保存值不是本次执行文本 ──
+    // WD14Tagger.tags / easy showAnything.text 是前端显示缓存，实测（0423 实图）
+    // 不含本次出图实际用到的角色词 → 用它会跨图污染。一律按"不可还原"处理。
+    if (isRuntimeOnlyTextNode(node.type)) {
+      warn('无法完整还原节点的运行期文本：' + node.type)
+      return []
+    }
     if (/^tk\s*prompt\s*cards$/.test(type)) {
       if (source.outputSlot === 2) { warn('LoRA 语法输出不属于提示词'); return [] }
       return [join(values(node, ['positive', 'opt_text'], role, next))]

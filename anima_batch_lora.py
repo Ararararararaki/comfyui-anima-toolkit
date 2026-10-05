@@ -7,6 +7,7 @@ import re
 import json
 import os
 import hashlib
+import math
 import threading
 import time
 import asyncio
@@ -1134,7 +1135,13 @@ async def gallery_meta(request):
     def read_metadata():
         before = os.stat(abs_path)
         canonical_rel = os.path.relpath(abs_path, root).replace("\\", "/")
-        meta = anima_gallery.parse_full(abs_path, canonical_rel)
+        history = None
+        try:
+            history = PromptServer.instance.prompt_queue.get_history(max_items=64)
+        except Exception:
+            pass
+        meta = (anima_gallery.parse_full(abs_path, canonical_rel, history=history) if history
+                else anima_gallery.parse_full(abs_path, canonical_rel))
         after = os.stat(abs_path)
         if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
             return None
@@ -1155,6 +1162,160 @@ async def gallery_meta(request):
     if meta is None:
         return web.json_response({"error": "图片在读取期间已更新，请重试"}, status=409)
     return web.json_response(meta, dumps=lambda o: json.dumps(o, ensure_ascii=False, separators=(",", ":")))
+
+
+# Outputs 允许删除的文件扩展名白名单（只有这些才算"图片"，绝不删任意文件）
+_OUTPUT_IMAGE_EXTS = {".png", ".webp", ".jpg", ".jpeg"}
+
+
+@PromptServer.instance.routes.post("/anima/outputs/delete")
+async def outputs_delete(request):
+    """删除 ComfyUI output 目录内的一张图片（Outputs 画廊来源）。
+
+    为什么需要独立端点（2026-10-04 用户实测）：
+      · 画廊来源的 Outputs **没有目录句柄**（`dirHandle=null`），浏览器侧的
+        File System Access 删除路径根本进不去 —— 这正是"删除不可用"的真实原因；
+      · 已有的 `/anima/panel_scan/delete` 是 **LoRA 专用**（按 loras 根解析），
+        复用它会把 Outputs 的删除语义和模型文件混在一起，故不复用。
+
+    安全与冲突语义（用户明确要求）：
+      · 路径必须落在 **output 根之内**（commonpath 严格比较，防 ../ 与前缀兄弟目录逃逸）；
+      · **必须**携带删除前的图片修订（mtime/size），且必须是有限数值；缺失/非法 → 400。
+        没有修订就没有可验证的"我删的是我看到的那一张"，一律拒绝（不做"省略即放行"的宽松分支）；
+      · 修订与磁盘现状不符 → 409，绝不误删"已换内容"的同名文件；
+      · stat 与 unlink 在**同一个 offload 操作内**完成（一次 stat + 一次 unlink），
+        避免"校验与删除跨线程/跨 await 分离"造成的更大竞态；
+      · 只删**图片扩展名**的文件，且**不跟随符号链接**；
+      · 删除成功后同步把该条目从画廊索引移除（无需全量重建）。
+
+    请求体：
+      {"path": "2026-10-03/xxx.png", "root": "<output root>", "mtime": 1791023902.8968248, "size": 7950951}
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    rel = str(body.get("path") or "").strip()
+    if not rel:
+        return web.json_response({"error": "缺少 path 参数"}, status=400)
+
+    # ── 来源 root 必填并与实际 output 根核对（2026-10-04 owner 追加证据）──
+    # 为什么必须有：`source + root + path + mtime + size` 才是真实图片身份。
+    # 缺 root 时，ComfyUI 的 output 目录配置一旦变更，
+    # 「同一相对路径 + 同 mtime/size」的文件在新根下会被当成同一张图删掉 —— 删错了另一张图。
+    if "root" not in body:
+        return web.json_response({"error": "缺少来源 root（无法证明与当前 output 根同一张图）"}, status=400)
+    want_root_raw = str(body.get("root") or "").strip()
+    if not want_root_raw:
+        return web.json_response({"error": "来源 root 为空"}, status=400)
+
+    try:
+        actual_root = folder_paths.get_output_directory()
+    except Exception as exc:
+        return web.json_response({"error": f"无法定位 output 目录: {exc}"}, status=500)
+
+    def _norm_root(value):
+        # 归一化只做"分隔符 + 尾斜杠 + 大小写（Windows）"，不做 realpath：
+        # 调用方给的是浏览器侧的来源标识，服务端只做同一性核对。
+        text = str(value or "").replace("\\", "/").rstrip("/")
+        return os.path.normcase(os.path.normpath(text))
+
+    if _norm_root(want_root_raw) != _norm_root(actual_root):
+        return web.json_response({
+            "error": "来源存储根与当前 output 根不一致，未删除",
+            "rootMismatch": True,
+        }, status=409)
+
+    # ── 修订必填且必须有限 ──
+    # 缺修订就无法证明"删的是同一张图"；NaN/Infinity 会让后续比较全部为 False（静默放行），必须挡掉。
+    if "mtime" not in body or "size" not in body:
+        return web.json_response({"error": "缺少图片修订信息（mtime/size）"}, status=400)
+    try:
+        want_mtime = float(body.get("mtime"))
+        want_size = int(body.get("size"))
+    except (TypeError, ValueError, OverflowError):
+        return web.json_response({"error": "修订信息非法（mtime/size 必须是数值）"}, status=400)
+    if not math.isfinite(want_mtime) or not math.isfinite(float(want_size)) or want_size < 0:
+        return web.json_response({"error": "修订信息非法（必须是有限数值）"}, status=400)
+
+    root = actual_root
+
+    # 扩展名白名单 + 根内校验（resolve_within_root 已做 commonpath 与隐藏文件防护）
+    rel_norm = rel.replace("\\", "/").lstrip("/")
+    if os.path.splitext(rel_norm)[1].lower() not in _OUTPUT_IMAGE_EXTS:
+        return web.json_response({"error": "只允许删除 output 目录内的图片文件"}, status=400)
+
+    abs_path = anima_thumbs.resolve_within_root(root, rel)
+    if not abs_path:
+        # 区分"本就不存在"（missing：调用方不得谎报已删除）与"路径非法/越界"
+        in_root = False
+        try:
+            candidate = os.path.abspath(os.path.join(os.path.abspath(root), rel_norm))
+            in_root = os.path.commonpath([os.path.abspath(root), candidate]) == os.path.abspath(root)
+        except ValueError:
+            in_root = False
+        if in_root:
+            return web.json_response({"error": "文件不存在（可能已被其它程序删除）", "missing": True}, status=404)
+        return web.json_response({"error": "文件不存在或不在 output 目录内"}, status=404)
+    # 符号链接：解析后必须仍在根内，且本身不能是链接（防借链接删到根外）
+    if os.path.islink(abs_path):
+        return web.json_response({"error": "拒绝通过符号链接删除文件"}, status=400)
+    try:
+        if os.path.commonpath([os.path.abspath(root), os.path.realpath(abs_path)]) != os.path.abspath(root):
+            return web.json_response({"error": "文件不在 output 目录内"}, status=403)
+    except ValueError:
+        return web.json_response({"error": "文件不在 output 目录内"}, status=403)
+
+    def _stat_and_remove():
+        """一次 stat → 修订核对 → unlink，在同一工作线程内完成。
+
+        返回 ("ok", rel) / ("conflict", cur) / ("gone", None) / ("io", msg)。
+        """
+        try:
+            before = os.stat(abs_path, follow_symlinks=False)
+        except FileNotFoundError:
+            return ("gone", None)
+        except OSError as exc:
+            return ("io", str(exc))
+        if abs(before.st_mtime - want_mtime) >= 0.001 or before.st_size != want_size:
+            return ("conflict", {"mtime": before.st_mtime, "size": before.st_size})
+
+        try:
+            os.remove(abs_path)
+        except FileNotFoundError:
+            return ("gone", None)
+        except OSError as exc:
+            return ("io", str(exc))
+
+        # 索引同步移除：只删这一条，不做全量重建（全量重建是用户明确点名要去掉的）
+        canonical = os.path.relpath(abs_path, root).replace("\\", "/")
+        try:
+            index_path = _gallery_index_path()
+            with _GALLERY_LOCK:
+                index = anima_gallery.load_index(index_path)
+                entries = index.get("entries")
+                if isinstance(entries, dict) and entries.pop(canonical, None) is not None:
+                    index["total"] = len(entries)
+                    index["builtAt"] = int(time.time() * 1000)
+                    anima_gallery._save_index(index_path, index)
+        except Exception as exc:  # noqa: BLE001 —— 索引清理失败不应回滚已完成的磁盘删除
+            print(f"[outputs] 索引条目清理失败（文件已删除）: {exc}")
+        return ("ok", canonical)
+
+    try:
+        status_kind, payload = await asyncio.to_thread(_stat_and_remove)
+    except Exception as exc:  # noqa: BLE001
+        return web.json_response({"error": f"删除失败: {exc}"}, status=500)
+
+    if status_kind == "ok":
+        return web.json_response({"deleted": payload})
+    if status_kind == "gone":
+        # 文件本就不在：这不是"我们删掉了"，必须让调用方知道，避免谎报成功
+        return web.json_response({"error": "文件不存在（可能已被其它程序删除）", "missing": True}, status=404)
+    if status_kind == "conflict":
+        return web.json_response({"error": "文件已被修改，未删除", "conflict": True, "current": payload}, status=409)
+    return web.json_response({"error": f"删除失败: {payload}"}, status=500)
 
 
 @PromptServer.instance.routes.post("/anima/panel_scan/delete")

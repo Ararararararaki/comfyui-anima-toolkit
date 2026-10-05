@@ -17,16 +17,24 @@ from PIL import Image
 
 try:
     from .services.output_metadata import parse_output_metadata
+    from .services.prompt_record import decode_record
 except ImportError:  # standalone pure-module tests / development tools
     from services.output_metadata import parse_output_metadata
+    from services.prompt_record import decode_record
 
 INDEX_VERSION = 1
 # 解析语义版本：**改动提取逻辑时必须 +1** —— 索引里记着上一轮的 parserVersion，
 # 不一致时增量更新会放弃复用旧条目、全量重解析一次（否则老图永远停在旧语义上，
 # 而它们的 mtime/size 没变，_entry_unchanged 会一直判定"可复用"）。
 # 2（2026-09-17）：正向提示词从「只取最长候选」改为「拼接全部候选 + 标签级保序去重」。
-PARSER_VERSION = 3
+# 4：build_entry 优先消费图片内的提示词溯源记录（tk_prompt_provenance），静态图字段
+#    退为兜底 —— 提取语义再次变化，升级后增量更新会全量重解析一次。
+PARSER_VERSION = 5
 _HEAD_BYTES = 4 * 1024 * 1024  # tEXt 在 IDAT 之前，读头部即可覆盖绝大多数图
+
+# 图片内的提示词溯源记录（wire schema v1，由 services/prompt_record.py 的编解码器定义）。
+# 记录是 SaveImage 侧写进 PNG 文本块的一行 ASCII JSON；缺失时本模块行为与历史版本一致。
+_PROMPT_RECORD_KEY = "tk_prompt_provenance"
 
 # 与前端 isNegativeText 相同的保守负面词表（命中≥2 判负，仅用于 hasPrompt 启发式）
 _NEG_WORDS = ["worst quality", "low quality", "score_1", "score_2", "score_3", "bad anatomy",
@@ -54,7 +62,39 @@ def _looks_negative_strong(text: str, hits: int = 3) -> bool:
     return sum(1 for w in _NEG_WORDS if w in lower) >= hits
 
 
-# ── PNG chunk 解析（只读文件头部；tEXt 精确 / zTXt zlib / iTXt 近似，与前端行为对齐）──
+def _read_itxt(value: bytes):
+    """按 PNG 规范解出 iTXt 的正文；解不出返回 None。
+
+    结构：keyword \\0 压缩标志 压缩方法 语言标签 \\0 翻译关键词 \\0 正文。
+    注意语言标签 / 翻译关键词**可以是空串**，所以必须逐字段推进指针，
+    不能用固定次数的 split（连续的空字段会让 split 的结果错位）。
+    调用方在 None 时退回历史近似行为，所以这里只做"正确的那一种"解析。
+    """
+    nul = value.find(b"\x00")
+    if nul < 0:
+        return None
+    cursor = nul + 1
+    if cursor + 2 > len(value):
+        return None
+    flag, method = value[cursor], value[cursor + 1]
+    cursor += 2
+    for _ in range(2):  # 语言标签，再翻译关键词
+        end = value.find(b"\x00", cursor)
+        if end < 0:
+            return None
+        cursor = end + 1
+    body = value[cursor:]
+    if flag == 0 and method == 0:
+        return body.decode("utf-8", "replace")
+    if flag == 1 and method == 0:
+        try:
+            return zlib.decompress(body).decode("utf-8", "replace")
+        except Exception:
+            return None
+    return None
+
+
+# ── PNG chunk 解析（只读文件头部；tEXt 精确 / zTXt zlib / iTXt 按规范结构）──
 def read_text_chunks(abs_path: str, head_bytes: int = _HEAD_BYTES) -> dict:
     raw: dict = {}
     try:
@@ -75,16 +115,23 @@ def read_text_chunks(abs_path: str, head_bytes: int = _HEAD_BYTES) -> dict:
         if ctype in (b"IDAT", b"IEND") or data_end > total:
             break  # 文本 chunk 都在 IDAT 前；缓冲区截断则停
         if ctype in (b"tEXt", b"zTXt", b"iTXt"):
-            seg = view[data_start:data_end]
-            key_end = data_start
-            while key_end < data_end and head[key_end] != 0 and key_end - data_start < 79:
-                key_end += 1
-            key = head[data_start:key_end].decode("latin-1", "replace")
+            seg = bytes(view[data_start:data_end])
+            nul = seg.find(b"\x00")
+            if not 1 <= nul <= 79:
+                offset = data_end + 4
+                continue
+            key = seg[:nul].decode("latin-1", "replace")
+            body = seg[nul + 1:] if nul >= 0 else b""
             try:
                 if ctype == b"zTXt":
-                    val = zlib.decompress(bytes(view[key_end + 2:data_end])).decode("utf-8", "replace")
+                    val = zlib.decompress(body[1:]).decode("utf-8", "replace")
+                elif ctype == b"iTXt":
+                    val = _read_itxt(seg)
+                    if val is None:  # malformed containers carry no usable text
+                        offset = data_end + 4
+                        continue
                 else:
-                    val = head[key_end + 1:data_end].decode("utf-8", "replace")
+                    val = body.decode("utf-8", "replace")
             except Exception:
                 val = ""
             raw[key] = val
@@ -404,8 +451,79 @@ def _mine_prompt_field(value, depth: int):
             yield from _mine_prompt_field(v, depth + 1)
 
 
-def parse_comfy_summary(wf) -> dict:
-    """从 ComfyUI 工作流（UI/API 双格式）提取摘要字段。"""
+# ── 提示词溯源记录消费（PNG 文本块 tk_prompt_provenance）──
+# 记录是**运行期已核验的观测**：SaveImage 落盘时把「这一张图由哪次采样、哪些已核验文本产生」
+# 写进图片本身。它比从工作流静态反推更接近真相，所以有记录时以记录为准，静态图字段退为兜底。
+# 记录的编解码语义完全在 services/prompt_record.py 里（本模块不重新实现、不改写它）。
+
+_PROMPT_FIELDS = ("prompt", "negativePrompt", "promptStages", "promptStatus", "promptWarnings")
+
+def _read_prompt_record(raw) -> str:
+    """取出图片内记录原文；没有该文本块时返回空串（= 历史行为路径）。"""
+    if not isinstance(raw, dict):
+        return ""
+    value = raw.get(_PROMPT_RECORD_KEY)
+    return value if isinstance(value, str) else ""
+
+
+def _merge_warnings(existing, extra) -> list:
+    """合并告警：保留原有告警，只追加新的、非空且不重复的字符串（顺序稳定）。"""
+    out = [item for item in (existing or []) if isinstance(item, str) and item]
+    for item in extra or []:
+        if isinstance(item, str) and item and item not in out:
+            out.append(item)
+    return out
+
+
+def _downgrade_static_status(status: str) -> str:
+    """静态结果**不得**因为一份读不出来的记录而被当成完整答案。
+
+    只有 complete 需要降级：partial / ambiguous / missing 本身已经表达了不确定性。
+    """
+    return "partial" if status == "complete" else status
+
+
+def _apply_record_to_summary(summary: dict, record_text: str) -> None:
+    """把图片内记录覆盖到摘要的提示词字段上（原地改 summary）。
+
+    判定与后果（与 codec 的公共状态协议一致，本函数**不发明**第五种状态）：
+      · 无记录原文           → 一字不动：保留历史解析器行为（老图不受影响）。
+      · 记录无效/未来版本     → 保留静态可靠结果，静态为 complete 时降级为 partial，并说明原因。
+      · 记录有效 + exact      → 提示词/负面/阶段/状态/告警全部取自记录；模型、seed、loras 等不受影响。
+      · 记录有效 + ambiguous  → 不导出任何提示词（记录侧已清空文本），状态 ambiguous。
+      · 记录有效 + unknown    → 不导出任何提示词，状态 missing。
+
+    为什么 ambiguous / unknown 不落回静态图文本：那时**无法证明这张图属于这条提示词**，
+    静态反推的文本可能来自工作流里与本图无关的分支；拿它填 prompt 会把不确定伪装成确定。
+    """
+    if not isinstance(summary, dict) or not record_text:
+        return
+    static_status = summary.get("promptStatus") or "missing"
+    static_prompt = summary.get("prompt") or ""
+    public = decode_record(record_text)
+    if not isinstance(public, dict):
+        # 记录存在但读不出来（损坏 / 字段非法 / 超出上限 / schemaVersion 不认识 /
+        # imageAssociation 不是合法值）。
+        summary["promptStatus"] = _downgrade_static_status(static_status)
+        summary["promptWarnings"] = _merge_warnings(
+            summary.get("promptWarnings"),
+            ["图片内的提示词记录无法读取（损坏或版本不认识）；以下提示词来自工作流静态解析"
+             if static_prompt
+             else "图片内的提示词记录无法读取（损坏或版本不认识）"],
+        )
+        return
+
+    # Ownership and status are authoritative codec decisions; never decode them twice.
+    for field in _PROMPT_FIELDS:
+        summary[field] = public[field]
+
+
+def parse_comfy_summary(wf, record: str = "") -> dict:
+    """从 ComfyUI 工作流（UI/API 双格式）提取摘要字段。
+
+    ``record`` 是图片内的提示词溯源记录原文（可选）。给了就按上面的规则优先消费它；
+    不给（默认）时行为与历史版本逐字一致。
+    """
     out = {"model": "", "seed": "", "steps": "", "cfg": "", "sampler": "", "scheduler": "",
            "prompt": "", "hasPrompt": False, "loras": [], "hasWorkflow": True}
     out["loras"] = _extract_loras(wf)
@@ -415,6 +533,7 @@ def parse_comfy_summary(wf) -> dict:
         val = fields.get(key)
         out[key] = "" if val is None else str(val)
     out.update(parse_output_metadata(wf))
+    _apply_record_to_summary(out, record)
     out["hasPrompt"] = bool(out["prompt"])
     return out
 
@@ -463,12 +582,17 @@ def parse_a1111_summary(parameters: str) -> dict:
 
 
 def build_entry(abs_path: str, rel_path: str, *, raw=None, stat=None) -> dict:
-    """单张图的摘要条目（按钮/卡片/筛选所需 + 布局宽高）。"""
+    """单张图的摘要条目（按钮/卡片/筛选所需 + 布局宽高）。
+
+    提示词字段优先取自图片内的溯源记录；模型 / seed / steps / cfg / sampler / scheduler /
+    loras / 宽高 / mtime / size / hasWorkflow 一律仍由静态解析给出，记录不参与。
+    """
     stat = stat if stat is not None else os.stat(abs_path)
     raw = raw if raw is not None else read_text_chunks(abs_path)
     prompt_data = raw.get("prompt", "")
     workflow_data = raw.get("workflow", "")
     parameters = raw.get("parameters", "")
+    record_text = _read_prompt_record(raw)
 
     entry = {
         "path": rel_path.replace("\\", "/"),
@@ -495,7 +619,7 @@ def build_entry(abs_path: str, rel_path: str, *, raw=None, stat=None) -> dict:
             src = None
 
     if src is not None:
-        summary = parse_comfy_summary(src)
+        summary = parse_comfy_summary(src, record_text)
         entry["hasWorkflow"] = bool(workflow_data or prompt_data)
         entry.update({k: summary[k] for k in ("model", "seed", "steps", "cfg", "sampler", "scheduler", "prompt", "loras",
                                                         "negativePrompt", "promptStages", "promptStatus", "promptWarnings")})
@@ -504,9 +628,20 @@ def build_entry(abs_path: str, rel_path: str, *, raw=None, stat=None) -> dict:
             entry["hasWorkflow"] = True
     elif parameters:
         summary = parse_a1111_summary(parameters)
+        # 参数块路径同样尊重图片内记录：有记录且可核验时以记录为准，否则保留 A1111 解析结果。
+        _apply_record_to_summary(summary, record_text)
         entry.update({k: summary[k] for k in ("model", "seed", "steps", "cfg", "sampler", "scheduler", "prompt", "loras", "hasWorkflow",
                                                         "negativePrompt", "promptStages", "promptStatus", "promptWarnings")})
+        entry["hasPrompt"] = bool(entry["prompt"])
     else:
+        # 没有工作流、没有参数块：记录本身就是唯一证据（SaveImage 可以不带 workflow 只写记录）。
+        if record_text:
+            summary = {"model": "", "seed": "", "steps": "", "cfg": "", "sampler": "", "scheduler": "",
+                       "prompt": "", "negativePrompt": "", "promptStages": [],
+                       "promptStatus": "missing", "promptWarnings": []}
+            _apply_record_to_summary(summary, record_text)
+            entry.update({k: summary[k] for k in _PROMPT_FIELDS})
+            entry["hasPrompt"] = bool(entry["prompt"])
         entry["hasWorkflow"] = bool(workflow_data or prompt_data)
         entry["loras"] = _extract_loras({}) or []
 
@@ -779,7 +914,7 @@ def _save_index(index_path: str, index: dict) -> None:
     os.replace(tmp, index_path)
 
 
-def parse_full(abs_path: str, rel_path: str) -> dict:
+def parse_full(abs_path: str, rel_path: str, *, history=None) -> dict:
     """单张完整元数据（/anima/gallery/meta 按需）：含 workflowJson 与 raw。"""
     raw = read_text_chunks(abs_path)
     prompt_data = raw.get("prompt", "")
@@ -787,6 +922,20 @@ def parse_full(abs_path: str, rel_path: str) -> dict:
     parameters = raw.get("parameters", "")
     stat = os.stat(abs_path)
     entry = build_entry(abs_path, rel_path, raw=raw, stat=stat)
+    # Old PNGs may lack runtime receipts. History is an optional, bounded source,
+    # used only after this exact file/execution/graph has been verified. Indexing
+    # remains disk-only; full metadata requests do not trigger a library rescan.
+    if history and prompt_data and not _read_prompt_record(raw):
+        try:
+            try:
+                from .services.output_execution_history import recover_prompt_fields
+            except ImportError:
+                from services.output_execution_history import recover_prompt_fields
+            recovered = recover_prompt_fields(json.loads(prompt_data), rel_path, stat.st_mtime, history)
+            if recovered:
+                entry.update(recovered)
+        except Exception:
+            pass  # History is optional; preserve the existing reliable fragments.
     return {
         "imageId": rel_path.replace("\\", "/"),
         "model": entry["model"], "seed": entry["seed"], "steps": entry["steps"],

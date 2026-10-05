@@ -14,7 +14,7 @@ import { confirmModal, promptModal } from '../components/Modal'
 import type { OutputFile, OutputMetadata, OutputDir, OutputScanStatus } from '../types/outputs'
 import type { PromptEntry } from '../types'
 import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow, parseOutputMetadata, PARSER_VERSION } from '../services/outputMetadata'
-import { createImageSnapshot, bindMetadata, backendMetadataMatches, metadataForFile, metadataMatches, outputRootIdentity, promptBody, imageRevision, createMetadataLoader, type ImageSnapshot } from '../services/outputIdentity'
+import { createImageSnapshot, bindMetadata, backendMetadataMatches, metadataForFile, metadataMatches, outputRootIdentity, promptBody, imageRevision, createMetadataLoader, normalizeOutputPath, commitListSource, listSourceStamp, type ImageSnapshot, type OutputSourceKind } from '../services/outputIdentity'
 import { extractPngTextChunks, injectPngTextChunks } from '../services/pngChunks'
 import { applyExportMetadata, isExportMetadataNoop } from '../utils/imageMetadata'
 import { useExportMetadataStore, exportMetadataOptions } from '../store/exportMetadata'
@@ -24,7 +24,7 @@ import { ImageNodeCache } from '../components/ImageNodeCache'
 import { computeMasonryLayout } from '../components/masonry'
 import { initOutputDragSelection, type OutputGridGeometry } from './outputDragSelection'
 import JSZip from 'jszip'
-import { nativeOutputUrl, nativeScanOutputs, nativeListOutputs, probeNativeStorage } from '../services/nativeStorage'
+import { nativeOutputUrl, comfyViewUrl, nativeScanOutputs, nativeListOutputs, probeNativeStorage } from '../services/nativeStorage'
 
 import {
   renderDirTree as renderDirTreeHtml,
@@ -55,19 +55,95 @@ let _copyToken = 0
 let _currentPreviewSnapshot: ImageSnapshot | null = null
 const _thumbnailRevisions = new Map<string, string>()
 
+/**
+ * 「刚刚确认从存储层删掉」的记忆 —— **不是**持久屏蔽注册表。
+ *
+ * 为什么需要它：gallery 模式下列表真源是后端索引（`/anima/gallery/manifest`），
+ * 前端删掉文件后后端要等下一轮预热/重建才知道。这中间任何一次
+ * 「探测到换代 → 拉全量 manifest → restoreOutputsFromDb() 重建 files」
+ * 都会把已删文件加回列表。
+ *
+ * ⚠️ 但绝不能做成无限期的路径黑名单（用户 2026-10-04 明确纠正）：
+ * 路径会被**复用** —— 同一路径下重新生成一张新图是完全正常的操作，
+ * 按路径永久屏蔽会把新图一起藏掉，那是比"删除后复活"更严重的数据可见性事故。
+ *
+ * 因此这里的记录遵守三条硬约束：
+ *   ① **按完整图片身份**（路径 + mtime + size + root）记录，不是按路径；
+ *      重生成的新图 mtime/size 必然不同 → 身份不匹配 → 立刻正常显示。
+ *   ② **有界且自动收敛**：只保留最近 N 条，并且在「store 已不含它」或
+ *      「重置/切换图片来源」时立即清除；不做跨会话持久化。
+ *   ③ 它只影响 **gallery manifest 重建**这一条路径的准入，不参与任何文件操作判定。
+ *
+ * 真正让删除持久生效的是后端索引追上（见 syncDeletedToGalleryIndex 显式收敛）。
+ */
+interface DeletedIdentity { path: string; mtime: number; size: number; root: string; at?: number }
+const _deletedIdentities = new Map<string, DeletedIdentity & { at: number }>()
+const DELETED_IDENTITY_MAX = 200
+
+function deletedIdentityKey(path: string, mtime: number, size: number, root: string): string {
+  return JSON.stringify([normalizeOutputPath(root), normalizeOutputPath(path), mtime, size])
+}
+/**
+ * 登记「这批图片身份确实已从存储层删除」。
+ * 只有成功到达 removeEntry 的图片才允许登记（由 deleteFiles 的返回值决定）。
+ */
+export function markOutputsDeleted(identities: DeletedIdentity[]): void {
+  for (const it of identities) {
+    if (!it?.path) continue
+    _deletedIdentities.set(deletedIdentityKey(it.path, it.mtime, it.size, it.root), { ...it, at: Date.now() })
+  }
+  // 有界：超出容量即淘汰最老的一条
+  if (_deletedIdentities.size > DELETED_IDENTITY_MAX) {
+    const ordered = [..._deletedIdentities.entries()].sort((a, b) => a[1].at - b[1].at)
+    for (let i = 0; i < ordered.length - DELETED_IDENTITY_MAX; i++) _deletedIdentities.delete(ordered[i][0])
+  }
+}
+
+/**
+ * gallery 重建列表时的准入判定。
+ * 只有**完整身份一致**（同路径 + 同 mtime + 同 size + 同 root）才抑制 ——
+ * 同路径下重新生成的新图身份不同，照常进列表。
+ */
+export function isOutputIdentityDeleted(relPath: string, mtime: number, size: number, root: string): boolean {
+  return _deletedIdentities.has(deletedIdentityKey(relPath, mtime, size, root))
+}
+
+/** 收敛：store 里已经不含该身份（说明这一次重建就是它最后一次出现）→ 立刻忘记 */
+function pruneDeletedIdentities(): void {
+  if (_deletedIdentities.size === 0) return
+  const present = new Set<string>()
+  const state = useOutputStore.getState()
+  const { root } = currentImageSource()
+  for (const f of state.files) present.add(deletedIdentityKey(f.path, f.mtime, f.size, root))
+  for (const [k, v] of [..._deletedIdentities]) {
+    // 超过 5 分钟一律忘记：避免任何形式的长期屏蔽
+    if (Date.now() - v.at > 300_000) { _deletedIdentities.delete(k); continue }
+    if (present.has(k)) _deletedIdentities.delete(k)
+  }
+}
+
+/** 切换图片来源/重置时清空（root 变了旧身份全部失效） */
+function clearDeletedIdentities(): void { _deletedIdentities.clear() }
+
 function currentImageSource() {
   const state = useOutputStore.getState()
-  const source = galleryIndexEnabled() ? 'gallery' : _nativeOutputs ? 'native' : 'directory'
-  const root = source === 'gallery' ? galleryOutputRoot() : outputRootIdentity(state.rootPath, state.dirHandle)
-  const key = JSON.stringify([source, root])
+  const stamp = listSourceStamp()
+  // 未确立来源：退回目录句柄直连（唯一能安全确认的来源），并显式标记为 directory。
+  // 宁可退到 directory 也不猜 gallery —— 猜错会读到另一张同路径的图。
+  const kind: OutputSourceKind = stamp ? stamp.kind : 'directory'
+  const root = stamp ? stamp.root : outputRootIdentity(state.rootPath, state.dirHandle)
+  const parserVersion = stamp ? stamp.parserVersion : PARSER_VERSION
+  const key = JSON.stringify([kind, root])
   if (key !== _sourceKey) {
     _sourceKey = key
     _sourceEpoch++
     _outputImageNodes.clear()
     _thumbnailRevisions.clear()
     useOutputStore.getState().invalidateThumbnails()
+    // root 变了 → 旧身份记录全部失效，必须清空（否则会误抑制新来源的同名文件）
+    clearDeletedIdentities()
   }
-  return { source, root, parserVersion: source === 'gallery' ? galleryParserVersion() : PARSER_VERSION, epoch: _sourceEpoch }
+  return { source: kind, root, parserVersion, epoch: _sourceEpoch }
 }
 
 function imageSnapshot(fileOrId: OutputFile | string, path?: string): ImageSnapshot | null {
@@ -128,6 +204,8 @@ async function refreshNativeOutputs() {
     } satisfies OutputMetadata]
   })
   useOutputStore.setState({ dirHandle: null, rootPath: 'TK SQLite · ComfyUI/output', metadataParserVersion: PARSER_VERSION, files, metadataCache: new Map() })
+  // 显式声明：当前列表来自 native 桥
+  commitListSource('native', outputRootIdentity('TK SQLite · ComfyUI/output', null), PARSER_VERSION)
   useOutputStore.getState().putMetadataBatch(metadata)
   useOutputStore.getState().applyFilters()
   renderNativeDirTree(page.total)
@@ -1620,8 +1698,7 @@ function bindOutputsEvents() {
       if (ids.length > 0) {
         const confirmed = await confirmModal('批量删除', `确认删除选中的 ${ids.length} 个文件？\n此操作不可撤销！`)
         if (confirmed) {
-          await deleteFiles(ids)
-          renderOutputsView()
+          await deleteOutputsAndTrack(ids)
           updateBatchBar()
         }
       }
@@ -1900,8 +1977,7 @@ function bindOutputsEvents() {
       onDelete: async (id) => {
         const confirmed = await confirmModal('删除文件', '确认删除这个文件？\n此操作不可撤销！')
         if (confirmed) {
-          await deleteFiles([id])
-          renderOutputsView()
+          await deleteOutputsAndTrack([id])
         }
       },
       onCopyMetadata: async (id) => {
@@ -1925,8 +2001,7 @@ function bindOutputsEvents() {
       onBatchDelete: async (ids) => {
         const confirmed = await confirmModal('批量删除', `确认删除选中的 ${ids.length} 个文件？\n此操作不可撤销！`)
         if (confirmed) {
-          await deleteFiles(ids)
-          renderOutputsView()
+          await deleteOutputsAndTrack(ids)
         }
       },
       onBatchRate: (ids) => {
@@ -1983,7 +2058,7 @@ function bindOutputsEvents() {
         confirmModal('批量删除', `确认删除选中的 ${state.selectedIds.size} 个文件？\n此操作不可撤销！`).then(confirmed => {
           if (confirmed) {
             const ids = Array.from(state.selectedIds)
-            deleteFiles(ids).then(() => renderOutputsView())
+            deleteOutputsAndTrack(ids)
           }
         })
       }
@@ -2535,6 +2610,48 @@ function bindOutputsLeaveRelease(): void {
 // 模块加载即尝试绑定（sectionOutputs 是 index.html 里的静态区域，不依赖激活时机）
 if (typeof window !== 'undefined') setTimeout(bindOutputsLeaveRelease, 0)
 
+/**
+ * 统一的删除入口：删除 → 把「确实到达存储层」的图片身份登记为已删 → 显式收敛索引。
+ *
+ * 为什么不直接在 4 个调用点写 deleteFiles：只有 deleteFiles 返回的成功项才允许登记，
+ * 且必须按**完整图片身份**（路径+mtime+size+root）登记，集中一处避免漏改。
+ */
+async function deleteOutputsAndTrack(ids: string[]): Promise<void> {
+  // 先按 id 快照身份：删除过程中 store 会被更新，事后按 id 再查可能已查不到
+  const { root } = currentImageSource()
+  const byId = new Map<string, { path: string; mtime: number; size: number; root: string }>()
+  for (const f of useOutputStore.getState().files) {
+    byId.set(f.id, { path: f.path, mtime: f.mtime, size: f.size, root })
+  }
+  const result = await deleteFiles(ids)
+  // 只有成功删除的 id 才有身份记录；失败项一个都不登记（它们必须继续可见、可重试）
+  const gone = result.deletedIds
+    .map(id => byId.get(id))
+    .filter((x): x is { path: string; mtime: number; size: number; root: string } => !!x)
+  if (gone.length > 0) {
+    markOutputsDeleted(gone)
+    // 显式把删除收敛到真实存储/索引：不再依赖"等下一轮探测"
+    void syncDeletedToGalleryIndex(gone.map(g => g.path))
+  }
+  renderOutputsView()
+  updateBatchBar()
+}
+
+/**
+ * 让后端索引显式追上这次删除。
+ *
+ * 为什么需要：gallery 模式下列表真源是后端索引。前端删除只动了磁盘，
+ * 后端要等自己下一轮预热才发现 → 这中间列表一重建就会把文件加回来。
+ * 靠前端无限期屏蔽路径是错的（同路径会有新图），正确做法是**催后端重建索引**，
+ * 然后用真实索引收敛。索引构建是幂等的，重复调用无副作用。
+ */
+async function syncDeletedToGalleryIndex(_paths: string[]): Promise<void> {
+  if (!galleryIndexEnabled()) return
+  try {
+    await fetch('/anima/gallery/rebuild', { cache: 'no-store' })
+  } catch { /* 后端不可用：本轮不收敛，下次探测换代后自然收敛 */ }
+}
+
 async function restoreOutputsFromDb(): Promise<boolean> {
   const bootStartedAt = performance.now()
   // ── Gallery 索引模式（插件 ≥2.6.0 的 /anima/gallery/manifest）：列表与元数据摘要
@@ -2542,9 +2659,16 @@ async function restoreOutputsFromDb(): Promise<boolean> {
   if (galleryIndexEnabled()) {
     const entries = galleryEntries()
     if (entries && entries.size > 0) {
+      // 先收敛：store 里已不含、或已超时的身份记录立即忘记（不做无限期屏蔽）
+      pruneDeletedIdentities()
+      const { root } = currentImageSource()
       const files: OutputFile[] = []
       const metas: OutputMetadata[] = []
       for (const [rel, e] of entries) {
+        // 只对**刚刚确认从存储层删掉、且身份完全一致**的条目做抑制：
+        // 同路径下重新生成的新图 mtime/size 不同 → 身份不匹配 → 照常显示
+        const mtime = Math.round((e.mtime || 0) * 1000)
+        if (isOutputIdentityDeleted(rel, mtime, e.size || 0, root)) continue
         const id = hashPath(rel)
         files.push({
           id, path: rel, filename: rel.split('/').pop() || rel,
@@ -2565,10 +2689,21 @@ async function restoreOutputsFromDb(): Promise<boolean> {
         delete summary.metadataIdentity
         metas.push(summary)
       }
+      // ⚠️ 只有「当前活跃列表确实要切到画廊」时才允许覆盖 store 与 dirHandle。
+      // 若用户已经显式选择了浏览器目录（activeListSource === 'directory'），
+      // 这里的画廊重建**不得**把 dirHandle 置空、也不得改写列表 ——
+      // 否则用户选中的目录会被静默换成 ComfyUI output 的列表，
+      // 同相对路径的图会读到 ComfyUI 的那一张（用户报的"图片对应错位"）。
+      if (listSourceStamp()?.kind === 'directory') {
+        pruneDeletedIdentities()
+        return false
+      }
       useOutputStore.setState({
         files, rootPath: galleryOutputRoot(), dirHandle: null, metadataParserVersion: galleryParserVersion(), metadataCache: new Map(), metadataVersion: useOutputStore.getState().metadataVersion + 1,
         thumbMemory: new Map(),
       })
+      // 显式声明：当前列表来自画廊索引
+      commitListSource('gallery', galleryOutputRoot(), galleryParserVersion())
       useOutputStore.getState().putMetadataBatch(metas)
       useOutputStore.getState().applyFilters()
       console.log(`[outputs] Gallery 索引直出：${files.length} 个文件 + ${metas.length} 条元数据摘要（${Math.round(performance.now() - bootStartedAt)}ms）`)
@@ -2669,7 +2804,10 @@ async function loadImageThumbnail(img: HTMLImageElement, fileId: string, filePat
   // ── 后端直供（插件 ≥2.5.1）：浏览器只解码 512px 小图 ──
   // 注意：/anima/thumb 只认 ComfyUI output 目录内的文件；用户用目录授权扫过其它目录时
   // 该端点会 404 —— onerror 后把该路径记入黑名单并回退旧管线（浏览器生成），会话内不再重试 URL。
-  if (backendThumbsEnabled() && !_thumbUrlBlocked.has(filePath)) {
+  // ⚠️ 2026-10-04 owner 要求：provider 由**操作捕获的 snapshot.source** 决定，
+  //    不能只看全局 backendThumbs 能力 —— native 桥下同样存在该端点不可用的组合。
+  const thumbsUsable = backendThumbsEnabled() && (snapshot.source === 'gallery' || snapshot.source === 'native')
+  if (thumbsUsable && !_thumbUrlBlocked.has(filePath)) {
     const url = animaThumbUrl(filePath, 512) + '&v=' + encodeURIComponent(imageRevision(snapshot))
     img.onerror = () => {
       if (!bound()) return
@@ -2816,7 +2954,17 @@ async function getFileBlob(fileId: string, snapshot?: ImageSnapshot | null): Pro
   const target = snapshot === undefined ? imageSnapshot(fileId) : snapshot
   const file = target?.file
   if (!target || !snapshotIsCurrent(target)) return null
-  if ((_nativeOutputs || galleryIndexEnabled()) && file) {
+  if (target.source === 'gallery' && file) {
+    // 画廊来源走 ComfyUI 原生 /view（原图字节），与预览同一 provider，避免再次 404
+    try {
+      const response = await fetch(comfyViewUrl(target.path))
+      if (!response.ok) return null
+      const blob = await response.blob()
+      return snapshotIsCurrent(target) ? { name: file.filename, blob } : null
+    } catch { return null }
+  }
+  if (target.source === 'native' && file) {
+    // TK 原生桥：整文件直连
     try {
       const response = await fetch(nativeOutputUrl(file.path))
       if (!response.ok) return null
@@ -3609,15 +3757,22 @@ async function openPreview(fileId: string, snapshot?: ImageSnapshot | null) {
     const r = await getExportBlob(fileId, target)
     if (!r) { if (token === _previewToken) showToast('图片读取失败，保留当前预览，请重试'); return }
     imgUrl = URL.createObjectURL(r.blob)
-  } else if (_nativeOutputs || galleryIndexEnabled()) {
+  } else if (target.source === 'gallery') {
+    // 画廊来源：必须走 ComfyUI **原生** `/view`。
+    // ⚠️ 2026-10-04 owner 实检：这里此前是 `_nativeOutputs || galleryIndexEnabled()`
+    // 然后调 nativeOutputUrl()（`/api/tk/output-file`，插件并不提供）→ 真实 HTTP 404
+    // → 用户点预览固定报「图片加载失败，保留当前预览，请重试」。
+    // 现在按**操作捕获的 target.source** 选 provider，不再按全局能力猜。
+    imgUrl = comfyViewUrl(target.path)
+  } else if (target.source === 'native') {
+    // TK 原生桥：/api/tk/output-file 由启动器提供，零拷贝直连
     imgUrl = nativeOutputUrl(file.path)
   } else {
     try {
       if (!dh) return
-      const current = await resolveDirEntry(dh, file.path)
-      const fileHandle = await current.getFileHandle(file.filename)
-      const f = await fileHandle.getFile()
-      imgUrl = URL.createObjectURL(f)
+      const r = await getFileBlob(fileId, target)
+      if (!r) { if (token === _previewToken) showToast("图片已变化或读取失败，保留当前预览，请重试"); return }
+      imgUrl = URL.createObjectURL(r.blob)
     } catch {
       return
     }
@@ -3847,3 +4002,13 @@ function showCategoryManager() {
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove() }
   document.body.appendChild(overlay)
 }
+
+/**
+ * 测试接缝（仅回归测试使用，**不改变任何运行时行为**）。
+ *
+ * 为什么保留：预览与图片读取依赖真实 DOM / Image 解码 / fetch，
+ * 必须能让回归驱动**生产用的同一份实现**（而不是在测试里复刻一份"等价预览"再自证）。
+ * 已实际被 `tests/test_outputs_delete_recovery.mjs` 的 J 组引用
+ * （断言 gallery 预览走 `/view`、native 走 `/api/tk/output-file`、原图读取同源）。
+ */
+export const __test = { openPreview, snapshotIsCurrent, currentImageSource, getFileBlob }

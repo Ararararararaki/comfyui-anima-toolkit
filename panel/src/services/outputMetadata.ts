@@ -2,6 +2,7 @@
 // 支持 ComfyUI、A1111/Forge、Fooocus 等格式
 
 import { parseGraphPrompt } from './outputGraph'
+import { PROMPT_PROVENANCE_KEY, applyPromptRecord, downgradeRejectedRecord, promptRecordFromRaw, promptRecordRejectedWarning } from './outputPromptRecord'
 import type { PromptStage, PromptStatus } from '../types/outputs'
 
 export interface ParsedMetadata {
@@ -66,8 +67,28 @@ export async function decompressZlibAsync(data: Uint8Array): Promise<string> {
 
 /**
  * 解析器版本：解析逻辑变更时递增，Outputs 借此自动失效旧的元数据缓存并重新解析。
+ *
+ * 8（2026-10-04）：拒绝**已证实的显示缓存型节点**的保存值
+ *   （WD14Tagger 的 tags、easy showAnything 的 text）。这些字段是前端上次预览
+ *   的显示状态、不是本次执行文本（0423 实测不含用户实际角色词）。
+ *   旧缓存里已把这些值当正文存过 → 必须换代，否则用户会继续看到旧显示词。
+ *   判据只按 class 名 + 执行语义，不按字段名或字符串内容。
+ *
+ * 9（2026-10-04）：PNG 文本块 `tk_prompt_provenance` 的运行期记录接入。
+ *   记录有效 → 只覆盖提示词字段（prompt/negativePrompt/promptStages/
+ *   promptStatus/promptWarnings），模型、种子、LoRA、raw、workflow 一律保留；
+ *   记录缺失 → 既有静态解析结果不变；记录不合法/未来版本 → 保留静态结果并
+ *   追加一条明确警告，不谎称记录已完整采用。
+ *
+ * 注意（诚实说明）：**ComfyUI 后端仍是提示词真源**。本版本只把图片里已写好的
+ *   运行期记录读出来，后端与 Python 消费端的接入是**另一条独立工作线**，不在
+ *   本文件内完成。此前 PNG 未保存运行期正文的历史图片，仍然只能给静态结果，
+ *   不虚构缺失的提示词。
+ *
+ * v10 支持保存分支的运行期采样记录（dependency 明确为 partial）。后端 v5
+ * 同时支持经图片路径、时间与 API 输入图核验的执行历史补救。旧缓存按需换代。
  */
-export const PARSER_VERSION = 7
+export const PARSER_VERSION = 10
 
 /**
  * 安全 JSON 解析：ComfyUI 的 json.dumps 会把 NaN/Infinity 原样写入（如 is_changed:[NaN]），
@@ -471,18 +492,50 @@ export async function parseOutputMetadata(
       let key = ''
       for (let i = dataStart; i < keyEnd; i++) key += String.fromCharCode(bytes[i])
 
-      let val: string
-      if (type === 'zTXt') {
+      // 结构不合法的块一律**跳过**，绝不把半截内容当成一个值写进 raw：
+      // 那会让一个损坏的块冒充"记录存在但被拒绝"，从而误报并降级可信的静态结果。
+      let val: string | null = null
+      if (keyEnd >= dataEnd || keyEnd === dataStart || bytes[keyEnd] !== 0) {
+        val = null // 键名没有终止符：块结构非法
+      } else if (type === 'zTXt') {
         try {
           const compData = bytes.slice(keyEnd + 2, dataEnd)
           val = await decompressZlibAsync(compData)
         } catch {
           val = new TextDecoder().decode(bytes.slice(keyEnd + 1, dataEnd))
         }
+      } else if (type === 'iTXt') {
+        // iTXt 结构：keyword\0 压缩标志(1) 压缩方法(1) 语言标签\0 翻译关键字\0 文本。
+        // 旧实现从 keyEnd+1 直接取文本，等于把这两个标志字节当成 JSON 的一部分
+        // → 带 iTXt 的图（含运行期记录）会整块解析失败。这里按规范跳过头部字段。
+        const p = keyEnd + 1
+        const compressed = bytes[p] === 1
+        let q = p + 2 // 压缩标志 + 压缩方法
+        let ok = q <= dataEnd && (bytes[p] === 0 || bytes[p] === 1) && bytes[p + 1] === 0
+        // 语言标签与翻译关键字各需一个 NUL 终止符；缺一个就说明块结构非法
+        for (let field = 0; field < 2 && ok; field++) {
+          while (q < dataEnd && bytes[q] !== 0) q++
+          if (q >= dataEnd) ok = false
+          else q += 1
+        }
+        if (!ok) {
+          val = null
+        } else if (compressed) {
+          // 声称压缩却解不开：块已损坏，跳过而不是把原始字节当文本
+          // （那是"猜内容"，会伪装成一条被拒绝的记录）。zTXt 保持既有回退行为不变。
+          const inflated = await decompressZlibAsync(bytes.slice(q, dataEnd))
+          val = inflated ? inflated : null
+        } else {
+          val = new TextDecoder().decode(bytes.slice(q, dataEnd))
+        }
       } else {
         val = new TextDecoder().decode(bytes.slice(keyEnd + 1, dataEnd))
       }
 
+      if (val === null) {
+        offset += 12 + len
+        continue
+      }
       raw[key] = val
 
       // 分离存储 prompt（标准格式）和 workflow（UI 格式）
@@ -501,6 +554,21 @@ export async function parseOutputMetadata(
   // API 格式粘贴会被忽略导致复制到"当前工作流"
   const parseSrc = (promptData && safeParseJSON(promptData)) ? promptData : workflowData
 
+  // 运行期提示词记录（PNG 文本块，键名由写入方定义）：每键只读一次。
+  // 有效记录只覆盖提示词字段；缺失（含空值）→ 静态结果不变；
+  // 不合法/未来版本 → 保留可靠的静态文本与警告，并把 complete 降级为 partial
+  // （记录存在却被拒绝时，静态正文已不是完整证据，不能继续自称完整）。
+  const recordValue = raw[PROMPT_PROVENANCE_KEY]
+  const promptRecord = promptRecordFromRaw(raw)
+  const recordWarning = typeof recordValue === 'string' && recordValue && !promptRecord ? promptRecordRejectedWarning(recordValue) : null
+  const recordWarnings = (base: readonly string[] | undefined): string[] => {
+    const warnings = base ? [...base] : []
+    if (recordWarning && !warnings.includes(recordWarning)) warnings.unshift(recordWarning)
+    return warnings
+  }
+  const recordStatus = (status: PromptStatus | undefined): PromptStatus | undefined =>
+    recordWarning ? downgradeRejectedRecord(status) : status
+
   // 尝试解析工作流
   if (parseSrc) {
     const workflow = safeParseJSON(parseSrc)
@@ -509,7 +577,7 @@ export async function parseOutputMetadata(
       const workflowJson = workflowData || promptData || ''
       // API prompt records the executed graph. A different UI graph must not
       // silently replace an incomplete result from that execution.
-      return {
+      const staticResult: ParsedMetadata = {
         model: parsed.model || '',
         seed: parsed.seed || '',
         steps: parsed.steps || '',
@@ -526,9 +594,10 @@ export async function parseOutputMetadata(
         raw,
         parserVersion: PARSER_VERSION,
         promptStages: parsed.promptStages,
-        promptStatus: parsed.promptStatus,
-        promptWarnings: parsed.promptWarnings,
+        promptStatus: recordStatus(parsed.promptStatus),
+        promptWarnings: recordWarnings(parsed.promptWarnings),
       }
+      return applyPromptRecord(staticResult, promptRecord)
     }
   }
 
@@ -536,7 +605,8 @@ export async function parseOutputMetadata(
   const params = raw['parameters'] || raw['prompt'] || ''
   if (params) {
     const parsed = parseA1111Parameters(params)
-    return {
+    const staticResult: ParsedMetadata = {
+      ...parsed,
       model: parsed.model || '',
       seed: parsed.seed || '',
       steps: parsed.steps || '',
@@ -549,17 +619,19 @@ export async function parseOutputMetadata(
       workflowJson: '',
       raw,
       parserVersion: PARSER_VERSION,
-      promptStatus: parsed.prompt ? 'complete' : 'missing',
+      promptStatus: recordStatus(parsed.prompt ? 'complete' : 'missing'),
       promptStages: [],
-      promptWarnings: [],
+      promptWarnings: recordWarnings([]),
     }
+    return applyPromptRecord(staticResult, promptRecord)
   }
 
   // 尝试 Fooocus 格式
   const fooocusParams = raw['fooocus_params'] || ''
   if (fooocusParams) {
     const parsed = parseFooocusParams(fooocusParams)
-    return {
+    const staticResult: ParsedMetadata = {
+      ...parsed,
       model: parsed.model || '',
       seed: parsed.seed || '',
       steps: parsed.steps || '',
@@ -572,10 +644,32 @@ export async function parseOutputMetadata(
       workflowJson: '',
       raw,
       parserVersion: PARSER_VERSION,
-      promptStatus: parsed.prompt ? 'complete' : 'missing',
+      promptStatus: recordStatus(parsed.prompt ? 'complete' : 'missing'),
       promptStages: [],
-      promptWarnings: [],
+      promptWarnings: recordWarnings([]),
     }
+    return applyPromptRecord(staticResult, promptRecord)
+  }
+
+  // 没有任何工作流：有效记录本身就能给出提示词文本（PNG 没有 workflow 块也一样）
+  if (promptRecord) {
+    return applyPromptRecord({
+      model: '',
+      seed: '',
+      steps: '',
+      cfg: '',
+      sampler: '',
+      vae: '',
+      clipSkip: 0,
+      prompt: '',
+      negativePrompt: '',
+      workflowJson: '',
+      raw,
+      parserVersion: PARSER_VERSION,
+      promptStages: [],
+      promptStatus: 'missing' as PromptStatus,
+      promptWarnings: [],
+    }, promptRecord)
   }
 
   // 如果没有任何元数据，返回空结果
@@ -595,5 +689,7 @@ export async function parseOutputMetadata(
     negativePrompt: raw['negative_prompt'] || '',
     workflowJson: '',
     raw,
+    parserVersion: PARSER_VERSION,
+    promptWarnings: recordWarnings([]),
   }
 }

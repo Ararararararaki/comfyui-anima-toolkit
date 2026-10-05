@@ -104,3 +104,40 @@ export function createMetadataLoader(options: MetadataLoaderOptions) {
     try { return await task } finally { if (inflight.get(snapshot.key) === task) inflight.delete(snapshot.key) }
   }
 }
+
+/**
+ * 当前**实际装载列表**的来源戳（单真源）。
+ *
+ * 为什么放在 identity 模块：来源决定「一条路径该由哪个 provider 解释」，
+ * 与图片身份是同一个关注点；放在这里可以让 scanner（提交列表的一方）
+ * 和 Outputs.ts（消费列表的一方）共用，不产生循环依赖。
+ *
+ * ⚠️ 2026-10-04 用户验收纠正（严重）：
+ * 旧实现按**全局能力探测**推导来源（`galleryIndexEnabled() ? 'gallery' : ...`）。
+ * 那是错的：后端画廊索引**可用** ≠ 用户当前看的列表**来自**画廊。
+ * 用户在画廊可用的前提下再选浏览器目录后，列表是用户自己的文件，
+ * 但来源仍被判成 gallery →
+ *   · 预览/元数据会去取 ComfyUI output 里**同相对路径的另一张图**（错位）；
+ *   · 删除会走 gallery 分支而失败。
+ * 因此来源必须由「真正把列表写进 store 的那条路径」显式声明，
+ * 绝不能由能力探测推导。
+ */
+export type OutputSourceKind = 'gallery' | 'native' | 'directory'
+export type OutputSourceStamp = Readonly<{ kind: OutputSourceKind; root: string; parserVersion: number }>
+
+let _listSource: OutputSourceStamp | null = null
+
+/** 列表提交的同时显式声明其来源（只有真正装载列表的路径可调用） */
+export function commitListSource(kind: OutputSourceKind, root: string, parserVersion: number): void {
+  _listSource = Object.freeze({ kind, root: normalizeOutputPath(root), parserVersion })
+}
+
+/** 当前列表来源；null 表示尚未确立（此时调用方不得做来源相关的读写） */
+export function listSourceStamp(): OutputSourceStamp | null {
+  return _listSource
+}
+
+/** 仅测试/来源切换复位用 */
+export function resetListSource(): void {
+  _listSource = null
+}

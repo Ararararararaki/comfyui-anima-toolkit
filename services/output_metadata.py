@@ -8,10 +8,50 @@ from __future__ import annotations
 import json
 import re
 
-PARSER_VERSION = 3
+# 4: the same prompt-provenance record consumer landed in anima_gallery.build_entry, so the
+#    index semantics changed again (record-first prompt, static graph as fallback).
+PARSER_VERSION = 5
 _SEPARATORS = {"逗号 ,": ", ", "空格": " ", "换行": "\n", "无": ""}
 _CONTENT_KEYS = ("text", "prompt", "value", "positive", "negative", "text_g", "text_l", "clip_l", "t5xxl", "natural_language")
 _IMAGE_KEYS = {"images", "image", "samples", "latent", "latent_image", "pixels", "input_image", "image_a", "image_b", "image1", "image2", "image_1", "image_2", "latents"}
+
+
+def image_dependency_nodes(graph, output_node_id):
+    """Conservative IMAGE/LATENT dependency spine, not pixel identity proof.
+
+    Stop at multi-input routing whose selected branch is unknown. Runtime
+    receipts, not node names, decide which visited nodes actually sampled.
+    """
+    nodes = normalize_graph(graph)
+    root = nodes.get(output_node_id)
+    if not root or not any(key in root['refs'] for key in ('images', 'image')):
+        return set(), ['保存节点未提供可核验的图像输入']
+    visited, active, warnings = set(), set(), []
+    def visit(node_id):
+        if node_id in active:
+            warnings.append('图像依赖包含循环')
+            return
+        if node_id in visited:
+            return
+        if len(visited) >= 4096 or len(active) >= 256:
+            warnings.append('图像依赖超过解析上限')
+            return
+        node = nodes.get(node_id)
+        if node is None:
+            warnings.append('图像依赖引用缺失节点')
+            return
+        visited.add(node_id)
+        edges = [edge for key, edge in node['refs'].items()
+                 if key in _IMAGE_KEYS or node['inputTypes'].get(key) in ('IMAGE', 'LATENT')]
+        if len(edges) > 1:
+            warnings.append('未记录图像分流的实际选择；更早阶段未补猜')
+            return
+        active.add(node_id)
+        for edge in edges:
+            visit(edge[0])
+        active.remove(node_id)
+    visit(output_node_id)
+    return visited, list(dict.fromkeys(warnings))[:64]
 
 
 def _segments(values):
@@ -181,8 +221,10 @@ def _router_settings(raw):
 
 
 class _Parser:
-    def __init__(self, nodes):
+    def __init__(self, nodes, runtime_texts=None, used_runtime=None):
         self.nodes = nodes
+        self.runtime_texts = runtime_texts or {}
+        self.used_runtime = used_runtime if used_runtime is not None else set()
         self.warnings = []
         self.active = set()
         self.memo = {}
@@ -204,6 +246,10 @@ class _Parser:
 
     def text(self, edge, role):
         node_id, slot = edge
+        runtime = self.runtime_texts.get((node_id, slot))
+        if isinstance(runtime, str) and runtime.strip():
+            self.used_runtime.add((node_id, slot))
+            return [runtime]
         key = (node_id, slot, role)
         if key in self.memo:
             return self.memo[key]
@@ -349,6 +395,10 @@ class _Parser:
 
     def is_sampler(self, node):
         ct = node["type"].lower()
+        # The public USDU contract disables both sampling passes in this mode.
+        # Merely having positive/negative inputs does not make resize a stage.
+        if ct == "ultimatesdupscale" and node["values"].get("mode_type") == "None" and node["values"].get("seam_fix_mode") == "None":
+            return False
         return ("sampler" in ct or "upscal" in ct) and self.stage_inputs(node) is not None
 
     def stages(self, root):
@@ -371,7 +421,7 @@ class _Parser:
             known = self.is_sampler(node) or "saveimage" in ct or ct in {
                 "vaedecode", "vaedecodetiled", "vaeencode", "vaeencodetiled", "vaeencodeforinpaint",
                 "latentupscale", "latentupscaleby", "imagescale", "imagescaleby", "reroute",
-                "imageblend", "imagecompositemasked", "latentcomposite", "latentcompositemasked"}
+                "imageblend", "imagecompositemasked", "latentcomposite", "latentcompositemasked", "ultimatesdupscale"}
             if not known and len(edges) > 1:
                 self.ambiguous = True
                 self.warn("无法确定图像分流节点 " + node_id + " 的实际输入分支")
@@ -396,10 +446,10 @@ class _Parser:
         return stages
 
 
-def parse_output_metadata(graph, output_node_id=None):
+def parse_output_metadata(graph, output_node_id=None, *, runtime_texts=None, used_runtime=None):
     """Return exact known text with stage provenance and honest partial status."""
     nodes = normalize_graph(graph)
-    parser = _Parser(nodes)
+    parser = _Parser(nodes, runtime_texts, used_runtime)
     result = {"prompt": "", "negativePrompt": "", "promptStages": [], "promptStatus": "missing", "promptWarnings": []}
     saves = [node["id"] for node in nodes.values() if "saveimage" in node["type"].lower()
              and node["mode"] not in (2, 4) and any(key in node["refs"] for key in ("images", "image"))]

@@ -3,6 +3,8 @@ import './styles/outputs.css'
 import './styles/clothing.css'
 import './styles/polish.css'
 import './styles/design-system.css'
+import './styles/local-manager-polish.css'
+import './styles/toolbox-shell.css'
 import { initLoraExplorer, setupBindingListeners, setupGlobalHandlers } from './sections/LoraExplorer'
 import { setupModalListeners } from './components/Modal'
 import { setupPromptHandlers } from './sections/PromptLibrary'
@@ -70,18 +72,83 @@ function initThemeSwitcher() {
     const theme = dot.dataset.theme || 'mono'
     document.documentElement.setAttribute('data-theme', theme)
     localStorage.setItem('anima_theme', theme)
-    document.querySelectorAll('.theme-dot').forEach(d => d.classList.toggle('active', d === dot))
+    document.querySelectorAll('.theme-dot').forEach(d => {
+      const active = d === dot
+      d.classList.toggle('active', active)
+      d.setAttribute('aria-pressed', String(active))
+    })
   })
 
   // Set initial active state
   document.querySelectorAll('.theme-dot').forEach(d => {
-    d.classList.toggle('active', (d as HTMLElement).dataset.theme === saved)
+    const active = (d as HTMLElement).dataset.theme === saved
+    d.classList.toggle('active', active)
+    d.setAttribute('aria-pressed', String(active))
   })
+}
+
+// Keep the existing tab controller while adding a roving keyboard focus target
+// and a page heading that follows the selected section.
+function initToolboxNavigation() {
+  const tablist = document.getElementById('mainTabs')
+  const sidebar = document.getElementById('toolboxSidebar')
+  const pageTitle = document.getElementById('pageTitle')
+  if (!tablist) return
+
+  const visibleTabs = () => Array.from(tablist.querySelectorAll<HTMLButtonElement>('.main-tab'))
+    .filter(tab => getComputedStyle(tab).display !== 'none')
+
+  const syncActiveTab = () => {
+    const tabs = visibleTabs()
+    const active = tabs.find(tab => tab.getAttribute('aria-selected') === 'true')
+      || tabs.find(tab => tab.classList.contains('active'))
+    tabs.forEach(tab => { tab.tabIndex = tab === active ? 0 : -1 })
+    if (!active) return
+
+    if (sidebar) sidebar.dataset.activeSection = active.dataset.section || ''
+    const label = active.querySelector<HTMLElement>(':scope > span:not(.badge-tab)')?.textContent?.trim()
+    if (pageTitle && label) pageTitle.textContent = label
+  }
+
+  tablist.addEventListener('click', syncActiveTab)
+  tablist.addEventListener('keydown', event => {
+    const keyEvent = event as KeyboardEvent
+    const current = (keyEvent.target as HTMLElement).closest<HTMLButtonElement>('.main-tab')
+    if (!current) return
+
+    const tabs = visibleTabs()
+    const index = tabs.indexOf(current)
+    if (index < 0) return
+
+    let nextIndex = index
+    if (keyEvent.key === 'ArrowDown') nextIndex = (index + 1) % tabs.length
+    else if (keyEvent.key === 'ArrowUp') nextIndex = (index - 1 + tabs.length) % tabs.length
+    else if (keyEvent.key === 'Home') nextIndex = 0
+    else if (keyEvent.key === 'End') nextIndex = tabs.length - 1
+    else return
+
+    keyEvent.preventDefault()
+    const next = tabs[nextIndex]
+    next.focus()
+    next.click()
+  })
+
+  // Some existing in-page actions switch sections directly through the shared
+  // controller; observe its selected state so the rail and heading stay in sync.
+  if (typeof MutationObserver !== 'undefined') {
+    new MutationObserver(syncActiveTab).observe(tablist, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['aria-selected', 'class'],
+    })
+  }
+
+  syncActiveTab()
 }
 
 // ── 布局自适应：header 实际高度写入 CSS 变量，主容器高度跟随（替换写死的 calc(100vh - 100px)）──
 function initLayoutVars() {
-  const header = document.querySelector('header')
+  const header = document.getElementById('contentHeader')
   if (!header) return
   const update = () => document.documentElement.style.setProperty('--header-h', `${Math.round(header.getBoundingClientRect().height)}px`)
   update()
@@ -104,6 +171,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initSettings()
   setupGlobalHandlers()
   setupBindingListeners()
+  initToolboxNavigation()
   setupModalListeners()
   setupPromptHandlers()
   bindPromptFreqEvents()

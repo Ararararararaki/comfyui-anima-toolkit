@@ -83,6 +83,32 @@ _INSTALL_SNAPSHOT: "dict | None" = None
 _THREAD: "threading.Thread | None" = None
 _WAKE = threading.Event()   # 事件加速：request_warmup 唤醒驱动循环
 _STOP = threading.Event()   # 仅供测试/卸载时优雅停线程
+_PREDECESSORS = ()          # Whole-package reload: let old writes finish first.
+
+
+def _retire_previous_drivers():
+    """Signal only verified predecessor workers from this exact module/file.
+
+    A purged module can remain alive through Thread's callback. Its cached old
+    parser must not keep overwriting a newer index. No generation process or
+    foreign thread is stopped; the predecessor finishes its current operation.
+    """
+    predecessors = []
+    for thread in threading.enumerate():
+        if thread.name != 'anima-gallery-warmup':
+            continue
+        target = getattr(thread, '_target', None)
+        namespace = getattr(target, '__globals__', {})
+        if (namespace.get('__name__') != __name__ or namespace.get('__file__') != __file__
+                or namespace.get('_THREAD') is not thread or namespace.get('_STOP') is _STOP):
+            continue
+        stop, wake = namespace.get('_STOP'), namespace.get('_WAKE')
+        if not isinstance(stop, threading.Event) or not isinstance(wake, threading.Event):
+            continue
+        stop.set()
+        wake.set()
+        predecessors.append(thread)
+    return tuple(predecessors)
 
 _LAST_RELS: set = set()            # 上一轮探测到的图片相对路径集合（变化判据 + 推导新增）
 _LAST_ROOT_MTIME_NS = 0            # 输出目录自身的 mtime（扁平结构下新增文件会改它）
@@ -507,13 +533,23 @@ def _install_event_hook() -> str:
     orig = getattr(server, "send_sync", None)
     if not callable(orig):
         return f"未挂（instance 上没有可用的 send_sync）{note} —— 只用轮询"
-    if getattr(orig, "_anima_warmup_hook", False):
+    namespace = getattr(orig, '__globals__', {})
+    if (namespace.get('__name__') == __name__ and namespace.get('_STOP') is _STOP
+            and getattr(orig, "_anima_warmup_hook", False)):
         return f"已挂（send_sync 包装，重复 install 跳过）{note}"
+    # Remove a stopped predecessor only when it is the actual public head;
+    # peer wrappers are preserved and are never identified by a copied marker.
+    if (namespace.get('__name__') == __name__ and namespace.get('__file__') == __file__
+            and isinstance(namespace.get('_STOP'), threading.Event)
+            and namespace['_STOP'].is_set() and callable(getattr(orig, '__wrapped__', None))):
+        orig = orig.__wrapped__
 
     @functools.wraps(orig)
     def _wrapped(*args, **kwargs):
         # 这里跑在**执行线程**上：只允许置标志 + set Event，绝不碰磁盘。
         # 结构上保证：无论通知逻辑出什么事，原函数都会被原样调用（生图不受影响）。
+        if _STOP.is_set():
+            return orig(*args, **kwargs)
         try:
             event = args[0] if args else kwargs.get("event")
             if event in _EXEC_EVENTS and _event_allowed(event):
@@ -539,9 +575,16 @@ def _driver_loop() -> None:
     就翻倍退避到 ``_MAX_INTERVAL_SEC``（120s）—— 没人出图时几乎不占资源，一旦有事件或变化
     立刻回到基准间隔。
     """
+    global _PREDECESSORS
     idle = 0
     first_round = True
     try:
+        # Only the background worker waits. A predecessor cannot write after
+        # this worker starts; server loading and generation never join it.
+        for predecessor in _PREDECESSORS:
+            while predecessor.is_alive() and not _STOP.is_set():
+                predecessor.join(0.25)
+        _PREDECESSORS = ()
         # 启动延迟（可被 request_warmup 提前唤醒：那时已经"生完图"，启动期早过了）
         if _WAKE.wait(_FIRST_DELAY_SEC):
             _WAKE.clear()
@@ -622,10 +665,11 @@ def install_gallery_warmup(*, output_root_getter, index_path_getter,
     :return: status 快照（``warmup_status()`` 的内容）。重复调用返回**同一个对象**，
              每次 install 时原地刷新；调用方**不要改写**它。
     """
-    global _THREAD, _LAST_ACCEPT_AT
+    global _THREAD, _LAST_ACCEPT_AT, _PREDECESSORS
     with _INSTALL_LOCK:
         if _STATUS["installed"] and _THREAD is not None and _THREAD.is_alive():
             return _refresh_snapshot()  # 幂等：第一个 install 说了算，配置不再变
+        _PREDECESSORS = _retire_previous_drivers()
 
         # 新一次 install = 干净起点：别让 install 之前残留的去抖时间戳吃掉第一个真实请求
         _LAST_ACCEPT_AT = 0.0

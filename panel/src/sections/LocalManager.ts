@@ -12,6 +12,8 @@ import { useOutputStore } from '../store/outputStore'
 import { ensureAllMetadata, isMetadataIndexComplete } from '../services/outputMetadataIndex'
 import { extractLorasFromWorkflow, decompressZlibAsync } from '../services/outputMetadata'
 import { metadataForFile, outputRootIdentity } from '../services/outputIdentity'
+import { localLoraTriggerOverrides, normalizeLocalLoraIdentity } from '../services/localLoraTriggerOverrides'
+import type { LocalLoraTriggerOverrideEntry } from '../services/localLoraTriggerOverrides'
 
 // ── 搜索高亮工具 ──
 function highlightText(text: string, query: string): string {
@@ -32,6 +34,548 @@ let _renderTimer: ReturnType<typeof setTimeout> | null = null
 function isLocalManagerActive(): boolean {
   const section = document.getElementById('sectionLocal')
   return Boolean(section && !section.classList.contains('section-hidden'))
+}
+
+interface LocalTriggerEditorState {
+  name: string
+  identity: string
+  requestId: number
+  operationId: number
+  entry: LocalLoraTriggerOverrideEntry | null
+  automaticWords: string[] | null
+  draft: string
+  dirty: boolean
+  copying: boolean
+  status: 'loading' | 'ready' | 'uneditable' | 'error' | 'saving'
+  error: string
+}
+
+let _triggerEditor: LocalTriggerEditorState | null = null
+const _triggerDrafts = new Map<string, { draft: string; dirty: boolean }>()
+let _triggerRequestId = 0
+let _triggerCopyOperationId = 0
+let _triggerSyncBound = false
+let _triggerSyncUnsubscribe: (() => void) | null = null
+let _categorySlotObserver: MutationObserver | null = null
+let _categorySlotEventsBound = false
+let _detailDrawerOpen = false
+let _categoryToggleEventsBound = false
+
+function triggerServiceAvailable(): boolean {
+  return Boolean(localLoraTriggerOverrides && typeof localLoraTriggerOverrides.load === 'function')
+}
+
+function initializeTriggerOverrideSync(): void {
+  if (_triggerSyncBound || !triggerServiceAvailable()) return
+  _triggerSyncBound = true
+  localLoraTriggerOverrides.initialize()
+  _triggerSyncUnsubscribe = localLoraTriggerOverrides.subscribe((identities) => {
+    const editor = _triggerEditor
+    if (!editor || !identities.includes(editor.identity)) return
+    const entry = localLoraTriggerOverrides.entry(editor.name)
+    if (!entry) return
+    editor.entry = entry
+    if (!editor.dirty && editor.status !== 'saving') editor.draft = effectiveTriggerWords(entry, editor.automaticWords).join('\n')
+    if (editor.status !== 'saving') editor.status = entry.editable ? 'ready' : 'uneditable'
+    editor.error = ''
+    updateTriggerEditorDom()
+  })
+}
+
+function effectiveTriggerWords(entry: LocalLoraTriggerOverrideEntry, automaticWords: string[] | null = null): string[] {
+  if (entry.hasOverride) return entry.words || []
+  if (automaticWords) return automaticWords
+  return entry.automaticWords || []
+}
+
+function setActiveTriggerName(name: string | null): void {
+  if (triggerServiceAvailable() && typeof localLoraTriggerOverrides.setActiveName === 'function') {
+    localLoraTriggerOverrides.setActiveName(name)
+  }
+}
+
+function ensureTriggerEditor(f: LocalLoraFile): LocalTriggerEditorState {
+  const identity = normalizeLocalLoraIdentity(f.name)
+  if (_triggerEditor?.identity === identity) {
+    _triggerEditor.automaticWords = Array.isArray(f.matchData?.trainedWords) ? f.matchData.trainedWords : null
+    if (_triggerEditor.entry && !_triggerEditor.dirty && !_triggerEditor.entry.hasOverride) {
+      _triggerEditor.draft = effectiveTriggerWords(_triggerEditor.entry, _triggerEditor.automaticWords).join('\n')
+    }
+    return _triggerEditor
+  }
+
+  if (_triggerEditor?.dirty) {
+    _triggerDrafts.set(_triggerEditor.identity, { draft: _triggerEditor.draft, dirty: true })
+  }
+  const savedDraft = _triggerDrafts.get(identity)
+
+  const editor: LocalTriggerEditorState = {
+    name: f.name,
+    identity,
+    requestId: ++_triggerRequestId,
+    operationId: 0,
+    entry: null,
+    automaticWords: Array.isArray(f.matchData?.trainedWords) ? f.matchData.trainedWords : null,
+    draft: savedDraft?.draft || '',
+    dirty: Boolean(savedDraft?.dirty),
+    copying: false,
+    status: 'loading',
+    error: '',
+  }
+  _triggerEditor = editor
+  setActiveTriggerName(_detailDrawerOpen || useLocalModelStore.getState().currentView === 'detail' ? f.name : null)
+  if (!triggerServiceAvailable()) {
+    editor.status = 'error'
+    editor.error = '共享触发词服务不可用。'
+    return editor
+  }
+
+  const requestId = editor.requestId
+  const operationId = editor.operationId
+  void localLoraTriggerOverrides.load(f.name, true).then(entry => {
+    if (_triggerEditor !== editor || editor.requestId !== requestId || editor.operationId !== operationId) return
+    editor.entry = entry
+    if (!editor.dirty) editor.draft = effectiveTriggerWords(entry, editor.automaticWords).join('\n')
+    editor.status = entry.editable ? 'ready' : 'uneditable'
+    editor.error = ''
+    updateTriggerEditorDom()
+  }).catch(error => {
+    if (_triggerEditor !== editor || editor.requestId !== requestId || editor.operationId !== operationId) return
+    editor.status = 'error'
+    editor.error = error instanceof Error ? error.message : String(error)
+    updateTriggerEditorDom()
+  })
+  return editor
+}
+
+function triggerEditorStatus(editor: LocalTriggerEditorState): string {
+  if (editor.status === 'saving') return '正在保存到 ComfyUI…'
+  if (editor.status === 'error') return `同步读取或保存失败：${editor.error} 草稿已保留，可重试。`
+  if (editor.dirty) return '草稿未保存；复制仍使用下方已保存有效词。'
+  if (editor.status === 'loading') return '正在读取 ComfyUI 当前保存的有效词…'
+  if (editor.status === 'uneditable' || (editor.entry && !editor.entry.editable)) {
+    return '此 LoRA 路径无法在 ComfyUI 中唯一匹配。请使用完整相对路径及扩展名。'
+  }
+  if (!editor.entry) return '尚未读取 ComfyUI 当前保存的有效词。'
+  if (editor.entry.hasOverride && !(editor.entry.words || []).length) return '当前使用空的自定义词（已停用自动词）。'
+  return editor.entry.hasOverride
+    ? `当前使用已保存的自定义词 · ${editor.entry.words?.length || 0} 段`
+    : `当前使用自动词 · ${(editor.automaticWords ?? editor.entry.automaticWords ?? []).length} 段`
+}
+
+function updateTriggerEditorDom(): void {
+  const editorEl = document.getElementById('localTriggerEditor')
+  const state = _triggerEditor
+  if (!editorEl || !state) return
+  const statusEl = editorEl.querySelector('[data-trigger-status]')
+  if (statusEl) statusEl.textContent = triggerEditorStatus(state)
+  const effectiveEl = editorEl.querySelector('[data-trigger-effective]')
+  if (effectiveEl) {
+    const words = state.entry ? effectiveTriggerWords(state.entry, state.automaticWords) : null
+    effectiveEl.textContent = words === null ? '尚未读取' : words.length ? words.join('\n') : '（空：当前不使用触发词）'
+  }
+  const autoEl = editorEl.querySelector('[data-trigger-automatic]')
+  if (autoEl) {
+    const words = state.automaticWords ?? state.entry?.automaticWords
+    autoEl.textContent = words ? (words.join('\n') || '自动词为空') : '读取中…'
+  }
+  const input = editorEl.querySelector('.local-trigger-draft') as HTMLTextAreaElement | null
+  if (input && (document.activeElement !== input || !state.dirty)) input.value = state.draft
+  if (input) input.disabled = state.status === 'saving' || state.status === 'uneditable'
+  const save = editorEl.querySelector('.local-trigger-save') as HTMLButtonElement | null
+  const reset = editorEl.querySelector('.local-trigger-reset') as HTMLButtonElement | null
+  const copy = editorEl.querySelector('.local-trigger-copy') as HTMLButtonElement | null
+  const retry = editorEl.querySelector('.local-trigger-retry') as HTMLButtonElement | null
+  if (save) {
+    save.disabled = state.status === 'saving' || state.status === 'uneditable'
+    save.textContent = state.dirty ? '保存自定义词' : '保存'
+  }
+  if (reset) reset.disabled = state.status === 'saving' || !state.entry?.editable || !state.entry.hasOverride
+  if (copy) {
+    copy.disabled = state.copying || state.status === 'loading' || state.status === 'saving' || !state.entry || !effectiveTriggerWords(state.entry, state.automaticWords).length
+    copy.setAttribute('aria-busy', String(state.copying))
+    copy.innerHTML = state.copying ? '读取最新值…' : `${icon('copy', 14)} 复制已保存`
+  }
+  if (retry) retry.hidden = state.status !== 'error'
+}
+
+function ensureLocalManagerLayout(): void {
+  const root = document.getElementById('sectionLocal') as HTMLElement | null
+  if (!root || typeof root.querySelector !== 'function') return
+  const container = root.querySelector('.local-container') as HTMLElement | null
+  const toolbar = container?.querySelector('.local-toolbar') as HTMLElement | null
+  const sidebarTools = container?.querySelector('.local-sidebar-tools') as HTMLElement | null
+  const main = container?.querySelector('.local-main') as HTMLElement | null
+  const home = document.getElementById('pageLocalHome')
+  const fileList = document.getElementById('localFileList')
+  if (!container || !toolbar || !main || !home || !fileList) return
+  container.classList.add('local-manager-polished')
+
+  if (!home.contains(fileList)) home.prepend(fileList)
+  const sidebar = container.querySelector('.local-sidebar') as HTMLElement | null
+  const batchBar = document.getElementById('localBatchBar')
+  if (batchBar && !home.contains(batchBar)) fileList.after(batchBar)
+
+  const primary = toolbar.querySelector('.local-toolbar-primary') || document.createElement('div')
+  primary.className = 'local-toolbar-primary'
+  const more = toolbar.querySelector('.local-toolbar-more') as HTMLDetailsElement | null || document.createElement('details')
+  more.className = 'local-toolbar-more'
+  if (!more.querySelector('summary')) {
+    const summary = document.createElement('summary')
+    summary.setAttribute('aria-label', '更多本地 LoRA 操作')
+    summary.textContent = '更多'
+    const actions = document.createElement('div')
+    actions.className = 'local-toolbar-more-actions'
+    more.append(summary, actions)
+  }
+  const moreActions = more.querySelector('.local-toolbar-more-actions') as HTMLElement
+  const primaryActions = ['localScanBtn', 'localUrlBtn']
+  const moreActionIds = ['localFolderCategoryBtn', 'localMatchAllBtn', 'localClearBtn', 'localBatchToggleBtn']
+  for (const id of primaryActions) {
+    const button = document.getElementById(id)
+    if (button && button.parentElement !== primary) primary.append(button)
+  }
+  for (const id of moreActionIds) {
+    const button = document.getElementById(id)
+    if (button && button.parentElement !== moreActions) moreActions.append(button)
+  }
+  const viewTabs = container.querySelector('.local-view-tabs') as HTMLElement | null
+  if (viewTabs) {
+    let viewGroup = moreActions.querySelector('.local-toolbar-more-views') as HTMLElement | null
+    if (!viewGroup) {
+      viewGroup = document.createElement('div')
+      viewGroup.className = 'local-toolbar-more-views'
+      viewGroup.setAttribute('role', 'group')
+      viewGroup.setAttribute('aria-label', '本地管理视图')
+      moreActions.append(viewGroup)
+    }
+    if (viewTabs.parentElement !== viewGroup) viewGroup.append(viewTabs)
+  }
+  const stats = document.getElementById('localScanStats')
+  const newFileBadge = document.getElementById('localNewFileBadge')
+  if (stats && stats.parentElement !== toolbar) toolbar.append(stats)
+  if (newFileBadge && newFileBadge.parentElement !== toolbar) toolbar.append(newFileBadge)
+  if (primary.parentElement !== toolbar) toolbar.prepend(primary)
+  if (more.parentElement !== toolbar) toolbar.append(more)
+
+  let controlRow = container.querySelector('.local-manager-control-row') as HTMLElement | null
+  if (!controlRow) {
+    controlRow = document.createElement('div')
+    controlRow.className = 'local-manager-control-row'
+    toolbar.after(controlRow)
+  }
+  if (sidebarTools) {
+    const search = sidebarTools.querySelector('.local-sidebar-search')
+    const filters = sidebarTools.querySelector('.local-sidebar-filters')
+    if (search && search.parentElement !== controlRow) controlRow.append(search)
+    if (filters && filters.parentElement !== controlRow) controlRow.append(filters)
+  }
+  const baseModel = document.getElementById('localBaseModelPanel')
+  if (baseModel && baseModel.parentElement !== controlRow) controlRow.append(baseModel)
+
+  const categorySlot = document.getElementById('toolboxLocalCategorySlot')
+  const categories = document.getElementById('localGridCategoryList')
+  if (categorySlot && categories && categories.parentElement !== categorySlot) categorySlot.append(categories)
+  if (categorySlot) {
+    ensureNarrowCategoryToggle(categorySlot)
+    syncCategorySlotVisibility()
+    if (!_categorySlotEventsBound) {
+      categorySlot.addEventListener('click', handleCategorySlotClick)
+      _categorySlotEventsBound = true
+    }
+    if (!_categorySlotObserver && typeof MutationObserver !== 'undefined' && root) {
+      _categorySlotObserver = new MutationObserver(syncCategorySlotVisibility)
+      _categorySlotObserver.observe(root, { attributes: true, attributeFilter: ['class'] })
+    }
+  }
+  // Every interactive control is moved out first. Hide the legacy two-column
+  // sidebar rather than leaving its duplicate proxy buttons tabbable.
+  if (sidebar && categorySlot && categories?.parentElement === categorySlot) {
+    sidebar.hidden = true
+    sidebar.style.display = 'none'
+    sidebar.setAttribute('aria-hidden', 'true')
+  }
+
+  const detailPage = document.getElementById('pageLocalDetail')
+  if (detailPage) {
+    detailPage.classList.add('local-detail-drawer')
+    detailPage.setAttribute('aria-hidden', String(!_detailDrawerOpen && useLocalModelStore.getState().currentView !== 'detail'))
+    detailPage.classList.toggle('local-detail-drawer-open', _detailDrawerOpen && useLocalModelStore.getState().currentView !== 'detail')
+  }
+}
+
+function syncCategorySlotVisibility(): void {
+  const slot = document.getElementById('toolboxLocalCategorySlot') as HTMLElement | null
+  const toggle = document.querySelector('.toolbox-local-category-toggle') as HTMLButtonElement | null
+  const sidebar = document.getElementById('toolboxSidebar')
+  const visible = isLocalManagerActive()
+  if (slot) {
+    slot.hidden = !visible
+    slot.setAttribute('aria-hidden', String(!visible))
+  }
+  if (toggle) {
+    toggle.hidden = !visible
+    if (!visible) setCategoryRailOpen(false)
+    toggle.setAttribute('aria-expanded', String(Boolean(sidebar?.classList.contains('local-category-rail-open'))))
+  }
+}
+
+function setCategoryRailOpen(open: boolean): void {
+  const sidebar = document.getElementById('toolboxSidebar')
+  const toggle = document.querySelector('.toolbox-local-category-toggle') as HTMLButtonElement | null
+  sidebar?.classList.toggle('local-category-rail-open', open)
+  toggle?.setAttribute('aria-expanded', String(open))
+}
+
+function ensureNarrowCategoryToggle(slot: HTMLElement): void {
+  if (!_categoryToggleEventsBound) {
+    const toggle = document.createElement('button')
+    toggle.type = 'button'
+    toggle.className = 'toolbox-local-category-toggle'
+    toggle.setAttribute('aria-controls', slot.id)
+    toggle.setAttribute('aria-expanded', 'false')
+    toggle.setAttribute('aria-label', '打开本地 LoRA 分类')
+    toggle.title = '分类'
+    toggle.innerHTML = `${icon('folder', 14)}<span>分类</span>`
+    slot.parentElement?.insertBefore(toggle, slot)
+    toggle.addEventListener('click', () => {
+      const sidebar = document.getElementById('toolboxSidebar')
+      setCategoryRailOpen(!sidebar?.classList.contains('local-category-rail-open'))
+    })
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return
+      const target = event.target as HTMLElement | null
+      if (target?.closest?.('[role="dialog"], .modal, .modal-overlay')) return
+      const sidebar = document.getElementById('toolboxSidebar')
+      if (sidebar?.classList.contains('local-category-rail-open')) {
+        event.preventDefault()
+        setCategoryRailOpen(false)
+        toggle.focus()
+        return
+      }
+      if (_detailDrawerOpen && isLocalManagerActive()) {
+        event.preventDefault()
+        closeLocalDetail()
+      }
+    })
+    _categoryToggleEventsBound = true
+  }
+}
+
+async function handleCategorySlotClick(event: Event): Promise<void> {
+  const target = event.target as HTMLElement
+  const del = target.closest('.local-cat-del-btn') as HTMLElement | null
+  if (del) {
+    const category = del.dataset.cat
+    if (category && await confirmModal('删除分类', `确认删除分类「${category}」？\n已归入该分类的 LoRA 不会被删除，仅移除分类标记。`)) {
+      const store = useLocalModelStore.getState()
+      store.removeCategory(category)
+      store.saveToCache()
+      renderSidebarList(useLocalModelStore.getState())
+    }
+    return
+  }
+  const rename = target.closest('.local-cat-rename-btn') as HTMLElement | null
+  if (rename) {
+    const category = rename.dataset.cat
+    if (!category) return
+    const store = useLocalModelStore.getState()
+    const newName = await promptModal('重命名分类', category)
+    if (!newName || !newName.trim() || newName.trim() === category) return
+    if (store.categories.includes(newName.trim())) { showToast('⚠️ 分类名已存在'); return }
+    store.renameCategory(category, newName.trim())
+    store.saveToCache()
+    renderSidebarList(store)
+    return
+  }
+  if (target.closest('.local-new-cat-btn')) {
+    const category = await promptModal('新建分类')
+    if (!category || !category.trim()) return
+    const store = useLocalModelStore.getState()
+    if (store.categories.includes(category.trim())) { showToast('⚠️ 分类已存在'); return }
+    store.addCategory(category.trim())
+    store.saveToCache()
+    renderSidebarList(store)
+    return
+  }
+  const button = target.closest('.local-grid-cat-btn') as HTMLElement | null
+  if (button) {
+    const category = button.dataset.cat || null
+    useLocalModelStore.getState().setFilterCategory(category)
+    setCategoryRailOpen(false)
+    renderSidebarList(useLocalModelStore.getState())
+  }
+}
+
+function openLocalDetail(name: string): void {
+  const state = useLocalModelStore.getState()
+  const previousView = state.currentView || 'home'
+  state.selectModel(name)
+  if (previousView !== 'detail') useLocalModelStore.getState().setCurrentView(previousView)
+  _detailDrawerOpen = true
+  renderSidebarList(useLocalModelStore.getState())
+  renderDetail(useLocalModelStore.getState())
+  const page = document.getElementById('pageLocalDetail')
+  if (page && useLocalModelStore.getState().currentView !== 'detail') {
+    page.classList.add('local-detail-drawer-open')
+    page.setAttribute('aria-hidden', 'false')
+  }
+  setActiveTriggerName(name)
+}
+
+function closeLocalDetail(): void {
+  const state = useLocalModelStore.getState()
+  _detailDrawerOpen = false
+  setActiveTriggerName(null)
+  if (state.currentView === 'detail') {
+    state.setCurrentView('home')
+    document.querySelectorAll('.local-view-tab').forEach(tab => tab.classList.toggle('active', (tab as HTMLElement).dataset.view === 'home'))
+    document.querySelectorAll('.local-page').forEach(page => page.classList.toggle('active', (page as HTMLElement).id === 'pageLocalHome'))
+  }
+  const page = document.getElementById('pageLocalDetail')
+  if (page) {
+    page.classList.remove('local-detail-drawer-open')
+    page.setAttribute('aria-hidden', 'true')
+  }
+  const fileList = document.getElementById('localFileList')
+  fileList?.focus({ preventScroll: true })
+}
+
+async function retryTriggerEditorRead(name: string): Promise<void> {
+  const editor = _triggerEditor
+  if (!editor || editor.identity !== normalizeLocalLoraIdentity(name) || !triggerServiceAvailable()) return
+  const operationId = ++editor.operationId
+  editor.status = 'loading'
+  editor.error = ''
+  updateTriggerEditorDom()
+  try {
+    const entry = await localLoraTriggerOverrides.load(name, true)
+    if (_triggerEditor !== editor || editor.operationId !== operationId) return
+    editor.entry = entry
+    if (!editor.dirty) editor.draft = effectiveTriggerWords(entry, editor.automaticWords).join('\n')
+    editor.status = entry.editable ? 'ready' : 'uneditable'
+  } catch (error) {
+    if (_triggerEditor !== editor || editor.operationId !== operationId) return
+    editor.status = 'error'
+    editor.error = error instanceof Error ? error.message : String(error)
+  }
+  updateTriggerEditorDom()
+}
+
+async function copyConfirmedTriggerWords(name: string, button: HTMLElement): Promise<void> {
+  const editor = _triggerEditor
+  if (!editor || editor.identity !== normalizeLocalLoraIdentity(name) || editor.copying || editor.status === 'saving' || !triggerServiceAvailable()) return
+  const copyOperationId = ++_triggerCopyOperationId
+  const editorOperationId = editor.operationId
+  editor.copying = true
+  updateTriggerEditorDom()
+  const isCurrent = () => {
+    const state = useLocalModelStore.getState()
+    return _triggerEditor === editor
+      && copyOperationId === _triggerCopyOperationId
+      && editor.operationId === editorOperationId
+      && state.selectedModel
+      && normalizeLocalLoraIdentity(state.selectedModel) === editor.identity
+      && isLocalManagerActive()
+      && (state.currentView === 'detail' || _detailDrawerOpen)
+  }
+  try {
+    const entry = await localLoraTriggerOverrides.load(name, true)
+    if (!isCurrent()) return
+    editor.entry = entry
+    if (!editor.dirty) editor.draft = effectiveTriggerWords(entry, editor.automaticWords).join('\n')
+    editor.status = entry.editable ? 'ready' : 'uneditable'
+    editor.error = ''
+    updateTriggerEditorDom()
+    const words = effectiveTriggerWords(entry, editor.automaticWords)
+    if (words.length) copyText(words.join(', '), button)
+  } catch (error) {
+    if (!isCurrent()) return
+    editor.status = 'error'
+    editor.error = error instanceof Error ? error.message : String(error)
+    // The failed refresh never replaces the draft or claims a stale value was copied.
+  } finally {
+    if (_triggerEditor === editor && copyOperationId === _triggerCopyOperationId) {
+      editor.copying = false
+      updateTriggerEditorDom()
+    }
+  }
+}
+
+async function persistTriggerEditor(name: string, reset = false): Promise<void> {
+  const editor = _triggerEditor
+  if (!editor || editor.identity !== normalizeLocalLoraIdentity(name) || editor.status === 'saving' || !triggerServiceAvailable()) return
+  const operationId = ++editor.operationId
+  const requestId = editor.requestId
+  const draft = editor.draft
+  editor.status = 'saving'
+  editor.error = ''
+  updateTriggerEditorDom()
+  try {
+    const entry = await localLoraTriggerOverrides.save(name, draft, reset)
+    if (_triggerEditor !== editor || editor.requestId !== requestId || editor.operationId !== operationId) return
+    editor.entry = entry
+    editor.dirty = false
+    editor.draft = effectiveTriggerWords(entry, editor.automaticWords).join('\n')
+    _triggerDrafts.delete(editor.identity)
+    editor.status = entry.editable ? 'ready' : 'uneditable'
+    editor.error = ''
+  } catch (error) {
+    if (_triggerEditor !== editor || editor.requestId !== requestId || editor.operationId !== operationId) return
+    editor.status = 'error'
+    editor.error = error instanceof Error ? error.message : String(error)
+    // Keep the user's text and dirty state so Save remains a real retry.
+  }
+  updateTriggerEditorDom()
+}
+
+function activateLocalView(view: LocalViewKey): void {
+  const state = useLocalModelStore.getState()
+  state.setCurrentView(view)
+  document.querySelectorAll('.local-view-tab').forEach(tab => tab.classList.toggle('active', (tab as HTMLElement).dataset.view === view))
+  document.querySelectorAll('.local-page').forEach(page => page.classList.toggle('active', page.id === `pageLocal${view.charAt(0).toUpperCase()}${view.slice(1)}`))
+  const detailPage = document.getElementById('pageLocalDetail')
+  if (view === 'detail') {
+    _detailDrawerOpen = false
+    detailPage?.classList.remove('local-detail-drawer-open')
+    detailPage?.setAttribute('aria-hidden', 'false')
+    renderDetail(state)
+    if (state.selectedModel) setActiveTriggerName(state.selectedModel)
+  } else {
+    if (view !== 'home') _detailDrawerOpen = false
+    if (!_detailDrawerOpen) {
+      detailPage?.classList.remove('local-detail-drawer-open')
+      detailPage?.setAttribute('aria-hidden', 'true')
+      setActiveTriggerName(null)
+    }
+    if (view === 'gallery') {
+      renderGallery(state)
+      renderTagFreq(state.tagFreq)
+    }
+    if (view === 'prompt') renderPromptTab(state)
+    if (view === 'models') void renderModelsTab()
+    if (view === 'home' && _detailDrawerOpen && state.selectedModel) renderDetail(state)
+  }
+}
+
+function renderTriggerEditor(f: LocalLoraFile, editor: LocalTriggerEditorState): string {
+  const saved = editor.entry ? effectiveTriggerWords(editor.entry, editor.automaticWords) : null
+  const automatic = editor.automaticWords || editor.entry?.automaticWords || []
+  const savedText = saved === null ? '尚未读取' : saved.length ? saved.join('\n') : '（空：当前不使用触发词）'
+  return `<section class="local-trigger-editor" id="localTriggerEditor" data-name="${escAttr(f.name)}">
+    <div class="local-trigger-heading"><div><h4>共享触发词</h4><span data-trigger-status role="status" aria-live="polite">${esc(triggerEditorStatus(editor))}</span></div>
+      <button class="local-trigger-copy" type="button" title="复制已保存的有效触发词" aria-label="复制已保存的有效触发词">${icon('copy', 14)} 复制已保存</button>
+    </div>
+    <div class="local-trigger-saved"><span>ComfyUI 当前使用</span><pre data-trigger-effective>${esc(savedText)}</pre></div>
+    <label class="local-trigger-label" for="localTriggerDraft">编辑草稿（每行一段）</label>
+    <textarea id="localTriggerDraft" class="local-trigger-draft" data-name="${escAttr(f.name)}" maxlength="20000" rows="4" placeholder="每行输入一段触发词；保存空白表示停用自动词。">${esc(editor.draft)}</textarea>
+    <details class="local-trigger-auto"><summary>查看自动提取词</summary><pre data-trigger-automatic>${esc(automatic.length ? automatic.join('\n') : '自动词为空')}</pre></details>
+    <div class="local-trigger-actions">
+      <button class="local-trigger-save" data-name="${escAttr(f.name)}" type="button">保存</button>
+      <button class="local-trigger-reset" data-name="${escAttr(f.name)}" type="button">恢复自动</button>
+      <button class="local-trigger-retry" data-name="${escAttr(f.name)}" type="button" hidden>重试读取</button>
+    </div>
+  </section>`
 }
 
 function scheduleRenderLocalView(): void {
@@ -272,6 +816,8 @@ function initDragSelect() {
 
 export async function initLocalManager() {
   if (_initDone) return
+  ensureLocalManagerLayout()
+  initializeTriggerOverrideSync()
   const store = useLocalModelStore.getState()
   store.loadFromCache()
   store.rebuildTagFreq()
@@ -388,21 +934,14 @@ function localPreviewImg(f: LocalLoraFile, state: ReturnType<typeof useLocalMode
     : ''
 }
 
-function localStatusBadge(f: LocalLoraFile, full = false): string {
-  if (f.scanning) return `<span class="local-list-badge scanning">${full ? '匹配中…' : '⏳'}</span>`
-  if (f.matched) return `<span class="local-list-badge matched">${full ? '已匹配' : '✓'}</span>`
-  if (f.matchError) return `<span class="local-list-badge error">${full ? '未匹配' : '✗'}</span>`
-  return ''
-}
-
 function renderListFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalModelStore.getState>): string {
   const isSel = f.name === state.selectedModel
   const isBatchSelected = state.batchSelection.includes(f.name)
   const thumb = localPreviewImg(f, state, 'local-list-thumb', 120) || '<div class="local-list-thumb local-list-thumb-placeholder"></div>'
   const label = f.matchData?.modelName || f.name
   const localSuffix = f.matchData?.modelName ? `<span class="local-list-localname">${esc(f.name.replace(/\.\w+$/, ''))}</span>` : ''
-  const creator = f.matchData?.creator || fmtSize(f.size)
-  const versionSuffix = f.matchData?.versionName ? ` <span style="color:var(--text2)">· v${esc(f.matchData.versionName)}</span>` : ''
+  const categories = state.modelCategories[stripExt(f.name)] || []
+  const metaParts = [f.matchData?.versionName, f.matchData?.baseModel, ...categories].filter(Boolean)
   const query = state.searchQuery || ''
   const chk = state.batchMode
     ? `<input type="checkbox" class="local-list-chk" data-name="${escAttr(f.name)}" ${state.batchSelection.includes(f.name) ? 'checked' : ''}>`
@@ -411,20 +950,16 @@ function renderListFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalM
     ${chk}
     ${thumb}
     <div class="local-list-info">
-      <div class="local-list-name">${highlightText(label, query)}${localSuffix}</div>
-      <div class="local-list-meta">${f.matchData ? highlightText(creator, query) : creator}${versionSuffix}</div>
-    </div>
-    <div class="local-list-actions">
-      ${localStatusBadge(f)}
-      <button class="local-list-del" data-name="${escAttr(f.name)}" title="从磁盘删除">${icon('trash', 12)}</button>
+      <div class="local-list-name" title="${escAttr(f.name)}">${localStatusDot(f)}${highlightText(label, query)}${localSuffix}</div>
+      ${metaParts.length ? `<div class="local-list-meta">${metaParts.map(part => `<span>${highlightText(String(part), query)}</span>`).join('')}</div>` : ''}
     </div>
   </div>`
 }
 
-function localGridStatusDot(f: LocalLoraFile): string {
+function localStatusDot(f: LocalLoraFile): string {
   const status = f.scanning ? 'scanning' : f.matched ? 'matched' : 'unmatched'
-  const label = f.scanning ? '匹配中' : f.matched ? '已匹配' : '未匹配'
-  return `<span class="local-grid-status-dot ${status}" title="${label}" aria-label="${label}"></span>`
+  const label = f.scanning ? 'ComfyUI 匹配中' : f.matched ? '已与本地模型匹配' : f.matchError ? '匹配失败' : '尚未匹配'
+  return `<span class="local-grid-status-dot ${status}" title="${label}" role="img" aria-label="${label}"></span>`
 }
 
 function localModelUrl(f: LocalLoraFile): string | null {
@@ -441,7 +976,7 @@ function renderGridFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalM
   const query = state.searchQuery || ''
   const label = f.matchData?.modelName || f.name.replace(/\.\w+$/, '')
   const localName = f.matchData?.modelName ? f.name.replace(/\.\w+$/, '') : ''
-  const tags = (state.modelCategories[stripExt(f.name)] || []).slice(0, 2)
+  const categories = (state.modelCategories[stripExt(f.name)] || []).slice(0, 2)
   const image = localPreviewImg(f, state, 'local-grid-preview-img', 240) // 卡片实际显示 ~180px，240 覆盖 2x DPI；480 是解码内存浪费
   const preview = image
     ? `<div class="local-grid-preview">${image}${custom ? '<span class="local-grid-custom">自定义</span>' : ''}</div>`
@@ -449,27 +984,34 @@ function renderGridFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalM
   const chk = state.batchMode
     ? `<input type="checkbox" class="local-list-chk local-grid-check" data-name="${escAttr(f.name)}" ${state.batchSelection.includes(f.name) ? 'checked' : ''}>`
     : ''
-  const creator = f.matchData?.creator || fmtSize(f.size)
-  const stats = f.matchData
-    ? `${fmtNum(f.matchData.downloadCount)} 下载 · ${fmtNum(f.matchData.thumbsUpCount)} 赞`
-    : creator
+  const baseModel = f.matchData?.baseModel || ''
+  const versionName = f.matchData?.versionName || ''
   const modelUrl = localModelUrl(f)
   return `<div class="local-list-item local-grid-card ${isSel ? 'active' : ''} ${isBatchSelected ? 'batch-selected' : ''}" data-name="${escAttr(f.name)}" draggable="true">
     ${preview}
     ${chk}
     <div class="local-grid-overlay">
-      ${localGridStatusDot(f)}
+      ${localStatusDot(f)}
       <div class="local-grid-actions">
         <button class="local-preview-upload" data-name="${escAttr(f.name)}" title="上传/替换预览图">${icon('image', 13)}</button>
         ${modelUrl ? `<button class="local-open-model" data-url="${escAttr(modelUrl)}" title="打开对应 LoRA 页面">${icon('globe', 13)}</button>` : ''}
-        ${custom ? `<button class="local-preview-reset" data-name="${escAttr(f.name)}" title="恢复 C 站预览图">${icon('x', 13)}</button>` : ''}
-        <button class="local-list-del" data-name="${escAttr(f.name)}" title="从磁盘删除">${icon('trash', 13)}</button>
+        <details class="local-card-more">
+          <summary title="更多卡片操作" aria-label="${escAttr(f.name)} 更多卡片操作">${icon('moreHorizontal', 16)}</summary>
+          <div class="local-card-more-menu">
+            ${custom ? `<button class="local-preview-reset" data-name="${escAttr(f.name)}" type="button">${icon('x', 13)} 恢复 C 站预览图</button>` : ''}
+            <button class="local-list-del" data-name="${escAttr(f.name)}" type="button">${icon('trash', 13)} 删除本地文件…</button>
+          </div>
+        </details>
       </div>
     </div>
     <div class="local-grid-body">
       <div class="local-grid-name" title="${escAttr(label)}">${highlightText(label, query)}</div>
       ${localName ? `<div class="local-grid-localname" title="${escAttr(localName)}">${esc(localName)}</div>` : ''}
-      <div class="local-grid-meta"><span>${esc(stats)}</span><span class="local-grid-extra">${f.matchData?.versionName ? `<span>v${esc(f.matchData.versionName)}</span>` : ''}${tags.length ? `<span class="local-grid-tags">${tags.map(c => `<span>${esc(c)}</span>`).join('')}</span>` : ''}</span></div>
+      ${(versionName || baseModel || categories.length) ? `<div class="local-grid-meta">
+        ${versionName ? `<span class="local-grid-version" title="版本">${esc(versionName)}</span>` : ''}
+        ${baseModel ? `<span class="local-grid-base" title="底模">${esc(baseModel)}</span>` : ''}
+        ${categories.length ? `<span class="local-grid-tags" title="分类">${categories.map(category => `<span>${esc(category)}</span>`).join('')}</span>` : ''}
+      </div>` : ''}
     </div>
   </div>`
 }
@@ -510,6 +1052,22 @@ function setLocalHtml(el: HTMLElement, html: string): boolean {
   return true
 }
 
+function setDetailHtml(el: HTMLElement, html: string): boolean {
+  const active = document.activeElement as HTMLTextAreaElement | null
+  const restoreDraftFocus = Boolean(active && active.classList?.contains('local-trigger-draft') && el.contains(active))
+  const selectionStart = restoreDraftFocus ? active!.selectionStart : null
+  const selectionEnd = restoreDraftFocus ? active!.selectionEnd : null
+  const changed = setLocalHtml(el, html)
+  if (changed && restoreDraftFocus) {
+    const replacement = el.querySelector('.local-trigger-draft') as HTMLTextAreaElement | null
+    if (replacement) {
+      replacement.focus()
+      if (selectionStart !== null && selectionEnd !== null) replacement.setSelectionRange(selectionStart, selectionEnd)
+    }
+  }
+  return changed
+}
+
 export function renderLocalView() {
   if (_renderTimer !== null) {
     clearTimeout(_renderTimer)
@@ -519,7 +1077,7 @@ export function renderLocalView() {
   renderSidebarList(state)
   updateStats(state)
   switch (state.currentView || 'home') {
-    case 'home': renderHome(state); break
+    case 'home': break
     case 'detail': renderDetail(state); break
     case 'gallery':
       renderGallery(state)
@@ -528,6 +1086,9 @@ export function renderLocalView() {
     case 'prompt': renderPromptTab(state); break
     case 'models': void renderModelsTab(); break
   }
+  if (_detailDrawerOpen && state.currentView !== 'detail' && state.selectedModel) renderDetail(state)
+  if (!_detailDrawerOpen && state.currentView !== 'detail') setActiveTriggerName(null)
+  syncCategorySlotVisibility()
 }
 
 function renderFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalModelStore.getState>): string {
@@ -792,8 +1353,8 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
 
   const categorySourceFiles = [...files]
   const categoryList = $$('localGridCategoryList')
+  if (categoryList) setLocalHtml(categoryList, renderGridCategoryRail(state, categorySourceFiles))
   if (state.displayMode === 'grid') {
-    if (categoryList) setLocalHtml(categoryList, renderGridCategoryRail(state, categorySourceFiles))
     if (state.filterCategory) {
       files = files.filter(f => {
         const assigned = state.modelCategories[stripExt(f.name)] || []
@@ -801,7 +1362,6 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
       })
     }
   } else {
-    if (categoryList) setLocalHtml(categoryList, '')
     if (state.filterCategory) {
       files = files.filter(f => {
         const assigned = state.modelCategories[stripExt(f.name)] || []
@@ -1048,7 +1608,6 @@ function renderPromptTab(state: ReturnType<typeof useLocalModelStore.getState>) 
   el.innerHTML = lines + `
     <div class="prompt-lora-toolbar">
       <button class="btn btn-ghost btn-sm" id="promptCopyAllBtn">${icon('copy', 12)} 复制全部</button>
-      <button class="btn btn-ghost btn-sm" id="promptSendComfyBtn">${icon('send', 12)} 发送到 ComfyUI</button>
     </div>`
 }
 
@@ -1105,6 +1664,10 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
   if (!state.selectedModel) {
     empty.style.display = ''
     content.style.display = 'none'
+    setActiveTriggerName(null)
+    const page = $$('pageLocalDetail')
+    page?.classList.remove('local-detail-drawer-open')
+    page?.setAttribute('aria-hidden', 'true')
     return
   }
 
@@ -1112,11 +1675,21 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
   if (!f) {
     empty.style.display = ''
     content.style.display = 'none'
+    setActiveTriggerName(null)
     return
   }
 
   empty.style.display = 'none'
   content.style.display = 'block'
+
+  const detailPage = $$('pageLocalDetail')
+  const isDrawer = state.currentView !== 'detail'
+  const drawerOpen = isDrawer && _detailDrawerOpen
+  detailPage?.classList.add('local-detail-drawer')
+  detailPage?.classList.toggle('local-detail-drawer-open', drawerOpen)
+  detailPage?.setAttribute('aria-hidden', String(isDrawer && !drawerOpen))
+  const triggerEditor = ensureTriggerEditor(f)
+  setActiveTriggerName(drawerOpen || state.currentView === 'detail' ? f.name : null)
 
   const d = f.matchData
   const previewSources = localPreviewSources(f, state)
@@ -1130,21 +1703,11 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
     ${customPreview ? `<button class="btn btn-ghost btn-sm local-preview-reset" data-name="${escAttr(f.name)}">${icon('x', 12)} 恢复 C 站图片</button>` : ''}
   </div>`
 
-  const statusBadge = f.scanning
-    ? '<span class="local-badge scanning">⏳ 匹配中…</span>'
-    : f.matched
-    ? '<span class="local-badge matched">✅ 已匹配</span>'
-    : f.matchError
-    ? `<span class="local-badge error">❌ ${esc(f.matchError)}</span>`
-    : '<span class="local-badge idle">⏸ 未匹配</span>'
-
   const actionBtn = !f.matched && !f.scanning
     ? `<button class="btn btn-ghost detail-match-btn btn-md" data-name="${escAttr(f.name)}">${icon('search', 12)} 匹配</button>`
     : ''
 
-  const trainedWords = d?.trainedWords?.length
-    ? `<div class="detail-section"><h4>触发词</h4><div class="detail-tw-list">${d.trainedWords.map(w => `<code class="local-tw-item" data-copy="${esc(w + ',')}">${esc(w)},</code>`).join('')}</div></div>`
-    : ''
+  const trainedWords = renderTriggerEditor(f, triggerEditor)
 
   const tags = d?.tags?.length
     ? `<div class="detail-section"><h4>模型标签</h4><div class="detail-tags">${d.tags.map(t => `<span class="detail-tag" data-copy="${esc(t)}">${esc(t)}</span>`).join('')}</div></div>`
@@ -1192,15 +1755,13 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
 
   const html = `<div class="detail-hero">${imgHtml}${previewTools}</div>
     <div class="detail-actions">
-      ${statusBadge}
+      ${localStatusDot(f)}
       <span class="detail-name">${esc(d?.modelName || f.name)}</span>
-      <span class="detail-sep">|</span>
-      <span class="detail-creator">${esc(d?.creator || '')}</span>
+      ${d?.creator ? `<span class="detail-sep">|</span><span class="detail-creator">${esc(d.creator)}</span>` : ''}
       <div class="detail-actions-right">
         ${d ? `<button class="btn btn-ghost detail-open-url btn-sm" data-id="${d.modelId}">${icon('globe', 12)} Civitai</button>` : ''}
         ${actionBtn}
-        <button class="btn btn-ghost btn-sm detail-send-comfy" data-name="${escAttr(f.name)}">${icon('send', 12)} ComfyUI</button>
-        <button class="btn btn-ghost detail-del-btn btn-sm btn-red">${icon('trash', 12)} 删除文件</button>
+        <button class="local-detail-close" type="button" title="关闭详情" aria-label="关闭详情">${icon('x', 16)}</button>
       </div>
     </div>
     <div class="detail-body">
@@ -1220,9 +1781,7 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
             <div class="detail-fi-row"><span>大小</span><span>${fmtSize(f.size)}</span></div>
             <div class="detail-fi-row"><span>SHA256</span><span class="detail-sha" title="${esc(f.sha256)}">${esc(f.sha256.slice(0, 20))}…</span></div>
             ${d ? `<div class="detail-fi-row"><span>基座模型</span><span>${esc(d.baseModel)}</span></div>` : ''}
-            ${d?.versionName ? `<div class="detail-fi-row"><span>版本</span><span>v${esc(d.versionName)} <span style="color:var(--text3);font-size:10px">(ID: ${d.versionId})</span></span></div>` : ''}
-            ${d ? `<div class="detail-fi-row"><span>下载</span><span>${fmtNum(d.downloadCount)}</span></div>` : ''}
-            ${d ? `<div class="detail-fi-row"><span>点赞</span><span>${fmtNum(d.thumbsUpCount)}</span></div>` : ''}
+            ${d?.versionName ? `<div class="detail-fi-row"><span>版本</span><span>${esc(d.versionName)} <span style="color:var(--text3);font-size:10px">(ID: ${d.versionId})</span></span></div>` : ''}
           </div>
         </div>
         ${descHtml}
@@ -1230,7 +1789,7 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
       </div>
     </div>`
 
-  if (setLocalHtml(content, html)) {
+  if (setDetailHtml(content, html)) {
     // Existing image nodes survive equivalent metadata refreshes.
     loadRelatedOutputThumbnails()
   }
@@ -1358,15 +1917,9 @@ function renderTagFreq(tags: TagFreq[]) {
 
 function updateStats(state: ReturnType<typeof useLocalModelStore.getState>) {
   const el = $$('localScanStats')
-  if (el) {
-    const matched = state.files.filter(f => f.matched).length
-    el.innerHTML = `📦 ${state.files.length} 个文件 · ✅ ${matched} 已匹配`
-  }
+  if (el) el.textContent = `📦 ${state.files.length} 个 LoRA`
   const gridStats = $$('localGridStats')
-  if (gridStats) {
-    const matched = state.files.filter(f => f.matched).length
-    gridStats.textContent = `${state.files.length} 个文件 · ${matched} 已匹配`
-  }
+  if (gridStats) gridStats.textContent = `${state.files.length} 个 LoRA`
   const fc = $$('statFileCount')
   const mc = $$('statMatchedCount')
   const pc = $$('statPngCount')
@@ -1514,20 +2067,7 @@ function bindLocalEvents() {
   document.querySelectorAll('.local-view-tab').forEach(tab => {
     tab.addEventListener('click', () => {
       const view = (tab as HTMLElement).dataset.view as LocalViewKey
-      useLocalModelStore.getState().setCurrentView(view)
-      document.querySelectorAll('.local-view-tab').forEach(t => t.classList.remove('active'))
-      tab.classList.add('active')
-      document.querySelectorAll('.local-page').forEach(p => p.classList.remove('active'))
-      const target = $$('pageLocal' + view.charAt(0).toUpperCase() + view.slice(1))
-      if (target) target.classList.add('active')
-      if (view === 'home') renderHome(useLocalModelStore.getState())
-      if (view === 'detail') renderDetail(useLocalModelStore.getState())
-      if (view === 'gallery') {
-        renderGallery(useLocalModelStore.getState())
-        renderTagFreq(useLocalModelStore.getState().tagFreq)
-      }
-      if (view === 'prompt') renderPromptTab(useLocalModelStore.getState())
-      if (view === 'models') renderModelsTab()
+      activateLocalView(view)
     })
   })
 
@@ -1634,15 +2174,7 @@ function bindLocalEvents() {
               state.toggleBatchSelection(name)
               renderSidebarList(useLocalModelStore.getState())
             } else {
-              state.selectModel(name)
-              renderSidebarList(useLocalModelStore.getState())
-              renderDetail(useLocalModelStore.getState())
-              document.querySelectorAll('.local-view-tab').forEach(t => t.classList.remove('active'))
-              document.querySelectorAll('.local-page').forEach(p => p.classList.remove('active'))
-              const dt = document.querySelector('.local-view-tab[data-view="detail"]')
-              if (dt) dt.classList.add('active')
-              const dp = $$('pageLocalDetail')
-              if (dp) dp.classList.add('active')
+              openLocalDetail(name)
             }
           }
         }
@@ -1660,9 +2192,12 @@ function bindLocalEvents() {
         return
       case 'Escape':
         e.preventDefault()
-        useLocalModelStore.getState().selectModel(null)
-        renderSidebarList(useLocalModelStore.getState())
-        renderDetail(useLocalModelStore.getState())
+        if (_detailDrawerOpen || useLocalModelStore.getState().currentView === 'detail') closeLocalDetail()
+        else {
+          useLocalModelStore.getState().selectModel(null)
+          renderSidebarList(useLocalModelStore.getState())
+          renderDetail(useLocalModelStore.getState())
+        }
         return
       case 'a':
         if (e.ctrlKey || e.metaKey) {
@@ -1689,16 +2224,11 @@ function bindLocalEvents() {
       })
       const name = (items[nextIdx] as HTMLElement).dataset.name
       if (name) {
-        useLocalModelStore.getState().selectModel(name)
-        renderDetail(useLocalModelStore.getState())
-        document.querySelectorAll('.local-view-tab').forEach(t => t.classList.remove('active'))
-        document.querySelectorAll('.local-page').forEach(p => p.classList.remove('active'))
-        const dt = document.querySelector('.local-view-tab[data-view="detail"]')
-        if (dt) dt.classList.add('active')
-        const dp = $$('pageLocalDetail')
-        if (dp) dp.classList.add('active')
+        openLocalDetail(name)
+        const selected = Array.from(fileList.querySelectorAll('.local-list-item'))
+          .find(item => (item as HTMLElement).dataset.name === name) as HTMLElement | undefined
+        selected?.scrollIntoView({ block: 'nearest' })
       }
-      items[nextIdx]?.scrollIntoView({ block: 'nearest' })
     }
   })
 
@@ -1777,6 +2307,20 @@ function bindLocalEvents() {
   $$('sectionLocal')?.addEventListener('input', (e) => {
     const target = e.target as HTMLElement
 
+    const triggerDraft = target.closest('.local-trigger-draft') as HTMLTextAreaElement | null
+    if (triggerDraft) {
+      const editor = _triggerEditor
+      const name = triggerDraft.dataset.name || ''
+      if (!editor || editor.identity !== normalizeLocalLoraIdentity(name)) return
+      editor.draft = triggerDraft.value
+      const saved = editor.entry ? effectiveTriggerWords(editor.entry, editor.automaticWords).join('\n') : null
+      editor.dirty = saved === null ? triggerDraft.value.length > 0 : triggerDraft.value !== saved
+      if (editor.dirty) _triggerDrafts.set(editor.identity, { draft: editor.draft, dirty: true })
+      else _triggerDrafts.delete(editor.identity)
+      updateTriggerEditorDom()
+      return
+    }
+
     // Slider drag: sync number, save store, update detail preview
     const slider = target.closest('.prompt-lora-slider, .detail-lora-slider') as HTMLInputElement
     if (slider) {
@@ -1821,6 +2365,39 @@ function bindLocalEvents() {
 
   $$('sectionLocal')?.addEventListener('click', async (e) => {
     const target = e.target as HTMLElement
+
+    if (target.closest('.local-detail-close')) {
+      closeLocalDetail()
+      return
+    }
+
+    const triggerSave = target.closest('.local-trigger-save') as HTMLElement | null
+    if (triggerSave) {
+      const name = triggerSave.dataset.name || _triggerEditor?.name
+      if (name) await persistTriggerEditor(name)
+      return
+    }
+
+    const triggerReset = target.closest('.local-trigger-reset') as HTMLElement | null
+    if (triggerReset) {
+      const name = triggerReset.dataset.name || _triggerEditor?.name
+      if (name) await persistTriggerEditor(name, true)
+      return
+    }
+
+    const triggerRetry = target.closest('.local-trigger-retry') as HTMLElement | null
+    if (triggerRetry) {
+      const name = triggerRetry.dataset.name || _triggerEditor?.name
+      if (name) await retryTriggerEditorRead(name)
+      return
+    }
+
+    const triggerCopy = target.closest('.local-trigger-copy') as HTMLElement | null
+    if (triggerCopy) {
+      const name = triggerCopy.closest('#localTriggerEditor')?.getAttribute('data-name') || _triggerEditor?.name
+      if (name) await copyConfirmedTriggerWords(name, triggerCopy)
+      return
+    }
 
     const proxyAction = target.closest('[data-local-action]') as HTMLElement
     if (proxyAction) {
@@ -1989,6 +2566,8 @@ function bindLocalEvents() {
 
     const listItem = target.closest('.local-list-item') as HTMLElement
     if (listItem) {
+      // The overflow menu must remain usable without opening the underlying card.
+      if (target.closest('.local-card-more')) return
       const name = listItem.dataset.name
       if (name) {
         const state = useLocalModelStore.getState()
@@ -1999,16 +2578,8 @@ function bindLocalEvents() {
           renderSidebarList(useLocalModelStore.getState())
           return
         }
-        if (state.displayMode === 'grid') state.setDisplayMode('list')
-        useLocalModelStore.getState().selectModel(name)
-        renderSidebarList(useLocalModelStore.getState())
-        renderDetail(useLocalModelStore.getState())
-        document.querySelectorAll('.local-view-tab').forEach(t => t.classList.remove('active'))
-        document.querySelectorAll('.local-page').forEach(p => p.classList.remove('active'))
-        const dt = document.querySelector('.local-view-tab[data-view="detail"]')
-        if (dt) dt.classList.add('active')
-        const dp = $$('pageLocalDetail')
-        if (dp) dp.classList.add('active')
+        if (_detailDrawerOpen && state.selectedModel === name && state.currentView !== 'detail') closeLocalDetail()
+        else openLocalDetail(name)
       }
       return
     }
@@ -2032,35 +2603,6 @@ function bindLocalEvents() {
     if (openUrl) {
       const id = openUrl.dataset.id
       if (id) window.open(`https://civitai.com/models/${id}`, '_blank')
-      return
-    }
-
-    // Send single LoRA to ComfyUI from detail page
-    const sendComfy = target.closest('.detail-send-comfy') as HTMLElement
-    if (sendComfy) {
-      const name = sendComfy.dataset.name
-      if (!name) return
-      const f = useLocalModelStore.getState().files.find(ff => ff.name === name)
-      if (!f) { showToast('⚠️ LoRA 未找到'); return }
-      const loraName = f.name.replace(/\.\w+$/, '')
-      const w = useLocalModelStore.getState().promptWeights?.[f.name] ?? 1.0
-      const bridgeData = {
-        loras: `<lora:${loraName}:${w.toFixed(2)}>`,
-        lora_list: [{ name: loraName, model_strength: parseFloat(w.toFixed(2)), trigger_words: f.matchData?.trainedWords || [] }],
-        updatedAt: Date.now(),
-      }
-      try {
-        const csrf = document.cookie.replace(/(?:(?:^|.*;\s*)csrftoken\s*=\s*([^;]*).*$)|^.*$/, "$1")
-        const resp = await fetch('/anima/bridge/update', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
-          body: JSON.stringify(bridgeData),
-        })
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-        showToast('✅ 已发送到 ComfyUI')
-      } catch (e: any) {
-        showToast('❌ 发送失败: ' + e.message + '，请确认 ComfyUI 已重启')
-      }
       return
     }
 
@@ -2158,50 +2700,6 @@ function bindLocalEvents() {
         })
         .join(' ')
       copyText(tags)
-      return
-    }
-
-    if (target.id === 'promptSendComfyBtn') {
-      const state = useLocalModelStore.getState()
-      const pw = state.promptWeights || {}
-      const loraList = state.files
-        .filter(f => f.matched || state.modelCategories[stripExt(f.name)])
-        .map(f => {
-          const name = f.name.replace(/\.\w+$/, '')
-          const w = pw[f.name] ?? 1.0
-          return {
-            name,
-            model_strength: parseFloat(w.toFixed(2)),
-            trigger_words: f.matchData?.trainedWords || [],
-          }
-        })
-      if (!loraList.length) { showToast('⚠️ 没有可用的 LoRA'); return }
-      const bridgeData = {
-        loras: loraList.map(l => `<lora:${l.name}:${l.model_strength}>`).join(' '),
-        lora_list: loraList,
-        updatedAt: Date.now(),
-      }
-      // Send via HTTP API (no File System Access required, works in all browsers)
-      try {
-        const csrf = document.cookie.replace(/(?:(?:^|.*;\s*)csrftoken\s*=\s*([^;]*).*$)|^.*$/, "$1")
-        const resp = await fetch('/anima/bridge/update', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
-          body: JSON.stringify(bridgeData),
-        })
-        if (!resp.ok) {
-          const err = await resp.json().catch(() => ({}))
-          throw new Error(err.error || `HTTP ${resp.status}`)
-        }
-        showToast('✅ 已发送到 ComfyUI（HTTP 桥接）')
-      } catch (e: any) {
-        console.error('[Anima] Bridge send failed:', e)
-        if (e.name === 'TypeError' && e.message.includes('fetch')) {
-          showToast('⚠️ 无法连接 ComfyUI，请确认 ComfyUI 正在运行')
-        } else {
-          showToast(`❌ 发送失败: ${e.message}，请确认 ComfyUI 已重启`)
-        }
-      }
       return
     }
 

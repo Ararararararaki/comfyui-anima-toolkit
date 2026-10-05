@@ -13,7 +13,7 @@ import {
   resetDiffObserver,
 } from './outputManifest'
 import { showToast } from '../utils'
-import { createImageSnapshot, bindMetadata, outputRootIdentity, type ImageSnapshot } from './outputIdentity'
+import { createImageSnapshot, bindMetadata, outputRootIdentity, commitListSource, type ImageSnapshot } from './outputIdentity'
 
 /** 从已有 DB 记录恢复用户元数据（收藏/评分/标签等） */
 async function withUserMetadata(base: OutputFile): Promise<OutputFile> {
@@ -508,6 +508,11 @@ export async function scanOutputDir(dirHandle: FileSystemDirectoryHandle): Promi
 
     const allFiles = [...restoredFiles, ...newFiles]
 
+    // 显式声明：当前列表来自**用户选中的浏览器目录**。
+    // 必须与列表提交同一步完成 —— 否则在画廊索引可用的前提下，
+    // 来源会被误判成 gallery，导致读到 ComfyUI output 里同相对路径的另一张图。
+    commitListSource('directory', outputRootIdentity(useOutputStore.getState().rootPath, dirHandle), PARSER_VERSION)
+
     // 更新状态（保留持久化的筛选/搜索状态，不再强制重置）
     useOutputStore.setState({
       files: allFiles,
@@ -629,6 +634,8 @@ export async function scanOutputDirIncremental(dirHandle: FileSystemDirectoryHan
 
     // 从 DB 重新加载完整列表
     const allFiles = await outputsDb.files.toArray()
+    // 增量扫描只处理用户选中的目录句柄 → 来源同样是 directory，必须显式声明
+    commitListSource('directory', outputRootIdentity(useOutputStore.getState().rootPath, dirHandle), PARSER_VERSION)
     useOutputStore.getState().setFiles(allFiles)
     // 返回变化的文件数量（新增/变更/删除），调用方据此判断是否有更新可提示
     return diff.changed.length + diff.orphaned.length

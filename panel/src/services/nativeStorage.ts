@@ -78,6 +78,63 @@ export function nativeOutputUrl(path: string): string {
   return url(`/api/tk/output-file?path=${encodeURIComponent(path)}`)
 }
 
+/**
+ * ComfyUI **原生**原图 URL（`/view`）。
+ *
+ * 为什么需要它（2026-10-04 用户实测 404）：
+ * 画廊来源（gallery）的 Outputs **不是** TK 原生桥的场景 —— 它由插件侧的
+ * `/anima/gallery/*` 索引驱动，而原图必须走 ComfyUI 自带的 `/view`。
+ * 旧代码在 gallery 分支误用了 `nativeOutputUrl()`（`/api/tk/output-file`），
+ * 那个端点属于外部 TK 启动器、插件并不提供 → 真实 HTTP **404** →
+ * 预览固定报「图片加载失败，保留当前预览，请重试」。
+ *
+ * `/view` 的参数契约（ComfyUI `server.py` 的 `view_image`）：
+ *   filename=<basename>、subfolder=<相对目录>、type=output
+ * 且它自身会拒绝绝对路径与 `..`（返回 400），并做 commonpath 越界校验（403）。
+ */
+export function comfyViewUrl(path: string): string {
+  const normalized = String(path || '').replace(/\\/g, '/').replace(/^\/+/, '')
+  const slash = normalized.lastIndexOf('/')
+  const filename = slash === -1 ? normalized : normalized.slice(slash + 1)
+  const subfolder = slash === -1 ? '' : normalized.slice(0, slash)
+  const params = new URLSearchParams()
+  params.set('filename', filename)
+  if (subfolder) params.set('subfolder', subfolder)
+  params.set('type', 'output')
+  return `/view?${params.toString()}`
+}
+
+/**
+ * 删除一张 output 图片（服务端执行，**不依赖目录句柄**）。
+ *
+ * 画廊来源下前端没有 `dirHandle`，浏览器侧的 File System Access 删除永远进不去；
+ * 必须由插件在服务端删除，并且由服务端做 output 根内校验与修订冲突校验。
+ * 携带删除前的 mtime/size：文件已被替换时服务端返回 409，避免误删同名的**新**图。
+ */
+export async function deleteOutputFile(
+  path: string,
+  revision: { mtime: number; size: number; root: string },
+): Promise<void> {
+  const resp = await fetch('/anima/outputs/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    // root 必须发出：`source + root + path + mtime + size` 才是真实图片身份。
+    // 服务端会把它与**实际** output 根核对，避免 output 目录配置变更后
+    // 把「同相对路径 + 同 mtime/size」的另一张图删掉。
+    body: JSON.stringify({ path, root: revision.root, mtime: revision.mtime / 1000, size: revision.size }),
+    cache: 'no-store',
+  })
+  if (resp.ok) return
+  let detail = `HTTP ${resp.status}`
+  try {
+    const data = await resp.json() as { error?: string; conflict?: boolean; rootMismatch?: boolean; missing?: boolean }
+    if (data?.error) detail = data.error
+  } catch { /* 响应体不是 JSON：沿用状态码 */ }
+  const err = new Error(detail) as Error & { status?: number }
+  err.status = resp.status
+  throw err
+}
+
 export async function nativeScanOutputs(): Promise<{ added: number; changed: number; removed: number; total: number }> {
   return request('/api/tk/outputs/scan', { method: 'POST' })
 }

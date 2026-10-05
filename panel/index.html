@@ -20,26 +20,39 @@ try {
 </head>
 <body data-ui-version="drinkit-2026-09-08">
 
-<header>
-  <div class="header-inner">
-    <h1><span data-icon="palette" class="h1-icon"></span> TK Toolkit <small>本地工具箱</small></h1>
-  <nav class="main-tabs" id="mainTabs" role="tablist">
-      <button class="main-tab active" data-section="local" data-icon="monitor" role="tab" aria-selected="true"><span>本地 lora 管理</span></button>
-      <button class="main-tab" data-section="lora" data-icon="package" role="tab" aria-selected="false"><span>LoRA 探索</span> <span class="badge-tab" id="loraBadge">0</span></button>
-      <!-- 画师系列：用户从不使用，隐藏入口（代码保留，去掉注释即可恢复；badge 8 原为写死值） -->
-      <button class="main-tab" data-section="artist" data-icon="brush" role="tab" aria-selected="false" style="display:none"><span>画师系列</span> <span class="badge-tab">8</span></button>
-      <button class="main-tab" data-section="prompt" data-icon="book" role="tab" aria-selected="false"><span>Prompt 库</span></button>
-      <button class="main-tab" data-section="clothing" data-icon="shirt" role="tab" aria-selected="false"><span>服装库</span></button>
-      <button class="main-tab" data-section="prompt-freq" data-icon="image" role="tab" aria-selected="false"><span>图片解析</span></button>
-      <button class="main-tab" data-section="outputs" data-icon="grid" role="tab" aria-selected="false"><span>Outputs</span></button>
-    </nav>
-    <div class="theme-switcher" id="themeSwitcher" title="切换主题">
-      <span class="theme-dot active" data-theme="drinkit" title="Drinkit 蓝色轻几何"></span>
-      <span class="theme-dot" data-theme="mono" title="Monochrome 暗"></span>
-      <span class="theme-dot" data-theme="mono-light" title="Monochrome 亮"></span>
+<aside class="toolbox-sidebar" id="toolboxSidebar" aria-label="工具箱导航">
+  <div class="toolbox-brand">
+    <span class="toolbox-brand-icon" data-icon="palette" aria-hidden="true"></span>
+    <span class="toolbox-brand-copy"><strong>TK Toolkit</strong><small>本地工具箱</small></span>
+  </div>
+  <nav class="main-tabs" id="mainTabs" role="tablist" aria-label="主栏目" aria-orientation="vertical">
+    <button class="main-tab active" type="button" data-section="local" data-icon="monitor" role="tab" aria-controls="sectionLocal" aria-selected="true" tabindex="0" title="本地 LoRA 管理"><span>本地 LoRA 管理</span></button>
+    <button class="main-tab" type="button" data-section="lora" data-icon="package" role="tab" aria-controls="sectionLora" aria-selected="false" tabindex="-1" title="LoRA 探索"><span>LoRA 探索</span> <span class="badge-tab" id="loraBadge">0</span></button>
+    <!-- 画师系列：用户从不使用，隐藏入口（代码保留，去掉注释即可恢复；badge 8 原为写死值） -->
+    <button class="main-tab" type="button" data-section="artist" data-icon="brush" role="tab" aria-controls="sectionArtist" aria-selected="false" tabindex="-1" style="display:none"><span>画师系列</span> <span class="badge-tab">8</span></button>
+    <button class="main-tab" type="button" data-section="prompt" data-icon="book" role="tab" aria-controls="sectionPrompt" aria-selected="false" tabindex="-1" title="Prompt 库"><span>Prompt 库</span></button>
+    <button class="main-tab" type="button" data-section="clothing" data-icon="shirt" role="tab" aria-controls="sectionClothing" aria-selected="false" tabindex="-1" title="服装库"><span>服装库</span></button>
+    <button class="main-tab" type="button" data-section="prompt-freq" data-icon="image" role="tab" aria-controls="sectionPromptFreq" aria-selected="false" tabindex="-1" title="图片解析"><span>图片解析</span></button>
+    <button class="main-tab" type="button" data-section="outputs" data-icon="grid" role="tab" aria-controls="sectionOutputs" aria-selected="false" tabindex="-1" title="Outputs"><span>Outputs</span></button>
+  </nav>
+  <div class="toolbox-local-category-slot" id="toolboxLocalCategorySlot" role="region" aria-label="本地分类"></div>
+  <div class="toolbox-sidebar-footer">
+    <span class="toolbox-theme-label">外观</span>
+    <div class="theme-switcher" id="themeSwitcher" role="group" aria-label="主题">
+      <button class="theme-dot active" type="button" data-theme="drinkit" aria-label="Drinkit 蓝色轻几何主题" aria-pressed="true" title="Drinkit 蓝色轻几何"><span class="theme-dot-swatch" aria-hidden="true"></span></button>
+      <button class="theme-dot" type="button" data-theme="mono" aria-label="Monochrome 暗色主题" aria-pressed="false" title="Monochrome 暗"><span class="theme-dot-swatch" aria-hidden="true"></span></button>
+      <button class="theme-dot" type="button" data-theme="mono-light" aria-label="Monochrome 亮色主题" aria-pressed="false" title="Monochrome 亮"><span class="theme-dot-swatch" aria-hidden="true"></span></button>
     </div>
-    <span id="buildTime" class="build-time"></span>
-    <button class="icon-btn settings-btn" id="settingsBtn" data-icon="settings" title="设置 (Ctrl+,)"></button>
+  </div>
+</aside>
+
+<header id="contentHeader">
+  <div class="header-inner">
+    <h1 class="toolbox-page-title" id="pageTitle">本地 LoRA 管理</h1>
+    <div class="toolbox-header-actions">
+      <span id="buildTime" class="build-time"></span>
+      <button class="icon-btn settings-btn" id="settingsBtn" type="button" data-icon="settings" title="设置 (Ctrl+,)" aria-label="设置"></button>
+    </div>
   </div>
 </header>
 

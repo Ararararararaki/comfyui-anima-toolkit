@@ -1493,11 +1493,20 @@
    不再占据图片下方整条高度 → 图片更大、整屏更紧凑。
    ⚠️ 绝对定位**不参与布局**：masonry 的卡高因此不再加信息区高度
    （见 masonry.ts 的 MASONRY_CARD_BORDER 注释），改这里的视觉不必同步布局层。 */
-.outputs-card.masonry .outputs-card-info {
+/* ── 信息区（文件名 / 分类 / 模型 / 大小 / 日期 / 操作按钮）改为「仅悬停显示」──
+   默认卡片**只有图片、完全干净**；鼠标悬停或用键盘聚焦（:focus-within）才淡入上滑。
+   ⚠️ 常驻层不受影响：**置顶图标与分类按钮**在 `.outputs-card-actions-top`，
+      它们是独立的一层（见上方「常驻顶部操作栏」），始终可见。
+   浮层绝对定位**不参与布局**：卡高 == 图片区高度
+   （见 masonry.ts 的 MASONRY_CARD_BORDER 注释与第 133 行 h = imgH + 0），
+   故隐藏它不会造成任何行错位，也无需改布局层。
+   ⚠️ 本规则去掉旧版的 `.masonry` 限定 —— 普通网格与瀑布流现在是同一套行为。 */
+.outputs-card .outputs-card-info {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
+  top: auto;
   height: auto;
   padding: 30px 8px 7px;          /* 上留白给渐变过渡，文字落在实底上 */
   /* ⚠️ 必须 !important：polish.css 用 `.outputs-card-info { background: ... !important }`
@@ -1512,11 +1521,19 @@
   border-top: 0;
   color: #fff;
   text-shadow: 0 1px 3px rgba(0, 0, 0, .7);
-  /* 容器不吃事件：点图片仍能预览 / 框选；按钮单独恢复 pointer-events */
+  /* 容器不吃事件：点图片仍能预览 / 框选；按钮在悬停态单独恢复 pointer-events */
   pointer-events: none;
+  /* 默认完全不可见 —— 卡片上没有任何文字与按钮 */
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity .18s ease, transform .18s ease;
 }
 
-.outputs-card.masonry:hover .outputs-card-info {
+/* 悬停 / 键盘聚焦 → 信息区淡入并上滑到位（置顶与分类按钮本就常驻，与此无关） */
+.outputs-card:hover .outputs-card-info,
+.outputs-card:focus-within .outputs-card-info {
+  opacity: 1;
+  transform: translateY(0);
   background: linear-gradient(to top,
     rgba(0, 0, 0, .94) 0%,
     rgba(0, 0, 0, .70) 42%,
@@ -1524,18 +1541,20 @@
     rgba(0, 0, 0, 0) 100%) !important;
 }
 
-.outputs-card.masonry .outputs-card-info .outputs-card-name { color: #fff; }
-.outputs-card.masonry .outputs-card-info .outputs-card-meta,
-.outputs-card.masonry .outputs-card-info .outputs-card-date {
-  color: rgba(255, 255, 255, .84);
+.outputs-card .outputs-card-info .outputs-card-name { color: #fff; }
+.outputs-card .outputs-card-info .outputs-card-meta,
+.outputs-card .outputs-card-info .outputs-card-date {
+  color: rgba(255, 255, 255, .84) !important;
   opacity: 1;
 }
-.outputs-card.masonry .outputs-card-info .outputs-card-category,
-.outputs-card.masonry .outputs-card-info .outputs-card-model { color: rgba(255, 255, 255, .94); }
+.outputs-card .outputs-card-info .outputs-card-category,
+.outputs-card .outputs-card-info .outputs-card-model { color: rgba(255, 255, 255, .94); }
 
-/* 操作按钮恢复可点（容器是 pointer-events:none），图标改反白以贴合暗底 */
-.outputs-card.masonry .outputs-card-info .outputs-card-actions { pointer-events: auto; }
-.outputs-card.masonry .outputs-card-info .outputs-card-actions button {
-  color: #fff;
+/* 操作按钮恢复可点（容器是 pointer-events:none），图标改反白以贴合暗底；
+   仅在信息区**可见**时才接管事件 —— 隐藏态不抢图片的点击与框选 */
+.outputs-card:hover .outputs-card-info .outputs-card-actions,
+.outputs-card:focus-within .outputs-card-info .outputs-card-actions { pointer-events: auto; }
+.outputs-card .outputs-card-info .outputs-card-actions button {
+  color: #fff !important;
   border-color: rgba(255, 255, 255, .3);
 }
