@@ -19,6 +19,12 @@ xlsx + defaults_config.json，实测未安装时分类退化到 98.6% 未归类�
 （用于「剔除 furry / 剔除巨乳」这类按主题整族剔除）。
 """
 
+try:
+    from .anima_paths import plugin_root
+except ImportError:
+    from anima_paths import plugin_root
+
+
 import functools
 import gzip
 import json
@@ -278,7 +284,7 @@ class TagTaxonomy:
 # ══════════════════════════════════════════════════════════════════════════
 
 #: 插件根目录（索引与 data/ 的相对基准）
-PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+PLUGIN_DIR = plugin_root()
 
 #: 标签段与自然语言段的分隔符。**这是节点间的输出/输入契约**：
 #: Tag Getter 用它输出，Anima 格式化与提示词扩写用它切分。改这里等于改三个节点。

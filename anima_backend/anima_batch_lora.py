@@ -1,3 +1,9 @@
+
+try:
+    from .anima_paths import plugin_root
+except ImportError:
+    from anima_paths import plugin_root
+
 # Anima Batch LoRA Loader - ComfyUI custom node
 # Reads <lora:name:weight> syntax and loads multiple LoRAs in sequence.
 # Also supports bridge mode: reads from in-memory bridge data (HTTP API)
@@ -27,7 +33,7 @@ _GALLERY_RESPONSE_CACHE = GalleryResponseCache()
 BRIDGE_DATA: dict = {}
 BRIDGE_LOCK = threading.Lock()
 
-BRIDGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "anima_bridge.json")
+BRIDGE_PATH = os.path.join(plugin_root(), "anima_bridge.json")
 _LORA_MODEL_EXTENSIONS = (".safetensors", ".pt", ".pth", ".ckpt", ".bin")
 
 
@@ -152,10 +158,10 @@ def _list_lora_entries() -> list[dict]:
 # ── 触发词持久表 ──
 # 节点侧 widget 把「LoRA → 触发词」推送到这里落盘（data/lora_trigger_words.json），
 # 执行时即可离线解析：不依赖面板是否推送过 bridge、也不依赖 C 站在线。
-TRIGGER_WORDS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "lora_trigger_words.json")
+TRIGGER_WORDS_PATH = os.path.join(plugin_root(), "data", "lora_trigger_words.json")
 _TRIGGER_WORDS_LOCK = threading.Lock()
 _TRIGGER_WORDS_CACHE: dict = {"mtime": -1.0, "map": {}}
-TRIGGER_OVERRIDE_STORE = TriggerOverrideStore(os.path.join(os.path.dirname(__file__), "data", "lora_trigger_overrides.json"))
+TRIGGER_OVERRIDE_STORE = TriggerOverrideStore(os.path.join(plugin_root(), "data", "lora_trigger_overrides.json"))
 
 
 def _trigger_identity_catalog():
@@ -765,7 +771,7 @@ async def anima_thumb(request):
     if not abs_path:
         return web.json_response({"error": "文件不存在或不在 output 目录内"}, status=404)
 
-    plugin_dir = os.path.dirname(os.path.abspath(__file__))
+    plugin_dir = plugin_root()
     cache_root = anima_thumbs.plugin_cache_root(plugin_dir, width)
     async with _THUMB_SEMAPHORE:
         try:
@@ -806,7 +812,7 @@ _GALLERY_STALE_LAG_MS = 2000
 
 
 def _gallery_index_path() -> str:
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "gallery", "index.json")
+    return os.path.join(plugin_root(), "data", "gallery", "index.json")
 
 
 # ── 预热器桥接（services/gallery_warmup.py；懒导入 + 全程容错）────────────────
@@ -880,7 +886,7 @@ def _gallery_plugin_version() -> str:
     global _GALLERY_VERSION_CACHE
     if _GALLERY_VERSION_CACHE is None:
         try:
-            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"), encoding="utf-8") as vf:
+            with open(os.path.join(plugin_root(), "VERSION"), encoding="utf-8") as vf:
                 _GALLERY_VERSION_CACHE = vf.read().strip()
         except Exception:  # noqa: BLE001
             _GALLERY_VERSION_CACHE = ""

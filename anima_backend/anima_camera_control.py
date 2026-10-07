@@ -1,3 +1,9 @@
+
+try:
+    from .anima_paths import plugin_root
+except ImportError:
+    from anima_paths import plugin_root
+
 # Anima Camera Control — 可视化相机提示词控制节点
 #
 # 算法忠实复刻 ComfyUI-bsk_UI 的 CameraControlNode（AGPL-3.0），
@@ -146,7 +152,7 @@ PRESET_NAMES = [CUSTOM_PRESET] + list(PRESETS.keys())
 # 保存/重命名/删除/导入导出走 /anima/camera/presets* API；节点 preset 下拉
 # 与 camera_preview（批量联动）都会合并自定义预设。
 
-_CAM_PRESETS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "camera_presets.json")
+_CAM_PRESETS_PATH = os.path.join(plugin_root(), "data", "camera_presets.json")
 _CAM_PRESETS_LOCK = threading.Lock()
 
 

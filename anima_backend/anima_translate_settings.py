@@ -13,12 +13,18 @@
 
 from __future__ import annotations
 
+try:
+    from .anima_paths import plugin_root
+except ImportError:
+    from anima_paths import plugin_root
+
+
 import json
 import os
 import threading
 from typing import Any, Callable
 
-PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+PLUGIN_DIR = plugin_root()
 SETTINGS_DIR = os.path.join(PLUGIN_DIR, "data")
 SETTINGS_PATH = os.path.join(SETTINGS_DIR, "translate_settings.json")
 

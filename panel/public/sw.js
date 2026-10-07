@@ -1,58 +1,11 @@
-const CACHE = 'anima-lora-v2'
-const PRECACHE = ['/', '/index.html']
-
-self.addEventListener('install', (e) => {
-  e.waitUntil(
-    caches.open(CACHE).then((c) => c.addAll(PRECACHE)).then(() => self.skipWaiting())
+// Compatibility tombstone for previously installed toolkit service workers.
+// Retire only the toolkit cache; preserve other applications and user data.
+self.addEventListener('install', (event) => {
+  event.waitUntil(self.skipWaiting())
+})
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.delete('anima-lora-v2').then(() => self.registration.unregister())
   )
 })
-
-self.addEventListener('activate', (e) => {
-  e.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
-  )
-})
-
-self.addEventListener('fetch', (e) => {
-  const { request } = e
-  const url = new URL(request.url)
-
-  // 导航（HTML 文档）请求一律网络优先：面板每次部署都会换 bundle 文件名，
-  // 若 index.html 命中旧缓存就会一直指向旧 bundle —— 用户会以为"面板没更新"。
-  // （2026-09-10 实际踩过：缓存优先 + 写死的 CACHE 名导致入口 HTML 长期不刷新）
-  if (request.mode === 'navigate' || request.destination === 'document') {
-    e.respondWith(
-      fetch(request).then((res) => {
-        if (res.ok && request.method === 'GET') {
-          const clone = res.clone()
-          caches.open(CACHE).then((c) => c.put(request, clone))
-        }
-        return res
-      }).catch(() =>
-        caches.match(request).then((c) => c || caches.match('/index.html'))
-      )
-    )
-    return
-  }
-
-  if (url.hostname === 'image.civitai.com' || url.hostname === 'civitai.com') {
-    e.respondWith(
-      caches.match(request).then((cached) => cached || fetch(request).then((res) => {
-        const clone = res.clone()
-        if (res.ok) caches.open(CACHE).then((c) => c.put(request, clone))
-        return res
-      }).catch(() => new Response('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"><rect fill="#1a1e28" width="400" height="300"/><text x="200" y="150" text-anchor="middle" fill="#6b728c" font-size="14">离线</text></svg>', { headers: { 'Content-Type': 'image/svg+xml' } })))
-    )
-    return
-  }
-
-  e.respondWith(
-    caches.match(request).then((cached) => cached || fetch(request).then((res) => {
-      if (res.ok && request.method === 'GET') {
-        const clone = res.clone()
-        caches.open(CACHE).then((c) => c.put(request, clone))
-      }
-      return res
-    }))
-  )
-})
+// No fetch handler: use normal HTTP cache/revalidation policies for all requests.

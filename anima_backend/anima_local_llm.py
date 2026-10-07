@@ -1,3 +1,9 @@
+
+try:
+    from .anima_paths import plugin_root
+except ImportError:
+    from anima_paths import plugin_root
+
 # TK 本地 LLM 翻译 provider（小规模接入，不改变现有 Router 架构）
 #
 # - ComfyUI 启动时默认不下载、不加载；用户可通过 UI/API 主动启用。
@@ -20,7 +26,7 @@ import time
 
 # ── 常量 ──
 
-PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+PLUGIN_DIR = plugin_root()
 try:
     import folder_paths
     TRANSLATORS_DIR = os.path.join(folder_paths.models_dir, "translators")

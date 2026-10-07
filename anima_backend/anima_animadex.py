@@ -41,6 +41,12 @@ url / thumb_url / img_url / has_image / loras / rating / fav_count。
 """
 from __future__ import annotations
 
+try:
+    from .anima_paths import plugin_root
+except ImportError:
+    from anima_paths import plugin_root
+
+
 import bisect
 import gzip
 import json
@@ -60,7 +66,7 @@ __all__ = [
     "refresh_async",
 ]
 
-PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+PLUGIN_DIR = plugin_root()
 SLIM_PATH = os.path.join(PLUGIN_DIR, "anima_animadex.json.gz")
 RAW_PATH = os.path.join(PLUGIN_DIR, "data", "_sources", "animadex_characters.json")
 TAXONOMY_PATH = os.path.join(PLUGIN_DIR, "data", "tag_taxonomy.tsv.gz")
@@ -733,7 +739,10 @@ def warm_async() -> threading.Thread | None:
 
         def worker() -> None:
             try:
-                get_index()
+                from .services.background_budget import background_slot
+                with background_slot() as admitted:
+                    if admitted:
+                        get_index()
             except Exception as error:  # noqa: BLE001
                 print(f"[AnimaDex] 预热失败（打开浮窗时会重试）：{error}")
 

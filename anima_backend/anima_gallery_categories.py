@@ -64,6 +64,12 @@ ComfyUI 的 HTTP 路由跑在多线程里（aiohttp + 可能的线程池），�
 """
 from __future__ import annotations
 
+try:
+    from .anima_paths import plugin_root
+except ImportError:
+    from anima_paths import plugin_root
+
+
 import copy
 import json
 import math
@@ -74,7 +80,7 @@ import time
 from contextlib import contextmanager
 from typing import Any
 
-PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+PLUGIN_DIR = plugin_root()
 DATA_DIR = os.path.join(PLUGIN_DIR, "data")
 STORE_PATH = os.path.join(DATA_DIR, "gallery_categories.json")
 

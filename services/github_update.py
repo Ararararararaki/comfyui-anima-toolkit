@@ -114,7 +114,7 @@ def is_release_path(relative_path: str) -> bool:
     if any(part in _EXCLUDED_DIRS for part in path.split("/")):
         return False
     return (
-        path in {"__init__.py", "VERSION", "README.md", "CHANGELOG.md", "LICENSE"}
+        path in {"__init__.py", "VERSION", "README.md", "CHANGELOG.md", "LICENSE", "requirements.txt", "pyproject.toml", ".comfyignore", "llms.txt"}
         or path.startswith("anima_")
         or path.startswith("services/")
         or path.startswith("web/")
@@ -345,14 +345,36 @@ def stage_update_archive(archive_path: str, stage_dir: str) -> list[tuple[str, s
         return staged
 
 
+def _layout_manifest(staged):
+    for relative, source in staged:
+        if relative.replace("\\", "/") == "anima_backend/layout.json":
+            with open(source, encoding="utf-8") as handle:
+                manifest = json.load(handle)
+            names = {name.replace("\\", "/") for name, _ in staged}
+            if manifest.get("format") != 1 or not isinstance(manifest.get("required"), list):
+                raise RuntimeError("Invalid backend layout manifest")
+            if not set(manifest["required"]).issubset(names):
+                raise RuntimeError("Incomplete backend update; missing required implementations")
+            return manifest
+    if any(name.replace("\\", "/").startswith("anima_backend/") for name, _ in staged):
+        raise RuntimeError("Backend update is missing its layout manifest")
+    return None
+
+
 def apply_staged_update(staged: list[tuple[str, str]]) -> int:
+    manifest = _layout_manifest(staged)
     backup_dir = tempfile.mkdtemp(prefix="anima-update-backup-", dir=os.path.dirname(_PLUGIN_DIR))
     applied: list[tuple[str, str, bool]] = []
+    rollback_errors = []
     try:
-        for relative, source in staged:
+        # Entry point and version commit last, after all dependencies are present.
+        ordered = sorted(staged, key=lambda item: (item[0] in {"__init__.py", "VERSION"}, item[0] == "VERSION", item[0]))
+        for relative, source in ordered:
             destination = os.path.abspath(os.path.join(_PLUGIN_DIR, relative))
             if os.path.commonpath([_PLUGIN_DIR, destination]) != os.path.abspath(_PLUGIN_DIR):
                 raise RuntimeError("更新目标路径越界")
+            if any(os.path.islink(os.path.join(_PLUGIN_DIR, *relative.replace("\\", "/").split("/")[:i])) for i in range(1, len(relative.replace("\\", "/").split("/")) + 1)):
+                raise RuntimeError("Update target contains a symbolic link")
             backup = os.path.join(backup_dir, relative)
             had_old = os.path.isfile(destination)
             if had_old:
@@ -368,7 +390,23 @@ def apply_staged_update(staged: list[tuple[str, str]]) -> int:
                     os.remove(destination)
                 raise
             applied.append((destination, backup, had_old))
-        return len(applied)
+        if manifest:
+            # Only retire verified official flat files. Locally modified code is retained.
+            for relative, expected in manifest.get("retired", {}).items():
+                if not re.fullmatch(r"anima_[A-Za-z0-9_]+\.py", relative):
+                    raise RuntimeError("Invalid retirement path")
+                destination = os.path.abspath(os.path.join(_PLUGIN_DIR, relative))
+                if not os.path.isfile(destination) or os.path.islink(destination):
+                    continue
+                with open(destination, "rb") as handle:
+                    digest = hashlib.sha256(handle.read().replace(b"\r\n", b"\n")).hexdigest()
+                if digest != expected:
+                    continue
+                backup = os.path.join(backup_dir, relative)
+                shutil.copy2(destination, backup)
+                applied.append((destination, backup, True))
+                os.remove(destination)
+        return len(staged)
     except Exception:
         for destination, backup, had_old in reversed(applied):
             try:
@@ -376,8 +414,11 @@ def apply_staged_update(staged: list[tuple[str, str]]) -> int:
                     shutil.copy2(backup, destination)
                 elif os.path.exists(destination):
                     os.remove(destination)
-            except Exception:
-                pass
+            except Exception as error:
+                rollback_errors.append(str(error))
+        if rollback_errors:
+            raise RuntimeError(f"Update failed and rollback needs recovery; backups retained at {backup_dir}")
         raise
     finally:
-        shutil.rmtree(backup_dir, ignore_errors=True)
+        if not rollback_errors:
+            shutil.rmtree(backup_dir, ignore_errors=True)

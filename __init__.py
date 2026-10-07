@@ -3,6 +3,11 @@
 # App available at: /extensions/ComfyUI-Anima-Batch-LoRA/app/
 
 import os
+
+# Keep established package/module identities for old workflows and integrations.
+# Backend comes first so old installations cannot load stale root implementations.
+_BACKEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "anima_backend")
+__path__ = [_BACKEND_DIR] + [path for path in __path__ if path != _BACKEND_DIR]
 import re
 import time
 import json
@@ -236,7 +241,7 @@ WEB_DIRECTORY = "./web"
 # 从根上消掉「两个地方要一起改」这个失败模式；读失败（打包丢文件等）才回落到内置值。
 # 更新链（_is_update_release_path / 更新 ZIP 校验）本来就要求包里带 VERSION，
 # 所以这个文件在真实安装里一定存在。
-_FALLBACK_VERSION = "2.29.0"
+_FALLBACK_VERSION = "2.30.0"
 try:
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"), encoding="utf-8") as _vf:
         __version__ = _vf.read().strip() or _FALLBACK_VERSION
@@ -1488,7 +1493,7 @@ async def serve_asset(request):
         return web.Response(status=404)
 
     # Cache control: JS/CSS assets get long TTL, HTML/no-ext gets no-cache
-    if ext in (".js", ".css", ".png", ".jpg", ".svg", ".ico"):
+    if os.path.relpath(filepath, APP_DIR).replace("\\", "/").startswith("assets/") and re.search(r"-[A-Za-z0-9_-]{8}\.(?:js|css|png|jpg|svg|ico)$", os.path.basename(filepath)) and ext in (".js", ".css", ".png", ".jpg", ".svg", ".ico"):
         cache = "public, max-age=31536000, immutable"
     else:
         cache = "no-cache"

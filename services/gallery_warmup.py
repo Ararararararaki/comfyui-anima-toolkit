@@ -43,6 +43,10 @@ import os
 import re
 import threading
 import time
+try:
+    from . import background_budget
+except ImportError:  # Standalone diagnostics load this file outside its package.
+    from services import background_budget
 
 # ── 常量 ────────────────────────────────────────────────────────────────────
 
@@ -52,7 +56,7 @@ _PROBE_MAX_DIRS = 4000    # 探测时最多枚举多少个目录（防御异常�
 _IMAGE_EXTS = (".png", ".webp", ".jpg", ".jpeg")  # 与 anima_gallery.scan_output_files 对齐
 _BACKOFF_AFTER = 2        # 连续 N 轮无变化后开始退避
 _MAX_INTERVAL_SEC = 120.0  # 退避上限
-_THUMB_WORKERS = 2        # 缩略图预热并发上限（生图优先，绝不抢）
+_THUMB_WORKERS = 1        # One speculative decoder; foreground thumbnails remain on demand.
 _THUMB_MAX_PER_BATCH = 200  # 单批预热上限：防止"首次全库"把 CPU 占满
 _THUMB_WIDTHS = (512,)    # 只预热列表档；768 详情档仍按需生成
 _EXEC_EVENTS = ("executed", "execution_success", "execution_error")  # "新图可能已落盘"
@@ -341,20 +345,17 @@ def _thumb_batch_worker(root: str, rels: list) -> None:
         if thumbs is None or not hasattr(thumbs, "ensure_thumbnail"):
             error = "anima_thumbs 不可用（缺 PIL 或导入失败），跳过缩略图预热"
         else:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
             width = _THUMB_WIDTHS[0]
             cache_root = thumbs.plugin_cache_root(_PLUGIN_DIR, width)
-            futures = []
-            with ThreadPoolExecutor(max_workers=_THUMB_WORKERS,
-                                    thread_name_prefix="anima-thumb") as pool:
-                for rel in rels:
+            for rel in rels:
+                with background_budget.background_slot(_STOP) as admitted:
+                    if not admitted:
+                        break
                     abs_path = os.path.join(root, rel)
                     if not os.path.isfile(abs_path):
                         continue
-                    futures.append(pool.submit(thumbs.ensure_thumbnail, abs_path, width, cache_root))
-                for fut in as_completed(futures):
                     try:
-                        fut.result()
+                        thumbs.ensure_thumbnail(abs_path, width, cache_root)
                         done += 1
                     except Exception:
                         failed += 1
@@ -594,6 +595,12 @@ def _driver_loop() -> None:
                 pending = bool(_STATUS["pending"])
                 # 带上触发来源（"event:executed" / "request"），既做诊断标签也决定"要不要强制跑"
                 reason = (_REQ_STATS["lastReason"] or "request") if pending else "poll"
+            deferred = background_budget.defer_reason()
+            if deferred:
+                with _STATUS_LOCK:
+                    _STATUS["lastResult"] = {"skipped": True, "mode": "deferred", "reason": deferred}
+                _STOP.wait(2.0)
+                continue
             # ⚠️ **首轮强制跑一次**（2026-09-17）：解析器换代（``anima_gallery.PARSER_VERSION`` 变了）
             #    时磁盘上一点变化都没有 —— poll 的签名判据会说 "unchanged" 直接跳过，
             #    于是老图永远停在旧语义上（用户视角：重启了，提示词还是老样子）。
@@ -606,7 +613,10 @@ def _driver_loop() -> None:
             if pending:
                 _debounce_sleep()
             try:
-                result = run_once(reason)
+                with background_budget.background_slot(_STOP) as admitted:
+                    if not admitted:
+                        break
+                    result = run_once(reason)
             except Exception as exc:  # run_once 自带兜底，这里只是双保险
                 print(f"[gallery_warmup] 单轮预热未捕获异常（已忽略）: {exc}")
                 result = {}

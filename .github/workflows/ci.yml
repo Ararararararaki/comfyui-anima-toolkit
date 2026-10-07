@@ -58,7 +58,7 @@ jobs:
 
       # ── 逐层验证：每步独立，失败环节一眼可见 ─────────────────────────
       - name: 'ci: python-compile'
-        run: python -m py_compile __init__.py anima_*.py
+        run: python -m compileall -q __init__.py anima_backend services
 
       - name: 'ci: panel-typecheck (tsc --noEmit)'
         run: |

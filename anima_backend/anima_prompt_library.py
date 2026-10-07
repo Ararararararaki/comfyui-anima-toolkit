@@ -11,6 +11,12 @@ merge-only 同步据此丢弃对应记录，避免"本地删除、同步复活"�
 
 from __future__ import annotations
 
+try:
+    from .anima_paths import plugin_root
+except ImportError:
+    from anima_paths import plugin_root
+
+
 import json
 import os
 import shutil
@@ -23,7 +29,7 @@ from aiohttp import web
 from server import PromptServer
 
 
-PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+PLUGIN_DIR = plugin_root()
 DATA_DIR = os.path.join(PLUGIN_DIR, "data")
 PROMPT_LIBRARY_PATH = os.path.join(DATA_DIR, "prompt_library.json")
 PROMPT_LIBRARY_BACKUP_COUNT = 5

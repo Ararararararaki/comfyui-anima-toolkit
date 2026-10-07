@@ -80,6 +80,7 @@ export function installGalleryBrowser(UI, app) {
       return old.search.call(this, options);
     }
     const snapshot = this.browseSnapshot();
+    const submittedInput = this.queryInput?.value ?? this.queryWidget?.value;
     this.hideSuggestions();
     if (!snapshot.query && (snapshot.source === 'pixiv' || (snapshot.source === 'danbooru' && !this.currentQuery()))) {
       this.setStatus(snapshot.source === 'pixiv' ? 'P站：请输入关键词后搜索' : '输入 Danbooru 标签后搜索');
@@ -132,7 +133,10 @@ export function installGalleryBrowser(UI, app) {
       this.settings.filters = result.settings.filters;
       this.settings.lastQuery = result.query;
       this.settings.sourceQueries = {...this.settings.sourceQueries,[snapshot.source]:result.query};
-      this.setQuery(result.query);
+      // Results belong to the submitted search; a newer input is still a draft.
+      // Avoid rewriting even identical input: assigning .value resets the caret.
+      const liveInput = this.queryInput?.value ?? this.queryWidget?.value;
+      if (liveInput === submittedInput && liveInput !== result.query && !this._queryComposing) this.setQuery(result.query);
       if (result.account.registered != null) this.registered = result.account.registered;
       if (result.account.tag_limit != null) this.tagLimitValue = result.account.tag_limit;
       this.settings.activeCategory = '';

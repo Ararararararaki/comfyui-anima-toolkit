@@ -1,3 +1,9 @@
+
+try:
+    from .anima_paths import plugin_root
+except ImportError:
+    from anima_paths import plugin_root
+
 # TK Prompt Cards —— 卡片库提示词编辑器节点 + /anima/cards/* 路由
 #
 # 功能：
@@ -61,8 +67,8 @@ CARDS_LOCK = threading.Lock()
 
 # Prompt Cards 输入联想词典：英文标签、D 站帖数、中文说明。
 # 文件由发布包随插件提供；现有的 danbooru_tags_zh.json 仅作为缺失译文的兼容补充。
-AUTOCOMPLETE_PATH = os.path.join(os.path.dirname(__file__), "data", "danbooru_tags_with_description_v3_modified.csv")
-AUTOCOMPLETE_ZH_PATH = os.path.join(os.path.dirname(__file__), "data", "danbooru_tags_zh.json")
+AUTOCOMPLETE_PATH = os.path.join(plugin_root(), "data", "danbooru_tags_with_description_v3_modified.csv")
+AUTOCOMPLETE_ZH_PATH = os.path.join(plugin_root(), "data", "danbooru_tags_zh.json")
 # 别名索引（角色中文名 / 作品中文名 / 别名），由 tools/build_tag_alias_index.py 生成。
 # 中文查询走这张表，不再扫描 20 万条英文说明 —— 既快又准（说明里的「望远镜」曾把「望」喂给 telescope）。
 #
@@ -70,9 +76,9 @@ AUTOCOMPLETE_ZH_PATH = os.path.join(os.path.dirname(__file__), "data", "danbooru
 #    `anima_* / services/ / web/ / app/` + 几个根文件，`data/` 被整个排除（保护用户状态）。
 #    放在 data/ 里，老用户点「更新」只会拿到新代码、拿不到新词典 → 联想静默失效。
 #    根目录的 `anima_alias_index.json` 连**旧版更新链**都会下发。
-ALIAS_INDEX_PATH = os.path.join(os.path.dirname(__file__), "anima_alias_index.json")
+ALIAS_INDEX_PATH = os.path.join(plugin_root(), "anima_alias_index.json")
 # 兼容/兜底：早期构建产物或手动放置的位置
-ALIAS_INDEX_FALLBACK_PATH = os.path.join(os.path.dirname(__file__), "data", "danbooru_alias_index.json")
+ALIAS_INDEX_FALLBACK_PATH = os.path.join(plugin_root(), "data", "danbooru_alias_index.json")
 # 可重入锁：_build_autocomplete_alias_tables 持锁期间会再调 _load_autocomplete_entries，
 # 普通 Lock 会在这里自死锁（预热线程与首次查询都会卡住）。
 AUTOCOMPLETE_LOCK = threading.RLock()
@@ -377,14 +383,20 @@ def _warm_autocomplete_async():
 
     def worker():
         try:
-            _build_autocomplete_alias_tables()
+            from .services.background_budget import background_slot
+            with background_slot() as admitted:
+                if not admitted:
+                    return
+                _build_autocomplete_alias_tables()
             print("[TK Prompt Cards] 中文联想索引预热完成：%d 个标签带中文别名" % len(_AUTOCOMPLETE_ZH_BY_TAG or {}))
         except Exception as error:  # noqa: BLE001
             print("[TK Prompt Cards] 中文联想索引预热失败（首次查询时会重试）：%s" % error)
             return
         try:
             # 说明兜底索引也要 1 秒多，同样挪到后台，别让首次查询等它
-            _ensure_autocomplete_description_index()
+            with background_slot() as admitted:
+                if admitted:
+                    _ensure_autocomplete_description_index()
         except Exception as error:  # noqa: BLE001
             print("[TK Prompt Cards] 说明兜底索引预热失败（不影响别名查询）：%s" % error)
 
@@ -855,7 +867,7 @@ def _zh_fallback_index():
     with _ZH_FALLBACK_LOCK:
         if _ZH_FALLBACK_INDEX is None:
             index = {}
-            path = os.path.join(os.path.dirname(__file__), "data", "danbooru_tags_zh.json")
+            path = os.path.join(plugin_root(), "data", "danbooru_tags_zh.json")
             try:
                 with open(path, encoding="utf-8") as handle:
                     data = json.load(handle)
@@ -1105,7 +1117,7 @@ async def cards_lora_triggers(request):
 
 # ── LLM 自动分类（卡片库；Ollama 本地优先，其次 OpenAI 兼容反代）──
 
-LLM_CONF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+LLM_CONF_DIR = os.path.join(plugin_root(), "data")
 LLM_CONF_PATH = os.path.join(LLM_CONF_DIR, "llm_config.json")
 LLM_CONF_LOCK = threading.Lock()
 OLLAMA_BASE = "http://127.0.0.1:11434"

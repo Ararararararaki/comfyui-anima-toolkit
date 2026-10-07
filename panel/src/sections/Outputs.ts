@@ -11,6 +11,7 @@ import { outputsDb } from '../db/outputsDb'
 import { addPrompt, generatePromptId } from '../store/prompts'
 import { esc, escAttr, showToast, copyText, icon, attachSearchClear, debounce } from '../utils'
 import { confirmModal, promptModal } from '../components/Modal'
+import { closeLightbox } from '../components/Lightbox'
 import type { OutputFile, OutputMetadata, OutputDir, OutputScanStatus } from '../types/outputs'
 import type { PromptEntry } from '../types'
 import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow, parseOutputMetadata, PARSER_VERSION } from '../services/outputMetadata'
@@ -1911,15 +1912,8 @@ function bindOutputsEvents() {
     })
   })
 
-  // 关闭 lightbox 时释放最后一张预览的原图 Blob URL
-  document.querySelector('.lightbox .close')?.addEventListener('click', () => {
-    ++_previewToken
-    _currentPreviewSnapshot = null
-    if (_previewBlobUrl) {
-      URL.revokeObjectURL(_previewBlobUrl)
-      _previewBlobUrl = ''
-    }
-  })
+  // Shared close lifecycle also covers Escape and backdrop clicks.
+  document.getElementById('lightbox')?.addEventListener('lightbox:closed', releaseOutputPreviewResources)
 
   // ── 右键菜单 ──
   document.addEventListener('contextmenu', (e) => {
@@ -2590,6 +2584,8 @@ function scheduleIdleRestoreRest(rest: OutputFile[]): void {
  * 再进 Outputs 会重新拉取（几百毫秒），换来的是**生图期间面板不常驻解码位图**。
  */
 function releaseOutputMemory(): void {
+  if (_currentPreviewSnapshot) closeLightbox()
+  else releaseOutputPreviewResources()
   _outputImageNodes.clear()   // 已解码位图：最大的可释放项（清掉后滚动回来会按需重建）
   destroyOutputsVS()          // 网格 + 虚拟滚动实例及其 DOM
   // ⚠️ 刻意**保留** thumbMemory：它是"路径 → 160px dataURL"表（≤500 条、约 15MB），
@@ -3711,6 +3707,15 @@ function bindEditToolbar() {
     const wrap = document.getElementById('lbEditWrap')
     if (wrap) wrap.style.cursor = ''
   })
+}
+
+function releaseOutputPreviewResources(): void {
+  ++_previewToken
+  _currentPreviewFileId = ''
+  _currentPreviewSnapshot = null
+  if (_previewBlobUrl) URL.revokeObjectURL(_previewBlobUrl)
+  _previewBlobUrl = ''
+  resetEdit()
 }
 
 function preparePreviewImage(url: string): Promise<boolean> {

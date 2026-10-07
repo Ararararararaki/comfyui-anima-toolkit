@@ -343,7 +343,8 @@ ComfyUI 工作流里的节点,批量挂载 LoRA:
    ▼
 ComfyUI 后端(Python)
    ├─ __init__.py        路由:模型扫描 / 元数据 / C 站代理 / 下载
-   ├─ anima_batch_lora.py 节点逻辑(LoRA 解析、批量应用)
+   ├─ anima_backend/ 后端实现（节点、画廊、提示词）
+   ├─ services/ 更新、索引、元数据与后台任务
    └─ web/js/            节点前端(ComfyUI 扩展)
 ```
 

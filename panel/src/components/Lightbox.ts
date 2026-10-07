@@ -19,8 +19,15 @@ export function openLightbox(imgs: string[], idx: number) {
 }
 
 export function closeLightbox() {
-  document.getElementById('lightbox')?.classList.remove('open')
+  const lb = document.getElementById('lightbox')
+  lb?.classList.remove('open')
+  document.getElementById('lbImg')?.removeAttribute('src')
+  const canvas = document.getElementById('lbEditCanvas') as HTMLCanvasElement | null
+  if (canvas) { canvas.width = 0; canvas.height = 0 }
+  images = []
+  index = 0
   document.body.style.overflow = ''
+  lb?.dispatchEvent(new Event('lightbox:closed'))
 }
 
 export function navLightbox(dir: number) {

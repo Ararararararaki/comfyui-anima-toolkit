@@ -20,6 +20,12 @@
 
 from __future__ import annotations
 
+try:
+    from .anima_paths import plugin_root
+except ImportError:
+    from anima_paths import plugin_root
+
+
 import importlib
 import inspect
 import json
@@ -729,7 +735,7 @@ def civitai_key_path() -> Path:
 
     刻意做成**函数**而不是模块常量 —— 测试可以直接 monkeypatch 它指向 tmp 目录。
     """
-    return Path(__file__).with_name("data") / CIVITAI_KEY_FILE
+    return Path(plugin_root()) / "data" / CIVITAI_KEY_FILE
 
 
 def normalize_civitai_key(raw: Any) -> str:

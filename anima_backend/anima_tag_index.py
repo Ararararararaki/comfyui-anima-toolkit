@@ -46,6 +46,12 @@
 """
 from __future__ import annotations
 
+try:
+    from .anima_paths import plugin_root
+except ImportError:
+    from anima_paths import plugin_root
+
+
 import bisect
 import csv
 import json
@@ -64,7 +70,7 @@ __all__ = [
     "index_status",
 ]
 
-PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+PLUGIN_DIR = plugin_root()
 DATA_DIR = os.path.join(PLUGIN_DIR, "data")
 CSV_PATH = os.path.join(DATA_DIR, "danbooru_tags_with_description_v3_modified.csv")
 ALIAS_PATH = os.path.join(PLUGIN_DIR, "anima_alias_index.json")
@@ -779,7 +785,10 @@ def warm_async() -> threading.Thread | None:
 
         def worker() -> None:
             try:
-                get_index()
+                from .services.background_budget import background_slot
+                with background_slot() as admitted:
+                    if admitted:
+                        get_index()
             except Exception as error:  # noqa: BLE001 —— 预热失败不应影响插件加载
                 print(f"[多源画廊·本地索引] 预热失败（首次查询时会重试）：{error}")
 

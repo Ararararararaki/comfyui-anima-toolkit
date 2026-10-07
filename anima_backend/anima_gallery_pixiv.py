@@ -26,6 +26,12 @@ token 只落盘 `data/pixiv_token.json`（已在 `.gitignore` 内），**不进�
 
 from __future__ import annotations
 
+try:
+    from .anima_paths import plugin_root
+except ImportError:
+    from anima_paths import plugin_root
+
+
 import asyncio
 import base64
 import functools
@@ -412,7 +418,7 @@ PIXIV_NOT_LOGGED_IN = (
 # ---------- token 落盘与自动续期 ----------
 _token_lock = threading.Lock()
 # 模块级变量（不是常量）：测试里可替换成临时文件，避免写真实 data/
-_token_path = Path(__file__).with_name("data") / "pixiv_token.json"
+_token_path = Path(plugin_root()) / "data" / "pixiv_token.json"
 _token_cache: dict[str, Any] | None = None
 #: token 文件的 (mtime, size) 指纹。缓存**不能只判 `is None`** —— 那等于"进程活着就只读一次盘"，
 #: 于是外部换 token（手工写入 / 另一个进程刷新）永远不会被感知，症状是 `/auth/status`

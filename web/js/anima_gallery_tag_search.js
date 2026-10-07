@@ -54,6 +54,7 @@ export function installGalleryTagSearch(UI) {
   };
   p.hideSuggestions = function () { old.hideSuggestions.call(this); this._booruCompletion = null; };
   p.scheduleSuggestions = function (value) {
+    if (this._queryComposing) {this.hideSuggestions();return;}
     const source = this.activeSourceId();
     const raw = String(value ?? '');
     const context = booruTokenAt(raw, this.queryInput?.selectionStart ?? raw.length);
@@ -199,10 +200,17 @@ export function installGalleryTagSearch(UI) {
   p.build = function (...args) {
     const result = old.build.apply(this,args);
     const input = this.queryInput;
+    if (!input || this._tagSearchInput === input) return result;
+    this._tagSearchInput = input;
     const keydown = input.onkeydown;
-    input.onkeydown = event => {if (!this.handleBooruSuggestionKey(event)) keydown?.call(input,event);};
-    input.addEventListener('click',() => {if (SOURCES.has(this.activeSourceId())) this.scheduleSuggestions(input.value);});
-    input.addEventListener('keyup',event => {if (['ArrowLeft','ArrowRight','Home','End'].includes(event.key) && SOURCES.has(this.activeSourceId())) this.scheduleSuggestions(input.value);});
+    input.onkeydown = event => {
+      if (this._queryComposing || event.isComposing || event.keyCode === 229) return;
+      if (!this.handleBooruSuggestionKey(event)) keydown?.call(input,event);
+    };
+    input.addEventListener('compositionstart',() => {this._queryComposing=true;this.hideSuggestions();});
+    input.addEventListener('compositionend',() => {this._queryComposing=false;this.scheduleSuggestions(input.value);});
+    input.addEventListener('click',() => this.scheduleSuggestions(input.value));
+    input.addEventListener('keyup',event => {if (['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) this.scheduleSuggestions(input.value);});
     return result;
   };
   p.positionSuggestions = function () {

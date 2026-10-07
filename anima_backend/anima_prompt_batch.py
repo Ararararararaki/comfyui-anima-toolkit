@@ -1,3 +1,9 @@
+
+try:
+    from .anima_paths import plugin_root
+except ImportError:
+    from anima_paths import plugin_root
+
 # Anima Prompt Batch — 批量提示词注入（控制器节点 + 文件 API + 批任务控制器）
 #
 # 后端职责：
@@ -41,7 +47,7 @@ def _input_root() -> str:
         try:
             _INPUT_ROOT = folder_paths.get_input_directory()
         except Exception:
-            _INPUT_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "input")
+            _INPUT_ROOT = os.path.join(os.path.dirname(plugin_root()), "input")
     return _INPUT_ROOT
 
 
@@ -376,7 +382,7 @@ async def prompt_read(request):
 # 每条任务自铸造 uuid 作 prompt_id，入队时在 extra_data 打 anima_batch 标记，
 # 状态对账按 prompt_id 精确匹配 /queue 与 /history，无需字符串反查。
 
-BATCH_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "batches")
+BATCH_DIR = os.path.join(plugin_root(), "data", "batches")
 _BATCH_LOCK = threading.Lock()
 _BATCH_NUMBER_LOCK = threading.Lock()
 _BATCH_FILE_LOCKS: dict[str, threading.Lock] = {}

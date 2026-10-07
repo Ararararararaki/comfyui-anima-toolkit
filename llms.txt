@@ -13,6 +13,13 @@
 > Publisher `toki` · Registry id `anima-toolkit` · License MIT · Primary docs are in Chinese,
 > with an English summary at the top of the README.
 
+## Current release
+
+Version 2.30.0. Python implementations live in anima_backend/ and services/;
+__init__.py remains the ComfyUI entry point. Existing node IDs and user data paths
+are unchanged. Restart ComfyUI after this layout upgrade. Galleries also support
+Safebooru, yande.re, Konachan.net, page positioning and local resume progress.
+
 ## Install
 
 - ComfyUI-Manager: search **`TK Toolkit`** (node id `anima-toolkit`).

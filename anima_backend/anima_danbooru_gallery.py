@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+try:
+    from .anima_paths import plugin_root
+except ImportError:
+    from anima_paths import plugin_root
+
+
 from collections import OrderedDict
 from dataclasses import dataclass
 import asyncio
@@ -307,7 +313,7 @@ def _apply_danbooru_proxy() -> None:
 # ---------- Danbooru 账号（上限按账号等级：Member=2、Gold=6、Platinum+=不限；登录后限流更宽） ----------
 # 凭证只存本机插件目录 data/danbooru_account.json，绝不上传/不入 git。
 _account_lock = threading.Lock()
-_account_path = Path(__file__).with_name("data") / "danbooru_account.json"
+_account_path = Path(plugin_root()) / "data" / "danbooru_account.json"
 _account_cache: dict[str, str] | None = None
 
 
@@ -556,7 +562,7 @@ _cache_lock = threading.Lock()
 _search_cache: OrderedDict[tuple[str, int, int], tuple[float, list[dict[str, Any]]]] = OrderedDict()
 _translation_lock = threading.Lock()
 _translations: dict[str, str] | None = None
-_translation_path = Path(__file__).with_name("data") / "danbooru_tags_zh.json"
+_translation_path = Path(plugin_root()) / "data" / "danbooru_tags_zh.json"
 
 
 def _search_tag_rewrite(token: str) -> tuple[str, str | None]:
@@ -1586,7 +1592,7 @@ def _image_cache_dir() -> Path:
     override = str(os.environ.get(IMAGE_CACHE_DIR_ENV, "") or "").strip()
     if override:
         return Path(override)
-    return Path(__file__).with_name("data") / IMAGE_CACHE_DIR_NAME
+    return Path(plugin_root()) / "data" / IMAGE_CACHE_DIR_NAME
 
 
 def _image_cache_key(url: str) -> str:

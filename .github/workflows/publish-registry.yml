@@ -1,0 +1,41 @@
+name: Publish Comfy Registry
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Validated release tag (for example v2.30.0)'
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: registry-publish
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+      - name: Verify release metadata and built panel
+        env:
+          REGISTRY_ACCESS_TOKEN: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          test -n "$REGISTRY_ACCESS_TOKEN" || { echo 'Configure the REGISTRY_ACCESS_TOKEN repository secret before publishing.'; exit 1; }
+          python - <<'PY'
+          import os, pathlib, tomllib
+          root = pathlib.Path('.')
+          version = (root / 'VERSION').read_text().strip()
+          metadata = tomllib.loads((root / 'pyproject.toml').read_text())
+          assert os.environ['RELEASE_TAG'] == 'v' + version
+          assert metadata['project']['version'] == version
+          assert (root / 'app/index.html').is_file()
+          assert (root / 'anima_backend/layout.json').is_file()
+          PY
+      - name: Publish validated package
+        uses: Comfy-Org/publish-node-action@main
+        with:
+          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}

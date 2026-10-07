@@ -9,7 +9,7 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
 import { GallerySelectionControls } from "./anima_gallery_selection_controls.js";
 import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover_preview.js";
 import { installGalleryBrowser } from "./anima_gallery_browser.js";
-import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
+import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./anima_gallery_tag_search.js";
 
 (() => {
   const NODE_NAME = "DanbooruGallery";
@@ -1929,6 +1929,9 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
       this.hidePromptTooltip();
       this.hideSuggestions();
       this.applySourceCapabilities();
+      // Restore synchronously, before category loading can race with a new draft.
+      const restored = String(this.settings.sourceQueries[id] || "");
+      this.setQuery(restored);
       // ★ 分类库**按图源分区** ⇒ 换源必须重新拉该源的分类与归属
       //   （否则 D站 的分类会留在 P站 的下拉里 —— 用户实报"分类还不是独立的"）
       await this.loadCategoryLibrary();
@@ -1937,8 +1940,6 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
       // 切到别的源由 refreshFavorites 内部清空（避免显示不属于该源的收藏态）。
       void this.refreshFavorites();
       this.filterControls?.refresh();
-      const restored = String(this.settings.sourceQueries[id] || "");
-      this.setQuery(restored);
       this.renderPagination();
       this.setStatus(`已切换到${this.sourceLabel(id)}${this.sourceCapabilities(id).login ? "（需要授权，见设置→图源密钥）" : ""}`);
       // P站 后端模块没装时不发这个必然失败的请求（状态来自 /anima/gallery/secrets 的 pixiv.available）
@@ -1946,7 +1947,9 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
         this.setStatus("P站 后端模块未安装（anima_gallery_pixiv.py）—— 该图源不可用，请用 C站 或 D站", "error");
         return;
       }
-      await this.search({ resetPage: true });
+      if ((this.queryInput?.value ?? this.queryWidget?.value) === restored && !this._queryComposing) {
+        await this.search({ resetPage: true });
+      }
     }
 
     /**
@@ -3586,6 +3589,9 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
 
     scheduleSuggestions(value) {
       const query = String(value ?? "");
+      // Input changes invalidate requests immediately, before the next debounce fires.
+      this.hideSuggestions();
+      if (this._queryComposing) return;
       // ── `@` 角色联想（AnimaDex）—— 优先级最高，且**先于图源守卫** ──
       // 它查的是 AnimaDex 角色库（独立数据源，与当前画廊图源无关），三个图源都给：用户显式敲
       // `@` 就是要角色，此时不该被「非 D站 没有标签词典」那条守卫吞掉（那条只管标签联想）。
@@ -3614,11 +3620,25 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
         this.hideSuggestions();
         return;
       }
-      if (this.suggestionTimer) clearTimeout(this.suggestionTimer);
+      const context = booruTokenAt(query, caret);
+      if (!context.query) return;
+      const state = { source: this.activeSourceId(), raw: query, context, input };
+      const requestId = this.suggestionRequestId;
       this.suggestionTimer = setTimeout(() => {
         this.suggestionTimer = null;
-        this.fetchSuggestions(query);
+        if (requestId !== this.suggestionRequestId || !this.tagSuggestionCurrent(state)) return;
+        this.fetchSuggestions(query, false, state);
       }, 180);
+    }
+
+    tagSuggestionCurrent(state, requireFocus = true) {
+      const input = this.queryInput;
+      if (!state || this.disposed || this._queryComposing || input !== state.input
+        || this.activeSourceId() !== state.source || input?.value !== state.raw) return false;
+      if (requireFocus && document.activeElement !== input) return false;
+      const context = booruTokenAt(input.value, input.selectionStart ?? input.value.length);
+      return context.start === state.context.start && context.end === state.context.end
+        && context.token === state.context.token;
     }
 
     /**
@@ -4129,31 +4149,36 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
         + (missing ? `，${missing} 张还没有快照（旧数据迁移而来，下次归类时会补上）` : ""));
     }
 
-    async fetchSuggestions(q, empty = false) {
+    async fetchSuggestions(q, empty = false, state = null) {
       if (!this.suggestions || !q?.trim()) {
         this.hideSuggestions();
         return;
       }
+      const input = this.queryInput;
+      state ??= { source: this.activeSourceId(), raw: String(input?.value ?? q), input,
+        context: booruTokenAt(String(input?.value ?? q), input?.selectionStart ?? String(q).length) };
+      if (!this.tagSuggestionCurrent(state, !empty)) return;
       this.suggestionController?.abort();
-      this.suggestionController = new AbortController();
+      const controller = this.suggestionController = new AbortController();
       const requestId = ++this.suggestionRequestId;
       // P站 与 D站 共用下面这一整段渲染（后端回包字段已对齐）——**只有取数端点与文案不同**。
       // 这样两边的浮层观感、防抢点击、以及点击后走的那条提交链路全都一致，不会各写一套后漂移。
       const pixiv = this.isPixivSource();
+      const term = empty ? q : state.context.query;
       const endpoint = pixiv
-        ? `/anima/gallery/pixiv/suggest?q=${encodeURIComponent(q)}`
-        : `/anima/danbooru/suggest?q=${encodeURIComponent(q)}`;
+        ? `/anima/gallery/pixiv/suggest?q=${encodeURIComponent(term)}`
+        : `/anima/danbooru/suggest?q=${encodeURIComponent(term)}`;
       try {
-        const response = await fetch(endpoint, { signal: this.suggestionController.signal });
+        const response = await fetch(endpoint, { signal: controller.signal });
         const d = await response.json();
-        if (requestId !== this.suggestionRequestId || !this.suggestions) return;
+        if (requestId !== this.suggestionRequestId || !this.suggestions || !this.tagSuggestionCurrent(state, !empty)) return;
         const names = empty ? d.didYouMean : d.suggestions;
         const details = !empty && Array.isArray(d.suggestionDetails) ? d.suggestionDetails : [];
         const choices = details.length ? details : (Array.isArray(names) ? names : []);
         // 自适应排序：用户实际选用过的标签靠前（**稳定** —— 没用过的保持后端原序，见 sortSuggestionsByUsage）
         const ordered = this.sortSuggestionsByUsage(choices);
         const rewrites = Array.isArray(d.rewrites) ? d.rewrites : [];
-        const chineseQuery = [...String(q)].some((char) => /[\u4e00-\u9fff]/.test(char));
+        const chineseQuery = [...String(term)].some((char) => /[\u4e00-\u9fff]/.test(char));
         this.suggestions.textContent = "";
         this.resetSuggestionMode();
         if (details.length) this.suggestions.classList.add("is-localized");
@@ -4179,8 +4204,8 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
           const button = document.createElement("button");
           button.type = "button";
           button.dataset.q = target;
-          button.onpointerdown = (event) => event.stopPropagation();
-          button.onmousedown = (event) => event.stopPropagation();
+          button.onpointerdown = (event) => { event.preventDefault(); event.stopPropagation(); };
+          button.onmousedown = (event) => { event.preventDefault(); event.stopPropagation(); };
           if (details.length) {
             button.className = "adg-localized-suggestion";
             const tag = document.createElement("span");
@@ -4210,12 +4235,11 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
             button.textContent = pixiv ? target : target.replaceAll("_", " ");
           }
           button.onclick = () => {
-            // 智能提示 = 词级替换：只替换光标所在标签（保留其余标签）；「你是不是想搜」整栏替换
-            const input = this.queryInput;
-            const raw = input?.value ?? this.queryWidget?.value ?? "";
-            const pos = input?.selectionStart ?? raw.length;
+            if (requestId !== this.suggestionRequestId || !this.tagSuggestionCurrent(state, false)) return;
+            const completed = completeBooruToken(state.raw, state.context, target);
             // 记历史要记**替换后的完整标签串** —— 用户敲的半截串不算一次检索
-            this.submitSearch(empty ? target : replaceWordAt(raw, pos, target));
+            this.submitSearch(empty ? target : completed.value);
+            if (!empty) input?.setSelectionRange(completed.caret, completed.caret);
           };
           this.suggestions.append(button);
         }
@@ -4225,7 +4249,9 @@ import { installGalleryTagSearch } from "./anima_gallery_tag_search.js";
           extension.textContent = `扩展：${rewrites.join(" / ")}`;
           this.suggestions.append(extension);
         }
-      } catch {}
+      } catch {} finally {
+        if (this.suggestionController === controller) this.suggestionController = null;
+      }
     }
 
     // 模糊纠错后自动重搜（仅执行一次；此后用户再点搜索会走新的精确词）
