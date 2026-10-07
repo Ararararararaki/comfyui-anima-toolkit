@@ -674,7 +674,8 @@ _ARCHIVE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml",
 }
-_ARCHIVE_TIMEOUT = aiohttp.ClientTimeout(total=25)
+_CIVITAI_INFO_TIMEOUT = aiohttp.ClientTimeout(total=10)
+_ARCHIVE_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 
 def _image_cache_store(url: str, body: bytes, ctype: str) -> None:
@@ -792,20 +793,24 @@ async def _archive_lora_info(name: str, sha256: str) -> dict | None:
     except Exception:  # noqa: BLE001
         return None
 
+    if not isinstance(props, dict):
+        return None
     models = props.get("models") or []
-    model = models[0] if models else None
-    if not isinstance(model, dict):
+    model = next((item for item in models if isinstance(item, dict)
+                  and item.get("platform", "civitai") == "civitai" and item.get("name")), None)
+    if model is None:
         return None
     version = model.get("version") if isinstance(model.get("version"), dict) else {}
 
     # 封面只收 civitai 图床：档案站也会给它自家 CDN（c.genur.art）的图，而 /anima/image
     # 只放行 image.civitai.com —— 收了也显示不出来，不如留空，前端会退回本地预览。
-    preview_url = None
+    images = []
     for image in version.get("images") or []:
+        if not isinstance(image, dict):
+            continue
         candidate = str((image or {}).get("url") or "")
         if candidate.startswith(_IMAGE_ALLOW_PREFIX):
-            preview_url = candidate
-            break
+            images.append(candidate)
 
     return {
         "name": name,
@@ -816,12 +821,27 @@ async def _archive_lora_info(name: str, sha256: str) -> dict | None:
         "versionId": version.get("id"),
         "creator": model.get("creator_name") or model.get("username") or "",
         "modelId": model.get("id"),
-        "previewUrl": preview_url,
+        "previewUrl": images[0] if images else None,
+        "images": images,
         "baseModel": version.get("base_model") or "",
+        "description": model.get("description") or "",
+        "downloadCount": model.get("download_count") or 0,
+        "thumbsUpCount": model.get("favorite_count") or 0,
+        "nsfw": bool(model.get("is_nsfw") or version.get("is_nsfw")),
         # 档案站如实带着删除时间；前端可据此提示「该模型已从 C 站下架」
         "deletedAt": version.get("deleted_at"),
         "source": "civitaiarchive",
     }
+
+
+@PromptServer.instance.routes.get("/anima/lora/archive")
+async def archive_lora_info(request):
+    """Panel fallback for an already computed hash; no local file lookup needed."""
+    sha256 = request.query.get("sha256", "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        return web.json_response({"error": "valid SHA256 required"}, status=400)
+    result = await _archive_lora_info("", sha256)
+    return web.json_response(result)
 
 
 async def _resolve_lora_info(name):
@@ -842,7 +862,7 @@ async def _resolve_lora_info(name):
     try:
         session = await _get_session()
         url = f"https://civitai.com/api/v1/model-versions/by-hash/{sha256}"
-        async with session.get(url) as resp:
+        async with session.get(url, timeout=_CIVITAI_INFO_TIMEOUT) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 result = {

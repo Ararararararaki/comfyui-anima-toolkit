@@ -1,4 +1,4 @@
-import type { CivitaiResponse, PeriodKey, SortKey } from '../types'
+import type { CivitaiResponse, LocalLoraMatch, PeriodKey, SortKey } from '../types'
 import { sleep, showToast, stripHtml } from '../utils'
 import { Cache } from '../store/cache'
 
@@ -157,43 +157,55 @@ export async function fetchModelById(id: number): Promise<CivitaiResponse['items
   return resp.json()
 }
 
-export async function fetchModelVersionByHash(hash: string): Promise<{
-  modelId: number; modelName: string; versionId: number; versionName: string;
-  trainedWords: string[]; images: string[];
-  creator: string; description: string; downloadCount: number;
-  thumbsUpCount: number; baseModel: string; tags: string[]; nsfw: boolean
-} | null> {
-  const url = withToken(apiBase(`/model-versions/by-hash/${hash.toLowerCase()}`))
+export async function fetchModelVersionByHash(hash: string): Promise<LocalLoraMatch | null> {
+  const normalizedHash = hash.toLowerCase()
+  const url = withToken(apiBase(`/model-versions/by-hash/${normalizedHash}`))
   try {
     const resp = await fetch(url, { signal: AbortSignal.timeout(15000) })
-    if (!resp.ok) {
-      if (resp.status === 404) return null
-      if (resp.status === 429) { await sleep(3000); return fetchModelVersionByHash(hash) }
-      return null
+    if (resp.ok) {
+      const d = await resp.json()
+      const modelName = d.model?.name || d.modelName || ''
+      if (typeof modelName === 'string' && modelName.trim()) {
+        const imgs = (d.images || [])
+          .filter((i: { type: string }) => i.type === 'image')
+          .map((i: { url: string }) => {
+            let u = i.url.trim()
+            if (u.startsWith('//')) u = 'https:' + u
+            return u.startsWith('http') ? u : ''
+          })
+          .filter(Boolean)
+        return {
+          modelId: d.modelId,
+          modelName,
+          versionId: d.id,
+          versionName: d.name || '',
+          trainedWords: d.trainedWords || [],
+          images: imgs,
+          creator: d.model?.creator?.username || d.creator?.username || '',
+          description: stripHtml(d.model?.description || ''),
+          downloadCount: d.model?.stats?.downloadCount ?? d.stats?.downloadCount ?? 0,
+          thumbsUpCount: d.model?.stats?.thumbsUpCount ?? d.stats?.thumbsUpCount ?? 0,
+          baseModel: d.baseModel || '',
+          tags: d.model?.tags || [],
+          nsfw: !!(d.model?.nsfw || d.nsfw),
+        }
+      }
     }
-    const d = await resp.json()
-    const imgs = (d.images || [])
-      .filter((i: { type: string }) => i.type === 'image')
-      .map((i: { url: string }) => {
-        let u = i.url.trim()
-        if (u.startsWith('//')) u = 'https:' + u
-        return u.startsWith('http') ? u : ''
-      })
-      .filter(Boolean)
+  } catch {
+    // C 站查询失败时仍按同一 SHA256 查档案，不让网络异常阻断回退。
+  }
+  try {
+    const resp = await fetch(`/anima/lora/archive?sha256=${encodeURIComponent(normalizedHash)}`, {
+      signal: AbortSignal.timeout(20000),
+    })
+    if (!resp.ok) return null
+    const archived = await resp.json()
+    if (typeof archived?.modelName !== 'string' || !archived.modelName.trim()) return null
     return {
-      modelId: d.modelId,
-      modelName: d.model?.name || d.modelName || '',
-      versionId: d.id,
-      versionName: d.name || '',
-      trainedWords: d.trainedWords || [],
-      images: imgs,
-      creator: d.model?.creator?.username || d.creator?.username || '',
-      description: stripHtml(d.model?.description || ''),
-      downloadCount: d.model?.stats?.downloadCount ?? d.stats?.downloadCount ?? 0,
-      thumbsUpCount: d.model?.stats?.thumbsUpCount ?? d.stats?.thumbsUpCount ?? 0,
-      baseModel: d.baseModel || '',
-      tags: d.model?.tags || [],
-      nsfw: !!(d.model?.nsfw || d.nsfw),
+      ...archived,
+      modelId: Number(archived.modelId),
+      versionId: Number(archived.versionId),
+      description: stripHtml(archived.description || ''),
     }
   } catch {
     return null
