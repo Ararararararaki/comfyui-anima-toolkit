@@ -659,6 +659,23 @@ _IMAGE_HEADERS = {
     "Referer": "https://civitai.com/",
 }
 
+# ── CivArchive（AI 模型档案镜像站）──
+# 为什么需要（2026-10-01 用户实报）：C 站下架/封禁的 LoRA，`model-versions/by-hash` 直接 404，
+# 面板里就只剩文件名与本地预览；但这些模型的信息在 CivArchive 上通常还留着
+#（触发词 / 封面 / 作者 / 原始 model+version id），比一无所知强得多。
+#
+# 取数走**页面 SSR 里的 __NEXT_DATA__**，而不是 `/_next/data/<buildId>/...` —— 后者要把
+# buildId 一并抓回且会随对方构建失效，前者一个请求拿全、无状态、不需要 cookie。
+_ARCHIVE_HOST = "https://civitaiarchive.com"
+_ARCHIVE_NEXT_DATA_RE = re.compile(
+    r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.S
+)
+_ARCHIVE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml",
+}
+_ARCHIVE_TIMEOUT = aiohttp.ClientTimeout(total=25)
+
 
 def _image_cache_store(url: str, body: bytes, ctype: str) -> None:
     """线程安全的图片缓存写入（aiohttp 单事件循环内串行执行，无需加锁）。"""
@@ -743,6 +760,70 @@ async def lora_info(request):
     return web.json_response(result, status=500 if "error" in result else 200)
 
 
+async def _archive_lora_info(name: str, sha256: str) -> dict | None:
+    """按 SHA256 去 CivArchive 捞 C 站已下架 LoRA 的信息；没有记录或取数失败一律返回 None。
+
+    为什么按 hash 直查而不是走站内搜索：站内搜索/列表默认**不显示已删除记录**（要手动点开），
+    而 `/sha256/<hash>` 是直查路由，实测对已删除记录照常返回（还带 `deleted_at` 供如实标注）——
+    2026-10-01 用真实样本验证过两条：civitai 已 404 的 FeatherPetit、以及标记删除的 Hm_uknown。
+
+    返回结构与 Civitai 分支**逐字段对齐**（外加前端本就留了槽位的 baseModel），
+    只有 `source` 不同（"civitaiarchive"），供界面标注出处。
+    """
+    try:
+        session = await _get_session()
+        async with session.get(
+            f"{_ARCHIVE_HOST}/sha256/{sha256}",
+            headers=_ARCHIVE_HEADERS,
+            timeout=_ARCHIVE_TIMEOUT,
+        ) as resp:
+            if resp.status != 200:
+                return None
+            html = await resp.text()
+    except Exception as e:  # noqa: BLE001
+        print(f"[anima/archive] 取数失败 {type(e).__name__}: {e}", flush=True)
+        return None
+
+    match = _ARCHIVE_NEXT_DATA_RE.search(html or "")
+    if not match:
+        return None
+    try:
+        props = (json.loads(match.group(1)).get("props") or {}).get("pageProps") or {}
+    except Exception:  # noqa: BLE001
+        return None
+
+    models = props.get("models") or []
+    model = models[0] if models else None
+    if not isinstance(model, dict):
+        return None
+    version = model.get("version") if isinstance(model.get("version"), dict) else {}
+
+    # 封面只收 civitai 图床：档案站也会给它自家 CDN（c.genur.art）的图，而 /anima/image
+    # 只放行 image.civitai.com —— 收了也显示不出来，不如留空，前端会退回本地预览。
+    preview_url = None
+    for image in version.get("images") or []:
+        candidate = str((image or {}).get("url") or "")
+        if candidate.startswith(_IMAGE_ALLOW_PREFIX):
+            preview_url = candidate
+            break
+
+    return {
+        "name": name,
+        "trainedWords": [w for w in (version.get("trigger") or []) if isinstance(w, str) and w.strip()],
+        "tags": [t for t in (model.get("tags") or []) if isinstance(t, str)],
+        "modelName": model.get("name") or "",
+        "versionName": version.get("name") or "",
+        "versionId": version.get("id"),
+        "creator": model.get("creator_name") or model.get("username") or "",
+        "modelId": model.get("id"),
+        "previewUrl": preview_url,
+        "baseModel": version.get("base_model") or "",
+        # 档案站如实带着删除时间；前端可据此提示「该模型已从 C 站下架」
+        "deletedAt": version.get("deleted_at"),
+        "source": "civitaiarchive",
+    }
+
+
 async def _resolve_lora_info(name):
 
     # Find file
@@ -782,6 +863,16 @@ async def _resolve_lora_info(name):
                 result = {"name": name, "trainedWords": [], "modelName": None, "previewUrl": None, "source": f"http_{resp.status}"}
     except Exception as e:
         result = {"name": name, "trainedWords": [], "modelName": None, "previewUrl": None, "source": f"error_{e}"}
+
+    # ★ C 站没给出模型信息 → 去档案镜像站再捞一次（2026-10-01）。
+    #   判据刻意用「有没有 modelName」而不是「状态码是不是 404」：对用户而言，C 站返回 404
+    #   （已下架）、5xx、代理抖动、甚至 200 但回包缺字段，结果都是**面板里一片空白**，
+    #   没必要区分对待。档案站命中就整份替换，它带回的字段比 civitai 分支还多（多 baseModel、
+    #   多删除时间）。两条都空才维持原来的 "not_on_civitai"。
+    if not result.get("modelName"):
+        archived = await _archive_lora_info(name, sha256)
+        if archived:
+            result = archived
 
     _LORA_INFO_CACHE[name] = (time.time() + _LORA_INFO_TTL, result)
     _cleanup_cache(_LORA_INFO_CACHE, _LORA_INFO_TTL)
