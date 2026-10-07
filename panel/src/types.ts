@@ -244,6 +244,8 @@ export interface LocalLoraMatch {
   baseModel: string
   tags: string[]
   nsfw: boolean
+  source?: 'civitai' | 'civitaiarchive'
+  deletedAt?: string | null
 }
 
 export interface PngMeta {

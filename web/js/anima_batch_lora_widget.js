@@ -8,6 +8,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   // 后端 anima_batch_lora.py 的 _parse_lora_syntax 用 float() 解析、本身无范围限制，这里只约束 UI 输入。
   const LORA_WEIGHT_MIN = -10;
   const LORA_WEIGHT_MAX = 10;
+  // 后端依次查询 Civitai（10s）和档案站（15s），另留文件哈希的准备时间。
+  const LORA_INFO_TIMEOUT_MS = 35000;
   const normalizeLoraName = (value) => String(value || "").trim().replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
   const LOCAL_LORA_CACHE_KEY = "anima_local_loras_v2";
   const LOCAL_LORA_CACHE_TTL = 365 * 24 * 60 * 60 * 1000;
@@ -1503,7 +1505,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     _fetchTw(name, onDone) {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 15000);
+      const timer = setTimeout(() => controller.abort(), LORA_INFO_TIMEOUT_MS);
       return fetch("/anima/lora/info?name=" + encodeURIComponent(name), {signal: controller.signal})
         .then((r) => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -2305,12 +2307,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         renderCurrent();
       };
       window.addEventListener("storage", onLocalLoraCacheStorage);
-      // C 站匹配请求：可取消 + 10s 超时，避免慢请求占满浏览器连接池导致二次打开列表加载不出
+      // 模型信息匹配请求：可取消，超时覆盖 C 站查询、档案回退与文件哈希准备。
       const _infoControllers = new Set();
       const getInfo = (name) => {
         const ctrl = new AbortController();
         _infoControllers.add(ctrl);
-        const timer = setTimeout(() => ctrl.abort(), 10000);
+        const timer = setTimeout(() => ctrl.abort(), LORA_INFO_TIMEOUT_MS);
         return fetch("/anima/lora/info?name=" + encodeURIComponent(name), { signal: ctrl.signal })
           .then((r) => (r.ok ? r.json() : null))
           .catch(() => null)
@@ -2333,7 +2335,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           _infoConcurrent++;
           getInfo(name)
             .then((info) => {
-              if (!closed && info && ["civitai", "not_on_civitai", "not_found"].includes(info.source)) this._imgCache[name] = info;
+              if (!closed && info && ["civitai", "civitaiarchive", "not_on_civitai", "not_found"].includes(info.source)) this._imgCache[name] = info;
               finish(closed ? null : info);
             })
             .finally(() => {
