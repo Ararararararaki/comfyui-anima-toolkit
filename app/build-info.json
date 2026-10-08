@@ -1,0 +1,390 @@
+{
+  "schema": 1,
+  "sha256": "619f7e78540b03976cc464c9185713120c17f70ddc8fbc110d4d4404efbdee43",
+  "files": [
+    {
+      "path": "panel/build/source_fingerprint.mjs",
+      "sha256": "bcb112d30c19966c64afdd1d725ac2b087a0544eb6311e5cf455a18ed223057e"
+    },
+    {
+      "path": "panel/index.html",
+      "sha256": "cf02fdb30f09a831a941f9156af3d1326e72a191b955c129dd6019125b611290"
+    },
+    {
+      "path": "panel/package-lock.json",
+      "sha256": "c0d406184afa06ddaa7446d08a7b69049a46ecfadee5faa209a8597e0c549d65"
+    },
+    {
+      "path": "panel/package.json",
+      "sha256": "ad3275aa5634288e70a9a8ea3a56ea7855e7fb9436cc18cd29af70dbd5d2f324"
+    },
+    {
+      "path": "panel/public/manifest.json",
+      "sha256": "d5732a9d27360df868c241076f711bae707d8a3f6482e919d5103ffe728b9479"
+    },
+    {
+      "path": "panel/public/sw.js",
+      "sha256": "e6e1694a2779e64a50d92f8e7e6bc60f2525bc75830ebc6b68bc54547cb57e51"
+    },
+    {
+      "path": "panel/src/api/civitai.ts",
+      "sha256": "0660945c9604ad2bb18458de6fe289b9e5cf742de28f60c2ad5070a0b74df21d"
+    },
+    {
+      "path": "panel/src/api/danbooru.ts",
+      "sha256": "8fad94d9c1d93562684e2e397d14a5a9c8a2c004138f928b7916b5420eb31b10"
+    },
+    {
+      "path": "panel/src/components/ClothingCard.ts",
+      "sha256": "966f275999d0a55df405129a6df4c1d92c7553eb3563520b0ee0cb61643613bc"
+    },
+    {
+      "path": "panel/src/components/ContextMenu.ts",
+      "sha256": "9b9f7ddd8d0c59636447a8c8851485b3fa551c004ae155f3b405656f3b385f02"
+    },
+    {
+      "path": "panel/src/components/Gallery.ts",
+      "sha256": "950dda2e9ff63d7726bb9a01ca98de6a193c5e780214eab5ca8d786ae6ca8b9c"
+    },
+    {
+      "path": "panel/src/components/ImageNodeCache.ts",
+      "sha256": "5acb00793d538aa32997a543ee7cdfff3385e9330b7c1c7b7892e59765f9ff6d"
+    },
+    {
+      "path": "panel/src/components/Lightbox.ts",
+      "sha256": "b791f70926e8d13a360dcad89a6541cba7a7af50c44aa1dcea35715538269d61"
+    },
+    {
+      "path": "panel/src/components/masonry.ts",
+      "sha256": "048696590495dfbd4f78d4096deacdd40984feac67b0c08e2bef2ce48b2047f5"
+    },
+    {
+      "path": "panel/src/components/MasonryVirtualScroll.ts",
+      "sha256": "dadd788f407eb933e9ac96a761e031a725e4bbf7ae0b3fadc0565b6c5b223d0e"
+    },
+    {
+      "path": "panel/src/components/Modal.ts",
+      "sha256": "7f218d7dfa3b949357d64f6ac9a83aa654b78363a3d4d96d07ecf7648e67a272"
+    },
+    {
+      "path": "panel/src/components/ModelCard.ts",
+      "sha256": "b149c883d4efb56e6658a95677bf74c87d4d5f7fc893ec4b4cf59f6695ca62b1"
+    },
+    {
+      "path": "panel/src/components/PromptCard.ts",
+      "sha256": "fa215460a11d9aa364001157e3761660dc26cc0591fb6fc9c7fe05775f648a48"
+    },
+    {
+      "path": "panel/src/components/PromptEditor.ts",
+      "sha256": "357ded4b49e0fbd1aadf96381f9f842c0f1ce09a41f9e1b64ce224e6c69cc15c"
+    },
+    {
+      "path": "panel/src/components/VirtualScroll.ts",
+      "sha256": "58f8c8068ee1a8b48647be8ea33ccac0a8d06ec40c1455157aea189364e54e7e"
+    },
+    {
+      "path": "panel/src/db/outputsDb.ts",
+      "sha256": "042ca7f1967dfdc276ffa26fbbea5f9d04d88860bcede20c6cd0665851f11b6a"
+    },
+    {
+      "path": "panel/src/main.ts",
+      "sha256": "78b51d1c2e0494aa7647d526838b6d528d4f640a334a7d4ae44e43c4acc7103c"
+    },
+    {
+      "path": "panel/src/renderers/outputRenderer.ts",
+      "sha256": "68823d69e7c1518c730c9d496b19a494f0a148322deeebe4b9112a861b3b94c6"
+    },
+    {
+      "path": "panel/src/sections/ArtistSeries.ts",
+      "sha256": "0a20218739c4364def2b988fd26426c41ffb792b7f43cec224dac58903b304e2"
+    },
+    {
+      "path": "panel/src/sections/ClothingLibrary.ts",
+      "sha256": "b06d6b48d52125b1e60ac1012456c33e50689ce21612ca2262ac14d423a90424"
+    },
+    {
+      "path": "panel/src/sections/CommandPalette.ts",
+      "sha256": "ea1fd6d43f5db5f0181c57e6837aefe2ff6e35afffeda377311fe6b80cca6a7b"
+    },
+    {
+      "path": "panel/src/sections/downloadUrlModal.ts",
+      "sha256": "1eb9553d9375fec42ca1e971f58261a427e745a0957ab641d5e25fc1f8cf2717"
+    },
+    {
+      "path": "panel/src/sections/LocalManager.ts",
+      "sha256": "f8a71171a4eca4fee9cbdf210b09065bb4c006b5a895737606ce3c9eaef0f2b0"
+    },
+    {
+      "path": "panel/src/sections/LoraExplorer.ts",
+      "sha256": "54d1e4d054904772725fca44df81ad5724bad4713ec7e5ed54cf1f06da8796ca"
+    },
+    {
+      "path": "panel/src/sections/outputDragSelection.ts",
+      "sha256": "ac9127cd955039400cbe3581aa80ef229eb805c7d95daefea8d5d11d0fdb6006"
+    },
+    {
+      "path": "panel/src/sections/Outputs.ts",
+      "sha256": "d18187a8e61aba8b339576aa10f60effec4169a177ffdc80c89d406852ce8707"
+    },
+    {
+      "path": "panel/src/sections/PromptFreq.ts",
+      "sha256": "f62e1783355352b593ccb3514decdea497d4f17c870c2929474c3dae9f89dbfd"
+    },
+    {
+      "path": "panel/src/sections/PromptLibrary.ts",
+      "sha256": "320f0912b6fc210e519b3edc5901d98b9f90beadace4f56cf7649b5dc247b75c"
+    },
+    {
+      "path": "panel/src/sections/PromptParser.ts",
+      "sha256": "7d3bff66b5e4381a177502c5799ee128fab25358789dc4fb807c05ffc0b6f3f9"
+    },
+    {
+      "path": "panel/src/sections/Settings.ts",
+      "sha256": "a362afb75b5bb8980b25340306c21979e1348a03da09833c8c09d48c7c848afc"
+    },
+    {
+      "path": "panel/src/services/backupService.ts",
+      "sha256": "cda56d4f062eb1ade5f3dbbf2c02745b5ca5b60e470882289d51492a2328ab30"
+    },
+    {
+      "path": "panel/src/services/fileHashWorker.ts",
+      "sha256": "2d3363a97cb33afd1f0b23c5cc049d18b2fea89f8cb18e3fa78f5db392ada9a6"
+    },
+    {
+      "path": "panel/src/services/galleryStatus.ts",
+      "sha256": "197c73683e5ec285aa37ffdcdc6b35ffb565d785573bfe00021914c09ac4917c"
+    },
+    {
+      "path": "panel/src/services/hashWorkerRuntime.ts",
+      "sha256": "57665cf92461d4142a79cf619445c088847885fa1985b2d3b37e3ed922ee0d19"
+    },
+    {
+      "path": "panel/src/services/localLoraScanner.ts",
+      "sha256": "d0c858b37120ad536e8b7906ae75e2c191a3068127a79fa28f182a1f93cb3dcf"
+    },
+    {
+      "path": "panel/src/services/localLoraTriggerOverrides.ts",
+      "sha256": "c53ed615c76d53e6914ddea5ebf0e79ce66ec17eb21201d59a3b3db80ce3f281"
+    },
+    {
+      "path": "panel/src/services/localScanSession.ts",
+      "sha256": "511b1f81259672e2b7bd2a0fdddd8399664652b542323f95a04f7c9393b9859f"
+    },
+    {
+      "path": "panel/src/services/loraCardImage.ts",
+      "sha256": "74a4f840ca672a1c84192670601422c588b68d4fc99702c243fbbe910cc237a5"
+    },
+    {
+      "path": "panel/src/services/nativeStorage.ts",
+      "sha256": "f52c08a30a34f26e143241586be7984c8edc622c06bc4fa2157dfc8bdee293c6"
+    },
+    {
+      "path": "panel/src/services/outputGraph.ts",
+      "sha256": "74a429391d25aad561aa24f6d698faa42f18116858b271472c2aba48f48528c7"
+    },
+    {
+      "path": "panel/src/services/outputIdentity.ts",
+      "sha256": "2a63c20ae56025a44ebca8f73ed40945f0e5bcf76d4838d62ebbef080cb498f5"
+    },
+    {
+      "path": "panel/src/services/outputManifest.ts",
+      "sha256": "272bb35c0cad525210324c23f86ee1307df26f9fc1bdb77fa6b98298ece98c2e"
+    },
+    {
+      "path": "panel/src/services/outputMetadata.ts",
+      "sha256": "dfec4861c3268b55938a6b8abfbb9c26fe24440cbbf9e4aa44bef01f3cb01fe0"
+    },
+    {
+      "path": "panel/src/services/outputMetadataIndex.ts",
+      "sha256": "403eef1e8a23a5deaac44c13e983679d0da036608cab4a63e70c6fc1f24d7532"
+    },
+    {
+      "path": "panel/src/services/outputMetadataService.ts",
+      "sha256": "e0543ffca002bcfdc29ac47b0d2f2ec09819b865080e552fe44d3b21675a02ee"
+    },
+    {
+      "path": "panel/src/services/outputPromptRecord.ts",
+      "sha256": "72b5b75029d2853ee5402e113061c87422e9b9d2b1a72b5879b3fb2bb031fd60"
+    },
+    {
+      "path": "panel/src/services/outputScanner.ts",
+      "sha256": "25190d6bb3c5a426b2d15ef80bf9df3f9642b283f14cb20551980114b160f34f"
+    },
+    {
+      "path": "panel/src/services/outputService.ts",
+      "sha256": "9731584de8904f3e59a22b78dd661098d5dc89fb251011506894594c8479fb5a"
+    },
+    {
+      "path": "panel/src/services/outputThumbnail.ts",
+      "sha256": "31ba59ced19489ea9596dafd84005e1787115a6d7adb55d26a977f8742076417"
+    },
+    {
+      "path": "panel/src/services/pngChunks.ts",
+      "sha256": "06a9e52a05a3820708bd257092cdd363339d76039b84808d10ada13be85f896d"
+    },
+    {
+      "path": "panel/src/services/promptPersistence.ts",
+      "sha256": "3e300ae701f6a2616bad26baf3a2b638a49e1fd7e25a921c1715630cd1f706a2"
+    },
+    {
+      "path": "panel/src/services/sha256.ts",
+      "sha256": "e8811a4663cfd969f50806280106c3bcf3158114c8db27ad7fefefca76cdedec"
+    },
+    {
+      "path": "panel/src/store/artistImages.ts",
+      "sha256": "fc47ed14f48d085f54833ee4d87209d568e88ab5f7f6a2a7710cf99270f24df3"
+    },
+    {
+      "path": "panel/src/store/artists.ts",
+      "sha256": "b3c45ed580395890fa144e3ad328c35494d37239390b63105a1a860bb072a731"
+    },
+    {
+      "path": "panel/src/store/artistStore.ts",
+      "sha256": "0ac80e980e3c28fdd4287a727c4e0da2ff50a15a641d87b400a24d1932bba29e"
+    },
+    {
+      "path": "panel/src/store/cache.ts",
+      "sha256": "ebd7f0f4198a32b64d8f5a7a43ca04381d34633dc4f3ccccd1dc3588935e88c3"
+    },
+    {
+      "path": "panel/src/store/clothingDb.ts",
+      "sha256": "e7fde2454f26b124a4c465b372925533bd4088ca27ef9c1a4a423b5d3afc9a97"
+    },
+    {
+      "path": "panel/src/store/db.ts",
+      "sha256": "88db580b1782e88efed621cc0f12761f9dbb65ffbd67748b6ccf07ccd927078d"
+    },
+    {
+      "path": "panel/src/store/exportMetadata.ts",
+      "sha256": "7cda8d637c475a9368c1ebccbf2c757279c977c52462db9b270d22ef2b497f43"
+    },
+    {
+      "path": "panel/src/store/favorites.ts",
+      "sha256": "b77e8dce9e22fdfad35b6c4aec5b586f555106482f0809dc6312e3c347e3f020"
+    },
+    {
+      "path": "panel/src/store/handleManager.ts",
+      "sha256": "5938a80c901ac4ba5f8b4e8ea93ebebeff69c949a27b5a0cbdd7b86d4779ff3b"
+    },
+    {
+      "path": "panel/src/store/hidden.ts",
+      "sha256": "f05e22c26f967cbb8e7f9dc51f3816de4e741c39291f7a370a02d7259d319f8e"
+    },
+    {
+      "path": "panel/src/store/history.ts",
+      "sha256": "0ac06fcaff5cab14090129308be6eafc2d8135a8f3b29803568595f6ce68453b"
+    },
+    {
+      "path": "panel/src/store/localModels.ts",
+      "sha256": "777445d5a7b8d376f2d27972a53cedcb6900f1859ea57f03332770d4e7bd14c4"
+    },
+    {
+      "path": "panel/src/store/models.ts",
+      "sha256": "eea3b1d155db98692b3b34b45763eec6aede67bc5124e3e7469f60792e3c2fe8"
+    },
+    {
+      "path": "panel/src/store/notes.ts",
+      "sha256": "bb521841b8c7e65fb1e1868885983b7253b19327aadd85a5267b1c929769107b"
+    },
+    {
+      "path": "panel/src/store/outputStore.ts",
+      "sha256": "cac4151cc255d2db890c94916d5f5dda09fc9140ee7e36039412b2a850e15bd5"
+    },
+    {
+      "path": "panel/src/store/prompts.ts",
+      "sha256": "c3f08984d817f20bb63a2bb14bbff218817570fcf424b8dd2719152610754399"
+    },
+    {
+      "path": "panel/src/store/settings.ts",
+      "sha256": "338891b86d196d33fd4800710166228165df09f6a93ad004b71c1ac8cce7f5fa"
+    },
+    {
+      "path": "panel/src/styles/clothing.css",
+      "sha256": "0feaec7042f3098c46fce5ad20c183c3a90cf52b52b20bf1fede2b8d62e56376"
+    },
+    {
+      "path": "panel/src/styles/design-system.css",
+      "sha256": "363964dcfe6dad0909d91037b3023d4d8e830bbff33225eb4ba2a0750e44867e"
+    },
+    {
+      "path": "panel/src/styles/global.css",
+      "sha256": "3186ddd7c577e3ff2fc04a656a908cb07b22e8f9bfd4896fd7495b3e1dd17945"
+    },
+    {
+      "path": "panel/src/styles/local-manager-polish.css",
+      "sha256": "6198d131aa2ffe4b437c9c3b77a9bd7507e245ae3a546d88450258f48dce3502"
+    },
+    {
+      "path": "panel/src/styles/outputs.css",
+      "sha256": "3a1535cd6d60982e5290c384413892a2e7616196f22aa9b49cf9f46ad25de995"
+    },
+    {
+      "path": "panel/src/styles/polish.css",
+      "sha256": "899ece6aab17d39c53974703490ce055d005068b38b5700b401bd01875798f6c"
+    },
+    {
+      "path": "panel/src/styles/toolbox-shell.css",
+      "sha256": "69d881b6376e4e31ff26cbac621528b4c1b70a37c48f0965a59c8f651f1d6bf0"
+    },
+    {
+      "path": "panel/src/types.ts",
+      "sha256": "aed33057a53736fda278c81f662e825ddb97e1e93de5ab833d71ff514abbdf92"
+    },
+    {
+      "path": "panel/src/types/outputs.ts",
+      "sha256": "befc1cbe53db5d5698f9d5f80e509c0134a48096ff01c0410fb4d648acb9c234"
+    },
+    {
+      "path": "panel/src/utils/icon.ts",
+      "sha256": "bf867f30597501287c24e90757e00c331d1db40ea2e6a3b156f54f2c41890654"
+    },
+    {
+      "path": "panel/src/utils/imageMetadata.ts",
+      "sha256": "ade66a7c600293fbec4d458f28ec3fc32e0f2d466ab06a7fb0de2531f7d2d158"
+    },
+    {
+      "path": "panel/src/utils/index.ts",
+      "sha256": "f60f3124b7e5b9d31531947e1ad25668e82709751566ea746ea53a979805ea49"
+    },
+    {
+      "path": "panel/tsconfig.json",
+      "sha256": "e6bb9f01817f7eca308eefb0baf53833b1d1b8d15e2386c2f9727b797992ee58"
+    },
+    {
+      "path": "panel/vite.config.ts",
+      "sha256": "f5aea136aa508d74bc53c47b26ae8715b2d35231df38e102cf3783a3e1e3490a"
+    },
+    {
+      "path": "web/js/shared/lora_info_client.d.ts",
+      "sha256": "edc271b0b6cd4ae7b4f26e3720fbbd049a3565dcdb0365fcb99f94f3a4f734f0"
+    },
+    {
+      "path": "web/js/shared/lora_info_client.js",
+      "sha256": "d2fa24d21b868fc1bcac9efb177adfec31407be7ba1aa8e8fbdd43a34bbde9d2"
+    },
+    {
+      "path": "web/js/shared/lora_syntax.d.ts",
+      "sha256": "f64f58e0de949b3b3e8b522290bccd3038cc8d2ca3b5ce56cc5cc5d343fb0f0d"
+    },
+    {
+      "path": "web/js/shared/lora_syntax.js",
+      "sha256": "7aa80bd9f891d9426be71780afd19a2a3dda924c9541bf8e19aed7173fe8a14f"
+    },
+    {
+      "path": "web/js/shared/prompt_document.d.ts",
+      "sha256": "7ff332beaeed1c34d6782e2746ada2701d41c6457bedbda42113dcbd0726255b"
+    },
+    {
+      "path": "web/js/shared/prompt_document.js",
+      "sha256": "41cdc232434691b760fa4c60ceb23e6ba28976ca92b66bcfb74ec36049c73353"
+    },
+    {
+      "path": "web/js/shared/prompt_library.d.ts",
+      "sha256": "8edd08e10f3ea27af6fb9940f9b6b9a90bf47b8a6b354f4f9f8addf8273a4a56"
+    },
+    {
+      "path": "web/js/shared/prompt_library.js",
+      "sha256": "b5805198a8a2b0fefff13c12afdc5021283c08de949036d2cbae5135fdb67440"
+    }
+  ]
+}
