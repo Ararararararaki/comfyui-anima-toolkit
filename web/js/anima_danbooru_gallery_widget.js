@@ -228,11 +228,27 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
     ["exact_match_for_tags", "标签精确匹配"],
     ["title_and_caption", "标题与说明"],
   ]);
+  /**
+   * P站 排序（与网页端搜索页的排序下拉同集）。
+   *
+   * `popular_*` 三个是"热度"系：网页端里选「按热门度排序」后旁边才出现「近期热门」，
+   * 这里同样把「近期热门」做成排序旁的一键开关（见 buildSourceFilterControls）。
+   * ⚠️ 值必须与后端 `PIXIV_SEARCH_SORTS` 同值 —— 上游只认这五个，别的会 400。
+   */
   const PIXIV_SORT_OPTIONS = Object.freeze([
     ["date_desc", "最新"],
     ["date_asc", "最早"],
-    ["popular_desc", "人气顺（需 Pixiv 会员）"],
+    ["popular_desc", "按热门度"],
+    ["popular_male_desc", "受男性欢迎"],
+    ["popular_female_desc", "受女性欢迎"],
   ]);
+  /** 排行榜的作品形式 / 排行榜范围选项 —— 由 anima_gallery_source_page.js 的标签表派生（单一真源）。 */
+  const PIXIV_RANKING_CONTENT_OPTIONS = Object.freeze(
+    GallerySourcePage.PIXIV_RANKING_CONTENTS.map((id) => [id, GallerySourcePage.PIXIV_RANKING_CONTENT_LABELS[id]]),
+  );
+  const PIXIV_RANKING_MODE_OPTIONS = Object.freeze(
+    GallerySourcePage.PIXIV_RANKING_MODES.map((id) => [id, GallerySourcePage.PIXIV_RANKING_MODE_LABELS[id]]),
+  );
   /**
    * 页码模式下**每页固定张数**。P站 上游（/v1/illust/search）固定每页 30 条，
    * 后端路由把 `page` 换算成 `(page-1)*30`（与 limit 参数无关）——
@@ -267,6 +283,14 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       pixiv: {
         target: pick(PIXIV_TARGET_OPTIONS, pixiv.target, "partial_match_for_tags"),
         sort: pick(PIXIV_SORT_OPTIONS, pixiv.sort, "date_desc"),
+        // 排行榜（2026-10-09）：缺字段 = 关闭 —— 老工作流恢复后行为与改动前逐字节一致。
+        ranking: pixiv.ranking === true,
+        rankMode: pick(PIXIV_RANKING_MODE_OPTIONS, pixiv.rankMode, "daily"),
+        rankContent: pick(PIXIV_RANKING_CONTENT_OPTIONS, pixiv.rankContent, "illust"),
+        // 历史榜日期（`YYYYMMDD`）；空 = 今日。后端支持，界面暂不暴露。
+        rankDate: /^\d{8}$/.test(String(pixiv.rankDate || "")) ? String(pixiv.rankDate) : "",
+        // 「近期热门」开关：缺字段 = 关
+        recentPopular: pixiv.recentPopular === true,
       },
     };
   }
@@ -1865,6 +1889,40 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const civitaiSort = makeSelect("排序", CIVITAI_SORT_OPTIONS);
       const pixivTarget = makeSelect("匹配", PIXIV_TARGET_OPTIONS);
       const pixivSort = makeSelect("排序", PIXIV_SORT_OPTIONS);
+      // 「近期热门」：网页端里它是「按热门度排序」的下级动作项，这里做成排序旁的一键开关。
+      // 只在有关键词、且不在排行榜模式时才有意义（排行榜本身就是热度榜）。
+      const pixivRecent = document.createElement("button");
+      pixivRecent.type = "button";
+      pixivRecent.className = "adg-source-toggle";
+      pixivRecent.textContent = "近期热门";
+      pixivRecent.setAttribute("aria-pressed", "false");
+      pixivRecent.title = "近一个月内的热门作品（同网页端 order=popular_d + 近一月区间）；"
+        + "开启时会自动把排序切到「按热门度」";
+      const pixivRecentField = document.createElement("div");
+      pixivRecentField.className = "adg-source-field adg-source-action";
+      pixivRecentField.append(pixivRecent);
+      host.append(pixivRecentField);
+      // 排行榜（P站 网页端原生榜）：入口是下拉菜单，样式复用 D站「筛选 → 快速筛选」那一套
+      const pixivRanking = new PortalDropdown({
+        label: "排行榜",
+        title: "P站 原生排行榜：作品形式（综合 / 插画 / 动图 / 漫画）"
+          + " × 排行榜范围（今日 / 本周 / 本月 / 新人 / 原创 / AI生成 / 受男性欢迎 / 受女性欢迎）",
+        menuClass: "adg-ranking-menu",
+        content: () => this.buildPixivRankingMenu(),
+      });
+      const pixivRankingField = document.createElement("div");
+      pixivRankingField.className = "adg-source-field adg-source-action";
+      pixivRankingField.append(pixivRanking.element);
+      host.append(pixivRankingField);
+      pixivRecent.onclick = () => {
+        const f = this.gallerySourceFilters("pixiv");
+        f.recentPopular = f.recentPopular !== true;
+        // 上游只在 popular_* 排序下认时间窗 —— 开启时把排序一并切过去，免得用户以为"没生效"
+        if (f.recentPopular && !String(f.sort || "").startsWith("popular_")) f.sort = "popular_desc";
+        this.saveSettings();
+        this.syncSourceFilterControls();
+        this.search({ resetPage: true });
+      };
       const apply = () => {
         const id = this.activeSourceId();
         if (id === "civitai") {
@@ -1887,7 +1945,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       hint.className = "adg-source-hint";
       hint.hidden = true;
       host.append(hint);
-      this.sourceFilterControls = { civitaiNsfw, civitaiSort, pixivTarget, pixivSort, hint };
+      this.pixivRankingDropdown = pixivRanking;
+      this.sourceFilterControls = { civitaiNsfw, civitaiSort, pixivTarget, pixivSort, pixivRecent, pixivRanking, hint };
       return host;
     }
 
@@ -1896,29 +1955,180 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const id = this.activeSourceId();
       const caps = this.sourceCapabilities(id);
       const f = this.gallerySourceFilters(id);
-      const { civitaiNsfw, civitaiSort, pixivTarget, pixivSort, hint } = this.sourceFilterControls;
-      const show = (element, on) => { element.parentElement.hidden = !on; };
+      const { civitaiNsfw, civitaiSort, pixivTarget, pixivSort, pixivRecent, pixivRanking, hint } = this.sourceFilterControls;
+      // ⚠️ 传进来的必须是 DOM 元素。`pixivRanking` 是 PortalDropdown **实例**，
+      // 取它的 `.element` 才对 —— 实例上 `parentElement` 是 undefined，
+      // 直接点 `.hidden` 会抛 TypeError，而这条路径在 build() 阶段就会走到（节点创建即崩）。
+      const show = (element, on) => {
+        const field = element?.parentElement;
+        if (field) field.hidden = !on;
+      };
+      const isPixiv = id === "pixiv";
+      // 排行榜是**无关键词浏览**：匹配方式 / 排序 / 近期热门在它之下都不生效，一律收起
+      const rankingOn = isPixiv && f.ranking === true;
       civitaiNsfw.value = f.nsfw || "";
       civitaiSort.value = f.sort || "Newest";
       pixivTarget.value = f.target || "partial_match_for_tags";
       pixivSort.value = f.sort || "date_desc";
       show(civitaiNsfw, id === "civitai");
       show(civitaiSort, id === "civitai");
-      show(pixivTarget, id === "pixiv");
-      show(pixivSort, id === "pixiv");
+      show(pixivTarget, isPixiv && !rankingOn);
+      show(pixivSort, isPixiv && !rankingOn);
+      show(pixivRecent, isPixiv && !rankingOn);
+      show(pixivRanking.element, isPixiv);
+      if (pixivRecent) {
+        const on = f.recentPopular === true;
+        pixivRecent.classList.toggle("is-active", on);
+        pixivRecent.setAttribute("aria-pressed", on ? "true" : "false");
+      }
+      if (pixivRanking) {
+        pixivRanking.setSummary("排行榜", rankingOn ? 1 : 0);
+        pixivRanking.element.title = rankingOn
+          ? `当前：${GallerySourcePage.pixivRankingLabel(f)}（点此更换或退出）`
+          : "P站 原生排行榜：作品形式 × 排行榜范围";
+      }
       if (hint) {
         const poolQuery = this.poolMode();
-        hint.hidden = caps.query;
-        hint.textContent = caps.query ? "" : (poolQuery ? CIVITAI_POOL_QUERY_HINT_SHORT : GALLERY_LOCAL_QUERY_HINT_SHORT);
-        hint.title = caps.query ? "" : (poolQuery ? CIVITAI_POOL_QUERY_HINT : GALLERY_LOCAL_QUERY_HINT);
+        // 排行榜模式下 P站 也占一行提示 —— 让用户知道搜索框里的词此刻不生效
+        hint.hidden = caps.query && !rankingOn;
+        hint.textContent = rankingOn
+          ? `排行榜模式：不使用关键词（${GallerySourcePage.pixivRankingLabel(f)}）`
+          : (caps.query ? "" : (poolQuery ? CIVITAI_POOL_QUERY_HINT_SHORT : GALLERY_LOCAL_QUERY_HINT_SHORT));
+        hint.title = rankingOn
+          ? "排行榜按上游榜单取数：搜索框关键词与匹配方式都不参与；在「排行榜」菜单里点「退出排行榜」回到关键词搜索。"
+          : (caps.query ? "" : (poolQuery ? CIVITAI_POOL_QUERY_HINT : GALLERY_LOCAL_QUERY_HINT));
         hint.dataset.queryMode = caps.query ? "server" : "local";
       }
       if (this.sourceFilterHost) {
         this.sourceFilterHost.hidden = ![...this.sourceFilterHost.children].some((element) => !element.hidden);
         this.sourceFilterHost.title = id === "civitai"
           ? "C站筛选：分级（None/Soft/Mature/X，匿名也可读）与排序（上游只认 Newest/Oldest/Most */Random）"
-          : "P站筛选：匹配方式与排序（标签与 Danbooru 词库不通用）";
+          : "P站筛选：匹配方式、排序、近期热门；「排行榜」进入上游原生榜单（不需要关键词）";
       }
+    }
+
+    /**
+     * P站 排行榜菜单：作品形式（第一行）+ 排行榜范围（第二行）+ 榜名预览 + 退出 / 应用。
+     * 样式与交互复用 D站「筛选 → 快速筛选」那一套（同一套 `adg-menu-*` 与 PortalDropdown）。
+     *
+     * ⚠️ 联动规则是「点了自动跳到最近合法值」，不是逐格禁灰：
+     * 上游对非法组合直接回 404（实测矩阵见 anima_gallery_source_page.js 的
+     * `PIXIV_RANKING_CONTENT_MODES`），逐格禁灰会让用户点了没反应又不知道为什么；
+     * 自动换档 + 底部一行说明，既不会出错，也说清了"上游就是这么给的"。
+     */
+    buildPixivRankingMenu() {
+      const f = this.gallerySourceFilters("pixiv");
+      // 字段名刻意与 settings 里的同名字段一致（rankMode / rankContent）——
+      // 这样 draft 能直接喂给 pixivRankingLabel()，不会因为改名而要再拼一次对象
+      const draft = {
+        rankMode: f.rankMode || "daily",
+        rankContent: f.rankContent || "illust",
+      };
+      const root = document.createElement("div");
+      root.className = "adg-menu-section adg-ranking-menu-content";
+      const title = document.createElement("div");
+      title.className = "adg-menu-title";
+      title.textContent = "P站 排行榜（网页端原生榜）";
+      const contentTitle = document.createElement("div");
+      contentTitle.className = "adg-menu-subtitle";
+      contentTitle.textContent = "作品形式";
+      const contentRow = document.createElement("div");
+      contentRow.className = "adg-ranking-grid adg-ranking-grid-4";
+      const modeTitle = document.createElement("div");
+      modeTitle.className = "adg-menu-subtitle";
+      modeTitle.textContent = "排行榜范围";
+      const modeRow = document.createElement("div");
+      modeRow.className = "adg-ranking-grid";
+      const preview = document.createElement("div");
+      preview.className = "adg-ranking-preview";
+      const note = document.createElement("div");
+      note.className = "adg-ranking-note";
+      const contentButtons = [];
+      const modeButtons = [];
+      const sync = () => {
+        for (const { value, button } of contentButtons) {
+          const on = value === draft.rankContent;
+          button.classList.toggle("is-selected", on);
+          button.setAttribute("aria-pressed", on ? "true" : "false");
+        }
+        for (const { value, button } of modeButtons) {
+          const on = value === draft.rankMode;
+          button.classList.toggle("is-selected", on);
+          button.setAttribute("aria-pressed", on ? "true" : "false");
+        }
+        preview.textContent = `当前：${GallerySourcePage.pixivRankingLabel(draft)}`;
+        const forms = GallerySourcePage.PIXIV_RANKING_CONTENTS
+          .filter((item) => GallerySourcePage.pixivRankingSupports(item, draft.rankMode));
+        const modeLabel = GallerySourcePage.PIXIV_RANKING_MODE_LABELS[draft.rankMode];
+        note.textContent = forms.length === 1
+          ? `「${modeLabel}」上游只提供综合榜（不区分作品形式）`
+          : (forms.includes("ugoira") ? "" : `「${modeLabel}」没有动图榜（上游只有日 / 周两档）`);
+        note.hidden = !note.textContent;
+      };
+      for (const [value, label] of PIXIV_RANKING_CONTENT_OPTIONS) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "adg-ranking-chip";
+        button.textContent = label;
+        button.onclick = (event) => {
+          event.stopPropagation();
+          draft.rankContent = value;
+          // 换形式后原范围若不再合法（如 动图 × 本月）→ 落到一定合法的日榜
+          if (!GallerySourcePage.pixivRankingSupports(value, draft.rankMode)) draft.rankMode = "daily";
+          sync();
+        };
+        contentButtons.push({ value, button });
+        contentRow.append(button);
+      }
+      for (const [value, label] of PIXIV_RANKING_MODE_OPTIONS) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "adg-ranking-chip";
+        button.textContent = label;
+        button.onclick = (event) => {
+          event.stopPropagation();
+          draft.rankMode = value;
+          // 换范围后原形式若不再合法（如 原创 × 插画）→ 落到综合榜（该榜唯一支持的形式）
+          if (!GallerySourcePage.pixivRankingSupports(draft.rankContent, value)) draft.rankContent = "all";
+          sync();
+        };
+        modeButtons.push({ value, button });
+        modeRow.append(button);
+      }
+      sync();
+      const actions = document.createElement("div");
+      actions.className = "adg-menu-actions";
+      const leave = document.createElement("button");
+      leave.type = "button";
+      leave.textContent = "退出排行榜";
+      leave.title = "回到普通关键词搜索（排行榜不参与关键词）";
+      leave.onclick = () => {
+        const target = this.gallerySourceFilters("pixiv");
+        target.ranking = false;
+        this.saveSettings();
+        this.syncSourceFilterControls();
+        this.pixivRankingDropdown?.close();
+        this.search({ resetPage: true });
+      };
+      const apply = document.createElement("button");
+      apply.type = "button";
+      apply.className = "primary";
+      apply.textContent = "应用筛选";
+      apply.onclick = () => {
+        const target = this.gallerySourceFilters("pixiv");
+        target.ranking = true;
+        target.rankMode = draft.rankMode;
+        target.rankContent = draft.rankContent;
+        this.saveSettings();
+        this.syncSourceFilterControls();
+        this.pixivRankingDropdown?.close();
+        this.search({ resetPage: true });
+      };
+      actions.append(leave, apply);
+      const divider = document.createElement("div");
+      divider.className = "adg-menu-divider";
+      root.append(title, contentTitle, contentRow, modeTitle, modeRow, preview, note, divider, actions);
+      return root;
     }
 
     imageProxyUrl(imageUrl, version = "", sourceId = null) {
@@ -8239,6 +8449,10 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       // 防的是将来新增调用点。dispose 后也一并挡住（那时 disposed=true，DOM 已拆）。
       if (this.root || this.disposed) return;
       this.filterControls?.destroy();
+      // 排行榜菜单是 PortalDropdown（菜单挂 document.body）—— 重建前必须显式销毁，
+      // 否则旧实例的菜单会留在页面上（且它绑的 pointerdown/keydown 监听也跟着泄漏）。
+      this.pixivRankingDropdown?.destroy();
+      this.pixivRankingDropdown = null;
       const root = document.createElement("section");
       root.className = "anima-danbooru-gallery";
       // ── 搜索输入框：真实 DOM 输入（替代画布文本 widget），回车直接搜索 ──
@@ -8686,6 +8900,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       this.domSizeSync?.dispose();
       this.domSizeSync = null;
       this.filterControls?.destroy();
+      this.pixivRankingDropdown?.destroy();
+      this.pixivRankingDropdown = null;
       this.hidePromptTooltip();
       this.imageLoadObserver?.disconnect();
       this.imageLoadObserver = null;
