@@ -641,7 +641,8 @@ _last_route = {}
 
 def install_resources(app):
     """Bind Pixiv worker pools to their independent stable app slot."""
-    _install_http(app, _pixiv_http, namespace="pixiv")
+    global _pixiv_http
+    _pixiv_http = _install_http(app, _pixiv_http, namespace="pixiv")
 
 
 def _route_snapshot():
