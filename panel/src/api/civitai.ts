@@ -1,6 +1,7 @@
 import type { CivitaiResponse, LocalLoraMatch, PeriodKey, SortKey } from '../types'
 import { sleep, showToast, stripHtml } from '../utils'
 import { Cache } from '../store/cache'
+import { LoraInfoClient } from '@tk/shared/lora_info_client.js'
 
 let controller: AbortController | null = null
 
@@ -151,17 +152,16 @@ export async function fetchModels(params: ModelFetchParams, cursor?: string | nu
   return data
 }
 
-export async function fetchModelById(id: number): Promise<CivitaiResponse['items'][0] | null> {
-  const resp = await fetch(withToken(apiBase(`/models/${id}`)))
+export async function fetchModelById(id: number, signal?: AbortSignal): Promise<CivitaiResponse['items'][0] | null> {
+  const resp = await fetch(withToken(apiBase(`/models/${id}`)), { signal })
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
   return resp.json()
 }
 
-export async function fetchModelVersionByHash(hash: string): Promise<LocalLoraMatch | null> {
+async function lookupModelVersionByHash({ hash, url }: { hash: string; url: string }, { signal }: { signal: AbortSignal }): Promise<LocalLoraMatch | null> {
   const normalizedHash = hash.toLowerCase()
-  const url = withToken(apiBase(`/model-versions/by-hash/${normalizedHash}`))
   try {
-    const resp = await fetch(url, { signal: AbortSignal.timeout(15000) })
+    const resp = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]) })
     if (resp.ok) {
       const d = await resp.json()
       const modelName = d.model?.name || d.modelName || ''
@@ -188,15 +188,17 @@ export async function fetchModelVersionByHash(hash: string): Promise<LocalLoraMa
           baseModel: d.baseModel || '',
           tags: d.model?.tags || [],
           nsfw: !!(d.model?.nsfw || d.nsfw),
+          source: 'civitai',
         }
       }
     }
   } catch {
+    if (signal.aborted) throw signal.reason
     // C 站查询失败时仍按同一 SHA256 查档案，不让网络异常阻断回退。
   }
   try {
     const resp = await fetch(`/anima/lora/archive?sha256=${encodeURIComponent(normalizedHash)}`, {
-      signal: AbortSignal.timeout(20000),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(20000)]),
     })
     if (!resp.ok) return null
     const archived = await resp.json()
@@ -208,8 +210,15 @@ export async function fetchModelVersionByHash(hash: string): Promise<LocalLoraMa
       description: stripHtml(archived.description || ''),
     }
   } catch {
+    if (signal.aborted) throw signal.reason
     return null
   }
+}
+
+const loraInfo = new LoraInfoClient<{ hash: string; url: string }, LocalLoraMatch>(lookupModelVersionByHash)
+export async function fetchModelVersionByHash(hash: string, signal?: AbortSignal): Promise<LocalLoraMatch | null> {
+  const normalizedHash = hash.toLowerCase()
+  return loraInfo.get({ hash: normalizedHash, url: withToken(apiBase(`/model-versions/by-hash/${normalizedHash}`)) }, { signal })
 }
 
 export async function fetchModelImages(modelId: number): Promise<string[]> {

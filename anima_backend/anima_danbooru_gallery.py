@@ -135,8 +135,20 @@ def _fallback_proxy() -> dict[str, str] | None:
     return {"http": server, "https": server} if server else None
 
 
-_danbooru_session = requests.Session()
-_danbooru_session.headers.update(DANBOORU_HEADERS)
+try:
+    from .services.thread_http import ThreadHttp
+except ImportError:
+    from services.thread_http import ThreadHttp
+_danbooru_http = ThreadHttp(DANBOORU_HEADERS)
+
+
+def install_resources(app):
+    """Bind the worker transport to the host's lifecycle."""
+    try:
+        from .services.thread_http import install
+    except ImportError:
+        from services.thread_http import install
+    install(app, _danbooru_http)
 
 _image_proxy_semaphore: asyncio.Semaphore | None = None
 
@@ -207,7 +219,7 @@ def _probe_first_alive(candidates: list[dict[str, str]]) -> dict[str, str] | Non
 
     历史（2026-09-27 实测更正）：上一版是**串行 for + 0.25s 超时**，注释声称「零等待」，
     但那只在活代理恰好排首位时成立（本机 7890 排首位，所以没暴露）。实测反例：
-      · 6 个候选全死 → `_apply_danbooru_proxy()` 冷路径 **2076ms**（串行累加 1524ms
+      · 6 个候选全死 → 当时的代理选择冷路径 **2076ms**（串行累加 1524ms
         + 失败后再全量 `pool.map` 兜底 540ms）；
       · 活端口排最后 → **1538ms**。
     对照：本函数并发版在两种场景都≈**254ms**（= 单个候选的探测耗时）。
@@ -268,7 +280,7 @@ def _probe_first_alive(candidates: list[dict[str, str]]) -> dict[str, str] | Non
     return None
 
 
-def _apply_danbooru_proxy() -> None:
+def _danbooru_route() -> dict[str, str]:
     """每次请求前按当前环境实时解析代理（不再重启时一次性固化）。
 
     策略：在所有候选代理里挑「活着」的第一个（TCP 活性探测，并发滚动，见 `_probe_first_alive`），
@@ -282,32 +294,43 @@ def _apply_danbooru_proxy() -> None:
       ① `_direct_blocked` 判定**提到缓存检查之前**。原先它在缓存之后，于是「直连被判死」
          这个更强的信号会被 30s 缓存压住 —— 缓存里若存着「直连(空 dict)」的选路结果，
          接下来 30s 内每次请求都照旧直连，正是「直连被墙」重复发生的来源。
-      ② session 代理改成**整体原子赋值**（`proxies = dict(chosen)`），不再
-         `clear()` 后再 `update()` —— 那两步之间并发的画廊缩略图请求会读到空代理 = 直连。
+      ② 每次返回独立选路快照；重试不再修改其它工作线程的 session 代理。
     """
     global _direct_blocked
     now = time.monotonic()
     if _direct_blocked:
-        # 直连曾失败：只用探测到的活代理，绝不直连。**先于缓存判定**（见 docstring ①）。
+        # 直连曾失败：优先探测到的活代理；探测无结果时仍走既有选路策略。**先于缓存判定**。
         fb = _fallback_proxy()
         if fb:
-            _danbooru_session.proxies = dict(fb)  # 原子赋值（见 docstring ②）
-            return
+            return dict(fb)
     with _PROXY_PICK_LOCK:
         cached = _PROXY_PICK_CACHE
         if cached["proxies"] is not None and now - float(cached["stamp"]) < _PROXY_PICK_TTL:
-            _danbooru_session.proxies = dict(cached["proxies"])  # 原子赋值（见 docstring ②）
-            return
+            return dict(cached["proxies"])
     candidates = _proxy_candidates()
     picked = _probe_first_alive(candidates)
     # 注意：`_probe_first_alive` 已是**并发滚动**探测（全部候选同时开探），
     # 它的 None 就是「所有候选都死了」的完整结论，无需再做一次全量 `pool.map` 兜底 ——
     # 旧代码那一步会让全死场景多付 ~540ms（实测总 2076ms）。
     chosen: dict[str, str] = dict(picked) if picked else {}
-    # 原子赋值（空 dict = 直连，语义同旧 clear()）；不再 clear()+update() 两步。
-    _danbooru_session.proxies = dict(chosen)
+    # 只缓存选路配置；请求与重试各自传入快照，不修改共享会话。
     with _PROXY_PICK_LOCK:
         _PROXY_PICK_CACHE.update({"stamp": now, "proxies": chosen, "server": chosen.get("https") or ""})
+    return dict(chosen)
+
+
+def _request_with_route(method, url, **kwargs):
+    """Choose and retry routes per request; other active requests stay untouched."""
+    route = _danbooru_route()
+    try:
+        return _danbooru_http.request(method, url, proxies=route, **kwargs)
+    except (requests.Timeout, requests.ConnectionError):
+        if route:
+            retry_route = {}
+        else:
+            _mark_direct_blocked()
+            retry_route = _fallback_proxy() or {}
+        return _danbooru_http.request(method, url, proxies=retry_route, **kwargs)
 
 
 # ---------- Danbooru 账号（上限按账号等级：Member=2、Gold=6、Platinum+=不限；登录后限流更宽） ----------
@@ -375,9 +398,8 @@ def _danbooru_request(method: str, path: str, *, params: Any = None, data: Any =
 
     为什么不复用 `_danbooru_json()`：它只做 GET、且不支持 Basic Auth / 表单体 ——
     收藏的写路径两者都要。换路逻辑与它保持一致（有代理 → 试直连；已直连 → 试兜底代理），
-    代理一律**整体原子赋值**（并发取图线程不能读到空 proxies）。
+    代理按请求传入，每个工作线程复用自己的连接池。
     """
-    _apply_danbooru_proxy()
     kwargs: dict[str, Any] = {"timeout": (6, timeout)}
     if params is not None:
         kwargs["params"] = params
@@ -386,20 +408,9 @@ def _danbooru_request(method: str, path: str, *, params: Any = None, data: Any =
     if auth is not None:
         kwargs["auth"] = auth
     try:
-        resp = _danbooru_session.request(method, _DANBOORU_API_ROOT + path, **kwargs)
-    except (requests.Timeout, requests.ConnectionError) as first:
-        if _danbooru_session.proxies:
-            _danbooru_session.proxies = {}
-        else:
-            _mark_direct_blocked()
-            fb = _fallback_proxy()
-            if fb:
-                _danbooru_session.proxies = dict(fb)
-        try:
-            resp = _danbooru_session.request(method, _DANBOORU_API_ROOT + path, **kwargs)
-        except (requests.Timeout, requests.ConnectionError) as second:
-            raise RuntimeError(f"连不上 D站：{second}") from second
-        del first
+        resp = _request_with_route(method, _DANBOORU_API_ROOT + path, **kwargs)
+    except (requests.Timeout, requests.ConnectionError) as error:
+        raise RuntimeError(f"连不上 D站：{error}") from error
     return resp
 
 
@@ -923,29 +934,14 @@ def _danbooru_json(url: str, params: dict[str, Any], timeout: int = 20) -> Any:
         if got is not None:
             return got
         _browser_working = False  # 网关失能 → 回退 requests 重试
-    _apply_danbooru_proxy()
     try:
-        resp = _danbooru_session.get(url, params=params, timeout=(6, timeout))
+        resp = _request_with_route("GET", url, params=params, timeout=(6, timeout))
     except (requests.Timeout, requests.ConnectionError) as error:
-        # 第一路失败（被风控/节点不稳/系统代理空窗）→ 换一条路径重试：
-        # 当前走代理 → 试直连；当前直连 → 试探测到的兜底代理
-        if _danbooru_session.proxies:
-            _danbooru_session.proxies.clear()
-        else:
-            _mark_direct_blocked()  # 直连失败一次 → 进程内记住「D站必须走代理」
-            fb = _fallback_proxy()
-            if fb:
-                _danbooru_session.proxies.update(fb)
-        try:
-            resp = _danbooru_session.get(url, params=params, timeout=(6, timeout))
-        except (requests.Timeout, requests.ConnectionError):
-            # 双路 requests 都失败 → 浏览器网关兜底（真浏览器渲染引擎过 CF）
-            got = _browser_json_or_none(url, params)
-            if got is not None:
-                _browser_working = True
-                return got
-            _apply_danbooru_proxy()  # 还原现场
-            raise error
+        got = _browser_json_or_none(url, params)
+        if got is not None:
+            _browser_working = True
+            return got
+        raise error
     if not _resp_is_cf(resp):
         resp.raise_for_status()
         return resp.json()
@@ -962,7 +958,7 @@ def _danbooru_get_image(url: str, timeout: int = 30, allow_browser: bool = True,
 
     ``extra_headers``（2026-09-27 新增）：本次请求**专属**的请求头（如 P站 的 Referer）。
     走 requests 的 per-request headers —— 与 session 默认头合并、request 优先，因此
-    **不再需要**改 `_danbooru_session.headers`，也就不需要那把把第三方图源取图串行化的全局锁。
+    不修改工作线程会话的默认头，也不需要把第三方图源取图串行化的全局锁。
     第三方图源一律配合 ``allow_browser=False`` 使用（网关对它们必然 403，见下）。
 
     ``allow_browser=False``：**禁用内置浏览器网关兜底**，第三方图源（P站/C站）必须这样调。
@@ -981,28 +977,14 @@ def _danbooru_get_image(url: str, timeout: int = 30, allow_browser: bool = True,
         if got is not None:
             return got
         _browser_working = False
-    _apply_danbooru_proxy()
-    # ⚠️ 并发安全（2026-09-27）：代理一律**整体原子赋值**，不再 clear()/update() 两步 ——
-    # 两步之间并发的取图线程会读到空 proxies（= 直连），与 `_apply_danbooru_proxy` 同一约定。
     try:
-        resp = _danbooru_session.get(url, headers=extra_headers, timeout=(6, timeout))
+        resp = _request_with_route("GET", url, headers=extra_headers, timeout=(6, timeout))
     except (requests.Timeout, requests.ConnectionError) as error:
-        if _danbooru_session.proxies:
-            _danbooru_session.proxies = {}
-        else:
-            _mark_direct_blocked()
-            fb = _fallback_proxy()
-            if fb:
-                _danbooru_session.proxies = dict(fb)
-        try:
-            resp = _danbooru_session.get(url, headers=extra_headers, timeout=(6, timeout))
-        except (requests.Timeout, requests.ConnectionError):
-            got = browser(url)
-            if got is not None:
-                _browser_working = True
-                return got
-            _apply_danbooru_proxy()
-            raise RuntimeError(f"D站 连不上（可能被风控/代理失效）：{error}。请在 Clash Verge 换节点或重启 ComfyUI 后重试") from error
+        got = browser(url)
+        if got is not None:
+            _browser_working = True
+            return got
+        raise RuntimeError(f"D站 连不上（可能被风控/代理失效）：{error}。请在 Clash Verge 换节点或重启 ComfyUI 后重试") from error
     if not _resp_is_cf(resp):
         resp.raise_for_status()
         return resp.content, resp.headers.get("Content-Type", "application/octet-stream").split(";", 1)[0]
@@ -2039,15 +2021,15 @@ async def anima_danbooru_diag(request: web.Request) -> web.Response:
         sys_proxies = f"ERR {type(error).__name__}: {error}"
 
     def _probe(proxies: dict[str, str] | None, label: str) -> dict[str, object]:
-        _danbooru_session.proxies.clear()
-        if proxies:
-            _danbooru_session.proxies.update(proxies)
         t0 = time.time()
         try:
-            resp = _danbooru_session.get(
-                "https://danbooru.donmai.us/posts.json",
-                params={"tags": "hatsune_miku", "limit": 1}, timeout=8,
-            )
+            with requests.Session() as diagnostic:
+                diagnostic.trust_env = False
+                resp = diagnostic.get(
+                    "https://danbooru.donmai.us/posts.json", headers=DANBOORU_HEADERS,
+                    params={"tags": "hatsune_miku", "limit": 1}, timeout=8,
+                    proxies=dict(proxies or {}),
+                )
             return {"label": label, "ok": True, "status": resp.status_code, "ms": round((time.time() - t0) * 1000)}
         except Exception as error:  # noqa: BLE001
             return {"label": label, "ok": False, "err": f"{type(error).__name__}: {str(error)[:160]}",
@@ -2059,7 +2041,7 @@ async def anima_danbooru_diag(request: web.Request) -> web.Response:
         "resolved_proxies": _resolve_danbooru_proxies(),
         "proxy_candidates": _proxy_candidates(),
         "direct_blocked": _direct_blocked,
-        "session_proxies": dict(_danbooru_session.proxies or {}),
+        "session_proxies": _danbooru_route(),
         "requests_version": requests.__version__,
         "requests_file": requests.__file__,
         "browser_working": _browser_working,
@@ -2069,7 +2051,6 @@ async def anima_danbooru_diag(request: web.Request) -> web.Response:
             _probe({"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}, "proxy-7890"),
         ],
     }
-    _apply_danbooru_proxy()  # 还原现场
     return web.json_response(result)
 
 

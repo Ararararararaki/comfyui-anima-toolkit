@@ -1,3 +1,7 @@
+import {
+  PromptDocument, splitPromptPieces, splitTags, serializePromptPieces, formatWeightedPromptText,
+  cardToText as formatCardText, appendCardToPrompt as appendFormattedCard, appendPromptBlock, escapeAnimaBrackets,
+} from "./shared/prompt_document.js";
 // TK Prompt Cards 节点前端 —— 卡片库提示词编辑器
 //
 // 数据层（2026-08-24 统一）：
@@ -44,7 +48,11 @@
     // 默认 12s 超时；opts.timeout 可覆盖（LLM 分类等长任务传更长）
     const timeoutMs = (opts && opts.timeout) || 12000;
       const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-      const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+      const abort = () => ctrl?.abort();
+      const signal = opts?.signal;
+      if (signal?.aborted) abort();
+      else signal?.addEventListener("abort", abort, { once: true });
+      const timer = ctrl ? setTimeout(abort, timeoutMs) : null;
       try {
         const r = await apiFetch(path, ctrl ? { ...(opts || {}), signal: ctrl.signal } : opts);
         if (!r.ok) {
@@ -55,17 +63,19 @@
           error.payload = payload;
           throw error;
         }
-        return r.json();
+        return await r.json();
     } finally {
       if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
     }
   }
-  function postJson(path, body, timeoutMs) {
+  function postJson(path, body, timeoutMs, signal) {
     return fetchJson(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
       timeout: timeoutMs,
+      signal,
     });
   }
 
@@ -82,8 +92,7 @@
   // Prompt 库的 IndexedDB 仍是节点的快速缓存；服务端镜像负责跨浏览器/跨
   // localhost 来源保留数据。这里保留一份轻量同步入口，确保只使用 TK
   // Prompt Cards 节点而没有打开面板时也能完成恢复和持久化。
-  let _promptLibrarySyncTimer = null;
-  let _promptLibraryHydratePromise = null;
+  let _promptLibraryPromise = null;
 
   let _dbPromise = null;
   let _activeDB = null;
@@ -213,7 +222,7 @@
       let request;
       try {
         tx = db.transaction(name, mode);
-        request = operation(tx.objectStore(name));
+        request = operation(Array.isArray(name) ? tx : tx.objectStore(name));
       } catch (error) {
         retryOrReject(error);
         return;
@@ -250,74 +259,64 @@
     return { schemaVersion: 1, updatedAt: Date.now(), categories: categories || [], prompts: prompts || [] };
   }
 
-  function schedulePromptLibrarySync() {
-    if (_promptLibrarySyncTimer) clearTimeout(_promptLibrarySyncTimer);
-    _promptLibrarySyncTimer = setTimeout(async () => {
-      _promptLibrarySyncTimer = null;
-      try {
-        const snapshot = await readPromptLibrarySnapshot(await openDB());
-        const response = await fetch("/anima/prompt-library", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(snapshot),
-          keepalive: true,
+  function getPromptLibrary() {
+    if (!_promptLibraryPromise) {
+      _promptLibraryPromise = import("./shared/prompt_library.js").then(({ PromptLibrary }) => {
+        let pendingStorage = null;
+        try { pendingStorage = localStorage; } catch {}
+        return new PromptLibrary({
+          pendingStorage,
+          request: apiFetch,
+          store: {
+            read: async () => readPromptLibrarySnapshot(await openDB()),
+            async write(changes) {
+              if (!changes.categories?.length && !changes.prompts?.length) return;
+              await runStoreOperation(await openDB(), [CAT_STORE, PROMPT_STORE], "readwrite", (tx) => {
+                for (const row of changes.categories || []) tx.objectStore(CAT_STORE).put(row);
+                for (const row of changes.prompts || []) tx.objectStore(PROMPT_STORE).put(row);
+              }, false);
+            },
+            async remove(ids) {
+              if (!ids.length) return;
+              await runStoreOperation(await openDB(), [CAT_STORE, PROMPT_STORE], "readwrite", (tx) => {
+                for (const id of ids) {
+                  tx.objectStore(CAT_STORE).delete(id);
+                  tx.objectStore(PROMPT_STORE).delete(id);
+                }
+              }, false);
+            },
+          },
         });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      } catch (error) {
-        console.warn("[TK Prompt Cards] Prompt 库服务端镜像写入失败：", error);
-      }
-    }, 800);
+      }).catch((error) => { _promptLibraryPromise = null; throw error; });
+    }
+    return _promptLibraryPromise;
   }
 
-  async function hydratePromptLibrary(db) {
-    if (_promptLibraryHydratePromise) return _promptLibraryHydratePromise;
-    _promptLibraryHydratePromise = (async () => {
-      try {
-        const response = await fetch("/anima/prompt-library", { cache: "no-store" });
-        if (!response.ok) return;
-        const payload = await response.json();
-        const remote = payload?.snapshot;
-        if (!remote) return;
-        const local = await readPromptLibrarySnapshot(db);
-        const byId = (items) => new Map((items || []).filter((item) => item && item.id).map((item) => [String(item.id), item]));
-        const categories = byId(remote.categories);
-        for (const item of local.categories) categories.set(String(item.id), item);
-        const prompts = byId(remote.prompts);
-        for (const item of local.prompts) {
-          const key = String(item.id);
-          const previous = prompts.get(key);
-          const localTime = Number(item.updatedAt || item.createdAt || 0);
-          const remoteTime = Number(previous?.updatedAt || previous?.createdAt || 0);
-          if (!previous || localTime >= remoteTime) prompts.set(key, item);
-        }
-        await Promise.all([
-          storeBulkPut(db, CAT_STORE, Array.from(categories.values())),
-          storeBulkPut(db, PROMPT_STORE, Array.from(prompts.values())),
-        ]);
-        // Merge-only: records missing from one browser are never erased remotely.
-        schedulePromptLibrarySync();
-      } catch (error) {
-        console.warn("[TK Prompt Cards] Prompt 库服务端镜像恢复失败：", error);
-      }
-    })();
-    return _promptLibraryHydratePromise;
+  async function hydratePromptLibrary(_db, refresh = false) {
+    return (await getPromptLibrary()).load({ refresh });
   }
 
   async function storePut(db, name, value) {
+    if (name === PROMPT_STORE || name === CAT_STORE) {
+      return (await getPromptLibrary()).upsert({ [name === PROMPT_STORE ? "prompts" : "categories"]: [value] });
+    }
     const result = await runStoreOperation(db, name, "readwrite", (store) => store.put(value), false, undefined);
-    if (name === PROMPT_STORE || name === CAT_STORE) schedulePromptLibrarySync();
     return result;
   }
   async function storeBulkPut(db, name, values) {
     if (!Array.isArray(values) || !values.length) return;
+    if (name === PROMPT_STORE || name === CAT_STORE) {
+      return (await getPromptLibrary()).upsert({ [name === PROMPT_STORE ? "prompts" : "categories"]: values });
+    }
     await runStoreOperation(db, name, "readwrite", (store) => {
       for (const value of values) store.put(value);
     }, false, undefined);
-    if (name === PROMPT_STORE || name === CAT_STORE) schedulePromptLibrarySync();
   }
   async function storeDel(db, name, id) {
+    if (name === PROMPT_STORE || name === CAT_STORE) {
+      return (await getPromptLibrary()).remove(name === CAT_STORE ? { categories: [id] } : [id]);
+    }
     const result = await runStoreOperation(db, name, "readwrite", (store) => store.delete(id), false, undefined);
-    if (name === PROMPT_STORE || name === CAT_STORE) schedulePromptLibrarySync();
     return result;
   }
   function storeGet(db, name, id) {
@@ -482,63 +481,6 @@
 
   const CJK_RE = /[\u4e00-\u9fff\u3400-\u4dbf]/;
 
-  function parsePromptToken(raw) {
-    const value = String(raw || "").trim();
-    if (!value) return null;
-    const m = value.match(/^\((.+):([+-]?(?:\d+(?:\.\d*)?|\.\d+))\)$/);
-    if (m) return { text: m[1].trim(), weight: m[2] };
-    return { text: value, weight: "" };
-  }
-
-  // 拆分提示词并保留每个片段前的原始分隔符。
-  // 这是刻意的格式信息：用户用空行/换行分组时，后续联想替换、翻译、
-  // 隐藏/恢复和权重调整都必须沿用这些分隔符，不能重新统一成逗号。
-  function splitPromptPieces(text) {
-    const source = String(text || "");
-    const out = [];
-    let tokenStart = 0;
-    let separatorBefore = "";
-    let i = 0;
-    const push = (raw) => {
-      const parsed = parsePromptToken(raw);
-      if (!parsed) return;
-      out.push({ ...parsed, separatorBefore, hidden: false });
-      separatorBefore = "";
-    };
-    while (i < source.length) {
-      if (!/[、，,;；\r\n]/.test(source[i])) {
-        i += 1;
-        continue;
-      }
-      push(source.slice(tokenStart, i));
-      const separatorStart = i;
-      i += 1;
-      while (i < source.length && /[ \t\r\n]/.test(source[i])) i += 1;
-      separatorBefore += source.slice(separatorStart, i);
-      tokenStart = i;
-    }
-    push(source.slice(tokenStart));
-    // ⚠️ 2026-09-27 修复（用户实测：「选了 1girl 却还是 1girl，还得手动补逗号」）：
-    // 片段模型是「分隔符挂在**下一个片段之前**」（separatorBefore），于是**末尾**的分隔符
-    // （"1girl, " 里那个 ", "）不属于任何后续片段 —— 循环结束后它留在 separatorBefore 里，
-    // 而末尾那次 push("") 被 parsePromptToken 判空丢弃 ⇒ 尾分隔符**凭空消失**。
-    // 后果：用户手打的尾逗号、①区联想补的 ", "、②区追加后的尾逗号，只要经过一次
-    // serializePromptPieces（_commitPromptPieces / _ensurePromptPiecesInSync 都会走）
-    // 就被吃掉。现在把它挂到最后一片段的 trailingSeparator 上，serialize 时原样拼回。
-    if (separatorBefore && out.length) {
-      const last = out[out.length - 1];
-      last.trailingSeparator = String(last.trailingSeparator || "") + separatorBefore;
-    }
-    return out;
-  }
-
-  // 拆分提示词 → 片段列表（[{text, weight}]）：
-  // 按换行分段，段内按所有逗号（中文顿号/逗号/分号/英文逗号）全部分割。
-  // 2026-08-18 用户要求：所有逗号都应分割（不做长句保留；组合卡展开=内部 tag 可拆）。
-  function splitTags(text) {
-    return splitPromptPieces(text).map(({ text: value, weight }) => ({ text: value, weight }));
-  }
-
   function langOf(text) {
     const t = String(text || "");
     if (!t) return "en";
@@ -698,12 +640,12 @@
     return value || TRANSLATE_SETTINGS_DEFAULT.llm_model;
   }
 
-  async function translateAuto(text, source = "auto") {
-    const result = await translateDetailed(text, source);
+  async function translateAuto(text, source = "auto", signal) {
+    const result = await translateDetailed(text, source, signal);
     return result.translatedText || "";
   }
 
-  async function translateDetailed(text, source = "auto") {
+  async function translateDetailed(text, source = "auto", signal) {
     const q = String(text || "").trim().slice(0, 2000);
     if (!q) return { ok: false, translatedText: "" };
     const lp = langOf(q) === "zh" ? "auto|en" : "en|zh-CN";
@@ -714,17 +656,17 @@
     const sourceParam = selected === "auto" ? "" : "&source=" + encodeURIComponent(selected);
     const request = (extra) => fetchJson(
       "/api/translate?q=" + encodeURIComponent(q) + "&langpair=" + encodeURIComponent(lp) + sourceParam + extra,
-      { timeout: translateSettings.timeout_ms },
+      { timeout: translateSettings.timeout_ms, signal },
     );
     let r;
     try {
       r = await request("");
     } catch (error) {
       // 单源超时/网络失败时，若用户允许回退则退回自动链再试一次
-      if (selected !== "auto" && translateSettings.allow_fallback !== false) {
+      if (error?.name !== "AbortError" && selected !== "auto" && translateSettings.allow_fallback !== false) {
         r = await fetchJson(
           "/api/translate?q=" + encodeURIComponent(q) + "&langpair=" + encodeURIComponent(lp),
-          { timeout: translateSettings.timeout_ms },
+          { timeout: translateSettings.timeout_ms, signal },
         );
       } else {
         throw error;
@@ -742,7 +684,7 @@
   // 之前只有 ③，所以「画廊里明明有中文」的标签在卡片里翻不出来、必须先手动存进 prompt 库。
   const ZH_LOOKUP_CACHE = new Map();
 
-  async function lookupZhDictionary(tags) {
+  async function lookupZhDictionary(tags, signal) {
     const wanted = [];
     const hit = {};
     for (const raw of tags || []) {
@@ -758,25 +700,27 @@
     for (let i = 0; i < wanted.length; i += 160) {     // 两个后端都是 160 条/次上限
       const chunk = wanted.slice(i, i + 160);
       try {
-        const r = await postJson("/anima/cards/zh_lookup", { tags: chunk }, 30000);
+        const r = await postJson("/anima/cards/zh_lookup", { tags: chunk }, 30000, signal);
         const map = (r && r.translations) || {};
         chunk.forEach((key) => {
           const zh = String(map[key] || "").trim();
           if (zh) hit[key] = zh;
         });
       } catch (error) {
+        if (error?.name === "AbortError") throw error;
         /* 失败就靠第 ② 级 */
       }
       const missing = chunk.filter((key) => !hit[key]);
       if (missing.length) {
         try {
-          const r = await postJson("/anima/danbooru/translate", { tags: missing }, 30000);
+          const r = await postJson("/anima/danbooru/translate", { tags: missing }, 30000, signal);
           const map = (r && r.translations) || {};
           missing.forEach((key) => {
             const zh = String(map[key] || "").trim();
             if (zh) hit[key] = zh;
           });
         } catch (error) {
+          if (error?.name === "AbortError") throw error;
           /* 两级都没命中 → 缓存空串，交给机翻档 */
         }
       }
@@ -786,14 +730,14 @@
   }
 
   /** 英文 tag → 中文：先查两级词典，都没有才机翻（返回 {zh, from}）。 */
-  async function translateEnToZhPreferred(text) {
+  async function translateEnToZhPreferred(text, signal) {
     const tag = String(text || "").trim();
     if (!tag) return { zh: "", from: "none" };
-    const dict = await lookupZhDictionary([tag]);
+    const dict = await lookupZhDictionary([tag], signal);
     const fromDict = dict[tag.toLowerCase()];
     if (fromDict) return { zh: fromDict, from: "dictionary" };
     try {
-      const zh = await translateAuto(tag);
+      const zh = await translateAuto(tag, "auto", signal);
       if (zh && zh !== tag) return { zh, from: "machine" };
     } catch (error) {
       /* 机翻不可用就返回空，由调用方提示 */
@@ -801,16 +745,16 @@
     return { zh: "", from: "none" };
   }
 
-  async function translateChineseToEnglish(text, source = "auto") {
-    const result = await translateDetailed(text, source);
+  async function translateChineseToEnglish(text, source = "auto", signal) {
+    const result = await translateDetailed(text, source, signal);
     const translated = result.translatedText || "";
     if (!translated || containsCJK(translated)) throw new Error("翻译服务未返回英文");
     return { ...result, translatedText: translated };
   }
 
-  async function semanticSearchTags(text) {
+  async function semanticSearchTags(text, signal) {
     try {
-      const result = await postJson("/danbooru_anima/vec_search", { query: String(text || "").trim(), top_k: 12 }, 45000);
+      const result = await postJson("/danbooru_anima/vec_search", { query: String(text || "").trim(), top_k: 12 }, 45000, signal);
       if (result.need_init) return { needInit: true, progress: result.progress || "" };
       return { tags: Array.isArray(result.tags) ? result.tags : [] };
     } catch (error) {
@@ -911,93 +855,6 @@
     return PROVIDER_ERROR_LABELS[state.error_code] || "待使用";
   }
 
-  function formatWeightedPromptText(text, weight) {
-    const value = String(text || "").trim();
-    if (!value) return "";
-    const rawWeight = String(weight ?? "").trim();
-    if (!rawWeight) return value;
-    const numericWeight = Number(rawWeight);
-    // 1.0 是默认权重，不写成冗余的 (tag:1.0)。
-    if (Number.isFinite(numericWeight) && Math.abs(numericWeight - 1) < 1e-9) return value;
-    return `(${value}:${rawWeight})`;
-  }
-
-  function serializePromptPieces(parts) {
-    const visible = (parts || []).filter((piece) => piece && !piece.hidden && formatWeightedPromptText(piece.text, piece.weight));
-    const body = visible.map((piece, index) => {
-      const separator = index === 0
-        ? ""
-        : (typeof piece.separatorBefore === "string" && piece.separatorBefore ? piece.separatorBefore : ", ");
-      return separator + formatWeightedPromptText(piece.text, piece.weight);
-    }).join("");
-    // 尾分隔符挂在最后一片段上（见 splitPromptPieces 的说明）：不拼回就等于把它吃掉。
-    const tail = visible.length ? String(visible[visible.length - 1].trailingSeparator || "") : "";
-    return body + tail;
-  }
-
-  /**
-   * 给「最后一片段」补尾分隔符（默认 `", "`）—— 片段模型只存「前分隔符」，
-   * 末尾那个分隔符必须挂在最后一片段上才留得住（2026-09-27）。
-   * 不补的两种情况：① 末尾本来就有分隔符；② 末尾是换行（多行提示词的分段处，补逗号会破坏分行）。
-   * 返回是否真的改了（调用方据此决定要不要再 commit 一次）。
-   */
-  function ensureTrailingSeparator(pieces, separator = ", ") {
-    if (!Array.isArray(pieces) || !pieces.length) return false;
-    let last = null;
-    for (const piece of pieces) if (piece && !piece.hidden) last = piece;
-    if (!last) return false;
-    const existing = String(last.trailingSeparator || "");
-    if (/[,，、;；]/.test(existing)) return false;
-    if (/\r?\n/.test(existing)) return false;
-    last.trailingSeparator = separator;
-    return true;
-  }
-
-  // 隐藏片段不能只存在 CardsUI 内存：ComfyUI 刷新/重建节点时会重新读取
-  // positive，而 positive 只保存可见文本。把完整片段（含 hidden/weight）
-  // 放进节点的可序列化 hidden widget，才能让工作流恢复后继续显示这些卡片。
-  const PROMPT_PIECES_STATE_VERSION = 1;
-
-  function normalizePromptPiece(piece, index = 0) {
-    if (!piece || typeof piece !== "object") return null;
-    const text = String(piece.text || "").trim();
-    if (!text) return null;
-    return {
-      text,
-      weight: String(piece.weight ?? "").trim(),
-      hidden: Boolean(piece.hidden),
-      // Older workflow state had no separator metadata.  Use the historic
-      // comma fallback; _ensurePromptPiecesInSync will reparse the live text
-      // once and recover its exact separators.
-      separatorBefore: typeof piece.separatorBefore === "string"
-        ? piece.separatorBefore
-        : (index ? ", " : ""),
-      // 尾分隔符（"1girl, " 末尾的 ", "）：持久化必须带上，否则刷新页面/重建节点后又丢
-      trailingSeparator: typeof piece.trailingSeparator === "string" ? piece.trailingSeparator : "",
-    };
-  }
-
-  function parsePromptPiecesState(raw) {
-    if (!raw) return null;
-    try {
-      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-      const source = Array.isArray(parsed) ? parsed : parsed?.pieces;
-      if (!Array.isArray(source)) return null;
-      const pieces = source.map(normalizePromptPiece).filter(Boolean);
-      if (!pieces.length && source.length) return null;
-      const visibleText = typeof parsed?.visibleText === "string"
-        ? parsed.visibleText
-        : serializePromptPieces(pieces.filter((piece) => !piece.hidden));
-      return {
-        version: Number(parsed?.version) || PROMPT_PIECES_STATE_VERSION,
-        pieces,
-        visibleText: String(visibleText || "").trim(),
-      };
-    } catch (error) {
-      return null;
-    }
-  }
-
   function normalizePromptCardWeight(value) {
     const parsed = Number.parseFloat(String(value ?? "").trim());
     const safe = Number.isFinite(parsed) ? parsed : 1;
@@ -1010,54 +867,10 @@
     return normalizePromptCardWeight(value).toFixed(1);
   }
 
-  function cardToText(c) {
-    const en = String(c.prompt || c.en || "").trim();
-    if (!en) return "";
-    // 先转义括号再套权重，否则 (tag:1.2) 的括号会被一起转义
-    return formatWeightedPromptText(applyPromptFormat(en), c.weight);
+  function cardToText(card) { return formatCardText(card, promptFormatSettings); }
+  function appendCardToPrompt(current, card, separator = ", ") {
+    return appendFormattedCard(current, card, separator, promptFormatSettings);
   }
-
-  // 追加（智能去重）
-  function appendCardToPrompt(cur, c, sep = ", ") {
-    const piece = cardToText(c);
-    if (!piece) return cur;
-    const analyst = splitTags(cur).map((p) => p.text.toLowerCase().trim());
-    const base = String(c.prompt || c.en || "").toLowerCase().trim();
-    if (analyst.includes(base)) return cur;
-    const raw = String(cur || "");
-    const curT = raw.replace(/[ \t]+$/, "");
-    // A deliberate trailing newline means the user started a new visual
-    // group.  Append into that group without converting the whole prompt to
-    // comma-separated text.
-    if (/\r?\n\s*$/.test(curT)) return curT + piece;
-    const compact = curT.replace(/,\s*$/, "");
-    return compact ? compact + sep + piece : piece;
-  }
-
-  // 追加工具箱的整段提示词：保留已有内容，并用空两行分隔，便于在②区阅读和继续编辑。
-  // 仅阻止完全相同或已作为末尾段落存在的重复追加；中间已有相同文本不阻塞用户再次加入。
-  function appendPromptBlock(cur, block) {
-    const current = String(cur || "").replace(/\s+$/, "");
-    const addition = String(block || "").trim();
-    if (!addition) return current;
-    if (!current) return addition;
-    if (current === addition || current.endsWith(`\n\n${addition}`)) return current;
-    return `${current}\n\n${addition}`;
-  }
-
-  function removePiece(cur, piece) {
-    const target = (piece.text || "").trim();
-    const parts = splitPromptPieces(cur);
-    const keep = [];
-    let removed = false;
-    for (const p of parts) {
-      if (!removed && p.text.trim() === target) { removed = true; continue; }
-      keep.push(p);
-    }
-    if (!removed) return cur;
-    return serializePromptPieces(keep);
-  }
-
   // Danbooru 内部标签用下划线；Anima 提示词使用空格和英文逗号。
   function danbooruTagToPrompt(tag) {
     return String(tag || "").replace(/_/g, " ").replace(/\s+/g, " ").trim();
@@ -1067,12 +880,6 @@
   // `nozomi (blue archive)` 必须写成 `nozomi \(blue archive\)`。
   // 与 D 站画廊的「转义括号」是同一套语义，先反转义再转义，重复调用安全。
   const promptFormatSettings = { escapeBrackets: true };
-  function escapeAnimaBrackets(text) {
-    return String(text || "")
-      .replace(/\\([()])/g, "$1")
-      .replace(/\(/g, "\\(")
-      .replace(/\)/g, "\\)");
-  }
   function applyPromptFormat(text) {
     const value = String(text || "");
     return promptFormatSettings.escapeBrackets ? escapeAnimaBrackets(value) : value;
@@ -1152,7 +959,7 @@
       this.cardRenderWindow = CARD_RENDER_WINDOW_INITIAL; // 卡片区已渲染窗口（滚动补渲染）
       this._cardGrowFrame = 0;
       this.search = "";
-      this.promptPieces = null; // ② 当前提示词完整片段；hidden 片段保留在卡片区但不输出
+      this.promptDocument = new PromptDocument(this.w.positive?.value || "");
       this.selectedCardIds = new Set(); // Ctrl/Cmd 点击选择，供批量分类使用
       this.rootEl = null;
       this.libListEl = null;    // ①区条目列表
@@ -1206,9 +1013,113 @@
       this._localLlmSessionRefs = 0;
       this._localLlmSessionAutoRelease = false;
       this.editOverlay = null;
+      this.disposed = false;
+      this._timers = new Set();
+      this._intervals = new Set();
+      this._requests = new Set();
+      this._lifetime = new AbortController();
+      this._listenerCleanups = new Set();
+      this._overlays = new Map();
+      this._objectUrls = new Set();
+      this._resizeFrame = 0;
+      this._unsubscribePromptLibrary = null;
       this._onExternalCardsUpdated = () => {
-        this.reloadAll().catch(() => {});
+        if (!this.disposed) this.reloadAll().catch(() => {});
       };
+      const previousRemoved = node.onRemoved;
+      const ui = this;
+      node.onRemoved = function () {
+        ui.dispose();
+        return typeof previousRemoved === "function" ? previousRemoved.apply(this, arguments) : undefined;
+      };
+    }
+
+    dispose() {
+      if (this.disposed) return;
+      this.disposed = true;
+      this._lifetime.abort();
+      this._cancelSuggestRequest();
+      this._hideTranslateSuggest();
+      this._cardSearchRequestId += 1;
+      this._cardSearchAbortController?.abort();
+      this._cardSearchAbortController = null;
+      for (const request of this._requests) request.abort();
+      this._requests.clear();
+      for (const timer of this._timers) clearTimeout(timer);
+      for (const timer of this._intervals) clearInterval(timer);
+      this._timers.clear();
+      this._intervals.clear();
+      if (this._resizeFrame) cancelAnimationFrame(this._resizeFrame);
+      if (this._cardGrowFrame) cancelAnimationFrame(this._cardGrowFrame);
+      this._resizeFrame = this._cardGrowFrame = 0;
+      for (const cleanup of this._listenerCleanups) cleanup();
+      this._listenerCleanups.clear();
+      this._unsubscribePromptLibrary?.();
+      this._unsubscribePromptLibrary = null;
+      for (const close of this._overlays.values()) close();
+      this._overlays.clear();
+      this._closeEditModal();
+      for (const url of this._objectUrls) URL.revokeObjectURL(url);
+      this._objectUrls.clear();
+      this.rootEl?.remove();
+      if (this.node?._cardsUI === this) this.node._cardsUI = null;
+      // anima-lora belongs to the panel and every Cards node; removing one view must not close it.
+    }
+
+    _listen(target, name, listener, options) {
+      target.addEventListener(name, listener, options);
+      const cleanup = () => target.removeEventListener(name, listener, options);
+      this._listenerCleanups.add(cleanup);
+      return () => { cleanup(); this._listenerCleanups.delete(cleanup); };
+    }
+
+    _setTimeout(callback, delay) {
+      if (this.disposed) return null;
+      const timer = setTimeout(() => {
+        this._timers.delete(timer);
+        if (!this.disposed) callback();
+      }, delay);
+      this._timers.add(timer);
+      return timer;
+    }
+
+    _setInterval(callback, delay) {
+      if (this.disposed) return null;
+      const timer = setInterval(() => { if (!this.disposed) callback(); }, delay);
+      this._intervals.add(timer);
+      return timer;
+    }
+
+    _clearTimeout(timer) { clearTimeout(timer); this._timers.delete(timer); }
+    _clearInterval(timer) { clearInterval(timer); this._intervals.delete(timer); }
+
+    _mountOverlay(overlay) {
+      if (!this.disposed) document.body.appendChild(overlay);
+    }
+
+    _ownOverlay(overlay, cleanup) {
+      const close = (...args) => {
+        this._overlays.delete(overlay);
+        overlay.remove();
+        cleanup?.(...args);
+      };
+      if (this.disposed) close();
+      else this._overlays.set(overlay, close);
+      return close;
+    }
+
+    async _fetchJson(path, opts) {
+      const controller = new AbortController();
+      if (this.disposed) controller.abort();
+      this._requests.add(controller);
+      try { return await fetchJson(path, { ...opts, signal: controller.signal }); }
+      finally { this._requests.delete(controller); }
+    }
+
+    _postJson(path, body, timeout) {
+      return this._fetchJson(path, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), timeout,
+      });
     }
 
     _attachSectionBody(sec, head, key, label) {
@@ -1247,8 +1158,10 @@
     }
 
     _scheduleNodeResize() {
-      requestAnimationFrame(() => {
-        if (!this.rootEl?.isConnected || typeof this.node?.setSize !== "function") return;
+      if (this.disposed || this._resizeFrame) return;
+      this._resizeFrame = requestAnimationFrame(() => {
+        this._resizeFrame = 0;
+        if (this.disposed || !this.rootEl?.isConnected || typeof this.node?.setSize !== "function") return;
         const width = Math.max(260, Number(this.node.size?.[0]) || 420);
         const heightNow = Math.ceil(this.rootEl.scrollHeight + 8);
         if (heightNow > 0 && Math.abs((Number(this.node.size?.[1]) || 0) - heightNow) > 4) this.node.setSize([width, heightNow]);
@@ -1256,7 +1169,7 @@
     }
 
     _setW(widget, value) {
-      if (!widget) return;
+      if (this.disposed || !widget) return;
       widget.value = value;
       if (typeof widget.callback === "function") { try { widget.callback(value) } catch {} }
       if (widget === this.w?.positive) this._stashDraft();
@@ -1287,16 +1200,11 @@
 
     _persistPromptPieces() {
       const widget = this.w?.prompt_pieces;
-      const pieces = Array.isArray(this.promptPieces)
-        ? this.promptPieces.map(normalizePromptPiece).filter(Boolean)
-        : [];
       if (!widget) return;
-      const payload = {
-        version: PROMPT_PIECES_STATE_VERSION,
-        visibleText: String(this.curText() || "").trim(),
-        pieces,
-      };
-      widget.value = JSON.stringify(payload);
+      if (this.promptDocument.snapshot().visibleText !== this.curText()) {
+        this.promptDocument.apply({ type: "sync", text: this.curText() });
+      }
+      widget.value = this.promptDocument.snapshot().serializedState;
       // 动态 hidden widget 的 callback 不一定由 ComfyUI 自动触发，显式标脏
       // 才能让「保存工作流」知道节点状态已经变化。
       this.node.graph?.change?.();
@@ -1304,23 +1212,22 @@
 
     _restorePromptPiecesFromWidget() {
       if (this._promptPiecesRestored) return Array.isArray(this.promptPieces);
-      const state = parsePromptPiecesState(this.w?.prompt_pieces?.value);
-      if (!state) {
-        this._promptPiecesRestored = true;
-        return false;
-      }
-      const currentVisible = String(this.curText() || "").trim();
-      // positive 是执行端的权威值。若用户在工作流外改过 positive，旧的
-      // hidden 状态不能把已删除的片段偷偷带回来，直接从新文本重新建片段。
-      if (state.visibleText !== currentVisible) {
-        this.promptPieces = this._piecesFromText(this.curText());
-        this._promptPiecesRestored = true;
-        this._persistPromptPieces();
-        return false;
-      }
-      this.promptPieces = state.pieces;
+      const state = this.promptDocument.restore(this.w?.prompt_pieces?.value, this.curText());
       this._promptPiecesRestored = true;
-      return true;
+      if (state.stateMismatch) this._persistPromptPieces();
+      return state.restored;
+    }
+
+    _initializePromptText() {
+      this._restorePromptPiecesFromWidget();
+      const widgetText = String(this.w.positive?.value || "");
+      // An empty visible string can still belong to a restored document whose pieces are all hidden.
+      const hasDocument = widgetText.trim() || this.promptDocument.snapshot().pieces.length > 0;
+      if (!hasDocument) {
+        const draftText = loadDraft();
+        if (draftText !== widgetText) this._setPromptText(draftText, { render: false });
+      }
+      return this.curText();
     }
 
     restorePromptPieces() {
@@ -1445,6 +1352,7 @@
     }
 
     _closeEditModal() {
+      this._overlays.delete(this.editOverlay);
       this.editOverlay?.remove();
       this.editOverlay = null;
     }
@@ -1488,10 +1396,10 @@
           </div>
           <div class="tk-cards-edit-btns"><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">保存</button></div>
         </div>`;
-      document.body.appendChild(overlay);
+      this._mountOverlay(overlay);
       this.editOverlay = overlay;
       const read = (field) => overlay.querySelector(`[data-f="${field}"]`)?.value.trim() || "";
-      const close = () => this._closeEditModal();
+      const close = this._ownOverlay(overlay, () => this._closeEditModal());
       let editedImage = currentImage;
       let imageChanged = false;
       const imageDrop = isLib ? overlay.querySelector('[data-a="image-drop"]') : null;
@@ -1586,44 +1494,20 @@
         if (event.key === "Escape") { event.preventDefault(); close(); }
         if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); save(); }
       });
-      setTimeout(() => overlay.querySelector('[data-f="prompt"]')?.focus(), 50);
+      this._setTimeout(() => overlay.querySelector('[data-f="prompt"]')?.focus(), 50);
     }
 
     curText() { return this.w.positive?.value || ""; }
 
-    _piecesFromText(text) {
-      return splitPromptPieces(text);
-    }
+    // Compatibility read for debug/host integrations; each read is a detached snapshot.
+    get promptPieces() { return this.promptDocument.snapshot().pieces; }
 
     _syncPromptPiecesFromVisibleText(text) {
-      const nextVisible = this._piecesFromText(text);
-      if (!Array.isArray(this.promptPieces)) {
-        this.promptPieces = nextVisible;
-        return this.promptPieces;
-      }
-      // 手动编辑上方 textarea 时保留仍未出现在新文本中的隐藏片段；
-      // 如果用户手动重新输入了隐藏 tag，则视为重新激活，移除旧隐藏副本。
-      const usedVisible = new Set();
-      const hidden = this.promptPieces.filter((piece) => piece.hidden);
-      const remainingHidden = hidden.filter((piece) => {
-        const key = promptTranslationKey(piece.text);
-        const index = nextVisible.findIndex((candidate, i) =>
-          !usedVisible.has(i) && promptTranslationKey(candidate.text) === key);
-        if (index >= 0) {
-          usedVisible.add(index);
-          return false;
-        }
-        return true;
-      });
-      this.promptPieces = nextVisible.concat(remainingHidden);
-      return this.promptPieces;
+      return this.promptDocument.apply({ type: "sync", text }).pieces;
     }
 
     _promptPieces() {
-      if (!Array.isArray(this.promptPieces)) {
-        this.promptPieces = this._piecesFromText(this.curText());
-      }
-      return this.promptPieces;
+      return this.promptDocument.snapshot().pieces;
     }
 
     _ensurePromptPiecesInSync() {
@@ -1634,29 +1518,25 @@
     }
 
     _commitPromptPieces(render = true) {
-      const pieces = this._promptPieces();
-      // serializePromptPieces uses each piece's separatorBefore.  Do not
-      // replace this with a plain `join(', ')`: line breaks are intentional
-      // visual/category boundaries in the user's prompt.
-      const next = serializePromptPieces(pieces.filter((piece) => !piece.hidden));
-      this._setW(this.w.positive, next);
+      const snapshot = this.promptDocument.apply({ type: "commit" });
+      this._setW(this.w.positive, snapshot.visibleText);
       this._persistPromptPieces();
+      const next = this.curText();
       if (this.curTextEl) this.curTextEl.value = next;
       if (render) this._renderChips();
       return next;
     }
 
     _setPromptText(text, { preserveHidden = false, render = true } = {}) {
-      if (preserveHidden) this._syncPromptPiecesFromVisibleText(text);
-      else this.promptPieces = this._piecesFromText(text);
+      this.promptDocument.apply({ type: "setText", text, preserveHidden });
       return this._commitPromptPieces(render);
     }
 
     _appendPromptBlock(text) {
       const current = this.curText();
-      const next = appendPromptBlock(current, text);
+      this._ensurePromptPiecesInSync();
+      const next = this.promptDocument.apply({ type: "appendBlock", text }).visibleText;
       if (next === current) return next;
-      this._syncPromptPiecesFromVisibleText(next);
       this._setW(this.w.positive, next);
       this._persistPromptPieces();
       if (this.curTextEl) this.curTextEl.value = next;
@@ -1669,34 +1549,36 @@
     _togglePieceVisibility(index) {
       const piece = this._promptPieces()[index];
       if (!piece) return;
-      piece.hidden = !piece.hidden;
+      const snapshot = this.promptDocument.apply({ type: "toggle", index });
       this._commitPromptPieces();
-      this._flash(piece.hidden ? `已隐藏：${piece.text}` : `已恢复：${piece.text}`);
+      this._flash(snapshot.pieces[index].hidden ? `已隐藏：${piece.text}` : `已恢复：${piece.text}`);
     }
 
     _removePromptPiece(index) {
       const pieces = this._promptPieces();
       const piece = pieces[index];
       if (!piece) return;
-      pieces.splice(index, 1);
+      this.promptDocument.apply({ type: "remove", index });
       this.piecesZh.delete(piece.text);
       this.piecesTranslation.delete(piece.text);
       this._commitPromptPieces();
     }
 
     // ── 库加载：① prompt 库（anima-lora）＋③ 卡片库（anima-tk-cards）──
-    async reloadAll() {
-      await Promise.all([this.reloadLib(), this.reloadCards()]);
+    async reloadAll(refresh = false) {
+      await Promise.all([this.reloadLib(refresh), this.reloadCards()]);
     }
 
-    async reloadLib() {
+    async reloadLib(refresh = false) {
+      if (this.disposed) return;
       try {
         const db = await openDB();
-        await hydratePromptLibrary(db);
+        await hydratePromptLibrary(db, refresh);
         const [prompts, cats] = await Promise.all([
           storeAll(db, PROMPT_STORE),
           storeAll(db, CAT_STORE),
         ]);
+        if (this.disposed) return;
         this.prompts = prompts || [];
         if (!cats || !cats.length) {
           for (const c of DEFAULT_CATS) await storePut(db, CAT_STORE, c);
@@ -1728,8 +1610,10 @@
     }
 
     async reloadCards() {
+      if (this.disposed) return;
       try {
         const lib = await loadCardLib();
+        if (this.disposed) return;
         this.cards = (lib.cards || []).map(cardFromEnvelope);
         this._rebuildCardTranslationIndex();
         let ccats = (lib.categories || []).slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
@@ -1874,11 +1758,11 @@
             delArmed = true;
             del.classList.add("arm");
             del.textContent = "✓删?";
-            clearTimeout(del._armT);
-            del._armT = setTimeout(disarmDel, 2500);
+            this._clearTimeout(del._armT);
+            del._armT = this._setTimeout(disarmDel, 2500);
             return;
           }
-          clearTimeout(del._armT);
+          this._clearTimeout(del._armT);
           const db = await openDB();
           await storeDel(db, PROMPT_STORE, p.id);
           this.prompts = this.prompts.filter((x) => x.id !== p.id);
@@ -1889,8 +1773,8 @@
         let clickTimer = null;
         el.addEventListener("click", (ev) => {
           if (ev.target.closest(".tk-cards-del")) return;
-          clearTimeout(clickTimer);
-          clickTimer = setTimeout(() => {
+          this._clearTimeout(clickTimer);
+          clickTimer = this._setTimeout(() => {
             this._rememberPromptTranslations(p.tagTranslations);
             const current = this.curText();
             const next = this._appendPromptBlock(p.prompt || "");
@@ -1900,7 +1784,7 @@
         // 双击打开编辑窗口：不触发第一次 click 的“载入提示词”动作。
         el.addEventListener("dblclick", (ev) => {
           if (ev.target.closest(".tk-cards-del")) return;
-          clearTimeout(clickTimer);
+          this._clearTimeout(clickTimer);
           ev.preventDefault();
           this._openEditModal(p, "lib");
         });
@@ -1917,7 +1801,7 @@
     async _loadBatchFiles() {
       if (!this.fileSel) return;
       try {
-        const j = await fetchJson("/anima/prompt/list?recursive=1");
+        const j = await this._fetchJson("/anima/prompt/list?recursive=1");
         this.batchFiles = (j.files || []).map((f) => f.name || f.path || f);
       } catch (e) {
         this.batchFiles = [];
@@ -1937,7 +1821,7 @@
       if (!path) { this.batchGroups.clear(); this._renderBatchGroups(); return; }
       this.fileSel.value = path;
       try {
-        const j = await fetchJson("/anima/prompt/parse?path=" + encodeURIComponent(path));
+        const j = await this._fetchJson("/anima/prompt/parse?path=" + encodeURIComponent(path));
         const groups = (j.groups || []).map((g) => ({ name: g.name, count: g.count, prompts: g.prompts || [] }));
         this.batchGroups.set(path, groups);
       } catch (e) {
@@ -2048,7 +1932,7 @@
         this._renderCards();
         this._flash(`「${en.slice(0, 24)}」已添加分类「${catName}」`);
         if (!String(dup.notes || "").trim()) {
-          translateAuto(en).then((nz) => {
+          translateAuto(en, "auto", this._lifetime.signal).then((nz) => {
             if (!nz || nz === en) return;
             dup.notes = nz;
             dup.updatedAt = Date.now();
@@ -2078,7 +1962,7 @@
       this._flash(`已存入卡片库「${CAT_NAME(this.cardCats.find((c) => c.id === cat))}」`);
       // 异步翻译补中文注释（失败不阻塞，卡片保留「待翻译」）
       if (!zh0) {
-        translateAuto(en).then((nz) => {
+        translateAuto(en, "auto", this._lifetime.signal).then((nz) => {
           if (!nz || nz === en) return;
           entry.notes = nz;
           entry.updatedAt = Date.now();
@@ -2490,7 +2374,10 @@
       this._setPromptText(next, { preserveHidden: true, render: false });
       // ⚠️ 2026-09-27 修复：片段模型只留「前分隔符」，上面补的 ", " 会在 serialize 时被吃掉
       //（用户实测："选了 1girl 却还是 1girl，还得手动补逗号"）⇒ 显式挂到最后一个片段上。
-      if (needComma && ensureTrailingSeparator(this.promptPieces)) this._commitPromptPieces(false);
+      if (needComma) {
+        this.promptDocument.apply({ type: "trailingSeparator" });
+        this._commitPromptPieces(false);
+      }
       el.value = this.curText();
       // 光标落在逗号之后，直接接着打下一个词
       const pos = ws + inserted.length;
@@ -2565,11 +2452,11 @@
 
     _setPieceWeight(index, value, commit = true) {
       const parts = this._promptPieces();
-      const piece = parts[index];
-      if (!piece) return null;
+      if (!parts[index]) return null;
       const weight = normalizePromptCardWeight(value);
-      piece.weight = weight.toFixed(1);
-      const next = serializePromptPieces(parts.filter((item) => !item.hidden));
+      const snapshot = this.promptDocument.apply({ type: "weight", index, weight: weight.toFixed(1) });
+      const piece = snapshot.pieces[index];
+      const next = snapshot.visibleText;
       // 拖动过程中只更新可见值，不触发 ComfyUI 图重建；松手或单击时再提交一次。
       if (commit) {
         this._setW(this.w.positive, next);
@@ -2587,7 +2474,7 @@
       }
       // 成交后不再整块重渲染卡片流：chip 宽度改由容器分配后，重渲染只会让其它卡片
       // 闪一下、并丢掉 chips 容器滚动位置；上面两处就地更新已覆盖该片段全部可见信息。
-      return { next, piece, weight };
+      return { next, piece: snapshot.pieces[index], weight };
     }
 
     _bindPieceWeightScrub(button, index) {
@@ -2597,6 +2484,13 @@
       let startWeight = 1;
       let dragging = false;
       let moved = false;
+      const cleanup = () => {
+        dragging = false;
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        document.body.style.cursor = "";
+        this._listenerCleanups.delete(cleanup);
+      };
 
       const onMove = (event) => {
         if (!dragging) return;
@@ -2608,19 +2502,17 @@
       };
       const onUp = (event) => {
         if (!dragging) return;
-        dragging = false;
         button.__scrubbed = moved;
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", onUp);
-        document.body.style.cursor = "";
+        cleanup();
         if (moved) {
           if (Number.isFinite(event?.clientX)) lastDelta = Math.round((event.clientX - startX) / 4) * 0.1;
           else lastDelta = Math.round((lastX - startX) / 4) * 0.1;
           this._setPieceWeight(index, startWeight + lastDelta, true);
         }
-        if (moved) setTimeout(() => { if (button.__scrubbed) button.__scrubbed = false; }, 2000);
+        if (moved) this._setTimeout(() => { if (button.__scrubbed) button.__scrubbed = false; }, 2000);
       };
       button.addEventListener("mousedown", (event) => {
+        if (this.disposed) return;
         event.preventDefault();
         event.stopPropagation();
         dragging = true;
@@ -2632,6 +2524,7 @@
         document.body.style.cursor = "ew-resize";
         window.addEventListener("mousemove", onMove);
         window.addEventListener("mouseup", onUp);
+        this._listenerCleanups.add(cleanup);
       });
     }
 
@@ -2782,7 +2675,7 @@
     /** 拉取后端统一翻译设置（跨浏览器一致）；后端不可用时保持本机缓存值。 */
     async _loadTranslateSettings() {
       try {
-        const snapshot = await fetchJson("/anima/translate/settings", { timeout: 8000 });
+        const snapshot = await this._fetchJson("/anima/translate/settings", { timeout: 8000 });
         if (!snapshot?.settings) return;
         const next = applyTranslateSettings(snapshot.settings);
         saveTranslateSettingsLocal(next);
@@ -2799,7 +2692,7 @@
     async _refreshTranslationStatus() {
       if (!this.translateStatusEl) return;
       try {
-        const result = await fetchJson("/anima/translate/status");
+        const result = await this._fetchJson("/anima/translate/status");
         const providers = result.providers || {};
         const order = Array.isArray(result.auto_order) ? result.auto_order : Object.keys(providers);
         const seen = new Set(order);
@@ -2862,7 +2755,7 @@
           const button = event.currentTarget;
           button.disabled = true;
           try {
-            const restart = await postJson("/anima/translate/deeplx/restart", {}, 12000);
+            const restart = await this._postJson("/anima/translate/deeplx/restart", {}, 12000);
             this._flash(restart.started ? "DeepLX 已启动" : "DeepLX 重启失败", 5000);
           } catch (error) {
             this._flash("DeepLX 重启失败：" + (error.message || error), 5000);
@@ -2877,7 +2770,7 @@
     }
 
     async _assertGenerationIdle() {
-      const queue = await fetchJson("/queue", { timeout: 5000 });
+      const queue = await this._fetchJson("/queue", { timeout: 5000 });
       const running = Array.isArray(queue?.queue_running) ? queue.queue_running.length : 0;
       const pending = Array.isArray(queue?.queue_pending) ? queue.queue_pending.length : 0;
       if (running || pending) {
@@ -2889,7 +2782,7 @@
       const deadline = Date.now() + timeoutMs;
       let state = null;
       while (Date.now() < deadline) {
-        state = await fetchJson("/anima/translate/local_llm/status", { timeout: 8000 });
+        state = await this._fetchJson("/anima/translate/local_llm/status", { timeout: 8000 });
         if (state.status === "ready" && state.model) return state;
         if (state.status === "error") throw new Error(state.error || "本地 LLM 加载失败");
         await new Promise((resolve) => setTimeout(resolve, 250));
@@ -2902,12 +2795,12 @@
       if (!this._localLlmSessionPromise) {
         this._localLlmSessionPromise = (async () => {
           await this._assertGenerationIdle();
-          const before = await fetchJson("/anima/translate/local_llm/status", { timeout: 8000 });
+          const before = await this._fetchJson("/anima/translate/local_llm/status", { timeout: 8000 });
           const wasReady = before.status === "ready" && Boolean(before.model);
           this._localLlmSessionAutoRelease = !wasReady;
           if (!wasReady) {
             if (before.status !== "loading" && before.status !== "downloading") {
-              const loaded = await postJson("/anima/translate/local_llm/load", { model: localLlmModelId(), download: false }, 12000);
+              const loaded = await this._postJson("/anima/translate/local_llm/load", { model: localLlmModelId(), download: false }, 12000);
               if (loaded?.ok === false) throw new Error(loaded.error || "本地模型未能启动");
             }
             await this._waitLocalLlmReady();
@@ -2930,6 +2823,7 @@
             await session;
             if (autoRelease) {
               try {
+                // Session cleanup survives removal of its view; manually loaded models still stay loaded.
                 await postJson("/anima/translate/local_llm/unload", {}, 12000);
               } catch (error) {
                 this._flash("本地 LLM 自动释放失败：" + (error.message || error), 5000);
@@ -2947,14 +2841,14 @@
       if (this._localLlmActionBusy) return;
       this._localLlmActionBusy = true;
       try {
-        const state = await fetchJson("/anima/translate/local_llm/status", { timeout: 8000 });
+        const state = await this._fetchJson("/anima/translate/local_llm/status", { timeout: 8000 });
         if (state.status === "ready") {
-          await postJson("/anima/translate/local_llm/unload", {}, 12000);
+          await this._postJson("/anima/translate/local_llm/unload", {}, 12000);
           this._flash("本地翻译模型已释放，显存已归还给生图", 5000);
         } else {
           await this._assertGenerationIdle();
           const modelId = localLlmModelId();
-          const loaded = await postJson("/anima/translate/local_llm/load", { model: modelId }, 12000);
+          const loaded = await this._postJson("/anima/translate/local_llm/load", { model: modelId }, 12000);
           if (loaded?.ok === false) throw new Error(loaded.error || "本地模型启动失败");
           this._flash(`本地模型 ${modelId} 加载中…`, 3000);
           await this._waitLocalLlmReady();
@@ -2981,8 +2875,8 @@
         <div class="tk-cards-baidu-status" data-a="status">正在读取百度配置…</div>
         <div class="tk-cards-edit-btns"><button type="button" class="tk-cards-btn" data-a="test">测试连接</button><button type="button" class="tk-cards-btn" data-a="clear">清除配置</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">保存配置</button></div>
       </div>`;
-      document.body.appendChild(overlay);
-      const close = () => overlay.remove();
+      this._mountOverlay(overlay);
+      const close = this._ownOverlay(overlay);
       overlay.querySelector('[data-a="close"]')?.addEventListener("click", close);
       overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
       overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); close(); } });
@@ -2996,7 +2890,7 @@
       const save = overlay.querySelector('[data-a="save"]');
       const show = (text, tone = "") => { if (status) { status.textContent = text; status.dataset.tone = tone; } };
       try {
-        const config = await fetchJson("/anima/translate/baidu/config", { timeout: 8000 });
+        const config = await this._fetchJson("/anima/translate/baidu/config", { timeout: 8000 });
         if (config.has_appid) appid.placeholder = "已保存，留空保持不变";
         if (config.has_api_key) apiKey.placeholder = "已保存，留空保持不变";
         model.value = config.model_type || "llm";
@@ -3009,7 +2903,7 @@
         test.disabled = true;
         show("测试中…");
         try {
-          const result = await postJson("/anima/translate/baidu/test", {
+          const result = await this._postJson("/anima/translate/baidu/test", {
             appid: appid.value.trim(), api_key: apiKey.value.trim(), model_type: model.value,
             need_intervene: intervene.checked, q: "你好，世界",
           }, 40000);
@@ -3024,7 +2918,7 @@
       clear.addEventListener("click", async () => {
         clear.disabled = true;
         try {
-          await postJson("/anima/translate/baidu/config", { clear_appid: true, clear_api_key: true }, 12000);
+          await this._postJson("/anima/translate/baidu/config", { clear_appid: true, clear_api_key: true }, 12000);
           appid.value = "";
           apiKey.value = "";
           appid.placeholder = "需要填写 APPID";
@@ -3040,7 +2934,7 @@
       save.addEventListener("click", async () => {
         save.disabled = true;
         try {
-          const config = await postJson("/anima/translate/baidu/config", {
+          const config = await this._postJson("/anima/translate/baidu/config", {
             appid: appid.value.trim(), api_key: apiKey.value.trim(), model_type: model.value,
             need_intervene: intervene.checked,
           }, 12000);
@@ -3071,20 +2965,24 @@
         <div class="tk-cards-llm-rows" data-a="rows"></div>
         <div class="tk-cards-llm-error" data-a="error" style="color:var(--tk-warn);font-size:10px;min-height:14px;"></div>
       </div>`;
-      document.body.appendChild(overlay);
+      this._mountOverlay(overlay);
       const box = overlay;
       let pollTimer = null;
-      const close = () => { if (pollTimer) clearInterval(pollTimer); overlay.remove(); };
+      const close = this._ownOverlay(overlay, () => {
+        if (pollTimer) { this._clearInterval(pollTimer); this._intervals.delete(pollTimer); pollTimer = null; }
+      });
       overlay.querySelector('[data-a="close"]').addEventListener("click", close);
 
       const render = async () => {
+        if (!this._overlays.has(overlay)) return;
         let st;
         try {
-          st = await fetchJson("/anima/translate/local_llm/status");
+          st = await this._fetchJson("/anima/translate/local_llm/status");
         } catch (e) {
           box.querySelector('[data-a="rows"]').innerHTML = `<div class="tk-cards-empty">后端尚未加载本地 LLM 路由（需要重启 ComfyUI 后才可用）</div>`;
           return;
         }
+        if (!this._overlays.has(overlay)) return;
         const models = st.models || {};
         const cur = st.status || "idle";
         const prog = cur === "downloading" || cur === "loading" ? ` ${Math.round((st.progress || 0) * 100)}%` : "";
@@ -3108,9 +3006,10 @@
         box.querySelectorAll('[data-a="load"]').forEach((b) => b.addEventListener("click", async () => {
           try {
             await this._assertGenerationIdle();
-            const loaded = await postJson("/anima/translate/local_llm/load", { model: b.getAttribute("data-m"), download: true });
+            const loaded = await this._postJson("/anima/translate/local_llm/load", { model: b.getAttribute("data-m"), download: true });
+            if (!this._overlays.has(overlay)) return;
             if (loaded?.ok === false) throw new Error(loaded.error || "本地 LLM 启动失败");
-            pollTimer = setInterval(render, 2000);
+            pollTimer = this._setInterval(render, 2000);
             await render();
           } catch (e) {
             box.querySelector('[data-a="error"]').textContent = "启用失败：" + (e.message || e);
@@ -3118,7 +3017,7 @@
         }));
         box.querySelectorAll('[data-a="unload"]').forEach((b) => b.addEventListener("click", async () => {
           try {
-            await postJson("/anima/translate/local_llm/unload", {});
+            await this._postJson("/anima/translate/local_llm/unload", {});
             this._refreshTranslationStatus();
             await render();
           } catch (e) {
@@ -3141,7 +3040,7 @@
     async _openTranslateSettings() {
       let snapshot = { settings: translateSettings };
       try {
-        snapshot = await fetchJson("/anima/translate/settings", { timeout: 8000 });
+        snapshot = await this._fetchJson("/anima/translate/settings", { timeout: 8000 });
       } catch (error) {
         snapshot = { settings: translateSettings, offline: true, error: error.message || String(error) };
       }
@@ -3249,7 +3148,7 @@
       // ⚠️ overlay 最后才插入文档（见本方法末尾）：旧写法是「先 appendChild、再隔着若干
       // await 后端请求才绑动作」，面板可见后约 2 秒内点任何按钮都无效（能命中按钮但没有
       // 监听器）。绑完再入文档，保证「可见即可用」。
-      const close = () => overlay.remove();
+      const close = this._ownOverlay(overlay);
       overlay.querySelector('[data-a="close"]').addEventListener("click", close);
       overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
       overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); close(); } });
@@ -3313,7 +3212,7 @@
       const b = (name) => overlay.querySelector(`[data-b="${name}"]`);
       const loadBaiduConfig = async () => {
         try {
-          const conf = await fetchJson("/anima/translate/baidu/config", { timeout: 8000 });
+          const conf = await this._fetchJson("/anima/translate/baidu/config", { timeout: 8000 });
           b("appid").placeholder = conf.has_appid ? "已保存，留空保持不变" : "百度开发者 APPID";
           b("api-key").placeholder = conf.has_api_key ? "已保存，留空保持不变" : "百度开发者 API Key";
           b("model").value = conf.model_type === "nmt" ? "nmt" : "llm";
@@ -3333,7 +3232,7 @@
         button.disabled = true;
         setResult("正在保存百度配置…");
         try {
-          const conf = await postJson("/anima/translate/baidu/config", baiduPayload(), 15000);
+          const conf = await this._postJson("/anima/translate/baidu/config", baiduPayload(), 15000);
           if (conf.ok === false) throw new Error(conf.error || "保存失败");
           b("appid").value = "";
           b("api-key").value = "";
@@ -3352,7 +3251,7 @@
         button.disabled = true;
         setResult("正在测试百度翻译…");
         try {
-          const r = await postJson("/anima/translate/baidu/test", { ...baiduPayload(), q: "你好，世界" }, 40000);
+          const r = await this._postJson("/anima/translate/baidu/test", { ...baiduPayload(), q: "你好，世界" }, 40000);
           if (!r.ok) throw new Error(r.error || "百度翻译测试失败");
           setResult(`百度连接成功：${r.translatedText || "已返回译文"}`, "is-success");
         } catch (error) {
@@ -3369,7 +3268,7 @@
       // 分类 LLM（复用既有 /anima/llm/config 路由与存储）
       let llmConf = { mode: "auto" };
       try {
-        llmConf = await fetchJson("/anima/llm/config", { timeout: 8000 });
+        llmConf = await this._fetchJson("/anima/llm/config", { timeout: 8000 });
       } catch (error) {
         setStatus(`分类 LLM 配置读取失败：${error.message || error}`, "is-error");
       }
@@ -3386,7 +3285,7 @@
       const glossaryHint = overlay.querySelector('[data-a="glossary-hint"]');
       const renderGlossary = async () => {
         try {
-          const r = await fetchJson("/anima/translate/glossary/list", { timeout: 8000 });
+          const r = await this._fetchJson("/anima/translate/glossary/list", { timeout: 8000 });
           const entries = Array.isArray(r.entries) ? r.entries : [];
           glossaryHint.textContent = entries.length
             ? `用户词典：${entries.length} 条（保存过的中文→英文对照优先于机翻）`
@@ -3399,7 +3298,7 @@
             button.addEventListener("click", async () => {
               button.disabled = true;
               try {
-                await fetchJson(`/anima/translate/glossary?id=${encodeURIComponent(button.getAttribute("data-k"))}`, { method: "DELETE", timeout: 8000 });
+                await this._fetchJson(`/anima/translate/glossary?id=${encodeURIComponent(button.getAttribute("data-k"))}`, { method: "DELETE", timeout: 8000 });
                 await renderGlossary();
               } catch (error) {
                 setStatus(`删除词典条目失败：${error.message || error}`, "is-error");
@@ -3447,8 +3346,8 @@
         button.disabled = true;
         setResult("正在检测并启动 DeepLX…");
         try {
-          await postJson("/anima/translate/settings", readForm(), 15000);
-          const restart = await postJson("/anima/translate/deeplx/restart", {}, 15000);
+          await this._postJson("/anima/translate/settings", readForm(), 15000);
+          const restart = await this._postJson("/anima/translate/deeplx/restart", {}, 15000);
           setResult(restart.started ? "DeepLX 已启动" : "DeepLX 未能启动：请检查可执行文件路径与端口", restart.started ? "is-success" : "is-error");
           await this._refreshTranslationStatus();
         } catch (error) {
@@ -3465,7 +3364,7 @@
         const button = event.currentTarget;
         button.disabled = true;
         try {
-          const r = await postJson("/anima/translate/cache/clear", {}, 15000);
+          const r = await this._postJson("/anima/translate/cache/clear", {}, 15000);
           setResult(`翻译缓存已清空（移除 ${Number(r.removed) || 0} 条）`, "is-success");
         } catch (error) {
           setResult(`清空翻译缓存失败：${error.message || error}`, "is-error");
@@ -3499,7 +3398,7 @@
         button.disabled = true;
         setResult("保存中…");
         try {
-          const saved = await postJson("/anima/translate/settings", payload, 20000);
+          const saved = await this._postJson("/anima/translate/settings", payload, 20000);
           if (saved?.ok === false) throw new Error(saved.error || "保存失败");
           const next = applyTranslateSettings(saved.settings || payload);
           saveTranslateSettingsLocal(next);
@@ -3512,7 +3411,7 @@
           const classifyPayload = { mode: payload.classify.mode, base_url: payload.classify.base_url, model: payload.classify.model };
           if (payload.api_keys.classify_api_key) classifyPayload.api_key = payload.api_keys.classify_api_key;
           if (payload.api_keys.classify_api_key_clear) { classifyPayload.api_key = ""; classifyPayload.api_key_clear = true; }
-          await postJson("/anima/llm/config", classifyPayload, 15000);
+          await this._postJson("/anima/llm/config", classifyPayload, 15000);
           setResult("设置已保存", "is-success");
           this._flash("翻译设置已保存");
           await this._refreshTranslationStatus();
@@ -3533,7 +3432,7 @@
         ? `后端设置接口不可用（${snapshot.error || "未连接"}）：当前显示本机缓存值，保存只写入浏览器`
         : "改动点「保存设置」后生效；敏感字段留空表示保持不变。", snapshot.offline ? "is-error" : "");
       // 所有监听器与表单初值都已就绪 → 此时才把面板插入文档（可见即可用）
-      document.body.appendChild(overlay);
+      this._mountOverlay(overlay);
       overlay.tabIndex = -1;
       overlay.focus?.();
     }
@@ -3639,7 +3538,7 @@
       const text = String(replacement || "").trim();
       if (!source || !text) return false;
       // 重建时统一使用 Anima 的英文逗号；Danbooru 下划线已在进入这里前转换为空格。
-      parts[index] = { ...source, text, weight: source.weight && !text.includes(",") ? source.weight : "" };
+      this.promptDocument.apply({ type: "replace", index, text });
       this._commitPromptPieces();
       this._hideResolve();
       return true;
@@ -3664,7 +3563,7 @@
       const translatedText = String(candidate?.prompt || candidate?.tag || "").trim();
       if (!sourceText || !translatedText) { this._flash("没有可保存的词典内容"); return; }
       try {
-        await postJson("/anima/translate/glossary", {
+        await this._postJson("/anima/translate/glossary", {
           source_text: sourceText,
           translated_text: translatedText,
           tag_text: candidate?.tag || "",
@@ -3688,30 +3587,8 @@
     }
 
     _appendResolvedText(text) {
-      const additions = splitPromptPieces(text);
-      if (!additions.length) return false;
-      const current = this._promptPieces();
-      const seen = new Set(current.map((p) => p.text.toLowerCase().trim()));
-      const currentText = this.curText();
-      const firstSeparator = current.length
-        ? (/\r?\n\s*$/.test(currentText) ? "" : ", ")
-        : "";
-      let appendedCount = 0;
-      additions.forEach((addition) => {
-        const key = addition.text.toLowerCase().trim();
-        if (key && !seen.has(key)) {
-          current.push({
-            ...addition,
-            hidden: false,
-            separatorBefore: appendedCount === 0 ? firstSeparator : addition.separatorBefore,
-          });
-          seen.add(key);
-          appendedCount += 1;
-        }
-      });
-      // ②区同样要带尾逗号（用户要求①②区一致）：片段模型只留「前分隔符」，追加完末尾那个
-      // 逗号留不住 ⇒ 用户在①区接着手打就会与上一个词粘连（2026-09-27 修复）。
-      if (appendedCount > 0) ensureTrailingSeparator(current);
+      if (!splitPromptPieces(text).length) return false;
+      this.promptDocument.apply({ type: "append", text });
       this._commitPromptPieces();
       this._hideResolve();
       return true;
@@ -3721,7 +3598,7 @@
       if (button?.disabled) return;
       if (button) button.disabled = true;
       try {
-        const result = await postJson("/danbooru_anima/vec_init", {}, 12000);
+        const result = await this._postJson("/danbooru_anima/vec_init", {}, 12000);
         this._flash(result.started ? "已开始初始化本地语义引擎，完成后再次点击翻译并校准" : "语义引擎正在初始化，请稍候", 6000);
       } catch (e) {
         this._flash("语义引擎启动失败：" + (e.message || e), 5000);
@@ -3747,7 +3624,7 @@
           translationStatus = "本地词典仅用于标签反查";
         } else {
           try {
-            const result = await translateChineseToEnglish(value, source);
+            const result = await translateChineseToEnglish(value, source, this._lifetime.signal);
             translation = result.translatedText || "";
             provider = result.provider || result.source || source;
             quality = result.quality || null;
@@ -3760,7 +3637,7 @@
           }
         }
       }
-      const semantic = withSemantic && isNaturalChinese(value) ? await semanticSearchTags(value) : null;
+      const semantic = withSemantic && isNaturalChinese(value) ? await semanticSearchTags(value, this._lifetime.signal) : null;
       return { translation, translationStatus, provider, quality, attempts, errorPayload, glossaryTag, semantic };
     }
 
@@ -3773,7 +3650,7 @@
       try {
         const source = this.translateSourceEl?.value || "auto";
         const translated = await this._withLocalLlmSession(source, () => this._translateAndSemantic(piece.text, true));
-        const result = await postJson("/anima/danbooru/resolve", {
+        const result = await this._postJson("/anima/danbooru/resolve", {
           items: [{ id: String(index), text: piece.text, translation: translated.translation }],
         }, 45000);
         this.resolveItems = (Array.isArray(result.items) ? result.items : []).map((item) => ({
@@ -3812,7 +3689,7 @@
       }
       try {
         const source = this.translateSourceEl?.value || "auto";
-        const result = await this._withLocalLlmSession(source, () => translateDetailed(piece.text, source));
+        const result = await this._withLocalLlmSession(source, () => translateDetailed(piece.text, source, this._lifetime.signal));
         const translated = String(result.translatedText || "").trim();
         if (!translated) throw new Error(result.error || "翻译源未返回译文");
         this.piecesTranslation.set(piece.text, {
@@ -3855,7 +3732,7 @@
             while (todo.length) {
               const p = todo.shift();
               try {
-                const result = await translateDetailed(p.text, source);
+                const result = await translateDetailed(p.text, source, this._lifetime.signal);
                 const translated = String(result.translatedText || "").trim();
                 if (!translated) throw new Error(result.error || "翻译源未返回译文");
                 this.piecesTranslation.set(p.text, {
@@ -3942,7 +3819,7 @@
       this._flash(`翻译并校准中：${parts.length} 段…`);
       const translated = await this._collectTranslations(parts, true);
       try {
-        const result = await postJson("/anima/danbooru/resolve", {
+        const result = await this._postJson("/anima/danbooru/resolve", {
           items: parts.map((p, i) => ({ id: String(i), text: p.text, translation: translated[i]?.translation || "" })),
         }, 45000);
         this.resolveItems = (Array.isArray(result.items) ? result.items : []).map((item, i) => ({
@@ -3982,7 +3859,7 @@
       // 1) LLM 判定分类（长超时：LLM 推理可能 10-60s；小批 30 提质量）
       let suggestions = {};
       try {
-        const res = await postJson("/anima/cards/classify", {
+        const res = await this._postJson("/anima/cards/classify", {
           cards: parts.map((p, i) => ({ id: String(i), text: p.text })),
           cats: catNames,
           cats_info: catsInfoOf(this.cardCats),
@@ -4030,8 +3907,8 @@
           <button type="button" class="tk-cards-btn" data-a="cancel">取消</button>
           <button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="confirm">✓ 确认入卡 ${parts.length} 张</button>
         </div></div>`;
-      document.body.appendChild(overlay);
-      const close = () => overlay.remove();
+      this._mountOverlay(overlay);
+      const close = this._ownOverlay(overlay);
       const updateConfirm = () => {
         const btn = overlay.querySelector('[data-a="confirm"]');
         if (btn) btn.textContent = `✓ 确认入卡 ${parts.length - removedSet.size} 张`;
@@ -4130,8 +4007,8 @@
         <div class="tk-cards-save-prompt-preview"><span>提示词预览</span><div>${esc(text.slice(0, 280))}${text.length > 280 ? "…" : ""}</div></div>
         <div class="tk-cards-edit-btns"><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">保存</button></div>
       </div>`;
-      document.body.appendChild(overlay);
-      const close = () => overlay.remove();
+      this._mountOverlay(overlay);
+      const close = this._ownOverlay(overlay);
       overlay.querySelectorAll('[data-a="close"], [data-a="cancel"]').forEach((button) => button.addEventListener("click", close));
       overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
       overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); close(); } });
@@ -4152,7 +4029,7 @@
           this._flash("保存到 prompt 库失败：" + (error.message || error), 5000);
         }
       });
-      setTimeout(() => overlay.querySelector('[data-f="cat"]')?.focus(), 50);
+      this._setTimeout(() => overlay.querySelector('[data-f="cat"]')?.focus(), 50);
     }
 
     _stashDraft() {
@@ -4183,9 +4060,9 @@
           <b>新建分类</b><input data-f="new-name" placeholder="分类名称"><input data-f="new-hint" placeholder="分类说明（可选）"><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="new">新增</button>
         </div>
       </div>`;
-      document.body.appendChild(overlay);
+      this._mountOverlay(overlay);
       const list = overlay.querySelector(".tk-cards-category-list");
-      const close = () => overlay.remove();
+      const close = this._ownOverlay(overlay);
       overlay.querySelector('[data-a="close"]').addEventListener("click", close);
       overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
       const render = () => {
@@ -4257,8 +4134,8 @@
         <label class="tk-cards-field"><span>归并到</span><select data-f="fallback">${candidates.map((x) => `<option value="${escAttr(x.id)}" ${x.id === "card_all" ? "selected" : ""}>${esc(CAT_NAME(x))}</option>`).join("")}<option value="">不归并（变为未分类）</option></select></label>
         <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-danger" data-a="delete">确认删除</button></div>
       </div>`;
-      document.body.appendChild(overlay);
-      const close = () => overlay.remove();
+      this._mountOverlay(overlay);
+      const close = this._ownOverlay(overlay);
       overlay.querySelector('[data-a="close"]').addEventListener("click", close);
       overlay.querySelector('[data-a="cancel"]').addEventListener("click", close);
       overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
@@ -4556,11 +4433,11 @@
             delArmed = true;
             del.classList.add("arm");
             del.textContent = "✓删?";
-            clearTimeout(del._armT);
-            del._armT = setTimeout(disarmDel, 2500);
+            this._clearTimeout(del._armT);
+            del._armT = this._setTimeout(disarmDel, 2500);
             return;
           }
-          clearTimeout(del._armT);
+          this._clearTimeout(del._armT);
           this.removeEntry(c.id);
         });
         // 放置目标（插入到目标卡片之前）
@@ -4603,14 +4480,14 @@
               ev.target.closest(".tk-cards-retranslate") ||
               ev.target.closest(".tk-cards-grip")) return;
           if (ev.ctrlKey || ev.metaKey) {
-            clearTimeout(clickTimer);
+            this._clearTimeout(clickTimer);
             if (this.selectedCardIds.has(c.id)) this.selectedCardIds.delete(c.id); else this.selectedCardIds.add(c.id);
             this._renderCards();
             this._flash(`${this.selectedCardIds.size} 张卡片已选中（Ctrl/Cmd 点击切换）`);
             return;
           }
-          clearTimeout(clickTimer);
-          clickTimer = setTimeout(() => {
+          this._clearTimeout(clickTimer);
+          clickTimer = this._setTimeout(() => {
             const cur = this.curText();
             const next = appendCardToPrompt(cur, c);
             this._setPromptText(next, { preserveHidden: true });
@@ -4622,7 +4499,7 @@
               ev.target.closest(".tk-cards-cat-btn") || ev.target.closest(".tk-cards-pin") ||
               ev.target.closest(".tk-cards-retranslate") ||
               ev.target.closest(".tk-cards-grip")) return;
-          clearTimeout(clickTimer);
+          this._clearTimeout(clickTimer);
           ev.preventDefault();
           this._openEditModal(c, "card");
         });
@@ -4659,11 +4536,11 @@
 
     // 卡片区滚动：接近底部（或还没铺满）时扩大渲染窗口；rAF 节流避免滚动风暴。
     _onCardGridScroll() {
-      if (this._cardGrowFrame) return;
+      if (this.disposed || this._cardGrowFrame) return;
       this._cardGrowFrame = requestAnimationFrame(() => {
         this._cardGrowFrame = 0;
         const el = this.cardGridEl;
-        if (!el) return;
+        if (this.disposed || !el) return;
         if (el.scrollHeight - el.scrollTop - el.clientHeight > 160) return;
         if (!el.querySelector(".tk-cards-more")) return; // 已全部渲染
         this._growCardWindow();
@@ -4685,10 +4562,10 @@
           <button type="button" class="tk-cards-btn" data-a="cancel">取消</button>
           <button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="ok">✓ 保存分类</button>
         </div></div>`;
-      document.body.appendChild(overlay);
+      this._mountOverlay(overlay);
       const listEl = overlay.querySelector(".tk-cards-catpick-list");
       const searchEl = overlay.querySelector('[data-a="search"]');
-      const close = () => overlay.remove();
+      const close = this._ownOverlay(overlay);
       overlay.querySelector('[data-a="close"]').addEventListener("click", close);
       overlay.querySelector('[data-a="cancel"]').addEventListener("click", close);
       overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
@@ -4763,10 +4640,12 @@
       const form = new FormData();
       form.append("file", file, file.name || "prompt.png");
       const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-      const timer = ctrl ? setTimeout(() => ctrl.abort(), 30000) : null;
+      if (ctrl) this._requests.add(ctrl);
+      const timer = ctrl ? this._setTimeout(() => ctrl.abort(), 30000) : null;
       try {
         const response = await apiFetch("/anima/cards/image", ctrl ? { method: "POST", body: form, signal: ctrl.signal } : { method: "POST", body: form });
         const result = await response.json();
+        if (this.disposed) return;
         if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
         if (!result.positive) { this._flash("该 PNG 没有可用的提示词元数据"); return; }
         this._setPromptText(result.positive);
@@ -4774,7 +4653,8 @@
       } catch (e) {
         this._flash("图片解析失败：" + (e.name === "AbortError" ? "请求超时" : (e.message || e)), 5000);
       } finally {
-        if (timer) clearTimeout(timer);
+        if (timer) this._clearTimeout(timer);
+        if (ctrl) this._requests.delete(ctrl);
       }
     }
 
@@ -4793,16 +4673,16 @@
         <div class="tk-cards-overlay-head"><b>浏览 LoRA · 一键收藏触发词卡片</b><button type="button" class="tk-cards-btn" data-a="close">✕</button></div>
         <input class="tk-cards-search" placeholder="搜索 LoRA 名称…">
         <div class="tk-cards-lora-list"></div></div>`;
-      document.body.appendChild(overlay);
+      this._mountOverlay(overlay);
       const listEl = overlay.querySelector(".tk-cards-lora-list");
       const searchEl = overlay.querySelector(".tk-cards-search");
-      const close = () => overlay.remove();
+      const close = this._ownOverlay(overlay);
       overlay.querySelector('[data-a="close"]').addEventListener("click", close);
       overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
       searchEl.addEventListener("input", render);
       let loras = [];
       try {
-        const j = await fetchJson("/anima/loras");
+        const j = await this._fetchJson("/anima/loras");
         loras = (j.loras || []).slice().sort((a, b) => (b.lastModified || 0) - (a.lastModified || 0));
       } catch (e) {
         listEl.innerHTML = `<div class="tk-cards-empty">LoRA 列表加载失败：${esc(e.message || e)}</div>`;
@@ -4823,7 +4703,7 @@
             if (W.includes(name)) return;
             W.push(name);
             try {
-              const r = await fetchJson("/anima/cards/lora-triggers?name=" + encodeURIComponent(name));
+              const r = await this._fetchJson("/anima/cards/lora-triggers?name=" + encodeURIComponent(name));
               const words = r.triggerWords || [];
               if (!words.length) { alert(`「${name}」没有找到触发词（bridge/Civitai 均无）`); return; }
               for (const w of words) {
@@ -4839,7 +4719,7 @@
           });
           row.querySelector('[data-a="add"]').addEventListener("click", async () => {
             try {
-              const r = await fetchJson("/anima/cards/lora-triggers?name=" + encodeURIComponent(name));
+              const r = await this._fetchJson("/anima/cards/lora-triggers?name=" + encodeURIComponent(name));
               const words = r.triggerWords || [];
               if (!words.length) { alert(`「${name}」没有找到触发词`); return; }
               let text = this.curText();
@@ -4878,8 +4758,8 @@
           </select></label>
           <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="start">生成分类建议</button></div>
         </div>`;
-        document.body.appendChild(overlay);
-        const close = (value = null) => { overlay.remove(); resolve(value); };
+        this._mountOverlay(overlay);
+        const close = this._ownOverlay(overlay, (value = null) => resolve(value));
         overlay.querySelector('[data-a="close"]').addEventListener("click", () => close());
         overlay.querySelector('[data-a="cancel"]').addEventListener("click", () => close());
         overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
@@ -4907,12 +4787,11 @@
         <div class="tk-cards-ai-list">${rows || `<div class="tk-cards-empty">没有可预览的分类建议</div>`}</div>
         <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="cancel">取消，不写入</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="apply">确认应用</button></div>
       </div>`;
-      document.body.appendChild(overlay);
+      this._mountOverlay(overlay);
       const removed = new Set();
-      const close = () => {
-        overlay.remove();
+      const close = this._ownOverlay(overlay, () => {
         if (this.statusEl?.textContent?.startsWith("生成分类建议中")) this._flash("分类建议未应用");
-      };
+      });
       const updateCount = () => {
         const highOnly = overlay.querySelector('[data-a="high-only"]').checked;
         const n = suggestions.reduce((sum, s, i) => sum + (!removed.has(i) && (!highOnly || (Number.isFinite(s.confidence) && s.confidence >= 0.7)) ? 1 : 0), 0);
@@ -4978,7 +4857,7 @@
         const batch = todo.slice(i, i + 30);
         let res;
         try {
-          res = await postJson("/anima/cards/classify", { cards: batch.map((c) => ({ id: c.id, text: c.prompt })), cats: catNames, cats_info: catsInfoOf(this.cardCats) }, 90000);
+          res = await this._postJson("/anima/cards/classify", { cards: batch.map((c) => ({ id: c.id, text: c.prompt })), cats: catNames, cats_info: catsInfoOf(this.cardCats) }, 90000);
         } catch (e) {
           this._flash("智能分类失败：" + (e.message || e) + "；未写入任何卡片", 6000);
           return;
@@ -4996,7 +4875,7 @@
     // LLM 配置（Ollama 本地 或 OpenAI 兼容反代）
     async llmSettings() {
       let conf = {};
-      try { conf = await fetchJson("/anima/llm/config"); } catch (e) { conf = { mode: "auto", error: e.message || String(e) }; }
+      try { conf = await this._fetchJson("/anima/llm/config"); } catch (e) { conf = { mode: "auto", error: e.message || String(e) }; }
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay";
       overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-settings-box">
@@ -5013,7 +4892,7 @@
         <div class="tk-cards-settings-note">API Key 只显示是否已保存，不会回显完整内容。点击“测试连接”不会写入配置文件。</div>
         <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="clear-key">清除 Key</button><button type="button" class="tk-cards-btn" data-a="test">测试连接</button><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">保存设置</button></div>
       </div>`;
-      document.body.appendChild(overlay);
+      this._mountOverlay(overlay);
       const modeEl = overlay.querySelector('[data-f="mode"]');
       const baseEl = overlay.querySelector('[data-f="base"]');
       const modelEl = overlay.querySelector('[data-f="model"]');
@@ -5023,7 +4902,7 @@
       modeEl.value = ["auto", "ollama", "api"].includes(conf.mode) ? conf.mode : "auto";
       baseEl.value = conf.base_url || "";
       modelEl.value = conf.model || "";
-      const close = () => overlay.remove();
+      const close = this._ownOverlay(overlay);
       const setStatus = (text, kind = "") => { statusEl.textContent = text; statusEl.className = "tk-cards-settings-status" + (kind ? ` ${kind}` : ""); };
       const updateMode = () => { apiFields.hidden = modeEl.value === "ollama"; };
       const read = () => ({ mode: modeEl.value, base_url: baseEl.value.trim(), model: modelEl.value.trim(), api_key: keyEl.value.trim() });
@@ -5039,7 +4918,7 @@
       overlay.addEventListener("keydown", (ev) => { if (ev.key === "Escape") close(); });
       overlay.querySelector('[data-a="clear-key"]').addEventListener("click", async () => {
         try {
-          await postJson("/anima/llm/config", { api_key: "", api_key_clear: true });
+          await this._postJson("/anima/llm/config", { api_key: "", api_key_clear: true });
           conf.hasApiKey = false;
           keyEl.value = "";
           keyEl.placeholder = "可留空";
@@ -5054,7 +4933,7 @@
         }
         setStatus("连接测试中…");
         try {
-          const r = await postJson("/anima/llm/test", payload, 25000);
+          const r = await this._postJson("/anima/llm/test", payload, 25000);
           if (!r.ok) throw new Error(r.error || "测试失败");
           setStatus(`连接成功 · ${r.mode || payload.mode} · ${r.model || "自动模型"} · ${r.latencyMs || 0}ms`, "is-success");
         } catch (e) { setStatus(e.message || String(e), "is-error"); }
@@ -5068,7 +4947,7 @@
         if (!payload.api_key) delete payload.api_key;
         setStatus("保存中…");
         try {
-          await postJson("/anima/llm/config", payload);
+          await this._postJson("/anima/llm/config", payload);
           this._flash("LLM 设置已保存");
           close();
         } catch (e) { setStatus("保存失败：" + (e.message || e), "is-error"); }
@@ -5080,7 +4959,7 @@
       if (!card || !String(card.prompt || "").trim()) { this._flash("这张卡片没有可翻译的英文 tag"); return; }
       this._flash(`正在重译：${String(card.prompt).slice(0, 28)}…`, 30000);
       try {
-        const { zh, from } = await translateEnToZhPreferred(card.prompt);
+        const { zh, from } = await translateEnToZhPreferred(card.prompt, this._lifetime.signal);
         if (!zh) { this._flash("词典没有该标签，机翻也没返回结果"); return; }
         card.notes = zh;
         card.updatedAt = Date.now();
@@ -5101,7 +4980,7 @@
       const todo = scope === "all" ? all : all.filter((p) => !String(p.notes || "").trim());
       if (!todo.length) { this._flash("没有需要补中文的卡片"); return; }
       this._flash(`正在从词典补全中文：${todo.length} 张…`, 60000);
-      const dict = await lookupZhDictionary(todo.map((p) => p.prompt));
+      const dict = await lookupZhDictionary(todo.map((p) => p.prompt), this._lifetime.signal);
       let okN = 0;
       for (const card of todo) {
         const zh = dict[String(card.prompt || "").trim().toLowerCase()];
@@ -5130,8 +5009,8 @@
         <label class="tk-cards-field"><span>翻译源</span><select class="tk-cards-select" data-f="source">${TRANSLATE_SOURCES.map(([id, label]) => `<option value="${escAttr(id)}">${esc(label)}</option>`).join("")}</select></label>
         <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="start">开始重译</button></div>
       </div>`;
-      document.body.appendChild(overlay);
-      const close = () => overlay.remove();
+      this._mountOverlay(overlay);
+      const close = this._ownOverlay(overlay);
       const sourceSel = overlay.querySelector('[data-f="source"]');
       sourceSel.value = this.translateSourceEl?.value || loadTranslateSource();
       overlay.querySelector('[data-a="close"]').addEventListener("click", close);
@@ -5165,7 +5044,7 @@
 
       // 第一步：整批查 D 站词典（一次请求最多 160 条）—— 命中的直接用，不再送机翻
       this._flash(`批量重译中：${total} 张，先查词典…`, 120000);
-      const dict = await lookupZhDictionary(todo.map((p) => p.prompt));
+      const dict = await lookupZhDictionary(todo.map((p) => p.prompt), this._lifetime.signal);
       const remaining = [];
       for (const card of todo) {
         const zh = dict[String(card.prompt || "").trim().toLowerCase()];
@@ -5189,7 +5068,7 @@
           if (index >= remaining.length) return;
           const card = remaining[index];
           try {
-            const zh = await translateAuto(card.prompt, effectiveSource);
+            const zh = await translateAuto(card.prompt, effectiveSource, this._lifetime.signal);
             if (!zh || zh === card.prompt) { failN++; continue; }
             card.notes = zh;
             card.updatedAt = Date.now();
@@ -5220,7 +5099,7 @@
       }
       if (!groups.length) { this._flash("卡片库为空"); return; }
       try {
-        const r = await postJson("/anima/cards/export", { name: n, groups });
+        const r = await this._postJson("/anima/cards/export", { name: n, groups });
         if (r.ok) this._flash(`已导出：${r.path}`);
         else this._flash(r.error || "导出失败");
       } catch (e) {
@@ -5234,13 +5113,14 @@
       const data = JSON.stringify(_cardLibCache, null, 1);
       const blob = new Blob([data], { type: "application/json" });
       const url = URL.createObjectURL(blob);
+      this._objectUrls.add(url);
       const a = document.createElement("a");
       a.href = url;
       a.download = "tk-cards-backup-" + new Date().toISOString().slice(0, 10) + ".json";
       document.body.appendChild(a);
       a.click();
       a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      this._setTimeout(() => { URL.revokeObjectURL(url); this._objectUrls.delete(url); }, 5000);
       this._flash(`已导出 ${_cardLibCache.cards.length} 张卡片（JSON 备份）`);
     }
 
@@ -5270,7 +5150,7 @@
               .map((c) => cardToEnvelope({ ...(c || {}), prompt: String(c.en || c.prompt || "") }))
               .filter((c) => c.en),
           };
-          const r = await postJson("/anima/cards", body);
+          const r = await this._postJson("/anima/cards", body);
           if (!r || !r.ok) throw new Error((r && r.error) || "导入失败");
           await this.reloadCards();
           this._flash(`已导入 ${r.count || body.cards.length} 张卡片（替换式恢复）`);
@@ -5282,10 +5162,10 @@
     }
 
     _flash(msg, ms = 2500) {
-      if (!this.statusEl) return;
+      if (this.disposed || !this.statusEl) return;
       this.statusEl.textContent = msg;
-      clearTimeout(this._flashTimer);
-      this._flashTimer = setTimeout(() => { if (this.statusEl) this.statusEl.textContent = ""; }, ms);
+      this._clearTimeout(this._flashTimer);
+      this._flashTimer = this._setTimeout(() => { if (this.statusEl) this.statusEl.textContent = ""; }, ms);
     }
 
     // ── build ──
@@ -5294,13 +5174,14 @@
     // 这里延迟重试直到三个核心 widget 就绪后再构建 UI。
     build() {
       const tryInit = (attempt) => {
+        if (this.disposed) return;
         if (attempt > 30) {
           console.error("[TK Prompt Cards] widgets 长时间未就绪，放弃构建（请确认节点为标准 TK Prompt Cards）");
           return;
         }
         const w = (n) => this.node.widgets?.find((x) => x.name === n);
         if (!w("positive") || !w("opt_text") || !w("lora_syntax")) {
-          setTimeout(() => tryInit(attempt + 1), 300);
+          this._setTimeout(() => tryInit(attempt + 1), 300);
           return;
         }
         this.w.positive = w("positive");
@@ -5315,6 +5196,7 @@
     }
 
     _initUI() {
+      if (this.disposed) return;
       const container = document.createElement("div");
       container.className = "tk-cards-ui";
       container.tabIndex = 0;
@@ -5345,7 +5227,7 @@
         }
       } catch (e) { console.error("[TK Prompt Cards] UI 挂载失败:", e); }
       if (!mounted) {
-        setTimeout(() => {
+        this._setTimeout(() => {
           try {
             if (!container.isConnected && this.node.element) { this.node.element.prepend(container); mounted = container.isConnected; }
           } catch (e) {}
@@ -5391,7 +5273,7 @@
       libRefresh.textContent = "重新读取";
       libRefresh.title = "重新读取 prompt 库与卡片库（面板新增/改动后点此同步）";
       libRefresh.addEventListener("click", () => {
-        this.reloadAll();
+        this.reloadAll(true);
         this._flash("已刷新（prompt 库 + 卡片库）");
       });
       // 清理误入卡（历史版本把卡片写进了 prompt 库；只在存在 kind=card 条目时显示）
@@ -5499,17 +5381,7 @@
       this.curTextEl = document.createElement("textarea");
       this.curTextEl.className = "tk-cards-textarea";
       this.curTextEl.placeholder = "当前提示词（点库条目/卡片/粘贴/拖入 PNG 填充；输入时卡片库联想补全）";
-      this._restorePromptPiecesFromWidget();
-      const widgetText = String(this.w.positive?.value || "");
-      const draftText = loadDraft();
-      const restoredText = Array.isArray(this.promptPieces)
-        ? serializePromptPieces(this.promptPieces.filter((piece) => !piece.hidden))
-        : "";
-      const initialText = widgetText.trim() ? widgetText : (restoredText || draftText);
-      if (initialText !== widgetText) {
-        if (restoredText && initialText === restoredText) this._setW(this.w.positive, initialText);
-        else this._setPromptText(initialText, { render: false });
-      }
+      const initialText = this._initializePromptText();
       this.curTextEl.value = initialText;
       this.curTextEl.addEventListener("input", () => this.onCurInput());
       this.curTextEl.addEventListener("keydown", (e) => this._suggestKeyDown(e));
@@ -5530,7 +5402,7 @@
       this.suggestEl = document.createElement("div");
       this.suggestEl.className = "tk-cards-suggest";
       this.suggestEl.style.display = "none";
-      document.addEventListener("click", (e) => {
+      this._listen(document, "click", (e) => {
         if (this.suggestEl && this.suggestEl.style.display !== "none" &&
             !this.suggestEl.contains(e.target) && e.target !== this.curTextEl) {
           this._hideSuggest();
@@ -5743,7 +5615,15 @@
       this._renderCatTabs();
       this._renderCards();
       this._renderLibList();
-      window.addEventListener("anima-prompt-cards-updated", this._onExternalCardsUpdated);
+      this._listen(window, "anima-prompt-cards-updated", this._onExternalCardsUpdated);
+      getPromptLibrary().then((library) => {
+        if (this.disposed) return;
+        let lastError = "";
+        this._unsubscribePromptLibrary = library.subscribe((state) => {
+          if (state.error && state.error !== lastError) this._flash(state.error, 8000);
+          lastError = state.error || "";
+        });
+      }).catch((error) => this._flash("Prompt 库模块加载失败：" + error.message, 8000));
       this.reloadAll();
       this._loadBatchFiles();
       this._switchLibPane(this.uiState.pane || "lib");

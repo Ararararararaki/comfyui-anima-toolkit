@@ -14,7 +14,8 @@
 #    它们只能在本机跑：`python tests/run_tests.py --integration`
 #    分层规则与原因见 tests/README.md。
 #
-# 本地等价命令：`python tests/run_tests.py`（= 本文件 verify job 的全部步骤）
+# 公开 CI 只做 Python 编译、panel 类型检查与构建；完整回归仅在本地。
+# 本地严格入口：`python tests/run_tests.py --strict`，其检查范围大于本 workflow。
 name: CI
 
 on:

@@ -8,8 +8,12 @@ import { PortalDropdown } from "./anima_dropdown_menu.js";
 import { AnimaDexPanel } from "./anima_animadex_panel.js";
 import { GallerySelectionControls } from "./anima_gallery_selection_controls.js";
 import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover_preview.js";
-import { installGalleryBrowser } from "./anima_gallery_browser.js";
+import { GalleryController, galleryBrowserView } from "./anima_gallery_browser.js";
+import { GallerySourceAdapter } from "./anima_gallery_source_adapter.js";
+import { fetchGalleryPage, gallerySourceRequestSnapshot } from "./anima_gallery_page_fetch.js";
+import * as GallerySourcePage from "./anima_gallery_source_page.js";
 import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./anima_gallery_tag_search.js";
+import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanbooruQuery, effectiveDanbooruTagLimit } from "./anima_danbooru_query.js";
 
 (() => {
   const NODE_NAME = "DanbooruGallery";
@@ -86,23 +90,6 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
     }
   }, true);
 
-  const MAX_TAGS = 8; // 搜索框最多保留 8 个标签（后端 MAX_SEARCH_TAGS=12；Member 上限 2、Gold 6，足够覆盖）
-  const FREE_METATAGS = new Set(["rating", "status", "is", "age", "date", "id", "limit", "score", "downvotes", "favcount", "width", "height", "ratio", "mpixels", "filesize", "filetype", "duration", "md5", "pixiv_id", "pixiv", "parent", "child", "upvote", "embedded", "tagcount", "order"]);
-  // ⚠️ order 是 metatag（不该被当成标签记进预设备注），但它**占一个 D站 计数槽**
-  // （与后端 count_restricted_search_tags 一致：order 不在后端 FREE_METATAGS 里）。
-  // 历史上这两件事共用一个 Set，导致 countedSearchTerms 把 order 当免费 → 计数永不超限
-  // →「自动移除排序」分支与其提示条变成死代码（tests/test_danbooru_gallery_interactions.py 长期红）。
-  const FREE_METATAGS_THAT_STILL_COUNT = new Set(["order", "ordfav"]);
-  const DANBOORU_TAG_LIMIT = 2;
-  /**
-   * 筛选面板独占管理的 token 前缀（顺序即用户可能手打的形态）。
-   * 「筛选面板是这些 token 的唯一 owner」——搜索框里如果还留着同一份（历史写入的
-   * `rating:g` / `-filetype:mp4`），拼查询词时会出现两份，白占计数槽、还会让
-   * 「重试/退化」逻辑拿到一模一样的查询（实测随机发现退化重试失效的真因）。
-   * order 早就有同样的规矩（normalizeTags 会丢弃搜索框里的 order:）。
-   */
-  const FILTER_OWNED_PREFIXES = ["rating", "age", "score", "favcount", "mpixels", "ratio", "filetype", "order", "limit", "status", "is", "date", "id"];
-  const ORDER_LABELS = { score: "评分", favcount: "收藏", random: "随机", rank: "综合" };
   // 这些控件为了脱离 LiteGraph 的裁剪层而挂在 body 上；命中它们时，不能再把同一坐标
   // 下的节点按钮当成“丢失的点击”补发，否则联想项/筛选菜单/弹窗会同时点到下面的按钮。
   // Portal/浮层自己拥有其坐标上的交互权，recoverPointer 不得穿过它们补发点击。
@@ -149,7 +136,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
   // ── 多源画廊（D站 / C站 / P站）──────────────────────────────────────────────
   // 契约唯一事实源：docs/PLAN-2026-09-15-P站C站画廊接入.md §5.2 item schema / §5.3 路由 +
   // capabilities / §5.5 密钥 / §5.7 P站用途。前端**只按契约里的路由名 fetch**，不猜后端实现。
-  // D站 继续走老路由 /anima/danbooru/posts（page 分页），一个字节都不改。
+  // D站保留 /anima/danbooru/posts 路由与 page 分页；查询准备由纯规则模块统一持有。
   const DANBOORU_SOURCE_ID = "danbooru";
   /**
    * 图源**排序偏好**（2026-09-26 由「硬白名单」降级为「偏好 + 兜底」）。
@@ -321,12 +308,6 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
     return svg;
   }
 
-  /** 文件名/扩展名：P站 original 多为 .jpg/.png，C站是 .jpeg；拿不到就退回 jpg */
-  function galleryFileExt(url, fallback = "jpg") {
-    const match = /\.([a-z0-9]{2,5})(?:[?#]|$)/i.exec(String(url || "").split("?")[0]);
-    return match ? match[1].toLowerCase() : fallback;
-  }
-
   function normalizePromptOutputSettings(value) {
     const source = value && typeof value === "object" ? value : {};
     const categories = Array.isArray(source.categories)
@@ -390,7 +371,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
       const sign = /^[~-]/.test(raw) ? raw[0] : "";
       const tag = raw.replace(/^[~-]+/, "");
       const colon = tag.indexOf(":");
-      if (!tag || tag === "or" || tag === "(" || tag === ")" || (colon > 0 && FREE_METATAGS.has(tag.slice(0, colon).toLowerCase()))) {
+      if (!tag || tag === "or" || tag === "(" || tag === ")" || (colon > 0 && isDanbooruMetaTag(tag.slice(0, colon)))) {
         return null;
       }
       return { tag, sign };
@@ -510,54 +491,12 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
     return str.slice(0, start) + replacement + str.slice(end);
   }
 
-  function normalizeTags(rawValue) {
-    const seen = new Set();
-    const tokens = [];
-    for (const rawToken of String(rawValue ?? "").trim().split(/\s+/)) {
-      const token = rawToken.trim().toLowerCase();
-      // 排序只能由 settings.filters.order 维护，避免搜索框与筛选菜单产生两个 order owner。
-      if (!token || token.startsWith("order:") || seen.has(token)) continue;
-      seen.add(token);
-      tokens.push(token);
-      if (tokens.length >= MAX_TAGS) break;
-    }
-    return tokens.join(" ");
-  }
-
-  /**
-   * 清掉搜索框里由筛选面板管理的 token（rating/age/score/filetype/... 含 `-` 否定前缀）。
-   * 筛选面板是这些 token 的唯一 owner：搜索框里残留的那份会被 currentQuery 再拼一次，
-   * 既多占计数槽，又会让「退化重试」拿到与上次完全相同的查询而形同没重试。
-   */
-  function stripFilterOwnedTokens(rawValue) {
-    const tokens = String(rawValue ?? "").trim().split(/\s+/).filter(Boolean);
-    return tokens.filter((token) => {
-      const body = token.replace(/^[-~]+/, "").toLowerCase();
-      const colon = body.indexOf(":");
-      if (colon < 0) return true;
-      return !FILTER_OWNED_PREFIXES.includes(body.slice(0, colon));
-    }).join(" ");
-  }
-
   function formatCount(value) {
     const count = Number(value);
     if (!Number.isFinite(count) || count <= 0) return "";
     if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(count < 10_000_000 ? 1 : 0).replace(/\.0$/, "")}m`;
     if (count >= 1_000) return `${(count / 1_000).toFixed(count < 10_000 ? 1 : 0).replace(/\.0$/, "")}k`;
     return String(Math.round(count));
-  }
-
-  function countedSearchTerms(query) {
-    return String(query || "").split(/\s+/).filter(Boolean).filter((rawToken) => {
-      const token = rawToken.replace(/^[-~]+/, "").toLowerCase();
-      if (token === "or" || token === "(" || token === ")") return false;
-      const colon = token.indexOf(":");
-      if (colon < 0) return true;
-      const prefix = token.slice(0, colon);
-      // order 虽然是 metatag，但在 D站 侧照样占一个计数槽（见 FREE_METATAGS_THAT_STILL_COUNT 注释）。
-      if (FREE_METATAGS_THAT_STILL_COUNT.has(prefix)) return true;
-      return !FREE_METATAGS.has(prefix);
-    }).length;
   }
 
   // ---------- 真·瀑布流布局（列填充 + 超宽图跨列），移植自面板 Outputs 的 masonry 算法 ----------
@@ -971,10 +910,48 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
       this.pixivMatches = new Map();
       this.pixivMatchBusy = new Set();  // 正在反查的 illust_id（防重复请求）
       this.diffReturnBtn = null;
+      this.galleryController = new GalleryController(this, app, { sourceAdapter: new GallerySourceAdapter({ fetchImpl: fetch.bind(globalThis) }) });
     }
 
     // ──────────────────────────── 多源画廊（D站 / C站 / P站）────────────────────────────
-    // 契约见 PLAN §5.3。**D站 的取数/分页/筛选全部走下面的老实现**，这里只服务新图源。
+    // 契约见 PLAN §5.3。图源适配保留各自分页协议，查询准备不依赖 DOM。
+
+    // *Legacy view methods are the existing DOM/category/detail ports, not a
+    // second request implementation. Retire their fallback branches after those
+    // finite views share GalleryBrowseState; their DOM rendering stays here.
+    ensureBrowse() { return this.galleryController.mount(); }
+    browseStore(...args) { return galleryBrowserView.browseStore(this, ...args); }
+    galleryBatchLabel(...args) { return galleryBrowserView.galleryBatchLabel(this, ...args); }
+    browseActive(...args) { return galleryBrowserView.browseActive(this, ...args); }
+    cancelBrowseRequest(...args) { return galleryBrowserView.cancelBrowseRequest(this, ...args); }
+    browseLocation(...args) { return galleryBrowserView.browseLocation(this, ...args); }
+    saveBrowseProgress(...args) { return galleryBrowserView.saveBrowseProgress(this, ...args); }
+    queueBrowseProgress(...args) { return galleryBrowserView.queueBrowseProgress(this, ...args); }
+    browseSnapshot(...args) { return galleryBrowserView.browseSnapshot(this, ...args); }
+    search(options = {}) { return this.galleryController.update(options); }
+    showBrowseWindow(...args) { return galleryBrowserView.showBrowseWindow(this, ...args); }
+    scrollToBrowsePage(...args) { return galleryBrowserView.scrollToBrowsePage(this, ...args); }
+    navigateBrowse(...args) { return galleryBrowserView.navigateBrowse(this, ...args); }
+    updateBrowseVisible(...args) { return galleryBrowserView.updateBrowseVisible(this, ...args); }
+    appendNextBatch(...args) { return galleryBrowserView.appendNextBatch(this, ...args); }
+    growPool(...args) { return galleryBrowserView.growPool(this, ...args); }
+    rebuildPool(...args) { return galleryBrowserView.rebuildPool(this, ...args); }
+    scrollMode(...args) { return galleryBrowserView.scrollMode(this, ...args); }
+    renderPagination(...args) { return galleryBrowserView.renderPagination(this, ...args); }
+    handleGridResize(...args) { return galleryBrowserView.handleGridResize(this, ...args); }
+    scheduleMasonryLayout(...args) { return galleryBrowserView.scheduleMasonryLayout(this, ...args); }
+    scheduleAutoFill(...args) { return galleryBrowserView.scheduleAutoFill(this, ...args); }
+    renderPosts(...args) { return galleryBrowserView.renderPosts(this, ...args); }
+    captureBrowseSelections(...args) { return galleryBrowserView.captureBrowseSelections(this, ...args); }
+    restoreBrowseSelections(...args) { return galleryBrowserView.restoreBrowseSelections(this, ...args); }
+    selectionKey(...args) { return galleryBrowserView.selectionKey(this, ...args); }
+    rememberCardSelection(...args) { return galleryBrowserView.rememberCardSelection(this, ...args); }
+    selectedGallerySelections(...args) { return galleryBrowserView.selectedGallerySelections(this, ...args); }
+    setLoadedCardsSelected(...args) { return galleryBrowserView.setLoadedCardsSelected(this, ...args); }
+    openPixivPages(...args) { return galleryBrowserView.openPixivPages(this, ...args); }
+    closePixivPages(...args) { return galleryBrowserView.closePixivPages(this, ...args); }
+    applyActiveCategory(...args) { return galleryBrowserView.applyActiveCategory(this, ...args); }
+    dispose() { return this.galleryController.dispose(); }
 
     isDanbooruSource() {
       return this.activeSourceId() === DANBOORU_SOURCE_ID;
@@ -1046,10 +1023,11 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
       return String(this.sourceEntry(sourceId)?.label || sourceId || "");
     }
 
-    /** capabilities 是隐藏/禁用控件的**唯一依据**（PLAN §5.3 + `query` 第 5 键 + `page_numbers` 第 6 键）；
-     *  缺字段一律按 false 处理 —— 所以 D站 的 page_numbers 必须靠 GALLERY_SOURCE_FALLBACK 兜住。 */
+    /** The adapter declares D站's native page/account protocol; other sources use their registry capabilities. */
     sourceCapabilities(sourceId = null) {
-      const caps = this.sourceEntry(sourceId)?.capabilities || {};
+      const id = sourceId || this.activeSourceId();
+      const adapter = this.sourceAdapter || this.galleryController.sourceAdapter;
+      const caps = adapter.capabilities(id, this.sourceEntry(id)?.capabilities || {});
       return {
         tags: caps.tags === true,
         prompt: caps.prompt === true,
@@ -1059,6 +1037,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
         query: caps.query !== false,
         // page_numbers 缺省按 false（"没声明能力"的源一律进游标分支，不猜）
         page_numbers: caps.page_numbers === true,
+        account: caps.account === true,
       };
     }
 
@@ -1104,7 +1083,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
      * 只在**页码分页的源**上生效（D站 / P站）：C站 的游标批次条与「无限加载池」本身已经是
      * "加载更多"形态，叠加会语义打架；P站 作品详情与本地分类浏览是有限集合，也不适用。
      */
-    scrollMode() {
+    scrollModeLegacy() {
       return this.settings.galleryScrollMode === "infinite"
         && this.pageMode()
         && !this.pixivDetail
@@ -1122,7 +1101,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
     }
 
     /** 分页条 / 状态栏里的「第几批」：页码模式的源显示页码，游标模式的源显示批号 */
-    galleryBatchLabel() {
+    galleryBatchLabelLegacy() {
       return this.pageMode()
         ? `第 ${Math.max(1, Number(this.page) || 1)} 页`
         : `第 ${this.cursorStack.length} 批`;
@@ -1185,36 +1164,15 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
      *    以免两边命名分歧导致"点了搜索没反应"。
      */
     gallerySearchParams(sourceId, query) {
-      const params = new URLSearchParams();
-      if (this.pageMode(sourceId)) {
-        params.set("page", String(Math.max(1, Number(this.page) || 1)));
-        // ⚠️ 2026-09-27 修「底部大片空白」：原先这里对所有页码源硬发 limit=30，
-        // 自适应张数完全不参与 ⇒ 节点越宽越填不满（见 galleryPageLimit 的说明）。
-        // P站 必须保持 30（后端 page↔offset 写死），其余页码源发自适应值。
-        params.set("limit", String(this.galleryPageLimit(sourceId)));
-      } else {
-        params.set("cursor", String(this.cursorStack[this.cursorStack.length - 1] ?? ""));
-        params.set("limit", String(this.resolveLimit()));
-      }
-      if (sourceId === "pixiv") {
-        params.set("word", query);
-        params.set("query", query);
-        const f = this.gallerySourceFilters(sourceId);
-        params.set("target", String(f.target || "partial_match_for_tags"));
-        params.set("sort", String(f.sort || "date_desc"));
-      } else {
-        params.set("query", query);
-        const f = this.gallerySourceFilters(sourceId);
-        if (f.nsfw) params.set("nsfw", String(f.nsfw));
-        params.set("sort", String(f.sort || "Newest"));
-      }
-      // C站「无限加载」池：告诉后端本轮要预取多少条（不发 = 后端 pool_target 默认 0 = 原有单页行为）
-      if (this.poolMode()) params.set("pool_target", String(this.settings.civitaiPool.target));
-      return params;
+      return GallerySourcePage.gallerySourceParameters(gallerySourceRequestSnapshot(this, {
+        source: sourceId, query, page: this.page, cursor: this.cursorStack.at(-1),
+        limit: this.pageMode(sourceId) ? this.galleryPageLimit(sourceId) : this.resolveLimit(),
+      }));
     }
 
-    readGalleryResponse(response) {
-      return response.json().catch(() => null);
+    gallerySourceRequest(source, parameters, signal) {
+      const adapter = this.sourceAdapter || this.galleryController.sourceAdapter;
+      return adapter.searchPage(source, parameters, { signal });
     }
 
     resetGalleryCursor() {
@@ -1238,34 +1196,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
 
     /** 统一 item schema（PLAN §5.2）→ 内部 post 形状（渲染/预览/下载链路一条都不用分叉） */
     galleryItemToPost(item, sourceId) {
-      const id = item?.id == null ? "" : String(item.id);
-      const full = String(item?.full_url || item?.preview_url || "");
-      const preview = String(item?.preview_url || full || "");
-      const tags = Array.isArray(item?.tags) ? item.tags.map((tag) => String(tag || "").trim()).filter(Boolean) : [];
-      const width = Number(item?.width);
-      const height = Number(item?.height);
-      return {
-        id,
-        source: sourceId,
-        // D站 帖子字段名复用：renderPosts / buildPromptForPost / selectionFromCard 都不必知道图源
-        preview_file_url: preview,
-        large_file_url: full,
-        file_url: full,
-        full_url: full,
-        preview_url: preview,
-        image_width: Number.isFinite(width) && width > 0 ? width : 0,
-        image_height: Number.isFinite(height) && height > 0 ? height : 0,
-        file_ext: galleryFileExt(full || preview),
-        rating: item?.rating == null ? "" : String(item.rating),
-        score: item?.score == null ? null : Number(item.score),
-        fav_count: item?.meta?.fav_count ?? item?.meta?.bookmarks ?? null,
-        tag_string: tags.join(" "),
-        tags,
-        prompt: item?.prompt == null ? "" : String(item.prompt),
-        negative_prompt: item?.negative_prompt == null ? "" : String(item.negative_prompt),
-        source_url: item?.source_url == null ? "" : String(item.source_url),
-        meta: item?.meta && typeof item.meta === "object" ? item.meta : {},
-      };
+      return GallerySourcePage.galleryItemToPost(item, sourceId);
     }
 
     /** 分类库键：`<source>:<id>`。D站/P站 的帖子 id 都是纯数字，只用 id 会**跨源撞号**。 */
@@ -1691,9 +1622,8 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
      * C站 / P站 搜索。与 D站 的差别只有三处：路由（/anima/gallery/{source}/search）、
      * 分页（cursor + next_cursor）、以及没有 D站 的计数标签上限。
      */
-    async searchGallerySource({ resetPage = false, retryCount = 0, append = false } = {}) {
+    async searchGallerySource({ resetPage = false, append = false } = {}) {
       const sourceId = this.activeSourceId();
-      const caps = this.sourceCapabilities(sourceId);
       const query = this.gallerySourceQuery();
       if (this.settings.activeCategory) {
         this.settings.activeCategory = "";
@@ -1702,168 +1632,80 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
       }
       if (resetPage) {
         this.resetGalleryCursor();
-        // 页码分页的源（P站）也要回到第 1 页：否则换词/换筛选后仍停在上次翻到的页码，
-        // 用户看到的"新搜索"会从第 7 页开始。
         this.page = 1;
-      }
-      // 新一批搜索（cursor 归零）＝ 新结果集 → 重新允许「拉大补图」与「自动补满」
-      if (resetPage) {
         this.fillMoreExhausted = false;
         this.autoFillRounds = 0;
-        this._autoFillTarget = 0;   // 新结果集 = 新目标，重新按当前尺寸评估
+        this._autoFillTarget = 0;
       }
       this.settings.sourceQueries[sourceId] = query;
       this.settings.lastQuery = query;
       this.saveSettings();
       this.setQuery(query);
-      // ★ C站 池模式：池已按同一套上游筛选建好 → **就在本池内重新筛**，不发任何请求。
-      //   这是「搜索范围 = 已加载的全部内容」与「改关键词零请求」的落点；
-      //   池不存在、或上游筛选（排序 / NSFW / 时间 / 作者）变了 → 落到下面正常请求去重建池。
-      if (this.poolMode() && this.sourcePool && this.sourcePool.fingerprint === this.poolFingerprint()) {
+      const poolEnabled = this.poolMode();
+      if (poolEnabled && this.sourcePool && this.sourcePool.fingerprint === this.poolFingerprint()) {
         if (resetPage) this.poolPageIndex = 0;
         this.applyPoolView();
         this.setStatus(this.poolStatusText());
-        return;
-      }
-      if (!query && sourceId === "pixiv") {
-        // Pixiv 搜索必须有词（契约只有 search/illust，没有匿名兜底列表）→ 明确提示，
-        // 而不是发一个必然失败的请求。
-        this.posts = [];
-        // 详情态必须一起清：`displayPosts()` 在 pixivDetail 非空时会**忽略 this.posts**，
-        // 只清 posts 的话网格仍显示上一个作品的整组页，而状态栏写着"请输入关键词"。
-        this.pixivDetail = null;
-        this.syncReturnButton();
-        this.renderPosts();
-        this.renderPagination();
-        this.setStatus("P站：请输入关键词后回车搜索（日文 / 英文均可）");
         return;
       }
       this.controller?.abort();
       this.controller = new AbortController();
       const requestController = this.controller;
       const currentRequest = ++this.requestId;
-      let timedOut = false;
       this.setStatus(`正在搜索：${query || "（最新）"} · ${this.sourceLabel(sourceId)}`);
       if (this.grid) this.grid.setAttribute("aria-busy", "true");
       try {
-        const parameters = this.gallerySearchParams(sourceId, query);
-        const timer = setTimeout(() => { timedOut = true; requestController.abort(); }, 45000);
-        let response, data;
-        try {
-          response = await fetch(`/anima/gallery/${encodeURIComponent(sourceId)}/search?${parameters}`, { signal: requestController.signal });
-          data = await this.readGalleryResponse(response);
-        } finally {
-          clearTimeout(timer);
-        }
-        if (currentRequest !== this.requestId) return;
-        if (!response.ok) {
-          const error = new Error(data?.error || `HTTP ${response.status}`);
-          error.name = "GallerySearchHTTPError";
-          error.httpStatus = response.status;
-          throw error;
-        }
-        const items = Array.isArray(data?.items) ? data.items : [];
-        const nextCursorValue = data?.next_cursor == null || data.next_cursor === "" ? null : String(data.next_cursor);
-        const incoming = items
-          .map((item) => this.galleryItemToPost(item, sourceId))
-          .filter((post) => post.preview_file_url || post.large_file_url);
-        // ★ C站 池模式：这一轮拿到的内容**并入池**（而不是替换展示源），展示交给 poolVisiblePosts 切片。
-        //   池模式的关键词筛选全在池内做，所以不参与下面的「排除标签 / pixiv 多页折叠」链路。
-        if (this.poolMode()) {
+        if (poolEnabled) {
+          // The accumulating legacy pool needs a whole upstream block, while
+          // the browser module exposes bounded windows from those blocks.
+          const parameters = this.gallerySearchParams(sourceId, query);
+          const { data } = await this.gallerySourceRequest(sourceId, parameters, requestController.signal);
+          if (this.disposed || requestController.signal.aborted || currentRequest !== this.requestId) return;
+          const incoming = (Array.isArray(data?.items) ? data.items : [])
+            .map((item) => this.galleryItemToPost(item, sourceId))
+            .filter((post) => post.preview_file_url || post.large_file_url);
+          const nextCursor = data?.next_cursor == null || data.next_cursor === "" ? null : String(data.next_cursor);
           const rebuild = !this.sourcePool || this.sourcePool.fingerprint !== this.poolFingerprint();
-          this.accumulatePool(incoming, { nextCursor: nextCursorValue, reset: rebuild });
+          this.accumulatePool(incoming, { nextCursor, reset: rebuild });
           if (resetPage) this.poolPageIndex = 0;
           this.nextCursor = this.sourcePool.cursor;
           this.applyPoolView();
           this.setStatus(this.poolStatusText());
           return;
         }
-        this.nextCursor = nextCursorValue;
-        this.posts = incoming;
-        // 折叠**前**的条数（= 含 P站 多页作品展开出来的每一条）：下面那条「缺图已跳过」要拿它比，
-        // 否则被折叠掉的页会被误报成缺图。
-        const loadedCount = this.posts.length;
-        // 排除标签是本地按 Danbooru tag_string 过滤的（无标签体系时没有意义，控件在设置里已禁用）
-        const excludeTags = caps.tags ? (this.settings.excludeTags || []) : [];
-        let excludedCount = 0;
-        if (excludeTags.length) {
-          const tagSet = new Set(excludeTags);
-          const before = this.posts.length;
-          this.posts = this.posts.filter((post) => !String(post.tag_string || "").split(" ").some((tag) => tagSet.has(tag)));
-          excludedCount = before - this.posts.length;
-        }
-        // 新一批结果 = 离开 P站 作品详情；并把多页作品折成「一作品一张卡」（见 foldPixivPages）
-        const beforeFold = this.posts.length;
+        const request = gallerySourceRequestSnapshot(this, {
+          source: sourceId, query, page: this.page, cursor: this.cursorStack.at(-1),
+          limit: this.pageMode(sourceId) ? this.galleryPageLimit(sourceId) : this.resolveLimit(),
+          batch: this.cursorStack.length,
+        });
+        const result = await GallerySourcePage.fetchGallerySourcePage(
+          this.sourceAdapter || this.galleryController.sourceAdapter, request, { signal: requestController.signal });
+        if (this.disposed || requestController.signal.aborted || currentRequest !== this.requestId) return;
+        this.nextCursor = result.nextCursor;
+        this.posts = result.posts;
+        this.pixivPageGroups = result.groups;
         this.pixivDetail = null;
-        this.posts = this.foldPixivPages(this.posts);
-        const foldedCount = beforeFold - this.posts.length;
         this.syncReturnButton();
-        // P站：设置里开了「自动关联」就把本批作品一次批量反查 D站（1 次请求），命中的就地刷成已匹配
         void this.autoMatchPixiv(this.posts);
-        // ⚠️ **追加模式（无限滚动 / 补满）不在这里渲染**（2026-09-28）：此刻 `this.posts` 只有
-        //    刚取回的这一批，渲染出来等于把网格整体换成新批 —— 旧卡片被 replaceChildren 清掉、
-        //    scrollTop 被浏览器 clamp 回 0、每张图重建 img（用户实报「所有图闪黑 + 位置被上滑一段」）。
-        //    数据合并与渲染统一交给 `appendNextBatch()` 的调用方收尾（一次渲染，见 loadNextPageForScroll）。
+        // Appending commits and renders once in the caller after data merge.
         if (!append) {
           this.renderPosts();
           this.renderPagination();
         }
-        const batch = this.cursorStack.length;
-        // 记账：本批带回了几张（分页条的「已浏览 K 张」就是这些批次累加，见 galleryBrowsedCount）
-        if (batch >= 1) this.cursorBatchSizes[batch - 1] = this.posts.length;
-        // 后端的 warnings（契约允许的可选键）**必须让用户看见** —— 例如 C站 不支持关键词检索时
-        // 后端会在这一页内本地过滤并回报"关键词未生效"；不说的话用户以为搜了却没反应（静默错误）。
-        const warnings = Array.isArray(data?.warnings) ? data.warnings.map((w) => String(w || "").trim()).filter(Boolean) : [];
-        const notices = [...warnings];
-        if (excludedCount) notices.push(`已排除 ${excludedCount} 张（${excludeTags.join("、")}）`);
-        if (items.length > loadedCount + excludedCount) notices.push(`${items.length - loadedCount - excludedCount} 张缺图已跳过`);
-        if (foldedCount) notices.push(`已折叠 ${foldedCount} 页多页作品（点卡片「全部页」展开）`);
-        if (!this.pageMode(sourceId) && !this.nextCursor) notices.push("已到末页");
-        if (caps.login && sourceId === "pixiv") notices.push("P站标签与 Danbooru 词库不通用");
-        if (caps.prompt === false && sourceId === "pixiv") notices.push("P站无提示词，可下载原图喂 WD14 反推");
-        this.setStatus(`${this.sourceLabel(sourceId)}：${this.posts.length} 张 · ${this.galleryBatchLabel()}` + (notices.length ? `（${notices.join("；")}）` : ""));
-        // 空结果 + 有警告时，网格里也写一格：状态栏那一行很容易被忽略
-        if (!this.posts.length && warnings.length) this.appendGridNotice(warnings.join("；"));
+        if (this.cursorStack.length >= 1) this.cursorBatchSizes[this.cursorStack.length - 1] = this.posts.length;
+        this.setStatus(result.status);
+        if (!this.posts.length && result.warnings.length) this.appendGridNotice(result.warnings.join("；"));
       } catch (error) {
-        if (timedOut) {
-          this.posts = [];
-          this.pixivDetail = null;   // 同上：不清详情态的话网格仍显示旧作品的整组页
-          this.syncReturnButton();
-          if (append) {
-            // 追加模式：超时**当失败抛出去**，交给 appendNextBatch 的 catch 恢复原结果集。
-            // 不能走下面那条路（直接 return）—— `this.posts` 已被清空，会被 appendNextBatch
-            // 读成「空页 ⇒ 到底了」，把一次网络抖动记成 fillMoreExhausted（之后再也不加载新图）。
-            const timeoutError = new Error("搜索超时（45 秒）：图源或代理网络不稳定，请检查 Clash 节点后重试");
-            timeoutError.name = "GallerySearchTimeoutError";
-            throw timeoutError;
-          }
-          this.renderPosts();
-          this.setStatus("搜索超时（45 秒）：图源或代理网络不稳定，请检查 Clash 节点后重试", "error");
-          return;
-        }
-        if (error?.name === "AbortError") return;
-        if (currentRequest !== this.requestId) return;
-        const retryable = error?.name === "TypeError" || [502, 503, 504].includes(Number(error?.httpStatus));
-        if (retryable && retryCount < 2) {
-          const attempt = retryCount + 1;
-          this.setStatus(`首次搜索响应异常，正在自动重试（${attempt}/2）…`);
-          await new Promise((resolve) => setTimeout(resolve, 250 + retryCount * 500));
-          if (currentRequest !== this.requestId) return;
-          return this.searchGallerySource({ resetPage: false, retryCount: attempt, append });
-        }
-        if (append) {
-          // 追加模式：把失败交给 appendNextBatch 的 catch（它恢复原结果集 + 写状态栏）。
-          // 这里若清空 posts 再渲染，用户滚动时看到的是整页图突然消失。
-          throw error;
-        }
+        if (this.disposed || requestController.signal.aborted || currentRequest !== this.requestId || error?.name === "AbortError") return;
+        if (append) throw error;
         this.posts = [];
-        this.pixivDetail = null;   // 同上：不清详情态的话网格仍显示旧作品的整组页
+        this.pixivDetail = null;
         this.syncReturnButton();
         this.renderPosts();
         this.renderPagination();
         this.setStatus(`${this.sourceLabel(sourceId)} 搜索失败：${error?.message || "未知错误"}`, "error");
       } finally {
-        if (currentRequest === this.requestId && this.grid) this.grid.removeAttribute("aria-busy");
+        if (!this.disposed && currentRequest === this.requestId && this.grid) this.grid.removeAttribute("aria-busy");
       }
     }
 
@@ -2128,7 +1970,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
       else this.loadPreviewImage(image);
     }
 
-    scheduleMasonryLayout() {
+    scheduleMasonryLayoutLegacy() {
       if (this.masonryLayoutFrame || !this.grid) return;
       this.masonryLayoutFrame = requestAnimationFrame(() => {
         this.masonryLayoutFrame = null;
@@ -2410,7 +2252,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
      * 根因：纵向拉大不改变列数，而旧实现只有 `cols !== lastCols` 才重取 ⇒ 拉高永远不补图。
      * 与「自动收缩」方向相反但同样要克制：只在自适应张数模式、只在明显填不满、450ms 防抖、末批不再取。
      */
-    handleGridResize() {
+    handleGridResizeLegacy() {
       if (!this.grid) return;
       const { cols } = this.gridMetrics();
       const changed = this.lastCols && cols !== this.lastCols;
@@ -2516,7 +2358,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
      *
      * 返回是否**真的**追加到了新内容（false = 已到底 / 被守卫拦下 / 失败 ⇒ 调用方不必渲染）。
      */
-    async appendNextBatch() {
+    async appendNextBatchLegacy() {
       if (this.disposed || this.fillMoreBusy || this.fillMoreExhausted) return;
       if (this.settings.activeCategory) return;
       if (this.pixivDetail) return;
@@ -2721,7 +2563,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
      * 根因：补图原先只在 handleGridResize 里触发（列数变化 / 纵向拉大），首屏与翻页后
      * 即便明显没填满也无人过问，空白就一直留着。
      */
-    scheduleAutoFill() {
+    scheduleAutoFillLegacy() {
       if (this.autoFillTimer || this.disposed) return;
       // 无限滚动模式（2026-09-27）：整条自动补满链让位给 `scheduleScrollFill()` ——
       // 后者用**同一个判据**（内容没超出容器就继续加载）覆盖了"首屏填满"，而且能在
@@ -3814,283 +3656,94 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
     }
 
     currentQuery() {
-      const raw = this.queryWidget?.value || this.settings.lastQuery || "";
-      const f = this.settings.filters;
-      // 评分/收藏/随机排序不再默认附加时间窗（用户显式设置 age/天数时遵循用户选择）。
-      // 全库排序被 D站 拒绝时由后端自动降级附加时间窗重试（响应 warnings 会提示）。
-      const age = f.age || (f.ageDays ? `${f.ageDays}days` : "");
-      // ⚠️ age 必须带 < 前缀（D站 的 age:1day 是「恰好一天前」等值语义，会显示过期内容；< 才是近 N 天）
-      const ageToken = age ? `age:<${age}` : "";
-      const RATIO_TOKENS = { wide: "ratio:>1", tall: "ratio:<1", square: "ratio:>=0.9 ratio:<=1.1", ultrawide: "ratio:>=1.5" };
-      const FILETYPE_TOKENS = { static: "-filetype:gif -filetype:mp4 -filetype:webm", gif: "filetype:gif", video: "filetype:mp4" };
-      const parts = [
-        normalizeTags(stripFilterOwnedTokens(raw)),
-        this.settings.rating.length ? `rating:${this.settings.rating.join(",")}` : "",
-        ageToken,
-        f.minScore ? `score:>${f.minScore}` : "",
-        f.minFavs ? `favcount:>${f.minFavs}` : "",
-        f.minMpixels ? `mpixels:>=${f.minMpixels}` : "",
-        RATIO_TOKENS[f.ratio] || "",
-        FILETYPE_TOKENS[f.filetype] || "",
-        f.order ? `order:${f.order}` : "",
-      ];
-      // 排除标签不拼进查询词（D站 把 -tag 当普通标签计数，会占搜索槽位）：
-      // 改为拿到结果后本地过滤（见 search()），槽位零占用、可任意添加。
-      // 去重（不区分大小写）：用户可能把 rating:g / -filetype:mp4 也手打进搜索框，
-      // 与筛选面板产生的同名 token 撞车 → 查询词里出现两份，白白多占计数槽。
-      const seen = new Set();
-      const deduped = [];
-      for (const part of parts) {
-        if (!part) continue;
-        const key = String(part).toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        deduped.push(part);
-      }
-      return deduped.join(" ");
+      return composeDanbooruQuery({
+        input: this.queryWidget?.value || this.settings.lastQuery || "",
+        ratings: this.settings.rating,
+        filters: this.settings.filters,
+      });
     }
 
     tagLimit() {
       // 计数标签上限：匿名/Member=2，Gold+=6。后端按账号等级动态返回（/account、/posts 响应带 tag_limit），
       // 前端优先用后端值，拉取前用保守默认 2。
-      return typeof this.tagLimitValue === "number" && this.tagLimitValue > 0 ? this.tagLimitValue : DANBOORU_TAG_LIMIT;
+      return effectiveDanbooruTagLimit(this.tagLimitValue);
     }
 
-    async readSearchResponse(response) {
-      // response.json() 遇到 BOM、代理残片或拼接响应时只给出模糊的 JSON.parse
-      // 错误，且无法区分“接口返回异常”和“搜索没有结果”。先完整读取文本，
-      // 清理 UTF-8 BOM，并把可重试的协议错误标记给 search()。
-      const body = (await response.text()).replace(/^\uFEFF/, "").trim();
-      try {
-        return JSON.parse(body);
-      } catch {
-        const error = new Error("D站接口返回了无效的 JSON 响应");
-        error.name = "InvalidJSONResponseError";
-        error.httpStatus = response.status;
-        error.contentType = response.headers.get("content-type") || "";
-        throw error;
-      }
+    /** Capture only request inputs; network work never receives this widget. */
+    danbooruSearchSnapshot() {
+      const tier = RANDOM_QUALITY_TIERS.find((entry) => entry.id === this.settings.randomQuality);
+      return {
+        input: String(this.queryWidget?.value ?? this.settings.lastQuery ?? ""),
+        ratings: [...(this.settings.rating || [])],
+        filters: { ...(this.settings.filters || {}) },
+        favoritesOnly: !!this.settings.favoritesOnly,
+        favoriteQuery: String(this.favoriteMeta?.query_tag || ""),
+        registered: this.registered,
+        tagLimit: this.tagLimitValue,
+        excludeTags: [...(this.settings.excludeTags || [])],
+        randomTier: tier ? { label: tier.label, hint: tier.hint } : null,
+        diffRootId: this.diffContext?.rootId || null,
+      };
     }
 
-    async search({ resetPage = false, force = false, skipFuzzy = false, retryCount = 0, append = false } = {}) {
-      // ★ 一旦发起搜索，联想浮层就必须收起 —— 这是**所有**搜索入口（回车 / 搜索按钮 /
-      //   点候选词 / 模糊纠错重搜）的统一收敛点。
-      //   用户 2026-09-20 实报"点了上面的按钮搜索之后（联想）会重新出现"：点候选走的是
-      //   `setQuery()`，而它在输入框仍聚焦时会再排一次联想（180ms 后弹）—— 在这里清掉
-      //   定时器即可（hideSuggestions 内部会 clearTimeout）。
+    /** Difference views commit the same page result as the ordinary controller. */
+    async searchDifference({ resetPage = false, force = false, skipFuzzy = false, append = false } = {}) {
       this.hideSuggestions();
-      // 多源画廊：非 D站 走统一画廊协议 /anima/gallery/{source}/search（cursor 分页）。
-      // ⚠️ D站 分支（下面这一整段）保持原样：路由 /anima/danbooru/posts、page 分页、
-      //    计数标签上限、模糊纠错、排除标签本地过滤全部不动。
-      if (!this.isDanbooruSource()) return this.searchGallerySource({ resetPage, retryCount, append });
-      // build() 中的初次搜索与 refreshAccount 并发时，不能先按默认匿名上限移除排序。
-      // 等待一次账号状态后，后续搜索只会 await 一个已完成的 Promise，不增加网络请求。
-      if (this.accountReady) {
-        try { await this.accountReady; } catch {}
-      }
-      // 分类浏览模式下发起新搜索 = 回到普通搜索视图（分类只作用于本地浏览，搜索条件与分类无关）
-      if (this.settings.activeCategory) {
-        this.settings.activeCategory = "";
-        this.saveSettings();
-        this.filterControls?.refresh();
-      }
-      this._searchSnapshot = null; // 新搜索后 posts 即将被覆盖，分类快照失效
-      // 切到 D站 取数 = 离开 P站 作品详情（两种上下文分属不同图源，留着会互相打架）
-      this.pixivDetail = null;
-      this.pixivPageGroups = null;
-      this.syncReturnButton();
-      this._droppedOrder = false;
-      this._randomPageShuffle = false;
-      // 工作流恢复/外部修改时，确保输入框与序列化 widget 一致（widget 是权威值）
-      if (this.queryInput && this.queryWidget && String(this.queryInput.value) !== String(this.queryWidget.value ?? "")) {
-        this.queryInput.value = this.queryWidget.value ?? "";
-      }
-      let query = this.currentQuery();
-      // 「我的收藏」模式（2026-09-28）：`ordfav:<账号>` 拼在**最前面**，而**不写进搜索框** ——
-      // 用户的筛选词原样保留，两者一起生效（D站 侧 ordfav 与普通标签可以并用，各占一个计数槽）。
-      // 刻意放在 `countedSearchTerms()` **之前**：它确实占槽，必须参与限额判断，
-      // 否则会静默超限（服务端 400）而前端毫不知情。
-      if (this.settings.favoritesOnly) {
-        const favTag = String(this.favoriteMeta?.query_tag || "");
-        if (favTag) query = query ? `${favTag} ${query}` : favTag;
-      }
-      if (!query) {
-        this.posts = [];
-        this.renderPosts();
-        this.setStatus("输入 Danbooru 标签后点“搜索”。例如：1girl solo");
-        return;
-      }
-      let counted = countedSearchTerms(query);
-      // 随机排序占一个 D站 搜索槽。槽位不足时只去掉上游排序，
-      // 保留全部标签与筛选，并在返回页内打乱；绝不改成全库随机。
-      if (counted > this.tagLimit() && this.settings.filters.order === "random") {
-        this._randomPageShuffle = true;
-        query = query.split(/\s+/).filter((t) => !/^order:random$/i.test(t)).join(" ");
-        counted = countedSearchTerms(query);
-      }
-      if (counted > this.tagLimit() && this.settings.filters.order && !this._randomPageShuffle) {
-        // 匿名搜索最多 2 个计数标签，而排序会占 1 个；内容标签/分级/筛选才是用户意图，
-        // 因此超限时优先保留这些、只自动降级排序（改用默认最新）而不是死路报错。
-        const droppedOrder = this.settings.filters.order;
-        this.settings.filters.order = "";
-        this.saveSettings();
-        this.filterControls.refresh();
-        this._droppedOrder = droppedOrder;
-        query = this.currentQuery();
-        counted = countedSearchTerms(query);
-      }
-      if (counted > this.tagLimit()) {
-        const hint = this.registered
-          ? `D站 登录账号当前最多 ${this.tagLimit()} 个计数标签（按等级：Member=2，Gold=6）。请减少普通标签，或改用评级/时间/评分/收藏筛选。`
-          : `D站 匿名搜索最多 ${this.tagLimit()} 个计数标签（普通标签与排序各占 1 个）。登录后上限按账号等级提升：Member 仍为 2，Gold 为 6。`;
-        this.setStatus(hint, "error");
-        return;
-      }
-      if (resetPage) this.page = 1;
-      // 新一轮搜索（点搜索/换筛选/列数变化）＝ 新结果集 → 重新允许「拉大补图」与「自动补满」
-      if (resetPage) {
-        this.fillMoreExhausted = false;
-        this.autoFillRounds = 0;
-        this._autoFillTarget = 0;   // 新结果集 = 新目标，重新按当前尺寸评估
-      }
-      this.settings.lastQuery = normalizeTags(this.queryWidget?.value || "");
-      // 高频路径：只落 localStorage。这里改的是"本机搜索框回填值"，与画布显示无关，
-      // 不该写 properties、更不该 setDirtyCanvas 标脏整块画布（见 saveUiState 注释）。
-      this.saveUiState();
-      this.setQuery(this.settings.lastQuery);
-
       this.controller?.abort();
-      this.controller = new AbortController();
-      const requestController = this.controller;
-      const currentRequest = ++this.requestId;
-      // 45s 兜底超时标记（声明在 try 外：catch 需要读它；若声明在 try 内，
-      // 快速切换筛选触发 abort 竞态时 catch 会抛 ReferenceError 导致状态栏卡死）
-      let timedOut = false;
-      this.setStatus(`正在搜索：${query}`);
-      if (this.grid) this.grid.setAttribute("aria-busy", "true");
+      const controller = new AbortController();
+      this.controller = controller;
+      const requestId = ++this.requestId;
+      const current = () => !this.disposed && !controller.signal.aborted && requestId === this.requestId;
+      const submitted = String(this.queryWidget?.value ?? this.settings.lastQuery ?? "");
+      const page = resetPage ? 1 : Math.max(1, Number(this.page) || 1);
+      this.setStatus(`正在搜索：${submitted}`);
+      this.grid?.setAttribute("aria-busy", "true");
       try {
-        const parameters = new URLSearchParams({
-          tags: query,
-          page: String(this.page),
-          // 自适应模式：按节点尺寸算出「刚好填满」的张数（上限=后端 MAX_PAGE_SIZE=48）
-          limit: String(this.resolveLimit()),
-          force: force ? "1" : "0",
-        });
-        const timer = setTimeout(() => { timedOut = true; requestController.abort(); }, 45000);
-        let response, data;
-        try {
-          response = await fetch(`/anima/danbooru/posts?${parameters}`, { signal: requestController.signal });
-          data = await this.readSearchResponse(response);
-        } finally {
-          clearTimeout(timer);
+        const result = await fetchGalleryPage(this, {
+          source: DANBOORU_SOURCE_ID, query: submitted, page, limit: this.resolveLimit(),
+          force, allowFuzzy: !skipFuzzy,
+        }, controller.signal);
+        if (!current()) return;
+        this.page = page;
+        this.posts = result.posts;
+        this.settings.filters = result.settings.filters;
+        this.settings.lastQuery = result.query;
+        if (String(this.queryWidget?.value ?? "") === submitted && (!this.queryInput || String(this.queryInput.value) === submitted)) this.setQuery(result.query);
+        if (typeof result.account?.registered === "boolean") this.registered = result.account.registered;
+        if (typeof result.account?.tag_limit === "number") this.tagLimitValue = result.account.tag_limit;
+        this.pixivDetail = null;
+        this.pixivPageGroups = null;
+        this._searchSnapshot = null;
+        if (this.settings.activeCategory) this.settings.activeCategory = "";
+        if (resetPage) {
+          this.fillMoreExhausted = false;
+          this.autoFillRounds = 0;
+          this._autoFillTarget = 0;
         }
-        if (typeof data?.registered === "boolean") this.registered = data.registered;
-        if (typeof data?.tag_limit === "number") this.tagLimitValue = data.tag_limit;
-        if (currentRequest !== this.requestId) return;
-        if (!response.ok) {
-          const error = new Error(data?.error || `HTTP ${response.status}`);
-          error.name = "DanbooruSearchHTTPError";
-          error.httpStatus = response.status;
-          throw error;
-        }
-        const rawPosts = Array.isArray(data.posts) ? data.posts : [];
-        // 本地排除过滤：排除标签不占 D站 计数槽（查询不含 -tag），拿到结果后按 tag_string 过滤
-        const excludeTags = this.settings.excludeTags || [];
-        let excludedCount = 0;
-        let visiblePosts = rawPosts;
-        if (excludeTags.length) {
-          const tagSet = new Set(excludeTags);
-          const filtered = [];
-          for (const post of rawPosts) {
-            const postTags = String(post?.tag_string || "").split(" ");
-            if (postTags.some((t) => tagSet.has(t))) excludedCount += 1;
-            else filtered.push(post);
-          }
-          visiblePosts = filtered;
-        }
-        // D站 偶尔会返回已删除/失效帖子，只剩元数据而没有任何图片 URL。
-        // 不把它计入“可显示图片”，避免状态写 24 张、DOM 实际只有 23 张。
-        let unavailableCount = 0;
-        this.posts = visiblePosts.filter((post) => {
-          if (this.postImageUrl(post)) return true;
-          unavailableCount += 1;
-          return false;
-        });
-        if (this._randomPageShuffle) {
-          for (let i = this.posts.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [this.posts[i], this.posts[j]] = [this.posts[j], this.posts[i]];
-          }
-        }
-        if (!rawPosts.length) {
-          this.fetchSuggestions(this.queryWidget?.value || query, true);
-          // 精确搜索无结果 → 模糊纠错（把近似标签替换成真实标签）自动重搜一次
-          if (!skipFuzzy && this.settings.filters.order !== "random") await this.fuzzyRetry(query, append);
-        } else if (!this.posts.length) {
-          this.setStatus(`该页 ${rawPosts.length} 张全部被排除标签过滤（${excludeTags.join("、")}），请调整排除标签`, "error");
-        }
-        // 追加模式（无限滚动）：与 searchGallerySource 同一条约定 —— 不在这里渲染
-        //（理由见那里的注释：此刻 posts 只有新批，渲染 = 整网格换成新批 + 闪黑 + scrollTop 归零）
+        this.saveUiState();
+        this.filterControls?.refresh();
+        this.syncReturnButton();
         if (!append) {
           this.renderPosts();
           this.renderPagination();
         }
-        this.rememberRandomResults(query);
-        // 差分浏览时状态栏明说当前是差分组，而不是让用户以为搜索词被悄悄改了
-        const source = this.diffContext ? `差分组 parent:${this.diffContext.rootId}` : (data.cached ? "缓存" : "D站");
-        const notices = [];
-        if (Array.isArray(data.warnings) && data.warnings.length) notices.push(...data.warnings.map(String));
-        // 差分组只剩根帖自己 = 子帖已删除/隐藏，别让用户以为「差分」按钮坏了
-        if (this.diffContext && this.posts.length <= 1) notices.push("未找到该作品的可显示差分（子帖可能已删除或隐藏）");
-        if (unavailableCount) notices.push(`${unavailableCount} 张原图已失效，已跳过`);
-        if (this._droppedOrder) {
-          const limitHint = this.registered
-            ? `登录账号当前最多 ${this.tagLimit()} 个计数标签`
-            : `匿名最多 ${this.tagLimit()} 个计数标签`;
-          notices.push(`已自动移除「${ORDER_LABELS[this._droppedOrder] || this._droppedOrder}」排序，按最新显示（${limitHint}）`);
-        }
-        const exclNotice = excludeTags.length ? `已排除 ${excludeTags.map(displayExcludeTag).join("、")} ${excludedCount} 张` : "";
-        const tier = this.settings.randomQuality ? RANDOM_QUALITY_TIERS.find((t) => t.id === this.settings.randomQuality) : null;
-        if (tier) notices.push(`${tier.label}（${tier.hint}）`);
-        if (this._randomPageShuffle) notices.push(`本页随机：已保留全部标签（D站 当前限 ${this.tagLimit()} 个搜索槽，随机排序另占 1 槽）`);
-        this.setStatus(`${source}：${this.posts.length} 张 · 第 ${this.page} 页` + (exclNotice ? `（${exclNotice}）` : "") + (notices.length ? `（${notices.join("；")}）` : ""));
+        this.rememberRandomResults(result.searchQuery);
+        this.setStatus(result.status);
+        if (!result.posts.length) this.fetchSuggestions(result.query, true);
       } catch (error) {
-        if (timedOut) {
-          this.posts = [];
-          if (append) {
-            // 追加模式：当失败抛出（理由同 searchGallerySource 里那条 —— 清空 posts 后直接 return
-            // 会被 appendNextBatch 读成「空页 ⇒ 到底了」，一次网络抖动就永久停手）
-            const timeoutError = new Error("搜索超时（45 秒）：D站 或代理网络不稳定，已自动多路重试仍失败。请检查 Clash 节点后重试");
-            timeoutError.name = "GallerySearchTimeoutError";
-            throw timeoutError;
-          }
-          this.renderPosts();
-          this.setStatus("搜索超时（45 秒）：D站 或代理网络不稳定，已自动多路重试仍失败。请检查 Clash 节点后重试", "error");
-          return;
-        }
-        if (error?.name === "AbortError") return;
-        if (currentRequest !== this.requestId) return;
-        const retryable = error?.name === "InvalidJSONResponseError"
-          || error?.name === "TypeError"
-          || [502, 503, 504].includes(Number(error?.httpStatus));
-        if (retryable && retryCount < 2) {
-          const attempt = retryCount + 1;
-          this.setStatus(`首次搜索响应异常，正在自动重试（${attempt}/2）…`);
-          await new Promise((resolve) => setTimeout(resolve, 250 + retryCount * 500));
-          if (currentRequest !== this.requestId) return;
-          return this.search({ resetPage: false, force, skipFuzzy, retryCount: attempt, append });
-        }
-        if (append) throw error;   // 追加模式：交给 appendNextBatch 的 catch 恢复（同上）
-        this.posts = [];
-        this.renderPosts();
-        this.setStatus(`搜索失败：${error?.message || "未知错误"}`, "error");
+        if (!current() || error?.name === "AbortError") return;
+        if (append) throw error;
+        this.setStatus(`搜索失败，已保留原图片和位置：${error?.message || "未知错误"}`, "error");
       } finally {
-        if (currentRequest === this.requestId && this.grid) this.grid.removeAttribute("aria-busy");
+        if (current()) {
+          this.grid?.removeAttribute("aria-busy");
+          this.controller = null;
+        }
       }
     }
     // 分类切换 = 本地分类浏览模式：不再过滤当前搜索页，而是按 id 从 D站 拉取
     // 该分类全部已归类图片（id 是免费 metatag，不占计数槽；一次最多 48 个 id，分批合取）。
-    async applyActiveCategory(catId) {
+    async applyActiveCategoryLegacy(catId) {
       // 分类浏览与 P站 作品详情是两种**互斥**的"展示层覆盖"：同时开着会让网格与分页条各说各话
       //（分页徽章写"本地分类浏览"、网格却是某个作品的全部页）。进分类就先退出作品详情（问题 2）。
       this.pixivDetail = null;
@@ -4254,20 +3907,6 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
       }
     }
 
-    // 模糊纠错后自动重搜（仅执行一次；此后用户再点搜索会走新的精确词）
-    // `append` 原样透传：追加链（无限滚动）里模糊重搜同样不能中途渲染网格
-    async fuzzyRetry(query, append = false) {
-      try {
-        const fz = await (await fetch(`/anima/danbooru/fuzzy?tags=${encodeURIComponent(query)}`)).json();
-        if (fz && fz.changed && fz.corrected && fz.corrected !== query) {
-          const note = Object.entries(fz.replacements || {}).map(([a, b]) => `${a} → ${b}`).join("，");
-          this.setQuery(fz.corrected);
-          this.setStatus(`模糊匹配：${note}，已自动换用完整标签搜索`);
-          return this.search({ resetPage: false, force: false, skipFuzzy: true, append });
-        }
-      } catch { /* 模糊接口失败则不打扰，保留原有“你是不是想搜”提示 */ }
-    }
-
     /**
      * 喂给**节点执行**的图片 URL —— 设置里的「取图尺寸（P站）」在这里生效。
      *
@@ -4307,18 +3946,15 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
       };
     }
 
-    selectionKey(card) {
-      return String(card?.dataset?.postId || card?.dataset?.imageUrl || "").trim();
-    }
 
-    rememberCardSelection(card, selected) {
+    rememberCardSelectionLegacy(card, selected) {
       const key = this.selectionKey(card);
       if (!key) return;
       this.selectionOrder = this.selectionOrder.filter((item) => item !== key);
       if (selected) this.selectionOrder.push(key);
     }
 
-    setLoadedCardsSelected(selected) {
+    setLoadedCardsSelectedLegacy(selected) {
       if (!this.grid) return;
       for (const card of this.grid.querySelectorAll(".adg-card")) {
         if (card.classList.contains("is-selected") === selected) continue;
@@ -4330,7 +3966,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
       this.updateSelection();
     }
 
-    selectedGallerySelections() {
+    selectedGallerySelectionsLegacy() {
       if (!this.grid) return [];
       const selectedCards = [...this.grid.querySelectorAll(".adg-card.is-selected")];
       const cardsByKey = new Map();
@@ -5119,26 +4755,9 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
      * 单页作品（无 illust_id）与其它图源**原样返回**（零影响）。
      */
     foldPixivPages(posts) {
-      const groups = new Map();
-      for (const post of posts) {
-        const illustId = String(post?.meta?.illust_id || "");
-        if (!illustId) continue;
-        const bucket = groups.get(illustId);
-        if (bucket) bucket.push(post);
-        else groups.set(illustId, [post]);
-      }
-      this.pixivPageGroups = groups.size ? groups : null;
-      if (!groups.size) return posts;
-      const seen = new Set();
-      const cards = [];
-      for (const post of posts) {
-        const illustId = String(post?.meta?.illust_id || "");
-        if (!illustId) { cards.push(post); continue; }   // 单页作品：没有 illust_id，原样出卡
-        if (seen.has(illustId)) continue;                 // 同一作品的第 2..N 页：不再单独出卡
-        seen.add(illustId);
-        cards.push(post);                                 // 适配器按 page 升序 push ⇒ 首条就是第一页
-      }
-      return cards;
+      const folded = GallerySourcePage.foldGalleryPosts(posts);
+      this.pixivPageGroups = folded.groups;
+      return folded.posts;
     }
 
     /** 当前该渲染哪些卡片：P站「全部页」详情模式下是单个作品的全部页，否则是搜索结果本身 */
@@ -5171,14 +4790,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
 
     /** 池内关键词过滤：与后端 `_item_matches` 同源语义（prompt / 负面词 / 作者 三处「全词命中」AND） */
     poolFilterPosts(posts) {
-      const terms = String(this.gallerySourceQuery() || "").toLowerCase().replace(/，/g, " ").split(/\s+/).filter(Boolean);
-      if (!terms.length) return posts;
-      return posts.filter((post) => {
-        const meta = post?.meta && typeof post.meta === "object" ? post.meta : {};
-        const haystack = [post?.prompt, post?.negative_prompt, meta.username]
-          .map((value) => String(value || "")).join(" ").toLowerCase();
-        return terms.every((term) => haystack.includes(term));
-      });
+      return GallerySourcePage.filterCivitaiPoolPosts(posts, this.gallerySourceQuery());
     }
 
     /** 池内已被关键词筛出的条数（分页与状态栏都用它） */
@@ -5250,15 +4862,19 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
      */
     async stepPoolPage(delta) {
       const pool = this.sourcePool;
-      if (!pool) return;
+      if (this.disposed || !pool) return;
       const next = (this.poolPageIndex || 0) + (delta > 0 ? 1 : -1);
       if (next < 0) return;
       const size = this.poolPageSize();
       // ⚠️ 补池判据必须用**过滤后**的条数，不能用池内总条数：搜索态下池里也许有 200 条，
       //    但匹配的只有 20 条 —— 按池总长判断会以为"还有得翻"，于是翻出空白页。
       if (delta > 0 && (next + 1) * size > this.poolFilteredCount() && !pool.exhausted) {
-        await this.growPool({ target: size });
+        const pending = this.growPool({ target: size });
+        const requestId = this.requestId;
+        const grown = await pending;
+        if (!grown || requestId !== this.requestId) return;
       }
+      if (this.disposed || this.sourcePool !== pool || !this.poolMode()) return;
       this.poolPageIndex = next;
       this.applyPoolView();
       this.setStatus(this.poolStatusText());
@@ -5268,19 +4884,24 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
      * 补池：从池尾游标继续往后拉 `target` 条（浏览态传「一页数量」，搜索态「加载更多」传设置档位）。
      * 刻意复用 `gallerySearchParams` 构参 —— 上游筛选（排序 / NSFW / 时间 / 作者）与首批完全一致。
      */
-    async growPool({ target = 0 } = {}) {
+    async growPoolLegacy({ target = 0 } = {}) {
       const pool = this.sourcePool;
-      if (!this.poolMode() || !pool || !pool.cursor) return false;
+      if (this.disposed || !this.poolMode() || !pool || !pool.cursor) return false;
       const sourceId = "civitai";
       const amount = Math.max(1, Number(target) || this.settings.civitaiPool.target);
       const parameters = this.gallerySearchParams(sourceId, this.gallerySourceQuery());
       parameters.set("cursor", pool.cursor);      // 从池尾继续，而不是从当前展示页
       parameters.set("pool_target", String(amount));
+      this.controller?.abort();
+      const controller = new AbortController();
+      this.controller = controller;
+      const requestId = ++this.requestId;
+      const current = () => !this.disposed && !controller.signal.aborted
+        && requestId === this.requestId && this.sourcePool === pool;
       try {
         this.setStatus(`正在后台加载 ${amount} 条…`);
-        const response = await fetch(`/anima/gallery/${encodeURIComponent(sourceId)}/search?${parameters}`);
-        const data = await this.readGalleryResponse(response);
-        if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+        const { data } = await this.gallerySourceRequest(sourceId, parameters, controller.signal);
+        if (!current()) return false;
         const items = Array.isArray(data?.items) ? data.items : [];
         const incoming = items
           .map((item) => this.galleryItemToPost(item, sourceId))
@@ -5289,8 +4910,10 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
         this.accumulatePool(incoming, { nextCursor });
         return true;
       } catch (error) {
-        this.setStatus(`后台加载失败：${error?.message || "未知错误"}`, "error");
+        if (current() && error?.name !== "AbortError") this.setStatus(`后台加载失败：${error?.message || "未知错误"}`, "error");
         return false;
+      } finally {
+        if (this.controller === controller) this.controller = null;
       }
     }
 
@@ -5299,7 +4922,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
      * 为什么需要它：池模式下改关键词**不会**重建池（那是本地筛，正是省请求的地方），
      * 于是「我想重新取一遍」就没有入口了 —— 排序/NSFW/时间/作者变化会自动重建，其余情况点这个按钮。
      */
-    async rebuildPool() {
+    async rebuildPoolLegacy() {
       if (!this.poolMode()) return;
       this.sourcePool = null;
       this.poolPageIndex = 0;
@@ -5453,7 +5076,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
      * 进入 P站 作品详情 = 展开该作品的全部页，等价于 Pixiv 网页点进 /artworks/<id>。
      * **只在展示层覆盖**（不动 this.posts / 光标栈 / 页码），所以「← 返回」不需要重新请求。
      */
-    openPixivPages(post) {
+    openPixivPagesLegacy(post) {
       const illustId = String(post?.meta?.illust_id || "");
       const pages = this.pixivPageGroups?.get(illustId);
       if (!illustId || !pages?.length) return;
@@ -5469,7 +5092,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
     }
 
     /** 离开 P站 作品详情：只收状态 + 重渲染（搜索结果本身从未被动过，不必重搜） */
-    closePixivPages() {
+    closePixivPagesLegacy() {
       if (!this.pixivDetail) return;
       // 用后即清：下一次进详情会重新抓，留着旧锚点只会在别的路径上误用
       const anchor = this.pixivReturnAnchor;
@@ -5599,7 +5222,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
       return false;
     }
 
-    renderPosts({ preserveScroll = false, appendOnly = false } = {}) {
+    renderPostsLegacy({ preserveScroll = false, appendOnly = false } = {}) {
       if (!this.grid) return;
       // 滚动位置：数值兜底（`keepScrollTop`）+ 锚点（`scrollAnchor`）。
       // ⚠️ **两者都必须在清空 / 删卡之前取**：全量路径的 replaceChildren() 会把 scrollTop 归零，
@@ -6032,7 +5655,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
       bar.append(top);
     }
 
-    renderPagination() {
+    renderPaginationLegacy() {
       if (!this.pagination) return;
       // 无限滚动模式（2026-09-27）：分页位换成「已加载 N 张 · 继续滚动加载 / 已到底」。
       // ⚠️ 早退放在**最前面**，下面那套页码 / 游标批次条**原文一字不动** —— 设置里切回
@@ -6100,7 +5723,11 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
           more.title = `再往后加载 ${this.settings.civitaiPool.target} 条，然后在本池内重新筛选`;
           more.onclick = async () => {
             more.disabled = true;
-            const ok = await this.growPool({ target: this.settings.civitaiPool.target });
+            const pool = this.sourcePool;
+            const pending = this.growPool({ target: this.settings.civitaiPool.target });
+            const requestId = this.requestId;
+            const ok = await pending;
+            if (this.disposed || this.sourcePool !== pool || requestId !== this.requestId) return;
             if (ok) {
               this.applyPoolView();
               this.setStatus(this.poolStatusText());
@@ -9047,7 +8674,7 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
       return root;
     }
 
-    dispose() {
+    disposeLegacy() {
       this.disposed = true;
       _danQueryFocusTargets.delete(this);
       this.controller?.abort();
@@ -9112,7 +8739,6 @@ import { booruTokenAt, completeBooruToken, installGalleryTagSearch } from "./ani
     document.head.append(link);
   }
 
-  installGalleryBrowser(DanbooruGalleryUI, app);
   installGalleryTagSearch(DanbooruGalleryUI);
 
   app.registerExtension({

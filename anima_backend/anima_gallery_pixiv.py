@@ -261,6 +261,8 @@ _sni_ip_cache: dict[str, tuple[float, str]] = {}
 _sni_lock = threading.Lock()
 _sni_active = False  # 已经装过绕行适配器（进程内一次即可）
 _sni_installed_hosts: set[str] = set()
+_sni_routes: dict[str, str] = {}
+_sni_generation = 0
 
 
 def _sni_mode() -> str:
@@ -365,8 +367,9 @@ def _resolve_host_ip(host: str) -> str:
 
 def _install_sni_bypass(reason: str) -> bool:
     """给 session 装上 SNI 绕行适配器；解析不到任何 IP 时**明确报错**（绝不静默直连）。"""
-    global _sni_active
-    hosts = [h for h in SNI_BYPASS_HOSTS if h not in _sni_installed_hosts]
+    global _sni_active, _sni_generation
+    with _sni_lock:
+        hosts = [h for h in SNI_BYPASS_HOSTS if h not in _sni_installed_hosts]
     if not hosts:
         return _sni_active
     ip_map: dict[str, str] = {}
@@ -386,14 +389,10 @@ def _install_sni_bypass(reason: str) -> bool:
         )
         return False
     with _sni_lock:
-        _pixiv_session.mount("https://", _SNIHostAdapter(ip_map, max_retries=0))
+        _sni_routes.update(ip_map)
         _sni_installed_hosts.update(ip_map)
+        _sni_generation += 1
         _sni_active = True
-    # 池里可能已有「用域名直连失败」的连接，换适配器后清一次，避免复用旧连接
-    try:
-        _pixiv_session.adapters["https://"].poolmanager.clear()  # type: ignore[attr-defined]
-    except Exception:
-        pass
     detail = ", ".join(f"{host}→{ip}" for host, ip in ip_map.items())
     print(f"[P站画廊·SNI] 已启用 SNI 绕行（触发原因：{reason}）｜{detail}", flush=True)
     return True
@@ -610,15 +609,50 @@ def _accept_language() -> str:
 
 
 # ---------- 会话与请求 ----------
-_pixiv_session = requests.Session()
-_pixiv_session.headers.update({
+try:
+    from .services.thread_http import ThreadHttp, install as _install_http
+except ImportError:
+    from services.thread_http import ThreadHttp, install as _install_http
+
+
+def _configure_pixiv_session(session):
+    """Replace only this worker's adapter when the shared SNI policy changes."""
+    with _sni_lock:
+        generation, routes = _sni_generation, dict(_sni_routes)
+    if routes and getattr(session, "_anima_sni_generation", None) != generation:
+        previous = getattr(session, "adapters", {}).get("https://")
+        session.mount("https://", _SNIHostAdapter(routes, max_retries=0))
+        session._anima_sni_generation = generation
+        if previous is not None:
+            previous.close()
+
+
+_pixiv_http = ThreadHttp({
     "User-Agent": PIXIV_USER_AGENT,
     "App-OS": "android",
     "App-OS-Version": "11",
     "App-Version": PIXIV_APP_VERSION,
     "Accept-Language": _accept_language(),
     "Referer": PIXIV_REFERER,
-})
+}, session_configurer=_configure_pixiv_session)
+_route_lock = threading.Lock()
+_last_route = {}
+
+
+def install_resources(app):
+    """Bind Pixiv worker pools to their independent stable app slot."""
+    _install_http(app, _pixiv_http, namespace="pixiv")
+
+
+def _route_snapshot():
+    with _route_lock:
+        return dict(_last_route)
+
+
+def _record_route(route):
+    global _last_route
+    with _route_lock:
+        _last_route = dict(route)
 
 _image_proxy_semaphore: asyncio.Semaphore | None = None
 
@@ -631,7 +665,7 @@ def _get_image_proxy_semaphore() -> asyncio.Semaphore:
     return _image_proxy_semaphore
 
 
-def _apply_pixiv_proxy() -> None:
+def _pixiv_route() -> dict:
     """每次请求前按当前环境实时解析代理（Clash 开关/换端口都能热跟随）。"""
     candidates = _proxy_candidates()
     if candidates:
@@ -643,10 +677,8 @@ def _apply_pixiv_proxy() -> None:
             alive = [False] * len(servers)
         for proxies, ok in zip(candidates, alive):
             if ok:
-                _pixiv_session.proxies.clear()
-                _pixiv_session.proxies.update(proxies)
-                return
-    _pixiv_session.proxies.clear()
+                return dict(proxies)
+    return {}
 
 
 def _api_headers(*, token: str = "", json_body: bool = False) -> dict[str, str]:
@@ -678,20 +710,17 @@ def _pixiv_request(
 
     失败路径必须**显式抛错**（绝不因为网络问题静默返回空结果）：调用方据此回可读错误。
     """
-    _apply_pixiv_proxy()
+    route = _pixiv_route()
+    _record_route(route)
     try:
-        return _pixiv_session.request(method, url, params=params, data=data, headers=headers, timeout=timeout)
+        return _pixiv_http.request(method, url, proxies=route, params=params, data=data, headers=headers, timeout=timeout)
     except (requests.Timeout, requests.ConnectionError) as first_error:
         host = (urlparse(url).hostname or "").lower()
         # 路径 ①：代理 ↔ 直连互切重试一次（与 D 站同策略）
-        if _pixiv_session.proxies:
-            _pixiv_session.proxies.clear()
-        else:
-            fallback = _fallback_proxy()
-            if fallback:
-                _pixiv_session.proxies.update(fallback)
+        retry_route = {} if route else dict(_fallback_proxy() or {})
+        _record_route(retry_route)
         try:
-            return _pixiv_session.request(method, url, params=params, data=data, headers=headers, timeout=timeout)
+            return _pixiv_http.request(method, url, proxies=retry_route, params=params, data=data, headers=headers, timeout=timeout)
         except (requests.Timeout, requests.ConnectionError) as second_error:
             # 路径 ②：SNI 绕行（解析 IP + 覆写 Host/SNI）。auto 模式下只在这里启用。
             mode = _sni_mode()
@@ -699,8 +728,8 @@ def _pixiv_request(
                 reason = f"{type(second_error).__name__}: {str(second_error)[:120]}"
                 if _install_sni_bypass(reason):
                     try:
-                        return _pixiv_session.request(
-                            method, url, params=params, data=data, headers=headers, timeout=timeout
+                        return _pixiv_http.request(
+                            method, url, proxies=retry_route, params=params, data=data, headers=headers, timeout=timeout
                         )
                     except (requests.Timeout, requests.ConnectionError) as sni_error:
                         raise PixivError(
@@ -1373,10 +1402,12 @@ def tag_translation(tag: str) -> dict[str, str]:
         # ⚠️ 刻意**不走 `_pixiv_request`**：它每次调用都会跑一遍代理活性探测
         #    （6 个候选端口 × 0.5s 超时）。本机是 TUN 模式、不监听本地代理端口，
         #    实测**每次白花 513ms**；而一次联想要发 11 个请求（1 次 cps + 10 次补翻译），
-        #    只有第一个请求需要选路 —— 补翻译这 10 个直接复用会话里已配好的代理。
+        #    只有第一个请求需要选路 —— 补翻译直接复制最近一次选路结果，
+        #    作为本次请求参数交给工作线程自己的连接池。
         #    代价：补翻译不再享受「代理中途挂掉自动切换」，但它本就允许失败（见调用方）。
-        response = _pixiv_session.get(
+        response = _pixiv_http.request("GET",
             PIXIV_TAG_INFO_URL.format(tag=quote(word, safe="")),
+            proxies=_route_snapshot(),
             headers={
                 "User-Agent": PIXIV_WEB_USER_AGENT,
                 "Accept": "application/json, text/plain, */*",
@@ -2004,7 +2035,7 @@ async def anima_gallery_pixiv_diag(request: web.Request) -> web.Response:
         "proxy_config": _mask_proxy_url(PIXIV_PROXY_CONFIG),
         "resolved_proxies": _mask_proxies(_resolve_pixiv_proxies()),
         "proxy_candidates": _mask_proxy_candidates(_proxy_candidates()),
-        "session_proxies": _mask_proxies(dict(_pixiv_session.proxies or {})),
+        "session_proxies": _mask_proxies(_route_snapshot()),
         "sni_mode": _sni_mode(),
         "sni_active": _sni_active,
         "sni_hosts": sorted(_sni_installed_hosts),

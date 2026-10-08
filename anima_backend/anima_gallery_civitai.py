@@ -35,9 +35,15 @@
 
 from __future__ import annotations
 
+try:
+    from .services.image_cache import image_cache
+except ImportError:
+    from services.image_cache import image_cache
+
 import asyncio
 import os
 import socket
+import threading
 import sys
 import time
 import urllib.request
@@ -214,16 +220,30 @@ def _resolve_civitai_proxies() -> dict[str, str] | None:
     return _fallback_proxy()
 
 
-_civitai_session = requests.Session()
-_civitai_session.headers.update(CIVITAI_HEADERS)
+try:
+    from .services.thread_http import ThreadHttp, install as _install_http
+except ImportError:
+    from services.thread_http import ThreadHttp, install as _install_http
+
+_civitai_http = ThreadHttp(CIVITAI_HEADERS)
+_route_lock = threading.Lock()
+_last_route = {}
 
 
-def _apply_civitai_proxy() -> None:
-    """每次请求前实时解析代理（用户中途开/关 Clash 不需要重启 ComfyUI）。"""
-    proxies = _resolve_civitai_proxies()
-    _civitai_session.proxies.clear()
-    if proxies:
-        _civitai_session.proxies.update(proxies)
+def install_resources(app):
+    """Bind Civitai worker pools to their independent stable app slot."""
+    _install_http(app, _civitai_http, namespace="civitai")
+
+
+def _route_snapshot():
+    with _route_lock:
+        return dict(_last_route)
+
+
+def _record_route(route):
+    global _last_route
+    with _route_lock:
+        _last_route = dict(route)
 
 
 def _friendly_civitai_error(error: requests.RequestException) -> str:
@@ -262,21 +282,14 @@ def _civitai_get_once(url: str, headers: dict[str, str], timeout: int,
     （当前走代理 → 试直连；当前直连 → 试探测到的兜底代理），再失败才抛出。
     connect 6s 快速失败，避免「一次请求白等 20s」。
     """
-    _apply_civitai_proxy()
+    route = dict(_resolve_civitai_proxies() or {})
+    _record_route(route)
     try:
-        return _civitai_session.get(url, params=params, headers=headers, timeout=(6, timeout))
+        return _civitai_http.request("GET", url, proxies=route, params=params, headers=headers, timeout=(6, timeout))
     except (requests.Timeout, requests.ConnectionError):
-        if _civitai_session.proxies:
-            _civitai_session.proxies.clear()  # 当前走代理 → 换直连
-        else:
-            fallback = _fallback_proxy()
-            if fallback:
-                _civitai_session.proxies.update(fallback)
-        try:
-            return _civitai_session.get(url, params=params, headers=headers, timeout=(6, timeout))
-        except (requests.Timeout, requests.ConnectionError):
-            _apply_civitai_proxy()  # 还原现场
-            raise
+        retry_route = {} if route else dict(_fallback_proxy() or {})
+        _record_route(retry_route)
+        return _civitai_http.request("GET", url, proxies=retry_route, params=params, headers=headers, timeout=(6, timeout))
 
 
 def _civitai_request_json(url: str, params: dict[str, Any], timeout: int = 20, *,
@@ -638,40 +651,6 @@ def _is_allowed_civitai_image_url(url: str) -> bool:
     return source_for_image_url(url) == CIVITAI_SOURCE_ID
 
 
-def _host_plugin_module() -> Any | None:
-    """惰性取插件入口模块（`__init__.py`）——用于复用它的图片字节缓存（条数+总字节双上限）。
-
-    独立运行（pytest / 探针）时没有这个模块，返回 None（此时不缓存，功能不受影响）。
-    """
-    package = __package__ or ""
-    for name in (package, "__init__"):
-        if not name:
-            continue
-        module = sys.modules.get(name)
-        if module is not None and hasattr(module, "_image_cache_store"):
-            return module
-    return None
-
-
-def _host_cached_image(url: str) -> tuple[bytes, str] | None:
-    module = _host_plugin_module()
-    if module is None:
-        return None
-    cache = getattr(module, "_IMAGE_CACHE", None)
-    if not isinstance(cache, dict):
-        return None
-    return cache.get(url)
-
-
-def _host_store_image(url: str, body: bytes, content_type: str) -> None:
-    module = _host_plugin_module()
-    if module is None:
-        return
-    store = getattr(module, "_image_cache_store", None)
-    if callable(store):
-        store(url, body, content_type)
-
-
 # ---------- 路由 ----------
 @_route_get("/anima/gallery/sources")
 async def anima_gallery_sources(request: web.Request) -> web.Response:
@@ -736,7 +715,7 @@ async def anima_gallery_civitai_image(request: web.Request) -> web.Response:
     if not _is_allowed_civitai_image_url(image_url):
         return web.json_response({"error": "只允许代理 civitai.com 域名的 HTTPS 图片"}, status=403)
 
-    cached = _host_cached_image(image_url)
+    cached = image_cache.get(image_url)
     if cached is not None:
         body, content_type = cached
         return web.Response(body=body, content_type=content_type,
@@ -751,7 +730,7 @@ async def anima_gallery_civitai_image(request: web.Request) -> web.Response:
         return web.json_response({"error": f"C站 图片代理失败：{error}"}, status=502)
     except RuntimeError as error:
         return web.json_response({"error": str(error)}, status=502)
-    _host_store_image(image_url, data, content_type)
+    image_cache.store(image_url, data, content_type)
     return web.Response(body=data, content_type=content_type,
                         headers={"Cache-Control": "public, max-age=86400"})
 
@@ -900,7 +879,7 @@ async def anima_gallery_civitai_diag(request: web.Request) -> web.Response:
                      for name, reason in adapter_status().items()},
         "key": {"configured": civitai_key_configured(), "masked": masked_civitai_key()},
         "resolved_proxies": _mask_proxies(_resolve_civitai_proxies()),
-        "session_proxies": _mask_proxies(dict(_civitai_session.proxies or {})),
+        "session_proxies": _mask_proxies(_route_snapshot()),
         "fallback_ports": list(FALLBACK_PROXY_PORTS),
         "sorts": list(CIVITAI_SORTS),
         "nsfw_levels": list(CIVITAI_NSFW_LEVELS),

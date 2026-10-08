@@ -1,9 +1,10 @@
 import { create } from 'zustand'
-import type { LocalLoraFile, LocalLoraMatch, PngMeta, TagFreq, LocalScanStatus } from '../types'
+import type { LocalLoraFile, PngMeta, TagFreq, LocalScanStatus } from '../types'
 import { Cache } from './cache'
 import { fetchModelVersionByHash, fetchModelById, parseCivitaiModelId } from '../api/civitai'
 import { showToast, stripExt } from '../utils'
-import { collectLoraFiles, groupLoraNamesByTopLevelFolder, isLoraFileName, normalizeRelativeLoraPath, pickerRelativeLoraPath, removeLoraFile } from '../services/localLoraScanner'
+import { collectLoraFiles, groupLoraNamesByTopLevelFolder, normalizeRelativeLoraPath, removeLoraFile } from '../services/localLoraScanner'
+import { LocalScanSession, type ManifestEntry, type ScanListing } from '../services/localScanSession'
 import { hashFileSha256 } from '../services/fileHashWorker'
 import { getSettings } from './settings'
 
@@ -11,69 +12,17 @@ let _lastBackendSync = 0
 let _backendMetaLoad: Promise<boolean> | null = null
 // 分类操作可能在短时间内连续触发；串行化 POST，避免后发请求先完成后又被旧快照覆盖。
 let _categorySyncQueue: Promise<void> = Promise.resolve()
-let activeScanController: AbortController | null = null
-let activeMatchController: AbortController | null = null
-let pendingScanFiles = new Map<string, ScanFile>()
-
-function progressShow(done: number, total: number, label: string, partial = 0) {
-  const wrap = document.getElementById('localProgress')
-  const bar = document.getElementById('localProgressBar')
-  const text = document.getElementById('localProgressText')
-  if (!wrap || !bar || !text) return
-  const pct = total > 0 ? Math.round(((done + Math.min(1, Math.max(0, partial))) / total) * 100) : 0
-  bar.style.width = `${pct}%`
-  text.textContent = `${label} ${done}/${total} (${pct}%)`
-  wrap.style.display = 'flex'
-  const scanBtn = document.getElementById('localScanBtn') as HTMLButtonElement | null
-  if (scanBtn) scanBtn.disabled = true
-}
-
-function progressHide() {
-  const wrap = document.getElementById('localProgress')
-  const bar = document.getElementById('localProgressBar')
-  if (!wrap || !bar) return
-  wrap.style.display = 'none'
-  bar.style.width = '0%'
-  const scanBtn = document.getElementById('localScanBtn') as HTMLButtonElement | null
-  if (scanBtn) scanBtn.disabled = false
-}
-
-function shortFileName(name: string): string {
-  const last = name.split('/').pop() || name
-  return last.length > 42 ? `${last.slice(0, 18)}…${last.slice(-21)}` : last
-}
-
-function progressShowFile(done: number, total: number, name: string, bytesRead: number, totalBytes: number) {
-  const filePct = totalBytes > 0 ? Math.round((bytesRead / totalBytes) * 100) : 0
-  progressShow(done, total, `扫描中 ${shortFileName(name)} ${filePct}%`, filePct / 100)
-}
-
-/** 兜底：showDirectoryPicker 不可用时（Firefox/Safari、夸克旧版、或通过局域网 IP 访问），
- *  用 <input webkitdirectory> 让用户选文件夹扫描 */
-function pickDirFiles(): Promise<{ name: string; file: File }[]> {
-  return new Promise((resolve) => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.setAttribute('webkitdirectory', '')
-    input.multiple = true
-    input.onchange = () => {
-      const files = Array.from(input.files || [])
-      resolve(
-        files
-          .filter((f) => isLoraFileName(f.name))
-          .map((f) => ({ name: pickerRelativeLoraPath(f), file: f }))
-          .filter((entry) => entry.name.length > 0)
-      )
-    }
-    input.oncancel = () => resolve([])
-    input.click()
-  })
-}
-
-/** 提示目录访问不可用，需 localhost/HTTPS 或回退文件选择 */
-function showCompatScanHint() {
-  showToast('⚠️ 当前浏览器/访问方式不支持目录选择，已改用文件选择方式；建议用 Chrome/Edge/夸克 并通过 localhost 访问')
-}
+export const localScanSession: LocalScanSession<ScanFile> = new LocalScanSession<ScanFile>({
+  read: () => useLocalModelStore.getState(),
+  commit: update => useLocalModelStore.setState(update),
+  hash: hashScanFile,
+  match: (hash, signal) => fetchModelVersionByHash(hash, signal),
+  persist: () => {
+    useLocalModelStore.getState().saveToCache()
+    useLocalModelStore.getState().rebuildTagFreq()
+  },
+  removePreviews: names => { for (const name of names) void deleteLocalLoraPreview(name) },
+})
 
 export type LocalSortKey = 'name' | 'size' | 'date' | 'match'
 export type LocalFilterKey = 'all' | 'matched' | 'unmatched'
@@ -164,10 +113,6 @@ export async function deleteLocalLoraPreview(name: string): Promise<void> {
     db.close()
   }
 }
-const LARGE_HASH_DEFER_BYTES = 512 * 1024 * 1024
-
-type ManifestEntry = { name: string; size: number; lastModified: number; sha256: string }
-
 interface LocalModelState {
   files: LocalLoraFile[]
   scanPath: string
@@ -295,157 +240,29 @@ async function hashScanFile(
   return hashFileSha256(file as File, opts)
 }
 
-/** 调用后端列目录（dir 空 = 全部 ComfyUI 注册 loras 目录），返回扫描管线入口。 */
-async function runBackendScan(
-  dir: string,
-  signal: AbortSignal,
-  dirLabel: string,
-  get: () => LocalModelState,
-  set: (partial: Partial<LocalModelState>) => void
-): Promise<void> {
+/** 列目录与哈希是 I/O 适配；扫描身份、取消和提交由 session 管理。 */
+async function listBackendScan(dir: string, signal: AbortSignal): Promise<ScanListing<ScanFile>> {
   const q = dir ? ('?dir=' + encodeURIComponent(dir)) : ''
   const resp = await fetch('/anima/panel_scan/list' + q, { signal })
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({} as { error?: string }))
     throw new Error(err.error || `后端扫描失败（HTTP ${resp.status}）`)
   }
-  const data = await resp.json() as { dir: string; files: { name: string; size: number; lastModified: number; path: string }[] }
-  const entries: { name: string; file: ScanFile }[] = (data.files || []).map(f => ({
-    name: f.name,
-    file: { size: f.size, lastModified: f.lastModified, __path: f.path },
-  }))
-  // 记住实际使用的目录（预设目录记为空串，表示"跟随 ComfyUI loras 根"）
+  const data = await resp.json() as { files: { name: string; size: number; lastModified: number; path: string }[] }
+  if (signal.aborted) throw new DOMException('扫描已取消', 'AbortError')
   setLastScanDir(dir)
-  set({ scanPath: dirLabel })
-  await applyScanEntries(entries, signal, dirLabel, get, set)
+  return {
+    directory: dir || 'ComfyUI loras 目录',
+    entries: (data.files || []).map(file => ({
+      name: file.name,
+      file: { size: file.size, lastModified: file.lastModified, __path: file.path },
+    })),
+  }
 }
 
-/** 扫描公共管线：手动选目录扫描与增量自动扫描共用。
- * 登记→diff→后台哈希→落库→自动匹配，全程进度条 + 取消支持。
- * 由 scanDir / scanIncremental 在拿到 entries 后调用。 */
-async function applyScanEntries(
-  entries: { name: string; file: ScanFile }[],
-  signal: AbortSignal,
-  dirName: string,
-  get: () => LocalModelState,
-  set: (partial: Partial<LocalModelState>) => void
-): Promise<void> {
-  try {
-    if (entries.length === 0) {
-      progressHide()
-      set({ scanStatus: 'done', files: [], newFileCount: 0 })
-      return
-    }
-
-    // --- 增量扫描逻辑 ---
-    const oldManifest = Cache.load<Record<string, ManifestEntry>>(MANIFEST_CACHE_KEY, 365 * 24 * 60 * 60 * 1000) || {}
-    const oldFiles = get().files
-    const oldFileMap = new Map(oldFiles.map(f => [f.name, f]))
-    pendingScanFiles = new Map(entries.map(entry => [normalizeRelativeLoraPath(entry.name), entry.file]))
-
-    const newManifest: Record<string, ManifestEntry> = {}
-    // 先登记全部文件，让列表和统计立即可见；新文件的哈希在后台逐个补齐。
-    const results: LocalLoraFile[] = entries.map(({ name, file }) => {
-      const relativeName = normalizeRelativeLoraPath(name)
-      const cached = oldManifest[relativeName]
-      const previous = oldFileMap.get(relativeName)
-      const unchanged = !!cached && cached.size === file.size && cached.lastModified === file.lastModified
-      return {
-        name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
-        sha256: unchanged ? cached.sha256 : '',
-        matched: unchanged ? previous?.matched || false : false,
-        matchData: unchanged ? previous?.matchData || null : null,
-        matchError: unchanged ? previous?.matchError || '' : '',
-        scanning: !unchanged,
-      }
-    })
-    let unchanged = 0, changed = 0, added = 0, total = entries.length
-
-    progressShow(0, total, '扫描')
-    set({ files: results, scanProgress: { done: 0, total }, scanningDir: dirName, scanStatus: 'scanning' })
-
-    for (let i = 0; i < entries.length; i++) {
-      if (signal.aborted) throw new DOMException('扫描已取消', 'AbortError')
-      const { name, file } = entries[i]
-      const relativeName = normalizeRelativeLoraPath(name)
-
-      const cached = oldManifest[relativeName]
-      if (cached && cached.size === file.size && cached.lastModified === file.lastModified) {
-        // 未变更: 保留上次的 sha256 和匹配状态
-        unchanged++
-        const prev = oldFileMap.get(relativeName)
-        results[i] = {
-          name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
-          sha256: cached.sha256,
-          matched: prev?.matched || false,
-          matchData: prev?.matchData || null,
-          matchError: prev?.matchError || '',
-          scanning: false,
-        }
-        newManifest[relativeName] = { ...cached, name: relativeName }
-      } else {
-        // 超大文件先完成登记，精确哈希放到后台匹配阶段，避免扫描界面长时间等待。
-        if (file.size > LARGE_HASH_DEFER_BYTES) {
-          results[i] = {
-            name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
-            sha256: '', matched: false, matchData: null, matchError: '', scanning: false,
-          }
-          newManifest[relativeName] = { name: relativeName, size: file.size, lastModified: file.lastModified, sha256: '' }
-        } else {
-          const sha256 = await hashScanFile(file, {
-            signal,
-            onProgress: ({ bytesRead, totalBytes }) => {
-              progressShowFile(i, total, relativeName, bytesRead, totalBytes)
-            },
-          })
-          results[i] = {
-            name: relativeName, path: relativeName, size: file.size, lastModified: file.lastModified,
-            sha256, matched: false, matchData: null, matchError: '', scanning: false,
-          }
-          newManifest[relativeName] = { name: relativeName, size: file.size, lastModified: file.lastModified, sha256 }
-        }
-        if (cached) changed++; else added++
-      }
-      progressShow(i + 1, total, `扫描  (新${added} 变${changed} 同${unchanged})`)
-      set({ files: [...results], scanProgress: { done: i + 1, total } })
-    }
-
-    // 清理 manifest 中已删除的文件，并统计"减少的 LoRA"
-    const currentNames = new Set(entries.map(e => normalizeRelativeLoraPath(e.name)))
-    const removedNames = oldFiles.filter(f => !currentNames.has(f.name)).map(f => f.name)
-    for (const k of Object.keys(oldManifest)) {
-      if (!currentNames.has(k)) delete oldManifest[k]
-    }
-    // 同步清理已删除文件的描述缓存（避免残留影响分类/搜索）
-    let descriptions = { ...get().descriptions }
-    let removedDesc = 0
-    for (const n of removedNames) {
-      if (n in descriptions) { delete descriptions[n]; removedDesc++ }
-      void deleteLocalLoraPreview(n)
-    }
-
-    progressHide()
-    Cache.save(MANIFEST_CACHE_KEY, newManifest)
-    set({ files: results, manifest: newManifest, descriptions, scanStatus: 'done', newFileCount: 0 })
-    get().saveToCache()
-    if (removedNames.length) get().rebuildTagFreq()
-    if (added + changed + removedNames.length > 0) {
-      showToast(`📁 扫描完成: 新增 ${added} · 变更 ${changed} · 移除 ${removedNames.length} · 跳过 ${unchanged}${removedDesc ? `（含 ${removedDesc} 条描述清理）` : ''}`)
-      // 自动匹配新文件
-      get().matchAll()
-    } else {
-      showToast(`📁 扫描完成: 无变化（${unchanged} 个未变）`)
-    }
-  } catch (err) {
-    progressHide()
-    if ((err as Error).name === 'AbortError' || (err as Error).message?.includes('abort')) {
-      set({ scanStatus: 'idle', scanProgress: { done: 0, total: 0 } })
-      showToast('⏹ 扫描已取消')
-    } else {
-      set({ scanStatus: 'error' })
-      showToast(`❌ 扫描失败：${(err as Error).message || '未知错误'}`)
-    }
-  }
+function listConfiguredDirectory(signal: AbortSignal): Promise<ScanListing<ScanFile>> {
+  const preset = (getSettings().localScanDir || '').trim()
+  return listBackendScan(preset || getLastScanDir(), signal)
 }
 
 export const useLocalModelStore = create<LocalModelState>((set, get) => ({
@@ -628,17 +445,16 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     const idStr = parseCivitaiModelId(url)
     if (!idStr) { showToast('URL 格式错误，需要 Civitai 模型链接（civitai.com / civitai.red 均可）'); return }
     const id = parseInt(idStr)
-    const data = await fetchModelById(id)
-    if (!data) { showToast('无法获取模型数据'); return }
-    const v = data.modelVersions?.[0]
-    if (!v) { showToast('该模型没有版本'); return }
-    const imgs = (v.images || [])
-      .filter((i: { type: string }) => i.type === 'image')
-      .map((i: { url: string }) => { let u = i.url.trim(); if (u.startsWith('//')) u = 'https:' + u; return u.startsWith('http') ? u : '' })
-      .filter(Boolean)
-    get().updateFile(name, {
-      matched: true, matchError: '', scanning: false,
-      matchData: {
+    await localScanSession.run({ kind: 'match', names: [name], resolve: async (_file, signal) => {
+      const data = await fetchModelById(id, signal)
+      if (!data) throw new Error('无法获取模型数据')
+      const v = data.modelVersions?.[0]
+      if (!v) throw new Error('该模型没有版本')
+      const imgs = (v.images || [])
+        .filter((i: { type: string }) => i.type === 'image')
+        .map((i: { url: string }) => { let u = i.url.trim(); if (u.startsWith('//')) u = 'https:' + u; return u.startsWith('http') ? u : '' })
+        .filter(Boolean)
+      return {
         modelId: data.id,
         modelName: data.name,
         versionId: v.id,
@@ -652,11 +468,8 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
         baseModel: v.baseModel || '',
         tags: data.tags || [],
         nsfw: !!data.nsfw,
-      },
-    })
-    get().saveToCache()
-    get().rebuildTagFreq()
-    showToast(`✅ 已匹配: ${data.name}`)
+      }
+    } })
   },
 
   setSearchQuery: (searchQuery) => set({ searchQuery }),
@@ -682,7 +495,7 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
   })),
   setScanStatus: (scanStatus) => set({ scanStatus }),
   setScanProgress: (scanProgress) => set({ scanProgress }),
-  cancelScan: () => { activeScanController?.abort(); activeMatchController?.abort() },
+  cancelScan: () => localScanSession.cancel(),
   setPngs: (pngs) => set({ pngs }),
   addPng: (png) => set(s => ({ pngs: [...s.pngs.filter(p => p.fileName !== png.fileName), png] })),
   setTagFreq: (tagFreq) => set({ tagFreq }),
@@ -718,168 +531,26 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     Cache.save(TAG_CACHE_KEY, sorted.slice(0, 500))
   },
 
-  scanDir: async () => {
-    if (activeScanController) return
-    const controller = new AbortController()
-    activeScanController = controller
-    const signal = controller.signal
-    try {
-      // 全静默后端扫描，不再弹文件夹选择框：优先设置里的预设目录，
-      // 其次上次使用的目录，都为空 = ComfyUI 注册的全部 loras 目录。
-      const preset = (getSettings().localScanDir || '').trim()
-      const dir = preset || getLastScanDir()
-      await runBackendScan(dir, signal, dir || 'ComfyUI loras 目录', get, set)
-    } catch (err) {
-      if (!((err as Error).name === 'AbortError' || (err as Error).message?.includes('abort'))) {
-        set({ scanStatus: 'error' })
-        showToast(`❌ 扫描失败：${(err as Error).message || '未知错误'}`)
-      }
-    } finally {
-      if (activeScanController === controller) activeScanController = null
-    }
-  },
+  scanDir: () => localScanSession.run({ kind: 'scan', list: listConfiguredDirectory }),
 
-  /** 增量自动扫描：优先已授权句柄；句柄缺失或权限失效时静默回退后端扫描。
-   *  全程零弹窗（requestPermission 需要用户手势且刷新后句柄必失效，纯前端免弹窗不可能）。 */
-  scanIncremental: async () => {
-    if (activeScanController) return
-    const dh = get().dirHandle
-    const controller = new AbortController()
-    activeScanController = controller
-    const signal = controller.signal
-    try {
-      if (dh) {
-        // 只在权限已授予时使用句柄；queryPermission 不触发任何浏览器弹窗
-        const perm = await (dh as any).queryPermission?.({ mode: 'readwrite' })
-        if (perm === 'granted') {
-          const entries = await collectLoraFiles(dh, signal)
-          await applyScanEntries(entries, signal, dh.name || '本地目录', get, set)
-          return
+  /** 只用已有目录授权，失效时静默回退后端，不弹浏览器权限框。 */
+  scanIncremental: () => localScanSession.run({
+    kind: 'scan',
+    list: async signal => {
+      const directory = get().dirHandle
+      if (directory) {
+        const permission = await (directory as any).queryPermission?.({ mode: 'readwrite' })
+        if (signal.aborted) throw new DOMException('扫描已取消', 'AbortError')
+        if (permission === 'granted') {
+          return { entries: await collectLoraFiles(directory, signal), directory: directory.name || '本地目录' }
         }
       }
-      // 无句柄 / 权限失效：静默走后端（预设 → 上次路径 → 默认 loras 目录）
-      const preset = (getSettings().localScanDir || '').trim()
-      const dir = preset || getLastScanDir()
-      await runBackendScan(dir, signal, dir || 'ComfyUI loras 目录', get, set)
-    } catch (err) {
-      progressHide()
-      if ((err as Error).name === 'AbortError' || (err as Error).message?.includes('abort')) {
-        set({ scanStatus: 'idle', scanProgress: { done: 0, total: 0 } })
-        showToast('⏹ 扫描已取消')
-      } else {
-        set({ scanStatus: 'error' })
-        showToast(`❌ 扫描失败：${(err as Error).message || '未知错误'}`)
-      }
-    } finally {
-      if (activeScanController === controller) activeScanController = null
-    }
-  },
+      return listConfiguredDirectory(signal)
+    },
+  }),
 
-  matchAll: async () => {
-    if (activeMatchController) return
-    const { files } = get()
-    const unmatched = files.filter(f => !f.matched)
-    if (unmatched.length === 0) {
-      showToast('✅ 所有文件已匹配')
-      return
-    }
-    const controller = new AbortController()
-    activeMatchController = controller
-    const signal = controller.signal
-    set({ scanStatus: 'matching', scanProgress: { done: 0, total: unmatched.length } })
-    progressShow(0, unmatched.length, '匹配')
-
-    const CONCURRENCY = 3
-    let done = 0
-    let nextIdx = 0
-    const errors: string[] = []
-
-    try {
-      await Promise.all(Array.from({ length: CONCURRENCY }, async () => {
-        while (nextIdx < unmatched.length && !signal.aborted) {
-          const idx = nextIdx++
-          const f = unmatched[idx]
-          get().updateFile(f.name, { scanning: true })
-          try {
-            let sha256 = f.sha256
-            if (!sha256) {
-              const source = pendingScanFiles.get(f.name)
-              if (!source) throw new Error('请重新扫描此文件后再匹配')
-              sha256 = await hashScanFile(source, {
-                signal,
-                onProgress: ({ bytesRead, totalBytes }) => {
-                  progressShowFile(done, unmatched.length, f.name, bytesRead, totalBytes)
-                },
-              })
-              const manifest = { ...get().manifest }
-              if (manifest[f.name]) manifest[f.name] = { ...manifest[f.name], sha256 }
-              set({ manifest })
-              get().updateFile(f.name, { sha256 })
-            }
-            const data = await fetchModelVersionByHash(sha256)
-            if (data) {
-              get().updateFile(f.name, {
-                matched: true, matchData: data, scanning: false, matchError: '',
-              })
-            } else {
-              get().updateFile(f.name, { matched: false, scanning: false, matchError: 'C站未匹配到此文件' })
-            }
-          } catch (error) {
-            if ((error as Error).name !== 'AbortError') {
-              get().updateFile(f.name, { scanning: false, matchError: (error as Error).message || '匹配异常' })
-              errors.push(f.name)
-            } else {
-              get().updateFile(f.name, { scanning: false })
-            }
-          }
-          done++
-          progressShow(done, unmatched.length, `匹配  (${done}/${unmatched.length})`)
-          set({ scanProgress: { done, total: unmatched.length } })
-        }
-      }))
-    } finally {
-      activeMatchController = null
-      progressHide()
-      get().saveToCache()
-      get().rebuildTagFreq()
-      set({ scanStatus: 'done' })
-    }
-    if (signal.aborted) showToast('⏹ 匹配已取消')
-    else if (errors.length) showToast(`⚠️ ${errors.length} 个匹配异常`)
-    else showToast(`✅ 匹配完成 (${done} 个)`)
-  },
-
-  matchOne: async (name) => {
-    const f = get().files.find(x => x.name === name)
-    if (!f) return
-    get().updateFile(name, { scanning: true })
-    let sha256 = f.sha256
-    if (!sha256) {
-      const source = pendingScanFiles.get(name)
-      if (!source) {
-        get().updateFile(name, { scanning: false, matchError: '请重新扫描此文件后再匹配' })
-        return
-      }
-      try {
-        sha256 = await hashScanFile(source)
-        const manifest = { ...get().manifest }
-        if (manifest[name]) manifest[name] = { ...manifest[name], sha256 }
-        set({ manifest })
-        get().updateFile(name, { sha256 })
-      } catch {
-        get().updateFile(name, { scanning: false, matchError: '哈希计算失败' })
-        return
-      }
-    }
-    const data = await fetchModelVersionByHash(sha256)
-    if (data) {
-      get().updateFile(name, { matched: true, matchData: data, scanning: false, matchError: '' })
-    } else {
-      get().updateFile(name, { matched: false, scanning: false, matchError: 'C站未匹配到此文件' })
-    }
-    get().saveToCache()
-    get().rebuildTagFreq()
-  },
+  matchAll: () => localScanSession.run({ kind: 'match' }),
+  matchOne: name => localScanSession.run({ kind: 'match', names: [name] }),
 
   deleteFile: async (name) => {
     const f = get().files.find(x => x.name === name)
@@ -982,7 +653,6 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       if (perm !== 'granted') return 0
       const oldManifest = get().manifest || {}
       const entries = await collectLoraFiles(dh)
-      pendingScanFiles = new Map(entries.map(entry => [normalizeRelativeLoraPath(entry.name), entry.file]))
       let count = 0
       for (const entry of entries) {
         const name = normalizeRelativeLoraPath(entry.name)
@@ -1089,3 +759,12 @@ export function getLocalFileNames(): string[] {
   const matched = state.files.filter(f => f.matchData?.modelName).map(f => f.matchData!.modelName.toLowerCase().replace(/[\s_-]/g, ''))
   return [...new Set([...raw, ...matched])]
 }
+
+localScanSession.subscribe(progress => {
+  useLocalModelStore.setState({
+    scanStatus: progress.status,
+    scanProgress: { done: progress.done, total: progress.total },
+    scanningDir: progress.directory,
+  })
+  if (progress.notice) showToast(progress.notice)
+})

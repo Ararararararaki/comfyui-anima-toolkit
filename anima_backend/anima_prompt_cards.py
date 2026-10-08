@@ -38,11 +38,8 @@ import folder_paths
 from aiohttp import web
 from server import PromptServer
 
-from .anima_batch_lora import (
-    BRIDGE_DATA,
-    BRIDGE_LOCK,
-    _find_lora_path,
-)
+from .anima_batch_lora import _find_lora_path
+from .services import bridge
 from .anima_prompt_batch import (
     _input_root,
     _safe_resolve,
@@ -797,28 +794,18 @@ _TRIGGER_TTL = 600
 
 def _lora_trigger_words_sync(name: str) -> list[str]:
     """同步部分：bridge 触发词（面板「发送到 ComfyUI」带 lora_list[].trigger_words）。"""
-    with BRIDGE_LOCK:
-        for l in BRIDGE_DATA.get("lora_list", []) or []:
-            if str(l.get("name", "")).replace(".safetensors", "") == name.replace(".safetensors", ""):
-                return [str(w) for w in (l.get("trigger_words", []) or []) if w]
+    for l in bridge.store.snapshot("memory").get("lora_list", []) or []:
+        if str(l.get("name", "")).replace(".safetensors", "") == name.replace(".safetensors", ""):
+            return [str(w) for w in (l.get("trigger_words", []) or []) if w]
     return []
 
 
 async def _lora_trigger_words_civitai(name: str) -> list[str]:
-    """异步部分：Civitai trainedWords（复用现有 /anima/lora/info 的查询路径）。"""
-    lora_path = _find_lora_path(name)
-    if lora_path is None:
-        return []
+    """Use the metadata service, including shared cache and archive fallback."""
     try:
-        from . import _sha256_file, _get_session
-        loop = asyncio.get_event_loop()
-        sha = await loop.run_in_executor(None, _sha256_file, lora_path)
-        session = await _get_session()
-        url = f"https://civitai.com/api/v1/model-versions/by-hash/{sha}"
-        async with session.get(url, timeout=10) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                return [str(w) for w in (data.get("trainedWords", []) or []) if w]
+        from .services.lora_metadata import get_info
+        data = await get_info(name)
+        return [str(word) for word in data.get("trainedWords") or [] if word]
     except Exception:
         pass
     return []

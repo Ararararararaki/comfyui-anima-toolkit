@@ -5,10 +5,8 @@
 # 触发词来源优先级：bridge 里 lora_list 的 trigger_words > 文件名兜底。
 # 独立成节点避免 LoRA 节点臃肿。
 
-import os
-import json
-
-from .anima_batch_lora import _parse_lora_syntax, BRIDGE_DATA, BRIDGE_LOCK, BRIDGE_PATH
+from .anima_batch_lora import _parse_lora_syntax
+from .services import bridge
 
 
 class AnimaTriggerWords:
@@ -49,11 +47,10 @@ class AnimaTriggerWords:
         entries = _parse_lora_syntax(lora_syntax or "")
 
         # 从 bridge 数据构建 name -> trigger_words 查找表（面板「发送到 ComfyUI」会带 trigger_words）
-        with BRIDGE_LOCK:
-            tw_lookup = {
-                l.get("name", ""): l.get("trigger_words", [])
-                for l in BRIDGE_DATA.get("lora_list", [])
-            } if BRIDGE_DATA else {}
+        tw_lookup = {
+            item.get("name", ""): item.get("trigger_words", [])
+            for item in bridge.store.snapshot("memory").get("lora_list", [])
+        }
 
         words = []
         for entry in entries:

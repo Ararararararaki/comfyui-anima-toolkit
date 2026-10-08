@@ -1,8 +1,11 @@
 // Anima Batch LoRA Widget — 中文界面 + 桥接自动加载 + 触发词复制
 import { triggerOverrides, openTriggerWordEditor } from "./anima_lora_trigger_overrides.js";
 import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
+import { LoRASyntax } from "./shared/lora_syntax.js";
+import { LoraInfoClient, LoraLookupSession, filenameLookup } from "./shared/lora_info_client.js";
 
-(function () {
+const loraInfoClient = new LoraInfoClient(filenameLookup());
+
   const NODE_NAME = "TK Batch LoRA Loader";
   // 权重范围 ±10：滑块类（slider）LoRA 常需要远超 ±2 的强度（例如 -5 / +8）。
   // 后端 anima_batch_lora.py 的 _parse_lora_syntax 用 float() 解析、本身无范围限制，这里只约束 UI 输入。
@@ -176,20 +179,19 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           const r = orig?.apply(this, arguments);
           const loraWidget = this.widgets?.find((w) => w.name === "lora_syntax");
           if (!loraWidget) return r;
-          const ui = new WidgetUI(this, loraWidget);
+          const ui = new BatchLoraWidgetUI(this, loraWidget);
           this._animaUI = ui;
-          ui.build();
+          ui.mount();
           return r;
         };
         // 加载工作流时 widget 值在 configure 阶段才恢复：onAdded 触发时
         // lora_syntax 仍是默认空值，解析不到任何标签，卡片不显示。
         // 因此在 configure（值已恢复）里解析渲染，并用 onAdded 延迟兜底。
         const restoreFromWidget = function (ui) {
-          if (!ui || !ui.listEl) return;
+          if (!ui || !ui.listEl || ui._disposed) return;
           const v = (ui.loraWidget && ui.loraWidget.value) || "";
           const parsed = ui._parse(v);
-          if (!parsed.length) return;
-          const same = ui.loras.length === parsed.length && ui.loras.every((x, i) => x.name === parsed[i].name && x.weight === parsed[i].weight);
+          const same = ui.loras.length === parsed.length && ui.loras.every((x, i) => x.name === parsed[i].name && x.weight === parsed[i].weight && x.clipWeight === parsed[i].clipWeight && x.disabled === parsed[i].disabled);
           if (same) return;
           ui.loras = parsed;
           ui._render(ui.listEl);
@@ -620,10 +622,20 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   };
 
   // ── UI 状态 ──
-  class WidgetUI {
+  export class BatchLoraWidgetUI {
     constructor(node, loraWidget) {
+      this._infoSession = new LoraLookupSession(loraInfoClient);
+      this._disposed = false;
+      this._lifetime = new AbortController();
+      this._views = new Map();
       this.node = node;
       this.loraWidget = loraWidget;
+      // The constructor parses immediately, so metadata ownership must exist before that parse starts its preload.
+      // 只有后端完整快照才能安全提交 loraMeta 单键；残缺基线会覆盖后端其他偏好。
+      this._metaLoaded = false;
+      this._metaPromise = null;
+      this._metaReadAttempted = false;
+      this._disabledChoices = new Map();
       this.loras = this._parse(loraWidget.value || "");
       this.triggerWordMap = {};
       this._unsubscribeTriggers = triggerOverrides.subscribe(changed => {
@@ -638,9 +650,6 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this._manualRefresh?.();
       });
       this.loraInfoMap = {}; // name -> {previewUrl, modelName, creator}（悬停预览用）
-      // this.meta 是否已是从后端完整读到的快照：只有快照才能安全提交 loraMeta 单键
-      // （后端按键级合并，loraMeta 值非空会整键替换 → 残缺基线会把后端其他偏好覆盖掉）
-      this._metaLoaded = false;
       this._lastBridgeTs = 0;   // 上次已应用的 bridge updated_at（避免重复同步）
       this._bridgeTimer = null;
       this.domSizeSync = null;
@@ -654,62 +663,26 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     // ── 解析 <lora:name:weight>（并合并 node.properties 里保留的禁用项） ──
     _parse(text) {
-      const re = /<lora:([^:>]+):([^:>]+)(?::([^:>]+))?>/gi;
-      const items = [];
-      let m;
-      while ((m = re.exec(text)) !== null) {
-        items.push({
-          name: m[1],
-          // 非法权重(如 <lora:foo:abc>)兜底为 1.0，避免 NaN 污染 lora_syntax 与滑块显示
-          weight: Number.isFinite(parseFloat(m[2])) ? parseFloat(m[2]) : 1.0,
-          disabled: false,
-        });
-      }
-      // 被禁用的 LoRA 不在 lora_syntax 里，但保留在节点上：优先从 node.properties（随工作流）恢复，localStorage 兜底
-      let disabledMap = (this.node && this.node.properties && this.node.properties.animaLoraDisabled);
+      let disabledMap = this.node?.properties?.animaLoraDisabled;
       if (!disabledMap) {
-        try { disabledMap = JSON.parse(localStorage.getItem("anima_lora_disabled") || "{}"); } catch { disabledMap = {}; }
+        try { disabledMap = JSON.parse(localStorage.getItem("anima_lora_disabled") || "{}"); }
+        catch { disabledMap = {}; }
       }
-      for (const [name] of Object.entries(disabledMap)) {
-        const existing = items.find((e) => normalizeLoraName(e.name) === normalizeLoraName(name));
-        if (existing) {
-          existing.disabled = true; // 同名项在 lora_syntax 里 → 标记禁用（恢复工作流保存的关闭状态）
-          const preservedWeight = parseFloat(disabledMap[name]);
-          if (Number.isFinite(preservedWeight) && preservedWeight >= -2 && preservedWeight <= 2) {
-            existing.weight = preservedWeight; // 禁用编码可能是 0.00，卡片仍显示用户原来的权重
-          }
-        }
-        // 不再 push 缺失项：localStorage 历史禁用记录不应让标签凭空出现/污染用户粘贴结果
-      }
-      // 补充：后端持久化的"通常隐藏"偏好——即使 disabledMap 丢失（移除后重加/跨工作流粘贴），也能恢复关闭状态
       this._ensureMeta();
-      for (const it of items) {
-        if (!it.disabled && this._prefDisabled(it.name)) it.disabled = true;
-      }
-      return items;
+      const items = LoRASyntax.parse(text, { disabledMap });
+      return items.map(item => {
+        const choice = this._disabledChoices.get(normalizeLoraName(item.name));
+        return { ...item, disabled: choice ? choice.disabled : item.disabled || this._prefDisabled(item.name) };
+      });
     }
 
-    _serialize() {
-      return this.loras
-        .map((l) => {
-          const w = Number.isFinite(l.weight) ? l.weight : 1.0;
-          // disabled 项输出权重 0.00（禁用=权重0，ComfyUI 标准语义，后端 0 权重加载安全）：
-          // 保证标签始终保留在 lora_syntax 文本框里，避免粘贴后被历史禁用记录静默剔除
-          // 导致"标签变少"以及文本框与 UI 不同步
-          const outW = l.disabled ? 0 : w;
-          return `<lora:${l.name}:${outW.toFixed(2)}>`;
-        })
-        .join(" ");
-    }
+    _serialize() { return LoRASyntax.serialize(this.loras); }
 
     _persistDisabled() {
-      const disabledMap = {};
-      for (const l of this.loras) {
-        if (l.disabled) disabledMap[l.name] = l.weight;
-      }
+      const disabledMap = LoRASyntax.disabledMap(this.loras);
       if (!this.node.properties) this.node.properties = {};
       this.node.properties.animaLoraDisabled = disabledMap;
-      try { localStorage.setItem("anima_lora_disabled", JSON.stringify(disabledMap)); } catch { /* 忽略 */ }
+      try { localStorage.setItem("anima_lora_disabled", JSON.stringify(disabledMap)); } catch { /* optional mirror */ }
     }
 
     // 从后端持久化的 loraMeta 读取"该 LoRA 通常被隐藏"的偏好（跨工作流/粘贴也能恢复）
@@ -724,20 +697,39 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     // 预加载后端 loraMeta 到 this.meta（供 _parse / 添加路径恢复隐藏偏好）
-    _ensureMeta() {
-      const hasContent = this.meta && (this.meta.categories?.length || Object.keys(this.meta.loraMeta || {}).length || (this.meta.loraGroups || []).length);
-      if (hasContent) return;
-      this.meta = { categories: [], loraMeta: {}, loraGroups: [] };
-      this._fetchMeta().then((data) => {
-        // 仅在后端确有数据时替换；失败/空结果保留现有引用，避免后续 toggle 把空 meta 整体覆盖到后端
-        if (data && (data.categories?.length || Object.keys(data.loraMeta || {}).length || (data.loraGroups || []).length)) {
-          this.meta = data;
-          this._metaLoaded = true; // 后端完整快照，可安全提交单键
-          return;
+    _ensureMeta({ retry = false } = {}) {
+      if (this._disposed) return Promise.resolve(null);
+      if (this._metaLoaded) return Promise.resolve(this.meta);
+      if (this._metaPromise) return this._metaPromise;
+      if (this._metaReadAttempted && !retry) return Promise.resolve(null);
+      this._metaReadAttempted = true;
+      if (!this.meta) this.meta = { categories: [], loraMeta: {}, loraGroups: [] };
+      const loading = this._fetchMeta().then((data) => {
+        if (this._disposed) return null;
+        // A successful empty snapshot is complete too; repeated parses must not issue another GET.
+        if (data) {
+          this.meta = {
+            categories: Array.isArray(data.categories) ? data.categories : [],
+            loraMeta: data.loraMeta && typeof data.loraMeta === "object" ? data.loraMeta : {},
+            loraGroups: Array.isArray(data.loraGroups) ? data.loraGroups : [],
+          };
+          this._metaLoaded = true;
         }
         // 读取失败（data === null）→ 用本地镜像兜底恢复，绝不拿空壳当起点
-        if (data === null) this._restoreMetaFromMirror();
-      }).catch(() => {});
+        else this._restoreMetaFromMirror();
+        const before = new Map(this.loras.map(item => [normalizeLoraName(item.name), item.disabled]));
+        const next = this._parse(this.loraWidget.value || "");
+        const newlyDisabled = next.some(item => item.disabled && !before.get(normalizeLoraName(item.name)));
+        this.loras = next;
+        // Persist original model/clip weights before publishing the masked syntax to the host callback.
+        if (newlyDisabled) this._commit();
+        if (this.listEl) this._render(this.listEl);
+        return data ? this.meta : null;
+      }).catch(() => null).finally(() => {
+        if (this._metaPromise === loading) this._metaPromise = null;
+      });
+      this._metaPromise = loading;
+      return loading;
     }
 
     // 后端读取失败时用 localStorage 镜像恢复 this.meta（只恢复展示，不自动写回后端）
@@ -757,9 +749,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     // 绝不返回 {} 或 { loraGroups: [] } —— 空对象一旦被继续 POST，后端元数据会被整体覆盖清空。
     async _fetchMeta() {
       try {
-        const response = await fetch("/anima/meta");
+        const response = await fetch("/anima/meta", { signal: this._lifetime?.signal });
         if (!response.ok) return null;
         const data = await response.json();
+        if (this._disposed) return null;
         if (!data || typeof data !== "object") return null;
         // 读到后端数据时刷新本地镜像；后端返回空壳时不覆盖镜像（别把还能用的备份抹成空）
         if (!metaIsEmptyShell(data)) saveMetaMirror(data);
@@ -788,6 +781,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (replaceKeys.length) body.__replace = replaceKeys;
       try {
         const response = await fetch("/anima/meta", {
+          signal: this._lifetime?.signal,
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
@@ -815,29 +809,30 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     // 只提交 loraMeta 这一个键（依赖后端键级合并），不再整体 POST this.meta —— 原实现
     // 在预加载失败时会把空壳整体写回，直接把后端分类/组/偏好清空。
     async _saveLoraPref(name, disabled) {
+      if (this._disposed) return false;
+      const key = normalizeLoraName(name), choice = { disabled: !!disabled };
+      // Capture the user's switch synchronously, before a pending preload can apply an older preference.
+      this._disabledChoices.set(key, choice);
       // 手里不是后端完整快照时先补读一次；读不到就中止本次写入并提示用户，绝不拿残缺基线覆盖后端
       if (!this._metaLoaded) {
-        const remote = await this._fetchMeta();
+        const remote = await this._ensureMeta({ retry: true });
+        if (this._disposed || this._disabledChoices.get(key) !== choice) return false;
         if (!remote) {
           showToast("读取后端数据失败，本次未保存，请重试");
           return false;
         }
-        this.meta = {
-          categories: Array.isArray(remote.categories) ? remote.categories : [],
-          loraMeta: remote.loraMeta && typeof remote.loraMeta === "object" ? remote.loraMeta : {},
-          loraGroups: Array.isArray(remote.loraGroups) ? remote.loraGroups : [],
-        };
-        this._metaLoaded = true;
       }
       if (!this.meta) this.meta = { categories: [], loraMeta: {}, loraGroups: [] };
       const mm = this.meta.loraMeta || (this.meta.loraMeta = {});
-      if (!mm[name]) mm[name] = { categories: [], favorite: false, pinned: false, count: 0 };
-      mm[name].disabled = !!disabled;
+      const storedName = Object.keys(mm).find(stored => normalizeLoraName(stored) === key) || name;
+      if (!mm[storedName]) mm[storedName] = { categories: [], favorite: false, pinned: false, count: 0 };
+      mm[storedName].disabled = choice.disabled;
       const res = await this._postMeta({ loraMeta: mm });
       return res.ok;
     }
 
     _commit() {
+      if (this._disposed) return;
       // 必须先持久化禁用状态再写 lora_syntax：lora_syntax 值变化会触发 widget 的
       // callback（this.loras = this._parse(v)），若 node.properties 尚未设置，禁用项会被覆盖丢失
       this._persistDisabled();
@@ -846,7 +841,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     // ── 构建 DOM ──
-    build() {
+    mount() {
+      if (this._mounted || this._disposed) return;
+      this._mounted = true;
       this._ensureMeta();
       const container = document.createElement("div");
       container.className = "anima-lora-widget";
@@ -1247,9 +1244,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
       this.loraWidget.callback = ((orig) => {
         return (v) => {
-          orig?.call(this, v);
-          this.loras = this._parse(v || "");
-          this._render(listEl);
+          orig?.call(this.loraWidget, v);
+          this.update();
         };
       })(this.loraWidget.callback);
 
@@ -1270,6 +1266,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 拉高后，多余空间会被分配到第一行，导致 LoRA 面板被推到节点底部。
       // 让 lora_syntax 占自然高度，第二行占剩余高度，内部列表才能随节点边框伸缩。
       const applyWidgetLayout = (attempt = 0) => {
+        if (this._disposed) return;
         const widgetGrid = container.closest(".lg-node-widgets");
         if (!widgetGrid) {
           if (attempt < 12) requestAnimationFrame(() => applyWidgetLayout(attempt + 1));
@@ -1290,16 +1287,44 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const ui = this;
       const origRemoved = this.node.onRemoved;
       this.node.onRemoved = function () {
-        if (ui._bridgeTimer) { clearInterval(ui._bridgeTimer); ui._bridgeTimer = null; }
-        if (ui._updateTimer) { clearInterval(ui._updateTimer); ui._updateTimer = null; }
-        ui._unsubscribeTriggers?.();
-        ui._triggerEditor?.close(true);
-        ui._loraInputResizeObserver?.disconnect();
-        ui._loraInputResizeObserver = null;
-        ui.domSizeSync?.dispose();
-        ui.domSizeSync = null;
+        ui.dispose();
         if (typeof origRemoved === "function") return origRemoved.apply(this, arguments);
       };
+    }
+
+    update(syntax = this.loraWidget.value || "") {
+      if (this._disposed) return;
+      this.loras = this._parse(syntax);
+      this._render(this.listEl);
+    }
+
+    dispose() {
+      if (this._disposed) return;
+      this._disposed = true;
+      this._lifetime.abort();
+      this._infoSession.dispose();
+      this._closeBrowser?.();
+      for (const close of [...this._views.values()]) close();
+      clearInterval(this._bridgeTimer); clearInterval(this._updateTimer); clearTimeout(this._twPushTimer);
+      this._bridgeTimer = this._updateTimer = this._twPushTimer = null;
+      this._triggerCopySequence = (this._triggerCopySequence || 0) + 1;
+      this._unsubscribeTriggers?.(); this._unsubscribeTriggers = null;
+      this._triggerEditor?.close(true);
+      this._loraInputResizeObserver?.disconnect(); this._loraInputResizeObserver = null;
+      this.domSizeSync?.dispose(); this.domSizeSync = null;
+    }
+
+    _ownView(kind, cleanup) {
+      this._views.get(kind)?.();
+      let closed = false;
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        if (this._views.get(kind) === close) this._views.delete(kind);
+        cleanup();
+      };
+      this._views.set(kind, close);
+      return close;
     }
 
     _effectiveWords(name, fallback = this.triggerWordMap[name]) {
@@ -1332,7 +1357,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     _editTriggerWords(anchor, name) {
       this._triggerEditor?.close();
-      document.querySelectorAll(".anima-tw-popover").forEach(el => el.remove());
+      this._views.get("popover")?.();
       this._triggerEditor = openTriggerWordEditor(anchor, name,
         () => Array.isArray(this.triggerWordMap[name]) ? Promise.resolve(this.triggerWordMap[name]) : new Promise(resolve => this._fetchTw(name, resolve)),
         {onClose: () => { this._triggerEditor = null; }});
@@ -1449,10 +1474,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       showToast(`⏳ 正在提取 ${pending.length} 个 LoRA 的触发词...`);
       let done = 0, found = 0, failed = 0;
       for (const l of pending) {
+        if (this._disposed) return;
         try {
-          const resp = await fetch("/anima/lora/info?name=" + encodeURIComponent(l.name));
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-          const data = await resp.json();
+          const data = await this._infoSession.get({ name: l.name });
+          if (this._disposed) return;
           const src = data.source || "";
           if (data.error || src.startsWith("error") || src.startsWith("http")) throw new Error(data.error || src);
           const tw = data.trainedWords || [];
@@ -1467,6 +1492,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           };
           if (tw.length) found++;
         } catch (e) {
+          if (this._disposed) return;
           // 查询失败不标记为"已检查"——用 null 表示失败，允许重试
           this.triggerWordMap[l.name] = null;
           failed++;
@@ -1504,14 +1530,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     }
 
     _fetchTw(name, onDone) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), LORA_INFO_TIMEOUT_MS);
-      return fetch("/anima/lora/info?name=" + encodeURIComponent(name), {signal: controller.signal})
-        .then((r) => {
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          return r.json();
-        })
+      return this._infoSession.get({ name })
         .then((data) => {
+          if (this._disposed) { onDone?.(null); return; }
           const src = data.source || "";
           if (data.error || src.startsWith("error") || src.startsWith("http")) {
             throw new Error(data.error || src);
@@ -1532,12 +1553,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           this._updateTwStatus();
         })
         .catch((e) => {
+          if (this._disposed) { onDone?.(null); return; }
           // 失败标记为 null，允许重试；不误判为"无触发词"
           this.triggerWordMap[name] = null;
           console.error("[Anima] 获取触发词失败:", name, e);
           showToast("❌ 获取失败，请确认 ComfyUI 已重启: " + e.message);
           onDone && onDone(null); // Release callers waiting to copy/edit after a failed lookup.
-        }).finally(() => clearTimeout(timer));
+        });
     }
 
     // ── 一键复制已启用 LoRA 的所有触发词（英文逗号连接，句末带逗号匹配后续提示词） ──
@@ -1655,7 +1677,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         };
         name.onmouseleave = () => {
           hovering = false; clearTimeout(tooltipTimer);
-          document.querySelectorAll(".anima-tw-popover").forEach(el => el.remove());
+          this._views.get("popover")?.();
         };
         name.onclick = e => { e.stopPropagation(); this._copyLoraWords(l.name); };
         const edit = document.createElement("button");
@@ -1700,7 +1722,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
         function clamp(v, min, max) { return isNaN(v) ? 0 : Math.max(min, Math.min(max, v)); }
         const applyWeight = (v) => {
+          const linkedWeights = l.clipWeight === undefined || l.clipWeight === l.weight;
           l.weight = clamp(v, LORA_WEIGHT_MIN, LORA_WEIGHT_MAX);
+          if (linkedWeights) l.clipWeight = l.weight;
           valSpan.value = l.weight.toFixed(2);
         };
         // 单击步进 0.05（仅纯单击；若刚发生 scrubbing 拖动则跳过，避免双重 commit 重建 DOM 丢卡片）
@@ -1787,12 +1811,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     // ── 验证桥接 ──
     async _verify(statusEl, listEl, triggerEl) {
+      if (this._disposed) return;
       statusEl.textContent = "⏳ 验证中...";
       statusEl.style.color = "#aaa";
       try {
         const text = this.loraWidget.value || "";
-        const resp = await fetch("/anima/bridge/status?text=" + encodeURIComponent(text));
+        const resp = await fetch("/anima/bridge/status?text=" + encodeURIComponent(text), { signal: this._lifetime.signal });
         const data = await resp.json();
+        if (this._disposed) return;
         if (!data.bridge_found) {
           statusEl.innerHTML = "⚠️ 输入中没有有效的 &lt;lora:...&gt; 标签";
           statusEl.style.color = "#f44"; return;
@@ -1815,6 +1841,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           }
         });
       } catch (e) {
+        if (this._disposed) return;
         statusEl.textContent = "❌ 验证失败: " + e.message;
         statusEl.style.color = "#f44";
       }
@@ -1823,6 +1850,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     // ── 缺失 LoRA 的 C 站查找弹窗：预览图 + 进 C 站 + 下载 ──
     // ── 缺失 LoRA 弹窗：复制名称 + 前往 C 站搜索（把搜索交给用户，绕开 API 匹配不准） ──
     _showMissingSearch(missingList) {
+      if (this._disposed) return;
       const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
       const overlay = document.createElement("div");
       overlay.className = "modal-overlay";
@@ -1842,10 +1870,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         <button class="close-btn" style="margin-top:10px;padding:5px 14px;align-self:flex-end;background:rgba(255,255,255,0.06);color:#8A8F98;border:1px solid rgba(255,255,255,0.06);border-radius:6px;cursor:pointer;font-size:10px;">关闭</button>`;
       overlay.appendChild(modal);
       document.body.appendChild(overlay);
-      const close = () => overlay.remove();
+      const onKey = e => { if (e.key === "Escape") close(); };
+      const close = this._ownView("missing", () => {
+        overlay.remove(); document.removeEventListener("keydown", onKey);
+      });
       overlay.onclick = (e) => { if (e.target === overlay) close(); };
       modal.querySelector(".close-btn").onclick = close;
-      document.addEventListener("keydown", function h(e) { if (e.key === "Escape") { close(); document.removeEventListener("keydown", h); } });
+      document.addEventListener("keydown", onKey);
       modal.addEventListener("click", (e) => {
         const copyBtn = e.target.closest(".ms-copy");
         if (copyBtn) { copyText(copyBtn.dataset.name); showToast("已复制: " + copyBtn.dataset.name); return; }
@@ -1858,10 +1889,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     // 投递语义：每个 bridge 版本只投递一次。localStorage 记录「已应用版本」，
     // 重启/刷新不再重放历史残留（anima_bridge.json 兜底文件），用户手动删除的条目不复活。
     async _syncFromBridge(listEl, silent) {
+      if (this._disposed) return 0;
       try {
-        const resp = await fetch("/anima/bridge/status");
+        const resp = await fetch("/anima/bridge/status", { signal: this._lifetime.signal });
         if (!resp.ok) return 0;
         const data = await resp.json();
+        if (this._disposed) return 0;
         if (!data || !data.bridge_found || !Array.isArray(data.loras) || !data.loras.length) return 0;
         const ts = data.updated_at || 0;
         if (this._lastBridgeTs && ts <= this._lastBridgeTs) return 0;
@@ -1874,7 +1907,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         data.loras.forEach((l) => {
           if (!l || !l.name) return;
           if (!this.loras.some((e) => normalizeLoraName(e.name) === normalizeLoraName(l.name))) {
-            this.loras.push({ name: l.name, weight: typeof l.model_strength === "number" ? l.model_strength : 1.0, disabled: this._prefDisabled(l.name) });
+            this.loras.push({ name: l.name, weight: typeof l.model_strength === "number" ? l.model_strength : 1.0, clipWeight: l.clip_strength ?? l.model_strength ?? 1.0, disabled: this._prefDisabled(l.name) });
             added++;
           }
           if (l.trigger_words && l.trigger_words.length && !this.triggerWordMap[l.name]) {
@@ -1972,14 +2005,25 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     // ── LoRA 组管理（保存 / 一键切换 / 重命名 / 删除 / 悬浮预览） ──
     _groupsModal(listEl) {
+      if (this._disposed) return;
+      this._views.get("groups")?.();
+      const generation = this._groupsGeneration = (this._groupsGeneration || 0) + 1;
       this._fetchMeta()
         .then((metaData) => {
+          if (this._disposed || generation !== this._groupsGeneration) return;
           // 读取失败（null）→ 直接中止本次操作并提示；绝不拿 { loraGroups: [] } 当起点去 POST，
           // 否则一次保存/删除就会把后端已有的组、分类、偏好整体覆盖清空
           if (!metaData) { showToast("读取后端数据失败，本次未保存，请重试"); return; }
           const groups = Array.isArray(metaData.loraGroups) ? metaData.loraGroups : [];
           this._metaLoaded = true; // 此刻拿到的是后端完整快照
           const overlay = document.createElement("div");
+          const hoverTimers = new Set();
+          const close = this._ownView("groups", () => {
+            if (generation === this._groupsGeneration) this._groupsGeneration++;
+            for (const timer of hoverTimers) clearTimeout(timer);
+            this._views.get("popover")?.();
+            overlay.remove();
+          });
           overlay.className = "modal-overlay anima-group-overlay";
           overlay.style.cssText = "position:fixed;inset:0;background:rgba(10,10,15,0.85);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);";
           const modal = document.createElement("div");
@@ -2006,16 +2050,18 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
               const name = nameInput.value.trim();
               if (!name) { showToast("请输入组名"); return; }
               const meta = await this._fetchMeta();
+              if (generation !== this._groupsGeneration) return;
               // 读取失败 → 中止并提示，绝不用空对象当基线（那会把后端 LoRA 组整体清掉）
               if (!meta) { showToast("读取后端数据失败，本次未保存，请重试"); return; }
               const gs = Array.isArray(meta.loraGroups) ? meta.loraGroups : [];
               if (gs.some((g) => g.name === name)) { showToast(`已存在同名组「${name}」`); return; }
-              gs.push({ name, loras: active.map((l) => ({ name: l.name, weight: l.weight })) });
+              gs.push({ name, loras: active.map((l) => ({ name: l.name, weight: l.weight, clipWeight: l.clipWeight })) });
               // 只提交 loraGroups 单键（依赖后端键级合并），不再整体覆盖后端 meta
               const res = await this._postMeta({ loraGroups: gs });
+              if (generation !== this._groupsGeneration) return;
               if (!res.ok) return; // 失败提示已在 _postMeta 内给出，保留弹窗让用户重试
               showToast(`已保存组「${name}」（${active.length} 个 LoRA）`);
-              overlay.remove();
+              close();
               this._groupsModal(listEl);
             };
             saveBtn.onclick = doSave;
@@ -2032,7 +2078,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           }
           const groupGrid = document.createElement("div");
           groupGrid.className = "anima-group-grid";
-          const dotClosePopover = () => { document.querySelectorAll(".anima-group-popover").forEach((el) => el.remove()); };
+          const dotClosePopover = () => this._views.get("popover")?.();
           modal.addEventListener("scroll", dotClosePopover);
           groups.forEach((g) => {
             const row = document.createElement("div");
@@ -2056,7 +2102,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             label.append(nameSpan, countSpan);
             label.title = `悬浮查看组内 LoRA：${g.name}`;
             let hoverTimer = null;
-            label.onmouseenter = () => { clearTimeout(hoverTimer); hoverTimer = setTimeout(() => this._showGroupPopover(row, g), 300); };
+            label.onmouseenter = () => {
+              clearTimeout(hoverTimer);
+              hoverTimer = setTimeout(() => {
+                hoverTimers.delete(hoverTimer);
+                if (generation === this._groupsGeneration) this._showGroupPopover(row, g);
+              }, 300);
+              hoverTimers.add(hoverTimer);
+            };
             label.onmouseleave = () => { clearTimeout(hoverTimer); dotClosePopover(); };
             row.appendChild(label);
 
@@ -2076,13 +2129,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
               input.focus();
               input.select();
               let done = false;
-              const reopen = () => { if (done) return; done = true; overlay.remove(); this._groupsModal(listEl); };
-              const reload = () => { overlay.remove(); this._groupsModal(listEl); };
+              const reopen = () => { if (done) return; done = true; close(); this._groupsModal(listEl); };
+              const reload = () => { close(); this._groupsModal(listEl); };
               const commit = async () => {
                 if (done) return; done = true;
                 const next = input.value.trim();
                 if (!next || next === prev) { reload(); return; }
                 const meta = await this._fetchMeta();
+                if (generation !== this._groupsGeneration) return;
                 if (!meta) { showToast("读取后端数据失败，本次未保存，请重试"); reload(); return; }
                 const gs = Array.isArray(meta.loraGroups) ? meta.loraGroups : [];
                 if (gs.some((x) => x.name === next)) { showToast(`已存在同名组「${next}」`); reload(); return; }
@@ -2092,6 +2146,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
                 // 改名属于"数组可能变短"的一类操作：显式声明 loraGroups 允许被覆盖，
                 // 否则后端"空值不覆盖非空"的护栏会把合法改动当成清空拦掉
                 const res = await this._postMeta({ loraGroups: gs }, { replace: ["loraGroups"] });
+                if (generation !== this._groupsGeneration) return;
                 if (!res.ok) { reload(); return; } // 失败提示已在 _postMeta 内给出
                 showToast(`组已重命名：${prev} → ${next}`);
                 reload();
@@ -2109,10 +2164,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
             loadBtn.textContent = "切换";
             loadBtn.onclick = () => {
               dotClosePopover();
-              this.loras = (g.loras || []).map((l) => ({ name: l.name, weight: l.weight, disabled: this._prefDisabled(l.name) }));
+              this.loras = (g.loras || []).map((l) => ({ name: l.name, weight: l.weight, clipWeight: l.clipWeight ?? l.weight, disabled: this._prefDisabled(l.name) }));
               this._commit();
               if (listEl) this._render(listEl);
-              overlay.remove();
+              close();
               showToast(`已切换组「${g.name}」（${this.loras.length} 个 LoRA）`);
             };
             row.appendChild(loadBtn);
@@ -2128,8 +2183,9 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
               // 删除会让数组变短（甚至删到空）：必须带 __replace 显式授权清空该键，
               // 否则后端护栏会把"删掉最后一组"这个合法操作整个拦掉（用户表现为删不掉）
               const res = await this._postMeta({ loraGroups: next }, { replace: ["loraGroups"] });
+              if (generation !== this._groupsGeneration) return;
               if (!res.ok) return; // 失败提示已在 _postMeta 内给出，保留弹窗让用户重试
-              overlay.remove();
+              close();
               this._groupsModal(listEl);
             };
             row.appendChild(delBtn);
@@ -2137,7 +2193,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
           });
           modal.appendChild(groupGrid);
           overlay.appendChild(modal);
-          overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+          overlay.onclick = (e) => { if (e.target === overlay) close(); };
           document.body.appendChild(overlay);
         });
     }
@@ -2146,6 +2202,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     // ── 浏览 LoRA（大图网格：收藏/置顶/分类） ──
     // ── 浏览 LoRA（列表/网格 + 收藏/置顶/分类 + 虚拟滚动） ──
     _browseModal(statusEl) {
+      this._closeBrowser?.();
       try {
       const overlay = document.createElement("div");
       overlay.className = "modal-overlay bm-overlay bm-overlay-enter";
@@ -2307,47 +2364,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         renderCurrent();
       };
       window.addEventListener("storage", onLocalLoraCacheStorage);
-      // 模型信息匹配请求：可取消，超时覆盖 C 站查询、档案回退与文件哈希准备。
-      const _infoControllers = new Set();
-      const getInfo = (name) => {
-        const ctrl = new AbortController();
-        _infoControllers.add(ctrl);
-        const timer = setTimeout(() => ctrl.abort(), LORA_INFO_TIMEOUT_MS);
-        return fetch("/anima/lora/info?name=" + encodeURIComponent(name), { signal: ctrl.signal })
-          .then((r) => (r.ok ? r.json() : null))
-          .catch(() => null)
-          .finally(() => { clearTimeout(timer); _infoControllers.delete(ctrl); });
-      };
-      // 同一文件只保留一个排队/在途查询；关闭后不再启动队列中的任务。
-      let _infoConcurrent = 0;
-      const _infoQueue = [];
-      const _infoPending = new Map();
-      const MAX_INFO_CONCURRENT = 4;
-      const getInfoQueued = (name) => {
-        if (closed) return Promise.resolve(null);
-        if (this._imgCache[name]) return Promise.resolve(this._imgCache[name]);
-        if (_infoPending.has(name)) return _infoPending.get(name);
-        let finish;
-        const pending = new Promise((resolve) => { finish = resolve; });
-        _infoPending.set(name, pending);
-        const run = () => {
-          if (closed) { finish(null); _infoPending.delete(name); return; }
-          _infoConcurrent++;
-          getInfo(name)
-            .then((info) => {
-              if (!closed && info && ["civitai", "civitaiarchive", "not_on_civitai", "not_found"].includes(info.source)) this._imgCache[name] = info;
-              finish(closed ? null : info);
-            })
-            .finally(() => {
-              _infoPending.delete(name);
-              _infoConcurrent--;
-              if (!closed && _infoQueue.length) _infoQueue.shift().run();
-            });
-        };
-        if (_infoConcurrent >= MAX_INFO_CONCURRENT) _infoQueue.push({ run, cancel: () => finish(null) });
-        else run();
-        return pending;
-      };
+      const infoSession = new LoraLookupSession(loraInfoClient);
+      const getInfoQueued = name => infoSession.get({ name }).then(info => {
+        if (closed) return null;
+        // Presentation snapshot for filtering and already mounted cards.
+        if (info) this._imgCache[name] = info;
+        return info;
+      }).catch(() => null);
       // ── 打开 C 站：有 modelId 直接进模型页；没有（懒加载未完成或未匹配到）则占位窗口 + 现查，
       //    确无匹配才回退名称搜索——避免"点 🔗 永远进搜索页"（9532e96 重构遗留）
       const openCivitai = (name, getMid) => {
@@ -2939,16 +2962,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         renderGeneration++;
         clearTimeout(_searchTimer);
         cancelPendingFrames();
-        _infoQueue.splice(0).forEach((job) => job.cancel());
-        _infoPending.clear(); visibleCards.clear(); recentCards.clear(); contentEl = null;
+        infoSession.dispose();
+        if (this._closeBrowser === closeModal) this._closeBrowser = null;
+        visibleCards.clear(); recentCards.clear(); contentEl = null;
         cancelBMDrag();
         // 释放资源：断开图片观察器、取消在途 C 站匹配请求（避免占满连接池导致二次打开列表加载不出）、恢复拖拽选中态、清理分类弹层
         io.disconnect();
-        _infoControllers.forEach((c) => c.abort());
-        _infoControllers.clear();
         document.body.style.userSelect = "";
         document.body.style.webkitUserSelect = "";
-        document.querySelectorAll(".bm-catpicker").forEach((el) => el.remove());
+        this._views.get("categories")?.();
         window.removeEventListener("resize", onResize);
         window.removeEventListener("storage", onLocalLoraCacheStorage);
         document.removeEventListener("mousedown", onBMDown, true);
@@ -2960,6 +2982,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         document.removeEventListener("mouseleave", cancelBMDrag);
         overlay.remove();
       };
+      this._closeBrowser = closeModal;
       closeBtn.onclick = closeModal;
       overlay.onclick = (e) => { if (e.target === overlay) closeModal(); };
       searchInput.onkeydown = (e) => { if (e.key === "Escape") closeModal(); };
@@ -3062,7 +3085,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     // ── 分类分配下拉（连续勾选：点击分类后保持打开继续勾选，点「完成」或点击外部才关闭，与面板 LoRA 管理一致） ──
     _showCatPicker(card, name, meta, saveMeta, renderList) {
-      document.querySelectorAll(".bm-catpicker").forEach((el) => el.remove());
+      if (this._disposed) return;
       const picker = document.createElement("div");
       picker.className = "bm-catpicker";
       picker.style.cssText = "position:fixed;z-index:100000;background:linear-gradient(180deg,#16161b,#101014);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:8px;max-width:220px;box-shadow:0 12px 40px rgba(0,0,0,0.6);";
@@ -3090,7 +3113,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         });
         picker.querySelector("[data-cat-done]").onclick = (ev) => { ev.stopPropagation(); close(); };
       };
-      const close = () => { picker.remove(); document.removeEventListener("mousedown", rm, true); };
+      let outsideTimer;
+      const close = this._ownView("categories", () => {
+        clearTimeout(outsideTimer); picker.remove(); document.removeEventListener("mousedown", rm, true);
+      });
       const rm = (e) => { if (!picker.contains(e.target)) close(); };
       renderBody();
       document.body.appendChild(picker);
@@ -3098,12 +3124,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (left + 220 > window.innerWidth) left = rect.left - 220 - 6;
       picker.style.left = left + "px";
       picker.style.top = Math.max(4, rect.top) + "px";
-      setTimeout(() => document.addEventListener("mousedown", rm, true), 10);
+      outsideTimer = setTimeout(() => document.addEventListener("mousedown", rm, true), 10);
     }
 
     // ── 右键分类菜单（支持拖拽多选批量；连续勾选：保持打开直到「完成」/点击外部，与面板 LoRA 管理一致） ──
     _showCatContextMenu(host, name, meta, saveMeta, onDone) {
-      document.querySelectorAll(".bm-catpicker").forEach((el) => el.remove());
+      if (this._disposed) return;
       // 拖拽/批量勾选多个时 → 批量分类
       const sel = this._bmSelected && this._bmSelected.size > 1 && this._bmSelected.has(name)
         ? [...this._bmSelected]
@@ -3143,7 +3169,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         });
         picker.querySelector("[data-cat-done]").onclick = (ev) => { ev.stopPropagation(); close(); };
       };
-      const close = () => { picker.remove(); document.removeEventListener("mousedown", rm, true); };
+      let outsideTimer;
+      const close = this._ownView("categories", () => {
+        clearTimeout(outsideTimer); picker.remove(); document.removeEventListener("mousedown", rm, true);
+      });
       const rm = (e) => { if (!picker.contains(e.target)) close(); };
       renderBody();
       document.body.appendChild(picker);
@@ -3151,12 +3180,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (left + 200 > window.innerWidth) left = rect.left - 200 - 6;
       picker.style.left = left + "px";
       picker.style.top = Math.max(4, rect.top) + "px";
-      setTimeout(() => document.addEventListener("mousedown", rm, true), 10);
+      outsideTimer = setTimeout(() => document.addEventListener("mousedown", rm, true), 10);
     }
 
     // ── 组悬浮预览：列出组内每个 LoRA（名称+权重，触发词已知则附上） ──
     _showGroupPopover(anchorEl, group) {
-      document.querySelectorAll(".anima-group-popover").forEach((el) => el.remove());
+      if (this._disposed) return;
       const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
       const popover = document.createElement("div");
       popover.className = "anima-group-popover anima-tw-popover";
@@ -3202,16 +3231,18 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       // 点击外部关闭（hover 由 mouseleave 处理）
       const closeHandler = (e) => {
         if (!popover.contains(e.target) && !anchorEl.contains(e.target)) {
-          document.querySelectorAll(".anima-group-popover").forEach((el) => el.remove());
-          document.removeEventListener("click", closeHandler, true);
+          close();
         }
       };
+      const close = this._ownView("popover", () => {
+        popover.remove(); document.removeEventListener("click", closeHandler, true);
+      });
       document.addEventListener("click", closeHandler, true);
     }
 
     // ── 触发词 tooltip 弹窗 ──
     _showTwTooltip(anchorEl, loraName, mode) {
-      document.querySelectorAll(".anima-tw-popover").forEach((el) => el.remove());
+      if (this._disposed) return;
       // 触发词来自 C 站第三方数据，插入 innerHTML 前必须完整转义
       const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
       const escAttr = (s) => esc(s);
@@ -3273,17 +3304,18 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       });
 
       // 点击外部关闭（hover 模式下由 mouseleave 处理）
-      if (mode !== "hover") {
-        const closeHandler = (e) => {
+      const closeHandler = (e) => {
           if (!popover.contains(e.target) && e.target !== anchorEl) {
-            popover.remove();
-            document.removeEventListener("click", closeHandler, true);
+            close();
           }
-        };
+      };
+      const close = this._ownView("popover", () => {
+        popover.remove(); document.removeEventListener("click", closeHandler, true);
+      });
+      if (mode !== "hover") {
         document.addEventListener("click", closeHandler, true);
       }
     }
   }
 
   init();
-})();

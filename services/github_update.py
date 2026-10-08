@@ -1,19 +1,11 @@
-"""``__init__.py`` 拆分的**第一阶段**产物：GitHub 自动更新链。
+"""GitHub update owner: checks, pinned ZIP application, state and HTTP routes.
 
-为什么优先拆这一块：
-  · 它是全仓库**边界最清晰**的一段 —— 实测只依赖「一个 aiohttp session」和「插件目录路径」，
-    其余全是自洽的纯逻辑（版本比较 / 发布文件白名单 / git blob sha / ZIP 校验与暂存 / 状态落盘）；
-  · 对外只暴露「检查更新」与「应用更新」两件事，不碰节点注册、不碰任何路由；
-  · 已有独立回归 `tests/test_update_archive.py` 兜底（ZIP 白名单、data/models 保留、坏包拒绝）。
-
-拆分纪律（照做，别破坏）：
-  · **路由仍留在 `__init__.py`** —— 那里是所有 `/anima/*` 的唯一入口，集中才看得清 API 面；
-    本模块只提供函数。
-  · **不改任何 API 路径、不改落盘格式**（`data/update_state.json` 的字段不变）。
-  · 会话与插件目录用**显式注入**（`configure()`），不用 import 回 `__init__` —— 避免循环导入。
+The installation path and shared HTTP getter are explicitly configured. ZIP
+validation, file rollback and user-asset protection remain within this service.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -25,6 +17,7 @@ import time
 import zipfile
 
 import aiohttp
+from aiohttp import web
 
 # ── 运行时注入（由 __init__.py 调用 configure()）─────────────────────────────
 _PLUGIN_DIR: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -63,21 +56,27 @@ _SHIPPED_DATA_FILES = {
 
 # 检查结果缓存（30 秒）+ 串行化锁；与应用锁分开，避免「检查」把「应用」堵住
 UPDATE_CHECK_CACHE: dict = {"expires": 0.0, "value": None}
-UPDATE_APPLY_LOCK: "object | None" = None  # 由 __init__ 注入 asyncio.Lock（跨版本保持兼容）
+UPDATE_APPLY_LOCK: "object | None" = None
 
 
 def configure(*, plugin_dir: str | None = None, session_getter=None,
               apply_lock=None, check_lock=None) -> None:
     """注入宿主环境。幂等，可重复调用（例如测试里改 PLUGIN_DIR 后）。"""
-    global _PLUGIN_DIR, _get_session, UPDATE_APPLY_LOCK
+    global _PLUGIN_DIR, _get_session, UPDATE_APPLY_LOCK, _CHECK_LOCK
     if plugin_dir is not None:
+        if os.path.abspath(plugin_dir) != os.path.abspath(_PLUGIN_DIR):
+            UPDATE_CHECK_CACHE.update(expires=0.0, value=None)
         _PLUGIN_DIR = plugin_dir
     if session_getter is not None:
         _get_session = session_getter
     if apply_lock is not None:
         UPDATE_APPLY_LOCK = apply_lock
+    elif UPDATE_APPLY_LOCK is None:
+        UPDATE_APPLY_LOCK = asyncio.Lock()
     if check_lock is not None:
-        globals()["_CHECK_LOCK"] = check_lock
+        _CHECK_LOCK = check_lock
+    elif _CHECK_LOCK is None:
+        _CHECK_LOCK = asyncio.Lock()
 
 
 _CHECK_LOCK = None
@@ -422,3 +421,55 @@ def apply_staged_update(staged: list[tuple[str, str]]) -> int:
     finally:
         if not rollback_errors:
             shutil.rmtree(backup_dir, ignore_errors=True)
+
+
+def register_routes(routes, current_version):
+    """Attach the existing check/apply protocol to this configured owner."""
+    async def version(request):
+        force = request.query.get("force", "").strip().lower() in {"1", "true", "yes"}
+        return web.json_response(await get_update_info(current_version, force=force))
+
+    async def apply(request):
+        """安全应用 GitHub ZIP 更新；仅覆盖发布文件，保留用户数据。"""
+        if UPDATE_APPLY_LOCK.locked():
+            return web.json_response({"ok": False, "error": "更新正在进行中"}, status=409)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        expected_commit = str(payload.get("expectedCommit") or "").strip() if isinstance(payload, dict) else ""
+        async with UPDATE_APPLY_LOCK:
+            info = await get_update_info(current_version, force=True)
+            remote_commit = str(info.get("remoteCommit") or "").strip()
+            if not remote_commit:
+                return web.json_response({"ok": False, "error": "无法获取 GitHub 最新提交，请稍后重试或手动更新"}, status=503)
+            if expected_commit and expected_commit != remote_commit:
+                return web.json_response({"ok": False, "error": "远端在检查后又有新提交，请重新检查更新", "remoteCommit": remote_commit}, status=409)
+            if not info.get("updateAvailable"):
+                return web.json_response({"ok": True, "alreadyLatest": True, "restartRequired": False, **info})
+            temp_dir = tempfile.mkdtemp(prefix="anima-update-")
+            archive_path = os.path.join(temp_dir, "update.zip")
+            stage_dir = os.path.join(temp_dir, "stage")
+            try:
+                os.makedirs(stage_dir, exist_ok=True)
+                await download_update_archive(remote_commit, archive_path)
+                staged = stage_update_archive(archive_path, stage_dir)
+                count = apply_staged_update(staged)
+                version_path = os.path.join(stage_dir, "VERSION")
+                with open(version_path, "r", encoding="utf-8") as handle:
+                    applied_version = handle.read().strip()
+                state_saved = write_update_state(remote_commit, applied_version)
+                UPDATE_CHECK_CACHE["value"] = None
+                return web.json_response({
+                    "ok": True, "updatedFiles": count, "version": applied_version,
+                    "commit": remote_commit, "stateSaved": state_saved,
+                    "restartRequired": True,
+                    "restartHint": "请通过绘世启动器重启 ComfyUI，然后刷新浏览器页面",
+                })
+            except Exception as error:
+                return web.json_response({"ok": False, "error": str(error), "unchangedOnValidationFailure": True}, status=500)
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+    routes.get("/anima/version")(version)
+    routes.post("/anima/update/apply")(apply)

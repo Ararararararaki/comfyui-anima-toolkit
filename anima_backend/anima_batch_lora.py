@@ -26,14 +26,10 @@ from . import anima_thumbs
 from . import anima_gallery
 from .services.lora_trigger_overrides import TriggerOverrideStore
 from .services.gallery_response import GalleryResponseCache, accepts_gzip
+from .services import bridge
 
 _GALLERY_RESPONSE_CACHE = GalleryResponseCache()
 
-# ── In-memory bridge data (shared with __init__.py via HTTP API) ──
-BRIDGE_DATA: dict = {}
-BRIDGE_LOCK = threading.Lock()
-
-BRIDGE_PATH = os.path.join(plugin_root(), "anima_bridge.json")
 _LORA_MODEL_EXTENSIONS = (".safetensors", ".pt", ".pth", ".ckpt", ".bin")
 
 
@@ -206,14 +202,7 @@ def _effective_trigger_words(index, name, overrides, catalog):
 def _resolved_lora_syntax(lora_syntax):
     text = str(lora_syntax or "").strip()
     if not text:
-        with BRIDGE_LOCK:
-            text = BRIDGE_DATA.get("loras", "")
-        if not text:
-            try:
-                with open(BRIDGE_PATH, encoding="utf-8") as source:
-                    text = json.load(source).get("loras", "")
-            except (OSError, ValueError):
-                pass
+        text = bridge.store.snapshot("auto").get("loras", "")
     return text
 
 
@@ -330,18 +319,9 @@ def _trigger_word_keys(name: str) -> list:
 def _build_trigger_index() -> dict:
     """合并三个来源的触发词（优先级由低到高）：bridge 文件 → 内存 bridge → 节点推送的持久表。"""
     pairs = []
-    try:
-        if os.path.exists(BRIDGE_PATH):
-            with open(BRIDGE_PATH, "r", encoding="utf-8") as fh:
-                file_data = json.load(fh)
-            for item in (file_data.get("lora_list") or []):
-                pairs.append((item.get("name", ""), item.get("trigger_words") or []))
-    except Exception:  # noqa: BLE001
-        pass
-    with BRIDGE_LOCK:
-        if BRIDGE_DATA:
-            for item in (BRIDGE_DATA.get("lora_list") or []):
-                pairs.append((item.get("name", ""), item.get("trigger_words") or []))
+    for source in ("file", "memory"):
+        for item in (bridge.store.snapshot(source).get("lora_list") or []):
+            pairs.append((item.get("name", ""), item.get("trigger_words") or []))
     for name, words in _load_trigger_words().items():
         pairs.append((name, words))
     index = {}
@@ -541,7 +521,7 @@ async def verify_bridge(request):
 
     Three modes:
       1. ``?text=<lora_tags>`` — parse and verify the inline tags directly
-      2. In-memory ``BRIDGE_DATA`` (from HTTP API)
+      2. In-memory bridge snapshot (from HTTP API)
       3. ``anima_bridge.json`` file (backward compat)
     """
     result = {"bridge_found": False, "source": None, "loras": []}
@@ -576,24 +556,21 @@ async def verify_bridge(request):
             return web.json_response(result)
 
         # Mode 2: in-memory bridge data
-        with BRIDGE_LOCK:
-            if BRIDGE_DATA:
-                text = BRIDGE_DATA.get("loras", "")
-                lora_list = BRIDGE_DATA.get("lora_list", [])
-                source = "memory"
-                result["updated_at"] = BRIDGE_DATA.get("_receivedAt", 0)
+        memory = bridge.store.snapshot("memory")
+        if memory:
+            text = memory.get("loras", "")
+            lora_list = memory.get("lora_list", [])
+            source = "memory"
+            result["updated_at"] = memory.get("_receivedAt", 0)
 
         # Mode 3: bridge file (backward compat)
-        if not text and os.path.exists(BRIDGE_PATH):
-            try:
-                with open(BRIDGE_PATH, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+        if not text:
+            data = bridge.store.snapshot("file")
+            if data:
                 text = data.get("loras", "")
                 lora_list = data.get("lora_list", [])
                 source = "file"
                 result["updated_at"] = data.get("updatedAt", 0)
-            except Exception:
-                pass
 
         if not text and not lora_list:
             result["bridge_found"] = False
@@ -929,7 +906,7 @@ def _gallery_build_worker(output_root: str) -> None:
             with _GALLERY_LOCK:
                 _GALLERY_STATE["progress"] = done
                 _GALLERY_STATE["total"] = total
-        index = anima_gallery.build_index(output_root, _gallery_index_path(), progress)
+        index = anima_gallery.refresh(output_root, _gallery_index_path(), "full", progress_cb=progress)["index"]
         with _GALLERY_LOCK:
             _GALLERY_STATE["index"] = index
             _GALLERY_STATE["loaded"] = True
@@ -1297,14 +1274,7 @@ async def outputs_delete(request):
         # 索引同步移除：只删这一条，不做全量重建（全量重建是用户明确点名要去掉的）
         canonical = os.path.relpath(abs_path, root).replace("\\", "/")
         try:
-            index_path = _gallery_index_path()
-            with _GALLERY_LOCK:
-                index = anima_gallery.load_index(index_path)
-                entries = index.get("entries")
-                if isinstance(entries, dict) and entries.pop(canonical, None) is not None:
-                    index["total"] = len(entries)
-                    index["builtAt"] = int(time.time() * 1000)
-                    anima_gallery._save_index(index_path, index)
+            anima_gallery.refresh(root, _gallery_index_path(), "delete", removed_paths=[canonical])
         except Exception as exc:  # noqa: BLE001 —— 索引清理失败不应回滚已完成的磁盘删除
             print(f"[outputs] 索引条目清理失败（文件已删除）: {exc}")
         return ("ok", canonical)

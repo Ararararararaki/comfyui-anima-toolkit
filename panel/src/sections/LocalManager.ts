@@ -1,4 +1,5 @@
-import { deleteLocalLoraPreview, loadLocalLoraPreviews, saveLocalLoraPreview, useLocalModelStore } from '../store/localModels'
+import { deleteLocalLoraPreview, loadLocalLoraPreviews, saveLocalLoraPreview, useLocalModelStore, localScanSession } from '../store/localModels'
+import type { LocalScanProgress } from '../services/localScanSession'
 import type { LocalDisplayMode, LocalSortKey, LocalFilterKey, LocalViewKey } from '../store/localModels'
 import { esc, escAttr, copyText, showToast, fmtNum, thumbUrl, debounce, stripExt, setBtnIcon, icon, attachSearchClear } from '../utils'
 import { openLightbox } from '../components/Lightbox'
@@ -26,6 +27,22 @@ function highlightText(text: string, query: string): string {
 
 let _initDone = false
 let _localStoreUnsubscribe: (() => void) | null = null
+let _scanProgressUnsubscribe: (() => void) | null = null
+
+function renderScanProgress(progress: LocalScanProgress): void {
+  const busy = progress.status === 'scanning' || progress.status === 'matching'
+  const wrap = document.getElementById('localProgress')
+  const bar = document.getElementById('localProgressBar')
+  const text = document.getElementById('localProgressText')
+  const scanButton = document.getElementById('localScanBtn') as HTMLButtonElement | null
+  const matchButton = document.getElementById('localMatchAllBtn') as HTMLButtonElement | null
+  if (scanButton) scanButton.disabled = busy
+  if (matchButton) matchButton.disabled = busy
+  if (wrap) wrap.style.display = busy ? 'flex' : 'none'
+  const pct = progress.total > 0 ? Math.round(((progress.done + progress.partial) / progress.total) * 100) : 0
+  if (bar) bar.style.width = busy ? `${pct}%` : '0%'
+  if (text) text.textContent = `${progress.label} ${progress.done}/${progress.total} (${pct}%)`
+}
 
 // ── 渲染调度：扫描/匹配期间 store 高频变化（每个文件 updateFile 一次），
 // 若每次都全量重建列表 DOM（数千卡片）会把主线程反复打满 —— 表现为弹窗/滚动期间
@@ -823,6 +840,7 @@ export async function initLocalManager() {
   store.rebuildTagFreq()
   if (isLocalManagerActive()) renderLocalView()
   bindLocalEvents()
+  if (!_scanProgressUnsubscribe) _scanProgressUnsubscribe = localScanSession.subscribe(renderScanProgress)
   if (!_localStoreUnsubscribe) {
     _localStoreUnsubscribe = useLocalModelStore.subscribe((state, previous) => {
       if (state.files !== previous.files || state.scanStatus !== previous.scanStatus || state.scanningDir !== previous.scanningDir) {
@@ -876,7 +894,7 @@ async function activateLocalManagerInner() {
     if (changed) scheduleRenderLocalView()
   })
   const store = useLocalModelStore.getState()
-  if (store.scanStatus === 'scanning') return
+  if (store.scanStatus === 'scanning' || store.scanStatus === 'matching') return
   // ⚠️ 自动扫描统一节流（2026-09-10 二次修复）：此前只在「句柄失效」分支判节流，
   // 「首次使用」分支（files=0）漏判 —— 扫描进行中 files 仍为 0，快速切页每次激活
   // 都重新 scanIncremental（CDP 实测 10 次往返产生 59 个后端扫描请求）。
@@ -1947,7 +1965,7 @@ function bindLocalEvents() {
   initDragSelect()
 
   $$('localScanBtn')?.addEventListener('click', async () => {
-    if (useLocalModelStore.getState().scanStatus === 'scanning') return
+    if (['scanning', 'matching'].includes(useLocalModelStore.getState().scanStatus)) return
     await useLocalModelStore.getState().scanDir()
     refreshLocalNames()
     renderLocalView()
@@ -1967,16 +1985,12 @@ function bindLocalEvents() {
 
 
   $$('localMatchAllBtn')?.addEventListener('click', async () => {
-    const btn = $$('localMatchAllBtn') as HTMLButtonElement
-    btn.disabled = true
-    setBtnIcon(btn, 'spinner', '匹配中…')
     await useLocalModelStore.getState().matchAll()
-    btn.disabled = false
-    setBtnIcon(btn, 'refresh', '全部匹配')
     renderLocalView()
   })
 
   $$('localClearBtn')?.addEventListener('click', () => {
+    useLocalModelStore.getState().cancelScan()
     useLocalModelStore.setState({ files: [], scanStatus: 'idle' })
     useLocalModelStore.getState().saveToCache()
     renderLocalView()

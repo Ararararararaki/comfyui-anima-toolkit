@@ -1,7 +1,7 @@
 import { PortalDropdown } from "./anima_dropdown_menu.js";
 
-// 注意：新增筛选字段必须同步 ① 这里 FILTER_DEFAULTS/normalizeFilters 白名单 ② widget currentQuery 拼词
-// ③ 前端 FREE_METATAGS（anima_danbooru_gallery_widget.js）与后端 FREE_METATAGS（anima_danbooru_gallery.py）
+// 新增筛选字段同步这里的 defaults/normalization、anima_danbooru_query 的拼词/计数，
+// 以及后端 anima_danbooru_gallery 的计数政策。控件只呈现和提交筛选。
 export const FILTER_DEFAULTS = Object.freeze({
   age: "", ageDays: "", minScore: "", minFavs: "", order: "",
   minMpixels: "", ratio: "", filetype: "",

@@ -7,7 +7,7 @@
 都要现等一次全量重建（实测 3571 张 ≈ 12.9s）。
 
 本模块提供一个与浏览器无关的**常驻 daemon 线程**：自己低频探测输出目录，发现变化就把
-索引（``anima_gallery.update_index_incremental``）与缩略图（``anima_thumbs.ensure_thumbnail``）
+索引（``anima_gallery.refresh``）与缩略图（``anima_thumbs.ensure_thumbnail``）
 预备好；面板打开时直接命中。
 
 **探测必须是廉价的**（这是本模块最关键的性能约束）：真机实测
@@ -27,7 +27,7 @@ Windows 上 stat 极贵）。所以本模块的轮询**不调用它** —— 自
 对外契约（``__init__.py`` 挂载与读状态用，签名逐字一致）::
 
     install_gallery_warmup(*, output_root_getter, index_path_getter,
-                           interval_sec=20, debounce_sec=1.5) -> dict
+                           interval_sec=20, debounce_sec=1.5, app=None) -> dict
     warmup_status() -> dict
     request_warmup(reason="") -> bool
 
@@ -36,6 +36,7 @@ Windows 上 stat 极贵）。所以本模块的轮询**不调用它** —— 自
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import functools
 import importlib
@@ -86,8 +87,9 @@ _INSTALL_LOCK = threading.Lock()
 _INSTALL_SNAPSHOT: "dict | None" = None
 _THREAD: "threading.Thread | None" = None
 _WAKE = threading.Event()   # 事件加速：request_warmup 唤醒驱动循环
-_STOP = threading.Event()   # 仅供测试/卸载时优雅停线程
+_STOP = threading.Event()   # 应用 cleanup / 热替换时停止接收预热工作
 _PREDECESSORS = ()          # Whole-package reload: let old writes finish first.
+_OWNER = None              # Application lifetime, captured independently of globals.
 
 
 def _retire_previous_drivers():
@@ -127,6 +129,75 @@ _WARNED: set = set()
 _HOOK_STATE = {"installed": False, "target": "", "note": "尚未尝试"}
 _THUMB_STATE = {"batches": 0, "done": 0, "failed": 0, "lastError": None, "lastAt": 0.0}
 _THUMB_BATCH_LOCK = threading.Lock()
+_THUMB_THREADS_LOCK = threading.Lock()
+_THUMB_THREADS = set()
+
+
+class _WarmupOwner:
+    """Stop accepting work, then drain index and thumbnail file writers."""
+    def __init__(self, thread, stop, wake, thumb_threads, thumb_lock, predecessors):
+        self.thread, self.stop_event, self.wake_event = thread, stop, wake
+        self.thumb_threads, self.thumb_lock = thumb_threads, thumb_lock
+        self.predecessors = predecessors
+
+    def stop(self):
+        self.stop_event.set()
+        self.wake_event.set()
+
+    def close(self):
+        self.stop()
+        self.thread.join()
+        for predecessor in self.predecessors:
+            predecessor.join()
+        # The driver has stopped, so it cannot queue another thumbnail batch.
+        while True:
+            with self.thumb_lock:
+                workers = tuple(self.thumb_threads)
+            if not workers:
+                break
+            for worker in workers:
+                worker.join()
+
+
+def _install_app_owner(app, owner):
+    key = "tk.toolkit.gallery-warmup"
+    slot = app.get(key)
+    if slot is not None:
+        previous = slot["owner"]
+        if previous is owner:
+            return
+        if previous is not None:
+            previous.stop()
+            loop = slot.get("loop") or getattr(app, "_loop", None)
+            if loop is None or not loop.is_running():
+                slot["pending"].append(previous)
+            else:
+                slot["retiring"].append(asyncio.run_coroutine_threadsafe(asyncio.to_thread(previous.close), loop))
+        slot["owner"] = owner
+        return
+
+    slot = {"owner": owner, "loop": getattr(app, "_loop", None), "pending": [], "retiring": []}
+
+    async def startup(application):
+        slot["loop"] = asyncio.get_running_loop()
+
+    async def cleanup(application):
+        current = slot["owner"]
+        if current is not None:
+            current.stop()
+            await asyncio.to_thread(current.close)
+        for pending in slot["pending"]:
+            await asyncio.to_thread(pending.close)
+        if slot["retiring"]:
+            await asyncio.gather(*(asyncio.shield(asyncio.wrap_future(item)) for item in slot["retiring"]))
+        slot["owner"] = None
+        slot["pending"].clear()
+        slot["retiring"].clear()
+
+    app[key] = slot
+    if not getattr(app.on_startup, "frozen", False):
+        app.on_startup.append(startup)
+    app.on_cleanup.append(cleanup)
 
 
 # ── 小工具 ─────────────────────────────────────────────────────────────────
@@ -316,6 +387,8 @@ def _normalize_added(updater_result) -> list:
 
 def _spawn_thumb_prewarm(root: str, added_rels: list, source: str, payload: dict) -> None:
     """对"新增"的那批文件后台预热缩略图。任何异常都只记 lastError，绝不影响索引结果。"""
+    if _STOP.is_set():
+        return
     rels = list(added_rels)[:_THUMB_MAX_PER_BATCH]
     if not rels:
         payload["thumbs"] = {"requested": 0, "source": source,
@@ -326,8 +399,15 @@ def _spawn_thumb_prewarm(root: str, added_rels: list, source: str, payload: dict
                              "note": "上一批预热仍在跑，跳过"}
         return
     try:
-        threading.Thread(target=_thumb_batch_worker, args=(root, rels),
-                         name="anima-gallery-thumbs", daemon=True).start()
+        thread = threading.Thread(target=_thumb_batch_worker, args=(root, rels),
+                                  name="anima-gallery-thumbs", daemon=True)
+        with _THUMB_THREADS_LOCK:
+            _THUMB_THREADS.add(thread)
+            try:
+                thread.start()
+            except BaseException:
+                _THUMB_THREADS.discard(thread)
+                raise
     except Exception as exc:  # 起线程失败要还锁，否则永久跳过预热
         _THUMB_BATCH_LOCK.release()
         payload["thumbs"] = {"requested": len(rels), "source": source, "error": f"起线程失败: {exc}"}
@@ -341,6 +421,8 @@ def _thumb_batch_worker(root: str, rels: list) -> None:
     done = failed = 0
     error = None
     try:
+        if _STOP.is_set():
+            return
         thumbs = _plugin_module("anima_thumbs")
         if thumbs is None or not hasattr(thumbs, "ensure_thumbnail"):
             error = "anima_thumbs 不可用（缺 PIL 或导入失败），跳过缩略图预热"
@@ -373,6 +455,8 @@ def _thumb_batch_worker(root: str, rels: list) -> None:
                 if _STATUS["lastError"] is None:
                     _STATUS["lastError"] = error
         _THUMB_BATCH_LOCK.release()
+        with _THUMB_THREADS_LOCK:
+            _THUMB_THREADS.discard(threading.current_thread())
 
 
 # ── 一轮运行（可独立调用，不需要起线程）────────────────────────────────────
@@ -452,19 +536,23 @@ def _run_once_inner(reason: str):
                 "anima_gallery 不可用，预热降级为仅更新状态")
 
     # ② 贵的那一步（anima_gallery 内部全量 stat + 增量解析）只在探测到变化/显式请求时发生
-    updater = getattr(gallery, "update_index_incremental", None)
-    if not callable(updater) or not index_path:
+    refresh_index = getattr(gallery, "refresh", None)
+    # Partial updates may still have an older gallery module. Its established
+    # updater remains a compatibility fallback, not a second new write owner.
+    legacy_updater = getattr(gallery, "update_index_incremental", None)
+    if (not callable(refresh_index) and not callable(legacy_updater)) or not index_path:
         # 故意**不**更新 _LAST_RELS/_LAST_ROOT_MTIME_NS：将来增量接口可用时，还能把这段积压
         # 推导成"新增"去预热缩略图。
         return ({"skipped": True, "mode": "degraded", "reason": "incremental-api-missing",
                  "scanned": len(rels), "signature": [len(rels), root_mtime_ns], "root": root,
                  "indexPath": index_path},
-                "anima_gallery.update_index_incremental 尚不可用（降级：只更新状态，不做索引）")
+                "anima_gallery 索引更新接口尚不可用（降级：只更新状态，不做索引）")
 
     with _STATUS_LOCK:
         prev_rels = _LAST_RELS
     try:
-        updated = updater(root, index_path)
+        updated = (refresh_index(root, index_path, "incremental")["stats"]
+                   if callable(refresh_index) else legacy_updater(root, index_path))
     except Exception as exc:
         return ({"skipped": True, "mode": "error", "reason": "incremental-failed",
                  "scanned": len(rels), "signature": [len(rels), root_mtime_ns],
@@ -660,7 +748,7 @@ def _debounce_sleep() -> None:
 # ── 对外契约 ───────────────────────────────────────────────────────────────
 
 def install_gallery_warmup(*, output_root_getter, index_path_getter,
-                           interval_sec: int = 60, debounce_sec: float = 1.5) -> dict:
+                           interval_sec: int = 60, debounce_sec: float = 1.5, app=None) -> dict:
     """启动常驻预热线程。**幂等**：重复调用只生效一次，返回同一个 status 容器。
 
     :param output_root_getter: 无参可调用，返回 ComfyUI output 目录绝对路径
@@ -671,13 +759,16 @@ def install_gallery_warmup(*, output_root_getter, index_path_getter,
                          ``send_sync`` 事件通道即时触发，轮询只是兜底；连续无变化还会
                          自动退避到 120s。想要更灵敏就传更小的值（探测只要 ~10ms）。
     :param debounce_sec: 请求去抖窗口（秒）；窗口内的多次请求合并成一次运行。
+    :param app: 宿主 aiohttp Application；cleanup 停止新预热并等待所有文件写入结束。
 
     :return: status 快照（``warmup_status()`` 的内容）。重复调用返回**同一个对象**，
              每次 install 时原地刷新；调用方**不要改写**它。
     """
-    global _THREAD, _LAST_ACCEPT_AT, _PREDECESSORS
+    global _THREAD, _LAST_ACCEPT_AT, _PREDECESSORS, _OWNER
     with _INSTALL_LOCK:
         if _STATUS["installed"] and _THREAD is not None and _THREAD.is_alive():
+            if app is not None:
+                _install_app_owner(app, _OWNER)
             return _refresh_snapshot()  # 幂等：第一个 install 说了算，配置不再变
         _PREDECESSORS = _retire_previous_drivers()
 
@@ -699,7 +790,10 @@ def install_gallery_warmup(*, output_root_getter, index_path_getter,
         _STOP.clear()
         _WAKE.clear()
         _THREAD = threading.Thread(target=_driver_loop, name="anima-gallery-warmup", daemon=True)
+        _OWNER = _WarmupOwner(_THREAD, _STOP, _WAKE, _THUMB_THREADS, _THUMB_THREADS_LOCK, _PREDECESSORS)
         _THREAD.start()
+        if app is not None:
+            _install_app_owner(app, _OWNER)
 
     # 事件加速：整段包住，失败只 print 一行并降级到轮询，绝不影响插件加载/生图。
     note = None
@@ -740,6 +834,8 @@ def request_warmup(reason: str = "") -> bool:
     本函数只碰内存（置标志 + ``Event.set()``），可安全地从 ComfyUI 执行线程调用。
     """
     global _LAST_ACCEPT_AT
+    if _STOP.is_set():
+        return False
     now = time.time()
     debounce = max(0.0, float(_CFG["debounce_sec"] or 0))
     with _STATUS_LOCK:
@@ -791,7 +887,7 @@ def _refresh_snapshot() -> dict:
 
 
 def _shutdown_for_tests(timeout: float = 2.0) -> None:
-    """仅供测试：停掉驱动线程（生产不需要 —— 线程是 daemon，随进程退出）。"""
+    """Test helper; production application cleanup drains all owned writers."""
     _STOP.set()
     _WAKE.set()
     thread = _THREAD
