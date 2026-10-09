@@ -220,7 +220,8 @@ export async function fetchGallerySourcePage(adapter, input, { signal } = {}) {
     const pageMode = request.capabilities.page_numbers === true;
     // 排行榜也是页码分页，但页数由上游榜单长度决定（最长 10 页 / 500 条）——
     // 翻过末页会拿到空集，这里补一句说明，免得看着像"搜索失败"
-    if (rankingMode && !posts.length) notices.push("已到末页（上游榜单只到这一页）");
+    if (rankingMode && !items.length) notices.push("已到末页（上游榜单只到这一页）");
+    else if (rankingMode && !posts.length && excludedCount) notices.push("本页作品已被排除标签隐藏");
     else if (!pageMode && !nextCursor) notices.push("已到末页");
     if (request.capabilities.login === true && request.source === "pixiv" && !rankingMode) notices.push("P站标签与 Danbooru 词库不通用");
     if (request.capabilities.prompt === false && request.source === "pixiv") notices.push("P站无提示词，可下载原图喂 WD14 反推");
@@ -229,6 +230,7 @@ export async function fetchGallerySourcePage(adapter, input, { signal } = {}) {
       : (pageMode ? `第 ${request.page} 页` : `第 ${Math.max(1, Number(request.batch) || 1)} 批`);
     result = {
       ...empty, posts, groups, nextCursor, warnings,
+      ...(rankingMode ? { exhausted: items.length === 0 } : {}),
       status: `${request.label}：${posts.length} 张 · ${batch}` + (notices.length ? `（${notices.join("；")}）` : ""),
     };
   }

@@ -18,6 +18,7 @@ import io
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import shutil
 import socket
@@ -144,11 +145,13 @@ _danbooru_http = ThreadHttp(DANBOORU_HEADERS)
 
 def install_resources(app):
     """Bind the worker transport to the host's lifecycle."""
+    global _danbooru_http
     try:
         from .services.thread_http import install
     except ImportError:
         from services.thread_http import install
-    install(app, _danbooru_http)
+    install_browser_resources(app)
+    _danbooru_http = install(app, _danbooru_http)
 
 _image_proxy_semaphore: asyncio.Semaphore | None = None
 
@@ -715,6 +718,9 @@ def _resp_is_cf(resp: requests.Response) -> bool:
 
 _browser_lock = threading.Lock()
 _browser: "_DanbooruBrowser | None" = None
+_browser_slot: dict[str, Any] | None = None
+_BROWSER_SLOT_KEY = "tk.toolkit.danbooru-browser"
+_standalone_browser_registered = False
 _browser_working = False  # 网关成功过一次后置 True：后续请求直连网关，跳过 requests 往返
 
 
@@ -723,7 +729,14 @@ def _safe_get(mapping: Any, key: str, default: Any) -> Any:
 
 
 class _DanbooruBrowser:
-    """内置浏览器网关：用真实 Edge/Chrome 渲染引擎过 Cloudflare，供 API 与图片下载复用。"""
+    """内置浏览器网关：用真实 Edge/Chrome 渲染引擎过 Cloudflare，供 API 与图片下载复用。
+
+    ⚠️ 线程归属（2026-10-09 实测修复）：Playwright 的同步对象（Playwright / BrowserContext /
+    Page）**绑定创建它们的线程**，换线程调用会抛 `Cannot switch to a different thread`。
+    画廊取图走 `ThreadPoolExecutor` 并发，调用者线程并不固定，所以这里的做法是**自建一个
+    专属工作线程**：`start()`、每次求值、`shutdown()` 全部投递到该线程执行。外部任意线程
+    调用都是安全的，Playwright 侧始终只见同一个线程。
+    """
 
     _WARM_INTERVAL_SECONDS = 1100  # CF 的 __cf_bm/cf_clearance 约半小时有效，提前续活
 
@@ -734,8 +747,81 @@ class _DanbooruBrowser:
         self._channel: str = ""
         self._lock = threading.Lock()
         self._last_warm = 0.0
+        self._profiles: list[str] = []
+        # 专属线程：Playwright 对象的唯一合法使用者。任务是 (fn, args, done, box)，
+        # fn 在专属线程里跑，结果写回 box，异常存 e，最后 set done。
+        self._tasks: queue.Queue = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._state_lock = threading.Lock()
+        self._closing = False
+        self._start_condition = threading.Condition(self._state_lock)
+        self._starting = False
+        self._start_result: bool | None = None
+
+    def _serve(self) -> None:
+        try:
+            while True:
+                fn, args, done, box = self._tasks.get()
+                if fn is None:
+                    return
+                try:
+                    box["value"] = fn(*args)
+                except BaseException as error:  # noqa: BLE001 —— 原样回抛给调用线程
+                    box["error"] = error
+                finally:
+                    done.set()
+        finally:
+            self._shutdown_bound()
+
+    def _call(self, fn, *args):
+        """把 fn 投递到专属线程执行并同步等待结果。"""
+        if threading.current_thread() is self._thread:
+            return fn(*args)
+        done, box = threading.Event(), {}
+        with self._state_lock:
+            if self._closing:
+                raise RuntimeError("浏览器网关已关闭")
+            if self._thread is None:
+                thread = threading.Thread(target=self._serve, name="anima-danbooru-browser", daemon=True)
+                thread.start()
+                self._thread = thread
+            self._tasks.put((fn, args, done, box))
+        # 求值本身有 JS 侧 AbortController 超时（20s）+ 预热预算，这里留足余量。
+        if not done.wait(timeout=300):
+            raise RuntimeError("浏览器网关请求超时（专属线程未在 300s 内返回）")
+        if "error" in box:
+            raise box["error"]
+        return box.get("value")
 
     def start(self) -> bool:
+        # Playwright objects are created on, and forever bound to, the worker
+        # thread — never on whichever caller happens to trigger lazy startup.
+        with self._start_condition:
+            self._start_condition.wait_for(lambda: not self._starting or self._closing)
+            if self._closing:
+                return False
+            if self._start_result is not None:
+                return self._start_result
+            self._starting = True
+        try:
+            started = bool(self._call(self._start_bound))
+        except Exception as error:
+            print(f"[多重画廊·风控网关] 浏览器网关启动失败：{error}")
+            started = False
+        if not started:
+            self._begin_shutdown()
+        with self._start_condition:
+            self._start_result = started and not self._closing
+            self._starting = False
+            self._start_condition.notify_all()
+            result = self._start_result
+        if not result:
+            self.shutdown()
+        return result
+
+    def _start_bound(self) -> bool:
+        if self._context is not None:
+            return True
         try:
             from playwright.sync_api import sync_playwright
         except Exception as error:
@@ -765,8 +851,10 @@ class _DanbooruBrowser:
         context = None
         for channel in ("msedge", "chrome"):
             try:
+                profile = tempfile.mkdtemp(prefix="anima_dbrowser_")
+                self._profiles.append(profile)
                 context = self._playwright.chromium.launch_persistent_context(
-                    user_data_dir=tempfile.mkdtemp(prefix="anima_dbrowser_"),
+                    user_data_dir=profile,
                     channel=channel,
                     **launch_kwargs,
                 )
@@ -776,7 +864,6 @@ class _DanbooruBrowser:
                 context = None
         if context is None:
             print("[多重画廊·风控网关] 本机未找到可用的 Edge/Chrome，无法自动过风控")
-            self.shutdown()
             return False
         self._context = context
         self._page = context.new_page()
@@ -784,11 +871,29 @@ class _DanbooruBrowser:
             self._warm()
         except Exception as error:
             print(f"[多重画廊·风控网关] 预热 Danbooru 失败：{error}；网关不可用")
-            self.shutdown()
             return False
         return True
 
+    def _begin_shutdown(self) -> threading.Thread | None:
+        # Admission and the sentinel share one lock: accepted tasks finish first;
+        # later calls cannot restart the worker or enqueue behind its exit.
+        with self._state_lock:
+            thread = self._thread
+            if not self._closing:
+                self._closing = True
+                if thread is not None:
+                    self._tasks.put((None, (), threading.Event(), {}))
+                self._start_condition.notify_all()
+            return thread
+
     def shutdown(self) -> None:
+        thread = self._begin_shutdown()
+        if thread is not None and threading.current_thread() is not thread:
+            thread.join(timeout=300)
+            if thread.is_alive():
+                raise RuntimeError("浏览器网关关闭超时，工作线程仍在完成已接受的请求")
+
+    def _shutdown_bound(self) -> None:
         try:
             if self._context is not None:
                 self._context.close()
@@ -802,8 +907,13 @@ class _DanbooruBrowser:
         self._context = None
         self._page = None
         self._playwright = None
+        for profile in self._profiles:
+            shutil.rmtree(profile, ignore_errors=True)
+        self._profiles.clear()
 
     def _warm(self) -> None:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
         page = self._page
         try:
             page.goto("https://danbooru.donmai.us/", wait_until="domcontentloaded", timeout=60000)
@@ -812,7 +922,7 @@ class _DanbooruBrowser:
                     "() => (document.title || '').includes('Danbooru') && document.readyState === 'complete'",
                     timeout=45000,
                 )
-            except Exception:
+            except PlaywrightTimeoutError:
                 print("[多重画廊·风控网关] 浏览器校验未完全就绪，继续尝试")
         finally:
             # ⚠️ 无论成功失败都必须记账。这是 2026-09-21 用户实报「P站 栏目选某些图片后
@@ -824,13 +934,18 @@ class _DanbooruBrowser:
             self._last_warm = time.time()
 
     def _run(self, script: str, argument: Any) -> Any:
+        # Serialize onto the owning thread; the lock keeps concurrent callers from
+        # interleaving warm-ups while the queue keeps Playwright single-threaded.
         with self._lock:
-            if time.time() - self._last_warm > self._WARM_INTERVAL_SECONDS:
-                self._warm()
-            # Playwright Python 的 Page.evaluate 不接受 timeout 参数；用页面默认超时
-            # 保留 25s 兜底，否则异常会让浏览器网关每次都直接失败。
-            self._page.set_default_timeout(25000)
-            return self._page.evaluate(script, argument)
+            return self._call(self._evaluate_bound, script, argument)
+
+    def _evaluate_bound(self, script: str, argument: Any) -> Any:
+        if time.time() - self._last_warm > self._WARM_INTERVAL_SECONDS:
+            self._warm()
+        # Playwright Python 的 Page.evaluate 不接受 timeout 参数；用页面默认超时
+        # 保留 25s 兜底，否则异常会让浏览器网关每次都直接失败。
+        self._page.set_default_timeout(25000)
+        return self._page.evaluate(script, argument)
 
     def json(self, url: str, params: dict[str, Any]) -> Any:
         full = url + "?" + urlencode(params)
@@ -874,15 +989,99 @@ class _DanbooruBrowser:
         return data, ctype
 
 
+def install_browser_resources(app) -> None:
+    """Bind lazy browser access to one application slot across module reloads."""
+    global _browser_slot
+    slot = app.get(_BROWSER_SLOT_KEY)
+    if slot is None:
+        if app.on_cleanup.frozen:
+            raise RuntimeError("浏览器资源生命周期尚未安装，请通过绘世启动器重启 ComfyUI 一次")
+        slot = {
+            "lock": threading.Lock(), "browser": None, "factory": _DanbooruBrowser,
+            "closed": False, "loop": getattr(app, "_loop", None), "retiring": [],
+        }
+        app[_BROWSER_SLOT_KEY] = slot
+
+        async def startup(_app):
+            slot["loop"] = asyncio.get_running_loop()
+
+        async def cleanup(_app):
+            with slot["lock"]:
+                slot["closed"] = True
+                browser, slot["browser"] = slot["browser"], None
+                retiring, slot["retiring"] = slot["retiring"], []
+                if browser is not None:
+                    browser._begin_shutdown()
+            if browser is not None:
+                await asyncio.to_thread(browser.shutdown)
+            for previous, future in retiring:
+                if future is None:
+                    await asyncio.to_thread(previous.shutdown)
+                else:
+                    await asyncio.shield(asyncio.wrap_future(future))
+
+        if not app.on_startup.frozen:
+            app.on_startup.append(startup)
+        app.on_cleanup.append(cleanup)
+        atexit.register(lambda owned_slot=slot: _close_browser_slot(owned_slot))
+    else:
+        with slot["lock"]:
+            if slot["factory"] is not _DanbooruBrowser:
+                previous, slot["browser"] = slot["browser"], None
+                slot["factory"] = _DanbooruBrowser
+                pending = []
+                for owner, future in slot["retiring"]:
+                    if future is None or not future.done():
+                        pending.append((owner, future))
+                    else:
+                        try:
+                            future.result()
+                        except Exception as error:
+                            print(f"[多重画廊·风控网关] 旧网关清理失败：{error}")
+                            pending.append((owner, future))
+                slot["retiring"] = pending
+                if previous is not None:
+                    previous._begin_shutdown()
+                    loop = slot["loop"] or getattr(app, "_loop", None)
+                    future = (asyncio.run_coroutine_threadsafe(asyncio.to_thread(previous.shutdown), loop)
+                              if loop is not None and loop.is_running() else None)
+                    slot["retiring"].append((previous, future))
+    _browser_slot = slot
+
+
 def _get_browser() -> "_DanbooruBrowser | None":
-    global _browser
-    with _browser_lock:
-        if _browser is None:
-            candidate = _DanbooruBrowser()
-            if not candidate.start():
+    if _browser_slot is not None:
+        slot = _browser_slot
+        with slot["lock"]:
+            if slot["closed"]:
                 return None
-            _browser = candidate
-        return _browser
+            if slot["browser"] is None:
+                slot["browser"] = slot["factory"]()
+            candidate = slot["browser"]
+        started = candidate.start()
+        with slot["lock"]:
+            if slot["closed"] or slot["browser"] is not candidate:
+                return None
+            if not started:
+                slot["browser"] = None
+                return None
+            return candidate
+    global _browser, _standalone_browser_registered
+    with _browser_lock:
+        if not _standalone_browser_registered:
+            atexit.register(_close_browser)
+            _standalone_browser_registered = True
+        if _browser is None:
+            _browser = _DanbooruBrowser()
+        candidate = _browser
+    started = candidate.start()
+    with _browser_lock:
+        if _browser is not candidate:
+            return None
+        if not started:
+            _browser = None
+            return None
+        return candidate
 
 
 def _browser_json_or_none(url: str, params: dict[str, Any]) -> Any:
@@ -907,18 +1106,33 @@ def _browser_bytes_or_none(url: str) -> tuple[bytes, str] | None:
         return None
 
 
+def _close_browser_slot(slot) -> None:
+    with slot["lock"]:
+        slot["closed"] = True
+        browser, slot["browser"] = slot["browser"], None
+        retiring, slot["retiring"] = slot["retiring"], []
+    if browser is not None:
+        browser.shutdown()
+    for previous, _future in retiring:
+        previous.shutdown()
+
+
 def _close_browser() -> None:
+    if _browser_slot is not None:
+        _close_browser_slot(_browser_slot)
+        return
     global _browser
     with _browser_lock:
-        if _browser is not None:
-            try:
-                _browser.shutdown()
-            except Exception:
-                pass
-            _browser = None
+        browser, _browser = _browser, None
+    if browser is not None:
+        browser.shutdown()
 
 
-atexit.register(_close_browser)
+def _browser_alive() -> bool:
+    if _browser_slot is not None:
+        with _browser_slot["lock"]:
+            return _browser_slot["browser"] is not None
+    return _browser is not None
 
 
 def _danbooru_json(url: str, params: dict[str, Any], timeout: int = 20) -> Any:
@@ -2045,7 +2259,7 @@ async def anima_danbooru_diag(request: web.Request) -> web.Response:
         "requests_version": requests.__version__,
         "requests_file": requests.__file__,
         "browser_working": _browser_working,
-        "browser_alive": _browser is not None,
+        "browser_alive": _browser_alive(),
         "probes": [
             _probe(None, "direct"),
             _probe({"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}, "proxy-7890"),

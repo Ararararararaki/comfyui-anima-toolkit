@@ -9,6 +9,8 @@ import { AnimaDexPanel } from "./anima_animadex_panel.js";
 import { GallerySelectionControls } from "./anima_gallery_selection_controls.js";
 import { GalleryHoverPreview, galleryHoverImageUrl } from "./anima_gallery_hover_preview.js";
 import { GalleryController, galleryBrowserView } from "./anima_gallery_browser.js";
+import { currentGalleryWorkflowId } from "./anima_gallery_browse_state.js";
+import { loadGallerySourcePreference, saveGallerySourcePreference } from "./anima_gallery_source_preference.js";
 import { GallerySourceAdapter } from "./anima_gallery_source_adapter.js";
 import { fetchGalleryPage, gallerySourceRequestSnapshot } from "./anima_gallery_page_fetch.js";
 import * as GallerySourcePage from "./anima_gallery_source_page.js";
@@ -1784,7 +1786,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       // 本地分类浏览是 D站 的实现（按 id: 回查 D站 帖子），换源时退出该模式，
       // 否则新源会带着一个永远匹配不上的分类过滤。
       this.settings.activeCategory = "";
-      this.saveSettings();
+      this.saveSettings({ rememberSource: true });
       this.resetGalleryCursor();
       this.page = 1;
       // Keep the old cards until the next source has a successful result.
@@ -1933,6 +1935,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           const f = this.gallerySourceFilters(id);
           f.target = pixivTarget.value;
           f.sort = pixivSort.value;
+          if (!String(f.sort).startsWith("popular_")) f.recentPopular = false;
+          this.syncSourceFilterControls();
         } else {
           return;
         }
@@ -3216,24 +3220,35 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
     }
 
     loadWorkflowSettings() {
-      const raw = this.node?.properties?.[WORKFLOW_SETTINGS_PROPERTY];
       const fromWorkflow = this.workflowSettings();
       const nodeId = String(this.node?.id ?? "");
-      // 工作流设置优先于 localStorage：它代表用户保存的那个画廊实例。
+      // 工作流拥有筛选/分类等设置；图源另外恢复本浏览器的显式选择。
       // 没有工作流设置时，兼容旧版本并在 node.id 分配完成后重新读取节点作用域存储。
       if (fromWorkflow) {
         this.settings = fromWorkflow;
-        try { localStorage.setItem(this.settingsKey(), JSON.stringify(this.settings)); } catch {}
       } else if (nodeId !== this._settingsNodeId) {
         this.settings = loadSettings(this.node?.id);
       }
+      // Reloading can restore an older saved workflow. Keep this browser's last
+      // explicit source choice, without sharing it with other gallery instances.
+      let preferred = "";
+      try { preferred = loadGallerySourcePreference(localStorage, currentGalleryWorkflowId(app, this.node), nodeId); } catch {}
+      if (preferred && preferred !== this.settings.source) {
+        this.settings.source = preferred;
+        this.settings.activeCategory = "";
+        this.settings.lastQuery = String(this.settings.sourceQueries[preferred] || "");
+      }
+      this.saveUiState();
       this._settingsNodeId = nodeId;
       this.refreshSettingsUI();
     }
 
-    saveSettings() {
+    saveSettings({ rememberSource = false } = {}) {
       const serialized = JSON.stringify(this.settings);
       try { localStorage.setItem(this.settingsKey(), serialized); } catch {}
+      if (rememberSource) {
+        try { saveGallerySourcePreference(localStorage, currentGalleryWorkflowId(app, this.node), this.node?.id, this.settings.source); } catch {}
+      }
       if (this.node) {
         this.node.properties = this.node.properties || {};
         this.node.properties[WORKFLOW_SETTINGS_PROPERTY] = serialized;

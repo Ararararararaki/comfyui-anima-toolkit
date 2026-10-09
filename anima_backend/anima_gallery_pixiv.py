@@ -696,7 +696,8 @@ _last_route = {}
 
 def install_resources(app):
     """Bind Pixiv worker pools to their independent stable app slot."""
-    _install_http(app, _pixiv_http, namespace="pixiv")
+    global _pixiv_http
+    _pixiv_http = _install_http(app, _pixiv_http, namespace="pixiv")
 
 
 def _route_snapshot():
@@ -1064,7 +1065,11 @@ def illust_to_items(illust: Any) -> list[dict]:
     ⚠️ 单页作品**保持原样**（id 不带页码后缀）：改变 id 会让既有工作流里已保存的
     选中状态与本地分类键（``<source>:<id>``）一起失配。
     """
-    base = illust_to_item(illust)
+    return _expand_illust_pages(illust_to_item(illust))
+
+
+def _expand_illust_pages(base: dict[str, Any]) -> list[dict]:
+    """Normalized search and ranking items share page URLs and persistent IDs."""
     meta = base.get("meta") if isinstance(base.get("meta"), dict) else {}
     try:
         count = int(meta.get("page_count") or 1)
@@ -1402,21 +1407,7 @@ def _ranking_item(entry: dict[str, Any], *, mode: str, content: str, date: str) 
 
 def _ranking_items(entry: dict[str, Any], *, mode: str, content: str, date: str) -> list[dict]:
     """一条排行记录 → **每页一条 item**（与 `illust_to_items` 同一约定，多页作品才展开）。"""
-    base = _ranking_item(entry, mode=mode, content=content, date=date)
-    meta = base.get("meta") if isinstance(base.get("meta"), dict) else {}
-    count = _bounded_int(meta.get("page_count"), 1, 1, 1000)
-    base_id = str(base.get("id") or "")
-    if count <= 1 or not base_id:
-        return [base]
-    items: list[dict] = []
-    for page in range(count):
-        item = dict(base)
-        item["id"] = f"{base_id}_p{page}"
-        item["preview_url"] = _page_url(base.get("preview_url"), page)
-        item["full_url"] = _page_url(base.get("full_url"), page)
-        item["meta"] = {**meta, "page": page, "page_count": count, "illust_id": base_id}
-        items.append(item)
-    return items
+    return _expand_illust_pages(_ranking_item(entry, mode=mode, content=content, date=date))
 
 
 def _ranking_error_detail(payload: Any) -> str:
@@ -1452,7 +1443,9 @@ def _fetch_ranking_json(*, mode: str, content: str, page: int, date: str) -> dic
             detail = _ranking_error_detail(resp.json() or {})
         except ValueError:
             detail = ""
-        if "统计范围" in detail:
+        if any(message in detail.casefold() for message in (
+            "统计范围", "ランキング集計の範囲外", "not included in ranking calculation",
+        )):
             return {}
         raise PixivError(f"P站 排行榜不可用（HTTP 404）{('：' + detail) if detail else ''}")
     if resp.status_code != 200:

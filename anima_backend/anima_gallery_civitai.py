@@ -232,7 +232,8 @@ _last_route = {}
 
 def install_resources(app):
     """Bind Civitai worker pools to their independent stable app slot."""
-    _install_http(app, _civitai_http, namespace="civitai")
+    global _civitai_http
+    _civitai_http = _install_http(app, _civitai_http, namespace="civitai")
 
 
 def _route_snapshot():
