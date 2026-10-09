@@ -69,6 +69,49 @@ PIXIV_USER_ILLUSTS_URL = f"{PIXIV_APP_API}/v1/user/illusts"
 PIXIV_ILLUST_DETAIL_URL = f"{PIXIV_APP_API}/v1/illust/detail"
 PIXIV_ILLUST_RANKING_URL = f"{PIXIV_APP_API}/v1/illust/ranking"
 
+# ---------- 排行榜（网页端 /ranking.php?format=json） ----------
+# 为什么走网页端、而不是上面那个 App API 的 `/v1/illust/ranking`：
+#   App API 的 ranking 只有 day/week/month/day_male/… 这套「时间 × 受众」维度，**没有作品形式**，
+#   给不出「插画 / 动图 / 漫画」三分类 —— 而那正是网页端第一行 tab，也正是本画廊要的。
+#   网页端 JSON 接口**匿名可读**（实测 2026-10-09，不带 cookie / 不带 App token），一次 50 条，
+#   条目自带缩略图 URL，不必为每条再打一次 `/v1/illust/detail`。
+PIXIV_RANKING_WEB_URL = "https://www.pixiv.net/ranking.php"
+# 作品形式（网页端第一行 tab：综合 / 插画 / 动图 / 漫画 / 小说）。
+# 小说在 `/novel/ranking.php`，与插画漫画不是同一套数据，本画廊不做。
+PIXIV_RANKING_CONTENTS = ("all", "illust", "ugoira", "manga")
+# 排行榜范围（网页端第二行 tab，顺序与官网一致）
+PIXIV_RANKING_MODES = ("daily", "weekly", "monthly", "rookie", "original", "daily_ai", "male", "female")
+# ⚠️ mode × content **不是全组合合法**：实测带非法组合上游回 HTTP 404（「不在排行榜统计范围内」）。
+# 下表是实测结论，前端据此置灰按钮、后端据此回可读错误：
+#   · original / daily_ai / male / female 只出综合榜 —— 上游不提供它们的作品形式细分
+#   · monthly / rookie 没有动图榜 —— 动图榜只有日 / 周两档
+PIXIV_RANKING_CONTENT_MODES = {
+    "all": frozenset(PIXIV_RANKING_MODES),
+    "illust": frozenset(("daily", "weekly", "monthly", "rookie")),
+    "ugoira": frozenset(("daily", "weekly")),
+    "manga": frozenset(("daily", "weekly", "monthly", "rookie")),
+}
+# 网页端每页固定 50 条、最多 10 页（rank_total=500；上界由 p 越界 404 实测确认）
+PIXIV_RANKING_PAGE_SIZE = 50
+PIXIV_RANKING_MAX_PAGE = 10
+# 排行缩略图 `/c/480x960/img-master/…_master1200.jpg` → master1200 原尺寸：
+# 去掉 `/c/<w>x<h>[_q][_a2]/` 这一段即可（实测 200，与 App API 的 `image_urls.large` 同一文件）。
+# ⚠️ **不去推** `/img-original/`：漫画 / 动图的原图扩展名不一定是 jpg（实测多例 404），
+# 而 master1200 变体 100% 命中 —— 与 App API 回退 large 的行为保持一致。
+PIXIV_RANKING_THUMB_RE = re.compile(r"^https://i\.pximg\.net/c/\d+x\d+(?:_\d+)?(?:_a2)?/")
+# 中文标签：报错文案与前端菜单共用同一套说法（前端自己抄一份同值表，见 anima_danbooru_gallery_widget.js）
+PIXIV_RANKING_CONTENT_LABELS = {"all": "综合", "illust": "插画", "ugoira": "动图", "manga": "漫画"}
+PIXIV_RANKING_MODE_LABELS = {
+    "daily": "今日",
+    "weekly": "本周",
+    "monthly": "本月",
+    "rookie": "新人",
+    "original": "原创",
+    "daily_ai": "AI生成",
+    "male": "受男性欢迎",
+    "female": "受女性欢迎",
+}
+
 # 公开的 pixiv-android 客户端凭据（与 pixivpy 一致：授权 URL 用 client=pixiv-android，
 # token 交换用这组 client_id/secret）。这不是"私密密钥"——它是 App 内置的公开值。
 PIXIV_CLIENT_ID = "MOBrBDS8blbauoSck0ZfDbtuzpyT"
@@ -87,8 +130,20 @@ PIXIV_ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9,en;q=0.8,ja;q=0.7"
 # 搜索枚举（P站只认这几档，透传前先校验，避免把用户输入原样拼进 URL）
 PIXIV_SEARCH_TARGETS = ("partial_match_for_tags", "exact_match_for_tags", "title_and_caption")
 # date_desc/date_asc 全账号可用；popular_desc 需要 Pixiv Premium，非会员会拿到错误 → 由调用方看到可读报错。
-PIXIV_SEARCH_SORTS = ("date_desc", "date_asc", "popular_desc")
+PIXIV_SEARCH_SORTS = (
+    "date_desc",
+    "date_asc",
+    "popular_desc",
+    "popular_male_desc",
+    "popular_female_desc",
+)
 PIXIV_FILTERS = ("for_android", "for_ios")
+
+# 「近期热门」= 网页端搜索页的 order=popular_d + scd/ecd，官网点它时抓的是**近一个月**的区间
+# （网址实测：scd=2026-09-09&ecd=2026-10-09），这里同语义。
+# ⚠️ 实测：App API 的 `start_date` / `end_date` **只在 popular_* 排序下生效**，
+# date_desc 带着它们会被忽略 —— 所以这两个参数只在排序是 popular_* 时才发。
+PIXIV_RECENT_POPULAR_DAYS = 30
 
 # 图片/搜索分页上限：与 D 站 MAX_PAGE_SIZE 同值（前端一屏的量级）
 MAX_PAGE_SIZE = 48
@@ -879,6 +934,16 @@ def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
         return default
 
 
+def _flag(value: Any) -> bool:
+    """查询串里的布尔开关：`"1"` / `"true"` / `"on"` / 真值 bool 都算真。
+
+    协议层可能把 `ranking=1` 原样作为字符串发下来，`bool("0")` 会是 True —— 必须显式解析。
+    """
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _safe_float(value: Any) -> float | None:
     try:
         return float(value)
@@ -1000,7 +1065,11 @@ def illust_to_items(illust: Any) -> list[dict]:
     ⚠️ 单页作品**保持原样**（id 不带页码后缀）：改变 id 会让既有工作流里已保存的
     选中状态与本地分类键（``<source>:<id>``）一起失配。
     """
-    base = illust_to_item(illust)
+    return _expand_illust_pages(illust_to_item(illust))
+
+
+def _expand_illust_pages(base: dict[str, Any]) -> list[dict]:
+    """Normalized search and ranking items share page URLs and persistent IDs."""
     meta = base.get("meta") if isinstance(base.get("meta"), dict) else {}
     try:
         count = int(meta.get("page_count") or 1)
@@ -1070,7 +1139,15 @@ def normalize_word(query: Any, word: Any = "") -> str:
     return ""
 
 
-def _search_params(word: str, offset: int, target: str, sort: str, filter_value: str) -> dict[str, Any]:
+def _search_params(
+    word: str,
+    offset: int,
+    target: str,
+    sort: str,
+    filter_value: str,
+    start_date: str = "",
+    end_date: str = "",
+) -> dict[str, Any]:
     """按 P站 API 的固定形状组装参数（只放官方认的键）。"""
     params: dict[str, Any] = {
         "filter": filter_value,
@@ -1080,6 +1157,11 @@ def _search_params(word: str, offset: int, target: str, sort: str, filter_value:
         params["word"] = word
         params["search_target"] = target
         params["sort"] = sort
+        # 「近期热门」的时间窗。实测只有 popular_* 排序吃这两个参数（date_* 会被静默忽略），
+        # 所以按排序分支下发 —— 免得给 date_desc 白塞两个上游不认的键。
+        if sort.startswith("popular_") and start_date and end_date:
+            params["start_date"] = start_date
+            params["end_date"] = end_date
     return params
 
 
@@ -1127,6 +1209,8 @@ def _fetch_illust_json(
     user_id: str,
     illust_id: str,
     token: str,
+    start_date: str = "",
+    end_date: str = "",
 ) -> dict[str, Any]:
     """真正打 P站 API 的那一层（可被测试直接 monkeypatch）。"""
     if user_id:
@@ -1137,7 +1221,7 @@ def _fetch_illust_json(
         params = {"illust_id": illust_id, "filter": filter_value}
     elif word:
         url = PIXIV_SEARCH_ILLUST_URL
-        params = _search_params(word, offset, target, sort, filter_value)
+        params = _search_params(word, offset, target, sort, filter_value, start_date, end_date)
     else:
         raise PixivError("P站 搜索需要一个关键词 word（或 user_id / illust_id）")
 
@@ -1163,7 +1247,9 @@ def _fetch_illust_json(
                 f"请重新走一次 OAuth 授权（GET /anima/gallery/pixiv/auth/url）。"
                 f"{('上游说明：' + detail) if detail else ''}"
             )
-        hint = "（popular_desc 排序需要 Pixiv Premium 会员）" if sort == "popular_desc" else ""
+        # 热门类排序（popular_desc / popular_male_desc / popular_female_desc）在部分账号上要 Premium，
+        # 被拒时会回 400 —— 这里把已知原因写进错误里，用户一眼知道该改排序而不是怀疑网络。
+        hint = "（热门类排序需要 Pixiv Premium 会员；可先换回「最新」）" if sort.startswith("popular_") else ""
         raise PixivError(f"P站 搜索参数被拒绝（HTTP 400）{hint}{('：' + detail) if detail else ''}")
     if resp.status_code != 200:
         raise PixivError(f"P站 搜索失败（HTTP {resp.status_code}）")
@@ -1219,6 +1305,207 @@ def _filter_items(
     return result
 
 
+# ---------- 排行榜（网页端 /ranking.php?format=json） ----------
+def _ranking_headers() -> dict[str, str]:
+    """排行榜打的是**网页接口**，用浏览器 UA —— 与 App API 的 `_api_headers` 不是一条线，别混。"""
+    return {
+        "User-Agent": PIXIV_WEB_USER_AGENT,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": PIXIV_ACCEPT_LANGUAGE,
+        "Referer": PIXIV_RANKING_WEB_URL,
+    }
+
+
+def _ranking_supports(content: str, mode: str) -> bool:
+    """该「作品形式 × 排行榜范围」组合上游是否认（实测表见常量区）。"""
+    return mode in PIXIV_RANKING_CONTENT_MODES.get(content, frozenset())
+
+
+def _ranking_combo_error(content: str, mode: str) -> PixivError:
+    """非法组合的可读错误：直接告诉用户这个榜能配哪些作品形式。"""
+    available = "、".join(
+        PIXIV_RANKING_CONTENT_LABELS[item]
+        for item in PIXIV_RANKING_CONTENTS
+        if _ranking_supports(item, mode)
+    )
+    return PixivError(
+        f"P站 排行榜没有「{PIXIV_RANKING_CONTENT_LABELS.get(content, content)}"
+        f" × {PIXIV_RANKING_MODE_LABELS.get(mode, mode)}」这个组合；"
+        f"{PIXIV_RANKING_MODE_LABELS.get(mode, mode)}榜可选的作品形式：{available}"
+    )
+
+
+def _ranking_thumb_to_master(url: Any) -> str:
+    """排行缩略图 → master1200（同一张图的原尺寸）。
+
+    缩略图 `/c/480x960/img-master/…_master1200.jpg` 去掉尺寸段即是 master1200；
+    不是 i.pximg.net 的 URL 原样回（下游取图口另有白名单把关）。
+    """
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    if not text.startswith("https://i.pximg.net/"):
+        return text
+    return PIXIV_RANKING_THUMB_RE.sub("https://i.pximg.net/", text)
+
+
+def _ranking_rating(entry: dict[str, Any]) -> str:
+    """排行条目**没有** `x_restrict`，只能用 `illust_content_type` 反推分级。
+
+    排行榜本身已经排除 R18（R18 榜在网页端要登录、另有入口），这里只做「上游标了性描写」
+    的兜底判断，供画廊的分级筛选使用。
+    """
+    content = entry.get("illust_content_type") if isinstance(entry.get("illust_content_type"), dict) else {}
+    if content.get("grotesque"):
+        return "r18g"
+    return "r18" if _bounded_int(content.get("sexual"), 0, 0, 10) >= 4 else "all"
+
+
+def _ranking_item(entry: dict[str, Any], *, mode: str, content: str, date: str) -> dict[str, Any]:
+    """一条排行记录 → 统一 item（字段与 `illust_to_item` 对齐，缺的给 null，**不省略 key**）。"""
+    illust_id = str(entry.get("illust_id") or "").strip()
+    thumb = str(entry.get("url") or "").strip()
+    master = _ranking_thumb_to_master(thumb)
+    tags: list[str] = []
+    for raw in entry.get("tags") or []:
+        name = str(raw or "").strip()
+        if name and name not in tags:
+            tags.append(name)
+    rating_count = _bounded_int(entry.get("rating_count"), 0, 0, 2**31 - 1)
+    page_count = max(1, _bounded_int(entry.get("illust_page_count"), 1, 1, 1000))
+    return {
+        "source": PIXIV_SOURCE_ID,
+        "id": illust_id,
+        "preview_url": thumb or None,
+        # 排行只给缩略图，原尺寸取 master1200（实测 100% 命中；推 /img-original/ 会因扩展名
+        # 不一定是 jpg 而 404）—— 与 App API 拿不到 original 时回退 large 的行为一致。
+        "full_url": master or thumb or None,
+        "width": _bounded_int(entry.get("width"), 0, 0, 200000) or None,
+        "height": _bounded_int(entry.get("height"), 0, 0, 200000) or None,
+        "tags": tags,
+        "prompt": None,
+        "negative_prompt": None,
+        "rating": _ranking_rating(entry),
+        # 排行条目没有收藏数，`rating_count`（点赞数）是上游给的最接近的热度指标
+        "score": rating_count if entry.get("rating_count") is not None else None,
+        "source_url": f"https://www.pixiv.net/artworks/{illust_id}" if illust_id else None,
+        "meta": {
+            "author": str(entry.get("user_name") or "") or None,
+            "author_id": str(entry.get("user_id") or "") or None,
+            "bookmarks": rating_count,
+            "page_count": page_count,
+            "illust_type": str(entry.get("illust_type") or "") or None,
+            "create_date": str(entry.get("date") or "") or None,
+            "total_view": _bounded_int(entry.get("view_count"), 0, 0, 2**31 - 1) or None,
+            "rank": _bounded_int(entry.get("rank"), 0, 0, 100000) or None,
+            "yes_rank": _bounded_int(entry.get("yes_rank"), 0, 0, 100000) or None,
+            "is_masked": bool(entry.get("is_masked")),
+            "ranking": {"mode": mode, "content": content, "date": str(date or "")},
+        },
+    }
+
+
+def _ranking_items(entry: dict[str, Any], *, mode: str, content: str, date: str) -> list[dict]:
+    """一条排行记录 → **每页一条 item**（与 `illust_to_items` 同一约定，多页作品才展开）。"""
+    return _expand_illust_pages(_ranking_item(entry, mode=mode, content=content, date=date))
+
+
+def _ranking_error_detail(payload: Any) -> str:
+    if isinstance(payload, dict):
+        return str(payload.get("error") or "").strip()
+    return ""
+
+
+def _fetch_ranking_json(*, mode: str, content: str, page: int, date: str) -> dict[str, Any]:
+    """真正打网页排行接口的那一层（可被测试直接 monkeypatch）。
+
+    `content=all` 时**不带 content 参数**：上游 page=None 与 page="all" 完全等价（实测 id 序列
+    逐条相同），少带一个参数更贴近官网「综合」tab 的真实链接（`?mode=daily`）。
+    """
+    params: dict[str, Any] = {"mode": mode, "format": "json", "p": max(1, int(page))}
+    if content and content != "all":
+        params["content"] = content
+    if date:
+        params["date"] = date
+
+    resp = _pixiv_request(
+        "GET",
+        PIXIV_RANKING_WEB_URL,
+        params=params,
+        headers=_ranking_headers(),
+        timeout=(8, 25),
+    )
+    if resp.status_code == 404:
+        # 上游的 404 有好几种含义，靠文案区分（实测 2026-10-09）：
+        #   「不在排行榜统计范围内」= 页码越界（rank_total 只有 500 条）→ 正常末页，回空
+        #   其余（「不正确的请求。」等）= 参数组合 / 日期非法 → 抛可读错误
+        try:
+            detail = _ranking_error_detail(resp.json() or {})
+        except ValueError:
+            detail = ""
+        if any(message in detail.casefold() for message in (
+            "统计范围", "ランキング集計の範囲外", "not included in ranking calculation",
+        )):
+            return {}
+        raise PixivError(f"P站 排行榜不可用（HTTP 404）{('：' + detail) if detail else ''}")
+    if resp.status_code != 200:
+        raise PixivError(f"P站 排行榜失败（HTTP {resp.status_code}）")
+    try:
+        payload = resp.json() or {}
+    except ValueError as error:
+        raise PixivError(f"P站 排行榜返回的不是 JSON（HTTP {resp.status_code}）") from error
+    if not isinstance(payload, dict):
+        raise PixivError("P站 排行榜回包不是对象")
+    return payload
+
+
+def ranking_illusts(
+    *,
+    mode: str = "daily",
+    content: str = "illust",
+    page: Any = 1,
+    date: str = "",
+    min_bookmark: int = 0,
+    nsfw: str = "all",
+) -> tuple[list[dict[str, Any]], str | None]:
+    """P站 排行榜主干：返回 `(items, next_cursor)`（**不需要关键词，也不需要登录**）。
+
+    分页：网页端每页固定 `PIXIV_RANKING_PAGE_SIZE`=50 条、最深 `PIXIV_RANKING_MAX_PAGE`=10 页。
+    这里的 `page` 就是上游的 `p`（**不做任何 offset 换算**，与 App API 那条「固定每页 30」的
+    规则无关 —— 所以排行榜模式下 limit 不参与分页，只被忽略）。
+    """
+    mode = str(mode or "").strip().lower()
+    content = str(content or "").strip().lower() or "all"
+    if mode not in PIXIV_RANKING_MODES:
+        mode = "daily"
+    if content not in PIXIV_RANKING_CONTENTS:
+        content = "illust"
+    if not _ranking_supports(content, mode):
+        raise _ranking_combo_error(content, mode)
+    nsfw = nsfw if nsfw in {"all", "safe", "r18"} else "all"
+    min_bookmark = _bounded_int(min_bookmark, 0, 0, 10**9)
+    # 上游最深 PIXIV_RANKING_MAX_PAGE 页（rank_total=500 ÷ 50）。越界直接回空，
+    # **不钳到最后一页** —— 钳制会让「下一页」一直显示同一页内容（用户表现为翻不动）。
+    # 页数不足 10 的榜（动图只有 2 页）交给上游 404 裁决，那才是唯一真源。
+    page_no = _bounded_int(page, 1, 1, 100000)
+    if page_no > PIXIV_RANKING_MAX_PAGE:
+        return [], None
+
+    payload = _fetch_ranking_json(mode=mode, content=content, page=page_no, date=str(date or ""))
+    if not payload:
+        return [], None
+    raw = payload.get("contents") if isinstance(payload.get("contents"), list) else []
+    resolved_date = str(payload.get("date") or date or "")
+    items = [
+        item
+        for entry in raw
+        if isinstance(entry, dict)
+        for item in _ranking_items(entry, mode=mode, content=content, date=resolved_date)
+    ]
+    items = _filter_items(items, min_bookmark=min_bookmark, nsfw=nsfw)
+    return items, None
+
+
 def search_illusts(
     *,
     word: str = "",
@@ -1235,6 +1522,15 @@ def search_illusts(
     nsfw: str = "all",
     token: str = "",
     force: bool = False,
+    # 排行榜模式（无关键词浏览）
+    ranking: bool = False,
+    rank_mode: str = "daily",
+    rank_content: str = "illust",
+    rank_date: str = "",
+    # 「近期热门」：开关 + 时间窗（时间窗只在 popular_* 排序下由 _search_params 下发）
+    recent_popular: bool = False,
+    start_date: str = "",
+    end_date: str = "",
 ) -> tuple[list[dict[str, Any]], str | None]:
     """P站搜索主干：返回 `(items, next_cursor)`（契约 §5.3）。
 
@@ -1267,9 +1563,47 @@ def search_illusts(
     else:
         offset = 0
 
+    if ranking:
+        # 排行榜是**无关键词浏览**：不经关键词校验，也不吃 sort / target（上游排行接口没有这两个参数）。
+        # 缓存键刻意不走下面那套 (keyword, offset, sort…) —— 排行的身份 = (mode, content, page, date)。
+        rank_mode = str(rank_mode or "").strip().lower()
+        rank_mode = rank_mode if rank_mode in PIXIV_RANKING_MODES else "daily"
+        rank_content = str(rank_content or "").strip().lower()
+        rank_content = rank_content if rank_content in PIXIV_RANKING_CONTENTS else "illust"
+        rank_page = _bounded_int(page, 1, 1, 100000)
+        rank_key = ("ranking", rank_mode, rank_content, rank_page, str(rank_date or ""), min_bookmark, nsfw)
+        if not force:
+            cached = _cache_get(rank_key)
+            if cached is not None:
+                return cached
+        ranking_items, ranking_cursor = ranking_illusts(
+            mode=rank_mode,
+            content=rank_content,
+            page=rank_page,
+            date=rank_date,
+            min_bookmark=min_bookmark,
+            nsfw=nsfw,
+        )
+        if not force:
+            _cache_put(rank_key, ranking_items, ranking_cursor)
+        return ranking_items, ranking_cursor
+
     if not (keyword or user_id or illust_id):
         return [], None
-    cache_key = (keyword, offset, target, sort, filter_value, user_id, illust_id, size, min_bookmark, nsfw)
+
+    if recent_popular:
+        # 「近期热门」= 网页端搜索页的 order=popular_d + scd/ecd（官网给的是近一个月区间）。
+        # 排序不是 popular_* 时**提升**为按热门度 —— 否则时间窗会被上游静默忽略、
+        # 用户拿到「近一个月最新」却以为在看热门（这正是最容易踩的坑）。
+        if not sort.startswith("popular_"):
+            sort = "popular_desc"
+        if not (start_date and end_date):
+            now = time.time()
+            end_date = time.strftime("%Y-%m-%d", time.localtime(now))
+            start_date = time.strftime("%Y-%m-%d", time.localtime(now - PIXIV_RECENT_POPULAR_DAYS * 86400))
+
+    cache_key = (keyword, offset, target, sort, filter_value, user_id, illust_id, size, min_bookmark, nsfw,
+                 start_date, end_date)
     if not force:
         cached = _cache_get(cache_key)
         if cached is not None:
@@ -1286,6 +1620,8 @@ def search_illusts(
             user_id=user_id,
             illust_id=illust_id,
             token=access,
+            start_date=start_date,
+            end_date=end_date,
         )
     except PixivAuthRequired:
         if token:
@@ -1305,6 +1641,8 @@ def search_illusts(
             user_id=user_id,
             illust_id=illust_id,
             token=access,
+            start_date=start_date,
+            end_date=end_date,
         )
 
     if illust_id:
@@ -1606,6 +1944,15 @@ class PixivSource:
             min_bookmark=_bounded_int(options.pop("min_bookmark", options.pop("min_bookmark_count", 0)), 0, 0, 10**9),
             nsfw=str(options.pop("nsfw", "all") or "all"),
             force=bool(options.pop("force", False)),
+            # 排行榜（无关键词浏览）：协议层按任意命名发都能接住
+            ranking=_flag(options.pop("ranking", False)),
+            rank_mode=str(options.pop("rank_mode", options.pop("ranking_mode", "daily")) or "daily"),
+            rank_content=str(options.pop("rank_content", options.pop("ranking_content", "illust")) or "illust"),
+            rank_date=str(options.pop("rank_date", options.pop("ranking_date", "")) or ""),
+            # 「近期热门」与可选手工时间窗
+            recent_popular=_flag(options.pop("recent_popular", False)),
+            start_date=str(options.pop("start_date", options.pop("scd", "")) or ""),
+            end_date=str(options.pop("end_date", options.pop("ecd", "")) or ""),
         )
 
     # `self=None` 的写法让三种调用形式都成立：实例调、类调（PixivSource.images_headers()）、
@@ -1905,6 +2252,15 @@ async def anima_gallery_pixiv_search(request: web.Request) -> web.Response:
             min_bookmark=query.get("min_bookmark", 0),
             nsfw=query.get("nsfw", "all"),
             force=query.get("force", "").lower() in {"1", "true", "yes"},
+            # 排行榜（不传关键词，page 直接就是上游的 p）
+            ranking=_flag(query.get("ranking", "")),
+            rank_mode=query.get("rank_mode", "daily"),
+            rank_content=query.get("rank_content", "illust"),
+            rank_date=query.get("rank_date", ""),
+            # 「近期热门」：只给开关，时间窗由后端算（单一真源）
+            recent_popular=_flag(query.get("recent_popular", "")),
+            start_date=query.get("start_date", ""),
+            end_date=query.get("end_date", ""),
         )
     except PixivAuthRequired as error:
         return _json_error(str(error), status=401, logged_in=False, next_cursor=None)

@@ -2,6 +2,37 @@
 
 const POOL_CURSOR_PREFIX = "tk-pool:";
 
+/**
+ * P站 排行榜的中文标签与合法组合表。
+ * ⚠️ 与后端 `anima_backend/anima_gallery_pixiv.py` 的 `PIXIV_RANKING_*` 常量**同值**：
+ * 那边用同一张表回可读错误，这边用它置灰按钮 —— 两处都改才算改完。
+ */
+export const PIXIV_RANKING_CONTENTS = ["all", "illust", "ugoira", "manga"];
+export const PIXIV_RANKING_MODES = ["daily", "weekly", "monthly", "rookie", "original", "daily_ai", "male", "female"];
+export const PIXIV_RANKING_CONTENT_LABELS = { all: "综合", illust: "插画", ugoira: "动图", manga: "漫画" };
+export const PIXIV_RANKING_MODE_LABELS = {
+  daily: "今日", weekly: "本周", monthly: "本月", rookie: "新人",
+  original: "原创", daily_ai: "AI生成", male: "受男性欢迎", female: "受女性欢迎",
+};
+/** mode × content 实测兼容表：实测带非法组合上游回 404（详见后端常量区注释）。 */
+export const PIXIV_RANKING_CONTENT_MODES = {
+  all: [...PIXIV_RANKING_MODES],
+  illust: ["daily", "weekly", "monthly", "rookie"],
+  ugoira: ["daily", "weekly"],
+  manga: ["daily", "weekly", "monthly", "rookie"],
+};
+
+export function pixivRankingSupports(content, mode) {
+  return (PIXIV_RANKING_CONTENT_MODES[content] || []).includes(mode);
+}
+
+/** 「插画今日排行榜」这类人类可读榜名（状态栏用）。 */
+export function pixivRankingLabel(filters = {}) {
+  const content = PIXIV_RANKING_CONTENT_LABELS[filters.rankContent] || PIXIV_RANKING_CONTENT_LABELS.illust;
+  const mode = PIXIV_RANKING_MODE_LABELS[filters.rankMode] || PIXIV_RANKING_MODE_LABELS.daily;
+  return `${content}${mode}排行榜`;
+}
+
 function throwIfAborted(signal) {
   if (!signal?.aborted) return;
   const error = new Error("Gallery request aborted");
@@ -26,6 +57,17 @@ export function gallerySourceParameters(request) {
     params.set("query", query);
     params.set("target", String(filters.target || "partial_match_for_tags"));
     params.set("sort", String(filters.sort || "date_desc"));
+    // 排行榜是**无关键词浏览**：后端据此改走网页端 ranking.php，并忽略 word/target/sort。
+    // `page` 在两个模式下都是同名的页码参数，但语义不同：搜索是 (page-1)*30 的 offset，
+    // 排行就是上游的 p（每页 50 条）—— 那条换算只在后端搜索分支里做，这里不必区分。
+    if (filters.ranking === true) {
+      params.set("ranking", "1");
+      params.set("rank_mode", String(filters.rankMode || "daily"));
+      params.set("rank_content", String(filters.rankContent || "illust"));
+      if (filters.rankDate) params.set("rank_date", String(filters.rankDate));
+    }
+    // 「近期热门」：只发开关，时间窗（近一个月）由后端算 —— 单一真源，前端不各算一份
+    if (filters.recentPopular === true) params.set("recent_popular", "1");
   } else {
     params.set("query", query);
     if (filters.nsfw) params.set("nsfw", String(filters.nsfw));
@@ -131,7 +173,9 @@ export async function fetchGallerySourcePage(adapter, input, { signal } = {}) {
     posts: [], groups: null, nextCursor: null, cursor: request.cursor,
     query: request.query, warnings: [], settings: {}, account: {},
   };
-  if (request.source === "pixiv" && !request.query) {
+  // 排行榜是无关键词浏览 —— 它和关键词搜索是两条互斥的路，别让「请输入关键词」把它拦住
+  const rankingMode = request.source === "pixiv" && request.filters.ranking === true;
+  if (request.source === "pixiv" && !request.query && !rankingMode) {
     return { ...empty, status: "P站：请输入关键词后回车搜索（日文 / 英文均可）" };
   }
   const poolEnabled = request.source === "civitai" && Number(request.poolTarget) > 0;
@@ -174,12 +218,19 @@ export async function fetchGallerySourcePage(adapter, input, { signal } = {}) {
     if (unavailableCount) notices.push(`${unavailableCount} 张缺图已跳过`);
     if (filtered.length > posts.length) notices.push(`已折叠 ${filtered.length - posts.length} 页多页作品（点卡片「全部页」展开）`);
     const pageMode = request.capabilities.page_numbers === true;
-    if (!pageMode && !nextCursor) notices.push("已到末页");
-    if (request.capabilities.login === true && request.source === "pixiv") notices.push("P站标签与 Danbooru 词库不通用");
+    // 排行榜也是页码分页，但页数由上游榜单长度决定（最长 10 页 / 500 条）——
+    // 翻过末页会拿到空集，这里补一句说明，免得看着像"搜索失败"
+    if (rankingMode && !items.length) notices.push("已到末页（上游榜单只到这一页）");
+    else if (rankingMode && !posts.length && excludedCount) notices.push("本页作品已被排除标签隐藏");
+    else if (!pageMode && !nextCursor) notices.push("已到末页");
+    if (request.capabilities.login === true && request.source === "pixiv" && !rankingMode) notices.push("P站标签与 Danbooru 词库不通用");
     if (request.capabilities.prompt === false && request.source === "pixiv") notices.push("P站无提示词，可下载原图喂 WD14 反推");
-    const batch = pageMode ? `第 ${request.page} 页` : `第 ${Math.max(1, Number(request.batch) || 1)} 批`;
+    const batch = rankingMode
+      ? pixivRankingLabel(request.filters)
+      : (pageMode ? `第 ${request.page} 页` : `第 ${Math.max(1, Number(request.batch) || 1)} 批`);
     result = {
       ...empty, posts, groups, nextCursor, warnings,
+      ...(rankingMode ? { exhausted: items.length === 0 } : {}),
       status: `${request.label}：${posts.length} 张 · ${batch}` + (notices.length ? `（${notices.join("；")}）` : ""),
     };
   }

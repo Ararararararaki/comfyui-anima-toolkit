@@ -8,7 +8,7 @@
 
 <p align="center"><img src="screenshots/icon.png" width="140" alt="TK Toolkit"></p>
 
-当前发布版本: **2.31.1**。
+当前发布版本: **2.32.0**。
 
 ## 安装
 
@@ -92,7 +92,7 @@ Registry 页面在 <https://registry.comfy.org/nodes/anima-toolkit>。依赖见 
 |---|---|---|
 | D站（Danbooru） | 不要 | 标签搜索加分级、时间、评分、收藏筛选。被 Cloudflare 拦的时候会自动拉起本机浏览器网关（需要 playwright） |
 | C站（Civitai） | API key，只用于账号校验，不影响取图 | cursor 分页，排序、NSFW 档位、时间窗、作者、模型浏览 |
-| P站（Pixiv） | OAuth 2.0 + PKCE 授权 | 关键词搜索。不给提示词，定位是素材，可以送去 WD14 反推 |
+| P站（Pixiv） | 关键词搜索需 OAuth 2.0 + PKCE 授权；排行榜可匿名浏览 | 原生排行榜、关键词搜索与近一个月热门筛选。不给提示词，定位是素材，可以送去 WD14 反推 |
 | Safebooru | 不要 | gelbooru-dapi 系公开 API |
 | yande.re | 不要 | moebooru 骨架，走 post.json |
 | Konachan.net | 不要 | 和 yande.re 同一套骨架（全年龄镜像；konachan.com 被 Cloudflare 拦，没有纳入） |

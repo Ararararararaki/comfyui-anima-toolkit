@@ -1421,3 +1421,57 @@
 .adg-pixiv-manual[open] summary { margin-bottom: 8px; color: var(--adg-text); }
 .adg-pixiv-manual .adg-settings-inline-row { margin: 8px 0; }
 .adg-source-secrets [hidden] { display: none !important; }
+
+/* ── P站 排行榜 / 近期热门（2026-10-09）───────────────────────────────────
+   与 D站「筛选 → 快速筛选」同一套视觉语言（标题 + 按钮网格 + 底部 重置/应用），
+   颜色一律走 --adg-* 变量 —— 暗色 / 亮色两套主题自动跟随，不再各写一份。
+   只作用于 P站 专属控件（源筛选容器里），D站 与 C站 不引用这些类名。 */
+.adg-source-field.adg-source-action { gap: 0; }
+.adg-source-toggle {
+  min-height: 24px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  color: var(--adg-muted, #9b9a95);
+  background: transparent;
+  border: 1px solid var(--adg-border, #34383c);
+  border-radius: var(--adg-r, 8px);
+  transition: background var(--adg-dur, 150ms) var(--adg-ease, ease-out),
+    border-color var(--adg-dur, 150ms) var(--adg-ease, ease-out);
+}
+.adg-source-toggle:hover { color: var(--adg-text, #d9d9de); border-color: var(--adg-accent, #7d5cff); }
+.adg-source-toggle.is-active {
+  color: var(--adg-accent-strong, #c8beff);
+  border-color: var(--adg-accent, #7d5cff);
+  background: var(--adg-accent-soft, rgba(125, 92, 255, .18));
+}
+
+.adg-ranking-menu-content { min-width: 306px; }
+.adg-menu-subtitle { padding: 5px 2px 3px; color: var(--adg-muted, #9b9a95); font-size: 10px; letter-spacing: .04em; }
+.adg-ranking-grid { display: flex; flex-wrap: wrap; gap: 5px; padding: 0 2px; }
+.adg-ranking-grid-4 .adg-ranking-chip { flex: 1 1 calc(25% - 5px); }
+.adg-ranking-chip {
+  flex: 1 1 calc(50% - 5px);
+  padding: 6px 8px;
+  font-size: 11px;
+  text-align: center;
+  white-space: nowrap;
+  cursor: pointer;
+  color: var(--adg-text, #d5cfff);
+  background: var(--adg-tint, rgba(139, 92, 246, .12));
+  border: 1px solid var(--adg-border, rgba(180, 166, 255, .3));
+  border-radius: 6px;
+  transition: background var(--adg-dur, 150ms) var(--adg-ease, ease-out),
+    border-color var(--adg-dur, 150ms) var(--adg-ease, ease-out);
+}
+.adg-ranking-chip:hover { border-color: var(--adg-accent, #9988ff); background: var(--adg-control-hover, rgba(139, 92, 246, .28)); }
+.adg-ranking-chip.is-selected {
+  color: var(--adg-accent-strong, #e8e2ff);
+  border-color: var(--adg-accent, #8979ee);
+  background: var(--adg-accent-soft-hover, rgba(125, 92, 255, .34));
+}
+.adg-ranking-preview { padding: 7px 2px 2px; color: var(--adg-accent-strong, #c8beff); font-size: 11px; font-weight: 700; }
+.adg-ranking-note { padding: 1px 2px 4px; color: var(--adg-muted, #9b9a95); font-size: 10px; line-height: 1.4; }
+.adg-ranking-note[hidden] { display: none; }
