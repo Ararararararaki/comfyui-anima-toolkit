@@ -9,6 +9,8 @@
 try {
   var __savedTheme = localStorage.getItem('anima_theme');
   if (__savedTheme) document.documentElement.setAttribute('data-theme', __savedTheme);
+  var __themeMode = localStorage.getItem('anima_theme_mode') || 'light';
+  document.documentElement.setAttribute('data-theme-mode', __themeMode === 'system' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : __themeMode);
 } catch (e) {}
 </script>
 <title>TK Toolkit · 本地工具箱</title>
@@ -17,13 +19,13 @@ try {
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script type="module" crossorigin src="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-H09jr2ZS.js"></script>
+  <script type="module" crossorigin src="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-D1kscKjb.js"></script>
   <link rel="modulepreload" crossorigin href="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/vendor-D6eCwX_v.js">
-  <link rel="stylesheet" crossorigin href="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-DHhGyibD.css">
+  <link rel="stylesheet" crossorigin href="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-BcHb5k9a.css">
 </head>
 <body data-ui-version="drinkit-2026-09-08">
 
-<aside class="toolbox-sidebar" id="toolboxSidebar" aria-label="工具箱导航">
+<aside class="toolbox-sidebar" id="toolboxSidebar" aria-label="工具箱栏目与设置" hidden>
   <div class="toolbox-brand">
     <span class="toolbox-brand-icon" data-icon="palette" aria-hidden="true"></span>
     <span class="toolbox-brand-copy"><strong>TK Toolkit</strong><small>本地工具箱</small></span>
@@ -38,21 +40,74 @@ try {
     <button class="main-tab" type="button" data-section="prompt-freq" data-icon="image" role="tab" aria-controls="sectionPromptFreq" aria-selected="false" tabindex="-1" title="图片解析"><span>图片解析</span></button>
     <button class="main-tab" type="button" data-section="outputs" data-icon="grid" role="tab" aria-controls="sectionOutputs" aria-selected="false" tabindex="-1" title="Outputs"><span>Outputs</span></button>
   </nav>
-  <div class="toolbox-local-category-slot" id="toolboxLocalCategorySlot" role="region" aria-label="本地分类"></div>
+    <section class="toolbox-outputs-slot" id="toolboxOutputsSlot" aria-label="图片目录">
+      <div class="outputs-sidebar-header">
+        <h2>图片目录</h2>
+        <button type="button" class="outputs-refresh-btn outputs-source-action" data-icon="refreshCw" title="刷新已勾选目录" aria-label="刷新已勾选目录"></button>
+      </div>
+      <button type="button" class="outputs-add-directory outputs-select-btn" data-icon="plus"><span>添加目录</span></button>
+      <p class="outputs-source-hint">勾选多个目录可一起浏览</p>
+      <div class="outputs-dir-tree" id="outputsDirTree">
+        <div class="outputs-empty-sidebar"><p>正在恢复图片目录…</p></div>
+      </div>
+      <div class="outputs-filter-panel" id="outputsFilterPanel">
+        <div class="outputs-filter-panel-header" id="outputsFilterToggle">
+          <span data-icon="slidersHorizontal">高级筛选</span>
+          <span class="outputs-filter-toggle-arrow" data-icon="chevronRight"></span>
+        </div>
+        <div class="outputs-filter-panel-body collapsed" id="outputsFilterBody">
+          <div class="outputs-filter-group" id="outputsFilterGroupModel" style="display:none">
+            <label>模型</label>
+            <input type="text" class="outputs-filter-input outputs-filter-model" placeholder="输入模型名..." list="outputsModelList">
+            <datalist id="outputsModelList"></datalist>
+          </div>
+          <div class="outputs-filter-group" id="outputsFilterGroupLora" style="display:none">
+            <label>LoRA</label>
+            <input type="text" class="outputs-filter-input outputs-filter-lora" placeholder="输入 LoRA 名..." list="outputsLoraList">
+            <datalist id="outputsLoraList"></datalist>
+          </div>
+          <div class="outputs-filter-group">
+            <label>时间段</label>
+            <div class="outputs-filter-quick-period">
+              <button class="outputs-period-btn" data-period="today">今日</button>
+              <button class="outputs-period-btn" data-period="3d">3天</button>
+              <button class="outputs-period-btn" data-period="week">本周</button>
+              <button class="outputs-period-btn" data-period="month">本月</button>
+              <button class="outputs-period-btn active" data-period="">全部</button>
+            </div>
+          </div>
+          <div class="outputs-filter-group">
+            <label>日期范围</label>
+            <div class="outputs-filter-range">
+              <input type="date" class="outputs-filter-input outputs-filter-date-min" title="开始日期">
+              <span>~</span>
+              <input type="date" class="outputs-filter-input outputs-filter-date-max" title="结束日期">
+            </div>
+          </div>
+          <div class="outputs-filter-group">
+            <label>筛选</label>
+            <div class="outputs-filter-quick-period">
+              <button class="outputs-filter-flag-btn" data-flag="favorite" data-icon="star"><span>已收藏</span></button>
+              <button class="outputs-filter-flag-btn" data-flag="rated" data-icon="thumbsUp"><span>已评分</span></button>
+              <button class="outputs-filter-flag-btn" data-flag="status" data-icon="tag"><span>有标签</span></button>
+            </div>
+          </div>
+          <button class="btn btn-ghost btn-xs outputs-filter-clear" style="display:none;margin-top:8px;width:100%" data-icon="x"><span>清除筛选</span></button>
+        </div>
+      </div>
+    </section>
   <div class="toolbox-sidebar-footer">
-    <span class="toolbox-theme-label">外观</span>
-    <div class="theme-switcher" id="themeSwitcher" role="group" aria-label="主题">
-      <button class="theme-dot active" type="button" data-theme="drinkit" aria-label="Drinkit 蓝色轻几何主题" aria-pressed="true" title="Drinkit 蓝色轻几何"><span class="theme-dot-swatch" aria-hidden="true"></span></button>
-      <button class="theme-dot" type="button" data-theme="mono" aria-label="Monochrome 暗色主题" aria-pressed="false" title="Monochrome 暗"><span class="theme-dot-swatch" aria-hidden="true"></span></button>
-      <button class="theme-dot" type="button" data-theme="mono-light" aria-label="Monochrome 亮色主题" aria-pressed="false" title="Monochrome 亮"><span class="theme-dot-swatch" aria-hidden="true"></span></button>
-    </div>
+    <div id="toolkitThemeControl"></div>
+    <button type="button" class="btn btn-ghost" id="releaseNotesBtn" data-icon="info"><span>更新日志与 QQ 交流群</span></button>
   </div>
 </aside>
 
 <header id="contentHeader">
   <div class="header-inner">
+    <button class="toolbox-folders-toggle" id="toolboxFoldersToggle" type="button" data-icon="grid" aria-label="切换工具箱栏目" aria-expanded="false" aria-controls="toolboxSidebar"><span>工具箱</span><span data-icon="chevronDown"></span></button>
     <h1 class="toolbox-page-title" id="pageTitle">本地 LoRA 管理</h1>
     <div class="toolbox-header-actions">
+      <button class="btn btn-ghost toolbox-url-download" id="localUrlBtn" type="button" title="从 C 站链接下载 LoRA、Checkpoint 等模型到 ComfyUI 目录" data-icon="downloadCloud"><span>URL 下载</span></button>
       <span id="buildTime" class="build-time"></span>
       <button class="icon-btn settings-btn" id="settingsBtn" type="button" data-icon="settings" title="设置 (Ctrl+,)" aria-label="设置"></button>
     </div>
@@ -324,12 +379,12 @@ try {
     <div class="local-toolbar">
       <button class="btn btn-primary" id="localScanBtn" data-icon="folder" title="递归扫描选定目录中的 LoRA 文件"><span>扫描文件夹（含子目录）</span></button>
       <button class="btn btn-ghost btn-border-green" id="localFolderCategoryBtn" data-icon="layers" title="根据扫描到的一级子目录自动创建分类并归类对应 LoRA"><span>子目录建分类</span></button>
-      <button class="btn btn-ghost btn-border-accent" id="localUrlBtn" title="从 C 站链接下载 LoRA、Checkpoint 等模型到 ComfyUI 目录" data-icon="downloadCloud"><span>URL 下载</span></button>
       <button class="btn btn-ghost btn-border-green" id="localMatchAllBtn" data-icon="refresh"><span>全部匹配</span></button>
       <button class="btn btn-ghost btn-border-red" id="localClearBtn" data-icon="trash"><span>清空</span></button>
       <button class="btn btn-ghost btn-border-green" id="localBatchToggleBtn" data-icon="checkSquare"><span>批量分类</span></button>
       <span id="localScanStats" class="local-stats-bar"></span>
       <span id="localNewFileBadge" class="local-newfile-badge hidden"></span>
+      <div class="toolbox-local-category-slot" id="toolboxLocalCategorySlot" role="region" aria-label="本地分类"></div>
     </div>
 
     <div class="local-progress local-progress-hidden" id="localProgress">
@@ -367,7 +422,6 @@ try {
         <div class="local-grid-sidebar-actions" aria-label="本地 LoRA 操作">
           <button class="btn btn-ghost btn-sm" data-local-action="localScanBtn" data-icon="folder"><span>扫描文件夹</span></button>
           <button class="btn btn-ghost btn-sm" data-local-action="localFolderCategoryBtn" data-icon="layers"><span>子目录建分类</span></button>
-          <button class="btn btn-ghost btn-sm" data-local-action="localUrlBtn" data-icon="download"><span>URL 下载</span></button>
           <button class="btn btn-ghost btn-sm" data-local-action="localMatchAllBtn" data-icon="refresh"><span>全部匹配</span></button>
           <button class="btn btn-ghost btn-sm btn-border-red" data-local-action="localClearBtn" data-icon="trash"><span>清空</span></button>
           <button class="btn btn-ghost btn-sm btn-border-green" data-local-action="localBatchToggleBtn" data-icon="checkSquare"><span>批量分类</span></button>
@@ -388,17 +442,11 @@ try {
       <main class="local-main">
         <div class="local-view-tabs">
           <button class="local-view-tab active" data-view="home" data-icon="monitor"><span>首页</span></button>
-          <button class="local-view-tab" data-view="prompt" data-icon="send"><span>批量发送</span></button>
           <button class="local-view-tab" data-view="gallery" data-icon="image"><span>PNG 解析</span></button>
-          <button class="local-view-tab" data-view="detail" data-icon="file-text"><span>详情</span></button>
           <button class="local-view-tab" data-view="models" data-icon="package"><span>模型</span></button>
         </div>
         <div class="local-view-pages">
           <div class="local-page active" id="pageLocalHome">
-          </div>
-
-          <div class="local-page" id="pageLocalPrompt">
-            <div id="promptLoraList"></div>
           </div>
 
           <div class="local-page" id="pageLocalGallery">
@@ -429,127 +477,91 @@ try {
 </div>
 
 <div id="sectionOutputs" class="section-hidden">
-  <div class="outputs-reauth-banner" id="outputsReauthBanner" style="display:none">
-    <span>🔑 上次的目录访问权限已过期，图片暂时无法加载</span>
-    <button class="outputs-reauth-btn" type="button">点击重新授权恢复图片</button>
-  </div>
   <div class="outputs-layout">
-    <aside class="outputs-sidebar">
-      <div class="outputs-sidebar-header">
-        <h3>📁 目录</h3>
-        <button class="btn btn-ghost btn-sm outputs-select-btn" data-icon="folder"><span>选择</span></button>
-        <button class="btn btn-ghost btn-sm outputs-refresh-btn" data-icon="refresh" title="增量扫描：检查并加载新图片"><span>刷新</span></button>
-        <button class="btn btn-ghost btn-sm outputs-reparse-btn" title="强制重新解析所有图片的元数据（升级解析逻辑后使用）" data-icon="refreshCw"><span>重解析</span></button>
-      </div>
-      <div class="outputs-dir-tree" id="outputsDirTree">
-        <div class="outputs-empty-sidebar"><p>📁 选择目录开始扫描</p></div>
-      </div>
-      <div class="outputs-filter-panel" id="outputsFilterPanel">
-        <div class="outputs-filter-panel-header" id="outputsFilterToggle">
-          <span>🔍 高级筛选</span>
-          <span class="outputs-filter-toggle-arrow">▶</span>
-        </div>
-        <div class="outputs-filter-panel-body collapsed" id="outputsFilterBody">
-          <div class="outputs-filter-group" id="outputsFilterGroupModel" style="display:none">
-            <label>模型</label>
-            <input type="text" class="outputs-filter-input outputs-filter-model" placeholder="输入模型名..." list="outputsModelList">
-            <datalist id="outputsModelList"></datalist>
-          </div>
-          <div class="outputs-filter-group" id="outputsFilterGroupLora" style="display:none">
-            <label>LoRA</label>
-            <input type="text" class="outputs-filter-input outputs-filter-lora" placeholder="输入 LoRA 名..." list="outputsLoraList">
-            <datalist id="outputsLoraList"></datalist>
-          </div>
-          <div class="outputs-filter-group">
-            <label>时间段</label>
-            <div class="outputs-filter-quick-period">
-              <button class="outputs-period-btn" data-period="today">今日</button>
-              <button class="outputs-period-btn" data-period="3d">3天</button>
-              <button class="outputs-period-btn" data-period="week">本周</button>
-              <button class="outputs-period-btn" data-period="month">本月</button>
-              <button class="outputs-period-btn active" data-period="">全部</button>
-            </div>
-          </div>
-          <div class="outputs-filter-group">
-            <label>日期范围</label>
-            <div class="outputs-filter-range">
-              <input type="date" class="outputs-filter-input outputs-filter-date-min" title="开始日期">
-              <span>~</span>
-              <input type="date" class="outputs-filter-input outputs-filter-date-max" title="结束日期">
-            </div>
-          </div>
-          <div class="outputs-filter-group">
-            <label>筛选</label>
-            <div class="outputs-filter-quick-period">
-              <button class="outputs-filter-flag-btn" data-flag="favorite" data-icon="star"><span>已收藏</span></button>
-              <button class="outputs-filter-flag-btn" data-flag="rated" data-icon="thumbsUp"><span>已评分</span></button>
-              <button class="outputs-filter-flag-btn" data-flag="status" data-icon="tag"><span>有标签</span></button>
-            </div>
-          </div>
-          <button class="btn btn-ghost btn-xs outputs-filter-clear" style="display:none;margin-top:8px;width:100%" data-icon="x"><span>清除筛选</span></button>
-        </div>
-      </div>
-    </aside>
+
 
     <main class="outputs-main">
       <div class="outputs-toolbar">
-        <div class="outputs-search-wrap">
-          <input type="text" class="outputs-search" id="outputsSearch" placeholder="搜索文件名、模型、提示词…" autocomplete="off">
+        <div class="outputs-search-wrap"><input type="search" class="outputs-search" id="outputsSearch" aria-label="搜索图片" placeholder="角色、作品、标签、文件名… 多个条件同时匹配" autocomplete="off"></div>
+        <select class="outputs-toolbar-select outputs-group-select" aria-label="浏览分组"><option value="none">文件夹浏览</option><option value="flat">全部平铺</option><option value="work">作品 → 角色</option><option value="character">按角色浏览</option></select>
+        <button type="button" class="outputs-toolbar-btn outputs-select-btn" data-icon="plus" title="添加图片目录" aria-label="添加图片目录"><span>添加目录</span></button>
+        <button type="button" class="outputs-toolbar-btn outputs-refresh-btn" data-icon="refreshCw" title="核对磁盘并刷新目录" aria-label="刷新图片目录"></button>
+        <div class="outputs-toolbar-group outputs-view-switch" role="group" aria-label="图片视图">
+          <button type="button" class="outputs-toolbar-btn outputs-view-grid active" data-icon="grid" title="网格视图" aria-label="网格视图"></button>
+          <button type="button" class="outputs-toolbar-btn outputs-view-list" data-icon="list" title="列表视图" aria-label="列表视图"></button>
         </div>
-        <div class="outputs-toolbar-group">
-          <button class="outputs-toolbar-btn outputs-select-all-btn" id="outputsSelectAllBtn" data-icon="checkSquare" title="全选当前视图"></button>
-        </div>
-        <div class="outputs-toolbar-group">
-          <button class="outputs-toolbar-btn outputs-view-grid active" data-icon="grid" title="网格视图"></button>
-          <button class="outputs-toolbar-btn outputs-view-list" data-icon="list" title="列表视图"></button>
-        </div>
-        <div class="outputs-toolbar-group">
-          <button class="outputs-toolbar-btn outputs-sort-btn" data-sort="date" data-icon="clock" title="按日期排序"></button>
-          <button class="outputs-toolbar-btn outputs-sort-btn" data-sort="name" data-icon="file-text" title="按名称排序"></button>
-          <button class="outputs-toolbar-btn outputs-sort-btn" data-sort="size" data-icon="package" title="按大小排序"></button>
-          <button class="outputs-toolbar-btn outputs-sort-order-btn" data-icon="arrowUpDown" title="切换排序方向"></button>
-        </div>
-        <div class="outputs-toolbar-group">
-          <button class="outputs-toolbar-btn outputs-filter-btn" data-filter="all">全部</button>
-          <select class="outputs-toolbar-select outputs-filter-category" aria-label="进入分类" title="进入分类后，下方只显示该分类的图片">
-            <option value="">分类</option>
-            <option value="__none__">未分类</option>
-          </select>
-          <button class="outputs-toolbar-btn outputs-category-manage-btn" title="管理分类（删除/重命名）" data-icon="settings"></button>
-          <button class="outputs-toolbar-btn outputs-filter-btn" data-filter="rated" data-icon="thumbsUp"><span>评分</span></button>
-        </div>
-        <div class="outputs-toolbar-group">
-          <!-- 导出元数据开关：开启后下载/复制/预览/编辑器副本都去掉 ComfyUI 的
-               prompt/workflow 并写入自定义署名；默认关闭，关闭时导出路径零改动 -->
-          <button class="outputs-toolbar-btn outputs-metadata-btn" id="outputsMetadataBtn" data-icon="shield" title="导出时去除元数据（当前：关闭）"></button>
-          <button class="outputs-toolbar-btn outputs-metadata-config-btn" id="outputsMetadataConfigBtn" data-icon="user" title="署名与自定义元数据"></button>
-        </div>
-        <button class="outputs-toolbar-btn outputs-shortcuts-btn" data-icon="keyboard" title="快捷键"></button>
-        <!-- 统计信息并入工具栏同一行（原先在网格下方独占一条带背景的状态栏，白占竖向空间；
-             内容由 Outputs.ts 的 renderStats() 填充） -->
-        <div class="outputs-stats"></div>
+        <details class="outputs-more">
+          <summary class="outputs-toolbar-btn" data-icon="slidersHorizontal"><span>浏览与筛选</span></summary>
+          <div class="outputs-more-panel">
+            <label class="outputs-menu-field">组内排序<select class="outputs-toolbar-select outputs-sort-select" aria-label="图片排序"><option value="date">按日期</option><option value="name">按名称</option><option value="size">按大小</option></select></label>
+            <button type="button" class="outputs-toolbar-btn outputs-sort-order-btn" data-icon="arrowUpDown" title="切换排序方向" aria-label="切换排序方向"><span>切换排序方向</span></button>
+            <label class="outputs-menu-field">自定义分类<select class="outputs-toolbar-select outputs-filter-category" aria-label="进入分类"><option value="">全部图片</option><option value="__none__">未分类</option></select></label>
+            <hr>
+            <button type="button" class="outputs-toolbar-btn outputs-select-all-btn" id="outputsSelectAllBtn" data-icon="checkSquare"><span>全选当前视图</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-filter-btn" data-filter="all" data-icon="image"><span>显示全部图片</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-filter-btn" data-filter="favorites" data-icon="heart"><span>只看收藏</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-filter-btn" data-filter="rated" data-icon="star"><span>只看评分</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-filter-btn" data-filter="missingMetadata" data-icon="file-text"><span>没有已保存的提示词</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-filter-btn" data-filter="inferred" data-icon="tag"><span>WD14 补标签的图片</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-category-manage-btn" data-icon="folder"><span>管理分类</span></button>
+            <hr>
+            <button type="button" class="outputs-toolbar-btn outputs-restore-output-btn" data-icon="folder"><span>恢复默认 output 目录</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-shortcuts-btn" data-icon="keyboard"><span>快捷键</span></button>
+          </div>
+        </details>
+        <button type="button" class="outputs-toolbar-btn outputs-organize-btn" data-icon="refreshCw" title="按已保存的提示词重新分类全部已启用目录，不重新扫描目录"><span>开始整理</span></button>
+        <details class="outputs-more outputs-recognition-menu">
+          <summary class="outputs-toolbar-btn" data-icon="tag"><span>识别设置</span></summary>
+          <div class="outputs-more-panel">
+            <small class="outputs-menu-label">整理与识别 · 全部已启用目录</small>
+            <p class="outputs-menu-help" id="outputsOrganizationCounts" aria-live="polite"></p>
+            <p class="outputs-menu-help" id="outputsRecognitionStatus" aria-live="polite"></p>
+            <p class="outputs-menu-help">待整理：尚未完成读取或分类。未识别：已整理，但没有确认角色。先整理提示词，再用 WD14 反推缺少角色的图片。</p>
+            <button type="button" class="outputs-toolbar-btn outputs-organize-btn" data-icon="refreshCw"><span>按提示词重新整理</span></button>
+            <hr>
+            <label class="outputs-menu-field"><input type="checkbox" id="outputsFallbackEnabled">启用空闲时 WD14 反推</label>
+            <label class="outputs-menu-field"><input type="checkbox" id="outputsFallbackUnrecognized">包括已有元数据但未识别角色的图片</label>
+            <label class="outputs-menu-field"><input type="checkbox" id="outputsFallbackLibrary">优先复用本机已验证的识别结果</label>
+            <label class="outputs-menu-field">WD14 模型<select id="outputsFallbackModel" aria-label="WD14 反推模型"><option value="">自动选择已安装模型</option></select></label>
+            <label class="outputs-menu-field">普通标签阈值<input type="number" id="outputsFallbackThreshold" min="0" max="1" step="0.05" value="0.35"></label>
+            <label class="outputs-menu-field">角色阈值<input type="number" id="outputsFallbackCharacterThreshold" min="0" max="1" step="0.05" value="0.85"></label>
+            <p class="outputs-menu-help" id="outputsFallbackHint">没有已保存提示词时用本地 WD14 补标签；只保存搜索摘要，原图保持。正在生图时暂停。</p>
+            <button type="button" class="outputs-toolbar-btn outputs-fallback-refresh-btn" data-icon="refreshCw"><span>刷新本地模型列表</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-recognize-unknown-btn" data-icon="tag"><span>用所选模型重试未识别</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-fallback-pause-btn" data-icon="pause"><span>暂停 WD14 反推</span></button>
+          </div>
+        </details>
+        <details class="outputs-more outputs-export-menu">
+          <summary class="outputs-toolbar-btn" data-icon="download"><span>导出设置</span></summary>
+          <div class="outputs-more-panel">
+            <small class="outputs-menu-label">复制、下载的默认方式</small>
+            <button type="button" class="outputs-toolbar-btn outputs-metadata-btn" id="outputsMetadataBtn" data-icon="shield" aria-pressed="false"><span>保留生成信息（原图）</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-metadata-config-btn" id="outputsMetadataConfigBtn" data-icon="user"><span>署名与自定义元数据…</span></button>
+            <p class="outputs-menu-help">仅处理导出副本，磁盘原图保持。去除生成信息后，图片不能还原工作流。</p>
+          </div>
+        </details>
       </div>
+      <div class="outputs-results-line"><span id="outputsLocation">所有已选目录</span><button type="button" class="outputs-toolbar-btn" id="outputsNewImages" hidden title="按日期查看 output 新图，会切换到全部图片并清除当前筛选"></button><span id="outputsIndexStatus" aria-live="polite"></span><span id="outputsRefreshStatus" aria-live="polite"></span><div class="outputs-stats"></div></div>
 
       <div class="outputs-batch-bar" id="outputsBatchBar" style="display:none">
         <span id="outputsBatchCount">已选 0 张</span>
         <button class="outputs-batch-btn outputs-batch-fav-btn" data-icon="heart"><span>收藏</span></button>
-        <button class="outputs-batch-btn outputs-batch-unfav-btn" data-icon="x"><span>取消收藏</span></button>
-        <button class="outputs-batch-btn outputs-batch-rate-btn" data-icon="star"><span>评分</span></button>
-        <button class="outputs-batch-btn outputs-batch-copy-btn" data-icon="copy"><span>复制</span></button>
-        <button class="outputs-batch-btn outputs-batch-download-btn" data-icon="download"><span>下载</span></button>
-        <button class="outputs-batch-btn danger outputs-batch-delete-btn" data-icon="trash"><span>删除</span></button>
+        <div class="outputs-split-action"><button class="outputs-batch-btn outputs-batch-copy-btn" data-icon="copy"><span>复制</span></button><details class="outputs-more"><summary class="outputs-batch-btn" aria-label="复制选项" data-icon="chevronDown"></summary><div class="outputs-more-panel"><button type="button" class="outputs-toolbar-btn" data-output-export="copy" data-export-mode="original">复制原图</button><button type="button" class="outputs-toolbar-btn" data-output-export="copy" data-export-mode="clean">去除生成信息后复制</button></div></details></div>
+        <div class="outputs-split-action"><button class="outputs-batch-btn outputs-batch-download-btn" data-icon="download"><span>下载</span></button><details class="outputs-more"><summary class="outputs-batch-btn" aria-label="下载选项" data-icon="chevronDown"></summary><div class="outputs-more-panel"><button type="button" class="outputs-toolbar-btn" data-output-export="download" data-export-mode="original">下载原图</button><button type="button" class="outputs-toolbar-btn" data-output-export="download" data-export-mode="clean">去除生成信息后下载</button></div></details></div>
+        <details class="outputs-more"><summary class="outputs-batch-btn" data-icon="moreHorizontal"><span>更多</span></summary><div class="outputs-more-panel"><button class="outputs-toolbar-btn outputs-batch-rate-btn" data-icon="star"><span>评分</span></button><button class="outputs-toolbar-btn outputs-batch-unfav-btn" data-icon="x"><span>取消收藏</span></button><hr><button class="outputs-toolbar-btn danger outputs-batch-delete-btn" data-icon="trash"><span>删除磁盘图片…</span></button></div></details>
       </div>
+      <div id="outputsExportProgress" class="outputs-export-progress" hidden><span aria-live="polite"></span><button type="button" class="outputs-batch-btn outputs-export-cancel">取消</button></div>
 
       <div class="outputs-scan-progress" id="outputsScanProgress" style="display:none">
         <div class="outputs-scan-progress-bar" id="outputsScanProgressBar"></div>
-        <span class="outputs-scan-progress-text" id="outputsScanProgressText">扫描中...</span>
+        <span class="outputs-scan-progress-text" id="outputsScanProgressText">扫描中...</span><button type="button" class="outputs-cancel-scan-btn">取消扫描</button>
       </div>
 
       <div class="outputs-grid" id="outputsGrid">
         <div class="outputs-empty">
           <div class="big" data-icon="image"></div>
-          <p>选择 ComfyUI 输出目录开始管理图片</p>
-          <button class="btn btn-primary outputs-select-btn" data-icon="folder"><span>选择目录</span></button>
+          <p>浏览 output 和归档目录中的图片</p>
+          <button class="btn btn-primary outputs-select-btn" data-icon="folder"><span>添加目录</span></button>
         </div>
       </div>
 
@@ -612,14 +624,32 @@ try {
   <button class="close" aria-label="关闭">✕</button>
   <button class="lb-nav prev" aria-label="上一张">‹</button>
   <button class="lb-nav next" aria-label="下一张">›</button>
+  <div class="lb-toolbars" aria-label="图片编辑工具">
   <div class="lb-editbar" id="lbEditBar">
     <button data-act="rotl" title="向左旋转 90°" data-icon="rotateCcw"><span>左转</span></button>
     <button data-act="rotr" title="向右旋转 90°" data-icon="rotateCw"><span>右转</span></button>
     <button data-act="fliph" title="水平翻转" data-icon="flipHorizontal"><span>水平</span></button>
     <button data-act="flipv" title="垂直翻转" data-icon="flipVertical"><span>垂直</span></button>
     <button data-act="crop" title="框选保留区域" data-icon="crop"><span>裁剪</span></button>
-    <button data-act="save" title="保存为副本（不覆盖原图）" data-icon="download"><span>保存</span></button>
+    <button data-act="save" title="另存副本，保留原图" data-icon="download"><span>另存副本</span></button>
+    <button data-act="overwrite" title="备份后覆盖原图"><span>覆盖原图</span></button>
     <button data-act="reset" title="重置编辑" data-icon="undo"><span>重置</span></button>
+  </div>
+  <div class="lb-paintbar" id="lbPaintBar" aria-label="预览编辑">
+    <div class="lb-paint-modes" role="group" aria-label="工具">
+      <button data-paint="view" aria-pressed="true">浏览</button>
+      <button data-paint="pen" aria-pressed="false">涂鸦</button>
+      <button data-paint="mosaic" aria-pressed="false">马赛克</button>
+      <button data-paint="cover" aria-pressed="false">色块遮盖</button>
+    </div>
+    <label data-paint-controls="pen cover" hidden title="画笔与遮盖颜色">颜色 <input id="lbPaintColor" type="color" value="#000000" aria-label="画笔颜色"></label>
+    <label data-paint-controls="pen" hidden title="画笔宽度，单位为原图像素">笔宽 <input id="lbPaintSize" type="range" min="2" max="128" value="24" aria-label="画笔大小"><output id="lbPaintSizeValue" for="lbPaintSize">24</output></label>
+    <label data-paint-controls="mosaic" hidden title="颗粒越小越细腻，单位为原图像素">颗粒 <input id="lbMosaicSize" type="range" min="2" max="128" value="8" aria-label="马赛克颗粒大小"><output id="lbMosaicSizeValue" for="lbMosaicSize">8</output></label>
+    <label data-paint-controls="mosaic" hidden title="马赛克与原图混合的强度">强度 <input id="lbMosaicStrength" type="range" min="1" max="100" value="100" aria-label="马赛克强度"><output id="lbMosaicStrengthValue" for="lbMosaicStrength">100%</output></label>
+    <button id="lbPaintUndo">撤销</button>
+    <button id="lbPreviewDrag" draggable="true" data-output-preview-drag data-output-drag="" title="拖动到 Pixiv 等接收位置；无需另存">拖出当前图</button>
+    <span id="lbEditHint" role="status">涂鸦可直接画；打码请拖出矩形</span>
+  </div>
   </div>
   <div class="lb-edit-wrap" id="lbEditWrap" style="display:none">
     <canvas id="lbEditCanvas"></canvas>
