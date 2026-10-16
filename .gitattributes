@@ -2,3 +2,6 @@ app/index.html text eol=lf
 app/manifest.json text eol=lf
 app/sw.js text eol=lf
 panel/index.html text eol=lf
+VERSION text eol=lf
+CHANGELOG.md text eol=lf
+integrations/pixiv-drop-bridge/* text eol=lf
