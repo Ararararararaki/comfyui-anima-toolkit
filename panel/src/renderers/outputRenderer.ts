@@ -3,10 +3,13 @@
 // 职责：从 `src/sections/Outputs.ts` 中提取，降低文件复杂度
 
 import { esc, escAttr } from '../utils'
-import type { OutputFile, OutputMetadata, OutputDir } from '../types/outputs'
+import type { OutputFile, OutputMetadata, OutputDir, OutputSummary } from '../types/outputs'
 import { metadataForFile, promptBody } from '../services/outputIdentity'
+import { outputContentKey, fileSourceIdentity } from '../services/outputSources'
 import { icon } from '../utils/icon'
 import { CLAMP_MAX_ASPECT } from '../components/masonry'
+import { renderGenerationDetails } from './outputGenerationDetails'
+import { parseMetadataJSON } from '../services/metadataJSON'
 
 // ── 状态标签定义 ──
 
@@ -22,7 +25,7 @@ export const STATUS_DEFS: Record<string, { label: string; color: string }> = {
 
 export function renderDirTree(dir: OutputDir | null, currentPath: string): string {
   if (!dir) {
-    return '<div class="outputs-empty-sidebar"><p>📁 选择目录开始扫描</p></div>'
+    return `<div class="outputs-empty-sidebar"><p>${icon('folder', 16)} 添加目录开始扫描</p></div>`
   }
   return renderDirNode(dir, 0, currentPath)
 }
@@ -35,8 +38,8 @@ function renderDirNode(dir: OutputDir, depth: number, currentPath: string): stri
   let html = `<div class="outputs-dir-node ${isCurrentPath ? 'active' : ''}"
     style="padding-left:${indent}px"
     data-path="${escAttr(dir.path)}">
-    <span class="outputs-dir-arrow ${hasChildren ? 'has-children' : ''}">${hasChildren ? '▶' : ''}</span>
-    <span class="outputs-dir-icon">${hasChildren ? '📂' : '📁'}</span>
+    <span class="outputs-dir-arrow ${hasChildren ? 'has-children' : ''}">${hasChildren ? icon('chevronRight', 12) : ''}</span>
+    <span class="outputs-dir-icon">${icon('folder', 14)}</span>
     <span class="outputs-dir-name">${esc(dir.name)}</span>
     <span class="outputs-dir-count">${dir.fileCount}</span>
   </div>`
@@ -64,7 +67,7 @@ export function renderGrid(
   }).join('')
 }
 
-export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, isSelected: boolean, loras?: string[], sig?: string, thumbSrc?: string, boxAspect?: number): string {
+export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, isSelected: boolean, loras?: string[], sig?: string, thumbSrc?: string, boxAspect?: number, summary?: OutputSummary): string {
   const st = file.status ? STATUS_DEFS[file.status] : null
   const masonry = boxAspect ? ' masonry' : ''
   // 图片区高度**不再由 JS 内联**：一旦同时定死宽和高，CSS 的 aspect-ratio 与
@@ -82,36 +85,29 @@ export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, i
   const cardAspect = file.width > 0 && file.height > 0 ? file.height / file.width : 1
   const clampClass = cardAspect > CLAMP_MAX_ASPECT ? ' tall-clamped' : ''
   return `<div class="outputs-card ${isSelected ? 'selected' : ''}${file.status ? ` status-${file.status}` : ''}${masonry}${clampClass}" data-id="${escAttr(file.id)}" data-path="${escAttr(file.path)}"${sig ? ` data-sig="${escAttr(sig)}"` : ''}>
-    <div class="outputs-card-img" style="--card-ar:${arValue}">
+    <div class="outputs-card-img" style="--card-ar:${arValue}" draggable="true" data-output-drag="${escAttr(file.id)}" title="拖出干净图片副本">
       ${st ? `<div class="outputs-card-status-tag" style="background:${st.color}">${st.label}</div>` : ''}
-      <img src="${escAttr(thumbSrc || '')}" data-file-id="${escAttr(file.id)}" data-file-path="${escAttr(file.path)}" data-file-version="${escAttr(sig || `${file.mtime}:${file.size}`)}" alt="${esc(file.filename)}" loading="eager">
+      <img src="${escAttr(thumbSrc || '')}" draggable="false" data-file-id="${escAttr(file.id)}" data-file-path="${escAttr(file.path)}" data-cache-key="${escAttr(outputContentKey(file))}" data-file-version="${escAttr(sig || `${file.mtime}:${file.size}`)}" alt="${esc(file.filename)}" loading="eager">
       <div class="outputs-card-actions-top">
         ${file.pinned ? `<span class="outputs-card-pinned-icon">${icon('pin', 12)}</span>` : ''}
-        <button class="outputs-card-category-icon ${file.category ? 'active' : ''}" data-id="${escAttr(file.id)}" title="${file.category ? `当前分类：${esc(file.category)}；点击修改` : '设置分类'}">${icon('folder', 14)}</button>
       </div>
       <div class="outputs-card-overlay">
-        <button class="outputs-card-btn outputs-pin-btn" data-id="${escAttr(file.id)}" title="${file.pinned ? '取消置顶' : '置顶'}">${icon(file.pinned ? 'pin' : 'pin', 13, file.pinned ? 'fill-icon' : '')}</button>
-        <button class="outputs-card-btn outputs-copy-btn" data-id="${escAttr(file.id)}" title="复制图片">${icon('copy', 13)}</button>
-        <button class="outputs-card-btn outputs-download-btn" data-id="${escAttr(file.id)}" title="下载">${icon('download', 13)}</button>
-        <button class="outputs-card-btn outputs-preview-btn" data-id="${escAttr(file.id)}" title="预览">${icon('eye', 13)}</button>
-        <button class="outputs-card-btn outputs-rename-btn" data-id="${escAttr(file.id)}" data-name="${escAttr(file.filename)}" title="重命名">${icon('edit3', 13)}</button>
+        <button class="outputs-card-btn outputs-preview-btn" data-id="${escAttr(file.id)}" title="预览">${icon('eye', 14)}</button>
       </div>
       ${file.rating > 0 ? `<div class="outputs-card-rating">${'★'.repeat(file.rating)}${'☆'.repeat(5 - file.rating)}</div>` : ''}
     </div>
     <div class="outputs-card-info">
       <div class="outputs-card-name" title="${esc(file.filename)}">${esc(file.filename)}</div>
       <div class="outputs-card-meta">
+        ${renderTagSource(summary)}
         ${file.category ? `<span class="outputs-card-category" title="分类：${esc(file.category)}">🏷 ${esc(file.category)}</span>` : ''}
         ${meta?.model ? `<span class="outputs-card-model" title="${esc(meta.model)}">${esc(meta.model.slice(0, 20))}</span>` : ''}
         <span class="outputs-card-size">${fmtSize(file.size)}</span>
       </div>
       <div class="outputs-card-date">${fmtDate(file.mtime)}</div>
       <div class="outputs-card-actions">
-        ${promptBody(meta) ? `<button class="outputs-copy-prompt-btn" data-id="${escAttr(file.id)}" title="复制正面 Prompt">${icon('file-text', 12)}</button>` : ''}
-        ${promptBody(meta) ? `<button class="outputs-save-prompt-btn" data-id="${escAttr(file.id)}" title="将 Prompt 和图片存入 Prompt 库">${icon('book', 12)}</button>` : ''}
-        ${meta?.loras?.length ? `<button class="outputs-copy-lora-btn" data-id="${escAttr(file.id)}" title="复制 LoRA 标签">${icon('tag', 12)}</button>` : ''}
-        ${meta?.hasWorkflow ? `<button class="outputs-dl-wf-btn" data-id="${escAttr(file.id)}" title="下载工作流（保存 .json，拖入 ComfyUI 画布导入）">${icon('download', 12)}</button>` : ''}
-        ${meta ? `<button class="outputs-meta-btn" data-id="${escAttr(file.id)}" title="查看元数据">${icon('info', 12)}</button>` : ''}
+        <button class="outputs-fav-btn" data-id="${escAttr(file.id)}" aria-label="${file.favorite ? '取消收藏' : '收藏'}" aria-pressed="${file.favorite}">${icon('star', 14, file.favorite ? 'fill-icon' : '')}</button>
+        <button class="outputs-card-more" data-id="${escAttr(file.id)}" aria-label="图片操作" aria-haspopup="menu" title="图片操作：复制、下载、Prompt 和元数据">${icon('moreHorizontal', 16)}</button>
       </div>
     </div>
   </div>`
@@ -119,13 +115,14 @@ export function renderImageCard(file: OutputFile, meta: OutputMetadata | null, i
 
 // ── 列表视图渲染 ──
 
-export function renderList(files: OutputFile[], selectedIds: Set<string>, metadataCache: Map<string, OutputMetadata>, root?: string, parserVersion?: number): string {
+export function renderList(files: OutputFile[], selectedIds: Set<string>, metadataCache: Map<string, OutputMetadata>, root?: string, parserVersion?: number, summaries?: Map<string, OutputSummary>): string {
   return `<div class="outputs-list">
-    ${files.map(f => renderListCard(f, selectedIds, metadataCache, root, parserVersion)).join('')}
+    ${files.map(f => renderListCard(f, selectedIds, metadataCache, root, parserVersion, summaries?.get(f.id))).join('')}
   </div>`
 }
 
-function renderListCard(file: OutputFile, selectedIds: Set<string>, metadataCache: Map<string, OutputMetadata>, root?: string, parserVersion?: number): string {
+function renderListCard(file: OutputFile, selectedIds: Set<string>, metadataCache: Map<string, OutputMetadata>, root?: string, parserVersion?: number, summary?: OutputSummary): string {
+  if (file.sourceId) { const identity = fileSourceIdentity(file); root = identity.root; parserVersion = identity.parserVersion }
   const meta = metadataForFile(metadataCache, file, root, parserVersion)
   const isSelected = selectedIds.has(file.id)
   const st = file.status ? STATUS_DEFS[file.status] : null
@@ -135,28 +132,22 @@ function renderListCard(file: OutputFile, selectedIds: Set<string>, metadataCach
       ${file.pinned ? `<span class="outputs-list-pinned">${icon('pin', 10)}</span>` : ''}
       ${st ? `<span class="outputs-list-status-dot" style="background:${st.color}" title="${st.label}"></span>` : ''}
     </div>
-    <div class="outputs-list-card-img">
-      <img src="" data-file-id="${escAttr(file.id)}" data-file-path="${escAttr(file.path)}" data-file-version="${escAttr(JSON.stringify([root || '', file.path, file.mtime, file.size]))}" alt="" loading="lazy">
+    <div class="outputs-list-card-img" draggable="true" data-output-drag="${escAttr(file.id)}" title="拖出干净图片副本">
+      <img src="" draggable="false" data-file-id="${escAttr(file.id)}" data-file-path="${escAttr(file.path)}" data-cache-key="${escAttr(outputContentKey(file))}" data-file-version="${escAttr(JSON.stringify([root || '', file.path, file.mtime, file.size]))}" alt="${escAttr(file.filename)}" loading="lazy">
     </div>
     <div class="outputs-list-card-body">
       <div class="outputs-list-card-name" title="${esc(file.filename)}">${esc(file.filename)}</div>
       <div class="outputs-list-card-meta">
+        ${renderTagSource(summary)}
         ${file.category ? `<span class="outputs-card-category" title="分类：${esc(file.category)}">🏷 ${esc(file.category)}</span>` : ''}
         <span>${meta?.model ? esc(meta.model.slice(0, 20)) : '-'}</span>
         <span>${fmtSize(file.size)}</span>
         <span>${new Date(file.mtime).toLocaleDateString()}</span>
       </div>
       <div class="outputs-list-card-actions">
-        <button class="outputs-action-btn outputs-fav-btn" data-id="${escAttr(file.id)}" title="收藏">${icon('star', 14, file.favorite ? 'fill-icon' : '')}</button>
-        <button class="outputs-action-btn outputs-copy-btn" data-id="${escAttr(file.id)}" title="复制图片">${icon('copy', 14)}</button>
-        <button class="outputs-action-btn outputs-download-btn" data-id="${escAttr(file.id)}" title="下载">${icon('download', 14)}</button>
+        <button class="outputs-action-btn outputs-fav-btn" data-id="${escAttr(file.id)}" aria-label="${file.favorite ? '取消收藏' : '收藏'}" aria-pressed="${file.favorite}">${icon('star', 14, file.favorite ? 'fill-icon' : '')}</button>
         <button class="outputs-action-btn outputs-preview-btn" data-id="${escAttr(file.id)}" title="预览">${icon('eye', 14)}</button>
-        <button class="outputs-action-btn outputs-rename-btn" data-id="${escAttr(file.id)}" data-name="${escAttr(file.filename)}" title="重命名">${icon('edit3', 14)}</button>
-        ${promptBody(meta) ? `<button class="outputs-action-btn outputs-copy-prompt-btn" data-id="${escAttr(file.id)}" title="复制正面 Prompt">${icon('file-text', 14)}</button>` : ''}
-        ${promptBody(meta) ? `<button class="outputs-action-btn outputs-save-prompt-btn" data-id="${escAttr(file.id)}" title="将 Prompt 和图片存入 Prompt 库">${icon('book', 14)}</button>` : ''}
-        ${meta?.loras?.length ? `<button class="outputs-action-btn outputs-copy-lora-btn" data-id="${escAttr(file.id)}" title="复制 LoRA 标签">${icon('tag', 14)}</button>` : ''}
-        ${meta?.hasWorkflow ? `<button class="outputs-action-btn outputs-dl-wf-btn" data-id="${escAttr(file.id)}" title="保存为 .json 文件，拖入 ComfyUI 画布即可导入">${icon('fileJson', 14)}</button>` : ''}
-        ${meta ? `<button class="outputs-action-btn outputs-meta-btn" data-id="${escAttr(file.id)}" title="查看元数据">${icon('info', 14)}</button>` : ''}
+        <button class="outputs-action-btn outputs-card-more" data-id="${escAttr(file.id)}" aria-label="图片操作" aria-haspopup="menu">${icon('moreHorizontal', 16)}</button>
       </div>
     </div>
   </div>`
@@ -205,26 +196,19 @@ export function renderMetadataPanel(meta: OutputMetadata | null, file: OutputFil
   if (!meta) return `${header}<div class="outputs-meta-empty">元数据读取失败或未找到，请重试。<button id="outputsMetaRetryBtn" class="btn btn-sm">重试解析</button></div>`
 
   const workflowSection = hasWorkflow ? renderWorkflowSection(meta.workflowJson) : ''
-  const status = meta.promptStatus === 'partial' ? '部分连接无法解析，以下为已解析内容。' : meta.promptStatus === 'ambiguous' ? '无法确定本图对应的生成分支，暂不能可靠复制。' : meta.promptStatus === 'missing' ? '未找到可靠提示词。' : ''
+  const needsRetry = meta.metadataState === 'error' || meta.metadataState === 'unknown' || ['partial', 'ambiguous', 'missing'].includes(meta.promptStatus || '')
   const stages = meta.promptStages || []
-  const prompts = stages.length > 1 ? stages.map(stage => `<div class="outputs-meta-section"><h4>${esc(stage.label || `阶段 ${stage.nodeId}`)}</h4>${stage.prompt ? `<div class="outputs-meta-prompt" data-copy="${escAttr(stage.prompt)}">${esc(stage.prompt)}</div>` : ''}${stage.negativePrompt ? `<h4>负向提示词</h4><div class="outputs-meta-prompt" data-copy="${escAttr(stage.negativePrompt)}">${esc(stage.negativePrompt)}</div>` : ''}</div>`).join('') : `${meta.prompt ? `<div class="outputs-meta-section"><h4>正向提示词</h4><div class="outputs-meta-prompt"${promptBody(meta) ? ` data-copy="${escAttr(meta.prompt)}"` : ''}>${esc(meta.prompt)}</div></div>` : ''}${meta.negativePrompt ? `<div class="outputs-meta-section"><h4>负向提示词</h4><div class="outputs-meta-prompt" data-copy="${escAttr(meta.negativePrompt)}">${esc(meta.negativePrompt)}</div></div>` : ''}`
+  const copyAttribute = (value: string) => ['missing', 'ambiguous'].includes(meta.promptStatus || '') ? '' : ` data-copy="${escAttr(value)}"`
+  const prompts = stages.length > 1 ? stages.map(stage => `<div class="outputs-meta-section"><h4>${esc(stage.label || `阶段 ${stage.nodeId}`)}</h4>${stage.prompt ? `<div class="outputs-meta-prompt"${copyAttribute(stage.prompt)}>${esc(stage.prompt)}</div>` : ''}${stage.negativePrompt ? `<h4>负向提示词</h4><div class="outputs-meta-prompt"${copyAttribute(stage.negativePrompt)}>${esc(stage.negativePrompt)}</div>` : ''}</div>`).join('') : `${meta.prompt ? `<div class="outputs-meta-section"><h4>正向提示词</h4><div class="outputs-meta-prompt"${copyAttribute(meta.prompt)}>${esc(meta.prompt)}</div></div>` : ''}${meta.negativePrompt ? `<div class="outputs-meta-section"><h4>负向提示词</h4><div class="outputs-meta-prompt"${copyAttribute(meta.negativePrompt)}>${esc(meta.negativePrompt)}</div></div>` : ''}`
 
   return `
     ${header}
+    ${renderGenerationDetails(meta)}
     <div class="outputs-meta-section">
-      <h4>模型信息</h4>
-      <div class="outputs-meta-row"><span>模型</span><span>${esc(meta.model || '-')}</span></div>
-      <div class="outputs-meta-row"><span>VAE</span><span>${esc(meta.vae || '-')}</span></div>
-      <div class="outputs-meta-row"><span>采样器</span><span>${esc(meta.sampler || '-')}</span></div>
-    </div>
-    <div class="outputs-meta-section">
-      <h4>生成参数</h4>
-      <div class="outputs-meta-row"><span>种子</span><span>${esc(meta.seed || '-')}</span></div>
-      <div class="outputs-meta-row"><span>步数</span><span>${esc(meta.steps || '-')}</span></div>
-      <div class="outputs-meta-row"><span>CFG</span><span>${esc(meta.cfg || '-')}</span></div>
+      <h4>图片信息</h4>
       <div class="outputs-meta-row"><span>尺寸</span><span>${file.width} × ${file.height}</span></div>
     </div>
-    ${status ? `<div class="outputs-meta-section">${esc(status)} <button id="outputsMetaRetryBtn">重试解析</button></div>` : ''}
+    ${needsRetry ? `<div class="outputs-meta-section"><button id="outputsMetaRetryBtn">重试解析</button></div>` : ''}
     ${prompts}
     ${workflowSection}
   `
@@ -244,8 +228,9 @@ export interface FilterPanelState {
 
 function renderWorkflowSection(workflowJson: string): string {
   try {
-    const workflow = JSON.parse(workflowJson)
-    const nodes: any[] = workflow.nodes || []
+    const workflow = parseMetadataJSON(workflowJson)
+    if (!workflow || typeof workflow !== 'object') throw new Error('invalid-workflow')
+    const nodes: any = workflow.nodes
     const promptFormat = !Array.isArray(nodes) && typeof workflow === 'object' && !workflow.nodes
     let nodeList: any[] = []
 
@@ -294,7 +279,7 @@ function renderWorkflowSection(workflowJson: string): string {
       const headerText = title ? `${type} (${title})` : type
       const hiddenClass = showAll ? '' : (i >= initialLimit ? 'node-hidden' : '')
       return `<div class="outputs-node-item${hiddenClass ? ' node-hidden' : ''}" data-node-index="${i}">
-        <div class="outputs-node-header">🔷 ${esc(headerText)} <span class="outputs-node-id">#${n.id ?? i}</span></div>
+        <div class="outputs-node-header">${icon('layers', 12)} ${esc(headerText)} <span class="outputs-node-id">#${esc(String(n.id ?? i))}</span></div>
         ${params.length > 0 ? `<div class="outputs-node-params">${params.map(p => `<span class="outputs-node-param">${esc(p)}</span>`).join('')}</div>` : ''}
       </div>`
     }).join('')
@@ -302,41 +287,42 @@ function renderWorkflowSection(workflowJson: string): string {
     return `
     <div class="outputs-meta-section outputs-workflow-section">
       <div class="outputs-workflow-toggle" id="outputsWorkflowToggle">
-        <span>📋 节点摘要${totalNodes > 0 ? ` <small>(${totalNodes} 节点)</small>` : ''}</span>
-        <span class="outputs-workflow-toggle-arrow">▶</span>
+        <span>${icon('layers', 12)} 节点摘要${totalNodes > 0 ? ` <small>(${totalNodes} 节点)</small>` : ''}</span>
+        <span class="outputs-workflow-toggle-arrow">${icon('chevronRight', 12)}</span>
       </div>
       <div class="outputs-workflow-content outputs-workflow-collapsed" id="outputsWorkflowContent">
         <div class="outputs-node-list">
           ${nodeItems}
-          ${totalNodes > initialLimit ? `<div class="outputs-node-more" id="outputsNodeMoreBtn">📄 查看全部 ${totalNodes} 个节点</div>` : ''}
+          ${totalNodes > initialLimit ? `<div class="outputs-node-more" id="outputsNodeMoreBtn">${icon('file-text', 12)} 查看全部 ${totalNodes} 个节点</div>` : ''}
         </div>
-        <details style="margin-top:8px">
-          <summary style="cursor:pointer;font-size:10px;color:var(--text3);padding:4px 0">原始 JSON</summary>
-          <pre style="font-size:10px;overflow-x:auto;margin-top:4px;background:var(--bg);padding:8px;border-radius:6px;max-height:300px;overflow-y:auto">${esc(JSON.stringify(workflow, null, 2))}</pre>
-        </details>
       </div>
     </div>`
   } catch {
     return `
     <div class="outputs-meta-section outputs-workflow-section">
       <div class="outputs-workflow-toggle" id="outputsWorkflowToggle">
-        <span>📋 节点摘要</span>
-        <span class="outputs-workflow-toggle-arrow">▶</span>
+        <span>${icon('layers', 12)} 节点摘要</span>
+        <span class="outputs-workflow-toggle-arrow">${icon('chevronRight', 12)}</span>
       </div>
       <div class="outputs-workflow-content outputs-workflow-collapsed" id="outputsWorkflowContent">
         <div class="outputs-node-list">
-          <div style="font-size:11px;color:var(--text3);padding:4px 0">工作流数据格式无法解析，可查看原始 JSON</div>
+          <div style="font-size:11px;color:var(--text3);padding:4px 0">工作流数据格式无法解析，可展开原始保存字段查看。</div>
         </div>
-        <details style="margin-top:8px">
-          <summary style="cursor:pointer;font-size:10px;color:var(--text3);padding:4px 0">原始 JSON</summary>
-          <pre style="font-size:10px;overflow-x:auto;margin-top:4px;background:var(--bg);padding:8px;border-radius:6px;max-height:300px;overflow-y:auto">${esc(workflowJson)}</pre>
-        </details>
       </div>
     </div>`
   }
 }
 
 // ── 工具函数 ──
+function renderTagSource(summary?: OutputSummary): string {
+  if (summary?.tagSource === 'wd14' || summary?.inferredTags?.length) {
+    const source = summary.inferenceModel?.startsWith('CCIP') ? '图库相似识别'
+      : summary.inferenceModel?.startsWith('PixAI') ? 'PixAI 识别' : 'WD14'
+    return `<span class="outputs-tag-source" title="本地推断标签（${esc(source)}）；没有替代原图元数据">${icon('tag', 11)} ${source}</span>`
+  }
+  if (summary?.indexStatus === 'ready' && !summary.prompt.trim()) return `<span class="outputs-tag-source" title="未保存可检索的正面提示词">无提示词</span>`
+  return ''
+}
 
 function fmtSize(bytes: number): string {
   if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + ' GB'

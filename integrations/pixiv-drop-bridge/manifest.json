@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "TK → Pixiv 图片接收桥",
+  "version": "0.2.0",
+  "description": "接收本机 TK Toolkit 已准备的导出图片。仅添加到 Pixiv 上传控件，不执行投稿。",
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "background": { "service_worker": "worker.js", "type": "module" },
+  "content_scripts": [
+    { "matches": ["http://127.0.0.1/*", "http://localhost/*"], "js": ["source.js"], "run_at": "document_idle", "all_frames": true },
+    { "matches": ["https://www.pixiv.net/*"], "js": ["receiver.js"], "run_at": "document_idle" }
+  ]
+}

@@ -10,10 +10,46 @@ import re
 
 # 4: the same prompt-provenance record consumer landed in anima_gallery.build_entry, so the
 #    index semantics changed again (record-first prompt, static graph as fallback).
-PARSER_VERSION = 5
+PARSER_VERSION = 9
 _SEPARATORS = {"逗号 ,": ", ", "空格": " ", "换行": "\n", "无": ""}
-_CONTENT_KEYS = ("text", "prompt", "value", "positive", "negative", "text_g", "text_l", "clip_l", "t5xxl", "natural_language")
+_CONTENT_KEYS = ("text", "prompt", "value", "positive", "negative", "text_g", "text_l", "clip_l", "t5xxl", "natural_language", "tags")
 _IMAGE_KEYS = {"images", "image", "samples", "latent", "latent_image", "pixels", "input_image", "image_a", "image_b", "image1", "image2", "image_1", "image_2", "latents"}
+
+
+def is_image_save_type(node_type):
+    """Easy-Use imageSaveSimple delegates this exact class to ComfyUI SaveImage."""
+    name = node_type.lower()
+    return "saveimage" in name or name == "easy imagesave"
+
+
+def output_node_for_filename(graph, filename):
+    """Unique literal SaveImage prefix plus official counter suffix, never a guess.
+
+    Moved images retain their basename. Unresolved date/dimension/batch macros,
+    connected prefixes and duplicate basenames deliberately remain ambiguous.
+    """
+    if not isinstance(filename, str) or not filename:
+        return None
+    full_name = filename.replace('\\', '/')
+    name = full_name.rsplit('/', 1)[-1]
+    candidates = []
+    for node in normalize_graph(graph).values():
+        if not is_image_save_type(node['type']) or node['mode'] in (2, 4):
+            continue
+        prefix = node['values'].get('filename_prefix')
+        if 'filename_prefix' in node['refs'] or not isinstance(prefix, str) or not prefix or '%' in prefix:
+            continue
+        prefix = prefix.replace('\\', '/')
+        basename = prefix.rsplit('/', 1)[-1]
+        if 'only_preview' in node['refs']:
+            continue
+        suffix = (r'_temp_[a-z]{5}' if node['type'].lower() == 'easy imagesave' and node['values'].get('only_preview') is True else '') + r'_\d{5,}_\.(?:png|webp|jpe?g)'
+        if basename and re.fullmatch(re.escape(basename) + suffix, name, re.I):
+            scoped = '/' in prefix and re.search(r'(?:^|/)' + re.escape(prefix) + suffix + '$', full_name, re.I)
+            candidates.append((node['id'], bool(scoped)))
+    scoped = [node_id for node_id, matches_path in candidates if matches_path]
+    eligible = scoped or [node_id for node_id, _ in candidates]
+    return eligible[0] if len(eligible) == 1 else None
 
 
 def image_dependency_nodes(graph, output_node_id):
@@ -97,6 +133,10 @@ def _widget_names(ctype):
         return ("separator", "router_settings")
     if "danboorugallery" in lower:
         return ("selection_data",)
+    if lower == 'easy imagesave':
+        return ('filename_prefix', 'only_preview')
+    if lower == 'saveimage':
+        return ('filename_prefix',)
     return ()
 
 
@@ -271,6 +311,12 @@ class _Parser:
 
     def node_text(self, node, slot, role):
         ct, values = node["type"].lower(), node["values"]
+        # Match the frontend's proven runtime-only display nodes. Their saved
+        # widget text can belong to an earlier image; runtime receipts are
+        # consumed before this static fallback and remain authoritative.
+        if re.match(r"^wd14tagger\b", ct.strip()) or re.fullmatch(r"easy\s*showanything", ct.strip()):
+            self.warn("无法完整还原节点的运行期文本：" + node["type"])
+            return []
         if "cliptextencode" in ct:
             return self.fields(node, ("text", "text_g", "text_l", "clip_l", "t5xxl"), role)
         if ct == "conditioningcombine":
@@ -370,6 +416,23 @@ class _Parser:
                 return []
             item = selections[0] if isinstance(selections[0], dict) else {}
             return [_join((data.get("role_prompt", ""), item.get("prompt", "")))]
+        if ct == "danboorutagsorternode":
+            if slot != 1:
+                self.warn("标签分类包不是文本输出")
+                return []
+            pattern = None
+            expression = str(values.get("regex_blacklist") or "")
+            if expression:
+                try:
+                    pattern = re.compile(expression, re.I)
+                except re.error:
+                    self.warn("排序节点的正则排除无法静态核验")
+                    return []
+            blocked = {part.strip().lower() for part in str(values.get("tag_blacklist") or "").split(',')}
+            tags = [tag.strip() for text in self.field(node, "tags", role) for tag in text.split(',')]
+            kept = [tag for tag in tags if tag and tag.lower() not in blocked and not (pattern and pattern.search(tag))]
+            self.warn("排序节点的保存标签已应用排除规则；分类顺序与注释未完整恢复")
+            return [_join(kept)]
         if ct in ("reroute", "conditioningreroute"):
             return self.fields(node, list(node["refs"]), role)
         if ct in ("conditioningsetarea", "conditioningsetareapercentage", "conditioningsettimesteprange", "conditioningsetmask"):
@@ -418,7 +481,7 @@ class _Parser:
             edges = [edge for key, edge in node["refs"].items()
                      if key in _IMAGE_KEYS or node["inputTypes"].get(key) in ("IMAGE", "LATENT")]
             ct = node["type"].lower()
-            known = self.is_sampler(node) or "saveimage" in ct or ct in {
+            known = self.is_sampler(node) or is_image_save_type(node["type"]) or ct in {
                 "vaedecode", "vaedecodetiled", "vaeencode", "vaeencodetiled", "vaeencodeforinpaint",
                 "latentupscale", "latentupscaleby", "imagescale", "imagescaleby", "reroute",
                 "imageblend", "imagecompositemasked", "latentcomposite", "latentcompositemasked", "ultimatesdupscale"}
@@ -451,7 +514,7 @@ def parse_output_metadata(graph, output_node_id=None, *, runtime_texts=None, use
     nodes = normalize_graph(graph)
     parser = _Parser(nodes, runtime_texts, used_runtime)
     result = {"prompt": "", "negativePrompt": "", "promptStages": [], "promptStatus": "missing", "promptWarnings": []}
-    saves = [node["id"] for node in nodes.values() if "saveimage" in node["type"].lower()
+    saves = [node["id"] for node in nodes.values() if is_image_save_type(node["type"])
              and node["mode"] not in (2, 4) and any(key in node["refs"] for key in ("images", "image"))]
     if output_node_id is not None:
         root = str(output_node_id)
@@ -482,3 +545,18 @@ def parse_output_metadata(graph, output_node_id=None, *, runtime_texts=None, use
     result["promptWarnings"] = parser.warnings
     result["promptStatus"] = "partial" if parser.warnings else "complete" if stages and result["prompt"] else "missing"
     return result
+
+
+def graph_identity_prompt(graph):
+    """All saved branches must agree; never establishes actual output ownership."""
+    saves = [node['id'] for node in normalize_graph(graph).values() if is_image_save_type(node['type'])
+             and node['mode'] not in (2, 4) and any(key in node['refs'] for key in ('images', 'image'))]
+    if not 2 <= len(saves) <= 16:
+        return ''
+    agreed = ''
+    for saver in saves:
+        prompt = parse_output_metadata(graph, saver)['prompt'].strip()
+        if not prompt or len(prompt) > 32768 or agreed and agreed != prompt:
+            return ''
+        agreed = prompt
+    return agreed

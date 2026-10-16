@@ -5,6 +5,13 @@ import './styles/polish.css'
 import './styles/design-system.css'
 import './styles/local-manager-polish.css'
 import './styles/toolbox-shell.css'
+import './styles/outputs-workspace.css'
+import './styles/toolkit-themes.css'
+import './styles/toolbox-collection.css'
+import './styles/release-notes.css'
+import { initReleaseNotes } from './services/releaseNotes'
+import { initToolkitTheme, mountToolkitThemeSelector } from './services/toolkitTheme'
+import { initToolboxMenu } from './services/toolboxMenu'
 import { initLoraExplorer, setupBindingListeners, setupGlobalHandlers } from './sections/LoraExplorer'
 import { setupModalListeners } from './components/Modal'
 import { setupPromptHandlers } from './sections/PromptLibrary'
@@ -165,6 +172,16 @@ document.addEventListener('DOMContentLoaded', () => {
   ensureOutputsDbCompatible().catch(err => console.warn('[outputsDb] 预检/自愈异常:', err))
   initIconButtons()
   initThemeSwitcher()
+  const disposeTheme = initToolkitTheme()
+  const themeHost = document.getElementById('toolkitThemeControl')
+  const themeControl = themeHost ? mountToolkitThemeSelector(themeHost, { compact: true }) : null
+  const disposeMenu = initToolboxMenu()
+  window.addEventListener('pagehide', event => {
+    if (event.persisted) return
+    disposeTheme()
+    themeControl?.dispose()
+    disposeMenu()
+  })
   initLayoutVars()
   initBuildTime()
   initBuildFreshnessCheck()
@@ -181,4 +198,6 @@ document.addEventListener('DOMContentLoaded', () => {
   bindArtistEvents()
   initOutputs()
   initCommandPalette()
+  const disposeReleaseNotes = initReleaseNotes()
+  window.addEventListener('pagehide', event => { if (!event.persisted) disposeReleaseNotes() })
 })

@@ -153,7 +153,7 @@ export async function getThumbnail(
   fileId: string,
   identity?: string
 ): Promise<string> {
-  const id = hashPath(fileId)
+  const id = fileId
 
   // 检查缓存
   const cached = await outputsDb.thumbnails.get(id)
@@ -196,21 +196,21 @@ export async function getThumbnail(
   return result.dataUrl
 }
 
-/** 批量把 DB 缩略图读回内存（一次 bulkGet 替代每张图独立查询），返回 path → dataUrl */
-export async function preloadThumbnailsFromDb(files: { path: string }[]): Promise<Map<string, string>> {
+/** 一次 bulkGet 读取明确文件 ID，返回来源+路径的 contentKey → dataUrl。 */
+export async function preloadThumbnailsFromDb(files: { path: string; id?: string; sourceId?: string }[]): Promise<Map<string, string>> {
   const out = new Map<string, string>()
   if (files.length === 0) return out
-  const ids = files.map(f => hashPath(f.path))
+  const ids = files.map(f => f.id || hashPath(f.path))
   const cached = await outputsDb.thumbnails.bulkGet(ids)
   for (let i = 0; i < files.length; i++) {
     const thumb = cached[i]
-    if (thumb?.dataUrl) out.set(files[i].path, thumb.dataUrl)
+    if (thumb?.dataUrl) out.set(JSON.stringify([files[i].sourceId || 'output', files[i].path]), thumb.dataUrl)
   }
   return out
 }
 
 export async function getCachedThumbnail(fileId: string, identity?: string): Promise<string | null> {
-  const id = hashPath(fileId)
+  const id = fileId
   const cached = await outputsDb.thumbnails.get(id)
   if (cached && (!identity || (cached as OutputThumbnail & { identity?: string }).identity === identity)) {
     accessOrder = accessOrder.filter(k => k !== id)
@@ -221,10 +221,10 @@ export async function getCachedThumbnail(fileId: string, identity?: string): Pro
   return null
 }
 
-/** 按文件路径删除缩略图缓存（文件变更后失效旧图） */
+/** 按 OutputFile.id 删除缩略图缓存。 */
 export async function deleteThumbnails(paths: string[]): Promise<void> {
   if (paths.length === 0) return
-  await outputsDb.thumbnails.bulkDelete(paths.map(hashPath))
+  await outputsDb.thumbnails.bulkDelete(paths)
 }
 
 export async function clearThumbnailCache(): Promise<void> {
@@ -267,6 +267,7 @@ export async function probeBackendThumbs(): Promise<boolean> {
 // ── Gallery 元数据索引（插件 ≥2.6.0 的 /anima/gallery/*）：列表与按钮摘要一次拉取 ──
 
 export interface GalleryEntry {
+  identityPrompt?: string
   path: string
   mtime: number
   size: number
@@ -282,7 +283,11 @@ export interface GalleryEntry {
   hasPrompt: boolean
   loras: string[]
   hasWorkflow: boolean
+  metadataState?: import('../types/outputs').MetadataState
+  metadataFormat?: string
+  metadataWarnings?: string[]
   parserVersion?: number
+  summaryStatus?: 'pending' | 'ready' | 'error'
 }
 
 let _galleryState: 'unknown' | 'ready' | 'no' = 'unknown'
@@ -296,6 +301,41 @@ let _galleryParserVersion = 0
 let _galleryRoot = ''
 export function galleryOutputRoot(): string { return _galleryRoot }
 let _galleryIndexParserVersion = 0
+let _galleryRevision = 0
+export interface GalleryChanges {
+  budgetReason?: string
+  revision: number; reset: boolean; entries: Record<string, GalleryEntry>; removed: string[]
+  total: number; builtAt: number; parserVersion: number; indexParserVersion?: number; outputRoot?: string; pending?: boolean
+  refresh?: { requestId?: number | string; state: string; reason?: string; error?: string; revision?: number }
+}
+let _changesInflight: Promise<GalleryChanges | null> | undefined
+export async function fetchGalleryChanges(): Promise<GalleryChanges | null> {
+  if (_changesInflight) return _changesInflight
+  const request = (async () => {
+    const response = await fetch(`/anima/gallery/changes?since=${_galleryRevision}`, { cache: 'no-store' })
+    if (response.status === 404 || response.status === 405) return null
+    if (!response.ok) throw new Error(`图库更新 HTTP ${response.status}`)
+    const changes = await response.json() as GalleryChanges
+    if (!Number.isSafeInteger(changes.revision) || !changes.entries || !Array.isArray(changes.removed)) throw new Error('图库更新格式无效')
+    if (changes.reset) _galleryEntries = new Map()
+    if (!_galleryEntries) _galleryEntries = new Map()
+    for (const path of changes.removed) _galleryEntries.delete(path)
+    for (const [path, entry] of Object.entries(changes.entries)) _galleryEntries.set(path, entry)
+    _galleryRevision = changes.revision; _galleryBuiltAt = changes.builtAt
+    _galleryParserVersion = changes.parserVersion; _galleryIndexParserVersion = changes.indexParserVersion ?? changes.parserVersion
+    if (changes.outputRoot) _galleryRoot = changes.outputRoot.replace(/\\/g, '/')
+    _galleryState = 'ready'
+    return changes
+  })()
+  _changesInflight = request
+  try { return await request } finally { if (_changesInflight === request) _changesInflight = undefined }
+}
+export async function requestGalleryRefresh(mode: 'incremental' | 'full' = 'incremental'): Promise<GalleryChanges['refresh']> {
+  const response = await fetch('/anima/gallery/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) })
+  if (!response.ok) throw new Error(`目录核对 HTTP ${response.status}`)
+  const data = await response.json()
+  return data.refresh || data
+}
 export function galleryIndexParserVersion(): number { return _galleryIndexParserVersion }
 
 export function galleryIndexEnabled(): boolean {
@@ -337,9 +377,10 @@ export async function probeGalleryIndex(force = false): Promise<boolean> {
       const resp = await fetch('/anima/gallery/manifest', { cache: 'no-store' })
       if (resp.ok) {
         const data = await resp.json()
-        if (data?.entries && typeof data.entries === 'object' && Object.keys(data.entries).length > 0) {
+        if (data?.entries && typeof data.entries === 'object' && (Object.keys(data.entries).length > 0 || data.loaded || (!data.building && Number(data.builtAt) > 0))) {
           _galleryEntries = new Map(Object.entries(data.entries) as [string, GalleryEntry][])
           _galleryBuiltAt = Number(data.builtAt || 0)
+          _galleryRevision = Number(data.revision || 0)
           _galleryParserVersion = Number(data.parserVersion || 0)
           _galleryIndexParserVersion = Number(data.indexParserVersion ?? data.parserVersion ?? 0)
           _galleryRoot = String(data.outputRoot || '').replace(/\\/g, '/')

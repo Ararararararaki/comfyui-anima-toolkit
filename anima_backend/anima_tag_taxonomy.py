@@ -125,7 +125,7 @@ class TagTaxonomy:
     def _signature(self):
         try:
             stat = os.stat(self.index_path)
-            return (int(stat.st_mtime), int(stat.st_size))
+            return (stat.st_mtime_ns, stat.st_size)
         except OSError:
             return None
 
@@ -291,6 +291,17 @@ PLUGIN_DIR = plugin_root()
 NATURAL_GAP = "\n\n"
 
 _SHARED_TAXONOMY = None
+_SHARED_SIGNATURE = None
+
+
+def taxonomy_fingerprint():
+    """Source revision without loading the 693k-entry dictionary or cache."""
+    path = os.path.join(PLUGIN_DIR, "data", INDEX_FILENAME)
+    try:
+        stat = os.stat(path)
+        return (path, stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return (path, None, None)
 
 
 def shared_taxonomy():
@@ -299,17 +310,18 @@ def shared_taxonomy():
     索引是只读的（加载后不再变化），跨节点复用安全；三个节点各持一份只会
     让同一份 693k 标签的表在内存里存三遍。
 
-    读路径走**双检锁的无锁快路径**：实例一旦就绪就不再碰锁 ——
-    查表热路径上每个标签都会取一次索引（实测 122 次/执行），
-    每次都进 RLock 是纯粹的浪费。
+    未变化的快照走无锁读取；仅比较源文件指纹，变化时在锁内完整
+    加载新实例再发布。正在使用旧快照的调用不受替换影响。
     """
-    global _SHARED_TAXONOMY
+    global _SHARED_TAXONOMY, _SHARED_SIGNATURE
+    signature = taxonomy_fingerprint()
     taxonomy = _SHARED_TAXONOMY
-    if taxonomy is not None:
+    if taxonomy is not None and signature == _SHARED_SIGNATURE:
         return taxonomy
     with _LOCK:
-        if _SHARED_TAXONOMY is None:
+        if _SHARED_TAXONOMY is None or signature != _SHARED_SIGNATURE:
             _SHARED_TAXONOMY = TagTaxonomy(PLUGIN_DIR).load()
+            _SHARED_SIGNATURE = signature
         return _SHARED_TAXONOMY
 
 

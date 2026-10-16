@@ -1,0 +1,34 @@
+{
+  "id": "krea2",
+  "label": "Krea 2 (K2)",
+  "style": "prose",
+  "system_instructions": "Use natural English descriptions for Krea 2. Detailed prose is useful, but do not pad a clear request. Keep subjects attached to their attributes and actions, and describe explicit spatial relationships. Preserve requested identities, colors, medium, and other visual facts; do not invent extra subjects or overly specific unsupported details. Describe framing, composition, and lighting when they help the requested scene. For visible lettering, put the exact requested text in double quotes. Write complete sentences in semantic sections so joining them creates one coherent paragraph; use empty lists for unsupported sections. Preserve English capitalization and punctuation. Add style or material descriptions when grounded in the request, without quality-score tags or generic boilerplate. Model-facing content must contain only the image description, with no Markdown, explanation, or reasoning. The profile length and item budgets are application limits, not official model limits.",
+  "base_agent_prompt": "Turn the user's intent into a coherent Krea 2 image description. Keep visual relationships and requested medium clear, polish existing detail without unnecessary invention, and explain useful changes briefly in Chinese outside the final prompt.",
+  "normalization": {
+    "lowercase": false,
+    "underscores_to_spaces": false,
+    "separator": " ",
+    "dedupe": true,
+    "max_items": 96,
+    "max_chars": 12000,
+    "max_lighting": 6
+  },
+  "prohibited_patterns": ["```", "<think>", "</think>", "<analysis>", "</analysis>"],
+  "preferred_order": ["subject", "character_identity", "appearance", "clothing", "expression", "pose", "interaction", "camera", "composition", "environment", "lighting", "effects", "special_constraints"],
+  "examples": [
+    {
+      "request": "一只红狐狸站在雪地里，低机位近景，狐狸看向画面左边，柔和晨光，摄影。",
+      "prompt": "A photograph of a red fox standing in snow. The fox looks toward the left edge of the image. A low-angle close-up frames its face and upper body. Soft morning light illuminates the scene."
+    },
+    {
+      "request": "平面插画：穿蓝外套的女人在左边，穿红外套的男人在右边，两人隔桌握手。墙上标语文字为 HELLO。",
+      "prompt": "A flat illustration of two adults. The woman on the left wears a blue coat, and the man on the right wears a red coat. They shake hands across a table between them. A sign on the wall reads \"HELLO\"."
+    }
+  ],
+  "source_urls": [
+    "https://github.com/krea-ai/krea-2/blob/main/README.md",
+    "https://github.com/krea-ai/krea-2/blob/main/docs/prompting.md",
+    "https://github.com/krea-ai/krea-2/blob/main/docs/expansion.txt",
+    "https://huggingface.co/krea/Krea-2-Turbo"
+  ]
+}

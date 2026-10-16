@@ -20,11 +20,9 @@ export interface ManifestDiff {
 /**
  * 加载缓存中的 manifest
  */
-export async function loadManifest(): Promise<OutputManifest[]> {
-  return await outputsDb.manifest
-    .where('orphaned')
-    .equals(0)
-    .toArray()
+export async function loadManifest(sourceId = 'output'): Promise<OutputManifest[]> {
+  const rows = sourceId === 'output' ? await outputsDb.manifest.toArray() : await outputsDb.manifest.where('sourceId').equals(sourceId).toArray()
+  return rows.filter(row => !row.orphaned && (row.sourceId || 'output') === sourceId)
 }
 
 /**
@@ -52,9 +50,10 @@ export function resetDiffObserver(): void {
  * @returns 需要更新和清理的文件列表
  */
 export async function diffManifest(
-  filesInDir: Map<string, { mtime: number; size: number }>
+  filesInDir: Map<string, { mtime: number; size: number }>,
+  sourceId = 'output'
 ): Promise<ManifestDiff> {
-  const cachedManifests = await loadManifest()
+  const cachedManifests = await loadManifest(sourceId)
   const cachedMap = new Map(cachedManifests.map(m => [m.path, m]))
 
   const unchanged: OutputManifest[] = []
@@ -66,22 +65,24 @@ export async function diffManifest(
     const path = rawPath.startsWith('/') ? rawPath.slice(1) : rawPath
 
     const cached = cachedMap.get(path)
+    const observationKey = JSON.stringify([sourceId, path])
     // mtime 用 1s 容差：FileSystem API 的 lastModified 可能有毫秒级抖动，
     // 严格相等会导致「无变化」误判为「有变化」，增量扫描每次轮询都重建网格、图片闪烁
     if (cached && Math.abs(cached.mtime - fileInfo.mtime) < 1000 && cached.size === fileInfo.size) {
       // 文件未变 —— 直接复用
       unchanged.push(cached)
       cachedMap.delete(path)
-      lastObservedSize.delete(path)
+      lastObservedSize.delete(observationKey)
     } else if (cached && fileInfo.size > cached.size) {
       // 同名文件疑似仍在写入（size 变大）。本次不判变更、不删缩略图，
       // 避免写图抖动反复重建网格导致图片闪烁；等 size 稳定（连续两次相同）后再确认变更
-      const prev = lastObservedSize.get(path)
-      lastObservedSize.set(path, fileInfo.size)
+      const prev = lastObservedSize.get(observationKey)
+      lastObservedSize.set(observationKey, fileInfo.size)
       cachedMap.delete(path)
       if (prev === fileInfo.size) {
         changed.push({
-          id: hashPath(path),
+          id: sourceId === 'output' ? hashPath(path) : encodeURIComponent(JSON.stringify([sourceId, path])),
+          sourceId,
           path,
           mtime: fileInfo.mtime,
           size: fileInfo.size,
@@ -95,7 +96,8 @@ export async function diffManifest(
     } else {
       // 新增文件或确定变更
       changed.push({
-        id: hashPath(path),
+        id: sourceId === 'output' ? hashPath(path) : encodeURIComponent(JSON.stringify([sourceId, path])),
+        sourceId,
         path,
         mtime: fileInfo.mtime,
         size: fileInfo.size,
@@ -103,7 +105,7 @@ export async function diffManifest(
         orphaned: false,
       })
       cachedMap.delete(path)
-      lastObservedSize.delete(path)
+      lastObservedSize.delete(observationKey)
     }
   }
 
@@ -138,10 +140,7 @@ export async function purgeDeletedFiles(ids: string[]): Promise<void> {
  * 获取所有标记为 orphaned 的 manifest 记录（用于 UI 提示哪些文件被删除了）
  */
 export async function getOrphanedManifests(): Promise<OutputManifest[]> {
-  return await outputsDb.manifest
-    .where('orphaned')
-    .equals(1)
-    .toArray()
+  return (await outputsDb.manifest.toArray()).filter(entry => entry.orphaned)
 }
 
 /**
@@ -185,6 +184,7 @@ export function hashPath(path: string): string {
 export function fileToManifest(file: OutputFile): OutputManifest {
   return {
     id: file.id,
+    sourceId: file.sourceId || 'output',
     path: file.path,
     mtime: file.mtime,
     size: file.size,

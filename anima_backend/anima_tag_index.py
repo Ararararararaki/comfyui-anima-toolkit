@@ -56,6 +56,7 @@ import bisect
 import csv
 import json
 import os
+import re
 import threading
 import time
 import unicodedata
@@ -68,6 +69,7 @@ __all__ = [
     "get_index",
     "warm_async",
     "index_status",
+    "index_fingerprint",
 ]
 
 PLUGIN_DIR = plugin_root()
@@ -75,6 +77,8 @@ DATA_DIR = os.path.join(PLUGIN_DIR, "data")
 CSV_PATH = os.path.join(DATA_DIR, "danbooru_tags_with_description_v3_modified.csv")
 ALIAS_PATH = os.path.join(PLUGIN_DIR, "anima_alias_index.json")
 ALIAS_FALLBACK_PATH = os.path.join(DATA_DIR, "danbooru_alias_index.json")
+# The root anima_ prefix is delivered by existing Toolkit updaters on the first update.
+IDENTITY_SUPPLEMENT_PATH = os.path.join(PLUGIN_DIR, "anima_output_identity_supplement.json")
 #: D 站英文别名表（JSONL：`{"a": 别名, "c": 规范标签, "_page": n}`，全英文、无汉字）
 DANBOORU_ALIASES_PATH = os.path.join(DATA_DIR, "_sources", "danbooru_aliases.jsonl")
 
@@ -86,6 +90,8 @@ _PREFIX_SCAN_CAP = 4000
 _SUBSTRING_CAP = 600_000
 #: 拼音前缀扫描的安全上界（与 `_PREFIX_SCAN_CAP` 同义；实测单次 ≤0.3 ms）
 _PINYIN_SCAN_CAP = 512
+# 只折叠全/半角字符；整串 NFKC 还会把圈号数字等兼容字符折叠，不能用于精确核对。
+_WIDTH_FORMS = re.compile("[\u3000\uff01-\uffef]+")
 
 
 def has_cjk(value: Any) -> bool:
@@ -101,6 +107,14 @@ def normalize_key(value: Any) -> str:
     """
     text = unicodedata.normalize("NFKC", str(value or "")).casefold().replace("\\", "")
     return "".join(ch for ch in text if ch.isalnum())
+
+
+def _exact_key(value: Any) -> str:
+    """精确标签键：大小写、全半角、空格/下划线、转义的字面括号等价，其余标点保留。"""
+    text = _WIDTH_FORMS.sub(
+        lambda match: unicodedata.normalize("NFKC", match.group()), str(value or "").strip()
+    ).casefold()
+    return text.replace("\\(", "(").replace("\\)", ")").replace(" ", "_")
 
 
 def _tag_count(tags: dict[str, tuple[str, int, str]], tag_key: str) -> int:
@@ -133,6 +147,10 @@ class TagIndex:
     def __init__(self) -> None:
         # 英文：key → (显示标签, 帖数, 类别)
         self.tags: dict[str, tuple[str, int, str]] = {}
+        # 精确快照保留原始标点与来源，不借用联想键（后者会合并不同标签）。
+        # key → (源表显示标签, 快照帖数, 源表类别, CSV 说明, 来源)
+        self._exact_tags: dict[str, tuple[str, int, Any, str, str]] = {}
+        self._exact_alias_map: dict[str, str] = {}
         # 排序后的英文键，供 bisect 前缀定位
         self._tag_keys: list[str] = []
         # 中文：(中文键, tag键, 中文显示, 帖数, 作品键, 作品显示)
@@ -166,6 +184,9 @@ class TagIndex:
         self.alias_skipped: int = 0
         self.series: dict[str, dict[str, Any]] = {}
         self.characters: dict[str, dict[str, Any]] = {}
+        # Read-only source aliases also serve Outputs' compact search summaries.
+        # The JSON strings are shared with the existing index, not reparsed per image.
+        self.aliases: dict[str, list[str]] = {}
         self.sources_loaded: list[str] = []
         self.errors: list[str] = []
 
@@ -198,16 +219,25 @@ class TagIndex:
         try:
             with open(CSV_PATH, "r", encoding="utf-8-sig", newline="") as handle:
                 for row in csv.reader(handle):
-                    if len(row) < 4:
+                    if len(row) < 3:
                         continue
                     tag = str(row[0] or "").strip()
-                    key = normalize_key(tag)
-                    if not key or key in self.tags:
+                    exact_key = _exact_key(tag)
+                    if not exact_key:
                         continue
                     try:
                         count = max(0, int(str(row[2] or "0").strip()))
                     except (TypeError, ValueError):
                         count = 0
+                    # 类别按源列保留（本机全为 "0"，不意味着官方分类）；无值则为 None。
+                    self._exact_tags.setdefault(exact_key, (
+                        tag, count, str(row[1] or "").strip() or None,
+                        str(row[3] or "").strip() if len(row) >= 4 else "", "csv",
+                    ))
+                    # 联想仍沿用原有四列判据、去标点键及首条优先契约。
+                    key = normalize_key(tag)
+                    if len(row) < 4 or not key or key in self.tags:
+                        continue
                     self.tags[key] = (tag, count, str(row[1] or "0").strip())
             self.sources_loaded.append("csv")
         except (OSError, UnicodeError) as error:
@@ -233,11 +263,48 @@ class TagIndex:
             self.errors.append("alias_index: 顶层不是对象")
             return
 
+        # Small, reviewed additions complement the large user-owned dictionary.
+        # Keep existing records and aliases; never replace that dictionary file.
+        try:
+            if os.path.getsize(IDENTITY_SUPPLEMENT_PATH) > 256 * 1024:
+                raise ValueError("identity supplement exceeds 256 KiB")
+            with open(IDENTITY_SUPPLEMENT_PATH, encoding="utf-8") as handle:
+                supplement = json.load(handle)
+            if not isinstance(supplement, dict) or supplement.get("schemaVersion") != 1:
+                raise ValueError("invalid identity supplement schema")
+            tables = {}
+            for bucket, canonical in (("characters", "t"), ("series", "n")):
+                additions = supplement.get(bucket, {})
+                if not isinstance(additions, dict) or len(additions) > 2000:
+                    raise ValueError("invalid identity supplement table")
+                merged = dict(payload.get(bucket) or {})
+                for key, row in additions.items():
+                    if not isinstance(row, dict) or not isinstance(row.get(canonical), str) or not row[canonical].strip():
+                        raise ValueError("invalid identity supplement record")
+                    previous = merged.get(key)
+                    if previous is not None and (not isinstance(previous, dict) or previous.get(canonical) != row[canonical]):
+                        self.errors.append("identity_supplement: conflicting canonical record " + key)
+                        continue
+                    combined = {**row, **(previous or {})}
+                    aliases = [*(previous or {}).get("zh", []), *row.get("zh", [])]
+                    if any(not isinstance(alias, str) for alias in aliases):
+                        raise ValueError("invalid identity supplement aliases")
+                    combined["zh"] = list(dict.fromkeys(aliases))
+                    merged[key] = combined
+                tables[bucket] = merged
+            payload.update(tables)
+            self.sources_loaded.append("identity_supplement")
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, TypeError) as error:
+            self.errors.append(f"identity_supplement: {type(error).__name__}: {error}")
+
         characters = payload.get("characters") if isinstance(payload.get("characters"), dict) else {}
         series = payload.get("series") if isinstance(payload.get("series"), dict) else {}
         aliases = payload.get("aliases") if isinstance(payload.get("aliases"), dict) else {}
         self.characters = characters
         self.series = series
+        self.aliases = aliases
 
         def series_display(series_key: str) -> str:
             meta = series.get(series_key)
@@ -260,6 +327,9 @@ class TagIndex:
                 count = max(0, int(meta.get("c") or 0))
             except (TypeError, ValueError):
                 count = 0
+            self._exact_tags.setdefault(_exact_key(tag), (
+                tag, count, meta.get("category"), "", "alias_index",
+            ))
             series_key = str(meta.get("s") or "")
             display = series_display(series_key)
             for zh in meta.get("zh") or ():
@@ -281,6 +351,9 @@ class TagIndex:
                 count = max(0, int(meta.get("c") or 0))
             except (TypeError, ValueError):
                 count = 0
+            self._exact_tags.setdefault(_exact_key(tag), (
+                tag, count, meta.get("category"), "", "alias_index",
+            ))
             display = series_display(series_key)
             for zh in meta.get("zh") or ():
                 zh_text = str(zh or "").strip()
@@ -324,6 +397,7 @@ class TagIndex:
             return
         alias_map: dict[str, str] = {}
         alias_display: dict[str, str] = {}
+        exact_alias_map: dict[str, str] = {}
         skipped = 0
         try:
             with open(DANBOORU_ALIASES_PATH, "r", encoding="utf-8") as handle:
@@ -339,6 +413,13 @@ class TagIndex:
                         skipped += 1
                         continue
                     raw_alias = str(obj.get("a") or "").strip()
+                    exact_alias_key = _exact_key(raw_alias)
+                    exact_canon_key = _exact_key(obj.get("c"))
+                    # 同一次 JSONL 读取保留精确原名与目标；查询再检查目标是否精确存在。
+                    # 缺失目标的旧别名即使仍出现在 CSV 中，也不能冒充规范标签。
+                    if (exact_alias_key and exact_canon_key
+                            and exact_canon_key != exact_alias_key):
+                        exact_alias_map.setdefault(exact_alias_key, exact_canon_key)
                     alias_key = normalize_key(raw_alias)
                     canon_key = normalize_key(obj.get("c"))
                     if not alias_key or not canon_key or alias_key == canon_key:
@@ -356,12 +437,38 @@ class TagIndex:
             return
         self._alias_map = alias_map
         self._alias_display = alias_display
+        self._exact_alias_map = exact_alias_map
         self._alias_keys = sorted(alias_map.keys())
         self.alias_count = len(alias_map)
         self.alias_skipped = skipped
         self.sources_loaded.append("danbooru_aliases")
 
     # ---------- 查询 ----------
+
+    def lookup_many(self, queries: list[str]) -> list[dict[str, Any]]:
+        """按输入顺序精确核对标签/英文别名，只读构建期快照，不执行联想或文件 I/O。
+
+        ``count`` 是源表快照；``category`` 原样来自源表，不保证官方分类或生图效果。
+        别名以 JSONL 的 canonical 为准，只有该目标精确存在才返回 ``alias``。
+        """
+        result: list[dict[str, Any]] = []
+        for query in queries:
+            key = _exact_key(query)
+            canonical_key = self._exact_alias_map.get(key)
+            entry = self._exact_tags.get(canonical_key if canonical_key is not None else key)
+            if entry is None:
+                result.append({
+                    "query": query, "status": "missing", "tag": "", "count": None,
+                    "category": None, "description": "", "source": None,
+                })
+                continue
+            tag, count, category, description, source = entry
+            result.append({
+                "query": query, "status": "alias" if canonical_key is not None else "found",
+                "tag": tag, "count": count, "category": category, "description": description,
+                "source": "danbooru_aliases" if canonical_key is not None else source,
+            })
+        return result
 
     def suggest(self, query: str, limit: int = MAX_RESULTS) -> list[dict[str, Any]]:
         """统一联想入口：中文走别名前缀 + 子串兜底，英文走标签前缀。
@@ -751,18 +858,34 @@ class TagIndex:
 _INDEX: TagIndex | None = None
 _INDEX_LOCK = threading.RLock()
 _WARM_THREAD: threading.Thread | None = None
+_INDEX_FINGERPRINT = None
+
+
+def index_fingerprint() -> tuple:
+    """Fingerprint source files only; never constructs or mutates a dictionary."""
+    result = []
+    for path in (CSV_PATH, ALIAS_PATH, ALIAS_FALLBACK_PATH, DANBOORU_ALIASES_PATH, IDENTITY_SUPPLEMENT_PATH):
+        try:
+            stat = os.stat(path)
+            signature = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            signature = None
+        result.append((path, signature))
+    return tuple(result)
 
 
 def get_index(build: bool = True) -> TagIndex | None:
     """取索引单例；`build=False` 时只返回已建好的（供预热线程自己调用）。"""
-    global _INDEX
+    global _INDEX, _INDEX_FINGERPRINT
     with _INDEX_LOCK:
-        if _INDEX is not None:
+        fingerprint = index_fingerprint() if build else _INDEX_FINGERPRINT
+        if _INDEX is not None and fingerprint == _INDEX_FINGERPRINT:
             return _INDEX
         if not build:
-            return None
+            return _INDEX
         index = TagIndex().build()
         _INDEX = index
+        _INDEX_FINGERPRINT = fingerprint
         try:
             print(
                 "[多源画廊·本地索引] 就绪：%s 标签 / %s 中文对 / %s 拼音键 / 构建 %.0f ms"

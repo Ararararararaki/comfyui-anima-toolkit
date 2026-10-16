@@ -1,37 +1,13 @@
 import type { OutputFile, OutputMetadata, OutputDir } from '../types/outputs'
-import { outputsDb, ensureOutputsDbCompatible } from '../db/outputsDb'
+import { outputsDb } from '../db/outputsDb'
 import { useOutputStore } from '../store/outputStore'
-import { parseOutputMetadata, PARSER_VERSION, extractLorasFromWorkflow } from './outputMetadata'
-import { getThumbnail, deleteThumbnails, preloadThumbnailsFromDb } from './outputThumbnail'
-import {
-  diffManifest,
-  restoreFilesFromDb,
-  saveManifest,
-  purgeDeletedFiles,
-  fileToManifest,
-  hashPath,
-  resetDiffObserver,
-} from './outputManifest'
+import { parseOutputMetadataBlob, PARSER_VERSION, outputLoraNames } from './outputMetadata'
+import { createImageSnapshot, bindMetadata, imageRevision, type ImageSnapshot } from './outputIdentity'
+import { getThumbnail, getCachedThumbnail } from './outputThumbnail'
+import { diffManifest, fileToManifest, markOrphaned } from './outputManifest'
+import { addOutputDirectory, getOutputSource, outputSources, outputFileId, fileSourceIdentity, restoreOutputSources, requestOutputSourcePermission, resolveOutputFileHandle } from './outputSources'
 import { showToast } from '../utils'
-import { createImageSnapshot, bindMetadata, outputRootIdentity, commitListSource, type ImageSnapshot } from './outputIdentity'
-
-/** 从已有 DB 记录恢复用户元数据（收藏/评分/标签等） */
-async function withUserMetadata(base: OutputFile): Promise<OutputFile> {
-  const existing = await outputsDb.files.get(base.id)
-  if (!existing) return { ...base, status: '' }
-  return {
-    ...base,
-    favorite: existing.favorite ?? false,
-    rating: existing.rating ?? 0,
-    notes: existing.notes ?? '',
-    tags: existing.tags ?? [],
-    category: existing.category ?? '',
-    status: existing.status ?? '',
-    pinned: existing.pinned ?? false,
-    createdAt: existing.createdAt ?? Date.now(),
-  }
-}
-
+const IMAGE_EXTENSIONS = /\.(png|jpg|jpeg|webp|gif|bmp)$/i
 /** 元数据落库（配额容错，防历史条目被 IndexedDB 配额静默丢弃）：
  * 先全量写；QuotaExceeded 时去掉冗余 rawMetadata 再试；仍失败清（可再生成的）缩略图再试；最后仍失败才跳过并 console 报告。 */
 export async function putMetadataQuotaSafe(outputMeta: OutputMetadata): Promise<void> {
@@ -41,7 +17,7 @@ export async function putMetadataQuotaSafe(outputMeta: OutputMetadata): Promise<
     return
   } catch (err) {
     const isQuota = err && (err as any)?.name === 'QuotaExceededError'
-    if (!isQuota) return // 非配额错误：由调用方 try 兜底
+    if (!isQuota) throw err
     const slim: OutputMetadata = { ...outputMeta, rawMetadata: {} }
     try {
       await tryPut(slim)
@@ -59,6 +35,7 @@ export async function putMetadataQuotaSafe(outputMeta: OutputMetadata): Promise<
     } catch { /* 继续 */ }
     console.error('[scan] 配额满且降级仍失败，跳过该条元数据（文件行已保留，重扫可再补）', err)
     showToast('⚠️ 浏览器存储已满，部分图片元数据未保存；建议在浏览器「清除站点数据」后重新扫描')
+    throw err
   }
 }
 
@@ -80,67 +57,8 @@ export async function logStorageReport(): Promise<void> {
   } catch { /* ignore */ }
 }
 
-const IMAGE_EXTENSIONS = /\.(png|jpg|jpeg|webp|gif|bmp)$/i
-
-/** 清理重复记录：相同 path 只保留最新的 mtime 的一条 */
-async function dedupFilesByPath(allFiles: OutputFile[]): Promise<void> {
-  const seen = new Map<string, OutputFile>()
-  const dupIds: string[] = []
-  for (const f of allFiles) {
-    const existing = seen.get(f.path)
-    if (existing) {
-      // 保留 mtime 更新的那条
-      if (f.mtime > existing.mtime) {
-        seen.set(f.path, f)
-        dupIds.push(existing.id)
-      } else {
-        dupIds.push(f.id)
-      }
-    } else {
-      seen.set(f.path, f)
-    }
-  }
-  if (dupIds.length > 0) {
-    console.log(`[outputScanner] 发现 ${dupIds.length} 条重复记录，正在清理...`)
-    await outputsDb.files.bulkDelete(dupIds)
-  }
-}
-
-// hashPath 已迁移至 outputManifest.ts，通过 import 使用
-
-/**
- * 元数据所在位置：PNG 的 tEXt/iTXt 块紧跟在 IHDR 之后、JPEG 的 APPn 段也在最前面，
- * 都在文件头部。而 ComfyUI 出图常见 2~5MB，**近 4000 张整文件读取 = 8~20GB 磁盘 IO**
- * （实测一轮全库重解析要数分钟、并刷出 195MB IndexedDB 写入）。
- * 这里先只读头部一小段解析；解析不出内容（元数据块在文件后段）才退回整读。
- */
-const META_HEAD_BYTES = 1024 * 1024
-
-/** 头部能解析出内容就返回，否则整读兜底（保持与原来完全一致的解析结果） */
-async function readAndParseMetadata<T>(file: File, ext: string, parse: (buf: ArrayBuffer, ext: string) => Promise<T | null>): Promise<{ meta: T | null; buf: ArrayBuffer }> {
-  if (file.size > META_HEAD_BYTES) {
-    const head = await readFileAsArrayBuffer(file.slice(0, META_HEAD_BYTES) as unknown as File)
-    const meta = await parse(head, ext)
-    const raw = meta as unknown as { prompt?: string; workflowJson?: string; model?: string } | null
-    if (raw && (raw.prompt || raw.workflowJson || raw.model)) return { meta, buf: head }
-  }
-  const buf = await readFileAsArrayBuffer(file)
-  return { meta: await parse(buf, ext), buf }
-}
-
-async function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
-  return new Promise((resolve, reject) => {
-    // 超大文件直接拒绝，避免全量读入内存放大攻击面（review low 修复，与 PNG 解析 20MB 上限一致）
-    if (file.size > 20 * 1024 * 1024) { reject(new Error('file too large')); return }
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as ArrayBuffer)
-    reader.onerror = reject
-    reader.readAsArrayBuffer(file)
-  })
-}
-
 /** Re-read only the requested image. Legacy rows without identity are never attributed to it. */
-export async function readImageMetadata(dirHandle: FileSystemDirectoryHandle, snapshot: ImageSnapshot): Promise<OutputMetadata | null> {
+export async function readImageMetadata(dirHandle: FileSystemDirectoryHandle, snapshot: ImageSnapshot, opts?: { strict?: boolean; signal?: AbortSignal }): Promise<OutputMetadata | null> {
   try {
     const parts = snapshot.path.split('/')
     let directory = dirHandle
@@ -148,11 +66,11 @@ export async function readImageMetadata(dirHandle: FileSystemDirectoryHandle, sn
     const handle = await directory.getFileHandle(parts[parts.length - 1])
     const file = await handle.getFile()
     if (file.lastModified !== snapshot.mtime || file.size !== snapshot.size) return null
-    const { meta } = await readAndParseMetadata(file, snapshot.file.extension, parseOutputMetadata)
+    const meta = await parseOutputMetadataBlob(file, snapshot.file.extension, opts?.signal, snapshot.path)
     const after = await handle.getFile()
     if (!meta || after.lastModified !== snapshot.mtime || after.size !== snapshot.size) return null
-    return bindMetadata({ ...meta, imageId: snapshot.file.id, rawMetadata: meta.raw, loras: extractLorasFromWorkflow(meta.workflowJson, meta.raw), lorasExtracted: true }, snapshot)
-  } catch { return null }
+    return bindMetadata({ ...meta, imageId: snapshot.file.id, rawMetadata: meta.raw, loras: outputLoraNames(meta), lorasExtracted: true }, snapshot)
+  } catch (err) { if (opts?.strict) throw err; return null }
 }
 
 async function getDimensionsByImage(dataUrl: string): Promise<{ width: number; height: number }> {
@@ -186,593 +104,203 @@ async function getDimensions(buf: ArrayBuffer, extension: string): Promise<{ wid
   return dims
 }
 
-async function processFile(
-  handle: FileSystemFileHandle,
-  relativePath: string
-): Promise<OutputFile | null> {
-  try {
-    const file = await handle.getFile()
-    const filename = file.name
-    const extension = filename.split('.').pop()?.toLowerCase() || ''
 
-    if (!IMAGE_EXTENSIONS.test(filename)) return null
-
-    const path = relativePath ? `${relativePath}/${filename}` : filename
-    const id = hashPath(path)
-
-    // 检查是否已索引
-    const existing = await outputsDb.files.get(id)
-    if (existing && existing.path === path && existing.mtime === file.lastModified && existing.size === file.size) {
-      return existing
-    }
-
-    // 读取文件内容用于元数据解析（头部优先，避免整读原图）
-    const { buf, meta } = await readAndParseMetadata(file, extension, parseOutputMetadata)
-
-    // 获取尺寸（PNG 走 IHDR 免解码，其余格式解码回退）
-    const dims = await getDimensions(buf, extension)
-
-    const outputFile: OutputFile = {
-      id,
-      path,
-      filename,
-      extension,
-      size: file.size,
-      mtime: file.lastModified,
-      width: dims.width,
-      height: dims.height,
-      favorite: existing?.favorite || false,
-      rating: existing?.rating || 0,
-      notes: existing?.notes || '',
-      tags: existing?.tags || [],
-      category: existing?.category ?? '',
-      status: existing?.status || '',
-      pinned: existing?.pinned ?? false,
-      createdAt: existing?.createdAt || Date.now(),
-    }
-
-    // 保存文件信息
-    await outputsDb.files.put(outputFile)
-
-    // 保存元数据
-    if (meta) {
-      const outputMeta: OutputMetadata = {
-        ...meta,
-        imageId: id,
-        model: meta.model || '',
-        seed: meta.seed || '',
-        steps: meta.steps || '',
-        cfg: meta.cfg || '',
-        sampler: meta.sampler || '',
-        vae: meta.vae || '',
-        clipSkip: meta.clipSkip || 0,
-        prompt: meta.prompt || '',
-        negativePrompt: meta.negativePrompt || '',
-        workflowJson: meta.workflowJson || '',
-        rawMetadata: meta.raw,
-      }
-      const state = useOutputStore.getState()
-      await putMetadataQuotaSafe(bindMetadata(outputMeta, createImageSnapshot(outputFile, 'directory', outputRootIdentity(state.rootPath, state.dirHandle), PARSER_VERSION)))
-    }
-
-    return outputFile
-  } catch {
-    return null
-  }
+// Each source owns its task. A new task cancels the old task before either can commit.
+const scans = new Map<string, { controller: AbortController; done: number; total: number; background?: boolean }>()
+let refreshEpoch = 0
+const AUTO_RECONCILE_MS = 5 * 60_000
+const nextAutomaticCheck = new Map<string, number>()
+let automaticRefresh: Promise<number> | undefined
+function scanUi(status: 'done' | 'idle' | 'error' = 'done'): void {
+  const jobs = [...scans.values()].filter(job => !job.background)
+  useOutputStore.setState({ scanStatus: jobs.length ? 'scanning' : status, loading: false,
+    scanProgress: { done: jobs.reduce((n, job) => n + job.done, 0), total: jobs.reduce((n, job) => n + job.total, 0) } })
 }
-
-/** 强制重新解析所有文件的元数据（解析逻辑升级后，旧缓存不会被增量扫描刷新） */
-export async function reparseAllMetadata(dirHandle: FileSystemDirectoryHandle): Promise<number> {
-  const files = useOutputStore.getState().files
-  const total = files.length
-  useOutputStore.setState({ scanStatus: 'scanning', scanProgress: { done: 0, total }, loading: true })
-  let done = 0
-  const errors: string[] = []
-  for (const f of files) {
-    try {
-      const parts = f.path.split('/')
-      let current = dirHandle
-      for (let i = 0; i < parts.length - 1; i++) {
-        current = await current.getDirectoryHandle(parts[i])
-      }
-      const handle = await current.getFileHandle(parts[parts.length - 1])
-      const file = await handle.getFile()
-      const ext = f.extension || (f.filename.split('.').pop() || '')
-      // 头部优先（元数据在文件头）→ 避免把 8~20GB 的原图整读一遍
-      const { meta } = await readAndParseMetadata(file, ext, parseOutputMetadata)
-      if (meta) {
-        const outputMeta: OutputMetadata = {
-          ...meta,
-          imageId: f.id,
-          model: meta.model || '',
-          seed: meta.seed || '',
-          steps: meta.steps || '',
-          cfg: meta.cfg || '',
-          sampler: meta.sampler || '',
-          vae: meta.vae || '',
-          clipSkip: meta.clipSkip || 0,
-          prompt: meta.prompt || '',
-          negativePrompt: meta.negativePrompt || '',
-          workflowJson: meta.workflowJson || '',
-          rawMetadata: meta.raw,
+export function cancelOutputScan(sourceId?: string): void {
+  if (!sourceId) refreshEpoch++
+  for (const [id, job] of scans) if (!sourceId || sourceId === id) { job.controller.abort(); scans.delete(id) }
+  scanUi('idle')
+}
+function checkScan(id: string, job: { controller: AbortController }): void {
+  if (job.controller.signal.aborted || scans.get(id) !== job || !getOutputSource(id)?.enabled) throw new DOMException('Scan cancelled', 'AbortError')
+}
+function defaultFile(id: string, path: string, file: File, sourceId: string): OutputFile {
+  return { id, sourceId, path, filename: file.name, extension: file.name.split('.').pop()?.toLowerCase() || '',
+    size: file.size, mtime: file.lastModified, width: 0, height: 0,
+    favorite: false, rating: 0, notes: '', tags: [], category: '', status: '', pinned: false, createdAt: Date.now() }
+}
+/** Enumerate names/revisions and PNG IHDR only; creation metadata is loaded on demand. */
+export async function scanOutputSource(sourceId: string, options: { background?: boolean } = {}): Promise<number> {
+  const source = getOutputSource(sourceId)
+  if (!source?.handle || source.kind !== 'directory' || !source.enabled) return 0
+  if (options.background && scans.has(sourceId)) return 0
+  scans.get(sourceId)?.controller.abort()
+  const job = { controller: new AbortController(), done: 0, total: 0, background: options.background }
+  scans.set(sourceId, job); if (!job.background) scanUi()
+  let status: 'done' | 'idle' | 'error' = 'done'
+  try {
+    if (!await requestOutputSourcePermission(sourceId, 'read', !job.background)) {
+      if (job.background) return 0
+      throw new DOMException('目录未授权，请重新授权后扫描', 'NotAllowedError')
+    }
+    checkScan(sourceId, job)
+    const previous = (await outputsDb.files.where('sourceId').equals(sourceId).toArray())
+    const previousByPath = new Map(previous.map(file => [file.path, file]))
+    const files: OutputFile[] = []
+    const seen = new Map<string, { mtime: number; size: number }>()
+    const walk = async (directory: FileSystemDirectoryHandle, prefix: string): Promise<void> => {
+      for await (const [name, handle] of (directory as any).entries()) {
+        checkScan(sourceId, job)
+        if (name.startsWith('.')) continue
+        const path = prefix ? `${prefix}/${name}` : name
+        if (handle.kind === 'directory') { await walk(handle, path); continue }
+        if (!IMAGE_EXTENSIONS.test(name)) continue
+        job.total++
+        let bytes: File
+        try { bytes = await handle.getFile() } catch {
+          const retained = previousByPath.get(path)
+          if (retained) { files.push(retained); seen.set(path, { mtime: retained.mtime, size: retained.size }) }
+          job.done++; continue
         }
-        const state = useOutputStore.getState()
-        const bound = bindMetadata(outputMeta, createImageSnapshot(f, 'directory', outputRootIdentity(state.rootPath, dirHandle), PARSER_VERSION))
-        await putMetadataQuotaSafe(bound)
-        useOutputStore.getState().putMetadata(bound)
+        const old = previousByPath.get(path)
+        const row = old && old.mtime === bytes.lastModified && old.size === bytes.size ? { ...old } : { ...old, ...defaultFile(outputFileId(sourceId, path), path, bytes, sourceId),
+          favorite: old?.favorite ?? false, rating: old?.rating ?? 0, notes: old?.notes ?? '', tags: old?.tags ?? [], category: old?.category ?? '', status: old?.status ?? '', pinned: old?.pinned ?? false, createdAt: old?.createdAt ?? Date.now() }
+        if (row.extension === 'png' && (!old || old.mtime !== row.mtime || old.size !== row.size)) {
+          const header = await bytes.slice(0, 32).arrayBuffer()
+          const dims = await getDimensions(header, 'png')
+          row.width = dims.width; row.height = dims.height
+        }
+        files.push(row); seen.set(path, { mtime: row.mtime, size: row.size }); job.done++
+        if (job.done % 64 === 0) { if (!job.background) scanUi(); await new Promise(resolve => setTimeout(resolve, 0)) }
       }
-    } catch {
-      errors.push(f.filename)
     }
-    done++
-    // 让出主线程：每 20 张喘一口气，避免长时间连续 IO 让界面无响应（扫描进度条仍在更新）
-    if (done % 20 === 0) await new Promise(r => setTimeout(r, 0))
-    if (done % 200 === 0) console.log(`[outputScanner] 重新解析 ${done}/${total}`)
-    useOutputStore.setState({ scanProgress: { done, total } })
-  }
-  useOutputStore.setState({ scanStatus: 'done', loading: false, scanProgress: { done, total } })
-  if (errors.length) showToast(`⚠️ 重解析完成 ${done} 个，${errors.length} 个失败`)
-  else showToast(`✅ 已重新解析 ${done} 个文件元数据`)
-  return done
-}
-
-const PARSER_VERSION_KEY = 'anima_output_parser_version'
-
-/**
- * 解析逻辑升级后自动失效旧元数据缓存并重新解析。
- * 增量扫描按 mtime+size 跳过未变更文件，解析器升级后旧缓存不会自动刷新，
- * 故用版本号标记：不匹配时清空 metadata/缩略图缓存并强制重解析一次。
- */
-export async function ensureMetadataFresh(_dirHandle: FileSystemDirectoryHandle | null): Promise<boolean> {
-  try {
-    const saved = localStorage.getItem(PARSER_VERSION_KEY)
-    if (saved === String(PARSER_VERSION)) return false
-    localStorage.setItem(PARSER_VERSION_KEY, String(PARSER_VERSION))
-  } catch {
-    return false
-  }
-
-  // Parser versions are checked on each image identity. Keep thumbnails and user records;
-  // visible images and explicit actions refresh metadata without an all-library startup task.
-  return true
-}
-
-async function scanDirectory(
-  dirHandle: FileSystemDirectoryHandle,
-  relativePath: string,
-  allFiles: OutputFile[]
-): Promise<void> {
-  const iter = (dirHandle as any).entries()
-  for (;;) {
-    const next = await iter.next()
-    if (next.done) break
-    const [name, handle] = next.value as [string, FileSystemFileHandle | FileSystemDirectoryHandle]
-
-    // 跳过隐藏文件和目录
-    if (name.startsWith('.')) continue
-
-    if ((handle as any).kind === 'directory') {
-      const childPath = relativePath ? `${relativePath}/${name}` : name
-      await scanDirectory(handle as FileSystemDirectoryHandle, childPath, allFiles)
-    } else if ((handle as any).kind === 'file') {
-      const file = await processFile(handle as FileSystemFileHandle, relativePath)
-      if (file) allFiles.push(file)
-    }
-  }
-}
-
-export async function scanOutputDir(dirHandle: FileSystemDirectoryHandle): Promise<void> {
-  const store = useOutputStore.getState()
-  store.setDirHandle(dirHandle)
-  resetDiffObserver()
-  useOutputStore.setState({ scanStatus: 'scanning', scanProgress: { done: 0, total: 0 }, loading: true })
-
-  try {
-    // 检查目录权限
-    const perm = await (dirHandle as any).requestPermission({ mode: 'readwrite' })
-    if (perm !== 'granted') {
-      showToast('需要读取权限才能扫描目录')
-      useOutputStore.setState({ scanStatus: 'idle', loading: false })
-      return
-    }
-
-    // 阶段 1: 快速遍历目录 — 建立文件清单
-    const filesInDir = new Map<string, { mtime: number; size: number }>()
-    await walkDir(dirHandle, '', filesInDir)
-
-    // 阶段 2: 与 manifest 比对，分离变更/未变/已删
-    const diff = await diffManifest(filesInDir)
-    const totalFiles = filesInDir.size
-    let processedCount = 0
-
-    useOutputStore.setState({
-      scanProgress: { done: 0, total: totalFiles },
-      scanStatus: diff.changed.length > 0 ? 'scanning' : 'done',
+    await walk(source.handle, '')
+    checkScan(sourceId, job)
+    const diff = await diffManifest(seen, sourceId)
+    checkScan(sourceId, job)
+    const sameRevision = (a: OutputFile, b: OutputFile) => a.id === b.id && a.path === b.path && a.mtime === b.mtime && a.size === b.size && a.width === b.width && a.height === b.height
+    const updates = files.filter(row => { const old = previousByPath.get(row.path); return !old || !sameRevision(old, row) })
+    const updateIds = new Set(updates.map(row => row.id))
+    const manifestIds = new Set([...updateIds, ...diff.changed.map(row => row.id)])
+    const manifestUpdates = files.filter(row => manifestIds.has(row.id))
+    let committed: OutputFile[] = []
+    if (updates.length || manifestUpdates.length || diff.orphaned.length) await outputsDb.transaction('rw', outputsDb.files, outputsDb.manifest, async () => {
+      checkScan(sourceId, job)
+      const current = await outputsDb.files.bulkGet(updates.map(file => file.id))
+      committed = updates.map((row, i) => current[i] ? { ...current[i]!, sourceId: row.sourceId, id: row.id, path: row.path, filename: row.filename, extension: row.extension, mtime: row.mtime, size: row.size, width: row.width, height: row.height } : row)
+      if (committed.length) await outputsDb.files.bulkPut(committed)
+      if (manifestUpdates.length) await outputsDb.manifest.bulkPut(manifestUpdates.map(fileToManifest))
+      await markOrphaned(diff.orphaned)
+      checkScan(sourceId, job)
     })
-
-    // 阶段 3: 从 DB 恢复未变更文件
-    const restoredFiles = await restoreFilesFromDb(diff.unchanged)
-
-    // 阶段 3.5 自愈：manifest 判定"未变更"，但 DB files 表缺失对应行（如早期存储配额/写入失败导致 files 行没写进去）
-    // → 这些文件既不会从 DB 恢复、也不会被重扫，导致"磁盘有图但列表永远缺失"（如 8.12 及之前）。
-    // 这里把这类文件转进 changed，强制按磁盘重建 files+metadata，补回后再入 manifest（幂等）。
-    const restoredIds = new Set(restoredFiles.map(f => f.id))
-    const missingOnDisk = diff.unchanged.filter(m => !restoredIds.has(m.id))
-    if (missingOnDisk.length) {
-      console.warn(`[scan] 检测到 ${missingOnDisk.length} 个文件在 DB 缺失（可能曾因存储配额写入失败），转重扫补回`)
-      diff.changed.push(...missingOnDisk)
+    checkScan(sourceId, job)
+    nextAutomaticCheck.set(sourceId, Date.now() + AUTO_RECONCILE_MS)
+    const store = useOutputStore.getState()
+    const visible = new Map(store.files.filter(file => file.sourceId === sourceId).map(file => [file.id, file]))
+    const changedRows = new Map(committed.map(file => [file.id, file]))
+    const next = files.map(row => changedRows.get(row.id) || visible.get(row.id) || row)
+    if (updateIds.size) store.removeMetadata([...updateIds])
+    // Keep the array and summary/index job untouched when nothing changed.
+    if (visible.size !== next.length || next.some(row => !visible.has(row.id) || !sameRevision(visible.get(row.id)!, row))) {
+      store.setFiles([...store.files.filter(file => file.sourceId !== sourceId), ...next])
     }
-
-    processedCount += diff.unchanged.length
-
-    // 清理已删除文件的 DB 记录
-    if (diff.orphaned.length > 0) {
-      await purgeDeletedFiles(diff.orphaned)
-    }
-
-    // 阶段 4: 增量处理变更文件（分批处理）
-    const newFiles: OutputFile[] = []
-    const metaUpdates: OutputMetadata[] = []
-    const BATCH_SIZE = 10
-    for (let i = 0; i < diff.changed.length; i += BATCH_SIZE) {
-      const batch = diff.changed.slice(i, i + BATCH_SIZE)
-      const batchResults = await Promise.all(
-        batch.map(async (entry) => {
-          try {
-            // 在文件系统中定位文件
-            const fileHandle = await resolveFileInDir(dirHandle, entry.path)
-            if (!fileHandle) return null
-
-            const file = await fileHandle.getFile()
-
-            const extension = file.name.split('.').pop()?.toLowerCase() || ''
-            if (!IMAGE_EXTENSIONS.test(file.name)) return null
-
-            const buf = await readFileAsArrayBuffer(file)
-            const meta = await parseOutputMetadata(buf, extension)
-
-            const dims = await getDimensions(buf, extension)
-
-            const outputFile = await withUserMetadata({
-              id: entry.id,
-              path: entry.path,
-              filename: file.name,
-              extension,
-              size: file.size,
-              mtime: file.lastModified,
-              width: dims.width,
-              height: dims.height,
-            } as OutputFile)
-
-            // 保存文件信息（保留已有收藏/评分/标签）
-            await outputsDb.files.put(outputFile)
-
-            // 保存元数据
-            if (meta) {
-              const outputMeta: OutputMetadata = {
-                imageId: entry.id,
-                model: meta.model || '',
-                seed: meta.seed || '',
-                steps: meta.steps || '',
-                cfg: meta.cfg || '',
-                sampler: meta.sampler || '',
-                vae: meta.vae || '',
-                clipSkip: meta.clipSkip || 0,
-                prompt: meta.prompt || '',
-                negativePrompt: meta.negativePrompt || '',
-                workflowJson: meta.workflowJson || '',
-                rawMetadata: {},
-              }
-              await putMetadataQuotaSafe(outputMeta)
-              metaUpdates.push(outputMeta)
-            }
-
-            return outputFile
-          } catch (err) {
-            console.warn('[outputScanner] 文件处理失败，跳过:', entry.path, (err as Error)?.message)
-            return null
-          }
-        })
-      )
-
-      for (const f of batchResults) {
-        if (f) newFiles.push(f)
-      }
-
-      processedCount += batch.length
-      useOutputStore.setState({
-        scanProgress: { done: processedCount, total: totalFiles },
-      })
-    }
-
-    // A1+C: 变更文件元数据同步到内存缓存，失效旧缩略图，清理孤儿缓存
-    if (metaUpdates.length > 0) useOutputStore.getState().putMetadataBatch(metaUpdates)
-    const changedPaths = diff.changed.map(c => c.path)
-    useOutputStore.getState().invalidateThumbnails(changedPaths)
-    await deleteThumbnails(changedPaths)
-    useOutputStore.getState().removeMetadata(diff.orphaned)
-
-    // 阶段 5: 保存 manifest 快照
-    const allManifests = [...diff.unchanged, ...diff.changed.map(c => {
-      const file = newFiles.find(f => f.id === c.id)
-      return file ? fileToManifest(file) : c
-    })]
-    await saveManifest(allManifests)
-
-    // 保存目录句柄（原始 handle + 外部 key）
-    try {
-      await (outputsDb.dirHandles as any).put(dirHandle, 'current')
-    } catch (err) {
-      console.warn('[outputScanner] 目录句柄存储失败（非关键错误）:', (err as Error)?.message)
-    }
-
-    const allFiles = [...restoredFiles, ...newFiles]
-
-    // 显式声明：当前列表来自**用户选中的浏览器目录**。
-    // 必须与列表提交同一步完成 —— 否则在画廊索引可用的前提下，
-    // 来源会被误判成 gallery，导致读到 ComfyUI output 里同相对路径的另一张图。
-    commitListSource('directory', outputRootIdentity(useOutputStore.getState().rootPath, dirHandle), PARSER_VERSION)
-
-    // 更新状态（保留持久化的筛选/搜索状态，不再强制重置）
-    useOutputStore.setState({
-      files: allFiles,
-      scanStatus: 'done',
-      scanProgress: { done: allFiles.length, total: allFiles.length },
-      loading: false,
-      currentPath: '',
-    })
-
-    store.setFiles(allFiles)
-
-    const changed = diff.changed.length
-    const restored = diff.unchanged.length
-    showToast(`扫描完成: 新增 ${changed}，恢复 ${restored}，共 ${allFiles.length} 张图片`)
-    logStorageReport() // 存储诊断：文件数 vs 元数据数 + 配额占用，定位历史日期未加载
+    return updates.length + diff.orphaned.length
   } catch (err) {
-    if ((err as Error).name === 'AbortError') {
-      useOutputStore.setState({ scanStatus: 'idle', loading: false })
-    } else if ((err as Error).name === 'UpgradeError' && /primary key/i.test((err as Error).message || '')) {
-      // 浏览器数据库主键与当前 schema 不符（历史版本/外部工具残留）：
-      // 启动时的预检自愈应已处理；此处兜底再触发一次修复并指引重扫
-      useOutputStore.setState({ scanStatus: 'error', loading: false })
-      ensureOutputsDbCompatible().catch(() => {})
-      showToast('数据库结构异常，已自动修复，请重新扫描')
-    } else {
-      useOutputStore.setState({ scanStatus: 'error', loading: false })
-      showToast('扫描失败: ' + (err as Error).message)
-    }
-  }
-}
-
-/**
- * 增量扫描入口——在已有缓存基础上快速恢复
- */
-export async function scanOutputDirIncremental(dirHandle: FileSystemDirectoryHandle): Promise<number> {
-  try {
-    const perm = await (dirHandle as any).requestPermission({ mode: 'readwrite' })
-    if (perm !== 'granted') return 0
-
-    // 快速目录遍历
-    const filesInDir = new Map<string, { mtime: number; size: number }>()
-    await walkDir(dirHandle, '', filesInDir)
-
-    // 比对 manifest
-    const diff = await diffManifest(filesInDir)
-
-    if (diff.changed.length === 0 && diff.orphaned.length === 0) {
-      // 完全无变化 — 返回 0（表示无变化；调用方据此不重建网格，
-      // 避免自动轮询 / 焦点触发时反复重建导致所有图片闪烁）
-      return 0
-    }
-
-    // 有变化但已有文件缓存 → 增量更新
-    const existingFiles = useOutputStore.getState().files
-    if (existingFiles.length === 0) {
-      // 首次运行（无缓存）→ 由 scanOutputDir 处理全量扫描
-      return 0
-    }
-
-    // 增量处理变更的文件
-    const metaUpdates: OutputMetadata[] = []
-    const BATCH_SIZE = 10
-    for (let i = 0; i < diff.changed.length; i += BATCH_SIZE) {
-      const batch = diff.changed.slice(i, i + BATCH_SIZE)
-      await Promise.all(
-        batch.map(async (entry) => {
-          try {
-            const fileHandle = await resolveFileInDir(dirHandle, entry.path)
-            if (!fileHandle) return null
-
-            const file = await fileHandle.getFile()
-            const extension = file.name.split('.').pop()?.toLowerCase() || ''
-            if (!IMAGE_EXTENSIONS.test(file.name)) return null
-
-            const buf = await readFileAsArrayBuffer(file)
-            const meta = await parseOutputMetadata(buf, extension)
-            const dims = await getDimensions(buf, extension)
-
-            const outputFile = await withUserMetadata({
-              id: entry.id, path: entry.path, filename: file.name,
-              extension, size: file.size, mtime: file.lastModified,
-              width: dims.width, height: dims.height,
-            } as OutputFile)
-            await outputsDb.files.put(outputFile)
-            if (meta) {
-              const outputMeta: OutputMetadata = {
-                imageId: entry.id, model: meta.model || '', seed: meta.seed || '',
-                steps: meta.steps || '', cfg: meta.cfg || '', sampler: meta.sampler || '',
-                vae: meta.vae || '', clipSkip: meta.clipSkip || 0,
-                prompt: meta.prompt || '', negativePrompt: meta.negativePrompt || '',
-                workflowJson: meta.workflowJson || '', rawMetadata: {},
-              }
-              await putMetadataQuotaSafe(outputMeta)
-              metaUpdates.push(outputMeta)
-            }
-            return outputFile
-          } catch (err) {
-            console.warn('[outputScanner] 增量扫描: 文件跳过', entry.path, (err as Error)?.message)
-            return null
-          }
-        })
-      )
-    }
-
-    // A1+C: 变更文件元数据同步到内存缓存，失效旧缩略图
-    if (metaUpdates.length > 0) useOutputStore.getState().putMetadataBatch(metaUpdates)
-    const changedPaths = diff.changed.map(c => c.path)
-    useOutputStore.getState().invalidateThumbnails(changedPaths)
-    await deleteThumbnails(changedPaths)
-
-    // 清理 orphaned
-    if (diff.orphaned.length > 0) {
-      await purgeDeletedFiles(diff.orphaned)
-    }
-
-    // 保存 manifest 快照并刷新
-    const allManifests = [...diff.unchanged, ...diff.changed]
-    await saveManifest(allManifests)
-
-    // 从 DB 重新加载完整列表
-    const allFiles = await outputsDb.files.toArray()
-    // 增量扫描只处理用户选中的目录句柄 → 来源同样是 directory，必须显式声明
-    commitListSource('directory', outputRootIdentity(useOutputStore.getState().rootPath, dirHandle), PARSER_VERSION)
-    useOutputStore.getState().setFiles(allFiles)
-    // 返回变化的文件数量（新增/变更/删除），调用方据此判断是否有更新可提示
-    return diff.changed.length + diff.orphaned.length
-  } catch {
+    if ((err as Error).name !== 'AbortError') { status = 'error'; console.warn('[Outputs] Source scan failed:', source.label, err); throw err }
+    status = 'idle'
     return 0
-  }
+  } finally { if (scans.get(sourceId) === job) { scans.delete(sourceId); if (!job.background) scanUi(status) } }
 }
-
-/**
- * 快速遍历目录，收集文件路径和基本信息（不解析文件内容）
- */
-async function walkDir(
-  handle: FileSystemDirectoryHandle,
-  relativePath: string,
-  result: Map<string, { mtime: number; size: number }>
-): Promise<void> {
-  const iter = (handle as any).entries()
-  for (;;) {
-    const next = await iter.next()
-    if (next.done) break
-    const [name, entry] = next.value as [string, FileSystemFileHandle | FileSystemDirectoryHandle]
-
-    // 跳过隐藏文件和目录（以 . 开头）
-    if (name.startsWith('.')) continue
-
-    if ((entry as any).kind === 'directory') {
-      const childPath = relativePath ? `${relativePath}/${name}` : name
-      await walkDir(entry as FileSystemDirectoryHandle, childPath, result)
-    } else if ((entry as any).kind === 'file' && IMAGE_EXTENSIONS.test(name)) {
-      try {
-        const file = await (entry as FileSystemFileHandle).getFile()
-        const path = relativePath ? `${relativePath}/${name}` : name
-        result.set(path, { mtime: file.lastModified, size: file.size })
-      } catch {
-        // 权限不足或文件被占用时跳过
+export async function scanOutputDir(handle: FileSystemDirectoryHandle): Promise<void> {
+  const source = await addOutputDirectory(handle)
+  await scanOutputSource(source.id)
+}
+export async function scanOutputDirIncremental(handle: FileSystemDirectoryHandle): Promise<number> {
+  const source = await addOutputDirectory(handle)
+  return scanOutputSource(source.id)
+}
+export function refreshOutputSources(options: { automatic?: boolean } = {}): Promise<number> {
+  if (options.automatic && automaticRefresh) return automaticRefresh
+  const epoch = ++refreshEpoch
+  const run = async () => {
+    let count = 0
+    for (const source of outputSources()) {
+      if (epoch !== refreshEpoch) break
+      if (source.kind !== 'directory' || !source.enabled) continue
+      if (options.automatic) {
+        if (scans.has(source.id) || Date.now() < (nextAutomaticCheck.get(source.id) || 0)) continue
+        // Bound failures/denied permissions too, without prompting on a timer.
+        nextAutomaticCheck.set(source.id, Date.now() + 60_000)
       }
+      count += await scanOutputSource(source.id, { background: options.automatic })
     }
+    return count
   }
+  const task = run()
+  if (options.automatic) { automaticRefresh = task; void task.finally(() => { if (automaticRefresh === task) automaticRefresh = undefined }).catch(() => {}) }
+  return task
 }
-
-/**
- * 根据相对路径在目录结构中定位文件句柄
- */
-async function resolveFileInDir(
-  dirHandle: FileSystemDirectoryHandle,
-  filePath: string
-): Promise<FileSystemFileHandle | null> {
+/** Explicit reparse refreshes only the requested source; it is never part of opening a folder. */
+export async function reparseOutputSource(id: string): Promise<number> {
+  const source = getOutputSource(id)
+  if (!source?.handle || !source.enabled) return 0
+  scans.get(id)?.controller.abort()
+  const files = useOutputStore.getState().files.filter(file => file.sourceId === id)
+  const job = { controller: new AbortController(), done: 0, total: files.length }
+  scans.set(id, job); scanUi()
+  let done = 0
+  let status: 'done' | 'idle' | 'error' = 'done'
   try {
-    const parts = filePath.split('/')
-    let current = dirHandle
-    for (let i = 0; i < parts.length - 1; i++) {
-      current = await current.getDirectoryHandle(parts[i])
-    }
-    return await current.getFileHandle(parts[parts.length - 1])
-  } catch {
-    return null
-  }
-}
-
-export interface LoadDirHandleResult {
-  /** 是否恢复了缓存文件列表（即使句柄权限未恢复，列表仍显示） */
-  restored: boolean
-  /** 句柄权限状态：none=无保存句柄；granted=可直接读写；prompt/denied=需重新授权 */
-  permission: 'granted' | 'prompt' | 'denied' | 'none'
-}
-
-export async function loadOutputDirHandle(opts?: { skipFiles?: boolean }): Promise<LoadDirHandleResult> {
-  // skipFiles（2026-09-11）：Gallery 索引模式下只恢复句柄与权限，**不要**把 IndexedDB 的旧
-  // 文件列表 setState 进去 —— 那会用旧管线缓存覆盖 gallery 直出的新鲜列表。
-  const skipFiles = !!opts?.skipFiles
-  const result: LoadDirHandleResult = { restored: false, permission: 'none' }
-  try {
-    const record = await outputsDb.dirHandles.get('current')
-    console.log('🔍 [loadOutputDirHandle] dirHandle 记录:', !!record)
-    if (!record) {
-      if (skipFiles) return result
-      // 没有保存的句柄但有缓存文件 → 仍然显示缓存内容
-      const cached = await outputsDb.files.toArray()
-      console.log('🔍 [loadOutputDirHandle] 无 dirHandle，IndexedDB 总文件数:', cached.length)
-      if (cached.length > 0) {
-        // 清理重复记录（保留相同 path 的最新一条）
-        await dedupFilesByPath(cached)
-        const deduped = await outputsDb.files.toArray()
-        console.log('🔍 [loadOutputDirHandle] 去重后文件数:', deduped.length)
-        // 直接全量展示，绕过 page=1 的 50 条限制
-        useOutputStore.setState({ files: deduped, page: Math.ceil(deduped.length / 50) })
-        // 无句柄时也预载缩略图到内存：图片浏览不依赖句柄（句柄只用于增量扫描/补缩略图），
-        // 否则无句柄缓存浏览时所有图片加载不了（loadImageThumbnail 无句柄直接 return）
-        const thumbs = await preloadThumbnailsFromDb(deduped)
-        if (thumbs.size > 0) {
-          useOutputStore.setState(s => {
-            const merged = new Map(s.thumbMemory)
-            for (const [p, d] of thumbs) merged.set(p, d)
-            return { thumbMemory: merged }
-          })
-        }
-        useOutputStore.getState().applyFilters()
-        result.restored = true
+    if (!await requestOutputSourcePermission(id)) throw new DOMException('目录未授权，请重新授权后解析', 'NotAllowedError')
+    for (const file of files) {
+      checkScan(id, job)
+      const identity = fileSourceIdentity(file)
+      const snapshot = createImageSnapshot(file, identity.source, identity.root, identity.parserVersion)
+      const meta = await readImageMetadata(source.handle, snapshot, { strict: true })
+      checkScan(id, job)
+      if (meta) {
+        await outputsDb.transaction('rw', outputsDb.metadata, async () => {
+          checkScan(id, job); await putMetadataQuotaSafe(meta); checkScan(id, job)
+        })
+        checkScan(id, job)
+        useOutputStore.getState().putMetadata(meta); done++
       }
-      return result
+      job.done++; scanUi()
+      if (job.done % 20 === 0) await new Promise(resolve => setTimeout(resolve, 0))
     }
-
-    // 兼容新旧存储格式：新版直接存原始 handle，旧版存 { id, handle } wrapper
-    const dh = (record as any).handle || record
-    // 始终恢复句柄引用——即使权限降级（浏览器重启后 FS Access 授权会回到 prompt），
-    // 后续可一键重新授权恢复图片，避免被迫重新「选择目录」而触发全量扫描
-    useOutputStore.getState().setDirHandle(dh)
-
-    try {
-      const perm = await (dh as any).queryPermission({ mode: 'readwrite' })
-      result.permission = (perm === 'granted' || perm === 'prompt' || perm === 'denied') ? perm : 'prompt'
-    } catch {
-      result.permission = 'denied'
-    }
-    console.log('🔍 [loadOutputDirHandle] 句柄权限:', result.permission)
-
-    if (skipFiles) return result
-
-    // 从 DB 加载已索引的文件（核心：无论如何都尝试加载）
-    const files = await outputsDb.files.toArray()
-    console.log('🔍 [loadOutputDirHandle] 有 dirHandle，IndexedDB 总文件数:', files.length)
-    if (files.length > 0) {
-      // 清理重复记录
-      await dedupFilesByPath(files)
-      const deduped = await outputsDb.files.toArray()
-      console.log('🔍 [loadOutputDirHandle] 去重后:', deduped.length)
-      // 缓存文件全量展示（绕过初始 page=1 的 50 条限制）
-      useOutputStore.setState({ files: deduped, page: Math.ceil(deduped.length / 50) })
-      useOutputStore.getState().applyFilters()
-      result.restored = true
-    }
-    return result
-  } catch {
-    return result
+    return done
+  } catch (err) {
+    if ((err as Error).name !== 'AbortError') { status = 'error'; console.warn('[Outputs] 元数据重解析失败:', source.label, err); throw err }
+    status = 'idle'
+    return done
+  } finally { if (scans.get(id) === job) { scans.delete(id); scanUi(status) } }
+}
+export async function reparseAllMetadata(handle: FileSystemDirectoryHandle): Promise<number> {
+  const source = await addOutputDirectory(handle)
+  return reparseOutputSource(source.id)
+}
+export async function ensureMetadataFresh(_handle: FileSystemDirectoryHandle | null): Promise<boolean> {
+  return false // Per-image parser identity owns invalidation; no library-wide startup task.
+}
+export interface LoadDirHandleResult { restored: boolean; permission: 'granted' | 'prompt' | 'denied' | 'none' }
+/** Compatibility entry for older callers. It no longer installs a global directory handle. */
+export async function loadOutputDirHandle(_opts?: { skipFiles?: boolean }): Promise<LoadDirHandleResult> {
+  const restored = await restoreOutputSources()
+  const directory = restored.find(source => source.kind === 'directory')
+  return { restored: !!directory, permission: directory?.permission || 'none' }
+}
+/** Explicit maintenance only; there are no automatic all-library thumbnail jobs. */
+export async function ensureThumbnails(handle: FileSystemDirectoryHandle | null): Promise<void> {
+  if (!handle) return
+  const source = await addOutputDirectory(handle)
+  for (const file of useOutputStore.getState().files.filter(file => file.sourceId === source.id)) {
+    const identity = fileSourceIdentity(file)
+    const revision = imageRevision(createImageSnapshot(file, identity.source, identity.root, identity.parserVersion))
+    if (await getCachedThumbnail(file.id, revision)) continue
+    const entry = await resolveOutputFileHandle(file)
+    if (entry) await getThumbnail(await entry.getFile(), file.id, revision)
   }
 }
-
 export async function buildDirTree(
   dirHandle: FileSystemDirectoryHandle,
   basePath: string = ''
@@ -839,74 +367,4 @@ export function buildDirTreeFromPaths(paths: string[], rootName = 'output'): Out
   }
   sortRec(root)
   return root
-}
-
-/** 已生成缩略图的文件路径集合（用于避免重复生成） */
-async function getCachedThumbnailPaths(): Promise<Set<string>> {
-  const thumbnails = await outputsDb.thumbnails.toArray()
-  const set = new Set<string>()
-  for (const t of thumbnails) {
-    // 通过文件名倒推出路径（thumbnails 表的 id 是路径哈希）
-    const file = await outputsDb.files.get(t.id)
-    if (file) set.add(file.path)
-  }
-  return set
-}
-
-/**
- * 补生成缺失的缩略图。
- *
- * 🚫 **已停用（2026-09-10）—— 不要从启动 / 进入栏目的路径调用它。**
- * 它会对**所有**缺失缩略图的图片顺序（2 张/批）跑一轮读盘 + 生成 + 写 IndexedDB；
- * 用户的库实测缺 3782 张，一轮就是两三分钟的磁盘与主线程占用，是「进 Outputs 要等
- * 两三分钟」的两个来源之一（另一个是当时的元数据全库预载）。
- * 现在缩略图完全由**可见区按需**生成：`Outputs.loadImageThumbnail` 命中
- * 内存 → IndexedDB → 只读这一张文件生成并缓存（管线内部 4 并发限流）。
- * 保留此函数仅供显式的「重建全部缩略图」维护动作使用。
- */
-// 120s 节流：避免每次切到 Outputs tab 都全表查缩略图缓存；也降低与可视加载抢解码通道的频率
-let _lastEnsureThumbs = 0
-
-export async function ensureThumbnails(dirHandle: FileSystemDirectoryHandle | null): Promise<void> {
-  if (!dirHandle) return
-  const now = Date.now()
-  if (now - _lastEnsureThumbs < 120000) return
-  _lastEnsureThumbs = now
-
-  const files = useOutputStore.getState().files
-  if (files.length === 0) return
-
-  // 检查哪些文件已有缓存缩略图
-  const cachedPaths = await getCachedThumbnailPaths()
-  const missing = files.filter(f => !cachedPaths.has(f.path))
-  if (missing.length === 0) return
-
-  // ⚠️ 这里**不要**改成"每次进页面只补 N 张"（2026-09-10 实测踩坑）：
-  // 库里缺 3782 张缩略图时，分批 + 每次进入重跑 = 永远跑不完、每切一次页面就重新开跑，
-  // 用户反馈"原本过会就好，现在会持续的卡"。保持"一次跑完并写入 IndexedDB 缓存"，
-  // 跑完即长期不再触发（`_lastEnsureThumbs` 120s 节流 + 缓存命中）。
-  // 单张开销已由 createImageBitmap 优化（数百毫秒 → 约 1ms），整轮比过去快一个量级。
-  console.log(`[outputScanner] 补生成 ${missing.length} 个缩略图...`)
-  let done = 0
-
-  // 分批处理，每批 2 个：后台任务低优先级，别挤占可视区加载
-  const BATCH = 2
-  for (let i = 0; i < missing.length; i += BATCH) {
-    const batch = missing.slice(i, i + BATCH)
-    await Promise.all(
-      batch.map(async (file) => {
-        try {
-          const fileHandle = await resolveFileInDir(dirHandle, file.path)
-          if (!fileHandle) return
-          const f = await fileHandle.getFile()
-          const dataUrl = await getThumbnail(f, file.path)
-          if (dataUrl) done++
-        } catch (err) {
-          // 单个文件失败不影响其他
-        }
-      })
-    )
-  }
-
-  console.log(`[outputScanner] 缩略图补完成: ${done}/${missing.length}`)
 }

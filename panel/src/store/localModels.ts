@@ -26,7 +26,7 @@ export const localScanSession: LocalScanSession<ScanFile> = new LocalScanSession
 
 export type LocalSortKey = 'name' | 'size' | 'date' | 'match'
 export type LocalFilterKey = 'all' | 'matched' | 'unmatched'
-export type LocalViewKey = 'home' | 'detail' | 'gallery' | 'prompt' | 'models'
+export type LocalViewKey = 'home' | 'detail' | 'gallery' | 'models'
 export type LocalDisplayMode = 'list' | 'grid'
 
 const SCAN_CACHE_KEY = 'local_loras_v2'

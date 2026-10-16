@@ -15,6 +15,9 @@ export type ImageSnapshot = Readonly<{
 export const normalizeOutputPath = (path: string): string => path.replace(/\\/g, '/').replace(/^\.\//, '')
 export const metadataPathKey = (root: string, path: string): string => JSON.stringify(['output-path', normalizeOutputPath(root), normalizeOutputPath(path)])
 const directoryRoots = new WeakMap<FileSystemDirectoryHandle, string>()
+export function registerOutputRootIdentity(handle: FileSystemDirectoryHandle, identity: string): void {
+  directoryRoots.set(handle, identity)
+}
 const directorySession = Date.now().toString(36)
 let directorySequence = 0
 export function outputRootIdentity(root: string, handle: FileSystemDirectoryHandle | null): string {
@@ -80,7 +83,8 @@ export function createMetadataLoader(options: MetadataLoaderOptions) {
   return async (snapshot: ImageSnapshot | null, force = false): Promise<OutputMetadata | null> => {
     if (!snapshot || !options.isCurrent(snapshot)) return null
     if (!force && memory.has(snapshot.key)) return memory.get(snapshot.key)!
-    if (inflight.has(snapshot.key)) return inflight.get(snapshot.key)!
+    const requestKey = JSON.stringify([snapshot.key, snapshot.epoch])
+    if (inflight.has(requestKey)) return inflight.get(requestKey)!
     const task = (async () => {
       let meta: OutputMetadata | undefined | null
       if (!force) {
@@ -100,8 +104,8 @@ export function createMetadataLoader(options: MetadataLoaderOptions) {
       if (options.isCurrent(snapshot)) void options.write(meta).catch(() => {})
       return meta
     })()
-    inflight.set(snapshot.key, task)
-    try { return await task } finally { if (inflight.get(snapshot.key) === task) inflight.delete(snapshot.key) }
+    inflight.set(requestKey, task)
+    try { return await task } finally { if (inflight.get(requestKey) === task) inflight.delete(requestKey) }
   }
 }
 
@@ -122,7 +126,8 @@ export function createMetadataLoader(options: MetadataLoaderOptions) {
  * 因此来源必须由「真正把列表写进 store 的那条路径」显式声明，
  * 绝不能由能力探测推导。
  */
-export type OutputSourceKind = 'gallery' | 'native' | 'directory'
+export type { OutputSourceKind } from '../types/outputs'
+import type { OutputSourceKind } from '../types/outputs'
 export type OutputSourceStamp = Readonly<{ kind: OutputSourceKind; root: string; parserVersion: number }>
 
 let _listSource: OutputSourceStamp | null = null

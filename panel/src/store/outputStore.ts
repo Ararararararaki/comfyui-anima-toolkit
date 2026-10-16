@@ -1,10 +1,45 @@
 import { create } from 'zustand'
-import type { OutputFile, OutputMetadata, OutputViewMode, OutputSortKey, OutputFilterKey, OutputScanStatus } from '../types/outputs'
+import type { OutputFile, OutputMetadata, OutputViewMode, OutputSortKey, OutputFilterKey, OutputScanStatus, OutputSummary, OutputGroupMode } from '../types/outputs'
 import { outputsDb } from '../db/outputsDb'
 import { extractLorasFromWorkflow, PARSER_VERSION } from '../services/outputMetadata'
-import { nativeStorageEnabled, nativeUpdateOutput } from '../services/nativeStorage'
+import { nativeUpdateOutput } from '../services/nativeStorage'
 import { metadataForFile, metadataPathKey, metadataMatches, outputRootIdentity, type ImageSnapshot } from '../services/outputIdentity'
 
+import { sourceForFile, fileSourceIdentity, outputSources } from '../services/outputSources'
+import { outputBrowserView, sourceBrowsePath, browseSource, restoreOutputBrowsePath, type OutputBrowseStep, type OutputBrowserView } from '../services/outputBrowser'
+import { makeOutputSummary, summaryMatches, matchesOutputQuery, outputGroup, compareOutputGroupDescriptors, canInferOutputTags, metadataStateOf, type OutputQuery } from '../services/outputQuery'
+
+type QueryExecutor = (rows: OutputSummary[], query: OutputQuery) => Promise<string[]>
+let queryExecutor: QueryExecutor | undefined
+let queryEpoch = 0
+const queryRows = new Map<string, { file: OutputFile; base: OutputSummary | OutputMetadata | null; root: string; parserVersion: number; row: OutputSummary }>()
+export function configureOutputQueryExecutor(executor?: QueryExecutor): void {
+  queryExecutor = executor; queryEpoch++
+  if (!executor) { queryRows.clear(); useOutputStore.setState({ queryPending: false }) }
+}
+export function outputSummaryForFile(file: OutputFile, summaries: Map<string, OutputSummary>): OutputSummary | undefined {
+  const identity = fileSourceIdentity(file), row = summaries.get(file.id)
+  return summaryMatches(row, file, identity.root, identity.parserVersion) ? row : undefined
+}
+
+async function saveAnnotation(files: OutputFile[], id: string, patch: Partial<OutputFile>): Promise<void> {
+  const matches = files.filter(file => file.id === id)
+  if (matches.length !== 1) throw new Error('图片身份不明确')
+  const file = matches[0]
+  if (sourceForFile(file).kind === 'native') await nativeUpdateOutput(id, patch)
+  else await outputsDb.transaction('rw', outputsDb.files, async () => {
+    const current = await outputsDb.files.get(id)
+    await outputsDb.files.put({ ...file,
+      favorite: current?.favorite ?? file.favorite, rating: current?.rating ?? file.rating,
+      notes: current?.notes ?? file.notes, tags: current?.tags ?? file.tags,
+      category: current?.category ?? file.category, status: current?.status ?? file.status,
+      pinned: current?.pinned ?? file.pinned, ...patch })
+  })
+}
+function fileMetadata(cache: Map<string, OutputMetadata>, file: OutputFile): OutputMetadata | null {
+  const identity = fileSourceIdentity(file)
+  return metadataForFile(cache, file, identity.root, identity.parserVersion)
+}
 const PAGE_SIZE = 50
 
 // 快捷时间段工具
@@ -33,6 +68,10 @@ interface OutputState {
   dirHandle: FileSystemDirectoryHandle | null
   rootPath: string
   currentPath: string
+  currentSourceId: string
+  browsePath: OutputBrowseStep[]
+  browserView: OutputBrowserView
+  setBrowsePath: (path: OutputBrowseStep[]) => void
 
   // 文件
   files: OutputFile[]
@@ -48,6 +87,15 @@ interface OutputState {
    */
   metadataVersion: number
   metadataParserVersion: number
+  summaryCache: Map<string, OutputSummary>
+  summaryVersion: number
+  queryPending: boolean
+  resultCount: number
+  groupMode: OutputGroupMode
+  collapsedGroups: Set<string>
+  setSummaries: (rows: OutputSummary[]) => void
+  setGroupMode: (mode: OutputGroupMode) => void
+  toggleGroup: (key: string) => void
 
   // 视图
   viewMode: OutputViewMode
@@ -85,6 +133,7 @@ interface OutputState {
   setFilterKey: (key: OutputFilterKey) => void
   setSearchQuery: (query: string) => void
   setCurrentPath: (path: string) => void
+  setCurrentSource: (sourceId: string, path?: string) => void
   setFilterModel: (model: string) => void
   setFilterLora: (lora: string) => void
   setFilterDateMin: (date: string) => void
@@ -116,7 +165,7 @@ interface OutputState {
    * 按需读取**单张**图片的元数据（2026-09-10：不再有全库预载）。
    * opts.loras = true 时从同一条 DB 记录里顺带提取 LoRA（一次读盘覆盖卡片所有信息）。
    */
-  loadMetadata: (id: string, opts?: { loras?: boolean; snapshot?: ImageSnapshot }) => Promise<OutputMetadata | null>
+  loadMetadata: (id: string, opts?: { loras?: boolean; snapshot?: ImageSnapshot; isCurrent?: (snapshot: ImageSnapshot) => boolean }) => Promise<OutputMetadata | null>
   putMetadata: (meta: OutputMetadata) => void
   putMetadataBatch: (metas: OutputMetadata[]) => void
   removeMetadata: (ids: string[]) => void
@@ -128,20 +177,15 @@ interface OutputState {
 }
 
 function matchSearch(file: OutputFile, query: string, metadata: OutputMetadata | null): boolean {
-  if (!query) return true
-  const q = query.toLowerCase()
-  return (
-    file.filename.toLowerCase().includes(q) ||
-    file.path.toLowerCase().includes(q) ||
-    (metadata?.model || '').toLowerCase().includes(q) ||
-    (metadata?.prompt || '').toLowerCase().includes(q)
-  )
+  return matchesOutputQuery(makeOutputSummary(file, metadata, fileSourceIdentity(file).parserVersion), { query })
 }
 
 // ── 内存瘦身：缓存版元数据剥离 workflowJson（单条几十~几百 KB，几百张图即数百 MB 内存 → GC 长暂停卡顿）
 // 提取 loras 供渲染/筛选直接使用；需要完整 workflow 的路径（下载 .json/复制标签/元数据面板）从 DB 懒读。
 function slimMeta(meta: OutputMetadata): OutputMetadata {
   const copy: OutputMetadata = { ...meta }
+  // Preserve container evidence before dropping its heavy raw/workflow fields.
+  copy.metadataState = metadataStateOf(meta)
   if (meta.workflowJson) {
     // ⚠️ 这里刻意**不做** LoRA 提取（2026-09-10 修；首开卡顿的真正根因）：
     // extractLorasFromWorkflow → safeParseJSON 会对**每条记录** JSON.parse 一个
@@ -229,12 +273,31 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   rootPath: '',
   metadataParserVersion: PARSER_VERSION,
   currentPath: '',
+  currentSourceId: '',
+  browsePath: [], browserView: { home: true, folders: [], files: [], count: 0 },
+  setBrowsePath: value => {
+    const browsePath = restoreOutputBrowsePath(value), scope = browseSource(browsePath)
+    set({ browsePath, currentSourceId: scope.sourceId, currentPath: scope.directory, page: 1, selectedIds: new Set() })
+    persistFilterState(get()); get().applyFilters()
+  },
 
   files: [],
   filteredFiles: [],
   selectedIds: new Set(),
   metadataCache: new Map(),
   metadataVersion: 0,
+  summaryCache: new Map(), summaryVersion: 0, queryPending: false, resultCount: 0,
+  groupMode: 'none', collapsedGroups: new Set(),
+  setSummaries: rows => {
+    set(state => { const next = new Map(state.summaryCache); for (const row of rows) next.set(row.imageId, row); return { summaryCache: next, summaryVersion: state.summaryVersion + 1 } })
+    get().applyFilters()
+  },
+  setGroupMode: groupMode => {
+    let browsePath: OutputBrowseStep[] = get().browsePath.filter(step => step.kind === 'source' || step.kind === 'directory')
+    if (!browsePath.length && groupMode !== 'none') browsePath = sourceBrowsePath('', '全部图片')
+    set({ groupMode, browsePath, page: 1, selectedIds: new Set() }); persistFilterState(get()); get().applyFilters()
+  },
+  toggleGroup: key => { set(state => { const next = new Set(state.collapsedGroups); if (next.has(key)) next.delete(key); else next.add(key); return { collapsedGroups: next } }); persistFilterState(get()); get().applyFilters() },
   thumbMemory: new Map(),
 
   viewMode: 'grid',
@@ -261,6 +324,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
 
   setDirHandle: (dirHandle) => set({ dirHandle, metadataParserVersion: PARSER_VERSION }),
   setFiles: (files) => {
+    if (queryRows.size) { const ids = new Set(files.map(file => file.id)); for (const id of queryRows.keys()) if (!ids.has(id)) queryRows.delete(id) }
     set({ files })
     get().applyFilters()
   },
@@ -291,9 +355,11 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     persistFilterState(get())
     get().applyFilters()
   },
+  setCurrentSource: (currentSourceId, currentPath = '') => {
+    get().setBrowsePath(sourceBrowsePath(currentSourceId, outputSources().find(source => source.id === currentSourceId)?.label || '全部图片', currentPath))
+  },
   setCurrentPath: (currentPath) => {
-    set({ currentPath, page: 1 })
-    get().applyFilters()
+    get().setCurrentSource(get().currentSourceId, currentPath)
   },
   setPage: (page: number) => set({ page }),
   setFilterModel: (filterModel) => { set({ filterModel, page: 1 }); persistFilterState(get()); get().applyFilters() },
@@ -306,16 +372,13 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   setFilterCategory: (filterCategory) => { set({ filterCategory, page: 1 }); persistFilterState(get()); get().applyFilters() },
   setCategory: async (id, category) => {
     try {
-      if (nativeStorageEnabled()) await nativeUpdateOutput(id, { category })
-      else await outputsDb.files.update(id, { category })
+      await saveAnnotation(get().files, id, { category })
       set(s => ({ files: s.files.map(f => f.id === id ? { ...f, category } : f) }))
       get().applyFilters()
     } catch (err) { console.warn('[outputStore] setCategory 失败:', err) }
   },
   batchSetCategory: async (ids, category) => {
-    const results = await Promise.allSettled(ids.map(id => nativeStorageEnabled()
-      ? nativeUpdateOutput(id, { category })
-      : outputsDb.files.update(id, { category })))
+    const results = await Promise.allSettled(ids.map(id => saveAnnotation(get().files, id, { category })))
     const failed = results.filter(r => r.status === 'rejected')
     if (failed.length > 0) console.warn(`[outputStore] batchSetCategory 失败 ${failed.length}/${ids.length}`)
     // 仅更新 DB 写入成功的项，失败项保持原值（内存与 DB 一致）
@@ -327,9 +390,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   deleteCategory: async (category) => {
     if (!category) return
     const ids = get().files.filter(f => f.category === category).map(f => f.id)
-    const results = await Promise.allSettled(ids.map(id => nativeStorageEnabled()
-      ? nativeUpdateOutput(id, { category: '' })
-      : outputsDb.files.update(id, { category: '' })))
+    const results = await Promise.allSettled(ids.map(id => saveAnnotation(get().files, id, { category: '' })))
     const failed = results.filter(r => r.status === 'rejected')
     if (failed.length > 0) console.warn(`[outputStore] deleteCategory 失败 ${failed.length}/${ids.length}`)
     const okIds = new Set(ids.filter((_, i) => results[i].status === 'fulfilled'))
@@ -339,9 +400,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   renameCategory: async (oldName, newName) => {
     if (!oldName || !newName) return
     const ids = get().files.filter(f => f.category === oldName).map(f => f.id)
-    const results = await Promise.allSettled(ids.map(id => nativeStorageEnabled()
-      ? nativeUpdateOutput(id, { category: newName })
-      : outputsDb.files.update(id, { category: newName })))
+    const results = await Promise.allSettled(ids.map(id => saveAnnotation(get().files, id, { category: newName })))
     const failed = results.filter(r => r.status === 'rejected')
     if (failed.length > 0) console.warn(`[outputStore] renameCategory 失败 ${failed.length}/${ids.length}`)
     const okIds = new Set(ids.filter((_, i) => results[i].status === 'fulfilled'))
@@ -369,8 +428,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     const file = get().files.find(f => f.id === id)
     if (!file) return
     const next = !file.favorite
-    if (nativeStorageEnabled()) await nativeUpdateOutput(id, { favorite: next })
-    else await outputsDb.files.update(id, { favorite: next })
+    await saveAnnotation(get().files, id, { favorite: next })
     set(s => ({
       files: s.files.map(f => f.id === id ? { ...f, favorite: next } : f)
     }))
@@ -379,8 +437,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
 
   setRating: async (id, rating) => {
     try {
-      if (nativeStorageEnabled()) await nativeUpdateOutput(id, { rating })
-      else await outputsDb.files.update(id, { rating })
+      await saveAnnotation(get().files, id, { rating })
       set(s => ({
         files: s.files.map(f => f.id === id ? { ...f, rating } : f)
       }))
@@ -391,24 +448,21 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   },
 
   setNotes: async (id, notes) => {
-    if (nativeStorageEnabled()) await nativeUpdateOutput(id, { notes })
-    else await outputsDb.files.update(id, { notes })
+    await saveAnnotation(get().files, id, { notes })
     set(s => ({
       files: s.files.map(f => f.id === id ? { ...f, notes } : f)
     }))
   },
 
   setTags: async (id, tags) => {
-    if (nativeStorageEnabled()) await nativeUpdateOutput(id, { tags })
-    else await outputsDb.files.update(id, { tags })
+    await saveAnnotation(get().files, id, { tags })
     set(s => ({
       files: s.files.map(f => f.id === id ? { ...f, tags } : f)
     }))
   },
 
   setStatus: async (id, status) => {
-    if (nativeStorageEnabled()) await nativeUpdateOutput(id, { status })
-    else await outputsDb.files.update(id, { status })
+    await saveAnnotation(get().files, id, { status })
     set(s => ({
       files: s.files.map(f => f.id === id ? { ...f, status } : f)
     }))
@@ -419,8 +473,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     const file = get().files.find(f => f.id === id)
     if (!file) return
     const next = !file.pinned
-    if (nativeStorageEnabled()) await nativeUpdateOutput(id, { pinned: next })
-    else await outputsDb.files.update(id, { pinned: next })
+    await saveAnnotation(get().files, id, { pinned: next })
     set(s => ({
       files: s.files.map(f => f.id === id ? { ...f, pinned: next } : f)
     }))
@@ -428,21 +481,13 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   },
 
   batchPin: async (ids) => {
-    if (nativeStorageEnabled()) {
-      for (const id of ids) await nativeUpdateOutput(id, { pinned: true })
-    } else {
-      for (const id of ids) await outputsDb.files.update(id, { pinned: true })
-    }
+    for (const id of ids) await saveAnnotation(get().files, id, { pinned: true })
     set(s => ({ files: s.files.map(f => ids.includes(f.id) ? { ...f, pinned: true } : f) }))
     get().applyFilters()
   },
 
   batchUnpin: async (ids) => {
-    if (nativeStorageEnabled()) {
-      for (const id of ids) await nativeUpdateOutput(id, { pinned: false })
-    } else {
-      for (const id of ids) await outputsDb.files.update(id, { pinned: false })
-    }
+    for (const id of ids) await saveAnnotation(get().files, id, { pinned: false })
     set(s => ({ files: s.files.map(f => ids.includes(f.id) ? { ...f, pinned: false } : f) }))
     get().applyFilters()
   },
@@ -452,8 +497,18 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     const matches = get().files.filter(f => f.id === id)
     const file = snapshot?.file ?? (matches.length === 1 ? matches[0] : undefined)
     if (!file) return null
-    const cached = metadataForFile(get().metadataCache, file, snapshot?.root ?? outputRootIdentity(get().rootPath, get().dirHandle), snapshot?.parserVersion ?? get().metadataParserVersion)
-    const key = snapshot?.key ?? id
+    const canPublish = () => {
+      const current = get().files.filter(row => row.id === file.id)
+      if (current.length !== 1) return false
+      const row = current[0]
+      if ((row.sourceId || 'output') !== (file.sourceId || 'output') || row.path !== file.path || row.mtime !== file.mtime || row.size !== file.size) return false
+      const source = sourceForFile(row)
+      if (!source.enabled) return false
+      return !snapshot || (source.kind === snapshot.source && source.root === snapshot.root && source.parserVersion === snapshot.parserVersion && (!opts?.isCurrent || opts.isCurrent(snapshot)))
+    }
+    if (!canPublish()) return null
+    const cached = metadataForFile(get().metadataCache, file, snapshot?.root ?? fileSourceIdentity(file).root, snapshot?.parserVersion ?? fileSourceIdentity(file).parserVersion)
+    const key = snapshot ? JSON.stringify([snapshot.key, snapshot.epoch]) : id
     // 内存命中且不追加 LoRA 需求（或该条已提取过）→ 直接返回，绝不回 DB
     const wantLoras = !!opts?.loras && !!cached?.hasWorkflow && !cached.lorasExtracted
     if (META_DBG) console.log('[meta-dbg] loadMetadata', id, { wantLorasOpt: !!opts?.loras, cached: !!cached, hasWf: cached?.hasWorkflow, extracted: cached?.lorasExtracted, wantLoras, earlyReturn: !!(cached && !wantLoras) })
@@ -475,8 +530,8 @@ export const useOutputStore = create<OutputState>((set, get) => ({
           }),
         ])
         if (META_DBG) console.log('[meta-dbg] db read done', id, { found: !!meta, wfLen: meta ? String(meta.workflowJson || '').length : -1 })
-        if (!meta || (snapshot ? !metadataMatches(meta, snapshot) : !metadataForFile(new Map([[id, meta]]), file, outputRootIdentity(get().rootPath, get().dirHandle), get().metadataParserVersion))) return null
-        if (snapshot && (!get().files.some(f => f.path === snapshot.path && f.mtime === snapshot.mtime && f.size === snapshot.size) || outputRootIdentity(get().rootPath, get().dirHandle) !== snapshot.root)) return null
+        if (!meta || (snapshot ? !metadataMatches(meta, snapshot) : !fileMetadata(new Map([[id, meta]]), file))) return null
+        if (!canPublish()) return null
         const slim = slimMeta(meta)
         if (opts?.loras) {
           // ⚠️ 只对这一张卡的工作流做 JSON.parse（历史上的做法是全库遍历解析，秒级到分钟级）
@@ -488,6 +543,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
           slim.lorasExtracted = true
           if (META_DBG) console.log('[meta-dbg] extracted', id, { n: slim.loras.length, sample: slim.loras.slice(0, 2), hasWf: !!meta.workflowJson })
         }
+        if (!canPublish()) return null
         set(s => {
           const next = new Map(s.metadataCache)
           next.set(id, slim)
@@ -582,14 +638,14 @@ export const useOutputStore = create<OutputState>((set, get) => ({
   },
 
   applyFilters: () => {
-    const { files, filterKey, searchQuery, sortKey, sortOrder, currentPath, metadataCache, page, viewMode,
+    const { files, filterKey, searchQuery, sortKey, sortOrder, currentPath, currentSourceId, metadataCache, page, viewMode, summaryCache, groupMode,
       filterModel, filterLora, filterDateMin, filterDateMax, filterQuickPeriod, filterStatusFlags, filterTag, filterCategory } = get()
 
-    let filtered = [...files]
+    let filtered = files.filter(file => sourceForFile(file).enabled && (!currentSourceId || (file.sourceId || 'output') === currentSourceId))
 
     // 路径筛选
     if (currentPath) {
-      filtered = filtered.filter(f => f.path.startsWith(currentPath))
+      filtered = filtered.filter(f => f.path === currentPath || f.path.startsWith(currentPath.replace(/\/$/, '') + '/'))
     }
 
     // 预设筛选（收藏/评分）
@@ -600,11 +656,12 @@ export const useOutputStore = create<OutputState>((set, get) => ({
       case 'rated':
         filtered = filtered.filter(f => f.rating > 0)
         break
-    }
-
-    // 搜索
-    if (searchQuery) {
-      filtered = filtered.filter(f => matchSearch(f, searchQuery, metadataForFile(metadataCache, f, outputRootIdentity(get().rootPath, get().dirHandle), get().metadataParserVersion)))
+      case 'missingMetadata':
+        filtered = filtered.filter(file => canInferOutputTags(outputSummaryForFile(file, summaryCache)))
+        break
+      case 'inferred':
+        filtered = filtered.filter(file => outputSummaryForFile(file, summaryCache)?.tagSource === 'wd14')
+        break
     }
 
     // 高级筛选
@@ -612,7 +669,7 @@ export const useOutputStore = create<OutputState>((set, get) => ({
     if (hasAdvanced) {
       const periodStart = filterQuickPeriod ? getPeriodStart(filterQuickPeriod) : 0
       filtered = filtered.filter(f => {
-        const meta = metadataForFile(metadataCache, f, outputRootIdentity(get().rootPath, get().dirHandle), get().metadataParserVersion)
+        const meta = fileMetadata(metadataCache, f)
 
         // 快捷时间段
         if (filterQuickPeriod && f.mtime < periodStart) return false
@@ -640,23 +697,18 @@ export const useOutputStore = create<OutputState>((set, get) => ({
           if (filterCategory !== '__none__' && f.category !== filterCategory) return false
         }
 
-        // 需要元数据的筛选
-        if (!meta) return !(filterModel || filterLora || filterTag)
-
-        if (filterModel && !meta.model.toLowerCase().includes(filterModel.toLowerCase())) return false
-        if (filterLora) {
-          const loras = meta.loras || []
-          if (!loras.some(l => l.toLowerCase().includes(filterLora.toLowerCase()))) return false
-        }
-        if (filterTag && !f.tags.some(t => t.toLowerCase().includes(filterTag.toLowerCase()))) return false
-
         return true
       })
     }
 
-    // 排序（置顶优先，同组内按当前规则）
+    const epoch = ++queryEpoch
+    const commit = (matched: OutputFile[]) => {
+    if (epoch !== queryEpoch) return
+    // Pinning is local to a semantic group; every image has one combination key.
     const dir = sortOrder === 'desc' ? -1 : 1
-    filtered.sort((a, b) => {
+    const groups = groupMode === 'work' || groupMode === 'character' ? new Map(matched.map(file => [file.id, outputGroup(outputSummaryForFile(file, summaryCache), groupMode)])) : undefined
+    matched.sort((a, b) => {
+      if (groups) { const order = compareOutputGroupDescriptors(groups.get(a.id)!, groups.get(b.id)!, groupMode); if (order) return order }
       if (a.pinned && !b.pinned) return -1
       if (!a.pinned && b.pinned) return 1
       switch (sortKey) {
@@ -669,13 +721,37 @@ export const useOutputStore = create<OutputState>((set, get) => ({
 
     // 分页：仅列表模式保留「加载更多」限流（列表未虚拟化，DOM 会随页数累积）；
     // 网格模式由 VirtualScroll 渲染全量（DOM 只含可视行，无需切片）
-    const total = filtered.length
-    const paged = viewMode === 'list' ? filtered.slice(0, page * PAGE_SIZE) : filtered
+    const state = get()
+    const browserView = outputBrowserView(matched, outputSources(), file => outputSummaryForFile(file, summaryCache), state.browsePath, groupMode)
+    const total = browserView.count
+    const paged = viewMode === 'list' ? browserView.files.slice(0, page * PAGE_SIZE) : browserView.files
 
     set({
       filteredFiles: paged,
-      hasMore: viewMode === 'list' && paged.length < total
+      browserView,
+      queryPending: false, resultCount: total,
+      hasMore: viewMode === 'list' && paged.length < browserView.files.length
     })
+    }
+    if (!(searchQuery || filterModel || filterLora || filterTag)) { commit(filtered); return }
+    const rows = filtered.map(file => {
+      const row = outputSummaryForFile(file, summaryCache)
+      const identity = fileSourceIdentity(file), metadata = row ? null : fileMetadata(metadataCache, file), base = row || metadata
+      const cached = queryRows.get(file.id)
+      if (cached && cached.file === file && cached.base === base && cached.root === identity.root && cached.parserVersion === identity.parserVersion) return cached.row
+      const next = !row ? makeOutputSummary(file, metadata, identity.parserVersion, identity.root)
+        : (row.notes || '') === file.notes && (row.manualTags || []).length === file.tags.length && (row.manualTags || []).every((tag, index) => tag === file.tags[index]) ? row
+          : { ...row, notes: file.notes, manualTags: file.tags }
+      // Stable snapshots let the worker transfer only changed records while
+      // historical classification is still being filled in.
+      queryRows.set(file.id, { file, base, root: identity.root, parserVersion: identity.parserVersion, row: next })
+      return next
+    })
+    const query = { query: searchQuery, model: filterModel, lora: filterLora, tag: filterTag }
+    if (queryExecutor) {
+      set({ queryPending: true })
+      void queryExecutor(rows, query).then(ids => { const found = new Set(ids); commit(filtered.filter(file => found.has(file.id))) }).catch(error => { if (epoch === queryEpoch) { set({ queryPending: false }); console.warn('[Outputs] 检索失败，保留当前结果', error) } })
+    } else commit(filtered.filter((_file, index) => matchesOutputQuery(rows[index], query)))
   },
 }))
 
@@ -690,13 +766,15 @@ if (savedOrder === 'asc' || savedOrder === 'desc') {
 // 是临时探索条件，不跨会话保存——否则一次误设的日期范围会长期静默生效，把历史日期全部藏掉
 // （复现：dateMin=2026-08-12 导致 8.12 及之前永久不显示，"清除筛选"才恢复）。
 const FILTER_STORAGE_KEY = 'outputs_filterState'
-function persistFilterState(state: { viewMode: string; sortKey: string; filterKey: string; searchQuery: string; filterModel: string; filterLora: string; filterDateMin: string; filterDateMax: string; filterQuickPeriod: string; filterStatusFlags: string[]; filterCategory: string }) {
+function persistFilterState(state: { viewMode: string; sortKey: string; filterKey: string; searchQuery: string; filterModel: string; filterLora: string; filterDateMin: string; filterDateMax: string; filterQuickPeriod: string; filterStatusFlags: string[]; filterCategory: string; currentSourceId?: string; currentPath?: string; groupMode?: OutputGroupMode; collapsedGroups?: Set<string>; browsePath?: OutputBrowseStep[] }) {
   void state.filterModel; void state.filterLora; void state.filterDateMin; void state.filterDateMax
   void state.filterQuickPeriod; void state.filterStatusFlags; void state.filterCategory
   try {
     localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify({
       viewMode: state.viewMode, sortKey: state.sortKey, filterKey: state.filterKey,
-      searchQuery: state.searchQuery,
+      searchQuery: state.searchQuery, currentSourceId: state.currentSourceId, currentPath: state.currentPath,
+      groupMode: state.groupMode, collapsedGroups: [...state.collapsedGroups || []],
+      browsePath: state.browsePath,
     }))
   } catch { /* quota */ }
 }
@@ -706,6 +784,13 @@ function restoreFilterState() {
     if (!raw) return
     const saved = JSON.parse(raw)
     const st = useOutputStore.getState()
+    if (['none', 'flat', 'work', 'character'].includes(saved.groupMode)) st.groupMode = saved.groupMode
+    if (Array.isArray(saved.collapsedGroups)) st.collapsedGroups = new Set(saved.collapsedGroups.filter((key: unknown) => typeof key === 'string'))
+    if (typeof saved.currentSourceId === 'string') st.currentSourceId = saved.currentSourceId
+    if (typeof saved.currentPath === 'string') st.currentPath = saved.currentPath
+    st.browsePath = restoreOutputBrowsePath(saved.browsePath)
+    const scope = browseSource(st.browsePath)
+    st.currentSourceId = scope.sourceId; st.currentPath = scope.directory
     if (saved.viewMode === 'grid' || saved.viewMode === 'list') st.viewMode = saved.viewMode
     if (typeof saved.sortKey === 'string') st.sortKey = saved.sortKey
     if (typeof saved.filterKey === 'string') st.filterKey = saved.filterKey

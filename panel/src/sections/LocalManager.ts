@@ -1,17 +1,22 @@
+import { sourceForFile, fileSourceIdentity, readOutputSourceFile } from '../services/outputSources'
+import { createImageSnapshot, imageRevision } from '../services/outputIdentity'
 import { deleteLocalLoraPreview, loadLocalLoraPreviews, saveLocalLoraPreview, useLocalModelStore, localScanSession } from '../store/localModels'
 import type { LocalScanProgress } from '../services/localScanSession'
 import type { LocalDisplayMode, LocalSortKey, LocalFilterKey, LocalViewKey } from '../store/localModels'
 import { esc, escAttr, copyText, showToast, fmtNum, thumbUrl, debounce, stripExt, setBtnIcon, icon, attachSearchClear } from '../utils'
 import { openLightbox } from '../components/Lightbox'
+import { ImageNodeCache } from '../components/ImageNodeCache'
+import { localCategoryEntries } from '../services/localCategoryNavigation'
 import type { PngMeta, LocalLoraFile, TagFreq } from '../types'
 import type { OutputMetadata } from '../types/outputs'
 import { promptModal, confirmModal } from '../components/Modal'
 import { openContextMenu, type ContextMenuAction } from '../components/ContextMenu'
 import { refreshLocalNames } from '../components/ModelCard'
 import { bindUrlDownloadModal } from './downloadUrlModal'
-import { useOutputStore } from '../store/outputStore'
+import { useOutputStore, outputSummaryForFile } from '../store/outputStore'
 import { ensureAllMetadata, isMetadataIndexComplete } from '../services/outputMetadataIndex'
-import { extractLorasFromWorkflow, decompressZlibAsync } from '../services/outputMetadata'
+import { extractLorasFromWorkflow, parseOutputMetadataBlob, outputLoraNames, type ParsedMetadata } from '../services/outputMetadata'
+import { renderMetadataReliability, renderGenerationDetails, bindRawMetadataDetails } from '../renderers/outputGenerationDetails'
 import { metadataForFile, outputRootIdentity } from '../services/outputIdentity'
 import { localLoraTriggerOverrides, normalizeLocalLoraIdentity } from '../services/localLoraTriggerOverrides'
 import type { LocalLoraTriggerOverrideEntry } from '../services/localLoraTriggerOverrides'
@@ -27,7 +32,10 @@ function highlightText(text: string, query: string): string {
 
 let _initDone = false
 let _localStoreUnsubscribe: (() => void) | null = null
+let _outputStoreUnsubscribe: (() => void) | null = null
 let _scanProgressUnsubscribe: (() => void) | null = null
+const _localImageNodes = new ImageNodeCache(128, 16 * 1024 * 1024)
+window.addEventListener('pagehide', () => _localImageNodes.clear(), { once: true })
 
 function renderScanProgress(progress: LocalScanProgress): void {
   const busy = progress.status === 'scanning' || progress.status === 'matching'
@@ -246,7 +254,7 @@ function ensureLocalManagerLayout(): void {
     more.append(summary, actions)
   }
   const moreActions = more.querySelector('.local-toolbar-more-actions') as HTMLElement
-  const primaryActions = ['localScanBtn', 'localUrlBtn']
+  const primaryActions = ['localScanBtn']
   const moreActionIds = ['localFolderCategoryBtn', 'localMatchAllBtn', 'localClearBtn', 'localBatchToggleBtn']
   for (const id of primaryActions) {
     const button = document.getElementById(id)
@@ -294,7 +302,7 @@ function ensureLocalManagerLayout(): void {
   const categories = document.getElementById('localGridCategoryList')
   if (categorySlot && categories && categories.parentElement !== categorySlot) categorySlot.append(categories)
   if (categorySlot) {
-    ensureNarrowCategoryToggle(categorySlot)
+    ensureCategoryMenu(categorySlot, toolbar)
     syncCategorySlotVisibility()
     if (!_categorySlotEventsBound) {
       categorySlot.addEventListener('click', handleCategorySlotClick)
@@ -323,8 +331,8 @@ function ensureLocalManagerLayout(): void {
 
 function syncCategorySlotVisibility(): void {
   const slot = document.getElementById('toolboxLocalCategorySlot') as HTMLElement | null
-  const toggle = document.querySelector('.toolbox-local-category-toggle') as HTMLButtonElement | null
-  const sidebar = document.getElementById('toolboxSidebar')
+  const toggle = document.querySelector('.toolbox-local-category-toggle') as HTMLElement | null
+  const menu = document.getElementById('localCategoryMenu') as HTMLDetailsElement | null
   const visible = isLocalManagerActive()
   if (slot) {
     slot.hidden = !visible
@@ -333,38 +341,45 @@ function syncCategorySlotVisibility(): void {
   if (toggle) {
     toggle.hidden = !visible
     if (!visible) setCategoryRailOpen(false)
-    toggle.setAttribute('aria-expanded', String(Boolean(sidebar?.classList.contains('local-category-rail-open'))))
+    toggle.setAttribute('aria-expanded', String(Boolean(menu?.open)))
   }
 }
 
 function setCategoryRailOpen(open: boolean): void {
-  const sidebar = document.getElementById('toolboxSidebar')
-  const toggle = document.querySelector('.toolbox-local-category-toggle') as HTMLButtonElement | null
-  sidebar?.classList.toggle('local-category-rail-open', open)
+  const menu = document.getElementById('localCategoryMenu') as HTMLDetailsElement | null
+  const toggle = document.querySelector('.toolbox-local-category-toggle') as HTMLElement | null
+  if (menu) menu.open = open
   toggle?.setAttribute('aria-expanded', String(open))
 }
 
-function ensureNarrowCategoryToggle(slot: HTMLElement): void {
+function ensureCategoryMenu(slot: HTMLElement, toolbar: HTMLElement): void {
   if (!_categoryToggleEventsBound) {
-    const toggle = document.createElement('button')
-    toggle.type = 'button'
+    const quick = document.createElement('nav')
+    quick.id = 'localCategoryQuickFilters'; quick.className = 'local-category-strip'; quick.setAttribute('aria-label', '快速切换 LoRA 分类')
+    quick.addEventListener('click', handleCategorySlotClick)
+    const menu = document.createElement('details')
+    menu.id = 'localCategoryMenu'; menu.className = 'local-category-menu'
+    const toggle = document.createElement('summary')
     toggle.className = 'toolbox-local-category-toggle'
     toggle.setAttribute('aria-controls', slot.id)
     toggle.setAttribute('aria-expanded', 'false')
-    toggle.setAttribute('aria-label', '打开本地 LoRA 分类')
-    toggle.title = '分类'
-    toggle.innerHTML = `${icon('folder', 14)}<span>分类</span>`
-    slot.parentElement?.insertBefore(toggle, slot)
-    toggle.addEventListener('click', () => {
-      const sidebar = document.getElementById('toolboxSidebar')
-      setCategoryRailOpen(!sidebar?.classList.contains('local-category-rail-open'))
-    })
+    toggle.setAttribute('aria-label', '搜索与管理 LoRA 分类')
+    toggle.title = '搜索、新建、重命名或删除分类'
+    toggle.innerHTML = `${icon('folder', 14)}<span>分类</span>${icon('chevronDown', 12)}`
+    const panel = document.createElement('div'); panel.className = 'local-category-panel'
+    const search = document.createElement('input'); search.type = 'search'; search.placeholder = '搜索分类…'; search.setAttribute('aria-label', '搜索 LoRA 分类')
+    panel.append(search, slot); menu.append(toggle, panel); toolbar.append(quick, menu)
+    const filter = () => { const query = search.value.trim().toLocaleLowerCase(); slot.querySelectorAll<HTMLElement>('.local-grid-category-row').forEach(row => { row.hidden = query !== '' && !row.textContent?.toLocaleLowerCase().includes(query) }) }
+    search.addEventListener('input', filter)
+    if (typeof MutationObserver !== 'undefined') new MutationObserver(filter).observe(slot, { childList: true, subtree: true })
+    menu.addEventListener('toggle', () => toggle.setAttribute('aria-expanded', String(menu.open)))
+    document.addEventListener('pointerdown', event => { if (!menu.contains(event.target as Node)) setCategoryRailOpen(false) })
+    toggle.addEventListener('keydown', event => { if (event.key === 'ArrowDown') { event.preventDefault(); setCategoryRailOpen(true); search.focus() } })
     document.addEventListener('keydown', (event) => {
       if (event.key !== 'Escape') return
       const target = event.target as HTMLElement | null
       if (target?.closest?.('[role="dialog"], .modal, .modal-overlay')) return
-      const sidebar = document.getElementById('toolboxSidebar')
-      if (sidebar?.classList.contains('local-category-rail-open')) {
+      if (menu.open) {
         event.preventDefault()
         setCategoryRailOpen(false)
         toggle.focus()
@@ -381,6 +396,8 @@ function ensureNarrowCategoryToggle(slot: HTMLElement): void {
 
 async function handleCategorySlotClick(event: Event): Promise<void> {
   const target = event.target as HTMLElement
+  // This menu lives inside sectionLocal now; the shared action must run once.
+  event.stopPropagation()
   const del = target.closest('.local-cat-del-btn') as HTMLElement | null
   if (del) {
     const category = del.dataset.cat
@@ -569,7 +586,6 @@ function activateLocalView(view: LocalViewKey): void {
       renderGallery(state)
       renderTagFreq(state.tagFreq)
     }
-    if (view === 'prompt') renderPromptTab(state)
     if (view === 'models') void renderModelsTab()
     if (view === 'home' && _detailDrawerOpen && state.selectedModel) renderDetail(state)
   }
@@ -616,7 +632,29 @@ function clearDragHighlight() {
 
 // 右键菜单：单个 LoRA 切换分类，或拖拽多选时批量添加分类
 // 菜单为「连续勾选」模式：点击分类后菜单保持打开（sticky），可一次勾选多个分类，点「✅ 完成」收尾
-function openLoraContextMenu(e: MouseEvent, name: string) {
+async function deleteLocalLora(name: string): Promise<void> {
+  if (!await confirmModal('删除文件', `确认从磁盘删除「${name}」？\n此操作不可撤销！`)) return
+  await useLocalModelStore.getState().deleteFile(name)
+  const state = useLocalModelStore.getState()
+  if (state.selectedModel === name) state.selectModel(null)
+  renderLocalView()
+}
+
+function loraContextActions(name: string): ContextMenuAction[] {
+  const state = useLocalModelStore.getState()
+  const file = state.files.find(row => row.name === name)
+  if (!file) return []
+  const url = localModelUrl(file)
+  return [
+    { label: '查看模型详情', icon: 'file-text', handler: () => openLocalDetail(name) },
+    { label: '上传/替换预览图', icon: 'image', handler: () => openLocalPreviewPicker(name) },
+    ...(url ? [{ label: '打开对应 LoRA 页面', icon: 'globe', handler: () => { window.open(url, '_blank', 'noopener,noreferrer') } }] : []),
+    ...(state.previewImages[name] ? [{ label: '恢复 C 站预览图', icon: 'refresh', handler: () => { void resetLocalPreview(name) } }] : []),
+    { label: '删除本地文件…', icon: 'trash', danger: true, handler: () => { void deleteLocalLora(name) } },
+  ]
+}
+
+function openLoraContextMenu(e: Pick<MouseEvent, 'clientX' | 'clientY'>, name: string, focus = false) {
   const x = e.clientX, y = e.clientY
 
   // ── 拖拽多选：右键在选中项上 → 批量添加分类 ──
@@ -667,7 +705,8 @@ function openLoraContextMenu(e: MouseEvent, name: string) {
           label: `已选 ${names.length} 个 LoRA`,
           items: [{ label: '添加到分类', icon: '🏷️', handler: () => {}, children: catItems }],
         },
-      ])
+        { label: name, items: loraContextActions(name) },
+      ], focus)
     }
     openBatchMenu()
     return
@@ -712,9 +751,10 @@ function openLoraContextMenu(e: MouseEvent, name: string) {
     openContextMenu(x, y, [
       {
         label: name.replace(/\.\w+$/, ''),
-        items: [{ label: '分类', icon: '🏷️', handler: () => {}, children: catItems }],
+        items: loraContextActions(name),
       },
-    ])
+      { items: [{ label: '分类', icon: 'tag', handler: () => {}, children: catItems }] },
+    ], focus)
   }
   openSingleMenu()
 }
@@ -736,6 +776,21 @@ function initDragSelect() {
     e.stopPropagation()
     const name = item.dataset.name
     if (name) openLoraContextMenu(e, name)
+  }, true)
+
+  document.addEventListener('keydown', (event: KeyboardEvent) => {
+    const item = (event.target as HTMLElement).closest('#localFileList .local-list-item') as HTMLElement | null
+    if (!item || (event.target as HTMLElement).closest('input, textarea, select')) return
+    const name = item.dataset.name
+    if (!name) return
+    if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) {
+      event.preventDefault()
+      const rect = item.getBoundingClientRect()
+      openLoraContextMenu({ clientX: rect.left + 16, clientY: rect.top + 16 }, name, true)
+    } else if (event.key === 'Enter' && event.target === item) {
+      event.preventDefault()
+      openLocalDetail(name)
+    }
   }, true)
 
   document.addEventListener('mousedown', (e: MouseEvent) => {
@@ -850,6 +905,9 @@ export async function initLocalManager() {
     })
   }
   _initDone = true
+  if (!_outputStoreUnsubscribe) _outputStoreUnsubscribe = useOutputStore.subscribe((state, previous) => {
+    if (state.files !== previous.files || state.summaryVersion !== previous.summaryVersion || state.metadataVersion !== previous.metadataVersion) scheduleRenderLocalView()
+  })
   // 自定义预览图独立于扫描缓存保存，启动时异步恢复，避免大图阻塞首次打开。
   loadLocalLoraPreviews().then(previewImages => {
     useLocalModelStore.setState({ previewImages })
@@ -948,7 +1006,7 @@ function localPreviewSrc(f: LocalLoraFile, state: ReturnType<typeof useLocalMode
 function localPreviewImg(f: LocalLoraFile, state: ReturnType<typeof useLocalModelStore.getState>, className: string, width: number): string {
   const src = localPreviewSrc(f, state, width)
   return src
-    ? `<img src="${escAttr(src)}" class="${className}" loading="lazy" alt="${escAttr(f.matchData?.modelName || f.name)}" onerror="this.style.display='none'" onload="this.style.display='block'">`
+    ? `<img src="${escAttr(src)}" data-cache-key="lora:${escAttr(f.name)}" data-file-version="${escAttr(src)}" class="${className}" loading="lazy" alt="${escAttr(f.matchData?.modelName || f.name)}" onerror="this.style.display='none'" onload="this.style.display='block'">`
     : ''
 }
 
@@ -1004,23 +1062,11 @@ function renderGridFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalM
     : ''
   const baseModel = f.matchData?.baseModel || ''
   const versionName = f.matchData?.versionName || ''
-  const modelUrl = localModelUrl(f)
-  return `<div class="local-list-item local-grid-card ${isSel ? 'active' : ''} ${isBatchSelected ? 'batch-selected' : ''}" data-name="${escAttr(f.name)}" draggable="true">
+  return `<div class="local-list-item local-grid-card ${isSel ? 'active' : ''} ${isBatchSelected ? 'batch-selected' : ''}" data-name="${escAttr(f.name)}" draggable="true" tabindex="0" role="group" aria-label="${escAttr(label)}" aria-haspopup="menu" title="右键打开操作菜单；Shift+F10 也可打开">
     ${preview}
     ${chk}
     <div class="local-grid-overlay">
       ${localStatusDot(f)}
-      <div class="local-grid-actions">
-        <button class="local-preview-upload" data-name="${escAttr(f.name)}" title="上传/替换预览图">${icon('image', 13)}</button>
-        ${modelUrl ? `<button class="local-open-model" data-url="${escAttr(modelUrl)}" title="打开对应 LoRA 页面">${icon('globe', 13)}</button>` : ''}
-        <details class="local-card-more">
-          <summary title="更多卡片操作" aria-label="${escAttr(f.name)} 更多卡片操作">${icon('moreHorizontal', 16)}</summary>
-          <div class="local-card-more-menu">
-            ${custom ? `<button class="local-preview-reset" data-name="${escAttr(f.name)}" type="button">${icon('x', 13)} 恢复 C 站预览图</button>` : ''}
-            <button class="local-list-del" data-name="${escAttr(f.name)}" type="button">${icon('trash', 13)} 删除本地文件…</button>
-          </div>
-        </details>
-      </div>
     </div>
     <div class="local-grid-body">
       <div class="local-grid-name" title="${escAttr(label)}">${highlightText(label, query)}</div>
@@ -1065,7 +1111,9 @@ function kickMetadataIndexForLocal(): void {
 const _localRenderedHtml = new WeakMap<HTMLElement, string>()
 function setLocalHtml(el: HTMLElement, html: string): boolean {
   if (_localRenderedHtml.get(el) === html) return false
+  _localImageNodes.capture(el)
   el.innerHTML = html
+  _localImageNodes.restore(el)
   _localRenderedHtml.set(el, html)
   return true
 }
@@ -1101,7 +1149,6 @@ export function renderLocalView() {
       renderGallery(state)
       renderTagFreq(state.tagFreq)
       break
-    case 'prompt': renderPromptTab(state); break
     case 'models': void renderModelsTab(); break
   }
   if (_detailDrawerOpen && state.currentView !== 'detail' && state.selectedModel) renderDetail(state)
@@ -1128,22 +1175,24 @@ function applyLocalDisplayMode(state: ReturnType<typeof useLocalModelStore.getSt
 }
 
 function renderGridCategoryRail(state: ReturnType<typeof useLocalModelStore.getState>, files: LocalLoraFile[]): string {
-  const mc = state.modelCategories || {}
-  const countFor = (cat: string | null) => files.filter(f => {
-    const assigned = mc[stripExt(f.name)] || []
-    return cat === null ? true : cat === '__uncategorized__' ? assigned.length === 0 : assigned.includes(cat)
-  }).length
-  const row = (cat: string | null, label: string, editable = false) => `<div class="local-grid-category-row">
+  const entries = localCategoryEntries(files.map(file => stripExt(file.name)), state.categories, state.modelCategories || {})
+  const quick = document.getElementById('localCategoryQuickFilters')
+  if (quick) {
+    const signature = JSON.stringify([entries, state.filterCategory])
+    if (quick.dataset.signature !== signature) {
+      const scroll = quick.scrollLeft
+      quick.innerHTML = entries.map(entry => `<button type="button" class="local-grid-cat-btn ${state.filterCategory === (entry.value || null) ? 'active' : ''}" data-cat="${escAttr(entry.value)}" aria-pressed="${state.filterCategory === (entry.value || null)}"><span>${esc(entry.label)}</span><small>${entry.count}</small></button>`).join('')
+      quick.dataset.signature = signature; quick.scrollLeft = scroll
+    }
+  }
+  const row = (cat: string | null, label: string, count: number, editable = false) => `<div class="local-grid-category-row">
     <button class="local-grid-cat-btn ${state.filterCategory === cat ? 'active' : ''}" data-cat="${escAttr(cat || '')}" type="button">
-      <span class="local-grid-cat-label">${icon(cat === null ? 'grid' : 'folder', 12)}${esc(label)}</span><span class="local-grid-cat-count">${countFor(cat)}</span>
+      <span class="local-grid-cat-label">${icon(cat === null ? 'grid' : 'folder', 12)}${esc(label)}</span><span class="local-grid-cat-count">${count}</span>
     </button>
     ${editable ? `<button class="local-cat-rename-btn local-grid-cat-action" data-cat="${escAttr(label)}" title="重命名">${icon('edit3', 11)}</button><button class="local-cat-del-btn local-grid-cat-action" data-cat="${escAttr(label)}" title="删除分类">${icon('x', 11)}</button>` : ''}
   </div>`
-  const categoryRows = state.categories.map(cat => row(cat, cat, true)).join('')
   return `<div class="local-grid-category-heading"><span>分类</span><span class="local-grid-category-total">${files.length}</span></div>
-    ${row(null, '全部')}
-    ${categoryRows}
-    ${row('__uncategorized__', '未分类')}
+    ${entries.map(entry => row(entry.value || null, entry.label, entry.count, entry.editable)).join('')}
     <button class="btn btn-ghost btn-sm local-new-cat-btn local-grid-new-category" type="button">${icon('plus', 12)} 新建分类</button>`
 }
 
@@ -1534,13 +1583,16 @@ function renderGridChunked(el: HTMLElement, files: LocalLoraFile[], state: Retur
       const frag = document.createElement('template')
       frag.innerHTML = cards.slice(rendered, to).join('')
       listEl.appendChild(frag.content)
+      _localImageNodes.restore(listEl as HTMLElement)
       rendered = to
       if (rendered < files.length) mountSentinel()
     }, { root: el, rootMargin: '600px 0px' })
     _gridObserver.observe(s)
   }
 
+  _localImageNodes.capture(el)
   el.innerHTML = `<div class="local-grid-card-list">${cards.slice(0, rendered).join('')}</div>`
+  _localImageNodes.restore(el)
   if (rendered < files.length) mountSentinel()
   el.scrollTop = keepScroll
   requestAnimationFrame(() => { el.scrollTop = keepScroll })
@@ -1601,34 +1653,6 @@ async function renderModelsTab() {
   }
 }
 
-function renderPromptTab(state: ReturnType<typeof useLocalModelStore.getState>) {
-  const el = $$('promptLoraList')
-  if (!el) return
-  const files = state.files.filter(f => f.matched || state.modelCategories[stripExt(f.name)])
-  if (files.length === 0) {
-    el.innerHTML = '<div class="empty-state empty-state-compact"><p>暂无可用的 LoRA，请先扫描并匹配</p></div>'
-    return
-  }
-  const pw = state.promptWeights || {}
-  const lines = files.map(f => {
-    const name = f.name.replace(/\.\w+$/, '')
-    const w = pw[f.name] ?? 1.0
-    return `<div class="prompt-lora-row" data-name="${escAttr(f.name)}">
-      <div class="prompt-lora-info">
-        <span class="prompt-lora-label" title="${esc(f.name)}">${esc(trunc(name, 30))}</span>
-        ${f.matchData?.modelName ? '<span class="prompt-lora-localname">' + esc(f.name.replace(/\.\w+$/, '')) + '</span>' : ''}
-      </div>
-      <input type="range" class="prompt-lora-slider" min="0" max="2" step="0.05" value="${w}" data-name="${escAttr(f.name)}">
-      <input type="number" class="prompt-lora-input" min="0" max="2" step="0.05" value="${w.toFixed(2)}" data-name="${escAttr(f.name)}">
-      <button class="btn btn-ghost prompt-lora-copy btn-xs" data-tag="${esc(name)}" data-w="${w}" title="复制触发词">${icon('copy', 11)}</button>
-    </div>`
-  }).join('')
-  el.innerHTML = lines + `
-    <div class="prompt-lora-toolbar">
-      <button class="btn btn-ghost btn-sm" id="promptCopyAllBtn">${icon('copy', 12)} 复制全部</button>
-    </div>`
-}
-
 function renderHome(state: ReturnType<typeof useLocalModelStore.getState>) {
   const el = $$('pageLocalHome')
   if (!el) return
@@ -1647,10 +1671,10 @@ function renderHome(state: ReturnType<typeof useLocalModelStore.getState>) {
   // Track how many outputs reference each local lora
   let outputWithLocalLora = 0
 
-  const outputRoot = outputRootIdentity(outputState.rootPath, outputState.dirHandle)
   for (const file of outputState.files) {
-    const meta = metadataForFile(outputState.metadataCache, file, outputRoot, outputState.metadataParserVersion)
-    const loras = meta?.loras || []
+    const identity = fileSourceIdentity(file)
+    const meta = metadataForFile(outputState.metadataCache, file, identity.root, identity.parserVersion)
+    const loras = meta?.loras || outputSummaryForFile(file, outputState.summaryCache)?.loras || []
     if (loras.length === 0) continue
 
     // Check if any lora is local
@@ -1816,13 +1840,14 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
 function renderRelatedOutputs(f: LocalLoraFile): string {
   const loraBase = f.name.replace(/\.\w+$/, '').toLowerCase()
   const outputState = useOutputStore.getState()
-  const matches: { id: string; filePath: string; mtime: number; meta: OutputMetadata | null }[] = []
+  const matches: { id: string; filePath: string; mtime: number }[] = []
 
-  const outputRoot = outputRootIdentity(outputState.rootPath, outputState.dirHandle)
   for (const file of outputState.files) {
-    const meta = metadataForFile(outputState.metadataCache, file, outputRoot, outputState.metadataParserVersion)
-    if (!meta || !(meta.loras || []).some(l => l.toLowerCase() === loraBase)) continue
-    matches.push({ id: file.id, filePath: file.path, mtime: file.mtime, meta })
+    const identity = fileSourceIdentity(file)
+    const meta = metadataForFile(outputState.metadataCache, file, identity.root, identity.parserVersion)
+    const loras = meta?.loras || outputSummaryForFile(file, outputState.summaryCache)?.loras || []
+    if (!loras.some(l => l.toLowerCase() === loraBase)) continue
+    matches.push({ id: file.id, filePath: file.path, mtime: file.mtime })
   }
 
   if (matches.length === 0) {
@@ -1835,7 +1860,7 @@ function renderRelatedOutputs(f: LocalLoraFile): string {
   const items = top.map(m => {
     const dateStr = m.mtime ? new Date(m.mtime).toLocaleDateString() : ''
     return `<div class="detail-output-item" data-id="${escAttr(m.id)}" data-path="${escAttr(m.filePath)}">
-      <div class="detail-output-thumb" data-path="${escAttr(m.filePath)}">
+      <div class="detail-output-thumb" data-id="${escAttr(m.id)}" data-path="${escAttr(m.filePath)}">
         <div class="detail-thumb-placeholder">⏳</div>
       </div>
       <div class="detail-output-info">
@@ -1850,39 +1875,21 @@ function renderRelatedOutputs(f: LocalLoraFile): string {
 
 /** 在 detail 渲染后，加载关联出图的缩略图 */
 async function loadRelatedOutputThumbnails() {
-  const dh = useOutputStore.getState().dirHandle
-  if (!dh) return
-  const items = document.querySelectorAll('.detail-output-thumb[data-path]')
+  const items = document.querySelectorAll<HTMLElement>('.detail-output-thumb[data-id]')
+  const { getCachedThumbnail, getThumbnail, animaThumbUrl, backendThumbsEnabled } = await import('../services/outputThumbnail')
   for (const el of items) {
-    const filePath = (el as HTMLElement).dataset.path
-    if (!filePath) continue
-
+    const row = useOutputStore.getState().files.find(file => file.id === el.dataset.id)
+    if (!row) continue
+    const identity = fileSourceIdentity(row)
+    const revision = imageRevision(createImageSnapshot(row, identity.source, identity.root, identity.parserVersion))
     try {
-      // Try cache first
-      const { getCachedThumbnail, getThumbnail } = await import('../services/outputThumbnail')
-      const cached = await getCachedThumbnail(filePath)
-      if (cached) {
-        el.innerHTML = `<img src="${escAttr(cached)}" alt="" style="width:100%;height:100%;object-fit:cover">`
-        continue
+      let url = identity.source === 'gallery' && backendThumbsEnabled() ? animaThumbUrl(row.path, 512) + '&v=' + encodeURIComponent(revision) : await getCachedThumbnail(row.id, revision)
+      if (!url && identity.source === 'directory') {
+        const file = await readOutputSourceFile(row)
+        if (file) url = await getThumbnail(file, row.id, revision)
       }
-
-      // Load from filesystem
-      const parts = filePath.split('/')
-      let current = dh
-      for (let i = 0; i < parts.length - 1; i++) {
-        current = await current.getDirectoryHandle(parts[i])
-      }
-      const fileHandle = await current.getFileHandle(parts[parts.length - 1])
-      const file = await fileHandle.getFile()
-      const thumb = await getThumbnail(file, filePath)
-      if (thumb) {
-        el.innerHTML = `<img src="${escAttr(thumb)}" alt="" style="width:100%;height:100%;object-fit:cover">`
-      } else {
-        el.innerHTML = '<div style="color:var(--text3);font-size:20px;text-align:center;padding:20% 0">🖼️</div>'
-      }
-    } catch {
-      el.innerHTML = '<div style="color:var(--text3);font-size:20px;text-align:center;padding:20% 0">🖼️</div>'
-    }
+      if (url && el.isConnected) el.innerHTML = `<img src="${escAttr(url)}" alt="${escAttr(row.filename)}" style="width:100%;height:100%;object-fit:cover">`
+    } catch { /* Leave the per-image placeholder when its source is unavailable. */ }
   }
 }
 
@@ -1891,16 +1898,18 @@ function renderGallery(state: ReturnType<typeof useLocalModelStore.getState>) {
   if (!el) return
   const pngs = state.pngs
   if (pngs.length === 0) {
-    el.innerHTML = '<div class="empty-state"><div class="big">' + icon('image', 28) + '</div><p>尚未添加 PNG 图片，点击上方区域选择或拖入图片</p></div>'
+    el.innerHTML = '<div class="empty-state"><div class="big">' + icon('image', 28) + '</div><p>尚未添加图片，点击上方区域选择或拖入 PNG / JPEG / WebP</p></div>'
     return
   }
-  el.innerHTML = pngs.map(p => {
+  el.innerHTML = pngs.map((p, index) => {
     const tags = extractTagsFromPrompt(p.positive).slice(0, 20)
-    return `<div class="local-png-card">
+    const metadata = p as LocalImageMetadata
+    return `<div class="local-png-card" data-local-image-index="${index}">
       <div class="local-png-header">
         <span class="local-png-name">${esc(p.fileName)}</span>
         <span class="local-png-size">${fmtSize(p.fileSize)}</span>
       </div>
+      ${metadata.metadataState ? renderMetadataReliability(metadata) : ''}
       ${p.positive ? `<div class="local-png-field"><label>正 Prompt</label><div class="local-png-text" data-copy="${esc(p.positive)}">${esc(trunc(p.positive, 200))}</div></div>` : ''}
       ${p.negative ? `<div class="local-png-field"><label>负 Prompt</label><div class="local-png-text" data-copy="${esc(p.negative)}">${esc(trunc(p.negative, 150))}</div></div>` : ''}
       <div class="local-png-params">
@@ -1912,8 +1921,13 @@ function renderGallery(state: ReturnType<typeof useLocalModelStore.getState>) {
       </div>
       ${tags.length > 0 ? `<div class="local-png-tags">${tags.map(t => `<code class="local-tw-item" data-copy="${esc(t)}">${esc(t)}</code>`).join('')}</div>` : ''}
       ${p.loras.length > 0 ? `<div class="local-png-loras">${p.loras.map(l => `<code class="local-tw-item lora" data-copy="${esc(l)}">${esc(l)}</code>`).join('')}</div>` : ''}
+      <details style="margin-top:8px"><summary style="cursor:pointer;color:var(--text2);font-size:12px">${icon('slidersHorizontal', 12)} 生成配置与原始字段</summary><div style="margin-top:10px">${renderGenerationDetails(metadata, false)}</div></details>
     </div>`
   }).join('')
+  el.querySelectorAll<HTMLElement>('[data-local-image-index]').forEach(card => {
+    const image = pngs[Number(card.dataset.localImageIndex)]
+    if (image) bindRawMetadataDetails(card, image as LocalImageMetadata)
+  })
 }
 
 function renderTagFreq(tags: TagFreq[]) {
@@ -2005,7 +2019,7 @@ function bindLocalEvents() {
   $$('localPngDropZone')?.addEventListener('click', () => {
     const input = document.createElement('input')
     input.type = 'file'
-    input.accept = '.png'
+    input.accept = '.png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp'
     input.multiple = true
     input.onchange = async (e) => {
       const files = (e.target as HTMLInputElement).files
@@ -2036,7 +2050,7 @@ function bindLocalEvents() {
     const items = e.dataTransfer?.files
     if (!items) return
     for (const f of Array.from(items)) {
-      if (!f.name.toLowerCase().endsWith('.png')) continue
+      if (!/\.(png|jpe?g|webp)$/i.test(f.name)) continue
       const png = await parsePngFile(f)
       if (png) useLocalModelStore.getState().addPng(png)
     }
@@ -2287,7 +2301,7 @@ function bindLocalEvents() {
     }
 
     // Number input blur/Enter: save store, sync slider, update detail preview
-    const numInput = (e.target as HTMLElement).closest('.prompt-lora-input, .detail-lora-input') as HTMLInputElement
+    const numInput = (e.target as HTMLElement).closest('.detail-lora-input') as HTMLInputElement
     if (numInput) {
       const name = numInput.dataset.name
       const val = parseFloat(numInput.value)
@@ -2295,8 +2309,8 @@ function bindLocalEvents() {
       const clamped = Math.max(0, Math.min(2, val))
       numInput.value = clamped.toFixed(2)
 
-      const row = numInput.closest('.prompt-lora-row, .detail-lora-builder')
-      const slider = row?.querySelector('.prompt-lora-slider, .detail-lora-slider') as HTMLInputElement
+      const row = numInput.closest('.detail-lora-builder')
+      const slider = row?.querySelector('.detail-lora-slider') as HTMLInputElement
       if (slider) slider.value = String(clamped)
 
       const s = useLocalModelStore.getState()
@@ -2336,13 +2350,13 @@ function bindLocalEvents() {
     }
 
     // Slider drag: sync number, save store, update detail preview
-    const slider = target.closest('.prompt-lora-slider, .detail-lora-slider') as HTMLInputElement
+    const slider = target.closest('.detail-lora-slider') as HTMLInputElement
     if (slider) {
       const val = parseFloat(slider.value)
       const name = slider.dataset.name
       if (!name) return
-      const row = slider.closest('.prompt-lora-row, .detail-lora-builder')
-      const numInput = row?.querySelector('.prompt-lora-input, .detail-lora-input') as HTMLInputElement
+      const row = slider.closest('.detail-lora-builder')
+      const numInput = row?.querySelector('.detail-lora-input') as HTMLInputElement
       if (numInput) numInput.value = val.toFixed(2)
 
       // Save store
@@ -2365,13 +2379,13 @@ function bindLocalEvents() {
     }
 
     // Number input typing: sync slider position (no store save, wait change)
-    const numInput = target.closest('.prompt-lora-input, .detail-lora-input') as HTMLInputElement
+    const numInput = target.closest('.detail-lora-input') as HTMLInputElement
     if (numInput) {
       const val = parseFloat(numInput.value)
       if (!isNaN(val)) {
         const clamped = Math.max(0, Math.min(2, val))
-        const row = numInput.closest('.prompt-lora-row, .detail-lora-builder')
-        const slider = row?.querySelector('.prompt-lora-slider, .detail-lora-slider') as HTMLInputElement
+        const row = numInput.closest('.detail-lora-builder')
+        const slider = row?.querySelector('.detail-lora-slider') as HTMLInputElement
         if (slider) slider.value = String(clamped)
       }
     }
@@ -2506,13 +2520,6 @@ function bindLocalEvents() {
       return
     }
 
-    const openModelBtn = target.closest('.local-open-model') as HTMLElement
-    if (openModelBtn) {
-      const url = openModelBtn.dataset.url
-      if (url) window.open(url, '_blank', 'noopener,noreferrer')
-      return
-    }
-
     const previewUrlBtn = target.closest('.local-preview-url') as HTMLElement
     if (previewUrlBtn) {
       const name = previewUrlBtn.dataset.name
@@ -2530,12 +2537,7 @@ function bindLocalEvents() {
     const delBtn = target.closest('.local-list-del, .detail-del-btn') as HTMLElement
     if (delBtn) {
       const name = delBtn.dataset.name
-      if (name && await confirmModal('删除文件', `确认从磁盘删除「${name}」？\n此操作不可撤销！`)) {
-        await useLocalModelStore.getState().deleteFile(name)
-        const state = useLocalModelStore.getState()
-        if (state.selectedModel === name) state.selectModel(null)
-        renderLocalView()
-      }
+      if (name) await deleteLocalLora(name)
       return
     }
 
@@ -2581,7 +2583,6 @@ function bindLocalEvents() {
     const listItem = target.closest('.local-list-item') as HTMLElement
     if (listItem) {
       // The overflow menu must remain usable without opening the underlying card.
-      if (target.closest('.local-card-more')) return
       const name = listItem.dataset.name
       if (name) {
         const state = useLocalModelStore.getState()
@@ -2702,21 +2703,6 @@ function bindLocalEvents() {
       return
     }
 
-    if (target.id === 'promptCopyAllBtn') {
-      const state = useLocalModelStore.getState()
-      const pw = state.promptWeights || {}
-      const tags = state.files
-        .filter(f => f.matched || state.modelCategories[stripExt(f.name)])
-        .map(f => {
-          const name = f.name.replace(/\.\w+$/, '')
-          const w = pw[f.name] ?? 1.0
-          return `<lora:${name}:${w.toFixed(2)}>`
-        })
-        .join(' ')
-      copyText(tags)
-      return
-    }
-
     // Click related output → switch to Outputs tab
     const outputItem = target.closest('.detail-output-item') as HTMLElement
     if (outputItem) {
@@ -2738,7 +2724,7 @@ function bindLocalEvents() {
       return
     }
 
-    const copyLora = target.closest('.prompt-lora-copy, .detail-lora-copy') as HTMLElement
+    const copyLora = target.closest('.detail-lora-copy') as HTMLElement
     if (copyLora) {
       const tag = copyLora.dataset.tag
       const w = copyLora.dataset.w
@@ -2751,146 +2737,27 @@ function bindLocalEvents() {
   })
 }
 
-const MAX_PNG_SIZE = 20 * 1024 * 1024 // 20MB 上限，防超大文件放大解压炸弹（security MEDIUM 修复）
+type LocalImageMetadata = PngMeta & Partial<ParsedMetadata>
 
-function parsePngFile(file: File): Promise<PngMeta | null> {
-  // 文件大小检查：超大文件直接拒绝，避免 readAsArrayBuffer 全量读入放大攻击面
-  if (file.size > MAX_PNG_SIZE) return Promise.resolve(null)
-  return new Promise((resolve) => {
-    const reader = new FileReader()
-    reader.onload = async () => {
-      const buf = reader.result as ArrayBuffer
-      const meta = await parsePngMetadata(buf)
-      if (meta) {
-        resolve({
-          fileName: file.name,
-          fileSize: file.size,
-          ...meta,
-        })
-      } else {
-        resolve(null)
-      }
+async function parsePngFile(file: File): Promise<LocalImageMetadata | null> {
+  try {
+    const metadata = await parsePngMetadata(file)
+    return {
+      ...metadata, fileName: file.name, fileSize: file.size,
+      positive: metadata.prompt, negative: metadata.negativePrompt,
+      loras: outputLoraNames(metadata),
     }
-    reader.onerror = () => resolve(null)
-    reader.readAsArrayBuffer(file)
-  })
-}
-
-async function parsePngMetadata(buf: ArrayBuffer): Promise<Omit<PngMeta, 'fileName' | 'fileSize'> | null> {
-  const view = new DataView(buf)
-  const bytes = new Uint8Array(buf)
-
-  const pngSig = [137, 80, 78, 71, 13, 10, 26, 10]
-  for (let i = 0; i < 8; i++) {
-    if (bytes[i] !== pngSig[i]) return null
-  }
-
-  const raw: Record<string, string> = {}
-  let offset = 8
-  while (offset < bytes.length) {
-    if (offset + 8 > bytes.length) break
-    const len = view.getUint32(offset)
-    const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7])
-
-    const isText = type === 'tEXt' || type === 'zTXt' || type === 'iTXt'
-    if (isText) {
-      const dataStart = offset + 8
-      const dataEnd = dataStart + len
-      if (dataEnd > bytes.length) break
-
-      let keyEnd = dataStart
-      while (keyEnd < dataEnd && bytes[keyEnd] !== 0 && keyEnd - dataStart < 79) keyEnd++
-      // key 按 PNG 规范 ≤79 字节截断，循环拼接避免超大 spread 抛 RangeError 挂死（security HIGH/MEDIUM 修复）
-      let key = ''
-      for (let i = dataStart; i < keyEnd; i++) key += String.fromCharCode(bytes[i])
-
-      let val: string
-      if (type === 'zTXt') {
-        try {
-          const compData = bytes.slice(keyEnd + 2, dataEnd)
-          // 复用 outputMetadata 的 DecompressionStream 解压(项目无 pako 依赖,原实现必失败输出乱码)
-          val = await decompressZlibAsync(compData)
-        } catch {
-          val = new TextDecoder().decode(bytes.slice(keyEnd + 1, dataEnd))
-        }
-      } else {
-        val = new TextDecoder().decode(bytes.slice(keyEnd + 1, dataEnd))
-      }
-      raw[key] = val
-    }
-    offset += 12 + len
-  }
-
-  const prompt = raw['prompt'] || raw['parameters'] || raw['user_comment'] || raw['Description'] || ''
-  const params = raw['parameters'] || ''
-
-  let positive = prompt
-  let negative = ''
-  const loras: string[] = []
-
-  if (params) {
-    const parts = params.split('\n')
-    const posParts: string[] = []
-    let inNeg = false
-    for (const line of parts) {
-      if (line.startsWith('Negative prompt:')) {
-        inNeg = true
-        posParts.push(line.replace('Negative prompt:', '').trim())
-        continue
-      }
-      if (inNeg) {
-        const negMatch = line.match(/^Negative prompt:\s*(.+)/i)
-        if (negMatch) {
-          negative += line.replace(/^Negative prompt:\s*/i, '').trim() + ' '
-        } else if (/^Steps:|^Sampler:|^CFG scale:|^Seed:|^Model:|^Size:|^Model hash:|^Hashes:/.test(line)) {
-          break
-        } else {
-          negative += line.trim() + ' '
-        }
-      } else {
-        posParts.push(line)
-      }
-    }
-    positive = posParts.join('\n').trim()
-
-    const paramLines = params.split('\n')
-    for (const line of paramLines) {
-      if (/^Negative prompt:/i.test(line)) {
-        const negText = line.replace(/^Negative prompt:\s*/i, '').trim()
-        if (negText && negText !== positive) negative = negText
-      }
-    }
-
-    const loraMatch = positive.match(/<lora:([^:>]+)/g)
-    if (loraMatch) loras.push(...loraMatch.map((l: string) => l.replace('<lora:', '')))
-  }
-
-  const loraMatch2 = positive.match(/<lora:([^:>]+)/g)
-  if (loraMatch2) loras.push(...loraMatch2.map((l: string) => l.replace('<lora:', '')))
-
-  function extractParam(line: string): string {
-    for (const l of params.split('\n')) {
-      if (l.startsWith(line)) {
-        return l.replace(line, '').trim()
-      }
-    }
-    return ''
-  }
-
-  const negativeRaw = extractParam('Negative prompt:')
-
-  return {
-    positive: positive || prompt,
-    negative: negative || raw['negative_prompt'] || negativeRaw,
-    seed: raw['seed'] || extractParam('Seed:'),
-    steps: raw['steps'] || extractParam('Steps:'),
-    cfg: raw['cfg'] || extractParam('CFG scale:'),
-    sampler: raw['sampler'] || extractParam('Sampler:'),
-    model: raw['model'] || extractParam('Model:'),
-    loras: [...new Set(loras)],
-    raw,
+  } catch {
+    showToast('图片元数据读取失败，请重试')
+    return null
   }
 }
+
+async function parsePngMetadata(blob: Blob): Promise<ParsedMetadata> {
+  return parseOutputMetadataBlob(blob)
+}
+
+export const __test = { parsePngFile, parsePngMetadata }
 
 function extractTagsFromPrompt(prompt: string): string[] {
   const tags = prompt.split(/[,，、\n]+/).map(t => t.trim()).filter(Boolean)

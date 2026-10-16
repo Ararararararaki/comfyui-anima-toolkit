@@ -10,6 +10,7 @@ export interface OutputGridGeometry {
 export interface OutputDragSelectionOptions {
   getGridGeometry: (width: number) => OutputGridGeometry
   onSelectionChanged: () => void
+  getCardRects?: (grid: HTMLElement) => Map<string, { left: number; top: number; width: number; height: number }>
 }
 
 let initialized = false
@@ -43,6 +44,9 @@ export function initOutputDragSelection(options: OutputDragSelectionOptions): vo
     const geom = options.getGridGeometry(grid.clientWidth)
     const files = state.filteredFiles
     if (files.length === 0) return []
+    if (options.getCardRects) {
+      return [...options.getCardRects(grid)].filter(([, box]) => l < box.left + box.width && r > box.left && t < box.top + box.height && b > box.top).map(([id]) => id)
+    }
     const layout = computeMasonryLayout(files, geom.cols, geom.cardW, geom.gap)
     const ids: string[] = []
     for (let i = 0; i < files.length; i++) {
@@ -119,7 +123,7 @@ export function initOutputDragSelection(options: OutputDragSelectionOptions): vo
     if (!target.closest('#sectionOutputs')) return
     const grid = target.closest('.outputs-grid') as HTMLElement | null
     if (!grid) return
-    if (target.closest('.outputs-list-header, button, input, .outputs-empty, .outputs-toolbar, .outputs-batch-bar')) return
+    if (target.closest('.outputs-list-header, button, input, .outputs-empty, .outputs-toolbar, .outputs-batch-bar, .outputs-folder, [draggable="true"]')) return
     if (mouse.button !== 0) return
 
     isDragging = true

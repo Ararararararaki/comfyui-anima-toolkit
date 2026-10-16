@@ -1,26 +1,30 @@
 /* Shared app frame: the local categories can occupy the lower part of this
    same rail while the active page stays in the content column. */
 :root {
-  --toolbox-sidebar-width: 200px;
-  --toolbox-content-header-height: 48px;
+  --toolbox-sidebar-width: 0px;
+  --toolbox-content-header-height: 76px;
 }
 
 body {
-  padding-left: var(--toolbox-sidebar-width);
+  padding-left: 0;
 }
 
 .toolbox-sidebar {
   position: fixed;
-  inset: 0 auto 0 0;
-  z-index: 200;
-  width: var(--toolbox-sidebar-width);
+  inset: 67px auto auto 24px;
+  z-index: 1000;
+  width: 300px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 90px);
   display: flex;
   flex-direction: column;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 12px 12px 10px;
-  border-right: 1px solid var(--border);
-  background: var(--surface, var(--bg2));
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--bg2);
+  box-shadow: 0 16px 48px #0002;
   color: var(--text);
   scrollbar-width: thin;
   scrollbar-color: var(--border-hover) transparent;
@@ -227,9 +231,9 @@ html[data-theme] .toolbox-sidebar .theme-dot.active {
   top: 0;
   height: var(--toolbox-content-header-height);
   min-height: var(--toolbox-content-header-height);
-  padding: 0 20px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface, var(--bg));
+  padding: 0 32px;
+  border-bottom: 0;
+  background: var(--bg);
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
@@ -240,8 +244,8 @@ html[data-theme] .toolbox-sidebar .theme-dot.active {
   max-width: none;
   height: 100%;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  justify-content: flex-start;
+  gap: 20px;
   margin: 0;
   flex-wrap: nowrap;
 }
@@ -250,8 +254,8 @@ html[data-theme] .toolbox-sidebar .theme-dot.active {
   min-width: 0;
   overflow: hidden;
   color: var(--text);
-  font-size: 16px;
-  font-weight: 650;
+  font-size: 27px;
+  font-weight: 700;
   line-height: 1.2;
   letter-spacing: -.02em;
   text-overflow: ellipsis;
@@ -261,6 +265,7 @@ html[data-theme] .toolbox-sidebar .theme-dot.active {
 #contentHeader .toolbox-page-title::after { content: none; }
 
 .toolbox-header-actions {
+  margin-left: auto;
   display: flex;
   flex: 0 0 auto;
   align-items: center;
@@ -276,29 +281,9 @@ html[data-theme] .toolbox-sidebar .theme-dot.active {
   place-items: center;
 }
 
-@media (max-width: 900px) {
-  :root { --toolbox-sidebar-width: 64px; }
-
-  .toolbox-sidebar { align-items: center; padding: 10px 7px 8px; }
-  .toolbox-brand { justify-content: center; margin: 0 0 14px; }
-  .toolbox-brand-copy { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .toolbox-sidebar .main-tabs { align-items: center; }
-  .toolbox-sidebar .main-tab { width: 48px; min-height: 44px; justify-content: center; padding: 8px; }
-  .toolbox-sidebar .main-tab > span:first-of-type { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .toolbox-sidebar .main-tab .badge-tab { position: absolute; top: 1px; right: 1px; margin: 0; padding: 0 3px; font-size: 9px; }
-  .toolbox-sidebar .theme-switcher { flex-direction: column; gap: 5px; }
-  .toolbox-sidebar .theme-dot { width: 34px; height: 34px; min-width: 34px; min-height: 34px; }
-  .toolbox-theme-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .toolbox-sidebar-footer { align-items: center; width: 100%; }
-  .toolbox-local-category-slot { width: 100%; }
-}
-
 @media (max-width: 540px) {
-  :root { --toolbox-sidebar-width: 56px; }
-  .toolbox-sidebar { padding-right: 5px; padding-left: 5px; }
-  .toolbox-sidebar .main-tab { width: 44px; }
-  #contentHeader { padding-right: 10px; padding-left: 12px; }
-  #contentHeader .toolbox-page-title { font-size: 14px; }
+  #contentHeader { padding-inline: 16px; }
+  #contentHeader .toolbox-page-title { font-size: 21px; }
   .toolbox-header-actions { gap: 6px; }
   .toolbox-header-actions .build-time { display: none; }
 }

@@ -3,7 +3,7 @@ name: Build panel app
 on:
   push:
     branches: [main]
-    paths: ['panel/**']
+    paths: ['panel/**', 'web/js/shared/**', 'VERSION', 'CHANGELOG.md', 'integrations/pixiv-drop-bridge/**']
   workflow_dispatch:
 
 jobs:

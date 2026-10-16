@@ -15,11 +15,15 @@
 
 ## Current release
 
-Version 2.30.0. Python implementations live in anima_backend/ and services/;
-__init__.py remains the ComfyUI entry point. Existing node IDs and user data paths
-are unchanged. Restart ComfyUI after this layout upgrade. Galleries also support
-Safebooru, yande.re, Konachan.net, page positioning and local resume progress.
-
+Version 2.33.0. Adds TK Prompt Agent (Anima / Krea 2 creation, iterative edits,
+explicit locks, image interrogation and optional native DSH execution). Outputs
+supports persistent image sources, work/character browsing, manual organization,
+local WD14 model selection, metadata provenance and zoom/paint/mosaic editing.
+Unsaved previews can be dragged using the global export metadata policy.
+An optional Pixiv receiver extension is downloadable in the panel; Chrome/Edge
+requires one initial manual installation, then follows local ports automatically.
+Version notes appear once per release/site/browser. QQ community: 758086740.
+Models, personal API connections and derived recognition caches are not bundled.
 ## Install
 
 - ComfyUI-Manager: search **`TK Toolkit`** (node id `anima-toolkit`).
@@ -41,6 +45,7 @@ Safebooru, yande.re, Konachan.net, page positioning and local resume progress.
 | Node | What it does |
 |---|---|
 | TK Batch LoRA Loader | Reads `<lora:name:weight>` syntax and applies many LoRAs in sequence; outputs only the activated trigger words |
+| TK Prompt Agent | Anima / Krea 2 prompt creation, iterative editing, image interrogation and STRING output |
 | TK Prompt Cards | Card-library prompt editor: bilingual tag cards, per-fragment hide/restore, Chinese/English autocomplete, CLIP encode output, `lora_syntax` passthrough |
 | TK Multi Gallery | Multi-source gallery inside the graph — **Danbooru / Civitai / Pixiv** behind one source dropdown; waterfall layout, random discovery tiers, prompt-output formatting |
 | TK Danbooru Tag Getter | Tag search with rating/category filters and tag classification |

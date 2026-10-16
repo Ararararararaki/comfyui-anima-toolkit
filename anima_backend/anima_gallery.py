@@ -4,24 +4,26 @@
 # 与前端 src/services/outputMetadata.ts 的语义对齐（摘要级：按钮/卡片/筛选所需字段）。
 # 完整 workflowJson / raw 不进索引 —— 由 /anima/gallery/meta 按需解析返回。
 
-import io
 import json
 import os
 import re
 import struct
-import tempfile
-import threading
 import time
-import zlib
 
 from PIL import Image
 
 try:
-    from .services.output_metadata import parse_output_metadata
+    from .services.output_metadata import PARSER_VERSION, parse_output_metadata
+    from .services.image_metadata_container import read_image_metadata
+    from .services.saved_image_metadata import parse_comfy_fields, parse_saved_metadata
     from .services.prompt_record import decode_record
+    from .services.gallery_catalog import catalog_for
 except ImportError:  # standalone pure-module tests / development tools
-    from services.output_metadata import parse_output_metadata
+    from services.output_metadata import PARSER_VERSION, parse_output_metadata
+    from services.image_metadata_container import read_image_metadata
+    from services.saved_image_metadata import parse_comfy_fields, parse_saved_metadata
     from services.prompt_record import decode_record
+    from services.gallery_catalog import catalog_for
 
 INDEX_VERSION = 1
 # 解析语义版本：**改动提取逻辑时必须 +1** —— 索引里记着上一轮的 parserVersion，
@@ -30,8 +32,8 @@ INDEX_VERSION = 1
 # 2（2026-09-17）：正向提示词从「只取最长候选」改为「拼接全部候选 + 标签级保序去重」。
 # 4：build_entry 优先消费图片内的提示词溯源记录（tk_prompt_provenance），静态图字段
 #    退为兜底 —— 提取语义再次变化，升级后增量更新会全量重解析一次。
-PARSER_VERSION = 5
-_HEAD_BYTES = 4 * 1024 * 1024  # tEXt 在 IDAT 之前，读头部即可覆盖绝大多数图
+# Version ownership stays in output_metadata so cache migration cannot drift.
+_HEAD_BYTES = 4 * 1024 * 1024  # Legacy argument default; complete container reads use seek.
 
 # 图片内的提示词溯源记录（wire schema v1，由 services/prompt_record.py 的编解码器定义）。
 # 记录是 SaveImage 侧写进 PNG 文本块的一行 ASCII JSON；缺失时本模块行为与历史版本一致。
@@ -63,81 +65,18 @@ def _looks_negative_strong(text: str, hits: int = 3) -> bool:
     return sum(1 for w in _NEG_WORDS if w in lower) >= hits
 
 
-def _read_itxt(value: bytes):
-    """按 PNG 规范解出 iTXt 的正文；解不出返回 None。
-
-    结构：keyword \\0 压缩标志 压缩方法 语言标签 \\0 翻译关键词 \\0 正文。
-    注意语言标签 / 翻译关键词**可以是空串**，所以必须逐字段推进指针，
-    不能用固定次数的 split（连续的空字段会让 split 的结果错位）。
-    调用方在 None 时退回历史近似行为，所以这里只做"正确的那一种"解析。
-    """
-    nul = value.find(b"\x00")
-    if nul < 0:
-        return None
-    cursor = nul + 1
-    if cursor + 2 > len(value):
-        return None
-    flag, method = value[cursor], value[cursor + 1]
-    cursor += 2
-    for _ in range(2):  # 语言标签，再翻译关键词
-        end = value.find(b"\x00", cursor)
-        if end < 0:
-            return None
-        cursor = end + 1
-    body = value[cursor:]
-    if flag == 0 and method == 0:
-        return body.decode("utf-8", "replace")
-    if flag == 1 and method == 0:
-        try:
-            return zlib.decompress(body).decode("utf-8", "replace")
-        except Exception:
-            return None
-    return None
-
-
-# ── PNG chunk 解析（只读文件头部；tEXt 精确 / zTXt zlib / iTXt 按规范结构）──
 def read_text_chunks(abs_path: str, head_bytes: int = _HEAD_BYTES) -> dict:
-    raw: dict = {}
-    try:
-        with open(abs_path, "rb") as fh:
-            head = fh.read(head_bytes)
-    except OSError:
-        return raw
-    if head[:8] != b"\x89PNG\r\n\x1a\n":
-        return raw
-    offset = 8
-    view = memoryview(head)
-    total = len(head)
-    while offset + 8 <= total:
-        length = struct.unpack(">I", view[offset:offset + 4])[0]
-        ctype = bytes(view[offset + 4:offset + 8])
-        data_start = offset + 8
-        data_end = data_start + length
-        if ctype in (b"IDAT", b"IEND") or data_end > total:
-            break  # 文本 chunk 都在 IDAT 前；缓冲区截断则停
-        if ctype in (b"tEXt", b"zTXt", b"iTXt"):
-            seg = bytes(view[data_start:data_end])
-            nul = seg.find(b"\x00")
-            if not 1 <= nul <= 79:
-                offset = data_end + 4
-                continue
-            key = seg[:nul].decode("latin-1", "replace")
-            body = seg[nul + 1:] if nul >= 0 else b""
-            try:
-                if ctype == b"zTXt":
-                    val = zlib.decompress(body[1:]).decode("utf-8", "replace")
-                elif ctype == b"iTXt":
-                    val = _read_itxt(seg)
-                    if val is None:  # malformed containers carry no usable text
-                        offset = data_end + 4
-                        continue
-                else:
-                    val = body.decode("utf-8", "replace")
-            except Exception:
-                val = ""
-            raw[key] = val
-        offset = data_end + 4
-    return raw
+    """Compatibility raw-map API. Container reads now visit metadata to the end.
+
+    ``head_bytes`` remains accepted for existing callers; pixel blocks are sought
+    past rather than read into a fixed head buffer or decoded.
+    """
+    return read_image_metadata(abs_path)['raw']
+
+
+def _parse_container(container, source_filename=''):
+    return parse_saved_metadata(container['raw'], status=container['status'],
+                                image_format=container['format'], warnings=container['warnings'], source_filename=source_filename)
 
 
 def png_dimensions(abs_path: str) -> tuple:
@@ -520,139 +459,30 @@ def _apply_record_to_summary(summary: dict, record_text: str) -> None:
 
 
 def parse_comfy_summary(wf, record: str = "") -> dict:
-    """从 ComfyUI 工作流（UI/API 双格式）提取摘要字段。
-
-    ``record`` 是图片内的提示词溯源记录原文（可选）。给了就按上面的规则优先消费它；
-    不给（默认）时行为与历史版本逐字一致。
-    """
-    out = {"model": "", "seed": "", "steps": "", "cfg": "", "sampler": "", "scheduler": "",
-           "prompt": "", "hasPrompt": False, "loras": [], "hasWorkflow": True}
-    out["loras"] = _extract_loras(wf)
-    fields = _ksampler_fields(wf)
-    out["model"] = _checkpoint_name(wf)
-    for key in ("seed", "steps", "cfg", "sampler", "scheduler"):
-        val = fields.get(key)
-        out[key] = "" if val is None else str(val)
-    out.update(parse_output_metadata(wf))
-    _apply_record_to_summary(out, record)
-    out["hasPrompt"] = bool(out["prompt"])
-    return out
-
-
-_A1111_LINE_RE = re.compile(r"^([A-Za-z ]+?):\s*(.*)$")
+    result = parse_comfy_fields(wf, record)
+    result['hasPrompt'] = bool(result['prompt'])
+    return result
 
 
 def parse_a1111_summary(parameters: str) -> dict:
-    """A1111 文本格式（parameters chunk）的摘要提取。"""
-    out = {"model": "", "seed": "", "steps": "", "cfg": "", "sampler": "", "scheduler": "",
-           "prompt": "", "hasPrompt": False, "loras": [], "hasWorkflow": False}
-    if not parameters:
-        return out
-    prompt_part, negative_part, params_part = parameters, "", ""
-    lines = parameters.replace("\r\n", "\n").split("\n")
-    for i, line in enumerate(lines):
-        if line.startswith("Negative prompt:"):
-            prompt_part = "\n".join(lines[:i])
-            rest = "\n".join(lines[i:])
-            nl = rest.split("\n", 1)
-            negative_part = nl[0][len("Negative prompt:"):].strip()
-            params_part = nl[1] if len(nl) > 1 else ""
-            break
-    else:
-        parts = parameters.rsplit("\nSteps:", 1)
-        prompt_part = parts[0]
-        params_part = ("Steps:" + parts[1]) if len(parts) > 1 else ""
-    out["prompt"] = prompt_part.strip()
-    out["hasPrompt"] = bool(out["prompt"])
-    for m in _A1111_LINE_RE.finditer(params_part.replace("\n", ", ")):
-        key, val = m.group(1).strip().lower(), m.group(2).strip()
-        if key == "seed":
-            out["seed"] = val
-        elif key == "steps":
-            out["steps"] = val
-        elif key == "cfg scale":
-            out["cfg"] = val
-        elif key == "sampler":
-            out["sampler"] = val
-        elif key == "model":
-            out["model"] = val
-    out["loras"] = [m.group(1) for m in _LORA_TAG_RE.finditer(prompt_part)]
-    out.update(negativePrompt=negative_part, promptStages=[],
-               promptStatus="complete" if out["prompt"] else "missing", promptWarnings=[])
-    return out
+    return parse_saved_metadata({'parameters': parameters})
 
 
-def build_entry(abs_path: str, rel_path: str, *, raw=None, stat=None) -> dict:
-    """单张图的摘要条目（按钮/卡片/筛选所需 + 布局宽高）。
-
-    提示词字段优先取自图片内的溯源记录；模型 / seed / steps / cfg / sampler / scheduler /
-    loras / 宽高 / mtime / size / hasWorkflow 一律仍由静态解析给出，记录不参与。
-    """
+def build_entry(abs_path: str, rel_path: str, *, raw=None, stat=None, container=None, parsed=None) -> dict:
+    """Small index entry. Full raw fields and configuration stay on demand."""
     stat = stat if stat is not None else os.stat(abs_path)
-    raw = raw if raw is not None else read_text_chunks(abs_path)
-    prompt_data = raw.get("prompt", "")
-    workflow_data = raw.get("workflow", "")
-    parameters = raw.get("parameters", "")
-    record_text = _read_prompt_record(raw)
-
-    entry = {
-        "path": rel_path.replace("\\", "/"),
-        "mtime": round(stat.st_mtime, 3),
-        "size": stat.st_size,
-        "width": 0,
-        "height": 0,
-        "model": "", "seed": "", "steps": "", "cfg": "", "sampler": "", "scheduler": "",
-        "prompt": "", "hasPrompt": False, "negativePrompt": "",
-        "promptStages": [], "promptStatus": "missing", "promptWarnings": [],
-        "loras": [], "hasWorkflow": False,
-    }
-
-    src = None
-    if prompt_data:
-        try:
-            src = json.loads(prompt_data)
-        except Exception:
-            src = None
-    if src is None and workflow_data:
-        try:
-            src = json.loads(workflow_data)
-        except Exception:
-            src = None
-
-    if src is not None:
-        summary = parse_comfy_summary(src, record_text)
-        entry["hasWorkflow"] = bool(workflow_data or prompt_data)
-        entry.update({k: summary[k] for k in ("model", "seed", "steps", "cfg", "sampler", "scheduler", "prompt", "loras",
-                                                        "negativePrompt", "promptStages", "promptStatus", "promptWarnings")})
-        entry["hasPrompt"] = bool(entry["prompt"])
-        if not summary["hasWorkflow"] and not workflow_data and prompt_data:
-            entry["hasWorkflow"] = True
-    elif parameters:
-        summary = parse_a1111_summary(parameters)
-        # 参数块路径同样尊重图片内记录：有记录且可核验时以记录为准，否则保留 A1111 解析结果。
-        _apply_record_to_summary(summary, record_text)
-        entry.update({k: summary[k] for k in ("model", "seed", "steps", "cfg", "sampler", "scheduler", "prompt", "loras", "hasWorkflow",
-                                                        "negativePrompt", "promptStages", "promptStatus", "promptWarnings")})
-        entry["hasPrompt"] = bool(entry["prompt"])
-    else:
-        # 没有工作流、没有参数块：记录本身就是唯一证据（SaveImage 可以不带 workflow 只写记录）。
-        if record_text:
-            summary = {"model": "", "seed": "", "steps": "", "cfg": "", "sampler": "", "scheduler": "",
-                       "prompt": "", "negativePrompt": "", "promptStages": [],
-                       "promptStatus": "missing", "promptWarnings": []}
-            _apply_record_to_summary(summary, record_text)
-            entry.update({k: summary[k] for k in _PROMPT_FIELDS})
-            entry["hasPrompt"] = bool(entry["prompt"])
-        entry["hasWorkflow"] = bool(workflow_data or prompt_data)
-        entry["loras"] = _extract_loras({}) or []
-
-    # 兜底：A1111/无工作流但 prompt 里有 <lora:> 标签
-    if not entry["loras"]:
-        for m in _LORA_TAG_RE.finditer(entry.get("prompt", "")):
-            entry["loras"].append(m.group(1))
-
-    w, h = png_dimensions(abs_path)
-    entry["width"], entry["height"] = w, h
+    if parsed is None:
+        if container is None:
+            container = read_image_metadata(abs_path) if raw is None else {
+                'raw': raw, 'status': 'present' if raw else 'unknown', 'format': 'unknown', 'warnings': []}
+        parsed = _parse_container(container, abs_path)
+    fields = ('model', 'seed', 'steps', 'cfg', 'sampler', 'scheduler', 'prompt', 'identityPrompt', 'hasPrompt',
+              'negativePrompt', 'promptStages', 'promptStatus', 'promptWarnings', 'loras', 'hasWorkflow',
+              'metadataState', 'metadataFormat', 'metadataWarnings')
+    entry = {key: parsed.get(key) for key in fields}
+    entry.update(path=rel_path.replace('\\', '/'), mtime=round(stat.st_mtime, 3), size=stat.st_size,
+                 summaryStatus='error' if parsed['metadataState'] == 'error' else 'ready')
+    entry['width'], entry['height'] = png_dimensions(abs_path)
     return entry
 
 
@@ -698,15 +528,9 @@ def build_index(output_root: str, index_path: str, progress_cb=None) -> dict:
 # 动机：面板要在**打开切到 Outputs 之前**就把新图备好。全量 build_index() 实测 3571 张 ≈ 12.9s，
 # 每次新图都全量重扫会把机器吃满；这里只解析「新增 + mtime/size 变化」的文件，其余条目原样复用。
 
-_INDEX_LOCKS: dict = {}
-_INDEX_LOCKS_GUARD = threading.Lock()
-
-
 def _index_lock(index_path: str):
     """One transaction lock per index, shared by every writer for that path."""
-    key = os.path.normcase(os.path.abspath(index_path))
-    with _INDEX_LOCKS_GUARD:
-        return _INDEX_LOCKS.setdefault(key, threading.RLock())
+    return catalog_for(index_path).lock
 
 
 def _entry_unchanged(old, mtime: float, size: int) -> bool:
@@ -738,99 +562,173 @@ def _resolve_entry(full: str, rel: str, mtime: float, size: int, old, *, stamp_f
         base["path"] = rel.replace("\\", "/")
         base["mtime"] = round(mtime, 3)
         base["size"] = size
+        base.update(metadataState="error", metadataWarnings=["metadata-read-failed"], summaryStatus="error")
         return base
 
 
 def refresh(output_root: str, index_path: str, mode: str = "incremental", *,
             progress_cb=None, removed_paths=()) -> dict:
-    """Own the complete read/compute/commit transaction for one gallery index.
-
-    Return {index: complete snapshot, stats: existing incremental statistics}.
-    Full builds always commit; incremental updates preserve the empty-scan guard
-    and only commit changes. Delete removes exactly the supplied relative paths
-    without rescanning or deleting files; its caller owns revision validation.
-    The old public functions only adapt this result to their established shapes.
-    """
+    """Prepare scans without holding the writer lock; merge concurrent changes."""
     if mode not in ("full", "incremental", "delete"):
         raise ValueError(f"Unknown gallery index refresh mode: {mode}")
     started = time.time()
-    with _index_lock(index_path):
-        existing = load_index(index_path)
-        old_entries = existing["entries"]
-        try:
-            existing_built_at = int(existing.get("builtAt", 0) or 0)
-        except (TypeError, ValueError):
-            existing_built_at = 0
-
-        if mode == "delete":
-            removed = 0
+    owner = catalog_for(index_path)
+    existing = owner.snapshot(load_index)
+    old_entries = existing["entries"]
+    existing_built_at = int(existing.get("builtAt", 0) or 0)
+    if mode == "delete":
+        # Delete has no preparation IO. Capture and commit under one short lock.
+        with owner.lock:
+            existing = owner.snapshot(load_index)
+            entries = dict(existing["entries"])
             for rel in removed_paths:
-                if old_entries.pop(rel, None) is not None:
-                    removed += 1
-            if removed:
-                existing["total"] = len(old_entries)
-                existing["builtAt"] = int(time.time() * 1000)
-                _save_index(index_path, existing)
-            return {"index": existing, "stats": {
-                "added": 0, "updated": 0, "removed": removed, "reused": 0,
-                "total": len(old_entries), "scanned": 0,
-                "builtAt": existing.get("builtAt", 0),
-                "durationMs": int((time.time() - started) * 1000)}}
+                entries.pop(rel, None)
+            committed, changed, deleted = owner.commit(existing, {**existing, "entries": entries}, load_index)
+        return {"index": committed, "stats": {
+            "added": 0, "updated": 0, "removed": len(deleted), "reused": 0,
+            "total": committed["total"], "scanned": 0,
+            "builtAt": committed.get("builtAt", 0),
+            "durationMs": int((time.time() - started) * 1000)}}
 
-        # Missing/empty indexes keep the established first-build semantics.
-        first_build = not os.path.isfile(index_path) or not old_entries
-        full_build = mode == "full" or first_build
-        try:
-            files = scan_output_files(output_root)
-        except Exception as exc:
+    with owner.prepare(load_index) as preparation:
+        return _refresh_prepared(output_root, owner, mode, preparation, progress_cb, started)
+
+
+def _refresh_prepared(output_root, owner, mode, preparation, progress_cb, started):
+    existing, concurrent = preparation
+    old_entries = existing["entries"]
+    existing_built_at = int(existing.get("builtAt", 0) or 0)
+    first_build = not existing_built_at
+    full_build = mode == "full" or first_build
+    try:
+        files = scan_output_files(output_root)
+    except Exception as exc:
+        if full_build:
+            raise
+        return {"index": existing, "stats": _incremental_skip(
+            f"扫描输出目录失败: {exc}", existing_built_at, len(old_entries), started)}
+    if not full_build and not files and old_entries:
+        return {"index": existing, "stats": _incremental_skip(
+            "扫描到 0 个文件而现有索引非空（疑似输出目录不可读/挂载点丢失），已保留索引且未写盘",
+            existing_built_at, len(old_entries), started)}
+    parser_stale = existing.get("parserVersion") != PARSER_VERSION
+    entries, reused = {}, 0
+    for i, (rel, full, mtime, size) in enumerate(files):
+        old = old_entries.get(rel)
+        if not parser_stale and _entry_unchanged(old, mtime, size) and old.get("summaryStatus") != "pending":
+            entries[rel] = old
+            reused += 1
+        else:
+            entry = _resolve_entry(full, rel, mtime, size, old, stamp_failure=not full_build)
+            entry = {**entry, "summaryStatus": "ready"}
+            entries[rel] = entry
+        if progress_cb:
             if full_build:
-                raise
-            return {"index": existing, "stats": _incremental_skip(
-                f"扫描输出目录失败: {exc}", existing_built_at, len(old_entries), started)}
-        if not full_build and not files:
-            return {"index": existing, "stats": _incremental_skip(
-                "扫描到 0 个文件而现有索引非空（疑似输出目录不可读/挂载点丢失），已保留索引且未写盘",
-                existing_built_at, len(old_entries), started)}
-
-        try:
-            parser_stale = int(existing.get("parserVersion") or 0) != PARSER_VERSION
-        except (TypeError, ValueError):
-            parser_stale = True
-        if parser_stale and not full_build:
-            print(f"[gallery] 解析器版本换代（{existing.get('parserVersion')} → {PARSER_VERSION}）：本轮全量重解析")
-        entries = {}
-        added = updated = reused = 0
-        for i, (rel, full, mtime, size) in enumerate(files):
-            old = old_entries.get(rel)
-            if not parser_stale and _entry_unchanged(old, mtime, size):
-                entries[rel] = old
-                reused += 1
+                progress_cb(i + 1, len(files))
             else:
-                entries[rel] = _resolve_entry(full, rel, mtime, size, old, stamp_failure=not full_build)
-                if isinstance(old, dict):
-                    updated += 1
-                else:
-                    added += 1
-            if progress_cb:
-                if full_build:
+                try:
                     progress_cb(i + 1, len(files))
-                else:
-                    try:
-                        progress_cb(i + 1, len(files))
-                    except Exception:
-                        pass
-        removed = sum(rel not in entries for rel in old_entries)
-        if full_build or added or updated or removed:
-            existing = {"version": INDEX_VERSION, "parserVersion": PARSER_VERSION,
-                        "builtAt": int(time.time() * 1000), "total": len(entries), "entries": entries}
-            _save_index(index_path, existing)
-        stats = {"added": added, "updated": updated, "removed": removed,
-                 "total": len(entries), "scanned": len(files), "reused": reused,
-                 "builtAt": existing.get("builtAt", existing_built_at),
-                 "durationMs": int((time.time() - started) * 1000)}
-        if first_build and mode == "incremental":
-            stats.update(added=len(entries), updated=0, removed=0, reused=0)
-        return {"index": existing, "stats": stats}
+                except Exception:
+                    pass
+    prepared = {"version": INDEX_VERSION, "parserVersion": PARSER_VERSION,
+                "builtAt": existing_built_at, "total": len(entries), "entries": entries}
+    committed, changes, deleted = owner.commit(existing, prepared, load_index,
+                                              force=full_build or parser_stale, concurrent=concurrent)
+    added = sum(path not in old_entries for path in changes)
+    stats = {"added": added, "updated": len(changes) - added, "removed": len(deleted),
+             "total": committed["total"], "scanned": len(files), "reused": reused,
+             "builtAt": committed.get("builtAt", existing_built_at),
+             "durationMs": int((time.time() - started) * 1000)}
+    return {"index": committed, "stats": stats}
+
+
+def index_snapshot(index_path: str) -> dict:
+    """Read the owner's complete immutable snapshot (do not mutate entries)."""
+    return catalog_for(index_path).snapshot(load_index)
+
+
+def catalog_view(index_path: str) -> dict:
+    """One coherent index reference and summary captured in a short read lock."""
+    owner = catalog_for(index_path)
+    index = owner.snapshot(load_index)
+    view = owner.read_view
+    if view is not None and view["index"] is index:
+        return dict(view)
+    return {"index": index, "revision": owner.revision(index),
+            "pending": sum(entry.get("summaryStatus") == "pending" for entry in index["entries"].values())}
+
+
+def index_changes(index_path: str, since: int = 0) -> dict:
+    return {**catalog_for(index_path).changes(since, load_index), "parserVersion": PARSER_VERSION}
+
+
+def _read_bounded_prompt_record(path):
+    """Read only an uncompressed provenance text chunk; skip all workflow bytes."""
+    maximum = 256 * 1024
+    with open(path, "rb") as handle:
+        if handle.read(8) != b"\x89PNG\r\n\x1a\n":
+            return ""
+        for _ in range(64):
+            header = handle.read(8)
+            if len(header) != 8:
+                return ""
+            size, kind = struct.unpack(">I4s", header)
+            if kind in (b"IDAT", b"IEND"):
+                return ""  # PNG encoders place text before the pixel stream.
+            if kind == b"tEXt" and size <= maximum:
+                prefix = handle.read(min(size, 80))
+                key, separator, rest = prefix.partition(b"\x00")
+                if key == _PROMPT_RECORD_KEY.encode("ascii") and separator:
+                    value = rest + handle.read(size - len(prefix))
+                    return value.decode("utf-8", "replace")
+                handle.seek(size - len(prefix) + 4, os.SEEK_CUR)
+            else:
+                handle.seek(size + 4, os.SEEK_CUR)
+    return ""
+
+
+def register_outputs(output_root: str, index_path: str, paths) -> dict:
+    """Register only known saved paths, reading stat and PNG IHDR, never decoding."""
+    root = os.path.realpath(output_root)
+    known = {}
+    for value in paths:
+        if not isinstance(value, str) or not value or os.path.isabs(value):
+            continue
+        full = os.path.realpath(os.path.join(root, value))
+        try:
+            if os.path.commonpath([root, full]) != root or not full.lower().endswith((".png", ".webp", ".jpg", ".jpeg")):
+                continue
+            stat = os.stat(full)
+            rel = os.path.relpath(full, root).replace("\\", "/")
+            width = height = 0
+            if full.lower().endswith(".png"):
+                with open(full, "rb") as handle:
+                    header = handle.read(24)
+                if header[:8] == b"\x89PNG\r\n\x1a\n" and len(header) == 24:
+                    width, height = struct.unpack(">II", header[16:24])
+            known[rel] = {"path": rel, "mtime": round(stat.st_mtime, 3), "size": stat.st_size,
+                          "width": width, "height": height, "model": "", "seed": "", "steps": "", "cfg": "",
+                          "sampler": "", "scheduler": "", "prompt": "", "hasPrompt": False,
+                          "loras": [], "hasWorkflow": False, "metadataState": "unknown", "metadataWarnings": [], "summaryStatus": "pending"}
+            if full.lower().endswith(".png"):
+                record_text = _read_bounded_prompt_record(full)
+                if record_text:
+                    _apply_record_to_summary(known[rel], record_text)
+                    known[rel]["hasPrompt"] = bool(known[rel]["prompt"])
+                    known[rel]["metadataState"] = "present"
+        except (OSError, ValueError):
+            continue
+    owner = catalog_for(index_path)
+    with owner.lock:
+        old = owner.snapshot(load_index)
+        entries = dict(old["entries"])
+        for rel, entry in known.items():
+            if not _entry_unchanged(entries.get(rel), entry["mtime"], entry["size"]):
+                entries[rel] = entry
+        committed, changes, removed = owner.commit(old, {**old, "entries": entries}, load_index)
+    return {"index": committed, "stats": {"added": sum(path not in old["entries"] for path in changes),
+            "updated": sum(path in old["entries"] for path in changes), "removed": 0,
+            "total": committed["total"], "builtAt": committed.get("builtAt", 0), "paths": list(changes)}}
 
 
 def update_index_incremental(output_root: str, index_path: str, progress_cb=None) -> dict:
@@ -888,8 +786,11 @@ def _incremental_skip(reason: str, built_at: int, existing_total: int, started: 
 
 def load_index(index_path: str) -> dict:
     try:
-        with open(index_path, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
+        # Windows readers must not hold a non-delete-sharing file handle while
+        # another writer replaces it. The lock covers IO, never scan preparation.
+        with _index_lock(index_path):
+            with open(index_path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
         if isinstance(data, dict) and isinstance(data.get("entries"), dict):
             return data
     except Exception:
@@ -899,54 +800,30 @@ def load_index(index_path: str) -> dict:
 
 def _save_index(index_path: str, index: dict) -> None:
     """Commit a complete generation through an exclusive same-directory file."""
-    with _index_lock(index_path):
-        directory = os.path.dirname(os.path.abspath(index_path))
-        os.makedirs(directory, exist_ok=True)
-        tmp = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
-                                             prefix=".gallery-index-", suffix=".tmp", delete=False) as fh:
-                tmp = fh.name
-                json.dump(index, fh, ensure_ascii=False, separators=(",", ":"))
-            os.replace(tmp, index_path)
-            tmp = None
-        finally:
-            if tmp is not None:
-                os.unlink(tmp)
+    owner = catalog_for(index_path)
+    with owner.lock:
+        owner.write(index)
+        owner.journal.clear()
+        owner.floor = owner.revision(index)
 
 
 def parse_full(abs_path: str, rel_path: str, *, history=None) -> dict:
-    """单张完整元数据（/anima/gallery/meta 按需）：含 workflowJson 与 raw。"""
-    raw = read_text_chunks(abs_path)
-    prompt_data = raw.get("prompt", "")
-    workflow_data = raw.get("workflow", "")
-    parameters = raw.get("parameters", "")
+    """Read the container once; preserve raw data, provenance and configuration."""
+    container = read_image_metadata(abs_path)
+    parsed = _parse_container(container, abs_path)
+    raw = container['raw']
     stat = os.stat(abs_path)
-    entry = build_entry(abs_path, rel_path, raw=raw, stat=stat)
-    # Old PNGs may lack runtime receipts. History is an optional, bounded source,
-    # used only after this exact file/execution/graph has been verified. Indexing
-    # remains disk-only; full metadata requests do not trigger a library rescan.
-    if history and prompt_data and not _read_prompt_record(raw):
+    entry = build_entry(abs_path, rel_path, stat=stat, parsed=parsed)
+    if history and raw.get('prompt') and not _read_prompt_record(raw):
         try:
             try:
                 from .services.output_execution_history import recover_prompt_fields
             except ImportError:
                 from services.output_execution_history import recover_prompt_fields
-            recovered = recover_prompt_fields(json.loads(prompt_data), rel_path, stat.st_mtime, history)
+            recovered = recover_prompt_fields(json.loads(raw['prompt']), rel_path, stat.st_mtime, history)
             if recovered:
-                entry.update(recovered)
+                parsed.update(recovered)
         except Exception:
-            pass  # History is optional; preserve the existing reliable fragments.
-    return {
-        "imageId": rel_path.replace("\\", "/"),
-        "model": entry["model"], "seed": entry["seed"], "steps": entry["steps"],
-        "cfg": entry["cfg"], "sampler": entry["sampler"], "scheduler": entry.get("scheduler", ""),
-        "vae": "", "clipSkip": 0,
-        "prompt": entry["prompt"], "negativePrompt": entry.get("negativePrompt", ""),
-        "promptStages": entry.get("promptStages", []), "promptStatus": entry.get("promptStatus", "missing"),
-        "promptWarnings": entry.get("promptWarnings", []), "parserVersion": PARSER_VERSION,
-        "mtime": entry["mtime"], "size": entry["size"],
-        "workflowJson": workflow_data or prompt_data or "",
-        "rawMetadata": raw,
-        "loras": entry["loras"], "hasWorkflow": entry["hasWorkflow"], "lorasExtracted": True,
-    }
+            pass  # Optional history does not replace reliable saved fragments.
+    return {**parsed, 'imageId': rel_path.replace('\\', '/'), 'mtime': entry['mtime'],
+            'size': entry['size'], 'parserVersion': PARSER_VERSION, 'lorasExtracted': True}

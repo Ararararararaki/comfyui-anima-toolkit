@@ -6,6 +6,8 @@ import { openLightbox } from '../components/Lightbox'
 import { outputsDb } from '../db/outputsDb'
 import { hashPath } from '../services/outputManifest'
 import type { OutputFile, OutputMetadata } from '../types/outputs'
+import { parseOutputMetadataBlob, outputLoraNames, loraTagsFromDetails, safeParseJSON, type ParsedMetadata } from '../services/outputMetadata'
+import { renderGenerationDetails, renderMetadataReliability, bindRawMetadataDetails } from '../renderers/outputGenerationDetails'
 
 // 翻译内存缓存（按「源|文本」键，切换翻译源后可重新翻译）
 const _transCache = new Map<string, string>()
@@ -36,7 +38,7 @@ function readSavedTransSource(): string {
 
 let _transSource = readSavedTransSource()
 
-// ── PNG 元数据解析 ──
+// ── 图片元数据解析 ──
 
 interface UploadedPng {
   id: string
@@ -57,7 +59,7 @@ interface UploadedPng {
   uiWorkflow: string
   previewThumb: string
   file: File
-  hasMeta?: boolean
+  metadata: ParsedMetadata
   saved?: boolean
   sent?: boolean
 }
@@ -70,202 +72,41 @@ function genUploadedId(): string {
 
 let _uploadedPngs: UploadedPng[] = []
 
-const MAX_PNG_SIZE = 20 * 1024 * 1024 // 20MB 上限（security 修复）
-
-function parsePngFile(file: File): Promise<UploadedPng | null> {
-  // 文件大小检查：超大文件直接拒绝（security 修复，与 LocalManager 一致）
-  if (file.size > MAX_PNG_SIZE) return Promise.resolve(null)
-  return new Promise((resolve) => {
-    // 兜底定时器：解析卡住（异常/未知浏览器行为）时也放行，避免界面永久残留旧卡片
-    const timer = setTimeout(() => resolve(null), 8000)
-    const done = (v: UploadedPng | null) => { clearTimeout(timer); resolve(v) }
-
-    const reader = new FileReader()
-    reader.onload = async () => {
+async function parsePngFile(file: File): Promise<UploadedPng | null> {
+  try {
+    // The shared reader detects the actual signature and slices only container
+    // headers/metadata. Thumbnail decoding is a separate, optional operation.
+    const metadata = await parseOutputMetadataBlob(file, file.name.split('.').pop())
+    const ui = safeParseJSON(metadata.raw.workflow || '')
+    const uiWorkflow = Array.isArray(ui?.nodes) ? metadata.raw.workflow : ''
+    const loras = outputLoraNames(metadata)
+    let previewThumb = ''
+    if (metadata.metadataFormat !== 'unknown' && metadata.metadataState !== 'error') {
       try {
-        const buf = reader.result as ArrayBuffer
-        const meta = await parsePngChunks(buf)
-        if (meta) {
-          // 生成压缩缩略图（保存到 Prompt 库用；失败不阻断解析）
-          let previewThumb = ''
-          try {
-            const { createThumbnailFromBlob } = await import('../services/outputThumbnail')
-            const thumb = await createThumbnailFromBlob(file)
-            previewThumb = thumb?.dataUrl || ''
-          } catch { /* 忽略缩略图失败 */ }
-          done({
-            id: genUploadedId(),
-            fileName: file.name,
-            positive: meta.prompt || '',
-            negative: meta.negativePrompt || '',
-            seed: meta.seed || '',
-            steps: meta.steps || '',
-            cfg: meta.cfg || '',
-            sampler: meta.sampler || '',
-            scheduler: meta.scheduler || '',
-            denoise: meta.denoise || '',
-            noiseSeed: meta.noiseSeed || '',
-            model: meta.model || '',
-            loras: meta.loras || [],
-            loraTags: meta.loraTags || [],
-            workflowJson: meta.workflowJson || '',
-            uiWorkflow: meta.uiWorkflow || '',
-            previewThumb,
-            file,
-            hasMeta: !!(meta.prompt || meta.negativePrompt || meta.workflowJson || meta.seed || meta.steps || meta.cfg || meta.sampler || meta.model || (meta.loras || []).length),
-            sent: false,
-          })
-        } else {
-          done(null)
-        }
-      } catch (e) {
-        console.warn('[PromptFreq] parsePngFile 解析异常，跳过该文件:', file.name, e)
-        done(null)
-      }
+        const { createThumbnailFromBlob } = await import('../services/outputThumbnail')
+        previewThumb = (await createThumbnailFromBlob(file))?.dataUrl || ''
+      } catch { /* Thumbnail failure does not change metadata state. */ }
     }
-    reader.onerror = () => done(null)
-    reader.readAsArrayBuffer(file)
-  })
+    return {
+      id: genUploadedId(), fileName: file.name, file, metadata,
+      positive: metadata.prompt, negative: metadata.negativePrompt,
+      seed: metadata.seed, steps: metadata.steps, cfg: metadata.cfg,
+      sampler: metadata.sampler, scheduler: metadata.scheduler,
+      denoise: metadata.denoise, noiseSeed: metadata.noiseSeed,
+      model: metadata.model, loras, loraTags: loraTagsFromDetails(metadata.loraDetails),
+      workflowJson: metadata.workflowJson, uiWorkflow, previewThumb,
+      sent: false,
+    }
+  } catch {
+    showToast('图片元数据读取失败，请重试')
+    return null
+  }
 }
 
-async function parsePngChunks(buf: ArrayBuffer): Promise<{
-  prompt: string; negativePrompt: string; seed: string; steps: string;
-  cfg: string; sampler: string; scheduler?: string; denoise?: string; noiseSeed?: string;
-  model: string; loras: string[]; loraTags: string[]; workflowJson: string; uiWorkflow: string
-} | null> {
-  const view = new DataView(buf)
-  const bytes = new Uint8Array(buf)
-  const pngSig = [137, 80, 78, 71, 13, 10, 26, 10]
-  for (let i = 0; i < 8; i++) { if (bytes[i] !== pngSig[i]) return null }
-
-  const raw: Record<string, string> = {}
-  let offset = 8
-  while (offset < bytes.length) {
-    if (offset + 8 > bytes.length) break
-    const len = view.getUint32(offset)
-    const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7])
-    const isText = type === 'tEXt' || type === 'zTXt' || type === 'iTXt'
-    if (isText) {
-      const dataStart = offset + 8
-      const dataEnd = dataStart + len
-      if (dataEnd > bytes.length) break
-      let keyEnd = dataStart
-      while (keyEnd < dataEnd && bytes[keyEnd] !== 0 && keyEnd - dataStart < 79) keyEnd++
-      // key 按 PNG 规范 ≤79 字节截断，循环拼接避免超大 spread 抛 RangeError（security 修复）
-      let key = ''
-      for (let i = dataStart; i < keyEnd; i++) key += String.fromCharCode(bytes[i])
-      let val: string
-      if (type === 'zTXt') {
-        try {
-          const compData = bytes.slice(keyEnd + 2, dataEnd)
-          const { decompressZlibAsync } = await import('../services/outputMetadata')
-          val = await decompressZlibAsync(compData)
-        } catch { val = new TextDecoder().decode(bytes.slice(keyEnd + 1, dataEnd)) }
-      } else {
-        val = new TextDecoder().decode(bytes.slice(keyEnd + 1, dataEnd))
-      }
-      raw[key] = val
-    }
-    offset += 12 + len
-  }
-
-  // workflow：优先 prompt chunk（API 格式，图实际执行的提示词）；workflow chunk（UI）兜底。
-  const { safeParseJSON } = await import('../services/outputMetadata')
-  // 提示词解析源：prompt chunk（API，图实际执行的提示词）优先；workflow chunk（UI）兜底
-  let workflowJson = ''
-  if (raw['prompt'] && safeParseJSON(raw['prompt'])) {
-    workflowJson = raw['prompt']
-  }
-  if (!workflowJson && raw['workflow']) {
-    workflowJson = raw['workflow']
-  }
-  // 复制工作流必须用真正 UI 格式（workflow chunk）——ComfyUI 前端「导入工作流」只认 UI 格式；
-  // 无 workflow chunk 时留空，由复制按钮走 API 转换/明确提示，避免把 API 格式当 UI 复制导致粘贴被忽略
-  const uiWorkflow = raw['workflow'] || ''
-  const params = raw['parameters'] || ''
-  const userComment = raw['user_comment'] || ''
-  const description = raw['Description'] || ''
-
-  let result: any = {}
-
-  // 复用 Outputs 的解析引擎
-  try {
-    const { parseComfyUIWorkflow, safeParseJSON } = await import('../services/outputMetadata')
-    if (workflowJson) {
-      const wf = safeParseJSON(workflowJson)
-      if (wf) result = parseComfyUIWorkflow(wf)
-      console.log('[PromptFreq] parseComfyUIWorkflow result:', {
-        promptLen: result.prompt?.length,
-        negativeLen: result.negativePrompt?.length,
-        promptPreview: result.prompt?.slice(0, 80),
-        negativePreview: result.negativePrompt?.slice(0, 80),
-        seed: result.seed,
-        steps: result.steps,
-        hasWorkflow: !!workflowJson,
-      })
-    }
-  } catch (e) {
-    console.warn('[PromptFreq] parseComfyUIWorkflow error:', e)
-  }
-
-  // 手动兜底：仅当解析引擎完全没提取到时，从 workflow 原始节点取第一个文本
-  if (!result.prompt && workflowJson) {
-    try {
-      const { safeParseJSON: sp } = await import('../services/outputMetadata')
-      const wf = sp(workflowJson)
-      const nodes: any[] = wf?.nodes || (Array.isArray(wf) ? wf : Object.values(wf || {}))
-      for (const node of nodes) {
-        if (!node) continue
-        if (node.class_type !== 'CLIPTextEncode' && node.type !== 'CLIPTextEncode') continue
-        let t = ''
-        if (Array.isArray(node.widgets_values)) {
-          for (const w of node.widgets_values) {
-            if (typeof w === 'string' && w.length > 3) { t = w; break }
-          }
-        } else if (node.inputs?.text && typeof node.inputs.text === 'string') {
-          t = node.inputs.text
-        }
-        if (t) { result.prompt = t; break }
-      }
-    } catch {}
-  }
-
-  // 最终 fallback
-  if (!result.prompt) {
-    result.prompt = userComment || description || ''
-  }  // 提取 LoRA：名称 + <lora:name:weight> 标签（含权重）；兜底从提示词文本提取 <lora:...> 标签
-  let loras: string[] = []
-  let loraTags: string[] = []
-  if (workflowJson) {
-    const { extractLorasFromWorkflow, extractLoraTagsFromWorkflow } = await import('../services/outputMetadata')
-    loras = extractLorasFromWorkflow(workflowJson)
-    loraTags = extractLoraTagsFromWorkflow(workflowJson)
-  }
-  if (loras.length === 0) {
-    const allText = (result.prompt || '') + ' ' + (result.negativePrompt || '')
-    const loraMatches = allText.match(/<lora:([^:>]+)/g)
-    if (loraMatches) loras.push(...loraMatches.map((l: string) => l.replace('<lora:', '')))
-  }
-  if (loraTags.length === 0 && loras.length) {
-    loraTags = loras.map((n) => `<lora:${n}:0.80>`)
-  }
-
-  return {
-    prompt: result.prompt || '',
-    negativePrompt: result.negativePrompt || '',
-    seed: result.seed || raw['seed'] || '',
-    steps: result.steps || raw['steps'] || '',
-    cfg: result.cfg || raw['cfg'] || '',
-    sampler: result.sampler || raw['sampler'] || '',
-    scheduler: result.scheduler || '',
-    denoise: result.denoise || '',
-    noiseSeed: result.noiseSeed || '',
-    model: result.model || raw['model'] || '',
-    loras: [...new Set(loras)],
-    loraTags: [...new Set(loraTags)],
-    workflowJson,
-    uiWorkflow,
-  }
+/** Retain every parser field when registering an imported original in Outputs. */
+function toOutputMetadata(p: UploadedPng, imageId: string): OutputMetadata {
+  const { raw, ...metadata } = p.metadata
+  return { ...metadata, imageId, rawMetadata: raw, loras: p.loras, lorasExtracted: true }
 }
 
 // ── 翻译 ──
@@ -350,9 +191,9 @@ function buildSrcMenu(anchor: HTMLElement): void {
 // ── 保存到 Prompt 库 ──
 
 async function savePngToLibrary(p: UploadedPng): Promise<void> {
-  if (!p.positive.trim()) { showToast('⚠️ 该图片未解析出 Prompt'); return }
+  if (!p.positive.trim() || p.metadata.promptStatus === 'ambiguous' || p.metadata.promptStatus === 'missing') { showToast('该图片未解析出可靠 Prompt'); return }
 
-  const displayName = p.fileName.replace(/\.png$/i, '') || 'PNG Prompt'
+  const displayName = p.fileName.replace(/\.(png|jpe?g|webp)$/i, '') || '图片 Prompt'
   const params = [
     p.model && `模型: ${p.model}`,
     p.seed && `Seed: ${p.seed}`,
@@ -387,7 +228,7 @@ async function savePngToLibrary(p: UploadedPng): Promise<void> {
 
 // ── 发送到 Outputs ──
 
-/** 发送 PNG 到 Outputs：先选分类，再保存文件到输出目录并注册记录 */
+/** 发送原图到 Outputs：先选分类，再保存文件到输出目录并注册记录 */
 function sendPngToOutputs(p: UploadedPng) {
   const state = useOutputStore.getState()
   if (!state.dirHandle) {
@@ -435,13 +276,7 @@ async function doSendPngToOutputs(p: UploadedPng, category: string): Promise<voi
     status: '', pinned: false, createdAt: Date.now(),
   }
   await outputsDb.files.put(outputFile)
-  const outputMeta: OutputMetadata = {
-    imageId: id, model: p.model, seed: p.seed, steps: p.steps, cfg: p.cfg,
-    sampler: p.sampler, scheduler: p.scheduler, denoise: p.denoise, noiseSeed: p.noiseSeed,
-    vae: '', clipSkip: 0,
-    prompt: p.positive, negativePrompt: p.negative, workflowJson: p.uiWorkflow || p.workflowJson,
-    rawMetadata: {},
-  }
+  const outputMeta = toOutputMetadata(p, id)
   await outputsDb.metadata.put(outputMeta)
   try {
     const { createThumbnailFromBlob } = await import('../services/outputThumbnail')
@@ -496,7 +331,7 @@ function showCategoryPick(onPick: (cat: string) => void) {
 
 // ── 渲染 ──
 
-/** 进入图片解析页面：重渲染。上传的 PNG 卡片常驻（切 tab 不丢），刷新页面才清空 */
+/** 进入图片解析页面：重渲染。上传的图片卡片常驻（切 tab 不丢），刷新页面才清空 */
 export function activatePromptFreq() {
   renderPromptFreq()
 }
@@ -508,29 +343,26 @@ export function renderPromptFreq() {
   const state = useOutputStore.getState()
   let html = ''
 
-  // 已上传的 PNG 提示词
-  // 已上传的 PNG 提示词
+  // 已上传图片的提示词与保存配置
   if (_uploadedPngs.length > 0) {
-    html += `<div class="prompt-freq-png-section"><h4>📤 上传的 PNG (${_uploadedPngs.length})</h4>`
+    html += `<div class="prompt-freq-png-section"><h4>${icon('image', 14)} 上传的图片 (${_uploadedPngs.length})</h4>`
     for (const p of _uploadedPngs) {
       const pngId = esc(p.id)
       const posSegments = p.positive ? p.positive.split(/[,，]/).map(t => t.trim()).filter(Boolean) : []
       const negSegments = p.negative ? p.negative.split(/[,，]/).map(t => t.trim()).filter(Boolean) : []
+      const canSave = !!p.positive.trim() && p.metadata.promptStatus !== 'ambiguous' && p.metadata.promptStatus !== 'missing'
 
-      html += `<div class="prompt-freq-png-card">
+      html += `<div class="prompt-freq-png-card" data-uploaded-id="${pngId}">
         <div class="prompt-freq-png-header">
           ${p.previewThumb ? `<img class="prompt-freq-png-thumb" src="${esc(p.previewThumb)}" alt="" data-pid="${esc(p.id)}" title="点击放大预览">` : ''}
-          <span>${esc(p.fileName)}${p.uiWorkflow ? '<span class="prompt-freq-png-flow" title="已内嵌 UI 格式工作流，可导入 ComfyUI"> 📄UI</span>' : (p.workflowJson ? '<span class="prompt-freq-png-flow" title="仅 API 执行参数，无画布工作流"> 📄API</span>' : '')}</span>
+          <span>${esc(p.fileName)}${p.uiWorkflow ? `<span class="prompt-freq-png-flow" title="已内嵌 UI 格式工作流，可导入 ComfyUI">${icon('file-text', 12)} UI</span>` : (p.workflowJson ? `<span class="prompt-freq-png-flow" title="仅 API 执行参数，无画布工作流">${icon('file-text', 12)} API</span>` : '')}</span>
           <span class="prompt-freq-png-ops">
             <button class="prompt-freq-png-send ${p.sent ? 'sent' : ''} ${!state.dirHandle ? 'needs-dir' : ''}" data-pid="${esc(p.id)}" title="${p.sent ? '已发送到 Outputs' : (state.dirHandle ? '发送到 Outputs（先选分类再保存文件）' : '未选择输出目录，点击前往 Outputs 选择')}" ${p.sent ? 'disabled' : ''}>${p.sent ? icon('check', 12) + '已发送' : (state.dirHandle ? icon('upload', 12) + '发送到 Outputs' : icon('folder', 12) + '选择输出目录')}</button>
-            <button class="prompt-freq-png-save ${p.saved ? 'saved' : ''} ${!p.positive.trim() ? 'no-prompt' : ''}" data-pid="${esc(p.id)}" title="${p.saved ? '已保存到 Prompt 库，可在顶部「Prompt 库」查看' : (p.positive.trim() ? '保存到 Prompt 库' : '该图未解析出 Prompt，无法保存')}" ${p.saved || !p.positive.trim() ? 'disabled' : ''}>${p.saved ? icon('check', 12) + '已保存' : icon('book', 12) + '保存到 Prompt 库'}</button>
+            <button class="prompt-freq-png-save ${p.saved ? 'saved' : ''} ${!canSave ? 'no-prompt' : ''}" data-pid="${esc(p.id)}" title="${p.saved ? '已保存到 Prompt 库，可在顶部「Prompt 库」查看' : (canSave ? '保存到 Prompt 库' : '该图未解析出可靠 Prompt，无法保存')}" ${p.saved || !canSave ? 'disabled' : ''}>${p.saved ? icon('check', 12) + '已保存' : icon('book', 12) + '保存到 Prompt 库'}</button>
             <button class="prompt-freq-png-del" data-pid="${esc(p.id)}" title="移除" aria-label="移除">${icon('x', 12)}</button>
           </span>
         </div>
-        ${p.hasMeta === false ? `<div class="prompt-freq-png-nometa" style="padding:10px;text-align:center;color:var(--text2);font-size:12px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;margin-top:6px;">
-          ⚠️ 该 PNG 无元数据，无法提取 Prompt / 工作流<br>
-          <small style="color:var(--text3);line-height:1.7">原因：图片经 QQ/微信传输、截图或二次保存后，内嵌的生成数据会被清除。<br>想要别人的工作流，需让对方发送 <b>未压缩的原始 PNG</b>（直接发原图/文件）。</small>
-        </div>` : ''}`
+        ${renderMetadataReliability(p.metadata)}`
 
       // 正面提示词 — 每个逗号片段独立卡片
       if (posSegments.length > 0) {
@@ -580,19 +412,7 @@ export function renderPromptFreq() {
           </div>`
       }
 
-      // 参数（采样方法/调度器/步数/CFG/重绘/种子/噪波）
-      if (p.seed || p.steps || p.cfg || p.sampler || p.scheduler || p.denoise || p.noiseSeed || p.model) {
-        html += `<div class="prompt-freq-png-params">
-          ${p.model ? `<span>🧠 ${esc(p.model)}</span>` : ''}
-          ${p.sampler ? `<span>🔬 ${esc(p.sampler)}</span>` : ''}
-          ${p.scheduler ? `<span>📊 ${esc(p.scheduler)}</span>` : ''}
-          ${p.steps ? `<span>👣 ${esc(p.steps)} 步</span>` : ''}
-          ${p.cfg ? `<span>⚙️ CFG ${esc(p.cfg)}</span>` : ''}
-          ${p.denoise ? `<span>🌫 重绘 ${esc(p.denoise)}</span>` : ''}
-          ${p.seed ? `<span>🌰 ${esc(p.seed)}</span>` : ''}
-          ${p.noiseSeed && p.noiseSeed !== p.seed ? `<span>🌪 噪波 ${esc(p.noiseSeed)}</span>` : ''}
-        </div>`
-      }
+      html += `<details style="margin-top:10px;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg2)"><summary style="cursor:pointer;color:var(--text2);font-size:12px">${icon('slidersHorizontal', 12)} 生成配置与原始字段</summary><div style="margin-top:12px">${renderGenerationDetails(p.metadata, false)}</div></details>`
 
       // 工作流操作（下载 .json 拖入 ComfyUI 导入最稳妥，不再提供复制——画布 Ctrl+V 易误导）
       if (p.uiWorkflow || p.workflowJson) {
@@ -606,18 +426,22 @@ export function renderPromptFreq() {
     html += `</div>`
   }
 
-  // PNG 上传区域（无论有无数据都渲染，保证上传入口始终可用）
+  // 上传区域始终可用。
   html += `<div class="prompt-freq-upload" id="promptFreqUpload">
-    <span>📤 拖拽或点击上传 PNG 图片</span>
+    <span>${icon('upload', 16)} 拖拽或点击上传图片 · PNG / JPEG / WebP</span>
   </div>`
 
   if (!html && state.files.length === 0 && _uploadedPngs.length === 0) {
     // 无任何数据：显示空态提示 + 上传区
-    el.innerHTML = '<div class="prompt-freq-empty"><div class="big">' + icon('file-text', 28) + '</div><p>暂无数据</p><p class="sub">请先在 Outputs 中扫描图片目录，或上传 PNG 文件</p></div>' + html
+    el.innerHTML = '<div class="prompt-freq-empty"><div class="big">' + icon('file-text', 28) + '</div><p>暂无数据</p><p class="sub">请先在 Outputs 中扫描图片目录，或上传 PNG / JPEG / WebP 图片</p></div>' + html
     return
   }
 
   el.innerHTML = html
+  el.querySelectorAll<HTMLElement>('[data-uploaded-id]').forEach(card => {
+    const image = _uploadedPngs.find(item => item.id === card.dataset.uploadedId)
+    if (image) bindRawMetadataDetails(card, image.metadata)
+  })
 }
 
 // ── 事件绑定 ──
@@ -767,7 +591,7 @@ export function bindPromptFreqEvents() {
       const wf = p?.uiWorkflow || p?.workflowJson
       if (!p || !wf) { showToast('⚠️ 该图片无工作流数据'); return }
       try {
-        const baseName = (p.fileName || 'workflow').replace(/\.png$/i, '')
+        const baseName = (p.fileName || 'workflow').replace(/\.(png|jpe?g|webp)$/i, '')
         const blob = new Blob([wf], { type: 'application/json' })
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
@@ -786,7 +610,7 @@ export function bindPromptFreqEvents() {
     if (target.closest('#promptFreqUpload')) {
       const input = document.createElement('input')
       input.type = 'file'
-      input.accept = '.png'
+      input.accept = '.png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp'
       input.multiple = true
       input.onchange = async (e) => {
         const files = (e.target as HTMLInputElement).files
@@ -800,9 +624,9 @@ export function bindPromptFreqEvents() {
             const png = await parsePngFile(f)
             if (png) { _uploadedPngs.push(png); existingKeys.add(key) }
           }
-          showToast(`已上传 ${files.length} 个 PNG`)
-        } catch (err) {
-          console.warn('[PromptFreq] 上传解析出错:', err)
+          showToast(`已处理 ${files.length} 张图片`)
+        } catch {
+          showToast('图片解析失败，请重试')
         } finally {
           renderPromptFreq()
         }
@@ -831,17 +655,19 @@ export function bindPromptFreqEvents() {
       // 追加到已有列表（多张 PNG 共存）；按 文件名+大小 去重
       const existingKeys = new Set(_uploadedPngs.map(p => `${p.fileName}:${p.file?.size ?? ''}`))
       for (const f of Array.from(items)) {
-        if (!f.name.toLowerCase().endsWith('.png')) continue
+        if (!/\.(png|jpe?g|webp)$/i.test(f.name)) continue
         const key = `${f.name}:${f.size}`
         if (existingKeys.has(key)) continue
         const png = await parsePngFile(f)
         if (png) { _uploadedPngs.push(png); existingKeys.add(key) }
       }
-      showToast(`已上传 PNG 文件`)
-    } catch (err) {
-      console.warn('[PromptFreq] 拖拽解析出错:', err)
+      showToast('已处理图片文件')
+    } catch {
+      showToast('图片解析失败，请重试')
     } finally {
       renderPromptFreq()
     }
   })
 }
+
+export const __test = { parsePngFile, toOutputMetadata }

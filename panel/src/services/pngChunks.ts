@@ -114,7 +114,7 @@ function latin1Bytes(s: string): Uint8Array<ArrayBuffer> {
  *  非法字符降级为下划线、超长截断——键名是用户自己填的，能被写进去比静默丢弃好，
  *  但绝不往文件里写非法字节（否则整张图可能被严格的解码器判为损坏）。 */
 export function sanitizePngKeyword(raw: string): string {
-  return raw.replace(/[^\x20-\x7e\xa1-\xff]/g, '_').slice(0, 79).trim()
+  return raw.replace(/[^\x20-\x7e\xa1-\xff]/g, '_').replace(/ +/g, ' ').slice(0, 79).trim()
 }
 
 /** 取文本 chunk 的 keyword（chunk data 开头到第一个 \0，Latin-1）。
@@ -192,20 +192,127 @@ export function rewritePngTextChunks(
       const kw = readTextKeyword(bytes, c.start, c.end)
       if (kw !== null && drop.has(kw)) { dropped++; continue }
     }
-    kept.push(bytes.slice(c.start, c.end))
+    kept.push(bytes.subarray(c.start, c.end))
   }
   if (dropped === 0 && inserted.length === 0) return bytes
 
-  const head = bytes.slice(0, 8)
+  const head = bytes.subarray(0, 8)
   let total = head.length
   for (const c of kept) total += c.length
   // 尾部若有未解析的残余字节（截断/畸形文件），原样保留，绝不丢数据
   const lastEnd = chunks[chunks.length - 1].end
-  const tail = lastEnd < bytes.length ? bytes.slice(lastEnd) : null
+  const tail = lastEnd < bytes.length ? bytes.subarray(lastEnd) : null
   const out = new Uint8Array(total + (tail ? tail.length : 0))
   out.set(head, 0)
   let pos = head.length
   for (const c of kept) { out.set(c, pos); pos += c.length }
   if (tail) out.set(tail, pos)
   return out
+}
+
+/** A requested cleanup cannot be reported successful when the PNG structure is incomplete. */
+export class PngMetadataError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'PngMetadataError'
+  }
+}
+
+interface BlobChunk {
+  type: string
+  start: number
+  end: number
+  keyword?: string
+}
+
+export interface PngBlobRewriteResult {
+  blob: Blob
+  removedKeywords: string[]
+}
+
+function abortIfRequested(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('导出已取消', 'AbortError')
+}
+
+/** Signature probe reads eight bytes, never the complete image. */
+export async function isPngBlob(blob: Blob): Promise<boolean> {
+  if (blob.size < PNG_SIGNATURE.length) return false
+  const signature = new Uint8Array(await blob.slice(0, PNG_SIGNATURE.length).arrayBuffer())
+  return signature.every((value, index) => value === PNG_SIGNATURE[index])
+}
+
+/**
+ * Read only chunk headers and at most 80 keyword bytes. The image payload and unrelated
+ * metadata stay in Blob slices: a 40 MiB IDAT no longer makes several 40 MiB JS copies.
+ * CRCs of preserved chunks are preserved verbatim; this is not an image repair/decoder.
+ */
+async function inspectPngBlob(blob: Blob, signal?: AbortSignal): Promise<BlobChunk[]> {
+  const chunks: BlobChunk[] = []
+  let offset = 8
+  let hasIdat = false
+  while (offset < blob.size) {
+    abortIfRequested(signal)
+    if (offset + 12 > blob.size) throw new PngMetadataError(`PNG 块在第 ${offset} 字节处被截断`)
+    const header = new Uint8Array(await blob.slice(offset, offset + 8).arrayBuffer())
+    const length = new DataView(header.buffer, header.byteOffset, header.byteLength).getUint32(0)
+    const type = String.fromCharCode(...header.subarray(4, 8))
+    if (length > 0x7fffffff || !/^[A-Za-z]{4}$/.test(type) || type[2] !== type[2].toUpperCase()) {
+      throw new PngMetadataError(`PNG 块头在第 ${offset} 字节处不合法`)
+    }
+    const end = offset + 12 + length
+    if (end > blob.size) throw new PngMetadataError(`PNG ${type} 块在第 ${offset} 字节处超出文件边界`)
+    if (chunks.length === 0 && (type !== 'IHDR' || length !== 13)) {
+      throw new PngMetadataError('PNG 必须以 13 字节的 IHDR 块开始')
+    }
+    if (type === 'IHDR' && chunks.length !== 0) throw new PngMetadataError('PNG 含有重复的 IHDR 块')
+    const current: BlobChunk = { type, start: offset, end }
+    if (TEXT_TYPES.has(type)) {
+      const keywordBytes = new Uint8Array(await blob.slice(offset + 8, offset + 8 + Math.min(length, 80)).arrayBuffer())
+      const terminator = keywordBytes.indexOf(0)
+      if (terminator < 1 || terminator > 79) throw new PngMetadataError(`PNG ${type} 块在第 ${offset} 字节处的关键词不合法`)
+      current.keyword = String.fromCharCode(...keywordBytes.subarray(0, terminator))
+    }
+    chunks.push(current)
+    if (type === 'IDAT') hasIdat = true
+    if (type === 'IEND') {
+      if (length !== 0) throw new PngMetadataError('PNG IEND 块必须为空')
+      if (!hasIdat) throw new PngMetadataError('PNG 缺少 IDAT 图像数据')
+      return chunks // Preserve historical author trailers after IEND without interpreting them.
+    }
+    offset = end
+  }
+  throw new PngMetadataError('PNG 文件不完整：缺少 IEND 块')
+}
+
+/** Strict export path; original Blob and pixel payload are never rewritten in place. */
+export async function rewritePngTextBlob(
+  blob: Blob,
+  dropKeywords: Iterable<string>,
+  entries: Array<[string, string]>,
+  options: { signal?: AbortSignal } = {},
+): Promise<PngBlobRewriteResult> {
+  abortIfRequested(options.signal)
+  const chunks = await inspectPngBlob(blob, options.signal)
+  const drop = new Set(dropKeywords)
+  const idat = chunks.find(chunk => chunk.type === 'IDAT')!
+  const dropped = chunks.filter(chunk => chunk.keyword !== undefined && drop.has(chunk.keyword))
+  if (!dropped.length && !entries.length) return { blob, removedKeywords: [] }
+
+  const parts: BlobPart[] = []
+  let spanStart = 0
+  for (const chunk of chunks) {
+    abortIfRequested(options.signal)
+    const insert = chunk.start === idat.start && entries.length > 0
+    const remove = chunk.keyword !== undefined && drop.has(chunk.keyword)
+    if (!insert && !remove) continue
+    if (chunk.start > spanStart) parts.push(blob.slice(spanStart, chunk.start))
+    if (insert) for (const [key, value] of entries) parts.push(makePngTextChunk(key, value))
+    spanStart = remove ? chunk.end : chunk.start
+  }
+  if (spanStart < blob.size) parts.push(blob.slice(spanStart))
+  abortIfRequested(options.signal)
+  return {
+    blob: new Blob(parts, { type: 'image/png' }),
+    removedKeywords: [...new Set(dropped.map(chunk => chunk.keyword!))],
+  }
 }

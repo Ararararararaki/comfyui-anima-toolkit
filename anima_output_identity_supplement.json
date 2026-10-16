@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "series": {
+    "bangdreamyumemita": {
+      "n": "bang dream! yume mita",
+      "sn": "BanG Dream! 梦限大",
+      "zh": [
+        "BanG Dream! 梦限大",
+        "BanG Dream! YUME∞MITA",
+        "バンドリ！ ゆめ∞みた",
+        "梦限大",
+        "夢限大"
+      ]
+    },
+    "arknightsendfield": {
+      "n": "arknights: endfield",
+      "sn": "明日方舟：终末地",
+      "zh": [
+        "明日方舟：终末地",
+        "明日方舟:终末地",
+        "Arknights: Endfield"
+      ]
+    }
+  },
+  "characters": {
+    "violabangdream": {
+      "t": "viola (bang dream!)",
+      "s": "bangdreamyumemita",
+      "zh": [
+        "薇欧拉",
+        "薇歐拉",
+        "ビオラ",
+        "viola",
+        "viola (bang dream)"
+      ]
+    },
+    "typhoeusarknights": {
+      "t": "typhoeus (arknights)",
+      "s": "arknightsendfield",
+      "zh": [
+        "提弗洛斯",
+        "typhoeusendfield",
+        "typhoeus_endfield"
+      ]
+    },
+    "siarknights": {
+      "t": "si (arknights)",
+      "s": "arknightsendfield",
+      "zh": [
+        "祀",
+        "si_endfield"
+      ]
+    }
+  },
+  "provenance": {
+    "reviewed": "2026-10-16",
+    "officialNamesAndWork": "https://endfield.hypergryph.com/operator",
+    "violaOfficial": "https://anime.bang-dream.com/yumemita/character/viola/",
+    "matching": "Reviewed exact normalized character triggers only; generic typhon, si and endfield are not character aliases."
+  }
+}

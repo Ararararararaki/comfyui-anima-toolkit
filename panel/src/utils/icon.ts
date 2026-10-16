@@ -6,6 +6,10 @@ type IconPaths = Record<string, string>
 
 // SVG path data for commonly used icons (lucide-compatible, 24x24 viewBox)
 const PATHS: IconPaths = {
+  panelLeft: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
+  hardDrive: '<path d="m5 3-3 12v4a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4L19 3Z"/><path d="M2 15h20M6 18h.01M10 18h.01"/>',
+  images: '<rect x="7" y="3" width="14" height="14" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12M7 13l4-4 10 8"/><circle cx="16" cy="7" r="1"/>',
+  slidersHorizontal: '<path d="M3 6h4m4 0h10M3 12h10m4 0h4M3 18h2m4 0h12M7 3v6m6 0v6M5 15v6"/>',
   search: '<path d="m21 21-4.35-4.35M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z"/>',
   star: '<path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>',
   copy: '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',

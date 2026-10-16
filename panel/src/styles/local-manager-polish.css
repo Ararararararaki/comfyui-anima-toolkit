@@ -322,57 +322,6 @@
   box-shadow: 0 1px 4px color-mix(in srgb, var(--text) 36%, transparent);
 }
 .local-manager-polished .local-grid-status-dot.matched { background: #22c55e; }
-.local-manager-polished .local-grid-actions { align-items: center; gap: 5px; }
-.local-manager-polished .local-grid-actions > button,
-.local-manager-polished .local-card-more > summary {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  flex: 0 0 34px;
-  place-items: center;
-  padding: 0;
-  border: 1px solid color-mix(in srgb, var(--text) 35%, transparent);
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--bg2) 82%, transparent);
-  color: var(--text);
-  cursor: pointer;
-  box-shadow: 0 2px 7px color-mix(in srgb, var(--text) 16%, transparent);
-  backdrop-filter: none;
-}
-.local-manager-polished .local-grid-actions > button:hover,
-.local-manager-polished .local-card-more > summary:hover { border-color: var(--accent); color: var(--accent); }
-.local-manager-polished .local-card-more { position: relative; }
-.local-manager-polished .local-card-more > summary { list-style: none; }
-.local-manager-polished .local-card-more > summary::-webkit-details-marker { display: none; }
-.local-manager-polished .local-card-more-menu {
-  position: absolute;
-  z-index: 30;
-  top: 40px;
-  right: 0;
-  min-width: 188px;
-  padding: 5px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--bg2);
-  box-shadow: 0 9px 24px color-mix(in srgb, var(--text) 18%, transparent);
-}
-.local-manager-polished .local-card-more-menu button {
-  display: flex;
-  width: 100%;
-  min-height: 34px;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 9px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text);
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
-  font-size: 12px;
-}
-.local-manager-polished .local-card-more-menu button:hover { background: var(--accent-soft); color: var(--accent); }
 .local-manager-polished .local-grid-body {
   max-height: 62%;
   padding: 8px 10px 9px;

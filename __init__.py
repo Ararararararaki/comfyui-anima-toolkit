@@ -100,6 +100,14 @@ from .anima_prompt_expander import (
     NODE_DISPLAY_NAME_MAPPINGS as PROMPT_EXPANDER_NODE_DISPLAY_NAME_MAPPINGS,
 )
 
+from .anima_prompt_agent import (
+    NODE_CLASS_MAPPINGS as PROMPT_AGENT_NODE_CLASS_MAPPINGS,
+    NODE_DISPLAY_NAME_MAPPINGS as PROMPT_AGENT_NODE_DISPLAY_NAME_MAPPINGS,
+)
+from .services.prompt_agent.routes import register_routes as _register_prompt_agent_routes
+
+_register_prompt_agent_routes(PromptServer.instance.routes)
+
 from . import anima_local_llm
 
 from . import anima_prompt_library
@@ -178,6 +186,7 @@ NODE_CLASS_MAPPINGS = {
     **CLOTHING_DRAW_NODE_CLASS_MAPPINGS,
     **ANIMA_FORMATTER_NODE_CLASS_MAPPINGS,
     **PROMPT_EXPANDER_NODE_CLASS_MAPPINGS,
+    **PROMPT_AGENT_NODE_CLASS_MAPPINGS,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -197,11 +206,12 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **CLOTHING_DRAW_NODE_DISPLAY_NAME_MAPPINGS,
     **ANIMA_FORMATTER_NODE_DISPLAY_NAME_MAPPINGS,
     **PROMPT_EXPANDER_NODE_DISPLAY_NAME_MAPPINGS,
+    **PROMPT_AGENT_NODE_DISPLAY_NAME_MAPPINGS,
 }
 
 WEB_DIRECTORY = "./web"
 
-_FALLBACK_VERSION = "2.32.0"
+_FALLBACK_VERSION = "2.33.0"
 
 try:
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"), encoding="utf-8") as _vf:
@@ -252,6 +262,10 @@ if hasattr(_host_app, 'on_cleanup') and hasattr(_host_app, 'get'):
     _install_danbooru_resources(_host_app)
     _install_civitai_resources(_host_app)
     _install_pixiv_resources(_host_app)
+    from .services.local_tagger import install_resources as _install_local_tagger_resources
+    _install_local_tagger_resources(_host_app)
+    from .services.output_share import install_resources as _install_output_share_resources
+    _install_output_share_resources(_host_app, folder_paths.get_temp_directory())
 
 from .services import image_proxy as _image_proxy
 

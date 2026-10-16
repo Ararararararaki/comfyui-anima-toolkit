@@ -11,3 +11,7 @@ playwright>=1.40
 # 「本地 LLM 翻译」provider（anima_local_llm）用到的 GGUF 推理后端。
 # 缺失时：该 provider 不加载，其余翻译源（本地词典 / DeepLX / 百度 / 通义等）不受影响。
 llama-cpp-python>=0.2.0
+
+# Prompt Agent 的 DSH 原生 skill/工具执行（通过本机 Harness Relay）。
+# 使用官方 SDK 的已验证 v1 API；缺失时仅原生模式提示安装，普通编辑不受影响。
+mcp>=1.26,<2

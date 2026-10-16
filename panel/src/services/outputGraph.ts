@@ -1,7 +1,7 @@
 import type { PromptStage, PromptStatus } from '../types/outputs'
 
-type Ref = { nodeId: string; outputSlot: number }
-type GraphNode = { id: string; type: string; inputs: Record<string, unknown>; inputTypes: Record<string, string>; raw: any }
+export type Ref = { nodeId: string; outputSlot: number }
+export type GraphNode = { id: string; type: string; inputs: Record<string, unknown>; inputTypes: Record<string, string>; raw: any }
 type Graph = Map<string, GraphNode>
 
 export interface GraphPromptResult {
@@ -17,6 +17,30 @@ const IMAGE_INPUTS = new Set(['images', 'image', 'samples', 'latent', 'latent_im
 const TEXT_INPUT = /^(text(?:_[a-z0-9]+)?|prompt(?:_text)?|positive|negative|string(?:_\d+)?|value|content|contents|input_str|opt_text|caption|tags)$/i
 const dedup = (values: string[]) => [...new Set(values.map(value => value.trim()).filter(Boolean))]
 const join = (values: string[]) => dedup(values).join(', ')
+
+// Easy-Use py/nodes/image.py:imageSaveSimple delegates this exact class to
+// ComfyUI SaveImage/PreviewImage with the same images input and metadata.
+export const isImageSaveType = (type: string): boolean => /saveimage/i.test(type) || /^easy imageSave$/i.test(type)
+
+/** Match only a unique literal prefix and ComfyUI's official counter suffix. */
+export function outputNodeForFilename(workflow: unknown, filename: string): string | null {
+  const fullName = filename.replace(/\\/g, '/')
+  const name = fullName.split('/').pop() || ''
+  const scoped = new Set<string>()
+  const matches = [...normalizeOutputGraph(workflow).values()].filter(node => {
+    const prefix = node.inputs.filename_prefix
+    if (!isImageSaveType(node.type) || [2, 4].includes(node.raw.mode) || typeof prefix !== 'string' || !prefix || prefix.includes('%')) return false
+    const basename = prefix.replace(/\\/g, '/').split('/').pop() || ''
+    const escaped = basename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    if (ref(node.inputs.only_preview)) return false
+    const suffix = (/^easy imageSave$/i.test(node.type) && node.inputs.only_preview === true ? '_temp_[a-z]{5}' : '') + '_\\d{5,}_\\.(?:png|webp|jpe?g)$'
+    const normalizedPrefix = prefix.replace(/\\/g, '/')
+    if (normalizedPrefix.includes('/') && new RegExp('(?:^|/)' + normalizedPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + suffix, 'i').test(fullName)) scoped.add(node.id)
+    return !!basename && new RegExp('^' + escaped + suffix, 'i').test(name)
+  })
+  const eligible = scoped.size ? matches.filter(node => scoped.has(node.id)) : matches
+  return eligible.length === 1 ? eligible[0].id : null
+}
 
 /**
  * **已证实的显示缓存型节点**（语义防护，不是"通用提取算法"）。
@@ -55,7 +79,7 @@ function ref(value: unknown): Ref | null {
     ? { nodeId: String(value[0]), outputSlot: value[1] } : null
 }
 
-function normalize(workflow: any): Graph {
+export function normalizeOutputGraph(workflow: any): Graph {
   const graph: Graph = new Map()
   const ui = Array.isArray(workflow?.nodes)
   const list = ui ? workflow.nodes : Array.isArray(workflow) ? workflow : Object.entries(workflow || {}).map(([id, value]) => ({ id, ...(value as object) }))
@@ -100,6 +124,7 @@ function normalize(workflow: any): Graph {
     else if (/^KSampler$/i.test(type)) names = ['seed', 'control_after_generate', 'steps', 'cfg', 'sampler_name', 'scheduler', 'denoise']
     else if (/^KSamplerAdvanced$/i.test(type)) names = ['add_noise', 'noise_seed', 'control_after_generate', 'steps', 'cfg', 'sampler_name', 'scheduler', 'start_at_step', 'end_at_step', 'return_with_leftover_noise']
     else if (/SaveImage/i.test(type)) names = ['filename_prefix']
+    else if (/^easy imageSave$/i.test(type)) names = ['filename_prefix', 'only_preview']
     else if (/TK\s*String\s*Router/i.test(type)) names = ['separator', 'router_settings']
     for (let index = 0; index < names.length; index++) if (inputs[names[index]] === undefined && widgets[index] !== undefined) inputs[names[index]] = widgets[index]
     if (/TK\s*String\s*Router/i.test(type)) {
@@ -116,13 +141,13 @@ function normalize(workflow: any): Graph {
 }
 
 /** Resolve only the generation ancestry of one saved output. No UI/global state. */
-export function parseGraphPrompt(workflow: unknown): GraphPromptResult {
-  const graph = normalize(workflow)
+export function parseGraphPrompt(workflow: unknown, outputNodeId?: string | null): GraphPromptResult {
+  const graph = normalizeOutputGraph(workflow)
   const warnings: string[] = []
   const warn = (message: string) => { if (!warnings.includes(message)) warnings.push(message) }
   const isSampler = (node: GraphNode) => !(node.type.toLowerCase() === 'ultimatesdupscale' && node.inputs.mode_type === 'None' && node.inputs.seam_fix_mode === 'None')
     && /sampler|upscal/i.test(node.type) && ('positive' in node.inputs || 'positive_cond' in node.inputs || 'guider' in node.inputs || 'conditioning' in node.inputs)
-  const savers = [...graph.values()].filter(node => /saveimage/i.test(node.type) && node.raw.mode !== 2 && node.raw.mode !== 4 && Object.keys(node.inputs).some(key => IMAGE_INPUTS.has(key)))
+  const savers = [...graph.values()].filter(node => isImageSaveType(node.type) && node.raw.mode !== 2 && node.raw.mode !== 4 && Object.keys(node.inputs).some(key => IMAGE_INPUTS.has(key)))
   let imageAmbiguous = false
   const stages: GraphNode[] = []
   const visitedImages = new Set<string>()
@@ -132,7 +157,7 @@ export function parseGraphPrompt(workflow: unknown): GraphPromptResult {
     if (activeImages.has(node.id) || activeImages.size > 256) { warn('图片生成链包含循环或超过解析上限'); return }
     activeImages.add(node.id)
     const edges = Object.entries(node.inputs).filter(([name, value]) => ref(value) && (IMAGE_INPUTS.has(name) || ['IMAGE', 'LATENT'].includes(node.inputTypes[name])))
-    const known = isSampler(node) || /saveimage/i.test(node.type) || new Set(['vaedecode', 'vaedecodetiled', 'vaeencode', 'vaeencodetiled', 'vaeencodeforinpaint', 'latentupscale', 'latentupscaleby', 'imagescale', 'imagescaleby', 'reroute', 'imageblend', 'imagecompositemasked', 'latentcomposite', 'latentcompositemasked', 'ultimatesdupscale']).has(node.type.toLowerCase())
+    const known = isSampler(node) || isImageSaveType(node.type) || new Set(['vaedecode', 'vaedecodetiled', 'vaeencode', 'vaeencodetiled', 'vaeencodeforinpaint', 'latentupscale', 'latentupscaleby', 'imagescale', 'imagescaleby', 'reroute', 'imageblend', 'imagecompositemasked', 'latentcomposite', 'latentcompositemasked', 'ultimatesdupscale']).has(node.type.toLowerCase())
     if (!known && edges.length > 1) {
       imageAmbiguous = true
       warn('无法确定图像分流节点的实际输入分支')
@@ -151,8 +176,10 @@ export function parseGraphPrompt(workflow: unknown): GraphPromptResult {
     visitedImages.add(node.id)
     if (isSampler(node)) stages.push(node)
   }
-  if (savers.length > 1) return { prompt: '', negativePrompt: '', promptStages: [], promptStatus: 'ambiguous', promptWarnings: ['图片包含多个保存分支，未记录本图对应的保存节点'] }
-  if (savers.length === 1) visitImage(savers[0])
+  const selected = outputNodeId ? savers.find(node => node.id === String(outputNodeId)) : null
+  if (outputNodeId && !selected) return { prompt: '', negativePrompt: '', promptStages: [], promptStatus: 'missing', promptWarnings: ['图片的保存节点标识不存在'] }
+  if (!selected && savers.length > 1) return { prompt: '', negativePrompt: '', promptStages: [], promptStatus: 'ambiguous', promptWarnings: ['图片包含多个保存分支，未记录本图对应的保存节点'] }
+  if (selected || savers.length === 1) visitImage(selected || savers[0])
   else {
     const samplers = [...graph.values()].filter(isSampler)
     if (samplers.length === 1) { visitImage(samplers[0]); warn('缺少保存节点，按唯一采样分支恢复文本') }
@@ -273,6 +300,17 @@ export function parseGraphPrompt(workflow: unknown): GraphPromptResult {
       if (!Array.isArray(selection?.selections) || selection.selections.length !== 1) { warn('图库批量文本缺少本图的运行期选择索引'); return [] }
       return [join([selection.role_prompt, selection.selections[0]?.prompt].filter(value => typeof value === 'string'))]
     }
+    if (type === 'danboorutagsorternode') {
+      if (source.outputSlot !== 1) { warn('标签分类包不是文本输出'); return [] }
+      let pattern: RegExp | undefined
+      try { if (node.inputs.regex_blacklist) pattern = new RegExp(String(node.inputs.regex_blacklist).replace(/^\(\?i\)/, ''), 'i') }
+      catch { warn('排序节点的正则排除无法静态核验'); return [] }
+      const blocked = new Set(String(node.inputs.tag_blacklist || '').split(',').map(value => value.trim().toLowerCase()))
+      const tags = values(node, ['tags'], role, next).flatMap(value => value.split(',')).map(value => value.trim())
+        .filter(value => value && !blocked.has(value.toLowerCase()) && !pattern?.test(value))
+      warn('排序节点的保存标签已应用排除规则；分类顺序与注释未完整恢复')
+      return [join(tags)]
+    }
     if (/guider/.test(type)) return values(node, role === 'negative' ? ['negative'] : ['positive', 'conditioning'], role, next)
     // Unknown text transforms expose only confirmed input fragments; never infer
     // runtime output or traverse model/CLIP/image/configuration branches.
@@ -293,4 +331,17 @@ export function parseGraphPrompt(workflow: unknown): GraphPromptResult {
   const negativePrompt = join(promptStages.map(stage => stage.negativePrompt))
   const promptStatus: PromptStatus = warnings.length ? 'partial' : prompt ? 'complete' : 'missing'
   return { prompt, negativePrompt, promptStages, promptStatus, promptWarnings: warnings, samplerInputs: stages[stages.length - 1]?.inputs }
+}
+
+/** Multiple outputs can agree on identity text while output ownership stays unknown. */
+export function graphIdentityPrompt(workflow: unknown): string {
+  const saves = [...normalizeOutputGraph(workflow).values()].filter(node => isImageSaveType(node.type) && ![2, 4].includes(node.raw.mode) && ['images', 'image'].some(key => ref(node.inputs[key])))
+  if (saves.length < 2 || saves.length > 16) return ''
+  let agreed = ''
+  for (const saver of saves) {
+    const prompt = parseGraphPrompt(workflow, saver.id).prompt.trim()
+    if (!prompt || prompt.length > 32768 || agreed && agreed !== prompt) return ''
+    agreed = prompt
+  }
+  return agreed
 }

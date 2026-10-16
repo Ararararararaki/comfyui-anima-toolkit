@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie'
-import type { OutputFile, OutputMetadata, OutputThumbnail } from '../types/outputs'
+import type { OutputFile, OutputMetadata, OutputThumbnail, OutputSource, OutputSummary } from '../types/outputs'
 
 // 与 outputManifest.hashPath 一致（文件路径 → 主键）。内联避免 db ↔ services 循环依赖。
 function hashPath(path: string): string {
@@ -13,6 +13,7 @@ function hashPath(path: string): string {
 }
 
 export interface OutputManifest {
+  sourceId?: string
   id: string                    // 路径哈希（同 OutputFile.id）
   path: string                  // 相对路径
   mtime: number                 // 文件最后修改时间
@@ -36,6 +37,8 @@ export class OutputsDB extends Dexie {
   thumbnails!: Table<OutputThumbnail, string>
   dirHandles!: Table<any, string>
   manifest!: Table<OutputManifest, string>
+  sources!: Table<OutputSource, string>
+  summaries!: Table<OutputSummary, string>
 
   constructor() {
     super(DB_NAME)
@@ -57,6 +60,17 @@ export class OutputsDB extends Dexie {
       thumbnails: '&id',
       dirHandles: '',
       manifest: '&id, path, mtime, orphaned',
+    })
+    this.version(4).stores({
+      files: '&id, sourceId, path, filename, favorite, rating, createdAt, mtime',
+      metadata: '&imageId',
+      thumbnails: '&id',
+      dirHandles: '',
+      manifest: '&id, sourceId, path, mtime, orphaned',
+      sources: '&id, kind',
+    })
+    this.version(5).stores({
+      summaries: '&imageId, sourceId, key, indexStatus',
     })
   }
 }

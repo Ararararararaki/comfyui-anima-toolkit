@@ -781,7 +781,7 @@ async def anima_thumb(request):
 # 本模块保留全量重建（_gallery_build_worker / /anima/gallery/rebuild）作为**保底**：
 # 预热器缺失（老用户更新链只下发部分文件）时，行为与改动前完全一致。
 
-_GALLERY_STATE = {"building": False, "progress": 0, "total": 0, "index": None, "loaded": False, "sig": None}
+_GALLERY_STATE = {"building": False, "progress": 0, "total": 0, "error": None}
 _GALLERY_LOCK = threading.Lock()
 
 # latest（os.stat 的 mtime，**秒**）与 builtAt（索引里的 **毫秒**）比大小时的容差（毫秒）。
@@ -826,7 +826,8 @@ def _gallery_warmup_status() -> dict:
 def _gallery_warmup_busy() -> bool:
     """预热器是否正在跑（含 debounce 排队中）。纯内存读取。"""
     status = _gallery_warmup_status()
-    return bool(status.get("running") or status.get("pending"))
+    refresh = status.get("refresh") or {}
+    return bool(status.get("active") or status.get("pending") or refresh.get("state") in ("queued", "deferred", "running"))
 
 
 def _gallery_handoff_to_warmup(reason: str) -> bool:
@@ -870,53 +871,21 @@ def _gallery_plugin_version() -> str:
     return _GALLERY_VERSION_CACHE
 
 
-def _gallery_index_sig() -> tuple:
-    """索引文件签名 (路径, mtime, size)：一次 stat，用来判断内存索引是否已被后台写过盘。"""
-    path = _gallery_index_path()
-    try:
-        st = os.stat(path)
-        return (path, st.st_mtime, st.st_size)
-    except OSError:
-        return (path, 0.0, 0)
-
-
-async def _gallery_sync_index_from_disk() -> bool:
-    """磁盘索引换代（预热器增量更新写过盘）时，把内存索引重载进来。
-
-    为什么必须有这一步：增量更新由 services/gallery_warmup.py 在后台写**文件**，它拿不到本模块的
-    _GALLERY_STATE —— 不重载，manifest/fresh 会永远返回旧索引，表现为「预热跑了但面板还是旧图」。
-    代价：索引没换代时只花一次 stat（不读那 16.5MB）；换代才在**线程**里 load_index（不阻塞事件循环）。
-    正在全量重建（building）时跳过：那份内存索引由 _gallery_build_worker 负责写。
-    """
-    sig = _gallery_index_sig()
-    with _GALLERY_LOCK:
-        if _GALLERY_STATE["building"] or sig == _GALLERY_STATE["sig"]:
-            return False
-    index = await asyncio.to_thread(anima_gallery.load_index, sig[0])
-    with _GALLERY_LOCK:
-        _GALLERY_STATE["index"] = index
-        _GALLERY_STATE["sig"] = sig
-        _GALLERY_STATE["loaded"] = int(index.get("builtAt", 0) or 0) > 0
-    return True
-
-
 def _gallery_build_worker(output_root: str) -> None:
     try:
         def progress(done, total):
             with _GALLERY_LOCK:
                 _GALLERY_STATE["progress"] = done
                 _GALLERY_STATE["total"] = total
-        index = anima_gallery.refresh(output_root, _gallery_index_path(), "full", progress_cb=progress)["index"]
+        anima_gallery.refresh(output_root, _gallery_index_path(), "full", progress_cb=progress)
         with _GALLERY_LOCK:
-            _GALLERY_STATE["index"] = index
-            _GALLERY_STATE["loaded"] = True
             _GALLERY_STATE["building"] = False
-            # 记下刚落盘那份索引的签名：省掉紧随其后的 sync 再读一次 16.5MB
-            _GALLERY_STATE["sig"] = _gallery_index_sig()
+            _GALLERY_STATE["error"] = None
     except Exception as exc:
         print(f"[anima_gallery] 索引构建失败: {exc}")
         with _GALLERY_LOCK:
             _GALLERY_STATE["building"] = False
+            _GALLERY_STATE["error"] = str(exc)
 
 
 @PromptServer.instance.routes.get("/anima/gallery/status")
@@ -934,24 +903,27 @@ async def gallery_status(request):
         output_root = folder_paths.get_output_directory()
     except Exception:  # noqa: BLE001
         output_root = ""
-    # ⚠️ 跨模块接缝（2026-09-16 前端 agent 实测发现）：预热器是直接改索引**文件**的
-    #    （services/gallery_warmup.py → anima_gallery.update_index_incremental），拿不到本模块的
-    #    内存副本 _GALLERY_STATE["index"]。这里不补一次同步的话，预热写过盘之后
-    #    status.index.builtAt 会一直是旧值 —— 只认它的前端永远不去拉新索引（表现为"预热跑了但面板还是旧图"）。
-    #    代价：没换代只多一次 stat；换代才在线程里 load_index（与 /manifest 同一套逻辑）。
-    await _gallery_sync_index_from_disk()
+    warmup = _gallery_warmup_status()
+    refresh_state = warmup.get("refresh", {"state": "idle", "requestId": 0})
+    view = await asyncio.to_thread(anima_gallery.catalog_view, _gallery_index_path())
     with _GALLERY_LOCK:
-        index = _GALLERY_STATE["index"] or {}
+        index = view["index"]
         index_view = {
             "total": int(index.get("total", 0) or 0),
             "builtAt": index.get("builtAt", 0) or 0,
-            "building": bool(_GALLERY_STATE["building"]),
-            "progress": _GALLERY_STATE["progress"],
-            "loaded": bool(_GALLERY_STATE["loaded"]),
+            "building": bool(_GALLERY_STATE["building"] or warmup.get("active")),
+            "progress": refresh_state.get("progress", 0) if refresh_state.get("state") == "running" else _GALLERY_STATE["progress"],
+            "loaded": True,
+            "revision": view["revision"],
+            "pending": view["pending"],
+            "refresh": refresh_state,
+            "parserVersion": anima_gallery.PARSER_VERSION,
+            "indexParserVersion": index.get("parserVersion", 0),
         }
     return web.json_response({
-        "warmup": _gallery_warmup_status(),
+        "warmup": warmup,
         "index": index_view,
+        "revision": view["revision"], "pending": view["pending"], "refresh": refresh_state,
         "outputRoot": output_root,
         "version": _gallery_plugin_version(),
     }, dumps=lambda o: json.dumps(o, ensure_ascii=False, separators=(",", ":")))
@@ -960,41 +932,35 @@ async def gallery_status(request):
 @PromptServer.instance.routes.get("/anima/gallery/manifest")
 async def gallery_manifest(request):
     """Gallery summary with encoding cached for a ready, immutable index generation."""
-    await _gallery_sync_index_from_disk()
-    with _GALLERY_LOCK:
-        needs_load = not _GALLERY_STATE["loaded"] and not _GALLERY_STATE["building"]
-    if needs_load:
-        loaded_index = await asyncio.to_thread(anima_gallery.load_index, _gallery_index_path())
-        with _GALLERY_LOCK:
-            if not _GALLERY_STATE["loaded"] and not _GALLERY_STATE["building"]:
-                _GALLERY_STATE["index"] = loaded_index
-                _GALLERY_STATE["loaded"] = loaded_index.get("builtAt", 0) > 0
-                _GALLERY_STATE["sig"] = _gallery_index_sig()
     try:
         output_root = os.path.abspath(folder_paths.get_output_directory()).replace("\\", "/")
     except Exception:
         output_root = ""
+    warmup = _gallery_warmup_status()
+    refresh_state = warmup.get("refresh", {"state": "idle", "requestId": 0})
+    view = await asyncio.to_thread(anima_gallery.catalog_view, _gallery_index_path())
     with _GALLERY_LOCK:
-        index = _GALLERY_STATE["index"]
-        sig = _GALLERY_STATE["sig"]
-        cacheable = bool(_GALLERY_STATE["loaded"] and not _GALLERY_STATE["building"] and index)
+        index = view["index"]
+        sig = view["revision"]
+        cacheable = not _GALLERY_STATE["building"] and not warmup.get("active")
         payload = {
-            "building": _GALLERY_STATE["building"],
-            "progress": _GALLERY_STATE["progress"],
+            "building": bool(_GALLERY_STATE["building"] or warmup.get("active")),
+            "progress": refresh_state.get("progress", 0) if refresh_state.get("state") == "running" else _GALLERY_STATE["progress"],
             "builtAt": (index or {}).get("builtAt", 0),
             "total": (index or {}).get("total", 0),
             "parserVersion": anima_gallery.PARSER_VERSION,
             "indexParserVersion": (index or {}).get("parserVersion", 0),
             "outputRoot": output_root,
+            "revision": view["revision"], "pending": view["pending"], "refresh": refresh_state,
         }
-        if _GALLERY_STATE["loaded"] and index:
-            payload["entries"] = index.get("entries", {})
-        generation = (id(index), sig, anima_gallery.PARSER_VERSION, output_root)
+        payload["entries"] = index.get("entries", {})
+        generation = (id(index), sig, anima_gallery.PARSER_VERSION, output_root,
+                      refresh_state.get("requestId"), refresh_state.get("state"), refresh_state.get("progress"))
 
     def is_current():
-        with _GALLERY_LOCK:
-            return (_GALLERY_STATE["index"] is index and _GALLERY_STATE["sig"] == sig
-                    and _GALLERY_STATE["loaded"] and not _GALLERY_STATE["building"])
+        owner = anima_gallery.catalog_for(_gallery_index_path())
+        with owner.lock:
+            return owner.index is index
 
     raw, compressed = await _GALLERY_RESPONSE_CACHE.encode(payload, generation, cacheable, is_current)
     headers = {"Vary": "Accept-Encoding"}
@@ -1036,15 +1002,10 @@ async def gallery_fresh(request):
     except Exception as exc:
         return web.json_response({"error": f"扫描输出目录失败: {exc}"}, status=500)
 
-    # 预热器可能刚把增量索引写盘 —— 先让内存索引跟上，再算 changed/known/builtAt，
-    # 否则会出现「后台其实已经更新完了，本端点却永远说还没变」。
-    await _gallery_sync_index_from_disk()
-
-    # 用 total 而不是 len(entries)：索引对象有 16.5MB，别为了数个数把它整个读进来。
-    with _GALLERY_LOCK:
-        index = _GALLERY_STATE["index"]
-        known = int((index or {}).get("total", 0) or 0)
-        built_at = float((index or {}).get("builtAt", 0) or 0)
+    view = await asyncio.to_thread(anima_gallery.catalog_view, _gallery_index_path())
+    index = view["index"]
+    known = int(index.get("total", 0) or 0)
+    built_at = float(index.get("builtAt", 0) or 0)
     # 判据①：磁盘文件数比索引里的 total 多（原有语义）。
     # 判据②：磁盘上有**比索引构建时刻更新**的文件（latest > builtAt）。
     #   只判①会漏两种情况，实测表现为「输出图不自动更新、必须手动点刷新」：
@@ -1058,7 +1019,7 @@ async def gallery_fresh(request):
     #   （「文件被覆盖/重写、总数没变」时探测不到新图）。现在统一换算到毫秒，容差 _GALLERY_STALE_LAG_MS。
     stale = bool(built_at) and latest * 1000.0 > built_at + _GALLERY_STALE_LAG_MS
     with _GALLERY_LOCK:
-        changed = count > known or stale
+        changed = count != known or stale
         building = bool(_GALLERY_STATE["building"])
         if changed and not building:
             # 降级链（2026-09-15）：① 首选交给预热器做**增量**更新（request_warmup，带 debounce
@@ -1082,7 +1043,179 @@ async def gallery_fresh(request):
         "builtAt": round(built_at, 3),
         "changed": changed,
         "building": building,
+        "revision": (index or {}).get("revision", 0),
     })
+
+
+@PromptServer.instance.routes.get("/anima/gallery/changes")
+async def gallery_changes(request):
+    try:
+        since = int(request.query.get("since", "0"))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "since 必须是整数修订号"}, status=400)
+    payload = await asyncio.to_thread(anima_gallery.index_changes, _gallery_index_path(), since)
+    try:
+        output_root = os.path.abspath(folder_paths.get_output_directory()).replace("\\", "/")
+    except Exception:
+        output_root = ""
+    warmup = _gallery_warmup_status()
+    payload.update(outputRoot=output_root, refresh=warmup.get("refresh", {"state": "idle", "requestId": 0}),
+                   building=bool(warmup.get("active")), ready=True)
+    from .services import background_budget
+    payload["budgetReason"] = background_budget.defer_reason() or ""
+    return web.json_response(payload, dumps=lambda value: json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+
+@PromptServer.instance.routes.post("/anima/gallery/refresh")
+async def gallery_refresh(request):
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return web.json_response({"error": "请求必须是 JSON 对象"}, status=400)
+    mode = body.get("mode", "incremental") if isinstance(body, dict) else None
+    if mode not in ("incremental", "full"):
+        return web.json_response({"error": "mode 必须是 incremental 或 full"}, status=400)
+    module = _gallery_warmup_module()
+    if module is None or not callable(getattr(module, "request_refresh", None)):
+        return web.json_response({"started": False, "refresh": {"state": "failed", "error": "索引后台服务不可用，请重启宿主加载完整插件"}}, status=503)
+    before = module.warmup_status().get("refresh", {}).get("requestId", 0)
+    refresh_state = module.request_refresh(mode)
+    current = await asyncio.to_thread(anima_gallery.index_changes, _gallery_index_path(), 0)
+    return web.json_response({"started": refresh_state["requestId"] != before,
+                              "revision": current["revision"], "pending": current["pending"], "refresh": refresh_state})
+
+
+@PromptServer.instance.routes.post("/anima/gallery/classify")
+async def gallery_classify(request):
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return web.json_response({"error": "请求必须是 JSON 对象"}, status=400)
+    items = body.get("items") if isinstance(body, dict) else None
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        return web.json_response({"error": "items 必须是对象数组"}, status=400)
+    from .services.output_classification import classify_many, classification_version
+    def classify_batch():
+        return {"items": classify_many(items), "version": classification_version()}
+    payload = await asyncio.to_thread(classify_batch)
+    return web.json_response(payload, dumps=lambda value: json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+
+@PromptServer.instance.routes.get("/anima/gallery/fallback")
+async def gallery_fallback_status(request):
+    from .services.output_fallback import fallback_catalog
+    return web.json_response(await asyncio.to_thread(fallback_catalog))
+
+
+@PromptServer.instance.routes.post("/anima/gallery/fallback")
+async def gallery_fallback(request):
+    from .services.output_fallback import fallback_defer_reason, infer_missing_image, lookup_saved_digest
+    try:
+        options = None
+        if request.content_type == 'application/json':
+            if request.content_length is not None and request.content_length > 8192:
+                return web.json_response({"error": "识别设置请求过大"}, status=400)
+            options = await request.json()
+            if isinstance(options, dict) and options.get('source') == 'library':
+                return web.json_response(await lookup_saved_digest(options.get('sha256'), options))
+        reason = fallback_defer_reason()
+        if reason:
+            return web.json_response({"status": "deferred", "reason": reason})
+        if request.content_type.startswith("multipart/"):
+            form = await request.post()
+            options = json.loads(form.get("options", "{}"))
+            uploaded = form.get("image")
+            if not hasattr(uploaded, "file"):
+                return web.json_response({"error": "缺少图片"}, status=400)
+            image = await asyncio.to_thread(uploaded.file.read)
+            validate = lambda: True
+        else:
+            if options is None:
+                options = await request.json()
+            if not isinstance(options, dict) or options.get("source") != "gallery":
+                return web.json_response({"error": "需要 output 图片身份或已授权目录的图片上传"}, status=400)
+            root = folder_paths.get_output_directory()
+            if os.path.normcase(os.path.normpath(options.get("root", ""))) != os.path.normcase(os.path.normpath(root)):
+                return web.json_response({"error": "output 目录已变更，请刷新"}, status=409)
+            path = await asyncio.to_thread(anima_thumbs.resolve_within_root, root, options.get("path", ""))
+            if not path:
+                return web.json_response({"error": "图片不存在或已移动"}, status=404)
+            def validate():
+                stat = os.stat(path)
+                return round(stat.st_mtime * 1000) == options.get("mtime") and stat.st_size == options.get("size")
+            def read():
+                if not validate():
+                    raise ValueError("图片已变更，请刷新")
+                with open(path, "rb") as stream:
+                    return stream.read()
+            image = await asyncio.to_thread(read)
+        result = await infer_missing_image(image, options)
+        if not await asyncio.to_thread(validate):
+            return web.json_response({"error": "图片在识别期间已变更"}, status=409)
+        return web.json_response(result)
+    except (ValueError, TypeError, OSError) as error:
+        return web.json_response({"error": str(error)}, status=400)
+
+
+@PromptServer.instance.routes.post("/anima/gallery/share")
+async def gallery_prepare_share(request):
+    from .services.output_share import RESOURCE_KEY, MAX_IMAGE_BYTES, prepare_share_image
+    store = request.app.get(RESOURCE_KEY)
+    if store is None:
+        return web.json_response({"error": "请通过绘世重启 ComfyUI 以启用拖出图片"}, status=503)
+    try:
+        form = await request.post()
+        uploaded = form.get("image")
+        if not hasattr(uploaded, "file"):
+            return web.json_response({"error": "缺少已授权目录的图片"}, status=400)
+        def prepare():
+            data = uploaded.file.read(MAX_IMAGE_BYTES + 1)
+            return store.put(prepare_share_image(data, form.get('metadata')))
+        token = await asyncio.to_thread(prepare)
+        return web.json_response({"url": "/anima/gallery/share?token=" + token, "expiresIn": 600, "mime": "image/png"})
+    except (ValueError, TypeError, OSError) as error:
+        return web.json_response({"error": str(error)}, status=400)
+
+
+@PromptServer.instance.routes.post("/anima/gallery/edit")
+async def gallery_save_edit(request):
+    from .services.output_edit import MAX_BYTES, save_gallery_edit
+    try:
+        form = await request.post()
+        uploaded = form.get("image")
+        if not hasattr(uploaded, "file"):
+            raise ValueError("缺少编辑后的图片")
+        data = await asyncio.to_thread(uploaded.file.read, MAX_BYTES + 1)
+        result = await asyncio.to_thread(save_gallery_edit, folder_paths.get_output_directory(),
+            os.path.join(folder_paths.get_user_directory(), 'toolkit', 'output-edit-backups'),
+            form.get('path', ''), form.get('root', ''), int(form.get('mtime', -1)),
+            int(form.get('size', -1)), data, form.get('overwrite') == 'true')
+        return web.json_response(result)
+    except (ValueError, TypeError, OSError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+
+@PromptServer.instance.routes.get("/anima/gallery/share")
+async def gallery_share(request):
+    from .services.output_share import RESOURCE_KEY, read_gallery_share
+    try:
+        token = request.query.get("token")
+        if token:
+            store = request.app.get(RESOURCE_KEY)
+            if store is None:
+                return web.json_response({"error": "拖出服务尚未启用，请重启 ComfyUI"}, status=503)
+            data = await asyncio.to_thread(store.get, token)
+        else:
+            data = await asyncio.to_thread(read_gallery_share, folder_paths.get_output_directory(),
+                request.query.get("path", ""), request.query.get("root", ""),
+                int(request.query.get("mtime", "-1")), int(request.query.get("size", "-1")))
+        return web.Response(body=data, content_type="image/png", headers={
+            "Cache-Control": "no-store", "Content-Disposition": 'attachment; filename="shared-image.png"',
+            "X-Content-Type-Options": "nosniff"})
+    except FileNotFoundError as error:
+        return web.json_response({"error": str(error)}, status=404)
+    except (ValueError, TypeError, OSError) as error:
+        return web.json_response({"error": str(error)}, status=409)
 
 
 @PromptServer.instance.routes.get("/anima/gallery/rebuild")
@@ -1092,6 +1225,12 @@ async def gallery_rebuild(request):
         root = folder_paths.get_output_directory()
     except Exception as exc:
         return web.json_response({"error": f"无法定位 output 目录: {exc}"}, status=500)
+    module = _gallery_warmup_module()
+    if module is not None and callable(getattr(module, "request_refresh", None)) and module.warmup_status().get("installed"):
+        before = module.warmup_status().get("refresh", {}).get("requestId", 0)
+        state = module.request_refresh("full")
+        return web.json_response({"started": state["requestId"] != before, "refresh": state,
+                                  "progress": state.get("progress", 0), "total": state.get("total", 0)})
     with _GALLERY_LOCK:
         if _GALLERY_STATE["building"]:
             return web.json_response({"started": False, "reason": "构建进行中", "progress": _GALLERY_STATE["progress"], "total": _GALLERY_STATE["total"]})

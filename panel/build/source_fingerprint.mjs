@@ -10,7 +10,7 @@ function filesIn(directory) {
     return statSync(path).isDirectory() ? filesIn(path) : [path];
   });
 }
-export function sourceFingerprint(panelRoot, sharedRoot) {
+export function sourceFingerprint(panelRoot, sharedRoot, toolkitRoot = resolve(panelRoot, '..')) {
   const inputs = [
     ...filesIn(join(panelRoot, 'src')).map(path => ['panel/src/' + relative(join(panelRoot, 'src'), path).replaceAll('\\', '/'), path]),
     ...filesIn(join(panelRoot, 'public')).map(path => ['panel/public/' + relative(join(panelRoot, 'public'), path).replaceAll('\\', '/'), path]),
@@ -18,6 +18,9 @@ export function sourceFingerprint(panelRoot, sharedRoot) {
     ['panel/index.html', join(panelRoot, 'index.html')],
     ...['vite.config.ts', 'tsconfig.json', 'package.json', 'package-lock.json'].map(name => ['panel/' + name, join(panelRoot, name)]),
     ['panel/build/source_fingerprint.mjs', new URL(import.meta.url)],
+    ...['release_info.mjs', 'pixiv_bridge.mjs'].map(name => ['panel/build/' + name, new URL('./' + name, import.meta.url)]),
+    ...['VERSION', 'CHANGELOG.md'].map(name => [name, join(toolkitRoot, name)]),
+    ...filesIn(join(toolkitRoot, 'integrations/pixiv-drop-bridge')).map(path => ['integrations/pixiv-drop-bridge/' + relative(join(toolkitRoot, 'integrations/pixiv-drop-bridge'), path).replaceAll('\\', '/'), path]),
   ].sort(([a], [b]) => a.localeCompare(b, 'en'));
   const files = inputs.map(([path, diskPath]) => {
     const bytes = readFileSync(diskPath);
@@ -27,13 +30,13 @@ export function sourceFingerprint(panelRoot, sharedRoot) {
   });
   return { schema: 1, sha256: digest(JSON.stringify(files)), files };
 }
-export function sourceFingerprintPlugin(panelRoot, sharedRoot) {
+export function sourceFingerprintPlugin(panelRoot, sharedRoot, toolkitRoot = resolve(panelRoot, '..')) {
   let start;
   return {
     name: 'tk-source-fingerprint',
-    buildStart() { start = sourceFingerprint(panelRoot, sharedRoot); },
+    buildStart() { start = sourceFingerprint(panelRoot, sharedRoot, toolkitRoot); },
     generateBundle() {
-      const end = sourceFingerprint(panelRoot, sharedRoot);
+      const end = sourceFingerprint(panelRoot, sharedRoot, toolkitRoot);
       if (start.sha256 !== end.sha256) throw new Error('Panel sources changed during build');
       this.emitFile({ type: 'asset', fileName: 'build-info.json', source: JSON.stringify(end, null, 2) + '\n' });
     },

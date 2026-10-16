@@ -124,6 +124,15 @@ class HttpResources:
         self._current = None
 
 
+def current(app):
+    """Resolve the current application owner, including after hot reload."""
+    slot = app.get("tk.toolkit.http-resources")
+    owner = slot.get("owner") if slot else None
+    if owner is None or owner.closed:
+        raise RuntimeError("Toolkit HTTP resources are not available")
+    return owner
+
+
 def install(app, resources):
     """Keep one app hook; replaced owners drain even after signals are frozen."""
     key = "tk.toolkit.http-resources"

@@ -78,6 +78,7 @@ _STATUS = {
     "lastError": None,
     "runs": 0,
     "pending": False,
+    "active": False,
 }
 
 _CFG = {"output_root_getter": None, "index_path_getter": None,
@@ -90,6 +91,13 @@ _WAKE = threading.Event()   # 事件加速：request_warmup 唤醒驱动循环
 _STOP = threading.Event()   # 应用 cleanup / 热替换时停止接收预热工作
 _PREDECESSORS = ()          # Whole-package reload: let old writes finish first.
 _OWNER = None              # Application lifetime, captured independently of globals.
+_KNOWN_THREAD = None
+_KNOWN_WAKE = threading.Event()
+_KNOWN_PENDING = set()
+_KNOWN_STATUS = {"queued": 0, "active": False, "registered": 0, "lastError": None}
+_REFRESH = {"requestId": 0, "mode": "incremental", "state": "idle", "reason": "", "error": None,
+            "progress": 0, "total": 0, "revision": 0}
+_REFRESH_PENDING = None
 
 
 def _retire_previous_drivers():
@@ -101,18 +109,22 @@ def _retire_previous_drivers():
     """
     predecessors = []
     for thread in threading.enumerate():
-        if thread.name != 'anima-gallery-warmup':
+        if thread.name not in ('anima-gallery-warmup', 'anima-gallery-known'):
             continue
         target = getattr(thread, '_target', None)
         namespace = getattr(target, '__globals__', {})
         if (namespace.get('__name__') != __name__ or namespace.get('__file__') != __file__
-                or namespace.get('_THREAD') is not thread or namespace.get('_STOP') is _STOP):
+                or (namespace.get('_THREAD') is not thread and namespace.get('_KNOWN_THREAD') is not thread)
+                or namespace.get('_STOP') is _STOP):
             continue
         stop, wake = namespace.get('_STOP'), namespace.get('_WAKE')
         if not isinstance(stop, threading.Event) or not isinstance(wake, threading.Event):
             continue
         stop.set()
         wake.set()
+        known_wake = namespace.get('_KNOWN_WAKE')
+        if isinstance(known_wake, threading.Event):
+            known_wake.set()
         predecessors.append(thread)
     return tuple(predecessors)
 
@@ -135,18 +147,27 @@ _THUMB_THREADS = set()
 
 class _WarmupOwner:
     """Stop accepting work, then drain index and thumbnail file writers."""
-    def __init__(self, thread, stop, wake, thumb_threads, thumb_lock, predecessors):
+    def __init__(self, thread, stop, wake, thumb_threads, thumb_lock, predecessors, known_thread=None, known_wake=None, unsubscribe=None):
         self.thread, self.stop_event, self.wake_event = thread, stop, wake
         self.thumb_threads, self.thumb_lock = thumb_threads, thumb_lock
         self.predecessors = predecessors
+        self.known_thread, self.known_wake = known_thread, known_wake
+        self.unsubscribe = unsubscribe
 
     def stop(self):
         self.stop_event.set()
         self.wake_event.set()
+        if self.known_wake is not None:
+            self.known_wake.set()
+        if self.unsubscribe is not None:
+            self.unsubscribe()
+            self.unsubscribe = None
 
     def close(self):
         self.stop()
         self.thread.join()
+        if self.known_thread is not None:
+            self.known_thread.join()
         for predecessor in self.predecessors:
             predecessor.join()
         # The driver has stopped, so it cannot queue another thumbnail batch.
@@ -467,13 +488,19 @@ def run_once(reason: str = "") -> dict:
     reason 语义：``"poll"`` = 周期轮询（签名没变就跳过）；其它值（如 ``"request"`` /
     ``"event:executed"``）视为显式请求，**强制**跑一次增量，不管签名是否变化。
     """
+    global _REFRESH_PENDING
     started = time.time()
     with _STATUS_LOCK:
         _STATUS["pending"] = False  # 本轮满足掉挂起的请求（运行中来的新请求会重新置位）
+        _STATUS["active"] = True
+        requested = _REFRESH_PENDING
+        _REFRESH_PENDING = None
+        if requested is not None:
+            _REFRESH.update(state="running", reason="", error=None, progress=0, total=0)
 
     error = None
     try:
-        result, error = _run_once_inner(reason)
+        result, error = _run_once_inner("refresh:" + requested[1] if requested else reason)
     except Exception as exc:  # 兜底：单轮异常绝不能让线程退出
         result = {"skipped": True, "reason": "internal-error", "mode": "error", "error": str(exc)}
         error = f"预热内部错误: {exc}"
@@ -482,6 +509,11 @@ def run_once(reason: str = "") -> dict:
     result["durationMs"] = int((time.time() - started) * 1000)
 
     with _STATUS_LOCK:
+        _STATUS["active"] = False
+        if requested is not None:
+            _REFRESH.update(state="failed" if error or result.get("skipped") else "complete",
+                            reason=result.get("reason", ""), error=error or (result.get("reason") if result.get("skipped") else None),
+                            revision=result.get("revision", 0), progress=result.get("scanned", 0), total=result.get("scanned", 0))
         _STATUS["lastRunAt"] = started
         _STATUS["lastDurationMs"] = result["durationMs"]
         _STATUS["lastResult"] = copy.deepcopy(result)
@@ -513,7 +545,7 @@ def _run_once_inner(reason: str):
         return ({"skipped": True, "mode": "error", "reason": "probe-failed", "error": str(exc)},
                 f"探测输出目录失败: {exc}")
 
-    if not rels:
+    if not rels and not reason.startswith("refresh:"):
         # 空目录**不动索引**：真实场景里"输出目录暂时为空"更可能是路径没就绪（盘符未挂载 /
         # 用户还没出图），此时跑增量只会把一份好索引清空 —— 放过一次删除同步，代价远小于静默清库。
         with _STATUS_LOCK:
@@ -551,8 +583,16 @@ def _run_once_inner(reason: str):
     with _STATUS_LOCK:
         prev_rels = _LAST_RELS
     try:
-        updated = (refresh_index(root, index_path, "incremental")["stats"]
+        def progress(done, total):
+            with _STATUS_LOCK:
+                if _REFRESH["state"] == "running":
+                    _REFRESH.update(progress=done, total=total)
+        result = (refresh_index(root, index_path, "full" if reason == "refresh:full" else "incremental", progress_cb=progress)
+                  if callable(refresh_index) else None)
+        updated = (result["stats"]
                    if callable(refresh_index) else legacy_updater(root, index_path))
+        if result is not None:
+            updated = {**updated, "revision": result["index"].get("revision", 0)}
     except Exception as exc:
         return ({"skipped": True, "mode": "error", "reason": "incremental-failed",
                  "scanned": len(rels), "signature": [len(rels), root_mtime_ns],
@@ -586,6 +626,94 @@ def _run_once_inner(reason: str):
 
 
 # ── 事件加速（尽力而为；失败一律降级到轮询）────────────────────────────────
+
+def register_saved_outputs(data) -> bool:
+    """Execution-thread hook: copy relative names into memory, never perform IO."""
+    if _STOP.is_set() or not isinstance(data, dict):
+        return False
+    output = data.get("output")
+    if not isinstance(output, dict) or not isinstance(output.get("images"), list):
+        return False
+    paths = []
+    for item in output["images"]:
+        if not isinstance(item, dict) or item.get("type") != "output":
+            continue
+        filename = item.get("filename")
+        subfolder = item.get("subfolder") or ""
+        if isinstance(filename, str) and isinstance(subfolder, str) and filename:
+            paths.append((subfolder.rstrip("/\\") + "/" if subfolder else "") + filename)
+    if not paths:
+        return False
+    with _STATUS_LOCK:
+        _KNOWN_PENDING.update(paths)
+        _KNOWN_STATUS["queued"] = len(_KNOWN_PENDING)
+    _KNOWN_WAKE.set()
+    return True
+
+
+def _notify_catalog_change(index):
+    if _STOP.is_set():
+        return
+    from server import PromptServer
+    server = getattr(PromptServer, "instance", None)
+    if server is not None and callable(getattr(server, "send_sync", None)):
+        server.send_sync("anima_gallery_changed", {"revision": index.get("revision", 0),
+                                                  "total": index.get("total", 0)}, sid=None)
+
+
+def _known_loop():
+    """Independent cheap registration lane; no speculative decoding or scans."""
+    for predecessor in _PREDECESSORS:
+        while predecessor.is_alive() and not _STOP.is_set():
+            predecessor.join(0.25)
+    while not _STOP.is_set():
+        _KNOWN_WAKE.wait()
+        _KNOWN_WAKE.clear()
+        if _STOP.is_set():
+            break
+        if _STOP.wait(0.05):
+            break
+        with _STATUS_LOCK:
+            paths = tuple(_KNOWN_PENDING)
+            _KNOWN_PENDING.clear()
+            _KNOWN_STATUS.update(active=True, queued=0)
+        try:
+            root = _safe_call(_CFG["output_root_getter"], "output_root_getter")
+            index_path = _safe_call(_CFG["index_path_getter"], "index_path_getter")
+            gallery = _plugin_module("anima_gallery")
+            if paths and root and index_path and gallery is not None:
+                result = gallery.register_outputs(root, index_path, paths)
+                with _STATUS_LOCK:
+                    _KNOWN_STATUS["registered"] += len(result["stats"]["paths"])
+                    _KNOWN_STATUS["lastError"] = None
+                request_warmup("known-outputs")
+        except Exception as exc:
+            with _STATUS_LOCK:
+                _KNOWN_STATUS["lastError"] = str(exc)
+            request_warmup("known-registration-failed")
+        finally:
+            with _STATUS_LOCK:
+                _KNOWN_STATUS["active"] = False
+
+
+def request_refresh(mode="incremental") -> dict:
+    """Queue an actual disk reconciliation with observable completion/error."""
+    global _REFRESH_PENDING
+    if mode not in ("incremental", "full"):
+        raise ValueError("refresh mode must be incremental or full")
+    with _STATUS_LOCK:
+        if _STOP.is_set() or not _STATUS["installed"]:
+            return {**_REFRESH, "state": "failed", "error": "索引后台服务已停止"}
+        if _REFRESH["state"] in ("queued", "deferred", "running"):
+            return dict(_REFRESH)
+        request_id = max(int(time.time() * 1000), _REFRESH["requestId"] + 1)
+        _REFRESH.update(requestId=request_id, mode=mode, state="queued", reason="", error=None,
+                        progress=0, total=0, revision=0)
+        _REFRESH_PENDING = (request_id, mode)
+        snapshot = dict(_REFRESH)
+    request_warmup("manual-refresh")
+    return snapshot
+
 
 def _install_event_hook() -> str:
     """探测并挂 ComfyUI 的"执行完成"通知，返回一行结论（用于日志/诊断）。
@@ -641,6 +769,9 @@ def _install_event_hook() -> str:
             return orig(*args, **kwargs)
         try:
             event = args[0] if args else kwargs.get("event")
+            if event == "executed":
+                data = args[1] if len(args) > 1 else kwargs.get("data")
+                register_saved_outputs(data)
             if event in _EXEC_EVENTS and _event_allowed(event):
                 request_warmup(f"event:{event}")
         except BaseException:  # noqa: BLE001 —— 通知纯属尽力而为，吞掉一切
@@ -687,7 +818,10 @@ def _driver_loop() -> None:
             if deferred:
                 with _STATUS_LOCK:
                     _STATUS["lastResult"] = {"skipped": True, "mode": "deferred", "reason": deferred}
-                _STOP.wait(2.0)
+                    if _REFRESH_PENDING is not None:
+                        _REFRESH.update(state="deferred", reason=deferred)
+                _WAKE.wait(0.5)
+                _WAKE.clear()
                 continue
             # ⚠️ **首轮强制跑一次**（2026-09-17）：解析器换代（``anima_gallery.PARSER_VERSION`` 变了）
             #    时磁盘上一点变化都没有 —— poll 的签名判据会说 "unchanged" 直接跳过，
@@ -764,7 +898,7 @@ def install_gallery_warmup(*, output_root_getter, index_path_getter,
     :return: status 快照（``warmup_status()`` 的内容）。重复调用返回**同一个对象**，
              每次 install 时原地刷新；调用方**不要改写**它。
     """
-    global _THREAD, _LAST_ACCEPT_AT, _PREDECESSORS, _OWNER
+    global _THREAD, _KNOWN_THREAD, _LAST_ACCEPT_AT, _PREDECESSORS, _OWNER
     with _INSTALL_LOCK:
         if _STATUS["installed"] and _THREAD is not None and _THREAD.is_alive():
             if app is not None:
@@ -789,9 +923,18 @@ def install_gallery_warmup(*, output_root_getter, index_path_getter,
 
         _STOP.clear()
         _WAKE.clear()
+        _KNOWN_WAKE.clear()
         _THREAD = threading.Thread(target=_driver_loop, name="anima-gallery-warmup", daemon=True)
-        _OWNER = _WarmupOwner(_THREAD, _STOP, _WAKE, _THUMB_THREADS, _THUMB_THREADS_LOCK, _PREDECESSORS)
+        _KNOWN_THREAD = threading.Thread(target=_known_loop, name="anima-gallery-known", daemon=True)
+        unsubscribe = None
+        gallery = _plugin_module("anima_gallery")
+        index_path = _safe_call(_CFG["index_path_getter"], "index_path_getter")
+        if gallery is not None and index_path and hasattr(gallery, "catalog_for"):
+            unsubscribe = gallery.catalog_for(index_path).subscribe(_notify_catalog_change)
+        _OWNER = _WarmupOwner(_THREAD, _STOP, _WAKE, _THUMB_THREADS, _THUMB_THREADS_LOCK, _PREDECESSORS,
+                              _KNOWN_THREAD, _KNOWN_WAKE, unsubscribe)
         _THREAD.start()
+        _KNOWN_THREAD.start()
         if app is not None:
             _install_app_owner(app, _OWNER)
 
@@ -820,6 +963,8 @@ def warmup_status() -> dict:
             snap = copy.deepcopy(_STATUS)
         except Exception:  # lastResult 里混进不可深拷贝对象时的兜底
             snap = dict(_STATUS)
+        snap["known"] = dict(_KNOWN_STATUS)
+        snap["refresh"] = dict(_REFRESH)
     thread = _THREAD
     snap["running"] = bool(snap["running"]) and thread is not None and thread.is_alive()
     return snap
@@ -890,8 +1035,13 @@ def _shutdown_for_tests(timeout: float = 2.0) -> None:
     """Test helper; production application cleanup drains all owned writers."""
     _STOP.set()
     _WAKE.set()
+    _KNOWN_WAKE.set()
+    if _OWNER is not None:
+        _OWNER.stop()
     thread = _THREAD
     if thread is not None:
         thread.join(timeout)
+    if _KNOWN_THREAD is not None:
+        _KNOWN_THREAD.join(timeout)
     with _STATUS_LOCK:
         _STATUS["running"] = False

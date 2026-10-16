@@ -3,8 +3,11 @@ import { triggerOverrides, openTriggerWordEditor } from "./anima_lora_trigger_ov
 import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 import { LoRASyntax } from "./shared/lora_syntax.js";
 import { LoraInfoClient, LoraLookupSession, filenameLookup } from "./shared/lora_info_client.js";
+import { ImageNodeCache } from "./shared/image_node_cache.js";
 
 const loraInfoClient = new LoraInfoClient(filenameLookup());
+const loraImageNodes = new ImageNodeCache(128, 16 * 1024 * 1024);
+window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true });
 
   const NODE_NAME = "TK Batch LoRA Loader";
   // 权重范围 ±10：滑块类（slider）LoRA 常需要远超 ±2 的强度（例如 -5 / +8）。
@@ -566,6 +569,7 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
     grip: '<circle cx="9" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="18" r="1"/>',
     x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
     check: '<path d="m5 12 4 4L19 6"/>',
+    minus: '<path d="M5 12h14"/>',
     tag: '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5"/>',
     search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
     download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
@@ -1077,6 +1081,11 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
           .bm-card *, .bm-li * { text-shadow:none !important; }
           .bm-card:hover .bm-thumb-img { transform:none !important; filter:none !important; }
           .bm-card-actions button, .bm-li-actions button { box-shadow:none !important; background:var(--comfy-menu-bg,var(--comfy-input-bg)) !important; }
+          .bm-card.is-enabled, .bm-li.is-enabled { border-color:var(--p-primary-color,var(--bm-accent)) !important; }
+          .bm-card.is-disabled, .bm-li.is-disabled { border-style:dashed !important; border-color:var(--descrip-text,var(--bm-fg-muted)) !important; }
+          .bm-badge, .bm-li-badge { display:inline-flex; align-items:center; gap:4px; width:auto !important; min-width:0; height:auto !important; padding:4px 7px; border-radius:7px !important; font-size:10px; line-height:1.2; white-space:nowrap; box-shadow:none !important; }
+          .is-enabled .bm-badge, .is-enabled .bm-li-badge { background:var(--p-primary-color,var(--bm-accent)) !important; color:var(--p-primary-text-color,var(--bm-accent-ink)) !important; }
+          .is-disabled .bm-badge, .is-disabled .bm-li-badge { background:var(--comfy-input-bg,var(--bm-surface)) !important; color:var(--descrip-text,var(--bm-fg-muted)) !important; border:1px dashed currentColor; }
           .anima-lora-widget .trigger-edit {flex:0 0 22px; width:22px; height:22px; padding:3px; border:1px solid transparent; border-radius:5px; background:transparent; color:var(--descrip-text); opacity:.55; cursor:pointer; display:inline-flex; align-items:center; justify-content:center;}
           .anima-lora-widget .lora-row:hover .trigger-edit, .anima-lora-widget .trigger-edit:focus-visible {opacity:1; border-color:var(--border-color);}
           .anima-lora-widget .trigger-edit.is-custom {opacity:1; color:var(--p-primary-color);}
@@ -2402,6 +2411,13 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
 
       const manualRefresh = () => { if (!closed && searchInput.value) renderCurrent(); };
       this._manualRefresh = manualRefresh;
+      const nodeLoraState = (name) => {
+        const entries = this.loras.filter((entry) => entry.name.toLowerCase() === name.toLowerCase());
+        if (!entries.length) return "";
+        return entries.some((entry) => !entry.disabled && (entry.weight !== 0 || (entry.clipWeight ?? entry.weight) !== 0)) ? "enabled" : "disabled";
+      };
+      const stateBadge = (state) => state ? `${svgIcon(state === "enabled" ? "check" : "minus", 11)}<span>${state === "enabled" ? "已启用" : "已停用"}</span>` : "";
+      const loraKey = lora => normalizeLoraName(lora.relativePath || lora.filename || lora.name);
       const getMatched = () => {
         const q = searchInput.value || "";
         const addedNames = new Set(this.loras.map((l) => l.name.toLowerCase()));
@@ -2437,6 +2453,10 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
           .sort((a, b) => {
             const left = a.l;
             const right = b.l;
+            // 节点已添加项始终置顶；每组内继续遵循用户的排序方式。
+            const addedA = addedNames.has(left.name.toLowerCase()) ? 1 : 0;
+            const addedB = addedNames.has(right.name.toLowerCase()) ? 1 : 0;
+            if (addedA !== addedB) return addedB - addedA;
             // 显式排序键决定使用次数/大小/日期顺序；非法计数降为 0，稳定并列按名称和完整路径。
             if (k === "usage") {
               const countOrder = numericValue(b.m?.count) - numericValue(a.m?.count);
@@ -2450,12 +2470,8 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
               const dateOrder = numericValue(right.lastModified) - numericValue(left.lastModified);
               return dateOrder || compareStableIdentity(left, right);
             }
-            // 名称排序保留搜索相关性，再以已添加状态作为同搜索结果中的次序提示。
+            // 名称排序在每组内保留搜索相关性。
             if (a.searchScore !== b.searchScore) return b.searchScore - a.searchScore;
-            // 已添加到节点的 LoRA 置顶
-            const addedA = addedNames.has(left.name.toLowerCase()) ? 1 : 0;
-            const addedB = addedNames.has(right.name.toLowerCase()) ? 1 : 0;
-            if (addedA !== addedB) return addedB - addedA;
             return compareStableIdentity(left, right);
           })
           .map((entry) => entry.l);
@@ -2468,7 +2484,7 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
           const item = document.createElement("button");
           item.className = `bm-filter-btn${curFilter === key ? " is-active" : ""}`;
           item.innerHTML = `<span class="bm-filter-label">${svgIcon(icon || "grid", 12)}<span>${esc(label)}</span></span><span class="bm-filter-count">${esc(String(count))}</span>`;
-          item.onclick = () => { curFilter = (curFilter === key) ? "all" : key; renderSidebar(); renderCurrent(); };
+          item.onclick = () => { curFilter = (curFilter === key) ? "all" : key; renderSidebar(); renderCurrent({ reset: true }); };
           sidebarEl.appendChild(item);
         };
         mk("all", "全部", allLoras.length, "");
@@ -2480,6 +2496,12 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
       };
 
       // ── 预览图懒加载 ──
+      const paintPreview = (host, name, previewUrl) => {
+        const url = this._imgProxy(previewUrl);
+        loraImageNodes.capture(host);
+        host.innerHTML = `<img class="bm-thumb-img" decoding="async" src="${esc(url)}" data-cache-key="lora:${esc(normalizeLoraName(name))}" data-file-version="${esc(url)}" onerror="this.style.display='none'">`;
+        loraImageNodes.restore(host);
+      };
       const io = new IntersectionObserver((entries) => {
         entries.forEach((en) => {
           if (!en.isIntersecting) return;
@@ -2490,7 +2512,7 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
             if (!info) return;
             if (closed || img.isConnected === false) return;
             if (info.previewUrl) {
-              img.innerHTML = `<img class="bm-thumb-img" decoding="async" src="${this._imgProxy(info.previewUrl)}" onerror="this.style.display='none'">`;
+              paintPreview(img, name, info.previewUrl);
             } else {
               img.innerHTML = `<span class="bm-img-fallback ${info.source === "not_on_civitai" ? "is-missing" : ""}">${info.source === "not_on_civitai" ? svgIcon("x", 24) : svgIcon("image", 24)}</span>`;
             }
@@ -2528,9 +2550,8 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
       const paintThumb = (imgEl, name) => {
         const cached = this._imgCache[name];
         if (cached) {
-          imgEl.innerHTML = cached.previewUrl
-            ? `<img class="bm-thumb-img" decoding="async" src="${this._imgProxy(cached.previewUrl)}" onerror="this.style.display='none'">`
-            : `<span class="bm-img-fallback ${cached.source === "not_on_civitai" ? "is-missing" : ""}">${svgIcon(cached.source === "not_on_civitai" ? "x" : "image", 24)}</span>`;
+          if (cached.previewUrl) paintPreview(imgEl, name, cached.previewUrl);
+          else imgEl.innerHTML = `<span class="bm-img-fallback ${cached.source === "not_on_civitai" ? "is-missing" : ""}">${svgIcon(cached.source === "not_on_civitai" ? "x" : "image", 24)}</span>`;
         } else {
           io.observe(imgEl);
         }
@@ -2539,19 +2560,22 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
       // ── 网格卡片 ──
       const buildCard = (l, idx, cols) => {
         const m = loraMeta(l.name);
-        const added = this.loras.some((e) => e.name.toLowerCase() === l.name.toLowerCase());
+        const state = nodeLoraState(l.name);
+        const added = !!state;
         const card = document.createElement("div");
         card.className = "bm-card";
         if (added) card.classList.add("is-added");
+        if (state) card.classList.add(`is-${state}`);
         if (selected.has(l.name)) card.classList.add("is-selected");
         card.dataset.name = l.name;
+        card.dataset.ref = loraKey(l);
         card.title = l.name; // 本地文件名悬停可见（卡片不再显示"本地:"行）
         const left = (idx % cols) * (ITEM_W + GAP);
         const top = Math.floor(idx / cols) * ROW_H;
         card.style.cssText = `position:absolute;left:${left}px;top:${top}px;width:${ITEM_W}px;height:${ROW_H - GAP}px;border-radius:8px;overflow:hidden;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);cursor:pointer;`;
         card.innerHTML = `
           <div class="bm-img" data-lora-name="${esc(l.name)}"><span class="bm-img-fallback">${svgIcon("image", 24)}</span></div>
-          <div class="bm-badge" style="display:${added ? "flex" : "none"};">${svgIcon("check", 11)}</div>
+          <div class="bm-badge" style="display:${added ? "flex" : "none"};">${stateBadge(state)}</div>
           <div class="bm-card-actions">
             <button class="bm-catbtn ${m.categories.length ? "is-active" : ""}" title="分配分类" aria-label="分配分类">${svgIcon("tag", 12)}</button>
             <button class="bm-csite" title="打开 C 站页面" aria-label="打开 C 站页面">${svgIcon("link", 12)}</button>
@@ -2604,21 +2628,17 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
             updateBatchBar();
           }
           const existing = this.loras.find((e2) => e2.name.toLowerCase() === l.name.toLowerCase());
-          const badge = card.querySelector(".bm-badge");
           if (existing) {
             this.loras = this.loras.filter((e2) => e2.name.toLowerCase() !== l.name.toLowerCase());
             this._commit(); this._render(this.listEl);
-            card.classList.remove("is-added");
-            if (badge) badge.style.display = "none";
             showToast("已移除: " + l.name);
           } else {
             this.loras.push({ name: l.name, weight: 1.0, disabled: this._prefDisabled(l.name) });
             bumpCount(l.name);
             this._commit(); this._render(this.listEl);
-            card.classList.add("is-added");
-            if (badge) badge.style.display = "flex";
             showToast("已添加: " + l.name);
           }
+          renderCurrent({ exclude: [l.name] });
         };
         const cachedInfo = this._imgCache[l.name];
         if (cachedInfo) applyInfo(card, cachedInfo);
@@ -2629,12 +2649,15 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
       // ── 列表行 ──
       const buildListRow = (l) => {
         const m = loraMeta(l.name);
-        const added = this.loras.some((e) => e.name.toLowerCase() === l.name.toLowerCase());
+        const state = nodeLoraState(l.name);
+        const added = !!state;
         const row = document.createElement("div");
         row.className = "bm-li";
         if (added) row.classList.add("is-added");
+        if (state) row.classList.add(`is-${state}`);
         if (selected.has(l.name)) row.classList.add("is-selected");
         row.dataset.name = l.name;
+        row.dataset.ref = loraKey(l);
         row.style.cssText = "cursor:pointer;";
         row.innerHTML = `
           <div class="bm-li-thumb" data-lora-name="${esc(l.name)}"><span class="bm-img-fallback">${svgIcon("image", 18)}</span></div>
@@ -2646,7 +2669,7 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
           <div class="bm-li-actions">
             <button class="bm-catbtn ${m.categories.length ? "is-active" : ""}" title="分配分类" aria-label="分配分类">${svgIcon("tag", 12)}</button>
             <button class="bm-csite" title="打开 C 站页面" aria-label="打开 C 站页面">${svgIcon("link", 12)}</button>
-            <span class="bm-li-badge">${added ? svgIcon("check", 12) : ""}</span>
+            <span class="bm-li-badge" style="display:${added ? "inline-flex" : "none"};">${stateBadge(state)}</span>
           </div>
         `;
         row.querySelector(".bm-catbtn").onclick = (ev) => {
@@ -2677,21 +2700,17 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
             updateBatchBar();
           }
           const existing = this.loras.find((e2) => e2.name.toLowerCase() === l.name.toLowerCase());
-          const badge = row.querySelector(".bm-li-badge");
           if (existing) {
             this.loras = this.loras.filter((e2) => e2.name.toLowerCase() !== l.name.toLowerCase());
             this._commit(); this._render(this.listEl);
-            row.classList.remove("is-added");
-            if (badge) badge.innerHTML = "";
             showToast("已移除: " + l.name);
           } else {
             this.loras.push({ name: l.name, weight: 1.0, disabled: this._prefDisabled(l.name) });
             bumpCount(l.name);
             this._commit(); this._render(this.listEl);
-            row.classList.add("is-added");
-            if (badge) badge.innerHTML = svgIcon("check", 12);
             showToast("已添加: " + l.name);
           }
+          renderCurrent({ exclude: [l.name] });
         };
         const cachedInfo = this._imgCache[l.name];
         if (cachedInfo) applyInfo(row, cachedInfo);
@@ -2704,13 +2723,84 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
       let cols = 1;
       const visibleCards = new Map();
       // Keep a bounded set of recent rows for reverse scrolling, including decoded images.
-      // Indices belong to matchedLoras; filtering/sorting must clear this pool.
+      // Stable names survive sorting and selected-first reordering.
       const recentCards = new Map();
+      const listRows = new Map();
+      let renderedMode = null;
+      let modeAnchor = null;
+      let listSpacer = null;
+      let viewportRevision = 0;
       const MAX_RECENT_CARDS = 128;
       let gridFrame = null;
       let listFrame = null;
       let renderGeneration = 0;
       let gridWindow = "";
+      listEl.style.overflowAnchor = "none";
+      const captureViewport = (exclude = []) => {
+        const omitted = new Set(exclude);
+        const viewport = listEl.getBoundingClientRect();
+        const scale = viewport.height > 0 && listEl.clientHeight > 0 ? viewport.height / listEl.clientHeight : 1;
+        const candidates = Array.from(listEl.querySelectorAll(".bm-card, .bm-li"));
+        const visible = candidates.filter(el => {
+          const rect = el.getBoundingClientRect();
+          return !omitted.has(el.dataset.name) && !omitted.has(el.dataset.ref) && rect.bottom > viewport.top && rect.top < viewport.bottom;
+        }).sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+        const anchor = (renderedMode !== mode && visible.find(el => el.dataset.ref === modeAnchor))
+          || visible.find(el => el.getBoundingClientRect().top >= viewport.top) || visible[0];
+        return { name: anchor?.dataset.ref, offset: anchor ? (anchor.getBoundingClientRect().top - viewport.top) / scale : 0,
+          oldNames: matchedLoras.map(loraKey), scrollTop: listEl.scrollTop, revision: viewportRevision };
+      };
+      const resolveViewport = snapshot => {
+        if (!snapshot?.name) return snapshot;
+        const names = new Set(matchedLoras.map(loraKey));
+        if (names.has(snapshot.name)) return snapshot;
+        const index = snapshot.oldNames.indexOf(snapshot.name);
+        const name = snapshot.oldNames.slice(index + 1).find(n => names.has(n))
+          || snapshot.oldNames.slice(0, index).reverse().find(n => names.has(n));
+        return { ...snapshot, name };
+      };
+      const restoreViewport = snapshot => {
+        if (!snapshot) { listEl.scrollTop = 0; return; }
+        if (snapshot.revision !== viewportRevision) return;
+        const index = matchedLoras.findIndex(l => loraKey(l) === snapshot.name);
+        let top = snapshot.scrollTop;
+        if (index >= 0) {
+          if (mode === "grid") top = (contentEl?.offsetTop || 0) + Math.floor(index / cols) * ROW_H - snapshot.offset;
+          else {
+            const row = listRows.get(snapshot.name);
+            if (!row?.parentNode) return;
+            top = row.offsetTop - snapshot.offset;
+          }
+        }
+        listEl.scrollTop = Math.max(0, Math.min(top, Math.max(0, listEl.scrollHeight - listEl.clientHeight)));
+      };
+      const updateItemState = host => {
+        const state = nodeLoraState(host.dataset.name);
+        host.classList.toggle("is-added", !!state);
+        host.classList.toggle("is-enabled", state === "enabled");
+        host.classList.toggle("is-disabled", state === "disabled");
+        host.classList.toggle("is-selected", selected.has(host.dataset.name));
+        const badge = host.querySelector(".bm-badge, .bm-li-badge");
+        if (badge) { badge.style.display = state ? (mode === "grid" ? "flex" : "inline-flex") : "none"; badge.innerHTML = stateBadge(state); }
+        host.querySelector(".bm-catbtn")?.classList.toggle("is-active", loraMeta(host.dataset.name).categories.length > 0);
+        const tags = host.querySelector(".bm-cattags");
+        const categories = loraMeta(host.dataset.name).categories;
+        const categoryKey = JSON.stringify(categories);
+        if (tags && tags.dataset.categories !== categoryKey) {
+          tags.dataset.categories = categoryKey;
+          tags.innerHTML = "";
+          for (const category of categories) {
+            const tag = document.createElement("span");
+            tag.className = "bm-cat-tag"; tag.textContent = category; tag.title = "点击移除分类";
+            tag.onclick = event => {
+              event.stopPropagation();
+              ensureMeta(host.dataset.name).categories = ensureMeta(host.dataset.name).categories.filter(c => c !== category);
+              saveMeta(); renderSidebar(); renderCurrent();
+            };
+            tags.appendChild(tag);
+          }
+        }
+      };
       const renderEmptyState = (target) => {
         if (loraLoadError && !allLoras.length) {
           target.innerHTML = `<div class="bm-empty"><strong>本地 LoRA 加载失败</strong><span>${esc(loraLoadError)}</span><button type="button" data-bm-retry="1" ${inventoryReloading ? "disabled" : ""}>${inventoryReloading ? "正在重试…" : "重试加载"}</button></div>`;
@@ -2728,26 +2818,28 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
           baseModelFilterEl.value = "";
           curFilter = "all";
           renderSidebar();
-          renderCurrent();
+          renderCurrent({ reset: true });
         });
       };
       const cancelPendingFrames = () => {
         if (gridFrame !== null) cancelAnimationFrame(gridFrame);
         if (listFrame !== null) cancelAnimationFrame(listFrame);
         gridFrame = listFrame = null;
+        listSpacer?.remove(); listSpacer = null;
       };
       const paintGrid = (generation = renderGeneration) => {
         if (generation !== renderGeneration) return;
         if (closed || mode !== "grid" || !contentEl) return;
         const matched = matchedLoras;
         if (!matched.length) {
+          io.disconnect(); visibleCards.clear(); recentCards.clear();
           renderEmptyState(contentEl);
           contentEl.style.height = "100%";
+          listEl.scrollTop = 0;
           return;
         }
         // Read geometry before writing styles to avoid forced layout on every scroll frame.
         const width = listEl.clientWidth, st = listEl.scrollTop, vh = listEl.clientHeight;
-        const oldCols = cols;
         cols = Math.max(1, Math.floor((width + GAP) / (ITEM_W + GAP)));
         const rows = Math.max(1, Math.ceil(matched.length / cols));
         const height = rows * ROW_H + "px";
@@ -2759,64 +2851,113 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
         if (gridWindow === nextWindow) return;
         gridWindow = nextWindow;
         const first = rStart * cols, last = Math.min(matched.length - 1, (rEnd + 1) * cols - 1);
-        for (const [idx, card] of visibleCards) {
-          if (idx < first || idx > last) {
+        const windowNames = new Set(matched.slice(first, last + 1).map(loraKey));
+        for (const [name, card] of visibleCards) {
+          if (!windowNames.has(name)) {
             io.unobserve(card.querySelector(".bm-img"));
-            card.remove(); visibleCards.delete(idx);
-            recentCards.set(idx, card);
+            card.remove(); visibleCards.delete(name);
+            recentCards.set(name, card);
             if (recentCards.size > MAX_RECENT_CARDS) recentCards.delete(recentCards.keys().next().value);
-          } else if (cols !== oldCols) {
-            card.style.left = (idx % cols) * (ITEM_W + GAP) + "px";
-            card.style.top = Math.floor(idx / cols) * ROW_H + "px";
           }
         }
         let nextCard = contentEl.firstElementChild;
         for (let idx = first; idx <= last; idx++) {
-          let card = visibleCards.get(idx);
+          const name = loraKey(matched[idx]);
+          let card = visibleCards.get(name);
           if (!card) {
-            card = recentCards.get(idx);
+            card = recentCards.get(name);
             if (card) {
-              recentCards.delete(idx);
+              recentCards.delete(name);
               card.style.left = (idx % cols) * (ITEM_W + GAP) + "px";
               card.style.top = Math.floor(idx / cols) * ROW_H + "px";
               card.classList.toggle("is-selected", selected.has(matched[idx].name));
               card.classList.toggle("is-added", this.loras.some(l => l.name.toLowerCase() === matched[idx].name.toLowerCase()));
             } else card = buildCard(matched[idx], idx, cols);
-            visibleCards.set(idx, card); contentEl.insertBefore(card, nextCard);
+            visibleCards.set(name, card);
             // An in-flight lookup may have completed while the card was detached.
             const img = card.querySelector(".bm-img"), info = this._imgCache[matched[idx].name];
             if (!info) io.observe(img);
             else if (!img.querySelector("img")) { applyInfo(card, info); paintThumb(img, matched[idx].name); }
           }
+          card.style.left = (idx % cols) * (ITEM_W + GAP) + "px";
+          card.style.top = Math.floor(idx / cols) * ROW_H + "px";
+          updateItemState(card);
+          if (card !== nextCard) contentEl.insertBefore(card, nextCard);
           nextCard = card.nextElementSibling;
         }
       };
-      const renderGrid = () => {
+      const renderGrid = (snapshot) => {
         listEl.style.display = "block";
-        listEl.innerHTML = "";
-        contentEl = document.createElement("div");
-        contentEl.style.cssText = "position:relative;width:100%;";
-        listEl.appendChild(contentEl);
+        if (!contentEl || renderedMode !== "grid") {
+          io.disconnect();
+          listEl.innerHTML = "";
+          visibleCards.clear(); recentCards.clear(); listRows.clear();
+          contentEl = document.createElement("div");
+          contentEl.style.cssText = "position:relative;width:100%;";
+          listEl.appendChild(contentEl);
+        }
+        cols = Math.max(1, Math.floor((listEl.clientWidth + GAP) / (ITEM_W + GAP)));
+        contentEl.style.height = Math.max(1, Math.ceil(matchedLoras.length / cols)) * ROW_H + "px";
+        restoreViewport(snapshot);
         paintGrid(renderGeneration);
       };
 
       // ── 列表模式 ──
-      const renderListMode = () => {
+      const renderListMode = (snapshot) => {
         listEl.style.display = "block";
-        listEl.innerHTML = "";
+        const oldHeight = listEl.scrollHeight;
+        if (renderedMode !== "list") {
+          io.disconnect();
+          listEl.innerHTML = "";
+          visibleCards.clear(); recentCards.clear(); contentEl = null; listRows.clear();
+        }
         const matched = matchedLoras;
         if (!matched.length) {
+          io.disconnect();
+          listRows.clear();
           renderEmptyState(listEl);
+          listEl.scrollTop = 0;
           return;
         }
+        const names = new Set(matched.map(loraKey));
+        for (const [name, row] of listRows) if (!names.has(name)) {
+          io.unobserve(row.querySelector(".bm-li-thumb")); row.remove(); listRows.delete(name);
+        }
+        listEl.style.minHeight = "0";
+        // Keep existing height until the anchor prefix is present; rows/images are moved, not rebuilt.
+        const spacer = document.createElement("div");
+        listSpacer = spacer;
+        spacer.style.height = "0px";
+        listEl.appendChild(spacer);
         // 分片渲染：每帧最多 60 行，避免数百行一次性同步构建阻塞主线程
         const CHUNK = 60;
         const generation = renderGeneration;
+        const anchorIndex = snapshot?.name ? matched.findIndex(l => loraKey(l) === snapshot.name) : -1;
         let i = 0;
+        let cursor = listEl.firstElementChild;
+        let restored = false;
         const step = () => {
           if (closed || generation !== renderGeneration || mode !== "list") return;
-          const end = Math.min(i + CHUNK, matched.length);
-          for (; i < end; i++) listEl.appendChild(buildListRow(matched[i]));
+          const end = Math.min(Math.max(i + CHUNK, anchorIndex + 1), matched.length);
+          let builds = 0;
+          for (; i < end; i++) {
+            const name = loraKey(matched[i]);
+            let row = listRows.get(name);
+            if (!row) {
+              if (builds >= CHUNK) break;
+              row = buildListRow(matched[i]); listRows.set(name, row); builds++;
+            }
+            updateItemState(row);
+            if (row !== cursor) listEl.insertBefore(row, cursor);
+            cursor = row.nextElementSibling;
+          }
+          const mountedRows = listEl.querySelectorAll(".bm-li");
+          const lastRow = mountedRows[mountedRows.length - 1];
+          const mountedHeight = lastRow ? lastRow.offsetTop + lastRow.offsetHeight : 0;
+          spacer.style.height = Math.max(0, oldHeight - mountedHeight) + "px";
+          if (!restored && (!snapshot?.name || matched.slice(0, i).some(l => loraKey(l) === snapshot.name))) {
+            restoreViewport(snapshot); restored = true;
+          }
           if (i < matched.length) {
             let frameId;
             frameId = requestAnimationFrame(() => {
@@ -2824,20 +2965,26 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
               if (generation === renderGeneration) step();
             });
             listFrame = frameId;
+          } else {
+            spacer.remove(); listSpacer = null;
+            if (!restored) restoreViewport(snapshot);
           }
         };
         step();
       };
 
-      const renderCurrent = () => {
+      const renderCurrent = ({ reset = false, exclude = [] } = {}) => {
         if (closed) return;
+        const snapshot = reset ? null : captureViewport(exclude);
+        modeAnchor = renderedMode !== mode ? snapshot?.name : null;
         renderGeneration++;
         cancelPendingFrames();
-        io.disconnect(); visibleCards.clear(); recentCards.clear(); contentEl = null; gridWindow = "";
+        gridWindow = "";
         matchedLoras = getMatched();
-        listEl.scrollTop = 0;
-        if (mode === "grid") renderGrid();
-        else renderListMode();
+        const viewport = resolveViewport(snapshot);
+        if (mode === "grid") renderGrid(viewport);
+        else renderListMode(viewport);
+        renderedMode = mode;
       };
 
       const updateBatchBar = () => {
@@ -2853,7 +3000,7 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
             saveMeta();
             this._commit(); this._render(this.listEl);
             showToast(`✅ 已添加 ${toAdd.length} 个 LoRA`);
-            selected.clear(); updateBatchBar(); renderCurrent();
+            selected.clear(); updateBatchBar(); renderCurrent({ exclude: toAdd });
           };
         } else {
           batchBar.style.display = "none";
@@ -2957,6 +3104,7 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
       // ── 事件 ──
       const closeModal = () => {
         if (closed) return;
+        loraImageNodes.capture(listEl);
         closed = true;
         if (this._manualRefresh === manualRefresh) this._manualRefresh = null;
         renderGeneration++;
@@ -2964,7 +3112,7 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
         cancelPendingFrames();
         infoSession.dispose();
         if (this._closeBrowser === closeModal) this._closeBrowser = null;
-        visibleCards.clear(); recentCards.clear(); contentEl = null;
+        visibleCards.clear(); recentCards.clear(); listRows.clear(); contentEl = null;
         cancelBMDrag();
         // 释放资源：断开图片观察器、取消在途 C 站匹配请求（避免占满连接池导致二次打开列表加载不出）、恢复拖拽选中态、清理分类弹层
         io.disconnect();
@@ -2980,6 +3128,9 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
         window.removeEventListener("blur", cancelBMDrag);
         document.removeEventListener("visibilitychange", onBMVisibility);
         document.removeEventListener("mouseleave", cancelBMDrag);
+        listEl.removeEventListener("wheel", userNavigation);
+        listEl.removeEventListener("touchstart", userNavigation);
+        listEl.removeEventListener("keydown", onListNavigationKey);
         overlay.remove();
       };
       this._closeBrowser = closeModal;
@@ -3011,13 +3162,20 @@ const loraInfoClient = new LoraInfoClient(filenameLookup());
       let _searchTimer = null;
       searchInput.oninput = () => {
         clearTimeout(_searchTimer);
-        _searchTimer = setTimeout(renderCurrent, 150);
+        _searchTimer = setTimeout(() => renderCurrent({ reset: true }), 150);
       };
       baseModelFilterEl.onchange = () => {
         baseModelFilter = baseModelFilterEl.value;
-        renderCurrent();
+        renderCurrent({ reset: true });
       };
-      sortEl.onchange = () => renderCurrent();
+      sortEl.onchange = () => renderCurrent({ reset: true });
+      const userNavigation = () => { viewportRevision++; modeAnchor = null; };
+      listEl.addEventListener("wheel", userNavigation, { passive: true });
+      listEl.addEventListener("touchstart", userNavigation, { passive: true });
+      const onListNavigationKey = event => {
+        if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) userNavigation();
+      };
+      listEl.addEventListener("keydown", onListNavigationKey);
       listEl.addEventListener("scroll", () => {
         if (closed || mode !== "grid" || gridFrame !== null) return;
         const generation = renderGeneration;

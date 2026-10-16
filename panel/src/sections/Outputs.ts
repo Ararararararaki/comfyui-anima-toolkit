@@ -1,34 +1,51 @@
 // ── Outputs 模块主页面 ──
 
-import { useOutputStore } from '../store/outputStore'
+import { restoreOutputSources, outputSources, sourceForFile, fileSourceIdentity, outputContentKey, outputFileId, readOutputSourceFile, requestOutputSourcePermission, setOutputSource, subscribeOutputSources } from '../services/outputSources'
+import { scanOutputSource, refreshOutputSources, cancelOutputScan } from '../services/outputScanner'
+import { renderOutputSourcesView, mountOutputSourcesView } from '../renderers/outputSourcesView'
+import { backendThumbnailSource, restoreOutputAnnotations, outputPreviewIndex } from '../services/outputPresentation'
+import { useOutputStore, outputSummaryForFile, configureOutputQueryExecutor } from '../store/outputStore'
+import { createOutputSummaryIndex, type OutputClassification } from '../services/outputSummaryIndex'
+import { outputGroups } from '../services/outputQuery'
+import { createOutputSummaryReader } from '../services/outputSummaryReader'
+import { createOutputSearchClient } from '../services/outputSearchClient'
+import { outputGroupedLayout, type OutputLayoutItem } from '../services/outputGroupedLayout'
+import { renderOutputFolder, renderOutputBreadcrumb, outputFolderLayout } from '../renderers/outputFolders'
+import { setOutputSourceEnabled, removeOutputSource } from '../services/outputSources'
+import type { OutputFolder } from '../services/outputBrowser'
+import { createOutputDragSession, writeOutputDragData } from '../services/outputDrag'
+import { createOutputPainter } from '../components/OutputPainter'
+import { saveOutputEdit } from '../services/outputEditSave'
+import { observeOutputFreshness } from '../services/outputFreshness'
+import { outputFallbackSettings, outputFallbackCatalog, outputFallbackVersion, refreshOutputFallbackCatalog, setOutputFallbackSettings, subscribeOutputFallback, inferOutputFallback } from '../services/outputFallback'
 import { deleteFiles, renameFile, batchFavorite, batchRate } from '../services/outputService'
-import { scanOutputDir, scanOutputDirIncremental, loadOutputDirHandle, buildDirTree, buildDirTreeFromPaths, reparseAllMetadata, ensureMetadataFresh, readImageMetadata } from '../services/outputScanner'
+import { scanOutputDir, scanOutputDirIncremental, reparseAllMetadata, readImageMetadata } from '../services/outputScanner'
 import { restoreAllFromDb } from '../services/outputManifest'
-import { preloadThumbnailsFromDb, probeBackendThumbs, backendThumbsEnabled, animaThumbUrl, probeGalleryIndex, galleryIndexEnabled, galleryEntries, galleryIndexBuiltAt, galleryParserVersion, galleryIndexParserVersion, galleryOutputRoot, fetchGalleryMeta } from '../services/outputThumbnail'
+import { probeBackendThumbs, backendThumbsEnabled, animaThumbUrl, probeGalleryIndex, galleryIndexEnabled, galleryEntries, galleryIndexBuiltAt, galleryParserVersion, galleryIndexParserVersion, galleryOutputRoot, fetchGalleryMeta, fetchGalleryChanges, requestGalleryRefresh, type GalleryChanges, type GalleryEntry } from '../services/outputThumbnail'
 import { probeGalleryStatus, galleryStatusAvailable, galleryStatusBusy } from '../services/galleryStatus'
 import { hashPath } from '../services/outputManifest'
 import { outputsDb } from '../db/outputsDb'
 import { addPrompt, generatePromptId } from '../store/prompts'
 import { esc, escAttr, showToast, copyText, icon, attachSearchClear, debounce } from '../utils'
 import { confirmModal, promptModal } from '../components/Modal'
-import { closeLightbox } from '../components/Lightbox'
+import { closeLightbox, setupLightboxView, setLightboxViewLocked } from '../components/Lightbox'
 import type { OutputFile, OutputMetadata, OutputDir, OutputScanStatus } from '../types/outputs'
 import type { PromptEntry } from '../types'
-import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow, parseOutputMetadata, PARSER_VERSION } from '../services/outputMetadata'
+import { extractLorasFromWorkflow, extractLoraTagsFromWorkflow, parseOutputMetadataBlob, outputLoraNames, PARSER_VERSION } from '../services/outputMetadata'
+import { bindRawMetadataDetails } from '../renderers/outputGenerationDetails'
 import { createImageSnapshot, bindMetadata, backendMetadataMatches, metadataForFile, metadataMatches, outputRootIdentity, promptBody, imageRevision, createMetadataLoader, normalizeOutputPath, commitListSource, listSourceStamp, type ImageSnapshot, type OutputSourceKind } from '../services/outputIdentity'
 import { extractPngTextChunks, injectPngTextChunks } from '../services/pngChunks'
 import { applyExportMetadata, isExportMetadataNoop } from '../utils/imageMetadata'
-import { useExportMetadataStore, exportMetadataOptions } from '../store/exportMetadata'
+import { useExportMetadataStore, exportMetadataOptions, type ExportMetadataMode } from '../store/exportMetadata'
+import { createOutputExportSession, compressOutputImage, snapshotExportMetadataPolicy, type OutputExportProgress } from '../services/outputExport'
 import { VirtualScroll, type VirtualScrollItemStyle } from '../components/VirtualScroll'
 import { MasonryVirtualScroll } from '../components/MasonryVirtualScroll'
 import { ImageNodeCache } from '../components/ImageNodeCache'
 import { computeMasonryLayout } from '../components/masonry'
 import { initOutputDragSelection, type OutputGridGeometry } from './outputDragSelection'
-import JSZip from 'jszip'
 import { nativeOutputUrl, comfyViewUrl, nativeScanOutputs, nativeListOutputs, probeNativeStorage } from '../services/nativeStorage'
 
 import {
-  renderDirTree as renderDirTreeHtml,
   renderList,
   renderEmpty,
   renderFilteredEmpty,
@@ -41,15 +58,158 @@ import {
 import { openContextMenu, closeContextMenu, createOutputContextMenu } from '../components/ContextMenu'
 
 let _initDone = false
-let dirTree: OutputDir | null = null
 let _lastClickedFileIndex = -1
 let _currentPreviewFileId = ''
 let _focusMode = false
 // 当前预览的原图 Blob URL（切换/关闭时 revoke，避免反复预览累积大图内存）
 let _previewBlobUrl = ''
 let _nativeOutputs = false
-let _sourceKey = ''
-let _sourceEpoch = 0
+let _summaryReader: ReturnType<typeof createOutputSummaryReader> | undefined
+let _searchClient: ReturnType<typeof createOutputSearchClient> | undefined
+let _classificationVersion = ''
+let _indexCanRead = true
+let _indexDeferReason = ''
+let _indexProgress: { done: number; total: number; deferred: boolean; deferredReason?: string; error: string; stage?: 'metadata' | 'wd14'; running?: boolean } = { done: 0, total: 0, deferred: false, error: '' }
+let _currentCardRects = new Map<string, OutputLayoutItem>()
+let _lastBrowseKey = ''
+let _activeGroupAnchor: string | undefined
+let _snapshotFilesRef: OutputFile[] | undefined
+const _snapshotFiles = new Map<string, OutputFile>()
+let _gallerySyncTask: Promise<boolean> | undefined
+let _manualRefreshId = ''
+const _newOutputIds = new Set<string>()
+let _exportSession: ReturnType<typeof createOutputExportSession> | undefined
+const _dragSession = createOutputDragSession({ current: snapshotIsCurrent, metadataPolicy: exportMetadataOptions,
+  read: async (snapshot, signal) => (await getFileBlob(snapshot.file.id, snapshot, signal))?.blob || null })
+let _dragHover = 0
+const _summaryIndex = createOutputSummaryIndex({
+  files: () => useOutputStore.getState().files.filter(file => sourceForFile(file).enabled),
+  cached: file => outputSummaryForFile(file, useOutputStore.getState().summaryCache),
+  metadata: file => cachedImageMetadata(file), snapshot: file => imageSnapshot(file)!, current: snapshotIsCurrent,
+  load: ids => outputsDb.summaries.bulkGet(ids), save: rows => outputsDb.summaries.bulkPut(rows),
+  publish: rows => { if (rows.length) useOutputStore.getState().setSummaries(rows) },
+  read: async (snapshot, signal) => {
+    const source = sourceForFile(snapshot.file)
+    if (!source.handle || !isOutputsActive()) return null
+    _summaryReader ||= createOutputSummaryReader()
+    return _summaryReader.read(snapshot, source.handle, signal)
+  },
+  classify: async (rows, signal) => {
+    if (!rows.length) return []
+    const response = await fetch('/anima/gallery/classify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
+      body: JSON.stringify({ items: rows.map(row => ({ id: row.imageId, positivePrompt: row.prompt || row.identityPrompt || '', tags: row.manualTags || [], inferredTags: row.inferredTags || [] })) }) })
+    if (!response.ok) throw new Error(`本地词库分类 HTTP ${response.status}`)
+    const result = await response.json() as { items: OutputClassification[]; version?: string }
+    if (result.version) _classificationVersion = result.version
+    if (!Array.isArray(result.items)) throw new Error('本地分类返回格式无效')
+    return result.items
+  },
+  canRead: () => isOutputsActive() && (_indexCanRead || _indexDeferReason === 'memory-pressure' && outputFallbackSettings().libraryMatching && outputFallbackCatalog().libraryMatches.count > 0),
+  // Explicit metadata reads are sequential and do not load a tagger runtime.
+  // Cache-only SHA lookups stay small; actual model inference keeps the budget gate.
+  canReadMetadata: manual => isOutputsActive() && (_indexCanRead || manual && _indexDeferReason === 'memory-pressure'),
+  deferReason: () => _indexDeferReason,
+  fallbackEnabled: () => outputFallbackSettings().enabled && (outputFallbackCatalog().models.includes(outputFallbackSettings().model || outputFallbackCatalog().defaultModel) || outputFallbackSettings().libraryMatching && outputFallbackCatalog().libraryMatches.count > 0),
+  fallbackVersion: outputFallbackVersion,
+  fallbackIncludeUnrecognized: () => outputFallbackSettings().includeUnrecognized,
+  fallback: (snapshot, signal) => inferOutputFallback(snapshot, signal, async () => (await getFileBlob(snapshot.file.id, snapshot, signal))?.blob || null, !_indexCanRead),
+  classificationVersion: () => _classificationVersion,
+  progress: progress => { _indexProgress = { ...progress, error: progress.error || '' }; syncIndexProgress() },
+})
+function syncIndexProgress(): void {
+  const element = document.getElementById('outputsIndexStatus')
+  if (!element) return
+  const state = useOutputStore.getState()
+  const reason = _indexProgress.deferredReason === 'memory-pressure' ? '内存不足，等待恢复'
+    : _indexProgress.deferredReason === 'generation-active' ? '正在生图，等待空闲'
+      : _indexProgress.deferredReason === 'tagger-busy' ? 'WD14 正被其他任务使用' : '等待资源或目录授权'
+  const text = _indexProgress.error ? `处理待重试：${_indexProgress.error}`
+    : _indexProgress.stage === 'wd14' ? `WD14 ${_indexProgress.done}/${_indexProgress.total}${_indexProgress.deferred ? ` · ${reason}` : _indexProgress.running ? ' · 反推中' : ' · 本轮完成'}`
+      : _indexProgress.total ? `整理 ${_indexProgress.done}/${_indexProgress.total}${_indexProgress.deferred ? ` · ${reason}` : _indexProgress.running ? ' · 处理中' : ' · 本轮完成'}` : ''
+  element.textContent = state.queryPending ? '搜索中…' : text
+  const status = document.getElementById('outputsRecognitionStatus'); if (status) status.textContent = text
+  const counts = document.getElementById('outputsOrganizationCounts')
+  if (counts) {
+    let pending = 0, unknown = 0, failed = 0
+    const files = state.files.filter(file => sourceForFile(file).enabled)
+    for (const file of files) {
+      const group = outputGroups(outputSummaryForFile(file, state.summaryCache), 'character')[0]
+      if (group.rank === 2) pending++
+      else if (group.rank === 3) failed++
+      else if (!group.characterId) unknown++
+    }
+    counts.textContent = `共 ${files.length} 张 · 待整理 ${pending} · 未识别 ${unknown} · 失败 ${failed}`
+  }
+}
+async function syncGalleryCatalog(): Promise<boolean> {
+  if (_nativeOutputs) return false
+  if (_gallerySyncTask) return _gallerySyncTask
+  const task = (async () => {
+    const changes = await fetchGalleryChanges()
+    if (!changes) return false
+    const changed = changes.reset || Object.keys(changes.entries).length > 0 || changes.removed.length > 0
+    if (changed) await applyGalleryChanges(changes)
+    _outputsWarmupBusy = !!changes.pending && !useOutputStore.getState().files.length
+    const refresh = changes.refresh, refreshElement = document.getElementById('outputsRefreshStatus')
+    if (refresh && refreshElement && _manualRefreshId && String(refresh.requestId) === _manualRefreshId) {
+      refreshElement.textContent = refresh.state === 'complete' ? '目录已核对' : refresh.state === 'failed' ? `核对失败：${refresh.error || '请重试'}`
+        : refresh.state === 'deferred' ? `核对待恢复：${refresh.reason || '等待资源'}` : '正在核对 output 目录…'
+    }
+    const reason = changes.budgetReason || ''
+    _indexDeferReason = reason
+    const canRead = reason !== 'memory-pressure' && reason !== 'generation-active'
+    const resumed = !_indexCanRead && canRead
+    _indexCanRead = canRead
+    if (changed && isOutputsActive()) renderOutputsView()
+    if (changed || resumed || _indexProgress.deferred && canRead) _summaryIndex.schedule()
+    return true
+  })()
+  _gallerySyncTask = task
+  try { return await task } finally { if (_gallerySyncTask === task) _gallerySyncTask = undefined }
+}
+function galleryFile(path: string, entry: GalleryEntry): OutputFile {
+  const mtime = Math.round(entry.mtime * 1000)
+  return { id: hashPath(path), sourceId: 'output', path, filename: path.split('/').pop() || path, extension: path.split('.').pop()?.toLowerCase() || '',
+    size: entry.size, mtime, width: entry.width, height: entry.height, favorite: false, rating: 0, notes: '', tags: [], category: '', status: '', pinned: false, createdAt: mtime }
+}
+async function applyGalleryChanges(changes: GalleryChanges): Promise<void> {
+  const previous = useOutputStore.getState(), existing = new Map(previous.files.map(file => [file.id, file]))
+  const removedPaths = new Set(changes.removed)
+  const removed = new Set(previous.files.filter(file => (file.sourceId || 'output') === 'output' && removedPaths.has(file.path)).map(file => file.id))
+  let files = previous.files.filter(file => (file.sourceId || 'output') !== 'output' || (!changes.reset && !removedPaths.has(file.path)))
+  const byKey = new Map(files.map(file => [outputContentKey(file), file]))
+  const incoming = Object.entries(changes.entries).map(([path, entry]) => ({ file: galleryFile(path, entry), entry })).filter(({ file }) => !isOutputIdentityDeleted(file.path, file.mtime, file.size, galleryOutputRoot()))
+  if (isOutputsActive() && previous.files.length) {
+    const previousKeys = new Set(previous.files.map(outputContentKey))
+    for (const { file } of incoming) if (!previousKeys.has(outputContentKey(file))) _newOutputIds.add(file.id)
+  }
+  const saved = await outputsDb.files.bulkGet(incoming.map(row => row.file.id))
+  const metadata: OutputMetadata[] = []
+  for (let index = 0; index < incoming.length; index++) {
+    const { file, entry } = incoming[index]
+    const merged = restoreOutputAnnotations(file, existing.get(file.id) || saved[index])
+    byKey.set(outputContentKey(file), merged)
+    const summary = bindMetadata({ imageId: file.id, model: entry.model || '', prompt: entry.prompt || '', identityPrompt: entry.identityPrompt, seed: entry.seed || '', steps: entry.steps || '', cfg: entry.cfg || '', sampler: entry.sampler || '', vae: '', clipSkip: 0, negativePrompt: '', workflowJson: '', rawMetadata: {}, loras: entry.loras || [], lorasExtracted: true, hasWorkflow: !!entry.hasWorkflow, metadataState: entry.metadataState, metadataWarnings: entry.metadataWarnings, metadataFormat: entry.metadataFormat, summaryStatus: entry.summaryStatus || 'ready' }, createImageSnapshot(merged, 'gallery', galleryOutputRoot(), entry.parserVersion || galleryIndexParserVersion()))
+    delete summary.metadataIdentity
+    const cached = cachedImageMetadata(merged)
+    if (!cached?.metadataIdentity || !metadataMatches(cached, createImageSnapshot(merged, 'gallery', galleryOutputRoot(), changes.parserVersion))) metadata.push(summary)
+  }
+  files = [...byKey.values()]
+  const presentIds = new Set(files.map(file => file.id))
+  for (const id of _newOutputIds) if (!presentIds.has(id)) _newOutputIds.delete(id)
+  commitListSource('gallery', galleryOutputRoot(), galleryParserVersion())
+  setOutputSource('gallery', galleryOutputRoot(), galleryParserVersion())
+  useOutputStore.setState({ files, rootPath: galleryOutputRoot(), metadataParserVersion: galleryParserVersion(), selectedIds: new Set([...previous.selectedIds].filter(id => presentIds.has(id))) })
+  useOutputStore.getState().putMetadataBatch(metadata)
+  if (removed.size) useOutputStore.getState().removeMetadata([...removed])
+  useOutputStore.getState().applyFilters()
+  await outputsDb.transaction('rw', outputsDb.files, async () => {
+    const latest = await outputsDb.files.bulkGet(incoming.map(row => row.file.id))
+    await outputsDb.files.bulkPut(incoming.map(({ file }, index) => restoreOutputAnnotations(byKey.get(outputContentKey(file))!, latest[index] || existing.get(file.id))))
+  })
+}
+let _viewEpoch = 0
+let _scanActionEpoch = 0
 let _previewToken = 0
 let _detailToken = 0
 let _copyToken = 0
@@ -115,7 +275,7 @@ function pruneDeletedIdentities(): void {
   const present = new Set<string>()
   const state = useOutputStore.getState()
   const { root } = currentImageSource()
-  for (const f of state.files) present.add(deletedIdentityKey(f.path, f.mtime, f.size, root))
+  for (const f of state.files) present.add(deletedIdentityKey(f.path, f.mtime, f.size, currentImageSource(f).root))
   for (const [k, v] of [..._deletedIdentities]) {
     // 超过 5 分钟一律忘记：避免任何形式的长期屏蔽
     if (Date.now() - v.at > 300_000) { _deletedIdentities.delete(k); continue }
@@ -126,25 +286,9 @@ function pruneDeletedIdentities(): void {
 /** 切换图片来源/重置时清空（root 变了旧身份全部失效） */
 function clearDeletedIdentities(): void { _deletedIdentities.clear() }
 
-function currentImageSource() {
-  const state = useOutputStore.getState()
-  const stamp = listSourceStamp()
-  // 未确立来源：退回目录句柄直连（唯一能安全确认的来源），并显式标记为 directory。
-  // 宁可退到 directory 也不猜 gallery —— 猜错会读到另一张同路径的图。
-  const kind: OutputSourceKind = stamp ? stamp.kind : 'directory'
-  const root = stamp ? stamp.root : outputRootIdentity(state.rootPath, state.dirHandle)
-  const parserVersion = stamp ? stamp.parserVersion : PARSER_VERSION
-  const key = JSON.stringify([kind, root])
-  if (key !== _sourceKey) {
-    _sourceKey = key
-    _sourceEpoch++
-    _outputImageNodes.clear()
-    _thumbnailRevisions.clear()
-    useOutputStore.getState().invalidateThumbnails()
-    // root 变了 → 旧身份记录全部失效，必须清空（否则会误抑制新来源的同名文件）
-    clearDeletedIdentities()
-  }
-  return { source: kind, root, parserVersion, epoch: _sourceEpoch }
+function currentImageSource(file?: OutputFile) {
+  const identity = fileSourceIdentity(file || { sourceId: 'output' } as OutputFile)
+  return { ...identity, epoch: _viewEpoch }
 }
 
 function imageSnapshot(fileOrId: OutputFile | string, path?: string): ImageSnapshot | null {
@@ -152,15 +296,18 @@ function imageSnapshot(fileOrId: OutputFile | string, path?: string): ImageSnaps
   const matches = typeof fileOrId === 'string' ? state.files.filter(f => f.id === fileOrId && (path == null || f.path === path)) : [fileOrId]
   const file = matches.length === 1 ? matches[0] : undefined
   if (!file) return null
-  const { source, root, parserVersion, epoch } = currentImageSource()
+  const { source, root, parserVersion, epoch } = currentImageSource(file)
   return createImageSnapshot(file, source, root, parserVersion, epoch)
 }
 
 function snapshotIsCurrent(snapshot: ImageSnapshot): boolean {
-  const current = currentImageSource()
-  return current.epoch === snapshot.epoch && current.source === snapshot.source && current.root === snapshot.root
+  const current = currentImageSource(snapshot.file)
+  const files = useOutputStore.getState().files
+  if (_snapshotFilesRef !== files) { _snapshotFilesRef = files; _snapshotFiles.clear(); for (const file of files) _snapshotFiles.set(outputContentKey(file), file) }
+  const file = _snapshotFiles.get(outputContentKey(snapshot.file))
+  return snapshot.epoch === _viewEpoch && sourceForFile(snapshot.file).enabled && current.source === snapshot.source && current.root === snapshot.root
     && current.parserVersion === snapshot.parserVersion
-    && useOutputStore.getState().files.some(f => f.path === snapshot.path && f.mtime === snapshot.mtime && f.size === snapshot.size)
+    && !!file && file.id === snapshot.file.id && file.mtime === snapshot.mtime && file.size === snapshot.size
 }
 
 function snapshotFromElement(el: HTMLElement): ImageSnapshot | null {
@@ -174,12 +321,19 @@ function snapshotFromElement(el: HTMLElement): ImageSnapshot | null {
 }
 
 function cachedImageMetadata(file: OutputFile): OutputMetadata | null {
-  const source = currentImageSource()
-  return metadataForFile(useOutputStore.getState().metadataCache, file, source.root, source.parserVersion)
+  const source = currentImageSource(file)
+  const state = useOutputStore.getState()
+  const metadata = metadataForFile(state.metadataCache, file, source.root, source.parserVersion)
+  if (metadata) return metadata
+  const row = outputSummaryForFile(file, state.summaryCache)
+  if (!row || row.indexStatus !== 'ready') return null
+  return { imageId: file.id, model: row.model, prompt: row.prompt, loras: row.loras, hasWorkflow: row.hasWorkflow, metadataState: row.metadataState, metadataWarnings: row.metadataWarnings, lorasExtracted: true,
+    summaryStatus: 'ready', seed: '', steps: '', cfg: '', sampler: '', vae: '', clipSkip: 0, negativePrompt: '', workflowJson: '', rawMetadata: {},
+    sourceIdentity: { source: source.source, root: source.root, path: file.path, mtime: file.mtime, size: file.size, parserVersion: source.parserVersion } }
 }
 function cachedImageThumbnail(file: OutputFile): string {
   const snapshot = imageSnapshot(file)
-  return snapshot && _thumbnailRevisions.get(file.path) === imageRevision(snapshot) ? useOutputStore.getState().thumbMemory.get(file.path) || '' : ''
+  return snapshot && _thumbnailRevisions.get(outputContentKey(file)) === imageRevision(snapshot) ? useOutputStore.getState().thumbMemory.get(outputContentKey(file)) || '' : ''
 }
 
 async function refreshNativeOutputs() {
@@ -193,28 +347,24 @@ async function refreshNativeOutputs() {
     pinned: !!item.pinned,
     tags: Array.isArray(item.tags) ? item.tags : [],
   })) as OutputFile[]
-  const metadata = page.items.flatMap(item => {
+  const metadata = page.items.flatMap((item, index) => {
     const meta = item.metadata
     if (!meta) return []
-    return [{
-      imageId: item.id,
+    return [bindMetadata({
+      ...meta, imageId: item.id,
       model: meta.model || '', seed: meta.seed || '', steps: meta.steps || '', cfg: meta.cfg || '',
       sampler: meta.sampler || '', scheduler: meta.scheduler, denoise: meta.denoise, noiseSeed: meta.noiseSeed,
       vae: meta.vae || '', clipSkip: meta.clipSkip || 0, prompt: meta.prompt || '',
       negativePrompt: meta.negativePrompt || '', workflowJson: meta.workflowJson || '', rawMetadata: meta.rawMetadata || {},
-    } satisfies OutputMetadata]
+    } satisfies OutputMetadata, createImageSnapshot(files[index], 'native', 'TK SQLite · ComfyUI/output', PARSER_VERSION))]
   })
-  useOutputStore.setState({ dirHandle: null, rootPath: 'TK SQLite · ComfyUI/output', metadataParserVersion: PARSER_VERSION, files, metadataCache: new Map() })
+  useOutputStore.setState({ dirHandle: null, rootPath: 'TK SQLite · ComfyUI/output', metadataParserVersion: PARSER_VERSION, files: [...files.map(file => ({ ...file, sourceId: 'output' })), ...useOutputStore.getState().files.filter(file => file.sourceId && file.sourceId !== 'output')], metadataCache: new Map([...useOutputStore.getState().metadataCache].filter(([, meta]) => meta.sourceIdentity?.source === 'directory')) })
   // 显式声明：当前列表来自 native 桥
   commitListSource('native', outputRootIdentity('TK SQLite · ComfyUI/output', null), PARSER_VERSION)
+  setOutputSource('native', 'TK SQLite · ComfyUI/output', PARSER_VERSION)
   useOutputStore.getState().putMetadataBatch(metadata)
   useOutputStore.getState().applyFilters()
-  renderNativeDirTree(page.total)
-}
-
-function renderNativeDirTree(total: number) {
-  const el = document.getElementById('outputsDirTree')
-  if (el) el.innerHTML = `<div class="outputs-dir-node active" data-path=""><span class="outputs-dir-icon">🗃️</span><span class="outputs-dir-name">TK SQLite · ComfyUI/output</span><span class="outputs-dir-count">${total}</span></div>`
+  renderOutputSourcesView()
 }
 
 /**
@@ -265,13 +415,13 @@ const getImageMetadata = createMetadataLoader({
       return bindMetadata(normalizeGalleryMeta(full, snapshot.file, snapshot.file.id), snapshot)
     }
     if (snapshot.source === 'directory') {
-      const dh = useOutputStore.getState().dirHandle
+      const dh = sourceForFile(snapshot.file).handle
       return dh ? readImageMetadata(dh, snapshot) : null
     }
     const blob = await getFileBlob(snapshot.file.id, snapshot)
     if (!blob || !snapshotIsCurrent(snapshot)) return null
-    const meta = await parseOutputMetadata(await blob.blob.arrayBuffer(), snapshot.file.extension)
-    return meta ? bindMetadata({ ...meta, imageId: snapshot.file.id, rawMetadata: meta.raw, loras: extractLorasFromWorkflow(meta.workflowJson, meta.raw), lorasExtracted: true }, snapshot) : null
+    const meta = await parseOutputMetadataBlob(blob.blob, snapshot.file.extension, undefined, snapshot.file.filename)
+    return meta ? bindMetadata({ ...meta, imageId: snapshot.file.id, rawMetadata: meta.raw, loras: outputLoraNames(meta), lorasExtracted: true }, snapshot) : null
   },
 })
 
@@ -293,11 +443,11 @@ function normalizeGalleryMeta(full: Record<string, unknown>, file: OutputFile, f
     ? full.rawMetadata as Record<string, string>
     : {}
   return {
-    imageId: fileId,
+    ...(full as Partial<OutputMetadata>), imageId: fileId,
     model: text(full.model), seed: text(full.seed), steps: text(full.steps), cfg: text(full.cfg),
     sampler: text(full.sampler), scheduler: text(full.scheduler), vae: text(full.vae),
     clipSkip: Number(full.clipSkip) || 0,
-    prompt: text(full.prompt), negativePrompt: text(full.negativePrompt),
+    prompt: text(full.prompt), identityPrompt: text(full.identityPrompt), negativePrompt: text(full.negativePrompt),
     workflowJson: text(full.workflowJson), rawMetadata: raw,
     loras: Array.isArray(full.loras) ? full.loras as string[] : [],
     hasWorkflow: !!full.hasWorkflow || !!text(full.workflowJson),
@@ -336,7 +486,7 @@ function markMetadataUnavailable(fileId: string): void {
   useOutputStore.getState().putMetadata({
     imageId: fileId, model: '', seed: '', steps: '', cfg: '', sampler: '', scheduler: '',
     vae: '', clipSkip: 0, prompt: '', negativePrompt: '', workflowJson: '', rawMetadata: {},
-    loras: [], hasWorkflow: false, lorasExtracted: true,
+    loras: [], hasWorkflow: false, lorasExtracted: true, metadataState: 'unknown',
   })
 }
 
@@ -374,124 +524,50 @@ async function writeClipboard(text: string): Promise<boolean> {
 export async function initOutputs() {
   if (_initDone) return
   _initDone = true
-
-  _nativeOutputs = await probeNativeStorage()
-  // 导出元数据开关的按钮状态（store 已在模块加载时从 localStorage 恢复好）
-  syncMetadataButton()
-  // 后端直供图源探测（插件 ≥2.5.1 的 /anima/thumb）：可用则卡片 <img> 直接引用小图 URL，
-  // 浏览器不再自己读盘解码原图。探测一次，失败（旧版插件/后端离线）自动走旧管线。
-  await probeBackendThumbs()
-  // Gallery 元数据索引探测（插件 ≥2.6.0 的 /anima/gallery/manifest）：可用则列表与按钮
-  // 摘要全部由后端索引直出（秒出、无需目录授权）；不可用走旧管线。
-  await probeGalleryIndex()
-  if (galleryIndexEnabled() && !_nativeOutputs) {
-    await restoreOutputsFromDb()
-    bindOutputsEvents()
-    bindOutputsSettingsRefresh()
-    bindScanProgressUI()
-    // ── 2026-09-11 修：gallery 只接管「列表 + 元数据摘要 + 缩略图」；左侧目录树、
-    //    增量扫描、删除等文件系统操作仍依赖目录句柄。此前这里提前 return 跳过了
-    //    句柄恢复 → 左侧树消失、重新选择目录退化为全量重扫（用户实测回归）。
-    //    skipFiles：gallery 直出是列表真源，别让 DB 旧缓存把列表覆盖回去。
-    const loadResult = await loadOutputDirHandle({ skipFiles: true })
-    const dh = useOutputStore.getState().dirHandle
-    // 目录树先用 gallery 路径秒出（纯数据、无需授权）；句柄可用后再换磁盘树（多空目录、真实计数）
-    const ghFiles = useOutputStore.getState().files
-    if (ghFiles.length > 0) {
-      dirTree = buildDirTreeFromPaths(ghFiles.map(f => f.path), 'ComfyUI/output')
-      renderDirTree(dirTree)
-      // ⚠️ 必须补渲染：activateOutputs 在 _initDone 置位后、gallery 数据落地前就可能被
-      // 切页触发（此时 files 还空，渲染了空网格 + 静态 .outputs-empty 占位）。
-      // 数据落地后若没有这次渲染，网格会一直空着（探针实测 gridCards=0）。
-      renderOutputsView()
-    }
-    if (dh && loadResult.permission === 'granted') {
-      void buildDirTree(dh).then(t => { dirTree = t; renderDirTree(t); renderOutputsView() }).catch(() => {})
-    } else if (dh) {
-      showReauthBanner()
-    }
-    startOutputsAutoScan()
-    bindOutputsExecutionEvents()
-    window.addEventListener('focus', triggerOutputsIncrementalScan)
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) triggerOutputsIncrementalScan() })
-    // 面板启动即安排一次「闲置预热」：用户还没点 outputs 栏目，数据就先进 store（切过去零等待）
-    scheduleOutputsIdleWarmup()
-    return
-  }
-  if (_nativeOutputs) {
-    try {
-      await refreshNativeOutputs()
-      renderOutputsView()
-    } catch (error) {
-      console.warn('[Outputs] TK SQLite 初始化失败，回退 IndexedDB:', error)
-      _nativeOutputs = false
-    }
-  }
-  if (_nativeOutputs) {
-    bindOutputsEvents()
-    bindOutputsSettingsRefresh()
-    startOutputsAutoScan()
-    bindOutputsExecutionEvents()
-    window.addEventListener('focus', triggerOutputsIncrementalScan)
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) triggerOutputsIncrementalScan() })
-    scheduleOutputsIdleWarmup()
-    return
-  }
-
-  // 尝试恢复目录句柄与权限状态（句柄引用始终恢复；权限降级时用横幅引导一键重新授权）
-  const loadResult = await loadOutputDirHandle()
-
-  const dh = useOutputStore.getState().dirHandle
-  if (dh && loadResult.permission === 'granted') {
-    // 解析逻辑升级时自动失效旧元数据缓存并重新解析（增量扫描按 mtime 会跳过未变更文件）
-    // ⚠️ 首屏红线：这里绝不能 await —— 解析器版本变化时它会全库重新解析（逐个读回近 4000
-    // 个原图再解析，实测 195MB IndexedDB 写入 / 数分钟），await 在首次渲染之前就是「卡几分钟
-    // 且页面毫无变化」。现在先用现有缓存渲染，重解析后台跑、结束后再刷新一次。
-    void ensureMetadataFresh(dh).then(fresh => { if (fresh) { renderOutputsView(); updateFilterPanel() } })
-    // 快速恢复：直接从 DB 恢复文件列表/元数据/缩略图缓存（跳过全量目录遍历），首屏秒出
-    await restoreOutputsFromDb()
-    // 构建目录树（buildDirTree 是轻量操作，仅遍历文件名）
-    // 目录树也不挡首屏（要遍历整个输出目录，几千个条目）
-    void buildDirTree(dh).then(t => { dirTree = t; renderDirTree(t); renderOutputsView() }).catch(() => {})
-  } else if (dh) {
-    // 权限降级（prompt/denied，如浏览器重启后）：显示重新授权横幅，避免被迫重新「选择目录」
-    showReauthBanner()
-  }
-
-  // 首次渲染（恢复缓存后的网格）
-  renderOutputsView()
-
-  // 权限正常且有缓存时，后台增量扫描（仅发现新文件才重建网格，避免无变化也重建导致闪烁）
-  if (dh && loadResult.permission === 'granted' && useOutputStore.getState().files.length > 0) {
-    try {
-      const count = await scanOutputDirIncremental(dh)
-      if (count > 0) { dirTree = await buildDirTree(dh); renderDirTree(dirTree); renderOutputsView() }
-    } catch { /* 静默 */ }
-  }
-
+  await restoreOutputSources()
+  mountOutputSourcesView(renderOutputsView)
+  let sourceSignature = ''
+  subscribeOutputSources(() => {
+    const next = JSON.stringify(outputSources().map(source => [source.id, source.enabled, source.permission, source.root, source.parserVersion]))
+    if (sourceSignature !== next) { sourceSignature = next; _summaryIndex.cancel(); _summaryIndex.retry() }
+    if (_currentPreviewSnapshot && !sourceForFile(_currentPreviewSnapshot.file).enabled) closeLightbox()
+    useOutputStore.getState().applyFilters(); renderOutputsView()
+  })
   bindOutputsEvents()
   bindOutputsSettingsRefresh()
-
-  // ── 自动检测新图：窗口获得焦点 / 页面重新可见 / 60s 轮询 ──
+  bindScanProgressUI()
+  syncMetadataButton()
+  let renderFrame = 0
+  useOutputStore.subscribe((state, previous) => {
+    if (state.files !== previous.files || state.metadataVersion !== previous.metadataVersion) _summaryIndex.schedule()
+    if (state.filteredFiles !== previous.filteredFiles || state.summaryVersion !== previous.summaryVersion || state.queryPending !== previous.queryPending) {
+      if (renderFrame) return
+      renderFrame = requestAnimationFrame(() => { renderFrame = 0; if (isOutputsActive()) renderOutputsView(); syncIndexProgress() })
+    }
+  })
+  // Restored directory rows appear before any network probe or new disk scan.
+  renderOutputsView()
+  _nativeOutputs = await probeNativeStorage()
+  await probeBackendThumbs()
+  const currentCatalog = await syncGalleryCatalog().catch(() => false)
+  if (!currentCatalog) await probeGalleryIndex()
+  if (_nativeOutputs) {
+    try { await refreshNativeOutputs() } catch { _nativeOutputs = false }
+  }
+  if (!_nativeOutputs && !currentCatalog) await restoreOutputsFromDb()
+  renderOutputsView()
   startOutputsAutoScan()
   bindOutputsExecutionEvents()
+  const stopFreshness = observeOutputFreshness(() => scheduleOutputsProbeAfterExecution(180))
+  window.addEventListener('pagehide', () => { stopFreshness(); _summaryIndex.dispose(); _summaryReader?.dispose(); _searchClient?.dispose(); _outputImageNodes.clear(); if (_outputsPollTimer !== null) clearInterval(_outputsPollTimer) }, { once: true })
+  subscribeOutputFallback(() => {
+    _summaryIndex.cancel()
+    if (!outputFallbackSettings().enabled) useOutputStore.getState().setSummaries([...useOutputStore.getState().summaryCache.values()].filter(row => row.inferenceStatus === 'pending').map(row => ({ ...row, inferenceStatus: undefined })))
+    if (isOutputsActive()) _summaryIndex.retry()
+    syncFallbackControls()
+  })
   window.addEventListener('focus', triggerOutputsIncrementalScan)
   document.addEventListener('visibilitychange', () => { if (!document.hidden) triggerOutputsIncrementalScan() })
-
-  // ── 元数据不再在进入页面时全库预载（2026-09-10 改按需）──
-  // 旧实现用「空闲分片」把**全部 3918 条**元数据读了一遍：每条记录都带 workflowJson
-  // （几十~几百 KB），bulkGet 的结构化克隆在主线程上就是数百 MB 的搬运；跑完还有
-  // 第二次全库遍历（scheduleIdleLoraExtraction）再次读盘解析工作流。这就是
-  // 「进 Outputs 要等两三分钟才用得顺」的来源 —— 分片只是把它摊开，并没有减少总量。
-  // 现在三条按需路径取代它：
-  //   ① 可见卡片：loadVisibleMetadata() 随滚动逐屏读单条（含 LoRA 提取，只解析这一张的工作流）；
-  //   ② 单图操作：复制 Prompt / 保存到 Prompt 库 / 复制 LoRA / 下载工作流 → 只读那一张；
-  //   ③ 全局筛选：只有真正用到「基座模型 / LoRA / 标签」筛选时，才触发一次分片补齐（带提示）。
-
-  // ── 扫描进度订阅 ──
-  bindScanProgressUI()
-
-  // 面板启动即安排一次「闲置预热」（同上：数据先进 store，用户切到 outputs 时零等待）
   scheduleOutputsIdleWarmup()
 }
 
@@ -513,7 +589,7 @@ function scheduleOutputsIdleWarmup() {
       // 用户可能已经切到 outputs（或正停在这里）：把刚落库的数据显出来
       if (isOutputsActive()) renderOutputsView()
       // 数据已就位 → 顺手把**最新这批图**的完整元数据也备好（用户下一步多半就是点进 outputs 复制）
-      if (ok) scheduleFullMetadataWarmup()
+      if (ok) _summaryIndex.schedule()
     })
   }
   if (typeof window.requestIdleCallback === 'function') {
@@ -543,6 +619,7 @@ function prepareOutputsData(): Promise<boolean> {
  */
 async function runPrepareOutputsData(): Promise<boolean> {
   try {
+    if (await syncGalleryCatalog()) return useOutputStore.getState().files.length > 0
     const hasData = useOutputStore.getState().files.length > 0
     if (hasData) {
       // 只有 gallery 索引在用时才有"索引换代"这回事；原生/目录管线由各自的轮询负责
@@ -582,42 +659,6 @@ function bindScanProgressUI() {
   })
 }
 
-// ── 目录权限过期横幅 ──
-
-function showReauthBanner() {
-  const el = document.getElementById('outputsReauthBanner')
-  if (el) el.style.display = 'flex'
-}
-
-function hideReauthBanner() {
-  const el = document.getElementById('outputsReauthBanner')
-  if (el) el.style.display = 'none'
-}
-
-/** 一键重新授权上次目录：浏览器重启后 FS Access 授权回到 prompt，点击恢复即可继续用增量扫描 */
-async function reauthorizeOutputs() {
-  const dh = useOutputStore.getState().dirHandle
-  if (!dh) { showToast('⚠️ 没有可恢复的目录，请重新选择'); return }
-  try {
-    const perm = await (dh as any).requestPermission({ mode: 'readwrite' })
-    if (perm === 'granted') {
-      hideReauthBanner()
-      // 清除灰图缩略图缓存，强制从文件系统重新加载
-      useOutputStore.getState().invalidateThumbnails()
-      await scanOutputDirIncremental(dh)
-      dirTree = await buildDirTree(dh)
-      renderDirTree(dirTree)
-      renderOutputsView()
-      updateFilterPanel()
-      showToast('✅ 目录已重新授权')
-    } else {
-      showToast('⚠️ 授权未完成，请点击按钮重新授权')
-    }
-  } catch {
-    showToast('⚠️ 授权失败，请重新选择目录')
-  }
-}
-
 // ── 自动增量扫描：生成一张新图后无需手动刷新 ──
 
 let _outputsPollTimer: number | null = null
@@ -631,11 +672,15 @@ function startOutputsAutoScan() {
   if (_outputsPollTimer !== null) return
   _outputsPollTimer = window.setInterval(() => {
     triggerOutputsIncrementalScan()
-  }, 60_000)
+  }, 4000)
 }
 
 async function triggerOutputsIncrementalScan() {
   const s = useOutputStore.getState()
+  if (await syncGalleryCatalog().catch(() => false)) {
+    if (isOutputsActive() && !document.hidden) await refreshOutputSources({ automatic: true })
+    return
+  }
   // gallery 索引模式（**无论有没有 TK 原生存储**）：先问后端的「有没有新图」轻量探测，只有真的
   // 新增/换代才拉全量 manifest。这样即使停留在别的栏目（甚至页面被切走）也能把新图准备好，
   // 切回来立即可见。
@@ -657,12 +702,7 @@ async function triggerOutputsIncrementalScan() {
     } catch { /* 静默 */ }
     return
   }
-  if (s.dirHandle && s.files.length > 0 && isOutputsActive() && s.scanStatus !== 'scanning') {
-    try {
-      const count = await scanOutputDirIncremental(s.dirHandle)
-      if (count > 0) { renderOutputsView(); updateFilterPanel() }
-    } catch { /* 静默 */ }
-  }
+
 }
 
 // ── 生成完成就后台更新（2026-09-13）──
@@ -843,157 +883,47 @@ async function refreshOutputsFromGallery() {
   if (isOutputsActive()) { renderOutputsView(); updateFilterPanel() }
 }
 
-let _lastIncrementalScan = 0
 
-// ── 首屏完整元数据预热（2026-09-17）──
-// 用户要求：面板关着 → 点进工具箱 → outputs 里的图"直接就能复制使用"。
-// 摘要（gallery manifest，面板启动即入库）已覆盖 prompt / LoRA 名字；
-// 但「复制 LoRA 标签（带权重）」「查看元数据」「下载工作流」要的是**完整工作流** ——
-// gallery 模式必须向后端按需取一次。为了不让用户在那儿等，进入栏目后在**空闲时间**
-// 把**当前可见的卡**静默补全：
-//   · 只补可见区（一屏），不随滚动无限拉 —— 否则浏览几百张就是几十 MB 的请求
-//   · 并发 2、失败静默、取到即落 IDB（下次连请求都没有）
-//   · 绝不进首屏关键路径（requestIdleCallback，且首帧之后才排）
-const FULL_META_WARM_CONCURRENCY = 2
-/** 一轮预热最多补多少张：够铺满一屏多一点，避免在超大屏上把一整屏拉满 */
-const FULL_META_WARM_MAX = 24
-let _fullMetaWarmToken = 0
-
-function scheduleFullMetadataWarmup(): void {
-  if (!galleryIndexEnabled()) return
-  const token = ++_fullMetaWarmToken
-  const run = () => {
-    if (token !== _fullMetaWarmToken) return
-    let snapshots = Array.from(document.querySelectorAll<HTMLElement>('.outputs-card[data-id], .outputs-list-card[data-id]'))
-      .map(el => snapshotFromElement(el))
-      .filter((s): s is ImageSnapshot => !!s)
-      .slice(0, FULL_META_WARM_MAX)
-    // 还没有卡片 DOM（面板刚启动、用户尚未切到 Outputs）→ 用 store 里最新的这批：
-    // 用户马上要看的多半就是刚生成的那几张，这样"点进来"时东西已经在手上（零等待）。
-    if (snapshots.length === 0) {
-      snapshots = useOutputStore.getState().filteredFiles.slice(0, FULL_META_WARM_MAX).map(f => imageSnapshot(f)).filter((s): s is ImageSnapshot => !!s)
-    }
-    if (snapshots.length === 0) return
-    void runFullMetadataWarm(snapshots, token)
-  }
-  const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback
-  if (typeof idle === 'function') idle(run, { timeout: 3000 })
-  else setTimeout(run, 600)
-}
-
-/** 并发受控地把这一屏的完整元数据补齐（token 失效即停：用户已切走/又进了一次栏目）。 */
-async function runFullMetadataWarm(snapshots: ImageSnapshot[], token: number): Promise<void> {
-  let cursor = 0
-  const worker = async (): Promise<void> => {
-    while (token === _fullMetaWarmToken) {
-      const snapshot = snapshots[cursor++]
-      if (!snapshot) return
-      try { await getImageMetadata(snapshot) } catch { /* 静默：单张失败不影响其余 */ }
-    }
-  }
-  await Promise.all(Array.from({ length: FULL_META_WARM_CONCURRENCY }, () => worker()))
-}
-
+// Activate summary queries and incremental freshness; full metadata is explicit-only.
 export async function activateOutputs() {
+  void refreshOutputFallbackCatalog().then(syncFallbackControls).catch(error => { const hint = document.getElementById('outputsFallbackHint'); if (hint) hint.textContent = (error as Error).message })
   if (!_initDone) return
-  if (_nativeOutputs) {
-    // 数据在面板启动时就已经拉过一遍（initOutputs 的 refreshNativeOutputs）：先把 store 里的图
-    // 渲染出来，别让用户在切栏目时干等一轮 /api/tk 往返；随后再后台刷新一次。
-    if (useOutputStore.getState().files.length > 0) { renderOutputsView(); setupInfiniteScroll() }
-    try { await refreshNativeOutputs() } catch { /* 保留当前缓存 */ }
-    renderOutputsView()
-    setupInfiniteScroll()
-    return
-  }
-  const state = useOutputStore.getState()
-
-  // ── gallery 索引模式：保证「切进来就有图」且尽量新鲜 ──
-  // ① 已有数据 → 立刻渲染（零等待、不拉 manifest）。是否要更新交给后台那一次**极轻**检查：
-  //    /anima/gallery/status 是纯内存端点，且 5s 内不重复问；只有 index.builtAt 换代了才静默
-  //    重拉 manifest 后重渲染（先旧后新，绝不白屏）。
-  // ② 没有数据（面板刚启动、后端索引刚就绪或正在预备）→ 立刻补一次，别让用户对着空网格。
-  if (galleryIndexEnabled()) {
-    if (state.files.length > 0) renderOutputsView()
-    if (Date.now() - _lastOutputsProbeAt >= 5000) {
-      void prepareOutputsData().then(() => { if (isOutputsActive()) renderOutputsView() })
-    }
-    // 首屏可见卡的**完整**元数据静默补全（空闲时跑，见 scheduleFullMetadataWarmup）：
-    // 用户点进来后「复制 LoRA 标签 / 查看元数据」应当是即时的，而不是等到点击才去后端取
-    scheduleFullMetadataWarmup()
-  }
-
-  // 有目录句柄时尝试增量扫描
-  if (state.dirHandle) {
-    const fileCount = state.files.length
-    if (fileCount === 0) {
-      // 缓存为空 -> 先尝试从 DB 快速恢复（跳过目录遍历），无缓存才全量扫描
-      const ok = await restoreOutputsFromDb()
-      if (!ok) {
-        try {
-          await scanOutputDir(state.dirHandle)
-          dirTree = await buildDirTree(state.dirHandle)
-          renderDirTree(dirTree)
-          renderOutputsView()
-        } catch { /* 静默失败 */ }
-      }
-    } else {
-      // 已有缓存 -> 先立即按当前缓存渲染（栏目刚显示，容器已有真实宽度；
-      // 若等扫描完成再渲染，期间会显示隐藏期留下的退化几何：单行+图片重叠）
-      renderOutputsView()
-      // 尝试检测新文件（轻量操作）；60s 节流避免每次切换栏目都遍历目录
-      const now = Date.now()
-      if (now - _lastIncrementalScan >= 60000) {
-        _lastIncrementalScan = now
-        try {
-          const count = await scanOutputDirIncremental(state.dirHandle)
-          if (count > 0) {
-            dirTree = await buildDirTree(state.dirHandle)
-            renderDirTree(dirTree)
-            renderOutputsView()
-          }
-        } catch { /* 静默失败 */ }
-      }
-    }
-
-    // ── 缩略图 / 元数据都不再做「全库补生成」（2026-09-10 改按需）──
-    // 旧代码在这里调用 ensureThumbnails(dirHandle)：它对所有缺失缩略图的图片
-    // （用户库实测 3782 张）按 **2 张/批串行** 读盘 + 生成 + 写 IndexedDB，一轮就是
-    // 两三分钟的磁盘/主线程占用 —— 与元数据全量预载一起，构成「进页面要等两三分钟」。
-    // 现在两者都只服务可见区：
-    //   · 缩略图：loadImageThumbnail → 内存 → IndexedDB → 只读这一张文件生成并缓存；
-    //   · 元数据：loadVisibleMetadata → 只读这一张（见 store.loadMetadata，带并发去重）。
-    // 滚到哪补到哪，缓存写入 IndexedDB 后长期命中，不存在需要「先跑完一轮」的全局任务。
-  } else {
-    // 没有目录句柄，提示用户选择
-    const empty = document.querySelector('.outputs-empty') as HTMLElement
-    if (empty) empty.style.display = 'flex'
-  }
-
-  // 每次进入栏目都重渲染：虚拟滚动的行列几何依赖可见宽度
-  // （旧 CSS grid 在显示时自动 reflow；现在由 JS 计算，隐藏期渲染过宽 0 的几何必须重建）
+  if (!_searchClient) { _searchClient = createOutputSearchClient(); configureOutputQueryExecutor(_searchClient.query); useOutputStore.getState().applyFilters() }
+  _summaryIndex.schedule()
+  void fetch('/anima/gallery/classify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items: [] }) }).then(async response => {
+    if (!response.ok) return
+    const result = await response.json()
+    if (result.version && result.version !== _classificationVersion) { _classificationVersion = result.version; _summaryIndex.retry() }
+  }).catch(() => {})
   renderOutputsView()
-
+  if (_nativeOutputs) {
+    try { await refreshNativeOutputs(); renderOutputsView() } catch { /* Retain the last complete list. */ }
+  } else if (galleryIndexEnabled()) {
+    if (Date.now() - _lastOutputsProbeAt >= 5000) void prepareOutputsData().then(() => { if (isOutputsActive()) renderOutputsView() })
+    _summaryIndex.schedule()
+  }
   setupInfiniteScroll()
+  void triggerOutputsIncrementalScan()
 }
 
-function renderDirTree(dir: OutputDir | null) {
-  const el = document.getElementById('outputsDirTree')
-  if (!el) return
-  const currentPath = useOutputStore.getState().currentPath
-  el.innerHTML = renderDirTreeHtml(dir, currentPath)
-}
 
 function renderOutputsView() {
+  renderOutputSourcesView()
   const state = useOutputStore.getState()
+  syncIndexProgress()
+  const newImages = document.getElementById('outputsNewImages')
+  if (newImages) { newImages.hidden = _newOutputIds.size === 0; newImages.textContent = `查看 ${_newOutputIds.size} 张新图` }
+  const groupSelect = document.querySelector<HTMLSelectElement>('.outputs-group-select')
+  if (groupSelect) groupSelect.value = state.groupMode
   renderImageGrid(state)
   // 同步填充已缓存的缩略图，避免操作后图片闪烁
   document.querySelectorAll('.outputs-card img[data-file-path], .outputs-list-card-img img[data-file-path]').forEach(img => {
-    const p = (img as HTMLImageElement).dataset.filePath
-    if (p) {
-      const cached = state.thumbMemory.get(p)
-      if (cached) (img as HTMLImageElement).src = cached
-    }
+    const file = state.files.find(file => file.id === (img as HTMLImageElement).dataset.fileId)
+    const cached = file ? cachedImageThumbnail(file) : ''
+    if (cached) (img as HTMLImageElement).src = cached
   })
+  const location = document.getElementById('outputsLocation')
+  if (location) location.innerHTML = renderOutputBreadcrumb(state.browsePath)
   updateOutputsStats(state)
   updateFilterPanel()
   syncSortOrderBtn()
@@ -1068,10 +998,11 @@ function updateStatusUI(ids: string[], status: string) {
   }
 }
 
-// 筛选面板模型/LoRA 选项增量缓存：每个 meta 只提取一次（修复：每次渲染全量遍历 metadataCache + JSON.parse workflow）
+// Options consume already extracted metadata, scoped to the selected sources.
 const _filterOptModels = new Set<string>()
 const _filterOptLoras = new Set<string>()
-const _filterOptDoneIds = new Set<string>()
+let _filterOptionsKey = ''
+let _filterOptionsFiles: OutputFile[] | undefined
 
 function getOutputCategories(files: OutputFile[]): Array<{ name: string; count: number }> {
   const counts = new Map<string, number>()
@@ -1101,7 +1032,6 @@ function updateFilterPanel() {
   const body = document.getElementById('outputsFilterBody')
   if (!body) return
   const s = useOutputStore.getState()
-  const hasMeta = s.metadataCache.size > 0
   const hasAny = s.filterModel || s.filterLora || s.filterDateMin || s.filterDateMax || s.filterQuickPeriod || s.filterStatusFlags.length > 0 || s.filterTag || s.filterCategory
 
   // 同步输入框值
@@ -1127,19 +1057,14 @@ function updateFilterPanel() {
     b.classList.toggle('active', flag ? s.filterStatusFlags.includes(flag) : false)
   })
 
-  // 填充 datalist 选项并显示/隐藏筛选组（增量缓存：每个 meta 只提取一次 LoRA，避免每次渲染全量 JSON.parse）
-  if (hasMeta) {
-    // 删除/清空导致缓存比数据多太多时重建增量缓存（如重解析清空 metadataCache）
-    if (_filterOptDoneIds.size > s.metadataCache.size + 200) {
-      _filterOptDoneIds.clear()
-      _filterOptModels.clear()
-      _filterOptLoras.clear()
-    }
-    const source = currentImageSource()
-    for (const [id, meta] of s.metadataCache) {
-      if (!meta.sourceIdentity || meta.sourceIdentity.root !== source.root || meta.sourceIdentity.parserVersion !== source.parserVersion) continue
-      if (_filterOptDoneIds.has(id)) continue
-      _filterOptDoneIds.add(id)
+  const optionsKey = JSON.stringify([s.currentSourceId, s.metadataVersion, s.summaryVersion, outputSources().map(source => [source.id, source.enabled])])
+  if (_filterOptionsFiles !== s.files || _filterOptionsKey !== optionsKey) {
+    _filterOptionsFiles = s.files; _filterOptionsKey = optionsKey
+    _filterOptModels.clear()
+    _filterOptLoras.clear()
+    for (const file of s.files.filter(file => sourceForFile(file).enabled && (!s.currentSourceId || file.sourceId === s.currentSourceId))) {
+      const meta = cachedImageMetadata(file)
+      if (!meta) continue
       if (meta.model) _filterOptModels.add(meta.model)
       if (meta.loras) {
         for (const l of meta.loras) _filterOptLoras.add(l)
@@ -1214,11 +1139,28 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
   // 否则虚拟滚动会按「1 列 + 退化行高」建几何，切进来时图片单行重叠
   // （显示后由 activateOutputs/renderOutputsView 以真实宽度渲染）
   if (el.clientWidth === 0 || el.clientHeight === 0) return
+  _outputImageNodes.capture(el)
+  const browseKey = JSON.stringify([state.browsePath, state.searchQuery, state.currentPath, state.currentSourceId, state.sortKey, state.sortOrder, state.groupMode, state.filterKey, state.filterModel, state.filterLora, state.filterTag, state.filterCategory, state.filterDateMin, state.filterDateMax])
+  const resetPosition = !!_lastBrowseKey && _lastBrowseKey !== browseKey
+  _lastBrowseKey = browseKey
+  const oldScroll = resetPosition ? 0 : el.scrollTop, viewport = el.getBoundingClientRect()
+  const anchors = resetPosition || oldScroll <= 4 ? [] : Array.from(el.querySelectorAll<HTMLElement>('.outputs-card[data-id], .outputs-list-card[data-id], [data-output-group]')).map(node => ({ id: node.dataset.id, group: node.dataset.outputGroup, offset: node.getBoundingClientRect().top - viewport.top, bottom: node.getBoundingClientRect().bottom - viewport.top })).filter(anchor => anchor.bottom > 0).sort((a, b) => {
+    const priority = (anchor: typeof a) => anchor.group === _activeGroupAnchor && _activeGroupAnchor ? 0 : anchor.id ? 1 : 2
+    return priority(a) - priority(b) || a.offset - b.offset
+  })
+  _activeGroupAnchor = undefined
 
   const files = state.filteredFiles
-  const hasDir = !!state.dirHandle
+  const folders = state.browserView.folders
+  const folderHtml = (folder: OutputFolder) => renderOutputFolder(folder, file => {
+    const snapshot = imageSnapshot(file)!, revision = imageRevision(snapshot)
+    return { src: backendThumbnailSource(snapshot, backendThumbsEnabled(), path => animaThumbUrl(path, 512), revision) || cachedImageThumbnail(file), key: outputContentKey(file), revision }
+  })
+  el.classList.toggle('outputs-folder-view', folders.length > 0)
+  const hasDir = outputSources().some(source => source.kind === 'directory')
 
-  if (files.length === 0) {
+  if (files.length === 0 && folders.length === 0) {
+    _currentCardRects.clear()
     destroyOutputsVS()
     removeOutputsSentinel()
     // 库里有图但被筛选/路径滤空 → 给准确空状态 + 一键清除筛选（防"幽灵筛选把历史日期藏掉"的困惑）
@@ -1237,35 +1179,49 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
     return
   }
 
-  if (state.viewMode === 'grid') {
+    if (state.viewMode === 'grid') {
     // ── 网格模式：列填充瀑布流（宽、高都随图片比例）虚拟滚动渲染全量
     //    超宽图跨 2/3 列；缩略图走 thumbMemory 回填 + IntersectionObserver，翻页不闪烁 ──
     const geom = outputsGeom(el.clientWidth)
     // 逐张放入当前最矮的列；跨列组对齐到组内最高列 top（绝不重叠）。布局带缓存，滚动画框选可复用。
-    const layout = computeMasonryLayout(files, geom.cols, geom.cardW, geom.gap)
+    const summaries = new Map(files.map(file => [file.id, outputSummaryForFile(file, state.summaryCache)!]))
+    const folderLayout = outputFolderLayout(folders, el.clientWidth)
+    const grouped = outputGroupedLayout(files, summaries, 'none', new Set(), geom.cols, geom.cardW, geom.gap)
+    for (const item of grouped.items) item.top += folderLayout.total
+    const layout = { items: [...folderLayout.items, ...grouped.items] as Array<OutputLayoutItem & { folder?: OutputFolder }>, total: folderLayout.total + grouped.total }
+    _currentCardRects = grouped.rects
+    const headings = new Map(grouped.items.filter(item => !item.file).map(item => [item.key, item]))
+    let desiredScroll = oldScroll
+    for (const anchor of anchors) { const item = anchor.id ? grouped.rects.get(anchor.id) : headings.get(anchor.group || ''); if (item) { desiredScroll = item.top - anchor.offset; break } }
+    const inner = el.querySelector<HTMLElement>('.masonry-virtual-scroll-inner')
+    if (inner) inner.style.height = `${layout.total}px`
+    el.scrollTop = Math.max(0, Math.min(desiredScroll, Math.max(0, layout.total - el.clientHeight)))
 
     // renderItem 只负责卡片内容；二维位置由 MasonryVirtualScroll 的 item rect 承担。
     // 普通 VirtualScroll 会把高度做一维前缀累加，无法表达「多列错位、同一 top 上有多张卡」的瀑布流。
     const renderItem = (index: number, style: VirtualScrollItemStyle) => {
       const s = useOutputStore.getState()
-      const f = files[index]
+      const item = layout.items[index]
+      if (item?.folder) return folderHtml(item.folder)
+      if (item && !item.file) return `<button type="button" class="outputs-group-heading ${item.work ? 'work' : ''}" data-output-group="${escAttr(item.key)}" aria-expanded="${!item.collapsed}">${icon(item.collapsed ? 'chevronRight' : 'chevronDown', 14)}<span>${esc(item.label || '')}</span><small>${item.count}</small></button>`
+      const f = item?.file
       if (!f) return ''
       const meta = cachedImageMetadata(f)
       // 传「布局实际使用的盒子比例」（极端比例已被上下限截断），而不是原图比例：
       // CSS 用 高度 = 宽度 ÷ 比例 反算高度，两者同源才能保证盒子高度与虚拟滚动
       // 的行几何严格一致（否则被截断的卡会比预算更高，压到下一行）。
-      const boxAspect = layout.boxAspects[index]
+      const boxAspect = item.aspect
       // thumbSrc 同步回填内存缩略图：虚拟滚动滚动时条目会被重建，
       // 若等 IntersectionObserver 异步回填会有几帧黑图闪烁
       const snapshot = imageSnapshot(f)!
-      return renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined, imageRevision(snapshot), backendThumbsEnabled() ? animaThumbUrl(f.path, 512) + '&v=' + encodeURIComponent(imageRevision(snapshot)) : cachedImageThumbnail(f), boxAspect)
+      return renderImageCard(f, meta ?? null, s.selectedIds.has(f.id), meta?.loras?.length ? meta.loras : undefined, imageRevision(snapshot), backendThumbnailSource(snapshot, backendThumbsEnabled(), path => animaThumbUrl(path, 512), imageRevision(snapshot)) || cachedImageThumbnail(f), boxAspect, outputSummaryForFile(f, s.summaryCache))
     }
 
     const getItemRect = (index: number) => ({
-      top: layout.tops[index],
-      left: layout.lefts[index],
-      width: layout.widths[index],
-      height: layout.heights[index],
+      top: layout.items[index].top,
+      left: layout.items[index].left,
+      width: layout.items[index].width,
+      height: layout.items[index].height,
     })
 
     // 布局/内容签名：只放会真正改变「卡片内容或几何」的因素。
@@ -1276,14 +1232,15 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
     // 卡片 DOM 停在无「复制 LoRA 标签」按钮的旧 HTML 上（用户报的按钮消失/时有时无）。
     const vsSignature = [
       geom.cols, Math.round(geom.cardW), geom.gap,
-      files.length, currentImageSource().root, files.map(f => JSON.stringify([f.path, f.mtime, f.size])).join(','),
-      state.selectedIds.size, state.metadataVersion ?? state.metadataCache.size, Math.round(layout.total),
+      files.length, currentImageSource().root, files.map(f => JSON.stringify([f.sourceId, f.path, f.mtime, f.size])).join(','),
+      state.selectedIds.size, state.metadataVersion ?? state.metadataCache.size, state.groupMode, state.summaryVersion, [...state.collapsedGroups].join(','), Math.round(layout.total),
+      JSON.stringify(folders.map(folder => [folder.key, folder.count, folder.label, folder.subtitle, folder.covers.map(file => [file.id, file.mtime, file.size])])),
     ].join('|')
 
     if (_outputsVS instanceof MasonryVirtualScroll && el.querySelector('.masonry-virtual-scroll-inner')) {
       el.querySelector('.outputs-empty')?.remove()   // 清掉静态 HTML 占位残留
       _outputsVS.update({
-        totalItems: files.length,
+        totalItems: layout.items.length,
         totalHeight: layout.total,
         renderItem,
         getItemRect,
@@ -1295,7 +1252,7 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
       el.innerHTML = ''   // 清空容器（含 index.html 静态 .outputs-empty 占位），VirtualScroll 只 append 不清
       _outputsVS = new MasonryVirtualScroll({
         container: el,
-        totalItems: files.length,
+        totalItems: layout.items.length,
         totalHeight: layout.total,
         renderItem,
         getItemRect,
@@ -1307,58 +1264,37 @@ function renderImageGrid(state: ReturnType<typeof useOutputStore.getState>) {
   } else {
     // ── 列表模式：保持原渲染（整表重建 + 加载更多），哨兵在滚动容器内驱动加载 ──
     destroyOutputsVS()
-    el.innerHTML = renderList(files, state.selectedIds, state.metadataCache, currentImageSource().root, currentImageSource().parserVersion)
+    _currentCardRects.clear()
+    el.innerHTML = `<div class="outputs-folder-list">${folders.map(folderHtml).join('')}</div>` + renderList(files, state.selectedIds, state.metadataCache, currentImageSource().root, currentImageSource().parserVersion, new Map(files.map(file => [file.id, outputSummaryForFile(file, state.summaryCache)!])))
+    _outputImageNodes.restore(el, state.thumbMemory)
     // 同步回填已缓存的缩略图，避免重建 DOM 时图片从灰图重新闪烁
     for (const img of el.querySelectorAll('img[data-file-path]')) {
       const p = (img as HTMLImageElement).dataset.filePath
       if (p) {
-        const file = files.find(f => f.path === p)
+        const file = files.find(f => f.id === (img as HTMLImageElement).dataset.fileId && f.path === p)
         const cached = file ? cachedImageThumbnail(file) : ''
         if (cached) (img as HTMLImageElement).src = cached
       }
     }
     setupInfiniteScroll()
-  }
-}
-
-/** 复用卡片时同步 meta 相关显示（model 文本 / prompt / LoRA / 工作流按钮），不重建图片 */
-function syncCardMeta(card: HTMLElement, file: OutputFile, meta: OutputMetadata | null) {
-  const metaRow = card.querySelector<HTMLElement>('.outputs-card-meta')
-  let modelEl = card.querySelector<HTMLElement>('.outputs-card-model')
-  if (meta?.model) {
-    if (modelEl) {
-      modelEl.textContent = `🏷 ${meta.model.slice(0, 20)}`
-      modelEl.title = meta.model
-    } else if (metaRow) {
-      const span = document.createElement('span')
-      span.className = 'outputs-card-model'
-      span.title = meta.model
-      span.textContent = `🏷 ${meta.model.slice(0, 20)}`
-      metaRow.prepend(span)
+    if (resetPosition) el.scrollTop = 0
+    else {
+      let restored = false
+      for (const anchor of anchors) {
+        const node = [...el.querySelectorAll<HTMLElement>('.outputs-list-card[data-id], [data-output-group]')].find(node => anchor.id ? node.dataset.id === anchor.id : node.dataset.outputGroup === anchor.group)
+        if (node) { el.scrollTop += node.getBoundingClientRect().top - viewport.top - anchor.offset; restored = true; break }
+      }
+      if (!restored) el.scrollTop = Math.min(oldScroll, el.scrollHeight - el.clientHeight)
     }
-  } else if (modelEl) {
-    modelEl.remove()
   }
-
-  const actionsEl = card.querySelector<HTMLElement>('.outputs-card-actions')
-  if (!actionsEl) return
-  const hasPrompt = !!promptBody(meta)
-  const hasLoras = !!meta?.loras?.length
-  const hasWf = !!meta?.hasWorkflow
-  const id = file.id
-  actionsEl.innerHTML =
-    (hasPrompt ? `<button class="outputs-copy-prompt-btn" data-id="${id}" title="复制正面 Prompt">${icon('file-text', 12)}</button>` : '') +
-    (hasPrompt ? `<button class="outputs-save-prompt-btn" data-id="${id}" title="将 Prompt 和图片存入 Prompt 库">${icon('book', 12)}</button>` : '') +
-    (hasLoras ? `<button class="outputs-copy-lora-btn" data-id="${id}" title="复制 LoRA 标签">${icon('tag', 12)}</button>` : '') +
-    (hasWf ? `<button class="outputs-dl-wf-btn" data-id="${id}" title="下载工作流（保存 .json，拖入 ComfyUI 画布导入）">${icon('download', 12)}</button>` : '') +
-    (meta ? `<button class="outputs-meta-btn" data-id="${id}" title="查看元数据">${icon('info', 12)}</button>` : '')
 }
+
 
 function updateOutputsStats(state: ReturnType<typeof useOutputStore.getState>) {
   const el = document.querySelector('.outputs-stats') as HTMLElement
   if (!el) return
   // 后端正在预备/重建索引时顺带一句人话提示（比让用户对着旧图或空网格猜更好）
-  el.innerHTML = renderStats(state.files.length, state.filteredFiles.length, state.selectedIds.size)
+  el.innerHTML = renderStats(state.files.filter(file => sourceForFile(file).enabled).length, state.resultCount, state.selectedIds.size)
     + (_outputsWarmupBusy ? outputsWarmupHintHtml() : '')
 }
 
@@ -1400,89 +1336,193 @@ function rangeSelectTo(id: string) {
 }
 
 function bindOutputsEvents() {
+  const dragSnapshot = (target: HTMLElement) => { if (target.closest('[data-output-preview-drag]')) return null; const element = target.closest<HTMLElement>('[data-output-drag]'); return element ? imageSnapshot(element.dataset.outputDrag!) : null }
+  document.addEventListener('pointerover', event => {
+    const snapshot = dragSnapshot(event.target as HTMLElement)
+    if (!snapshot || _dragSession.get(snapshot)) return
+    clearTimeout(_dragHover)
+    _dragHover = window.setTimeout(() => { _dragHover = 0; void _dragSession.prepare(snapshot).catch(error => { if (error.name !== 'AbortError') console.warn('[Outputs] 拖出准备失败', error.message) }) }, 450)
+  })
+  document.addEventListener('pointerout', event => { const target = (event.target as HTMLElement).closest<HTMLElement>('[data-output-drag]'); if (target && !target.contains(event.relatedTarget as Node | null)) { clearTimeout(_dragHover); _dragHover = 0 } })
+  document.addEventListener('dragstart', event => {
+    if ((event.target as HTMLElement).closest('[data-output-preview-drag]')) {
+      const target = _currentPreviewSnapshot
+      const copy = target && !_editCropping && !_painter?.active && _editDragSession.get(target)
+      if (!copy || !event.dataTransfer) { event.preventDefault(); showToast('正在准备当前编辑结果，就绪后请从“拖出当前图”拖动'); void prepareEditedDrag(); return }
+      try { writeOutputDragData(event.dataTransfer, copy) }
+      catch (error) { event.preventDefault(); showToast((error as Error).message) }
+      return
+    }
+    const target = event.target as HTMLElement, snapshot = dragSnapshot(target)
+    if (!snapshot || !event.dataTransfer) return
+    const copy = _dragSession.get(snapshot)
+    if (!copy) { event.preventDefault(); showToast('正在准备导出副本，准备好后再次拖出'); void _dragSession.prepare(snapshot).then(result => { if (result) showToast('导出副本已就绪，可以拖出') }).catch(error => { if (error.name !== 'AbortError') showToast(`准备拖出失败：${error.message}`) }); return }
+    try { writeOutputDragData(event.dataTransfer, copy) }
+    catch (error) { event.preventDefault(); showToast((error as Error).message); return }
+    const image = target.closest('[data-output-drag]')?.querySelector('img')
+    if (image?.complete && image.naturalWidth) event.dataTransfer.setDragImage(image, Math.min(80, image.clientWidth / 2), Math.min(80, image.clientHeight / 2))
+  })
+  const openFolder = async (target: HTMLElement) => {
+    const st = useOutputStore.getState(), folder = st.browserView.folders.find(row => row.key === target.dataset.outputFolder)
+    const epoch = _viewEpoch
+    if (!folder) return
+    try {
+      if (folder.source) {
+        if (folder.source.kind === 'directory' && !await requestOutputSourcePermission(folder.source.id)) { showToast('需要授权这个目录才能读取图片'); return }
+        if (!folder.source.enabled) await setOutputSourceEnabled(folder.source.id, true)
+      }
+      if (_viewEpoch !== epoch || useOutputStore.getState().browsePath !== st.browsePath || !isOutputsActive()) return
+      st.setBrowsePath([...st.browsePath, folder.step]); renderOutputsView()
+    } catch (error) { showToast(`打开目录失败：${(error as Error).message}`) }
+  }
+  document.addEventListener('dblclick', event => { const target = (event.target as HTMLElement).closest<HTMLElement>('[data-output-folder]'); if (target && !(event.target as HTMLElement).closest('button')) { event.preventDefault(); void openFolder(target) } })
+  document.addEventListener('keydown', event => { const target = event.target as HTMLElement; if (target.matches('[data-output-folder]') && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); void openFolder(target) } })
+  document.addEventListener('click', event => {
+    const target = event.target as HTMLElement
+    for (const menu of document.querySelectorAll<HTMLDetailsElement>('details.outputs-more[open]')) if (!menu.contains(target)) menu.open = false
+  })
+  document.addEventListener('keydown', event => {
+    const target = event.target as HTMLElement, menu = target.closest<HTMLDetailsElement>('details.outputs-more')
+    if (event.key === 'Escape' && document.querySelector('details.outputs-more[open]')) {
+      for (const opened of document.querySelectorAll<HTMLDetailsElement>('details.outputs-more[open]')) { opened.open = false; opened.querySelector<HTMLElement>('summary')?.focus() }
+      event.preventDefault(); event.stopImmediatePropagation(); return
+    }
+    if (menu && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) && target.tagName !== 'SELECT') {
+      menu.open = true
+      const controls = [...menu.querySelectorAll<HTMLElement>('.outputs-more-panel button, .outputs-more-panel select')].filter(control => !control.hasAttribute('disabled'))
+      const current = controls.indexOf(target), next = event.key === 'Home' ? 0 : event.key === 'End' ? controls.length - 1 : event.key === 'ArrowUp' ? Math.max(0, current - 1) : Math.min(controls.length - 1, current + 1)
+      controls[next]?.focus(); event.preventDefault()
+    }
+  }, { capture: true })
   // 初始化拖拽框选（放在最前面，避免被后续代码的运行时错误阻断）
   initOutputDragSelection({
     getGridGeometry: outputsGeom,
+    getCardRects: () => _currentCardRects,
     onSelectionChanged: () => { syncSelectionUI(); updateBatchBar() },
   })
   // 预览图片编辑工具栏（旋转/裁剪/保存）
   bindEditToolbar()
+  document.addEventListener('change', event => {
+    const input = event.target as HTMLInputElement
+    if (!input.id.startsWith('outputsFallback')) return
+    try {
+      if (input.id === 'outputsFallbackEnabled') setOutputFallbackSettings({ enabled: input.checked })
+      else if (input.id === 'outputsFallbackUnrecognized') setOutputFallbackSettings({ includeUnrecognized: input.checked })
+      else if (input.id === 'outputsFallbackLibrary') setOutputFallbackSettings({ libraryMatching: input.checked })
+      else if (input.id === 'outputsFallbackModel') setOutputFallbackSettings({ model: input.value })
+      else if (input.id === 'outputsFallbackThreshold') setOutputFallbackSettings({ threshold: Number(input.value) })
+      else if (input.id === 'outputsFallbackCharacterThreshold') setOutputFallbackSettings({ characterThreshold: Number(input.value) })
+    } catch (error) { showToast((error as Error).message); syncFallbackControls() }
+  })
 
   // 事件委托 - 单一 click handler
   document.addEventListener('click', async (e) => {
     const target = e.target as HTMLElement
-
-    // 重新授权目录（浏览器重启后权限降级）
-    if (target.closest('.outputs-reauth-btn')) {
-      await reauthorizeOutputs()
+    const sourceMenu = target.closest<HTMLElement>('[data-output-source-menu]')
+    if (sourceMenu) {
+      const source = outputSources().find(row => row.id === sourceMenu.dataset.outputSourceMenu)
+      if (!source) return
+      const rect = sourceMenu.getBoundingClientRect()
+      openContextMenu(rect.right, rect.bottom, [{ items: [
+        { label: source.enabled ? '从全部图片汇总中取消' : '加入全部图片汇总', icon: 'checkSquare', handler: () => { void setOutputSourceEnabled(source.id, !source.enabled) } },
+        { label: '从图片库移除目录', icon: 'x', handler: () => { void removeOutputSource(source.id).then(() => { if (useOutputStore.getState().currentSourceId === source.id) useOutputStore.getState().setBrowsePath([]); renderOutputsView(); showToast('已移除目录，磁盘图片与收藏评分保留') }) } },
+      ] }])
+      return
+    }
+    const depth = target.closest<HTMLElement>('[data-output-depth], [data-output-back]')
+    if (depth) { const st = useOutputStore.getState(); st.setBrowsePath(st.browsePath.slice(0, depth.hasAttribute('data-output-back') ? -1 : Number(depth.dataset.outputDepth))); renderOutputsView(); return }
+    if (target.closest('[data-output-folder]')) return
+    const group = target.closest<HTMLElement>('[data-output-group]')
+    if (group) { _activeGroupAnchor = group.dataset.outputGroup; useOutputStore.getState().toggleGroup(group.dataset.outputGroup!); renderOutputsView(); return }
+    const cardMore = target.closest<HTMLElement>('.outputs-card-more')
+    if (cardMore) { const rectangle = cardMore.getBoundingClientRect(); cardMore.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: rectangle.right, clientY: rectangle.bottom })); return }
+    if (target.closest('.outputs-export-cancel')) { _exportSession?.cancel(); return }
+    if (target.closest('#outputsNewImages')) {
+      const state = useOutputStore.getState()
+      _newOutputIds.clear(); state.clearAdvancedFilters(); state.setFilterKey('all'); state.setSearchQuery(''); state.setCurrentSource('output'); state.setGroupMode('flat'); state.setSortKey('date'); state.setSortOrder('desc')
+      renderOutputsView(); const grid = document.querySelector('.outputs-grid'); if (grid) grid.scrollTop = 0
+      return
+    }
+    const exportAction = target.closest<HTMLElement>('[data-output-export]')
+    if (exportAction) {
+      const ids = Array.from(useOutputStore.getState().selectedIds)
+      const mode = exportAction.dataset.exportMode === 'clean' ? 'clean' : 'original'
+      exportAction.closest('details')?.removeAttribute('open')
+      await exportOutputs(ids, exportAction.dataset.outputExport === 'copy' ? 'copy' : 'download', mode)
+      return
+    }
+    if (target.closest('.outputs-restore-output-btn')) { await setOutputSourceEnabled('output', true); renderOutputsView(); showToast('已恢复默认 ComfyUI output 目录'); return }
+    if (target.closest('.outputs-organize-btn')) {
+      _summaryIndex.retry({ reclassify: true, metadataOnly: true })
+      showToast('已开始按提示词重新整理全部启用目录；未授权目录请进入文件夹授权')
+      return
+    }
+    if (target.closest('.outputs-fallback-refresh-btn')) {
+      try { await refreshOutputFallbackCatalog(); showToast(`找到 ${outputFallbackCatalog().models.length} 个本地 WD14 模型`) }
+      catch (error) { showToast(`模型列表读取失败：${(error as Error).message}`) }
+      return
+    }
+    if (target.closest('.outputs-fallback-pause-btn')) {
+      setOutputFallbackSettings({ enabled: false }); showToast('WD14 反推已暂停，已完成的识别结果保留'); return
+    }
+    if (target.closest('.outputs-recognize-unknown-btn')) {
+      try {
+        await refreshOutputFallbackCatalog()
+        const settings = outputFallbackSettings(), catalog = outputFallbackCatalog(), model = settings.model || catalog.defaultModel
+        if (!catalog.models.includes(model)) { showToast('请先选择已安装的 WD14 模型'); return }
+        setOutputFallbackSettings({ enabled: true, includeUnrecognized: true })
+        _summaryIndex.retry({ reinfer: true })
+        showToast(`已加入 WD14 识别队列：${model}；正在生图或内存不足时等待`)
+      } catch (error) { showToast(`无法启动 WD14：${(error as Error).message}`) }
       return
     }
 
-    // 选择目录
+    // Directory additions extend the catalog and preserve output and other roots.
     if (target.closest('.outputs-select-btn')) {
-      if (!('showDirectoryPicker' in window)) {
-        showCompatMessage()
-        return
-      }
+      const action = ++_scanActionEpoch
+      if (!('showDirectoryPicker' in window)) { showCompatMessage(); return }
       try {
-        const dirHandle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
-        await scanOutputDir(dirHandle)
-        dirTree = await buildDirTree(dirHandle)
-        renderDirTree(dirTree)
-        renderOutputsView()
-      } catch (err) {
-        if ((err as Error).name !== 'AbortError') {
-          showToast('选择目录失败')
-        }
+        const handle = await (window as any).showDirectoryPicker({ mode: 'read' })
+        await scanOutputDir(handle)
+        if (action === _scanActionEpoch) renderOutputsView()
+      } catch (error) {
+        if ((error as Error).name !== 'AbortError') showToast(`添加目录失败：${(error as Error).message || '无法读取'}`)
       }
       return
     }
-
-    // 刷新目录 —— 用增量扫描：只处理新增/变更文件，已加载的图片不动
+    if (target.closest('.outputs-cancel-scan-btn')) { _scanActionEpoch++; cancelOutputScan(); renderOutputsView(); showToast('扫描已取消'); return }
     if (target.closest('.outputs-refresh-btn')) {
-      const dh = useOutputStore.getState().dirHandle
-      if (!dh) {
-        // 无目录句柄时给明确反馈（此前静默无反应，用户以为按钮坏了）
-        showToast('请先点击「选择」授权输出目录')
-        return
-      }
+      const action = ++_scanActionEpoch
       try {
-        showToast('正在扫描新图片…')
-        const count = await scanOutputDirIncremental(dh)
-        dirTree = await buildDirTree(dh)
-        renderDirTree(dirTree)
+        if (_nativeOutputs) await refreshNativeOutputs()
+        else {
+          const status = await requestGalleryRefresh()
+          _manualRefreshId = String(status?.requestId || '')
+          await syncGalleryCatalog()
+          const element = document.getElementById('outputsRefreshStatus')
+          if (element) element.textContent = status?.state === 'complete' ? '目录已核对' : '正在核对 output 目录…'
+        }
+        await refreshOutputSources()
+        if (action !== _scanActionEpoch || !isOutputsActive()) return
         renderOutputsView()
-        showToast(count > 0 ? `✅ 已刷新：${count} 个文件有变化` : 'ℹ️ 没有新图片')
-      } catch {
-        showToast('⚠️ 刷新失败')
-      }
+        _summaryIndex.retry()
+        showToast(_nativeOutputs ? '所选目录已刷新' : '已开始核对目录，新图将自动补入')
+      } catch (error) { showToast(`刷新失败：${(error as Error).message}`) }
       return
     }
-
-    // 强制重新解析元数据（解析逻辑升级后，旧的 prompt/workflow 缓存需重扫才会更新）
     if (target.closest('.outputs-reparse-btn')) {
-      const dh = useOutputStore.getState().dirHandle
-      if (!dh) { showToast('请先点击「选择」授权输出目录'); return }
-      // 重活：先确认，防止误点后长时间无反馈
-      const ok = await confirmModal('重解析全部图片元数据？', '将逐个读取所有图片的 PNG 元数据并更新缓存。图片较多时可能需要一些时间，扫描进度会显示在工具栏下方。')
-      if (!ok) return
+      const action = ++_scanActionEpoch
       try {
-        await reparseAllMetadata(dh)
+        const selected = outputSources().filter(source => source.enabled && source.kind === 'directory' && source.handle)
+        if (!selected.length) { showToast('output 元数据由后端自动解析；归档目录可添加后重新解析'); return }
+        for (const source of selected) {
+          if (action !== _scanActionEpoch) return
+          await reparseAllMetadata(source.handle!)
+        }
+        if (action !== _scanActionEpoch || !isOutputsActive()) return
         renderOutputsView()
-        showToast('✅ 重解析完成')
-      } catch {
-        showToast('⚠️ 重解析失败')
-      }
-      return
-    }
-
-    // 目录树点击
-    const dirNode = target.closest('.outputs-dir-node') as HTMLElement
-    if (dirNode) {
-      const path = dirNode.dataset.path
-      useOutputStore.getState().setCurrentPath(path || '')
-      renderDirTree(dirTree!)
-      renderOutputsView()
+        showToast('所选目录元数据已更新')
+      } catch (error) { showToast(`重新解析失败：${(error as Error).message}`) }
       return
     }
 
@@ -1852,6 +1892,12 @@ function bindOutputsEvents() {
   // 复选框 change 事件
   document.addEventListener('change', (e) => {
     const target = e.target as HTMLElement
+    if (target.classList.contains('outputs-group-select')) { useOutputStore.getState().setGroupMode((target as HTMLSelectElement).value as 'none' | 'work' | 'character'); renderOutputsView(); return }
+
+    if (target.classList.contains('outputs-sort-select')) {
+      useOutputStore.getState().setSortKey((target as HTMLSelectElement).value as 'date' | 'name' | 'size')
+      renderOutputsView()
+    }
 
     if (target.classList.contains('outputs-list-chk')) {
       const id = (target as HTMLInputElement).dataset.id
@@ -1985,6 +2031,11 @@ function bindOutputsEvents() {
       onCopyPrompt: async (id) => {
         await copyOutputPrompt(contextTarget(id))
       },
+      onSavePrompt: id => { void saveOutputPromptToLibrary(id, contextTarget(id)) },
+      onCopyLoras: async id => { const meta = await getImageMetadata(contextTarget(id)); const tags = meta?.workflowJson ? extractLoraTagsFromWorkflow(meta.workflowJson, meta.rawMetadata) : []; if (tags.length) { const ok = await writeClipboard(tags.join(', ')); showToast(ok ? `已复制 ${tags.length} 个 LoRA 标签` : '剪贴板访问被拒绝') } else showToast('该图片没有已记录的 LoRA') },
+      onWorkflow: async id => { const meta = await getImageMetadata(contextTarget(id)); await downloadOutputWorkflow(meta || undefined, contextTarget(id)?.file.filename || 'workflow') },
+      onMetadata: id => { void openMetaPanel(id, contextTarget(id)) },
+      onExport: (ids, action, mode) => { void exportOutputs(ids, action, mode, contextSnapshot) },
       onRate: (id) => {
         showStarPicker(id)
       },
@@ -2175,14 +2226,19 @@ function bindOutputsEvents() {
   const searchInput = document.querySelector('.outputs-search') as HTMLInputElement
   if (searchInput) {
     let debounce: ReturnType<typeof setTimeout>
-    searchInput.addEventListener('input', () => {
+    let composing = false
+    const search = () => {
       clearTimeout(debounce)
+      if (composing) return
       debounce = setTimeout(() => {
         useOutputStore.getState().setSearchQuery(searchInput.value)
         renderOutputsView()
-        if (searchInput.value.trim()) ensureMetadataForGlobalFilter()
-      }, 300)
-    })
+        if (searchInput.value.trim()) _summaryIndex.schedule()
+      }, 150)
+    }
+    searchInput.addEventListener('compositionstart', () => { composing = true; clearTimeout(debounce) })
+    searchInput.addEventListener('compositionend', () => { composing = false; search() })
+    searchInput.addEventListener('input', search)
     attachSearchClear(searchInput, () => {
       useOutputStore.getState().setSearchQuery('')
       renderOutputsView()
@@ -2209,7 +2265,7 @@ function bindOutputsEvents() {
   // 观察所有图片
   const observeImages = () => {
     let dbgObserved = 0, dbgDirect = 0
-    document.querySelectorAll<HTMLImageElement>('.outputs-card img[data-file-id], .outputs-list-card-img img[data-file-id]').forEach(img => {
+    document.querySelectorAll<HTMLImageElement>('#outputsGrid img[data-file-id]').forEach(img => {
       const id = img.dataset.fileId
       // renderImageCard 已同步写入 thumbMemory 命中项；不要再观察并重复设置相同 src，
       // 某些 Chromium 版本会因此重新走图片解码管线，造成一次黑帧。
@@ -2263,7 +2319,7 @@ function bindOutputsEvents() {
         // 基座模型 / LoRA 属于**全库**筛选（applyFilters 会排除元数据未加载的条目）→
         // 只有用户真正用到它们时才补齐全库元数据，进入页面时不再预载。
         if (val && (cls === 'outputs-filter-model' || cls === 'outputs-filter-lora')) {
-          ensureMetadataForGlobalFilter()
+          _summaryIndex.schedule()
         }
       }, 300)
     })
@@ -2395,60 +2451,9 @@ function setupInfiniteScroll() {
 
 // ── 元数据按需加载（2026-09-10：取代「进入页面全库预载」）──
 
-/** 可见卡片元数据的并发上限：一屏十几张卡同时进屏时不至于把 IndexedDB 读取扎堆 */
-const VISIBLE_META_CONCURRENCY = 6
-let _visibleMetaRunning = 0
-const _visibleMetaQueue: ImageSnapshot[] = []
-/** 已入队/已处理，避免滚动中反复排队 */
-const _metaQueued = new Set<string>()
-/** DB 读超时后的重试次数：兜底 IndexedDB 偶发悬挂，保证按钮最终能出现 */
-const _metaRetry = new Map<string, number>()
-const META_MAX_RETRY = 3
 /** /anima/thumb 覆盖不到的路径（非 output 目录的授权扫描）：会话内直接走旧管线 */
 const _thumbUrlBlocked = new Set<string>()
-/** 诊断开关：URL 带 ?metaDbg=1 时打印可见区元数据链路（生产无副作用） */
 const META_DBG = (() => { try { return new URLSearchParams(location.search).has('metaDbg') } catch { return false } })()
-
-/** 元数据陆续到位时合并刷新：一屏的卡片只重建一次网格（图片走 ImageNodeCache 复用，不闪） */
-let _metaRefreshTimer: ReturnType<typeof setTimeout> | null = null
-/** 诊断：本屏元数据从首次请求到合并刷新的耗时（按需加载是否真的没有阻塞，看这一行） */
-let _metaRefreshStartedAt = 0
-let _metaRefreshCount = 0
-function scheduleMetaRefresh(): void {
-  if (_metaRefreshStartedAt === 0) _metaRefreshStartedAt = performance.now()
-  _metaRefreshCount++
-  if (_metaRefreshTimer !== null) return
-  _metaRefreshTimer = setTimeout(() => {
-    _metaRefreshTimer = null
-    const cost = Math.round(performance.now() - _metaRefreshStartedAt)
-    const loaded = new Set(useOutputStore.getState().metadataCache.values()).size
-    console.log(`[outputs] 元数据按需加载：本屏 ${_metaRefreshCount} 条，${cost}ms（缓存中共 ${loaded} 条；无全库读取）`)
-    _metaRefreshStartedAt = 0
-    _metaRefreshCount = 0
-    // ⚠️ 增量同步，不要全量重建（2026-09-11）：
-    // metadataVersion 进签名后，滚动浏览期间每 250ms 就会满足一次「签名变化」→
-    // renderOutputsView → VS 全量重建可见卡片（replaceChildren）→ 主线程被反复占住，
-    // 点击目录树/切换栏目全部排队无响应，点击目标还常落在重建窗口里被销毁（点了没反应）。
-    // 元数据只影响卡片的 model 行与操作按钮 → 用 syncCardMeta 逐卡同步即可，图片节点不动。
-    const state = useOutputStore.getState()
-    if (state.viewMode !== 'grid') {
-      renderOutputsView()   // 列表模式无逐卡同步支持，保持全量重建
-      return
-    }
-    const byPath = new Map(state.filteredFiles.map(f => [f.path, f]))
-    let synced = 0
-    document.querySelectorAll<HTMLElement>('.outputs-card[data-id]').forEach(card => {
-      const id = card.dataset.id
-      if (!id) return
-      const file = byPath.get(card.dataset.path || '')
-      if (!file) return
-      syncCardMeta(card, file, cachedImageMetadata(file))
-      synced++
-    })
-    updateFilterPanel()
-    if (synced === 0) renderOutputsView()   // 无可同步卡片（异常态）→ 兜底全量重建
-  }, 250)
-}
 
 /**
  * 可见卡片进屏时按需读它的元数据（含 LoRA 提取：只解析这一张的工作流）。
@@ -2458,57 +2463,7 @@ function scheduleMetaRefresh(): void {
 function requestVisibleMetadata(fileId: string, path?: string): void {
   const snapshot = imageSnapshot(fileId, path)
   if (!snapshot) return
-  const cached = cachedImageMetadata(snapshot.file)
-  // ⚠️ 早退判据不能只看「有没有缓存」（2026-09-11 修）：条目可能已被全库元数据补齐
-  // （ensureAllMetadata → putMetadataBatch）写成了未提取 LoRA 的瘦身版（loras=[]）。
-  // 只看 has() 会导致这些条目被判为"已加载" → 永不补提取 → 「复制 LoRA 标签」按钮消失后不恢复。
-  // 正确判据：已加载 **且**（无工作流可提 或 LoRA 已提取）。
-  if (cached && metadataMatches(cached, snapshot) && (!cached.hasWorkflow || cached.lorasExtracted)) {
-    if (META_DBG) console.log('[meta-dbg] requestVisible skip', fileId, { hasWf: cached.hasWorkflow, extracted: cached.lorasExtracted })
-    return
-  }
-  if (_metaQueued.has(snapshot.key)) return
-  if (META_DBG) console.log('[meta-dbg] requestVisible enqueue', fileId, { cached: !!cached, hasWf: cached?.hasWorkflow, extracted: cached?.lorasExtracted })
-  _metaQueued.add(snapshot.key)
-  _visibleMetaQueue.push(snapshot)
-  void pumpVisibleMetadata()
-}
-
-async function pumpVisibleMetadata(): Promise<void> {
-  while (_visibleMetaRunning < VISIBLE_META_CONCURRENCY && _visibleMetaQueue.length > 0) {
-    const snapshot = _visibleMetaQueue.shift()!
-    const id = snapshot.key
-    _visibleMetaRunning++
-    void getImageMetadata(snapshot)
-      .then(async () => {
-        _metaRetry.delete(id)
-        // ── Gallery 模式兜底（2026-09-17）：内存与 IDB 都没有这一条（典型场景：刚重命名 →
-        //    id 变了、或索引尚未收录）时向后端要一次；再拿不到就写一条「已确认无元数据」，
-        //    否则早退判据永远不成立 → 每次进屏都重新入队 → 又变成刷日志的空转循环。
-        const c = cachedImageMetadata(snapshot.file)
-        if (META_DBG) console.log('[meta-dbg] pumped', id, { loras: c?.loras?.length, extracted: c?.lorasExtracted, hasWf: c?.hasWorkflow })
-        if (c && snapshotIsCurrent(snapshot)) scheduleMetaRefresh()
-      })
-      .catch((err) => {
-        if (META_DBG) console.log('[meta-dbg] pump ERROR', id, String(err && (err.stack || err.message || err)).slice(0, 300))
-        // DB 读超时（IndexedDB 偶发悬挂，实测扫描刚结束时最明显）→ 退避重试。
-        // 不重试的话这些卡片永久缺 loras，「复制 LoRA 标签」按钮不会出现。
-        if ((err as Error)?.name === 'MetadataReadTimeoutError') {
-          const n = _metaRetry.get(id) || 0
-          if (n < META_MAX_RETRY) {
-            _metaRetry.set(id, n + 1)
-            setTimeout(() => requestVisibleMetadata(snapshot.file.id, snapshot.path), 800 * (n + 1))
-          } else if (META_DBG) {
-            console.log('[meta-dbg] pump give up', id, { retries: n })
-          }
-        }
-      })
-      .finally(() => {
-        _visibleMetaRunning--
-        _metaQueued.delete(id)
-        if (_visibleMetaQueue.length > 0) void pumpVisibleMetadata()
-      })
-  }
+  if (!outputSummaryForFile(snapshot.file, useOutputStore.getState().summaryCache)) _summaryIndex.schedule()
 }
 
 /**
@@ -2516,77 +2471,28 @@ async function pumpVisibleMetadata(): Promise<void> {
  * 必要性：applyFilters 对「基座模型 / LoRA / 标签」三项会排除元数据未加载的条目 ——
  * 懒加载后若不补齐，这三项筛选会静默漏结果（是结果错，不是变慢）。
  */
-let _filterMetaToastShown = false
-function ensureMetadataForGlobalFilter(): void {
-  if (_filterMetaToastShown) return
-  _filterMetaToastShown = true
-  const pending = useOutputStore.getState().files.map(f => imageSnapshot(f)).filter((s): s is ImageSnapshot => !!s)
-  let cursor = 0
-  const worker = async () => {
-    while (cursor < pending.length) {
-      const snapshot = pending[cursor++]
-      if (!snapshotIsCurrent(snapshot)) break
-      await getImageMetadata(snapshot)
-      if (cursor % 20 === 0) await new Promise(resolve => setTimeout(resolve, 0))
-    }
-  }
-  showToast('正在后台按图片身份补齐筛选元数据，可继续浏览')
-  void Promise.all(Array.from({ length: VISIBLE_META_CONCURRENCY }, worker)).then(() => {
-    _filterMetaToastShown = false
-    useOutputStore.getState().applyFilters()
-    updateFilterPanel()
-    renderOutputsView()
-    showToast('筛选元数据已刷新')
-  })
-}
 
 /**
  * 从 DB 快速恢复缓存（页面刷新后首屏秒出，跳过全量目录遍历）：
  * files 列表 + 缩略图批量回填内存（元数据改为按需），一次渲染到位；
  * 文件系统变化由后续增量扫描（initOutputs/activateOutputs 已有）后台校正。
  */
-/** 首开只喂这么多条：够铺满首屏并留一点缓冲，其余空闲分片追加 */
-const BOOT_FILES = 300
-/** 空闲追加大分片：少几次重建、也少几次 setState */
-const RESTORE_SLICE = 800
-let _idleRestoreToken = 0
-
-/**
- * 空闲分片追加剩余文件。
- * 目的：把「一次性装配 3900+ 条 + 首屏布局 + 首屏取图」从进入页面的那一刻挪走。
- * 首屏先出图、先可交互，剩余条目在浏览器空闲时补齐；每次追加后重建一次网格，
- * 卡片图片走 thumbMemory / ImageNodeCache 复用，不会重新请求。
- */
-function scheduleIdleRestoreRest(rest: OutputFile[]): void {
-  const token = ++_idleRestoreToken
-  let cursor = 0
-  const schedule = (fn: () => void) => {
-    const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback
-    if (typeof idle === 'function') idle(fn, { timeout: 1500 })
-    else setTimeout(fn, 40)
-  }
-  const step = () => {
-    if (token !== _idleRestoreToken) return
-    const chunk = rest.slice(cursor, cursor + RESTORE_SLICE)
-    if (chunk.length === 0) return
-    cursor += chunk.length
-    useOutputStore.setState(s => ({ files: s.files.concat(chunk) }))
-    renderOutputsView()
-    if (cursor < rest.length) schedule(step)
-  }
-  schedule(step)
-}
-
-/**
- * 离开 Outputs 时释放"可重建"的内存，把 RAM 让给生图（ComfyUI 需要大块内存/显存）。
- *
- * 只丢缓存、不丢数据：缩略图回 IndexedDB 取、元数据仍在内存里（几十 MB 级）。
- * 再进 Outputs 会重新拉取（几百毫秒），换来的是**生图期间面板不常驻解码位图**。
- */
 function releaseOutputMemory(): void {
+  clearTimeout(_dragHover); _dragHover = 0; _dragSession.cancel()
+  _viewEpoch++
+  _scanActionEpoch++
+  cancelOutputScan()
+  _summaryIndex.cancel()
+  _exportSession?.cancel()
+  _summaryReader?.dispose(); _summaryReader = undefined
+  _currentCardRects.clear()
+  _searchClient?.dispose(); _searchClient = undefined
+  configureOutputQueryExecutor()
+
   if (_currentPreviewSnapshot) closeLightbox()
   else releaseOutputPreviewResources()
-  _outputImageNodes.clear()   // 已解码位图：最大的可释放项（清掉后滚动回来会按需重建）
+  const grid = document.getElementById('outputsGrid')
+  if (grid) _outputImageNodes.capture(grid) // Keep at most 32 MiB of ready thumbnails across section switches.
   destroyOutputsVS()          // 网格 + 虚拟滚动实例及其 DOM
   // ⚠️ 刻意**保留** thumbMemory：它是"路径 → 160px dataURL"表（≤500 条、约 15MB），
   // 但重新填充要读 240 次 IndexedDB。上一版把它一起清了，导致每次切回 Outputs 都要重读，
@@ -2617,7 +2523,7 @@ async function deleteOutputsAndTrack(ids: string[]): Promise<void> {
   const { root } = currentImageSource()
   const byId = new Map<string, { path: string; mtime: number; size: number; root: string }>()
   for (const f of useOutputStore.getState().files) {
-    byId.set(f.id, { path: f.path, mtime: f.mtime, size: f.size, root })
+    byId.set(f.id, { path: f.path, mtime: f.mtime, size: f.size, root: currentImageSource(f).root })
   }
   const result = await deleteFiles(ids)
   // 只有成功删除的 id 才有身份记录；失败项一个都不登记（它们必须继续可见、可重试）
@@ -2654,7 +2560,7 @@ async function restoreOutputsFromDb(): Promise<boolean> {
   //    全部由后端索引直出，秒出且无需目录授权；缩略图走 /anima/thumb；不可用则回退旧管线。
   if (galleryIndexEnabled()) {
     const entries = galleryEntries()
-    if (entries && entries.size > 0) {
+    if (entries) {
       // 先收敛：store 里已不含、或已超时的身份记录立即忘记（不做无限期屏蔽）
       pruneDeletedIdentities()
       const { root } = currentImageSource()
@@ -2667,7 +2573,7 @@ async function restoreOutputsFromDb(): Promise<boolean> {
         if (isOutputIdentityDeleted(rel, mtime, e.size || 0, root)) continue
         const id = hashPath(rel)
         files.push({
-          id, path: rel, filename: rel.split('/').pop() || rel,
+          id, sourceId: 'output', path: rel, filename: rel.split('/').pop() || rel,
           extension: (rel.split('.').pop() || '').toLowerCase(),
           size: e.size || 0, mtime: Math.round((e.mtime || 0) * 1000),
           width: e.width || 0, height: e.height || 0,
@@ -2677,29 +2583,28 @@ async function restoreOutputsFromDb(): Promise<boolean> {
         const summary = bindMetadata({
           imageId: id, model: e.model || '', seed: e.seed || '', steps: e.steps || '', cfg: e.cfg || '',
           sampler: e.sampler || '', scheduler: e.scheduler || '', vae: '', clipSkip: 0,
-          prompt: e.prompt || '', negativePrompt: '', workflowJson: '', rawMetadata: {},
+          prompt: e.prompt || '', identityPrompt: e.identityPrompt, negativePrompt: '', workflowJson: '', rawMetadata: {},
           loras: e.loras || [], hasWorkflow: !!e.hasWorkflow, lorasExtracted: true,
+          metadataState: e.metadataState, metadataWarnings: e.metadataWarnings, metadataFormat: e.metadataFormat,
+          summaryStatus: e.summaryStatus || 'ready',
           workflowFingerprint: galleryFingerprint((e.mtime || 0) * 1000, e.size || 0),
         }, createImageSnapshot(files[files.length - 1], 'gallery', galleryOutputRoot(), Number(e.parserVersion ?? galleryIndexParserVersion())))
         // A manifest is only a summary. Actions/visible cards refresh it through the full endpoint.
         delete summary.metadataIdentity
         metas.push(summary)
       }
-      // ⚠️ 只有「当前活跃列表确实要切到画廊」时才允许覆盖 store 与 dirHandle。
-      // 若用户已经显式选择了浏览器目录（activeListSource === 'directory'），
-      // 这里的画廊重建**不得**把 dirHandle 置空、也不得改写列表 ——
-      // 否则用户选中的目录会被静默换成 ComfyUI output 的列表，
-      // 同相对路径的图会读到 ComfyUI 的那一张（用户报的"图片对应错位"）。
-      if (listSourceStamp()?.kind === 'directory') {
-        pruneDeletedIdentities()
-        return false
+      // Restore annotations only from the same ID and exact relative path.
+      const saved = await outputsDb.files.bulkGet(files.map(file => file.id))
+      for (let i = 0; i < files.length; i++) {
+        files[i] = restoreOutputAnnotations(files[i], saved[i])
       }
       useOutputStore.setState({
-        files, rootPath: galleryOutputRoot(), dirHandle: null, metadataParserVersion: galleryParserVersion(), metadataCache: new Map(), metadataVersion: useOutputStore.getState().metadataVersion + 1,
-        thumbMemory: new Map(),
+        files: [...files, ...useOutputStore.getState().files.filter(f => f.sourceId && f.sourceId !== 'output')], rootPath: galleryOutputRoot(), dirHandle: null, metadataParserVersion: galleryParserVersion(), metadataCache: new Map([...useOutputStore.getState().metadataCache].filter(([, meta]) => meta.sourceIdentity?.source === 'directory')), metadataVersion: useOutputStore.getState().metadataVersion + 1,
+        thumbMemory: useOutputStore.getState().thumbMemory,
       })
       // 显式声明：当前列表来自画廊索引
       commitListSource('gallery', galleryOutputRoot(), galleryParserVersion())
+      setOutputSource('gallery', galleryOutputRoot(), galleryParserVersion())
       useOutputStore.getState().putMetadataBatch(metas)
       useOutputStore.getState().applyFilters()
       console.log(`[outputs] Gallery 索引直出：${files.length} 个文件 + ${metas.length} 条元数据摘要（${Math.round(performance.now() - bootStartedAt)}ms）`)
@@ -2707,49 +2612,14 @@ async function restoreOutputsFromDb(): Promise<boolean> {
     }
   }
   const restored = await restoreAllFromDb()
-  if (restored.length === 0) return false
-  // ⚠️ 首开性能关键（2026-09-10 修）：
-  // 此前是一次性 `setFiles(restored)`（近 4000 条），于是「全部装配 + 首屏布局 +
-  // 首屏取图」全挤在进入页面的那一刻 —— 用户实测特征正是「首次加载卡、之后不卡、
-  // 功能都正常」。现在首屏只喂 BOOT_FILES 条，其余交给空闲分片追加。
-  const head = restored.slice(0, BOOT_FILES)
-  useOutputStore.getState().setFiles(head)
-  // 并行回填：缩略图 → 内存缓存（渲染走同步路径）；元数据 → 只读缺失
-  // 启动只预载首屏需要的量（两种情况都限 240）：其余缩略图交给 IntersectionObserver
-  // 按需从 IndexedDB 取（loadImageThumbnail 的内存/IDB 分支对"无句柄"同样生效）。
-  // 大图库全量灌内存会造成打开卡顿。
-  const hasHandle = !!useOutputStore.getState().dirHandle || !!_nativeOutputs
-  // ⚠️ 无句柄时也必须限量（2026-09-10 修）：
-  // 此前写成 `hasHandle ? 前240 : 全量`，结果「未授权目录」的用户（恰恰是唯一没有其它
-  // 出图通道的场景）会在进入页面时一次性从 IndexedDB 反序列化近 4000 条缩略图 dataURL
-  // （几十上百 MB）—— 单次 bulkGet 的结构化克隆在主线程上就是一次长任务，页面上所有
-  // 点击都要排队等它跑完，表现为「进入 Outputs 卡死、按钮全点不了、切栏目也没反应」。
-  // 现在两种情况都只预载首屏需要的量，其余交给 IntersectionObserver 按需从 IDB 取即可。
-  // 元数据不再随启动预载：首屏卡片进屏时按需读单条（requestVisibleMetadata），
-  // 启动路径上因此不存在任何「全库」任务。
-  // 后端直供图源（≥2.5.1）下 dataURL 预载整段跳过：卡片 <img> 直接引用 /anima/thumb URL，
-  // IndexedDB dataURL 仓库只作为回退保留，不再占内存。
-  if (backendThumbsEnabled()) {
-    renderOutputsView()
-    return true // 文件已恢复；仅跳过 dataURL 预载（图源走 /anima/thumb）
-  }
-  const thumbs = await preloadThumbnailsFromDb(restored.slice(0, 240))
-  if (thumbs.size > 0) {
-    useOutputStore.setState(state => {
-      const merged = new Map(state.thumbMemory)
-      for (const [p, d] of thumbs) merged.set(p, d)
-      return { thumbMemory: merged }
-    })
-  }
+  const store = useOutputStore.getState()
+  const combined = new Map(store.files.map(file => [file.id, file]))
+  for (const file of restored) if (file.sourceId) combined.set(file.id, file)
+  store.setFiles([...combined.values()])
   renderOutputsView()
-  // 诊断：这条日志是「进页面要等多久」的唯一判据 —— 它只统计首屏装配 + 首屏缩略图，
-  // 元数据与其余缩略图都不在其内（按需）。若这里远小于几秒，说明启动路径没有全库任务。
-  console.log(`[outputs] 首屏就绪 ${Math.round(performance.now() - bootStartedAt)}ms`
-    + `（files=${head.length}，缩略图 ${thumbs.size} 张，元数据/其余缩略图按需加载）`)
-  // 剩余条目空闲追加（首屏已经能看能点，不再阻塞）
-  if (restored.length > BOOT_FILES) scheduleIdleRestoreRest(restored.slice(BOOT_FILES))
-  return true
+  return combined.size > 0
 }
+
 
 function updateBatchBar() {
   const bar = document.getElementById('outputsBatchBar')
@@ -2803,12 +2673,12 @@ async function loadImageThumbnail(img: HTMLImageElement, fileId: string, filePat
   // ⚠️ 2026-10-04 owner 要求：provider 由**操作捕获的 snapshot.source** 决定，
   //    不能只看全局 backendThumbs 能力 —— native 桥下同样存在该端点不可用的组合。
   const thumbsUsable = backendThumbsEnabled() && (snapshot.source === 'gallery' || snapshot.source === 'native')
-  if (thumbsUsable && !_thumbUrlBlocked.has(filePath)) {
+  if (thumbsUsable && !_thumbUrlBlocked.has(outputContentKey(snapshot.file))) {
     const url = animaThumbUrl(filePath, 512) + '&v=' + encodeURIComponent(imageRevision(snapshot))
     img.onerror = () => {
       if (!bound()) return
       img.onerror = null
-      _thumbUrlBlocked.add(filePath)
+      _thumbUrlBlocked.add(outputContentKey(snapshot.file))
       void legacyThumbLoad(img, fileId, filePath)
     }
     if (img.getAttribute('src') !== url) img.src = url
@@ -2827,13 +2697,13 @@ async function legacyThumbLoad(img: HTMLImageElement, fileId: string, filePath: 
   const bound = () => img.isConnected && img.dataset.filePath === snapshot.path && img.dataset.fileId === snapshot.file.id && img.dataset.fileVersion === version && snapshotIsCurrent(snapshot)
   const assign = (dataUrl: string) => {
     if (!dataUrl || !bound()) return
-    _thumbnailRevisions.set(filePath, revision)
-    useOutputStore.getState().setThumbMemory(filePath, dataUrl)
+    _thumbnailRevisions.set(outputContentKey(snapshot.file), revision)
+    useOutputStore.getState().setThumbMemory(outputContentKey(snapshot.file), dataUrl)
     if (img.getAttribute('src') !== dataUrl) img.src = dataUrl
     _outputImageNodes.remember(img)
   }
-  const dh = useOutputStore.getState().dirHandle
-  if (_nativeOutputs) {
+  const dh = sourceForFile(snapshot.file).handle
+    if (snapshot.source === 'native') {
     // TK 原生模式：服务端对 /api/tk/output-file 是整文件回传（平均数 MB），
     // 过去直接把原图 URL 当缩略图用 —— 首屏数十张卡同时按原始尺寸下载 + 解码
     // （单张解码位图可达 6~25MB），主线程与内存瞬间被压满，表现为「进入 Outputs 卡死」。
@@ -2847,7 +2717,7 @@ async function legacyThumbLoad(img: HTMLImageElement, fileId: string, filePath: 
       }
 
       const thumbMod = await import('../services/outputThumbnail')
-      const cached = await thumbMod.getCachedThumbnail(filePath, revision)
+      const cached = await thumbMod.getCachedThumbnail(fileId, revision)
       if (cached) {
         assign(cached)
         return
@@ -2878,7 +2748,7 @@ async function legacyThumbLoad(img: HTMLImageElement, fileId: string, filePath: 
         assign(mem)
         return
       }
-      const cached = await import('../services/outputThumbnail').then(m => m.getCachedThumbnail(filePath, revision))
+      const cached = await import('../services/outputThumbnail').then(m => m.getCachedThumbnail(fileId, revision))
       if (cached) {
         assign(cached)
       }
@@ -2895,7 +2765,7 @@ async function legacyThumbLoad(img: HTMLImageElement, fileId: string, filePath: 
     }
 
     // 尝试从 IndexedDB 缓存加载
-    const cached = await import('../services/outputThumbnail').then(m => m.getCachedThumbnail(filePath, revision))
+    const cached = await import('../services/outputThumbnail').then(m => m.getCachedThumbnail(fileId, revision))
     if (cached) {
       assign(cached)
       return
@@ -2907,7 +2777,7 @@ async function legacyThumbLoad(img: HTMLImageElement, fileId: string, filePath: 
     const file = await fileHandle.getFile()
     if (!bound() || file.lastModified !== snapshot.mtime || file.size !== snapshot.size) return
 
-    const thumbnail = await import('../services/outputThumbnail').then(m => m.getThumbnail(file, filePath, revision))
+    const thumbnail = await import('../services/outputThumbnail').then(m => m.getThumbnail(file, fileId, revision))
     if (thumbnail) {
       assign(thumbnail)
     }
@@ -2933,7 +2803,7 @@ function navigatePreview(direction: number) {
   const state = useOutputStore.getState()
   const files = state.filteredFiles
   if (!_currentPreviewFileId || files.length === 0) return
-  const currentIdx = files.findIndex(f => f.path === _currentPreviewSnapshot?.path)
+  const currentIdx = outputPreviewIndex(files, _currentPreviewSnapshot)
   if (currentIdx === -1) return
   const nextIdx = (currentIdx + direction + files.length) % files.length
   const nextFile = files[nextIdx]
@@ -2945,38 +2815,31 @@ function navigatePreview(direction: number) {
 // ── 图片复制与下载 ──
 
 /** 通过文件 ID 获取文件系统 File 对象 */
-async function getFileBlob(fileId: string, snapshot?: ImageSnapshot | null): Promise<{ name: string; blob: Blob } | null> {
-  const dh = useOutputStore.getState().dirHandle
+async function getFileBlob(fileId: string, snapshot?: ImageSnapshot | null, signal?: AbortSignal): Promise<{ name: string; blob: Blob } | null> {
   const target = snapshot === undefined ? imageSnapshot(fileId) : snapshot
   const file = target?.file
-  if (!target || !snapshotIsCurrent(target)) return null
+  if (!target || signal?.aborted || !snapshotIsCurrent(target)) return null
   if (target.source === 'gallery' && file) {
     // 画廊来源走 ComfyUI 原生 /view（原图字节），与预览同一 provider，避免再次 404
     try {
-      const response = await fetch(comfyViewUrl(target.path))
+      const response = await fetch(comfyViewUrl(target.path), { signal })
       if (!response.ok) return null
       const blob = await response.blob()
-      return snapshotIsCurrent(target) ? { name: file.filename, blob } : null
+      return !signal?.aborted && snapshotIsCurrent(target) ? { name: file.filename, blob } : null
     } catch { return null }
   }
   if (target.source === 'native' && file) {
     // TK 原生桥：整文件直连
     try {
-      const response = await fetch(nativeOutputUrl(file.path))
+      const response = await fetch(nativeOutputUrl(file.path), { signal })
       if (!response.ok) return null
       const blob = await response.blob()
-      return snapshotIsCurrent(target) ? { name: file.filename, blob } : null
+      return !signal?.aborted && snapshotIsCurrent(target) ? { name: file.filename, blob } : null
     } catch { return null }
   }
-  if (!dh || !file) return null
-  try {
-    const current = await resolveDirEntry(dh, file.path)
-    const handle = await current.getFileHandle(file.filename)
-    const blob = await handle.getFile()
-    return snapshotIsCurrent(target) && blob.lastModified === target.mtime && blob.size === target.size ? { name: file.filename, blob } : null
-  } catch {
-    return null
-  }
+  if (!file) return null
+  const blob = await readOutputSourceFile(target)
+  return blob && !signal?.aborted && snapshotIsCurrent(target) ? { name: file.filename, blob } : null
 }
 
 /**
@@ -2984,12 +2847,12 @@ async function getFileBlob(fileId: string, snapshot?: ImageSnapshot | null): Pro
  * ⚠️ 只在「用户会拿到这份字节」的路径上用它。以下用途必须继续用 getFileBlob：
  *   · ensureEditSrc —— 编辑画布的像素基准
  *   · saveEditedImage 里读原图元数据以注入副本 —— 一旦被 strip 就静默破坏「副本保留工作流」
- *   · copyImagesToClipboard 的降级分支 —— 只取文件名，不碰字节
  */
 async function getExportBlob(fileId: string, snapshot?: ImageSnapshot | null): Promise<{ name: string; blob: Blob } | null> {
+  const policy = snapshotExportMetadataPolicy(exportMetadataOptions())
   const r = await getFileBlob(fileId, snapshot)
   if (!r) return null
-  return { name: r.name, blob: await applyExportMetadata(r.blob, exportMetadataOptions()) }
+  return { name: r.name, blob: await applyExportMetadata(r.blob, policy) }
 }
 
 /** 把开关状态同步到工具栏按钮：active 高亮 + title 写明当前状态（避免用户忘了自己开过） */
@@ -2998,10 +2861,33 @@ function syncMetadataButton() {
   const btn = document.getElementById('outputsMetadataBtn')
   if (!btn) return
   btn.classList.toggle('active', st.enabled)
+  btn.setAttribute('aria-pressed', String(st.enabled))
+  const label = btn.querySelector('span')
+  if (label) label.textContent = st.enabled ? '去除生成信息 · 已开启' : '保留生成信息（原图）'
   const filled = st.entries.filter(e => e.key.trim() !== '' && e.value !== '').length
   btn.title = st.enabled
     ? `导出时去除元数据：已开启${filled > 0 ? `（另写入 ${filled} 项署名）` : '（未填署名 = 只去不写）'}`
     : '导出时去除元数据（当前：关闭）'
+}
+
+function syncFallbackControls(): void {
+  const settings = outputFallbackSettings(), catalog = outputFallbackCatalog()
+  const check = document.getElementById('outputsFallbackEnabled') as HTMLInputElement | null
+  if (check) check.checked = settings.enabled
+  const unrecognized = document.getElementById('outputsFallbackUnrecognized') as HTMLInputElement | null
+  if (unrecognized) unrecognized.checked = settings.includeUnrecognized
+  const library = document.getElementById('outputsFallbackLibrary') as HTMLInputElement | null
+  if (library) library.checked = settings.libraryMatching
+  const model = document.getElementById('outputsFallbackModel') as HTMLSelectElement | null
+  if (model) {
+    const names = [...catalog.models]; if (settings.model && !names.includes(settings.model)) names.push(settings.model)
+    model.innerHTML = `<option value="">自动${catalog.defaultModel ? `（${esc(catalog.defaultModel)}）` : '选择已安装模型'}</option>` + names.map(name => `<option value="${escAttr(name)}">${esc(name)}${catalog.models.includes(name) ? '' : '（未安装）'}</option>`).join('')
+    model.value = settings.model
+  }
+  for (const [id, value] of [['outputsFallbackThreshold', settings.threshold], ['outputsFallbackCharacterThreshold', settings.characterThreshold]] as const) { const input = document.getElementById(id) as HTMLInputElement | null; if (input) input.value = String(value) }
+  const hint = document.getElementById('outputsFallbackHint')
+  if (hint) hint.textContent = catalog.models.length ? `当前：${settings.model || catalog.defaultModel} · CPU。${settings.enabled ? '反推已启用' : '反推已暂停'}。${settings.includeUnrecognized ? '包括已有提示词但未识别角色的图片。' : '自动反推仅处理确认无元数据的图片。'}切换模型或阈值后可点击“用所选模型重试未识别”。角色置信度不足时仍保留未识别，不强行归类。` : '没有完整的本地 WD14 ONNX+CSV 模型；在 WD14 Tagger 安装后刷新列表。'
+  if (hint && catalog.libraryMatches.count) hint.textContent += ` 本机有 ${catalog.libraryMatches.count} 项识别缓存，${settings.libraryMatching ? '优先复用相似匹配与本机模型结果，未命中时再用所选 WD14；内存不足时仍可读取已有结果' : '当前未启用复用'}。识别标签不属于原始提示词。`
 }
 
 /** 开关按钮：切换 + 同步 UI + 明确告知影响面（这是会改变用户拿到的东西的开关，不能静默） */
@@ -3010,7 +2896,7 @@ function toggleMetadataExport() {
   st.setEnabled(!st.enabled)
   syncMetadataButton()
   showToast(st.enabled
-    ? '已开启：导出副本将去除 prompt/workflow（磁盘原图不动）'
+    ? '已开启：导出副本将去除提示词、工作流与提示词来源记录（磁盘原图保留）'
     : '已关闭：导出恢复为原图字节')
 }
 
@@ -3036,8 +2922,8 @@ function openMetadataConfigPanel() {
         <button class="outputs-meta-close-btn" data-cfg="close" title="关闭">${icon('x', 14)}</button>
       </div>
       <div style="font-size:12px;color:var(--descrip-text);line-height:1.7;margin-bottom:12px">
-        开启后，<b>下载 / 打包下载 / 复制到剪贴板 / 大图预览 / 编辑器副本</b>都会去掉 ComfyUI 写进 PNG 的
-        <code>prompt</code> 与 <code>workflow</code>（提示词与工作流不再随图外流），并写入下面的署名。<br>
+        开启后，<b>下载 / 打包下载 / 复制到剪贴板 / 大图预览 / 编辑器副本</b>会清理 PNG 中的
+        提示词、工作流和本插件的提示词来源记录，并写入下面的署名。像素、色彩信息及无关元数据保留。<br>
         <b>磁盘上的原图不会被改动</b>；去掉 workflow 后图片拖回 ComfyUI 无法恢复工作流。
       </div>
       <label style="display:flex;align-items:center;gap:8px;margin-bottom:14px;cursor:pointer">
@@ -3112,30 +2998,7 @@ function blobToDataURL(blob: Blob): Promise<string> {
   })
 }
 
-/** 压缩图片——转为 WebP，缩小 base64 体积。尺寸 ≤ maxDimension 时不缩放但仍转格式 */
-async function compressImage(blob: Blob, maxDimension = 1920): Promise<Blob> {
-  try {
-    const img = await createImageBitmap(blob)
-    let { width, height } = img
-    if (width > maxDimension || height > maxDimension) {
-      if (width > height) {
-        height = Math.round(height * maxDimension / width)
-        width = maxDimension
-      } else {
-        width = Math.round(width * maxDimension / height)
-        height = maxDimension
-      }
-    }
-    const canvas = new OffscreenCanvas(width, height)
-    const ctx = canvas.getContext('2d')!
-    ctx.imageSmoothingEnabled = true
-    ctx.imageSmoothingQuality = 'high'
-    ctx.drawImage(img, 0, 0, width, height)
-    return canvas.convertToBlob({ type: 'image/webp', quality: 0.85 })
-  } catch {
-    return blob // fallback: 返回原图
-  }
-}
+
 
 /** 将 Outputs 图片的 Prompt 与压缩图片副本保存到 Prompt 库，脱离原文件后仍可查看。 */
 async function saveOutputPromptToLibrary(fileId: string, snapshot?: ImageSnapshot | null): Promise<void> {
@@ -3154,7 +3017,7 @@ async function saveOutputPromptToLibrary(fileId: string, snapshot?: ImageSnapsho
   }
 
   try {
-    const image = await blobToDataURL(await compressImage(result.blob))
+    const image = await blobToDataURL(await compressOutputImage(result.blob))
     if (!target || !snapshotIsCurrent(target) || !meta) return
     const loras = meta.workflowJson
       ? extractLoraTagsFromWorkflow(meta.workflowJson, meta.rawMetadata)
@@ -3192,142 +3055,73 @@ async function saveOutputPromptToLibrary(fileId: string, snapshot?: ImageSnapsho
   }
 }
 
-/** 复制单张图片到剪贴板 */
-async function copyImageToClipboard(fileId: string, snapshot?: ImageSnapshot | null) {
-  const result = await getExportBlob(fileId, snapshot)
-  if (!result) { showToast('复制失败：找不到文件'); return }
-  try {
-    const type = result.blob.type || 'image/png'
-    await navigator.clipboard.write([
-      new ClipboardItem({ [type]: result.blob })
-    ])
-    showToast('图片已复制到剪贴板')
-  } catch {
-    showToast('复制失败，请重试')
-  }
-}
-
-/** 批量复制图片到剪贴板 */
-async function copyImagesToClipboard(ids: string[]) {
-  if (ids.length === 0) return
-
-  // 1. 逐张转为 Base64，边构建边检测大小
-  const MAX_HTML_SIZE = 16 * 1024 * 1024 // 16MB（实测 22MB 会被系统剪贴板截断）
-
-  let htmlAccum = ''
-  const names: string[] = []
-  const dataUrls: string[] = []
-  let copiedCount = 0
-
-  for (const id of ids) {
-    const result = await getExportBlob(id)
-    if (!result) continue
-
-    // 多图时压缩以减少 base64 体积
-    const blob = ids.length > 1 ? await compressImage(result.blob) : result.blob
-    const dataUrl = await blobToDataURL(blob)
-    const tag = `<img src="${dataUrl}" alt="${escAttr(result.name)}" style="max-width:100%;display:block;margin:4px 0">`
-    const newHtml = htmlAccum + tag
-
-    // 精确测量实际大小
-    if (copiedCount > 0 && new Blob([newHtml]).size > MAX_HTML_SIZE) {
-      // 加这张会超限，停止
-      console.log(`[复制] 第 ${copiedCount + 1} 张超出上限，停止累积。当前 ${copiedCount} 张`)
-      break
-    }
-
-    htmlAccum = newHtml
-    names.push(result.name)
-    dataUrls.push(dataUrl)
-    copiedCount++
-  }
-
-  if (copiedCount === 0) {
-    showToast('单张图片过大，无法复制到剪贴板')
-    return
-  }
-
-  // HTML 调试：检查所有图片是否已生成
-  console.log('[HTML调试] 总图片数:', names.length)
-  names.forEach((name, i) => {
-    console.log(`[HTML调试] 图片 ${i + 1}: ${name}, Base64 长度: ${dataUrls[i]?.length || 0}`)
+/** Every export freezes file revisions and policy before any asynchronous read. */
+async function exportOutputs(ids: string[], action: 'copy' | 'download', mode: ExportMetadataMode = 'default', target?: ImageSnapshot | null): Promise<void> {
+  if (!ids.length) return
+  if (_exportSession) { showToast('已有导出任务，完成或取消后再试'); return }
+  const snapshots = [...new Set(ids)].map(id => target?.file.id === id ? target : imageSnapshot(id)).filter((snapshot): snapshot is ImageSnapshot => !!snapshot)
+  if (!snapshots.length) { showToast('找不到可导出的图片'); return }
+  const byId = new Map(snapshots.map(snapshot => [snapshot.file.id, snapshot]))
+  const session = createOutputExportSession(snapshots.map(snapshot => ({
+    id: snapshot.file.id, sourceId: snapshot.file.sourceId || 'output',
+    path: snapshot.path, filename: snapshot.file.filename, size: snapshot.file.size,
+  })), {
+    policy: exportMetadataOptions(mode),
+    readBlob: async (item, signal) => {
+      const snapshot = byId.get(item.id)
+      const result = await getFileBlob(item.id, snapshot, signal)
+      if (!result) throw new Error('图片已移动、目录未授权或文件读取失败')
+      return result.blob
+    },
+    download: async (artifact, signal) => {
+      if (signal.aborted) throw new DOMException('导出已取消', 'AbortError')
+      const url = URL.createObjectURL(artifact.blob)
+      const link = document.createElement('a')
+      link.href = url; link.download = artifact.name
+      document.body.appendChild(link); link.click(); link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    },
+    archiveName: `outputs-${new Date().toISOString().replace(/[:.]/g, '-')}`,
   })
-  console.log('[HTML调试] 完整 HTML 长度:', htmlAccum.length)
-  names.forEach((name, i) => {
-    if (dataUrls[i]) {
-      const included = htmlAccum.includes(dataUrls[i].substring(0, 80))
-      console.log(`[HTML调试] 图片 ${i + 1} "${name}" 是否在 HTML 中: ${included}`)
+  _exportSession = session
+  const progress = document.getElementById('outputsExportProgress')
+  if (progress) { progress.hidden = false; progress.title = ''; const button = progress.querySelector<HTMLElement>('button'); if (button) button.hidden = false }
+  const unsubscribe = session.subscribe(state => {
+    if (_exportSession !== session || !progress) return
+    const text = progress.querySelector('span')
+    const labels: Record<OutputExportProgress['phase'], string> = {
+      reading: '读取', processing: '处理生成信息', packing: '打包', copying: '复制', downloading: '交付下载', complete: '完成', cancelled: '已取消',
     }
+    if (text) text.textContent = `${labels[state.phase]} ${state.completed}/${state.total}${state.part ? ` · 第${state.part}包` : ''}${state.failed ? ` · ${state.failed}张失败` : ''}`
   })
-
-  // 2. 写入剪贴板
   try {
-    if (copiedCount === 1) {
-      const resp = await fetch(dataUrls[0])
-      const blob = await resp.blob()
-      await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })])
-    } else {
-      const htmlBlob = new Blob([htmlAccum], { type: 'text/html' })
-      const textBlob = new Blob([`已复制 ${copiedCount} 张图片\n${names.join('\n')}`], { type: 'text/plain' })
-      console.log('[复制] HTML 大小:', htmlBlob.size, '字节, 图片数:', copiedCount)
-      await navigator.clipboard.write([
-        new ClipboardItem({ 'text/html': htmlBlob, 'text/plain': textBlob })
-      ])
+    const result = await session.run(action === 'download' && snapshots.length > 1 ? 'zip' : action)
+    if (_exportSession !== session || !isOutputsActive()) return
+    const text = progress?.querySelector('span')
+    const message = result.status === 'cancelled' ? `已取消，已交付 ${result.succeeded} 张`
+      : `${action === 'copy' ? '已复制' : '已提交下载'} ${result.succeeded}/${result.total} 张${result.failures.length ? `，${result.failures.length} 张失败` : ''}${result.warnings.length ? `，${result.warnings.length} 项提示` : ''}`
+    if (text) text.textContent = message
+    if (progress) {
+      progress.title = [...result.failures.map(failure => `${failure.name}：${failure.message}`), ...result.warnings.map(warning => `${warning.name}：${warning.message}`)].join('\n')
+      const button = progress.querySelector<HTMLElement>('button'); if (button) button.hidden = true
     }
-    const skipped = ids.length - copiedCount
-    const compressed = ids.length > 1 ? '（已压缩至1920px以便复制更多）' : ''
-    if (skipped > 0) {
-      showToast(`已复制 ${copiedCount} 张图片${compressed}（剩余 ${skipped} 张超过剪贴板大小限制）`)
-    } else {
-      showToast(`已复制 ${copiedCount} 张图片到剪贴板${compressed}`)
-    }
-  } catch (err) {
-    console.warn('[复制] 写入失败:', err)
-    // 降级：复制文件名
-    try {
-      const allNames = await Promise.all(ids.map(async id => {
-        const r = await getFileBlob(id); return r?.name || ''
-      }))
-      await navigator.clipboard.writeText(allNames.filter(Boolean).join('\n'))
-      showToast(`已复制 ${allNames.filter(Boolean).length} 个文件名到剪贴板`)
-    } catch { showToast('复制失败') }
+    showToast(message)
+  } catch (error) {
+    if (_exportSession === session && isOutputsActive()) showToast(`导出失败：${(error as Error).message}`)
+  } finally {
+    unsubscribe()
+    if (_exportSession === session) _exportSession = undefined
   }
 }
 
-/** 下载单张图片 */
-async function downloadImage(fileId: string, snapshot?: ImageSnapshot | null) {
-  const result = await getExportBlob(fileId, snapshot)
-  if (!result) { showToast('下载失败：找不到文件'); return }
-  const url = URL.createObjectURL(result.blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = result.name; a.click()
-  URL.revokeObjectURL(url)
-  showToast('已开始下载')
+async function copyImageToClipboard(fileId: string, snapshot?: ImageSnapshot | null): Promise<void> {
+  await exportOutputs([fileId], 'copy', 'default', snapshot)
 }
-
-/** 批量下载（单张直接下载，多张打包 ZIP） */
-async function downloadImagesAsZip(ids: string[]) {
-  if (ids.length === 1) {
-    // 单张：直接下载原文件
-    downloadImage(ids[0])
-    return
-  }
-  showToast('正在打包...')
-  const zip = new JSZip()
-  let added = 0
-  for (const id of ids) {
-    const result = await getExportBlob(id)
-    if (result) { zip.file(result.name, result.blob); added++ }
-  }
-  const zipBlob = await zip.generateAsync({ type: 'blob' })
-  const now = new Date()
-  const ts = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}-${String(now.getMinutes()).padStart(2,'0')}`
-  const url = URL.createObjectURL(zipBlob)
-  const a = document.createElement('a')
-  a.href = url; a.download = `outputs_${ts}.zip`; a.click()
-  URL.revokeObjectURL(url)
-  showToast(`已下载 ${added} 张图片${added < ids.length ? `（${ids.length - added} 张失败）` : ''}`)
+async function copyImagesToClipboard(ids: string[]): Promise<void> { await exportOutputs(ids, 'copy') }
+async function downloadImage(fileId: string, snapshot?: ImageSnapshot | null): Promise<void> {
+  await exportOutputs([fileId], 'download', 'default', snapshot)
 }
+async function downloadImagesAsZip(ids: string[]): Promise<void> { await exportOutputs(ids, 'download') }
 
 /** 独立元数据弹窗（不放大图片，直接查看 prompt/参数/工作流） */
 async function openMetaPanel(fileId: string, snapshot?: ImageSnapshot | null) {
@@ -3344,6 +3138,7 @@ async function openMetaPanel(fileId: string, snapshot?: ImageSnapshot | null) {
   const panel = document.createElement('div')
   panel.style.cssText = 'background:var(--bg2);color:var(--text);border-radius:12px;padding:16px;width:90vw;max-width:640px;max-height:85vh;overflow-y:auto;border:1px solid var(--border);box-shadow:0 0 0 1px rgba(0,0,0,0.2),0 24px 70px rgba(0,0,0,0.5);'
   panel.innerHTML = renderMetadataPanel(meta ?? null, file)
+  bindRawMetadataDetails(panel, meta || {})
   overlay.appendChild(panel)
   document.body.appendChild(overlay)
 
@@ -3362,7 +3157,7 @@ async function openMetaPanel(fileId: string, snapshot?: ImageSnapshot | null) {
   document.addEventListener('keydown', escHandler)
 }
 
-// ══ 预览图片编辑（旋转/翻转/框选裁剪，保存为副本，不覆盖原图） ══
+// ══ 预览图片编辑：当前像素画布、临时拖出及显式保存 ══
 // 状态模型：_editBase 是「当前编辑结果」基准画布。每个操作（旋转/翻转/裁剪）都把结果固化到基准，
 // 后续操作总是基于最新结果继续，因此任意顺序组合都不会出现坐标错位。
 
@@ -3384,14 +3179,52 @@ let _editCropping = false
 let _cropStartX = 0
 let _cropStartY = 0
 let _saving = false
+let _painter: ReturnType<typeof createOutputPainter> | undefined
+let _editDragTimer = 0
+const _editDragSession = createOutputDragSession({
+  forceUpload: true,
+  metadataPolicy: exportMetadataOptions,
+  current: snapshot => snapshotIsCurrent(snapshot) && _currentPreviewSnapshot?.key === snapshot.key,
+  read: async snapshot => {
+    if (_editCropping || _painter?.active) return null
+    if (!_editBase || _editSnapshot?.key !== snapshot.key) return (await getFileBlob(snapshot.file.id, snapshot))?.blob || null
+    return new Promise<Blob | null>(resolve => buildEditedCanvas().toBlob(resolve, 'image/png'))
+  },
+})
+function invalidateEditedDrag() {
+  _editDragSession.cancel(); clearTimeout(_editDragTimer)
+  const button = document.getElementById('lbPreviewDrag')
+  if (button) button.textContent = '准备拖出…'
+  _editDragTimer = window.setTimeout(() => { if (!_painter?.active && !_editCropping) void prepareEditedDrag() }, 350)
+}
+async function prepareEditedDrag() {
+  const snapshot = _currentPreviewSnapshot
+  if (!snapshot || _editCropping || _painter?.active) return
+  try {
+    const copy = await _editDragSession.prepare(snapshot)
+    if (copy && _currentPreviewSnapshot?.key === snapshot.key) {
+      const button = document.getElementById('lbPreviewDrag')
+      if (button) button.textContent = '拖出当前图'
+    }
+  } catch (error) {
+    if ((error as Error).name === 'AbortError') return
+    const button = document.getElementById('lbPreviewDrag')
+    if (button) { button.textContent = '重试准备拖出'; button.title = (error as Error).message }
+  }
+}
+function setPaintMode(mode: 'view' | 'pen' | 'mosaic' | 'cover') {
+  _painter?.setMode(mode)
+  document.querySelectorAll<HTMLElement>('[data-paint]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.paint === mode)))
+  document.querySelectorAll<HTMLElement>('[data-paint-controls]').forEach(control => { control.hidden = !control.dataset.paintControls?.split(' ').includes(mode) })
+  const hint = document.getElementById('lbEditHint')
+  if (hint) hint.textContent = mode === 'mosaic' ? '拖出矩形；调整颗粒与强度可预览最后一块效果' : mode === 'pen' ? '在图片上直接涂画；放大后也可绘制' : mode === 'cover' ? '拖出矩形，用当前颜色遮盖' : '滚轮缩放，放大后拖动查看'
+}
 
-/** 导航到文件所在目录，返回目录句柄 */
+/** Navigate within an already authorized directory (also used by bulk export). */
 async function resolveDirEntry(dirHandle: FileSystemDirectoryHandle, path: string): Promise<FileSystemDirectoryHandle> {
   const parts = path.split('/')
   let current = dirHandle
-  for (let i = 0; i < parts.length - 1; i++) {
-    current = await current.getDirectoryHandle(parts[i])
-  }
+  for (let i = 0; i < parts.length - 1; i++) current = await current.getDirectoryHandle(parts[i])
   return current
 }
 
@@ -3446,6 +3279,7 @@ function buildEditedCanvas(): HTMLCanvasElement {
 
 /** 把当前编辑基准渲染到预览画布（隐藏原 img） */
 function renderEdit() {
+  setLightboxViewLocked(false)
   const wrap = document.getElementById('lbEditWrap')
   const cv = document.getElementById('lbEditCanvas') as HTMLCanvasElement
   const imgEl = document.getElementById('lbImg') as HTMLImageElement
@@ -3456,9 +3290,12 @@ function renderEdit() {
   imgEl.style.display = 'none'
   wrap.style.display = 'inline-block'
   hideCropUI()
+  setPaintMode('view')
+  invalidateEditedDrag()
 }
 
 function hideCropUI() {
+  setLightboxViewLocked(false)
   const layer = document.getElementById('lbCropLayer')
   const rect = document.getElementById('lbCropRect')
   if (layer) layer.style.display = 'none'
@@ -3467,6 +3304,7 @@ function hideCropUI() {
 
 function rotateEdit(delta: number) {
   if (!_editBase) return
+  _painter?.checkpoint()
   const src = _editBase
   const rot = ((delta % 360) + 360) % 360
   const swap = rot === 90 || rot === 270
@@ -3483,6 +3321,7 @@ function rotateEdit(delta: number) {
 
 function toggleFlip(axis: 'h' | 'v') {
   if (!_editBase) return
+  _painter?.checkpoint()
   const src = _editBase
   const out = document.createElement('canvas')
   out.width = src.width
@@ -3499,6 +3338,8 @@ function enterCropMode() {
   if (!_editBase) return
   renderEdit() // 确保编辑画布显示——否则裁剪层位于隐藏的 wrap 里，点击裁剪看起来"无效"
   _editCropping = true
+  _editDragSession.cancel()
+  setLightboxViewLocked(true)
   const layer = document.getElementById('lbCropLayer')
   const rect = document.getElementById('lbCropRect')
   const wrap = document.getElementById('lbEditWrap')
@@ -3534,12 +3375,16 @@ function confirmCrop() {
   out.width = Math.max(1, Math.round(cw))
   out.height = Math.max(1, Math.round(ch))
   out.getContext('2d')!.drawImage(_editBase, x, y, cw, ch, 0, 0, out.width, out.height)
+  _painter?.checkpoint()
   _editBase = out
   hideCropUI()
   renderEdit()
 }
 
 function resetEdit() {
+  _painter?.reset()
+  _editDragSession.cancel(); clearTimeout(_editDragTimer)
+  setPaintMode('view')
   _editSrcImg = null
   _editFileId = ''
   _editSnapshot = null
@@ -3552,106 +3397,105 @@ function resetEdit() {
   hideCropUI()
 }
 
-/** 保存编辑结果为副本文件（原名 + _edited），不覆盖原图 */
-async function saveEditedImage() {
-  if (!_editBase) { showToast('请先编辑再保存'); return }
-  if (_saving) return
+/** Save only on explicit user action; overwrite always keeps a verified original backup. */
+async function saveEditedImage(overwrite = false) {
+  if (!_editBase || _saving || _painter?.active) return
   const target = _editSnapshot
   const file = target?.file
-  const dh = useOutputStore.getState().dirHandle
-  if (!file || !dh || !target || !snapshotIsCurrent(target)) { showToast('图片来源已变化，请重新打开后保存'); return }
-
-  // 仍处于裁剪模式且有选框时，先应用裁剪，确保保存结果与所见一致
-  if (_editCropping) confirmCrop()
-
+  if (!file || !target || !snapshotIsCurrent(target)) { showToast('图片来源已变化，请重新打开后保存'); return }
+  if (!['png', 'jpg', 'jpeg', 'webp'].includes(file.extension.toLowerCase())) { showToast('保存编辑仅支持 PNG、JPEG、WebP 静态图片'); return }
   _saving = true
-  showToast('⏳ 正在保存副本...')
   try {
-    const ext = file.extension || 'png'
-    const mime = EXT_MIME[ext] || 'image/png'
-    const cv = buildEditedCanvas()
-    const blob = await new Promise<Blob | null>(res => cv.toBlob(b => res(b), mime))
-    if (!blob) { showToast('⚠️ 导出失败'); return }
-
-    // PNG 副本的元数据（2026-09-21 用户决定：跟随导出元数据开关）
-    //  · 开关关闭（默认）→ 保持原行为：把原始 prompt/workflow 注入副本，方便拖回 ComfyUI 恢复工作流
-    //  · 开关开启 → 反过来：去掉元数据并写入自定义署名
-    let savedBlob: Blob
-    if (ext !== 'png') {
-      savedBlob = blob
-    } else if (isExportMetadataNoop(exportMetadataOptions())) {
-      const original = await getFileBlob(target.file.id, target)
-      const bytes = injectPngTextChunks(
-        new Uint8Array(await blob.arrayBuffer()),
-        original ? extractPngTextChunks(new Uint8Array(await original.blob.arrayBuffer())) : []
-      )
-      savedBlob = new Blob([bytes], { type: mime })
-    } else {
-      savedBlob = await applyExportMetadata(blob, exportMetadataOptions())
+    if (overwrite && !await confirmModal('覆盖原图', `将覆盖 ${file.filename}。\n会先核验并保留原图备份；也可取消后选择“另存副本”。`)) return
+    if (_editCropping) confirmCrop()
+    const cv = buildEditedCanvas(), ext = file.extension.toLowerCase(), mime = EXT_MIME[ext]
+    const dh = sourceForFile(file).handle
+    if (target.source !== 'gallery' && (!dh || !await requestOutputSourcePermission(file.sourceId || 'output', 'readwrite'))) { showToast('保存需要目录写入权限'); return }
+    const blob = await new Promise<Blob | null>(res => cv.toBlob(res, mime))
+    if (!blob || blob.type !== mime) throw Error('浏览器无法按原图片格式导出')
+    let savedBlob = blob
+    if (ext === 'png') {
+      if (isExportMetadataNoop(exportMetadataOptions())) {
+        const original = await getFileBlob(target.file.id, target)
+        if (!original) throw Error('无法读取原图元数据，未保存')
+        const bytes = injectPngTextChunks(new Uint8Array(await blob.arrayBuffer()), extractPngTextChunks(new Uint8Array(await original.blob.arrayBuffer())))
+        savedBlob = new Blob([bytes], { type: mime })
+      } else savedBlob = await applyExportMetadata(blob, exportMetadataOptions())
     }
-
-    const base = file.filename.replace(/\.[^.]+$/, '')
-    const newName = `${base}_edited.${ext}`
-    if (!snapshotIsCurrent(target) || useOutputStore.getState().dirHandle !== dh) { showToast('图片来源已变化，副本尚未保存'); return }
-    const dir = await resolveDirEntry(dh, file.path)
-    const newHandle = await dir.getFileHandle(newName, { create: true })
-    const writable = await newHandle.createWritable()
-    await writable.write(savedBlob)
-    await writable.close()
-
-    // 新副本加入列表：手动入库 + store，确保网格即时显示，不依赖增量扫描的可见性
-    const parts = file.path.split('/')
-    const newPath = parts.length > 1 ? parts.slice(0, -1).concat(newName).join('/') : newName
-    const newId = hashPath(newPath)
-    // 按需取源文件元数据（内存未命中就单条回 DB），保证另存副本继承 Prompt/LoRA
     const meta = await getImageMetadata(target)
-    const written = await newHandle.getFile()
+    const saved = await saveOutputEdit({ target, blob: savedBlob, width: cv.width, height: cv.height, overwrite, handle: dh,
+      current: () => snapshotIsCurrent(target) && _currentPreviewSnapshot?.key === target.key && (target.source === 'gallery' || sourceForFile(target.file).handle === dh) })
+    const newId = overwrite ? file.id : file.sourceId && file.sourceId !== 'output' ? outputFileId(file.sourceId, saved.path) : hashPath(saved.path)
     const newFile: OutputFile = {
-      id: newId, path: newPath, filename: newName, extension: ext,
-      size: written.size, mtime: written.lastModified, width: cv.width, height: cv.height,
-      favorite: false, rating: 0, notes: '', tags: [], category: '', status: '', pinned: false,
-      createdAt: Date.now(),
+      ...file, id: newId, path: saved.path, filename: saved.filename, mtime: saved.mtime, size: saved.size, width: saved.width, height: saved.height,
+      ...(overwrite ? {} : { favorite: false, rating: 0, notes: '', tags: [], category: '', status: '', pinned: false, createdAt: Date.now() }),
     }
     await outputsDb.files.put(newFile)
+    const store = useOutputStore.getState()
+    store.removeMetadata([newId]); store.invalidateThumbnails([outputContentKey(file), outputContentKey(newFile)])
     if (meta) {
       const copyMeta = bindMetadata({ ...meta, imageId: newId }, createImageSnapshot(newFile, target.source, target.root, target.parserVersion, target.epoch))
-      await outputsDb.metadata.put(copyMeta)
-      useOutputStore.getState().putMetadata(copyMeta)
+      await outputsDb.metadata.put(copyMeta); store.putMetadata(copyMeta)
     }
-    if (!snapshotIsCurrent(target)) { showToast('副本已保存，原浏览目录已切换'); return }
-    useOutputStore.setState(s => ({ files: [newFile, ...s.files.filter(f => f.path !== newPath)] }))
-    useOutputStore.getState().applyFilters()
-    renderOutputsView()
-
-    // 后台增量扫描：同步 manifest / 缩略图（失败静默，不影响已显示的副本）
-    try { await scanOutputDirIncremental(dh) } catch { /* 静默 */ }
-
-    showToast(`✅ 已保存为 ${newName}`)
-    // 切换预览到新副本，让用户立即看到编辑结果
-    if (_currentPreviewSnapshot?.key === target.key) openPreview(newId, imageSnapshot(newFile)).catch(() => {})
-  } catch {
-    showToast('⚠️ 保存失败')
-  } finally {
-    _saving = false
-  }
+    useOutputStore.setState(s => ({ files: [newFile, ...s.files.filter(f => f.id !== newId)] }))
+    useOutputStore.getState().applyFilters(); renderOutputsView()
+    if (target.source === 'gallery') void requestGalleryRefresh().catch(() => {})
+    else if (dh) void scanOutputDirIncremental(dh).catch(() => {})
+    showToast(overwrite ? `已覆盖 ${saved.filename}，原图备份：${saved.backup}` : `已另存 ${saved.filename}`)
+    if (_currentPreviewSnapshot?.key === target.key) await openPreview(newId, imageSnapshot(newFile))
+  } catch (error) { showToast(`保存失败：${(error as Error).message}`) }
+  finally { _saving = false }
 }
+
 
 /** 绑定编辑工具栏与裁剪交互（一次性） */
 function bindEditToolbar() {
+  const editCanvas = document.getElementById('lbEditCanvas') as HTMLCanvasElement | null
+  if (editCanvas) _painter = createOutputPainter({ canvas: editCanvas, get: () => _editBase,
+    set: canvas => { _editBase = canvas }, changed: invalidateEditedDrag, busy: () => _saving || _editCropping })
+  document.getElementById('lbPaintBar')?.addEventListener('click', async e => {
+    const mode = (e.target as HTMLElement).closest<HTMLElement>('[data-paint]')?.dataset.paint as 'view' | 'pen' | 'mosaic' | 'cover' | undefined
+    if (!mode || _saving || !_currentPreviewFileId) return
+    if (mode !== 'view') {
+      if (!await ensureEditSrc(_currentPreviewFileId)) { showToast('读取图片失败'); return }
+      renderEdit()
+    }
+    setPaintMode(mode)
+  })
+  const configure = () => {
+    const color = (document.getElementById('lbPaintColor') as HTMLInputElement).value
+    const size = Number((document.getElementById('lbPaintSize') as HTMLInputElement).value)
+    const mosaicSize = Number((document.getElementById('lbMosaicSize') as HTMLInputElement).value)
+    const mosaicStrength = Number((document.getElementById('lbMosaicStrength') as HTMLInputElement).value)
+    _painter?.configure({ color, brushSize: size, mosaicSize, mosaicStrength })
+    const label = document.getElementById('lbPaintSizeValue'); if (label) label.textContent = String(size)
+    const grainLabel = document.getElementById('lbMosaicSizeValue'); if (grainLabel) grainLabel.textContent = String(mosaicSize)
+    const strengthLabel = document.getElementById('lbMosaicStrengthValue'); if (strengthLabel) strengthLabel.textContent = `${mosaicStrength}%`
+  }
+  document.getElementById('lbPaintColor')?.addEventListener('input', configure)
+  document.getElementById('lbPaintSize')?.addEventListener('input', configure)
+  document.getElementById('lbMosaicSize')?.addEventListener('input', configure)
+  document.getElementById('lbMosaicStrength')?.addEventListener('input', configure)
+  configure()
+  document.getElementById('lbPaintUndo')?.addEventListener('click', () => {
+    hideCropUI(); _editCropping = false; _painter?.undo()
+  })
+  document.getElementById('lbPreviewDrag')?.addEventListener('pointerenter', () => { void prepareEditedDrag() })
+  document.getElementById('lbPreviewDrag')?.addEventListener('click', () => { void prepareEditedDrag() })
   const bar = document.getElementById('lbEditBar')
   bar?.addEventListener('click', async (e) => {
     const btn = (e.target as HTMLElement).closest('button[data-act]') as HTMLElement
     if (!btn) return
     const act = btn.dataset.act
     const fileId = _currentPreviewFileId
-    if (!fileId) return
-    if (act === 'save') {
+    if (!fileId || _saving || _painter?.active) return
+    if (act === 'save' || act === 'overwrite') {
       // 未编辑也允许保存原图副本：先确保原图已加载
       if (!_editBase && !(await ensureEditSrc(fileId))) { showToast('⚠️ 读取图片失败'); return }
-      saveEditedImage()
+      void saveEditedImage(act === 'overwrite')
       return
     }
-    if (act === 'reset') { resetEdit(); return }
+    if (act === 'reset') { resetEdit(); invalidateEditedDrag(); return }
     if (!_editBase && !(await ensureEditSrc(fileId))) { showToast('⚠️ 读取图片失败'); return }
     switch (act) {
       case 'rotl': rotateEdit(-90); break
@@ -3701,6 +3545,7 @@ function bindEditToolbar() {
 
   document.getElementById('lbCropConfirm')?.addEventListener('click', (e) => { e.stopPropagation(); confirmCrop() })
   document.getElementById('lbCropCancel')?.addEventListener('click', (e) => {
+    invalidateEditedDrag()
     e.stopPropagation()
     _editCropping = false
     hideCropUI()
@@ -3750,8 +3595,8 @@ async function openPreview(fileId: string, snapshot?: ImageSnapshot | null) {
   void getImageMetadata(target).catch(() => {})
 
   // 获取图片 URL
-  const dh = useOutputStore.getState().dirHandle
-  if (!_nativeOutputs && !galleryIndexEnabled() && !dh) return
+  const dh = sourceForFile(file).handle
+  if (target.source === 'directory' && !dh) { showToast('请在目录栏重新授权该目录'); return }
 
   let imgUrl = ''
   // 开关开启时预览也走「干净副本」——否则用户在预览界面「右键 → 图片另存为」拿到的仍是
@@ -3805,9 +3650,13 @@ async function openPreview(fileId: string, snapshot?: ImageSnapshot | null) {
 
   resetEdit()
   if (img) img.src = imgUrl
+  setupLightboxView()
+  const dragButton = document.getElementById('lbPreviewDrag')
+  if (dragButton) dragButton.dataset.outputDrag = fileId
+  invalidateEditedDrag()
   if (counter) {
     const total = useOutputStore.getState().filteredFiles.length
-    const idx = useOutputStore.getState().filteredFiles.findIndex(f => f.path === target.path)
+    const idx = outputPreviewIndex(useOutputStore.getState().filteredFiles, target)
     counter.textContent = total > 1 ? `${idx + 1}/${total}` : file.filename
   }
   if (lightbox) lightbox.classList.add('open')

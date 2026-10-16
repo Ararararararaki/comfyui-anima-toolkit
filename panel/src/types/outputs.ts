@@ -1,7 +1,8 @@
 // ── Outputs 模块类型定义 ──
 
 export interface OutputFile {
-  id: string                    // 路径哈希 (用于 IndexedDB 主键)
+  sourceId?: string             // 缺省为历史 ComfyUI output；外部目录使用持久来源 ID
+  id: string                    // output 保留旧 ID；目录使用来源+路径的可逆编码
   path: string                  // 相对路径 (output/2024-01/img001.png)
   filename: string
   extension: string
@@ -19,7 +20,33 @@ export interface OutputFile {
   createdAt: number
 }
 
+export type OutputSourceKind = 'gallery' | 'native' | 'directory'
+export interface OutputSource {
+  id: string
+  kind: OutputSourceKind
+  label: string
+  root: string
+  parserVersion: number
+  handle?: FileSystemDirectoryHandle
+  enabled: boolean
+  permission: 'granted' | 'prompt' | 'denied' | 'none'
+}
+
 export type PromptStatus = 'complete' | 'partial' | 'ambiguous' | 'missing'
+export type MetadataState = 'present' | 'absent' | 'error' | 'unsupported' | 'unknown'
+
+export interface OutputGenerationDetails {
+  checkpoints: string[]
+  textEncoders: string[]
+  vaes: string[]
+  loraDetails: { name: string; strengthModel: number | null; strengthClip: number | null; enabled: boolean; nodeId: string; active: boolean | null }[]
+  generationStages: { nodeId: string; label: string; steps: string; cfg: string; seed: string; noiseSeed?: string; sampler: string; scheduler: string; denoise: string; effectiveSteps?: number }[]
+  generationStatus: PromptStatus
+  generationWarnings: string[]
+  generationScope?: 'output' | 'recorded'
+  generationOutputNodeId?: string | null
+  metadataSource?: string
+}
 
 export interface PromptStage {
   nodeId: string
@@ -28,10 +55,16 @@ export interface PromptStage {
   negativePrompt: string
 }
 
-export interface OutputMetadata {
+export interface OutputMetadata extends Partial<OutputGenerationDetails> {
+  /** Agreed saved-branch text for identity matching; never a copyable actual prompt. */
+  identityPrompt?: string
   imageId: string               // 关联 OutputFile.id
   identity?: { path: string; root: string; mtime: number; size: number }
   parserVersion?: number
+  summaryStatus?: 'pending' | 'ready' | 'error'
+  metadataState?: MetadataState
+  metadataFormat?: string
+  metadataWarnings?: string[]
   promptStages?: PromptStage[]
   promptStatus?: PromptStatus
   promptWarnings?: string[]
@@ -73,11 +106,51 @@ export interface OutputDir {
 
 export type OutputViewMode = 'grid' | 'list'
 export type OutputSortKey = 'date' | 'name' | 'size'
-export type OutputFilterKey = 'all' | 'favorites' | 'rated'
+export type OutputGroupMode = 'none' | 'flat' | 'work' | 'character'
+export interface OutputEntity { id: string; name: string; tag?: string; aliases?: string[]; workIds?: string[] }
+/** Rebuildable search data; file IDs and user annotations keep their existing ownership. */
+export interface OutputSummary {
+  identityPrompt?: string
+  imageId: string
+  sourceId: string
+  path: string
+  filename: string
+  root: string
+  mtime: number
+  size: number
+  parserVersion: number
+  indexVersion: number
+  key: string
+  model: string
+  prompt: string
+  loras: string[]
+  tagKeys: string[]
+  searchAliases: string[]
+  characters: OutputEntity[]
+  works: OutputEntity[]
+  classificationVersion: string
+  hasWorkflow?: boolean
+  metadataState?: MetadataState
+  metadataWarnings?: string[]
+  classificationStatus: 'pending' | 'identified' | 'unrecognized' | 'error'
+  classificationAmbiguous?: boolean
+  indexStatus: 'ready' | 'pending' | 'error'
+  error?: string
+  retryAt?: number
+  notes?: string
+  manualTags?: string[]
+  inferredTags?: string[]
+  inferenceStatus?: 'pending' | 'ready' | 'error'
+  inferenceVersion?: string
+  inferenceModel?: string
+  inferenceError?: string
+  tagSource?: 'saved' | 'wd14' | 'none'
+}
+export type OutputFilterKey = 'all' | 'favorites' | 'rated' | 'missingMetadata' | 'inferred'
 export type OutputScanStatus = 'idle' | 'scanning' | 'done' | 'error'
 
 export interface OutputThumbnail {
-  id: string                    // 文件路径哈希
+  id: string                    // 对应 OutputFile.id
   dataUrl: string               // base64 数据 URL
   width: number
   height: number

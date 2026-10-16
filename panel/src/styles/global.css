@@ -808,6 +808,25 @@ h1 small { font-size: 12px; color: var(--text2); font-weight: 400; margin-left: 
 
 .lightbox.open { display: flex; }
 
+.lightbox { overflow: hidden; }
+.lightbox #lbImg, .lightbox #lbEditWrap { transform-origin: center; touch-action: none; user-select: none; }
+.lightbox .close, .lightbox .lb-nav, .lightbox .lb-counter { z-index: 21; }
+.lb-fit-view { position: absolute; z-index: 21; bottom: 16px; right: 20px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg2); color: var(--text); cursor: pointer; font: inherit; font-size: 12px; }
+.lb-fit-view:disabled { opacity: .5; cursor: default; }
+/* Both rows share normal flow: wrapping and mode-specific controls change height together. */
+.lb-toolbars { position: absolute; z-index: 22; top: 12px; left: 50%; transform: translateX(-50%); width: min(760px, calc(100% - 128px)); max-height: calc(100% - 72px); overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.lb-paintbar { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); color: var(--text); font-size: 12px; }
+.lb-paintbar button { color: inherit; background: transparent; border: 1px solid var(--border); padding: 5px 8px; border-radius: 5px; cursor: pointer; white-space: nowrap; }
+.lb-paint-modes { display: flex; flex-wrap: wrap; justify-content: center; gap: 3px; }
+.lb-paintbar [hidden] { display: none !important; }
+.lb-paintbar button[aria-pressed="true"] { background: var(--accent); color: var(--bg); }
+.lb-paintbar label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.lb-paintbar input[type="color"] { width: 24px; height: 24px; border: 0; padding: 0; background: transparent; cursor: pointer; }
+.lb-paintbar input[type="range"] { width: 70px; }
+.lb-paintbar output { min-width: 22px; }
+#lbPreviewDrag { cursor: grab; border-color: var(--accent); }
+#lbEditHint { width: 100%; text-align: center; color: var(--text2); font-size: 11px; }
+
 .lightbox img { max-width: 92vw; max-height: 88vh; object-fit: contain; border-radius: 8px; box-shadow: 0 0 60px rgba(0, 0, 0, .5); }
 
 .lightbox .close { position: absolute; top: 14px; right: 20px; font-size: 28px; color: #fff; cursor: pointer; opacity: .6; background: none; border: none; font-family: var(--font); }
@@ -827,46 +846,33 @@ h1 small { font-size: 12px; color: var(--text2); font-weight: 400; margin-left: 
 /* ── 预览图片编辑（旋转/翻转/裁剪/保存） ── */
 
 .lb-editbar {
-
-  position: absolute;
-
-  top: 14px;
-
-  left: 50%;
-
-  transform: translateX(-50%);
-
   display: flex;
+
+  flex: 0 0 auto;
 
   gap: 6px;
 
   padding: 6px 8px;
 
-  background: rgba(10, 10, 15, .72);
+  background: var(--bg2);
 
-  border: 1px solid rgba(255, 255, 255, .1);
+  border: 1px solid var(--border);
 
   border-radius: 8px;
-
-  backdrop-filter: blur(8px);
-
-  z-index: 20;
 
   flex-wrap: wrap;
 
   justify-content: center;
 
-  max-width: 90vw;
-
 }
 
 .lb-editbar button {  font-size: 11px;
 
-  color: #EDEDEF;
+  color: var(--text);
 
-  background: rgba(255, 255, 255, .06);
+  background: var(--bg3);
 
-  border: 1px solid rgba(255, 255, 255, .12);
+  border: 1px solid var(--border);
 
   border-radius: 5px;
 
@@ -884,7 +890,7 @@ h1 small { font-size: 12px; color: var(--text2); font-weight: 400; margin-left: 
 
 }
 
-.lb-editbar button:hover { background: var(--accent); color: #fff; }
+.lb-editbar button:hover { background: var(--accent); color: var(--bg); }
 
 .lb-edit-wrap {
 
@@ -1763,16 +1769,6 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 
 .local-grid-status-dot.scanning { background: #f59e0b; }
 
-.local-grid-actions { display: flex; gap: 3px; opacity: 1; pointer-events: auto; }
-
-.local-grid-card:hover .local-grid-actions, .local-grid-card:focus-within .local-grid-actions { opacity: 1; pointer-events: auto; }
-
-.local-grid-actions button { width: 25px; height: 25px; padding: 0; display: grid; place-items: center; border: 1px solid rgba(255,255,255,.5); border-radius: 5px; background: rgba(8,10,15,.7); color: #f8fafc; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,.38); backdrop-filter: blur(4px); }
-
-.local-grid-actions button:hover { color: var(--accent); border-color: var(--accent); }
-
-.local-grid-actions .local-list-del { opacity: 1; }
-
 .local-grid-body { position: absolute; z-index: 3; left: 0; right: 0; bottom: 0; min-width: 0; max-height: 46%; overflow: hidden; padding: 8px 9px 9px; border-top: 1px solid rgba(255,255,255,.18); background: rgba(18,18,22,.78); background: color-mix(in srgb, var(--bg3) 82%, transparent); backdrop-filter: blur(6px); }
 
 .local-grid-name { overflow: hidden; color: var(--text); font-size: 12px; font-weight: 600; line-height: 1.35; white-space: nowrap; text-overflow: ellipsis; }
@@ -2222,28 +2218,6 @@ footer { text-align: center; padding: 16px; color: var(--text3); font-size: 11px
 .prompt-preview-text:hover { color: var(--text); }
 
 .local-prompt-list { background: var(--bg3); border-radius: 8px; padding: 8px; border: 1px solid var(--border); }
-
-.prompt-lora-row { display: flex; align-items: center; gap: 8px; padding: 5px 4px; border-bottom: 1px solid var(--border); }
-
-.prompt-lora-row:last-child { border-bottom: none; }
-
-.prompt-lora-label { font-size: 11px; color: var(--text); min-width: 80px; max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-.prompt-lora-info { display: flex; flex-direction: column; min-width: 80px; max-width: 160px; flex-shrink: 0; }
-
-.prompt-lora-localname { font-size: 9px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
-
-.prompt-lora-slider { flex: 1; height: 4px; appearance: none; -webkit-appearance: none; background: var(--bg2); border-radius: 2px; outline: none; cursor: pointer; }
-
-.prompt-lora-slider::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); cursor: pointer; border: 2px solid var(--bg3); }
-
-.prompt-lora-input { font-size: 11px; color: var(--text); background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; width: 50px; padding: 2px 4px; text-align: center; outline: none; }
-
-.prompt-lora-input:focus { border-color: var(--accent); }
-
-.prompt-lora-input::-webkit-inner-spin-button { opacity: 0.6; }
-
-.prompt-lora-toolbar { display: flex; gap: 8px; padding: 8px 4px 4px; justify-content: flex-end; border-top: 1px solid var(--border); margin-top: 4px; }
 
 /* ── Enhanced Artist Series ── */
 

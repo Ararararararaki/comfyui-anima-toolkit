@@ -99,9 +99,12 @@ restore()
  * ⚠️ 开关关闭时 entries 必须是空对象：署名属于开关内部行为，
  * 否则「只想留个署名、不去元数据」会变成静默的元数据改写。
  */
-export function exportMetadataOptions(): ExportMetadataOptions {
+export type ExportMetadataMode = 'default' | 'original' | 'clean'
+
+/** Per-action override leaves the persisted default unchanged. */
+export function exportMetadataOptions(mode: ExportMetadataMode = 'default'): ExportMetadataOptions {
   const st = useExportMetadataStore.getState()
-  if (!st.enabled) return { strip: false, entries: {} }
+  if (mode === 'original' || (mode === 'default' && !st.enabled)) return { strip: false, entries: {} }
   const entries: Record<string, string> = {}
   for (const e of st.entries) {
     const key = e.key.trim()

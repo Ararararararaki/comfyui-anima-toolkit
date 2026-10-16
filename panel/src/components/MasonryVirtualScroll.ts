@@ -16,8 +16,8 @@ export interface MasonryVirtualScrollOptions {
   overscanPx?: number
   /**
    * 布局/内容签名。update() 时若签名、总条目数、总高度都未变化，
-   * 则不做任何重建（不 replaceChildren）——卡片里的 <img> 会被保留，
-   * 避免「重建 → 图片重新请求/重新解码」的首屏抖动与卡顿。
+   * 则跳过渲染；签名变化时逐卡比较内容，只更新真正变化的卡片，
+   * 保留未变化卡片的悬浮、聚焦和已解码图片。
    */
   signature?: string
   beforeRender?: (inner: HTMLElement) => void
@@ -47,7 +47,7 @@ export class MasonryVirtualScroll {
   private container: HTMLElement
   private inner: HTMLElement
   private opts: ResolvedOptions
-  private renderedItems = new Map<number, HTMLElement>()
+  private renderedItems = new Map<number, { element: HTMLElement; html: string }>()
   private rafId: number | null = null
   private lastSignature = ''
   private lastVisibleKey = ''
@@ -165,40 +165,41 @@ export class MasonryVirtualScroll {
     this.lastVisibleKey = key
 
     const visibleSet = new Set(visible)
-    if (force) {
-      this.inner.replaceChildren()
-      this.renderedItems.clear()
-    } else {
-      for (const [index, item] of this.renderedItems) {
-        if (!visibleSet.has(index)) {
-          item.remove()
-          this.renderedItems.delete(index)
-        }
+    for (const [index, item] of this.renderedItems) {
+      if (!visibleSet.has(index)) {
+        item.element.remove()
+        this.renderedItems.delete(index)
       }
     }
 
     // 批量插入：攒进 DocumentFragment 后一次性入 DOM
     const fragment = document.createDocumentFragment()
     for (const index of visible) {
-      if (this.renderedItems.has(index)) continue
+      const previous = this.renderedItems.get(index)
+      if (previous && !force) continue
       const rect = this.opts.getItemRect(index)
-      const item = document.createElement('div')
-      item.className = 'virtual-scroll-item masonry-virtual-scroll-item'
-      item.dataset.index = String(index)
-      item.style.position = 'absolute'
+      const item = previous?.element ?? document.createElement('div')
+      if (!previous) {
+        item.className = 'virtual-scroll-item masonry-virtual-scroll-item'
+        item.dataset.index = String(index)
+        item.style.position = 'absolute'
+      }
       item.style.top = `${Math.round(rect.top)}px`
       item.style.left = `${Math.round(rect.left)}px`
       item.style.width = `${rect.width}px`
       item.style.height = `${rect.height}px`
-      item.innerHTML = this.opts.renderItem(index, {
+      const html = this.opts.renderItem(index, {
         position: 'absolute',
         top: 0,
         left: 0,
         width: '100%',
         height: rect.height,
       })
-      fragment.appendChild(item)
-      this.renderedItems.set(index, item)
+      // 全局整理进度会改变签名，不能因此清空所有卡片并重启 hover 动画。
+      // 比较上次渲染结果，避免异步缩略图/状态补丁改变 DOM 后被误判为新内容。
+      if (!previous || previous.html !== html) item.innerHTML = html
+      if (!previous) fragment.appendChild(item)
+      this.renderedItems.set(index, { element: item, html })
     }
     if (fragment.childNodes.length > 0) this.inner.appendChild(fragment)
     this.opts.afterRender(this.inner)

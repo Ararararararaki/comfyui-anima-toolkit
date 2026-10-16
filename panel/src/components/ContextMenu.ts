@@ -23,6 +23,25 @@ export interface ContextMenuGroup {
 let _activeMenu: HTMLElement | null = null
 let _activeSubMenu: HTMLElement | null = null
 let _subMenuTimer: number | null = null
+let _keyboardOrigin: HTMLElement | null = null
+
+function bindMenuKeys(menu: HTMLElement, parent?: HTMLElement): void {
+  menu.addEventListener('keydown', event => {
+    const items = [...menu.querySelectorAll<HTMLElement>(':scope > [role="menuitem"]:not([aria-disabled="true"])')]
+    const active = document.activeElement as HTMLElement
+    const index = items.indexOf(active)
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) && items.length) {
+      event.preventDefault()
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+        : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+      items[next].focus()
+    } else if (event.key === 'Enter' || event.key === ' ' || event.key === 'ArrowRight' && active?.classList.contains('has-submenu')) {
+      event.preventDefault(); active?.click()
+    } else if (event.key === 'ArrowLeft' && parent) {
+      event.preventDefault(); closeSubMenu(); parent.focus()
+    }
+  })
+}
 
 /** 菜单图标：图标名 → SVG，非图标名（如旧 emoji）原样返回（兜底值转义防误用） */
 function menuIcon(name: string): string {
@@ -59,9 +78,11 @@ function scheduleCloseSubMenu(delay = 160) {
 export function openContextMenu(
   x: number,
   y: number,
-  groups: ContextMenuGroup[]
+  groups: ContextMenuGroup[],
+  focus = false
 ) {
   closeContextMenu()
+  if (focus) _keyboardOrigin = document.activeElement as HTMLElement | null
 
   const menu = document.createElement('div')
   menu.className = 'context-menu'
@@ -86,6 +107,7 @@ export function openContextMenu(
       const el = document.createElement('div')
       el.className = `context-menu-item${item.danger ? ' danger' : ''}${item.disabled ? ' disabled' : ''}`
       el.setAttribute('role', 'menuitem')
+      el.tabIndex = item.disabled ? -1 : 0
       if (item.disabled) {
         el.setAttribute('aria-disabled', 'true')
       }
@@ -93,6 +115,13 @@ export function openContextMenu(
       if (item.children && item.children.length > 0) {
         // 有子菜单
         el.classList.add('has-submenu')
+        el.setAttribute('aria-haspopup', 'menu')
+        el.addEventListener('click', event => {
+          event.stopPropagation()
+          if (item.disabled) return
+          openSubMenu(el, item.children!, x, y)
+          if (event.detail === 0) _activeSubMenu?.querySelector<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])')?.focus()
+        })
 
         const labelSpan = document.createElement('span')
         labelSpan.className = 'context-menu-item-label'
@@ -143,6 +172,8 @@ export function openContextMenu(
 
   document.body.appendChild(menu)
   _activeMenu = menu
+  bindMenuKeys(menu)
+  if (focus) menu.querySelector<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])')?.focus()
 
   // 确保菜单在视口内
   requestAnimationFrame(() => {
@@ -170,10 +201,14 @@ function openSubMenu(parentEl: HTMLElement, items: ContextMenuAction[], parentX:
 
   const sub = document.createElement('div')
   sub.className = 'context-menu context-submenu'
+  sub.setAttribute('role', 'menu')
 
   items.forEach(item => {
     const el = document.createElement('div')
     el.className = `context-menu-item${item.danger ? ' danger' : ''}${item.disabled ? ' disabled' : ''}`
+    el.setAttribute('role', 'menuitem')
+    el.tabIndex = item.disabled ? -1 : 0
+    if (item.disabled) el.setAttribute('aria-disabled', 'true')
     el.innerHTML = `<span class="context-menu-item-label">${item.icon ? `${menuIcon(item.icon)}${esc(item.label)}` : esc(item.label)}</span>`
     if (item.shortcut) {
       const shortcut = document.createElement('span')
@@ -221,6 +256,7 @@ function openSubMenu(parentEl: HTMLElement, items: ContextMenuAction[], parentX:
 
   document.body.appendChild(sub)
   _activeSubMenu = sub
+  bindMenuKeys(sub, parentEl)
 }
 
 function closeSubMenu() {
@@ -240,6 +276,8 @@ export function closeContextMenu() {
     _activeMenu.remove()
     _activeMenu = null
   }
+  if (_keyboardOrigin?.isConnected) _keyboardOrigin.focus()
+  _keyboardOrigin = null
 }
 
 // ── 全局事件绑定 ──
@@ -278,6 +316,11 @@ export function createOutputContextMenu(
     onRate?: (id: string) => void
     onCopyMetadata?: (id: string) => void
     onCopyPrompt?: (id: string) => void
+    onSavePrompt?: (id: string) => void
+    onCopyLoras?: (id: string) => void
+    onWorkflow?: (id: string) => void
+    onMetadata?: (id: string) => void
+    onExport?: (ids: string[], action: 'copy' | 'download', mode: 'original' | 'clean') => void
     onPin?: (id: string, pinned: boolean) => void
     onCopyImage?: (id: string) => void
     onDownloadImage?: (id: string) => void
@@ -310,6 +353,10 @@ export function createOutputContextMenu(
       items: [
         { label: '复制元数据', icon: 'file-text', handler: () => handlers.onCopyMetadata?.(id) },
         { label: '复制 Prompt', icon: 'copy', handler: () => handlers.onCopyPrompt?.(id) },
+        { label: '存入 Prompt 库', icon: 'book', handler: () => handlers.onSavePrompt?.(id) },
+        { label: '复制 LoRA 标签', icon: 'tag', handler: () => handlers.onCopyLoras?.(id) },
+        { label: '下载工作流', icon: 'fileJson', handler: () => handlers.onWorkflow?.(id) },
+        { label: '查看元数据', icon: 'info', handler: () => handlers.onMetadata?.(id) },
       ]
     })
     groups.push({
@@ -332,5 +379,17 @@ export function createOutputContextMenu(
     })
   }
 
+  if (fileIds.length && handlers.onExport) groups.splice(groups.length - 1, 0, {
+    label: '导出副本', items: [
+      { label: '复制选项', icon: 'copy', handler: () => {}, children: [
+        { label: '复制原图', handler: () => handlers.onExport?.(fileIds, 'copy', 'original') },
+        { label: '去除生成信息后复制', handler: () => handlers.onExport?.(fileIds, 'copy', 'clean') },
+      ] },
+      { label: '下载选项', icon: 'download', handler: () => {}, children: [
+        { label: '下载原图', handler: () => handlers.onExport?.(fileIds, 'download', 'original') },
+        { label: '去除生成信息后下载', handler: () => handlers.onExport?.(fileIds, 'download', 'clean') },
+      ] },
+    ],
+  })
   return groups
 }

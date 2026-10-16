@@ -1,0 +1,29 @@
+{
+  "id": "anima",
+  "label": "Anima",
+  "style": "tags",
+  "system_instructions": "Use concise English image tags for Anima. Keep named character identities and all explicitly requested visual facts. Output lowercase tags, turn underscores into spaces, and use commas between tags. Avoid duplicates, contradictions, and unnecessarily long tag lists. Describe subjects, appearance, clothing, expression, pose, interactions, camera, composition, environment, and only a few useful lighting details. Do not add quality, score, style, texture, artist, or rendering boilerplate by default; include a visual style or texture only when requested or grounded in the user's input. Keep each tag in its semantic section and leave unsupported sections empty. Model-facing content must contain only image descriptions, with no Markdown, explanation, or reasoning.",
+  "base_agent_prompt": "Translate the user's intent into a concise, consistent Anima prompt. Preserve character identity and important details, remove redundant tags, and explain useful changes briefly in Chinese outside the final prompt.",
+  "normalization": {
+    "lowercase": true,
+    "underscores_to_spaces": true,
+    "separator": ", ",
+    "dedupe": true,
+    "max_items": 90,
+    "max_chars": 6000,
+    "max_lighting": 4
+  },
+  "prohibited_patterns": ["```", "<think>", "</think>", "<analysis>", "</analysis>"],
+  "preferred_order": ["subject", "character_identity", "appearance", "clothing", "expression", "pose", "interaction", "camera", "composition", "environment", "lighting", "effects", "special_constraints"],
+  "examples": [
+    {
+      "request": "初音未来，青色双马尾、蓝眼睛、白衬衫，微笑着坐在窗边，半身，窗外有雨，柔和窗光。",
+      "prompt": "1girl, hatsune miku, aqua hair, twintails, blue eyes, white shirt, smile, sitting, upper body, window, rain outside, soft window light"
+    },
+    {
+      "request": "两位穿黑色外套的成年女性在夜晚街头握手，全身，路灯照明。不要风格和质量词。",
+      "prompt": "2women, adults, black coats, standing, handshake, full body, street, night, streetlight"
+    }
+  ],
+  "source_urls": []
+}
