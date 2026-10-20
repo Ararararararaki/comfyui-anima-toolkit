@@ -19,97 +19,97 @@ try {
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script type="module" crossorigin src="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-D1kscKjb.js"></script>
+  <script type="module" crossorigin src="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-CGTH0Yd5.js"></script>
   <link rel="modulepreload" crossorigin href="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/vendor-D6eCwX_v.js">
-  <link rel="stylesheet" crossorigin href="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-BcHb5k9a.css">
+  <link rel="stylesheet" crossorigin href="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-rcbT6zlq.css">
 </head>
 <body data-ui-version="drinkit-2026-09-08">
 
-<aside class="toolbox-sidebar" id="toolboxSidebar" aria-label="工具箱栏目与设置" hidden>
+<aside class="toolbox-sidebar" id="toolboxSidebar" aria-label="工具箱栏目与设置" hidden data-i18n-aria-label="shell.toolboxNavigationAria">
   <div class="toolbox-brand">
     <span class="toolbox-brand-icon" data-icon="palette" aria-hidden="true"></span>
-    <span class="toolbox-brand-copy"><strong>TK Toolkit</strong><small>本地工具箱</small></span>
+    <span class="toolbox-brand-copy"><strong>TK Toolkit</strong><small data-i18n="shell.localToolbox">本地工具箱</small></span>
   </div>
-  <nav class="main-tabs" id="mainTabs" role="tablist" aria-label="主栏目" aria-orientation="vertical">
-    <button class="main-tab active" type="button" data-section="local" data-icon="monitor" role="tab" aria-controls="sectionLocal" aria-selected="true" tabindex="0" title="本地 LoRA 管理"><span>本地 LoRA 管理</span></button>
-    <button class="main-tab" type="button" data-section="lora" data-icon="package" role="tab" aria-controls="sectionLora" aria-selected="false" tabindex="-1" title="LoRA 探索"><span>LoRA 探索</span> <span class="badge-tab" id="loraBadge">0</span></button>
+  <nav class="main-tabs" id="mainTabs" role="tablist" aria-label="主栏目" aria-orientation="vertical" data-i18n-aria-label="shell.mainSectionsAria">
+    <button class="main-tab active" type="button" data-section="local" data-icon="monitor" role="tab" aria-controls="sectionLocal" aria-selected="true" tabindex="0" title="本地 LoRA 管理" data-i18n-title="shell.localTitle"><span data-i18n="shell.localTitle">本地 LoRA 管理</span></button>
+    <button class="main-tab" type="button" data-section="lora" data-icon="package" role="tab" aria-controls="sectionLora" aria-selected="false" tabindex="-1" title="LoRA 探索" data-i18n-title="shell.loraTitle"><span data-i18n="shell.loraTitle">LoRA 探索</span> <span class="badge-tab" id="loraBadge">0</span></button>
     <!-- 画师系列：用户从不使用，隐藏入口（代码保留，去掉注释即可恢复；badge 8 原为写死值） -->
-    <button class="main-tab" type="button" data-section="artist" data-icon="brush" role="tab" aria-controls="sectionArtist" aria-selected="false" tabindex="-1" style="display:none"><span>画师系列</span> <span class="badge-tab">8</span></button>
-    <button class="main-tab" type="button" data-section="prompt" data-icon="book" role="tab" aria-controls="sectionPrompt" aria-selected="false" tabindex="-1" title="Prompt 库"><span>Prompt 库</span></button>
-    <button class="main-tab" type="button" data-section="clothing" data-icon="shirt" role="tab" aria-controls="sectionClothing" aria-selected="false" tabindex="-1" title="服装库"><span>服装库</span></button>
-    <button class="main-tab" type="button" data-section="prompt-freq" data-icon="image" role="tab" aria-controls="sectionPromptFreq" aria-selected="false" tabindex="-1" title="图片解析"><span>图片解析</span></button>
+    <button class="main-tab" type="button" data-section="artist" data-icon="brush" role="tab" aria-controls="sectionArtist" aria-selected="false" tabindex="-1" style="display:none"><span data-i18n="shell.artistTitle">画师系列</span> <span class="badge-tab">8</span></button>
+    <button class="main-tab" type="button" data-section="prompt" data-icon="book" role="tab" aria-controls="sectionPrompt" aria-selected="false" tabindex="-1" title="Prompt 库" data-i18n-title="shell.promptTitle"><span data-i18n="shell.promptTitle">Prompt 库</span></button>
+    <button class="main-tab" type="button" data-section="clothing" data-icon="shirt" role="tab" aria-controls="sectionClothing" aria-selected="false" tabindex="-1" title="服装库" data-i18n-title="shell.clothingTitle"><span data-i18n="shell.clothingTitle">服装库</span></button>
+    <button class="main-tab" type="button" data-section="prompt-freq" data-icon="image" role="tab" aria-controls="sectionPromptFreq" aria-selected="false" tabindex="-1" title="图片解析" data-i18n-title="shell.imageAnalysis"><span data-i18n="shell.imageAnalysis">图片解析</span></button>
     <button class="main-tab" type="button" data-section="outputs" data-icon="grid" role="tab" aria-controls="sectionOutputs" aria-selected="false" tabindex="-1" title="Outputs"><span>Outputs</span></button>
   </nav>
-    <section class="toolbox-outputs-slot" id="toolboxOutputsSlot" aria-label="图片目录">
+    <section class="toolbox-outputs-slot" id="toolboxOutputsSlot" aria-label="图片目录" data-i18n-aria-label="shell.imageDirectories">
       <div class="outputs-sidebar-header">
-        <h2>图片目录</h2>
-        <button type="button" class="outputs-refresh-btn outputs-source-action" data-icon="refreshCw" title="刷新已勾选目录" aria-label="刷新已勾选目录"></button>
+        <h2 data-i18n="shell.imageDirectories">图片目录</h2>
+        <button type="button" class="outputs-refresh-btn outputs-source-action" data-icon="refreshCw" title="刷新已勾选目录" aria-label="刷新已勾选目录" data-i18n-title="shell.refreshSelectedDirectories" data-i18n-aria-label="shell.refreshSelectedDirectories"></button>
       </div>
-      <button type="button" class="outputs-add-directory outputs-select-btn" data-icon="plus"><span>添加目录</span></button>
-      <p class="outputs-source-hint">勾选多个目录可一起浏览</p>
+      <button type="button" class="outputs-add-directory outputs-select-btn" data-icon="plus"><span data-i18n="shell.addDirectory">添加目录</span></button>
+      <p class="outputs-source-hint" data-i18n="shell.multipleDirectoriesHint">勾选多个目录可一起浏览</p>
       <div class="outputs-dir-tree" id="outputsDirTree">
-        <div class="outputs-empty-sidebar"><p>正在恢复图片目录…</p></div>
+        <div class="outputs-empty-sidebar"><p data-i18n="shell.restoringDirectories">正在恢复图片目录…</p></div>
       </div>
       <div class="outputs-filter-panel" id="outputsFilterPanel">
         <div class="outputs-filter-panel-header" id="outputsFilterToggle">
-          <span data-icon="slidersHorizontal">高级筛选</span>
+          <span data-icon="slidersHorizontal"><span data-i18n="shell.advancedFilters">高级筛选</span></span>
           <span class="outputs-filter-toggle-arrow" data-icon="chevronRight"></span>
         </div>
         <div class="outputs-filter-panel-body collapsed" id="outputsFilterBody">
           <div class="outputs-filter-group" id="outputsFilterGroupModel" style="display:none">
-            <label>模型</label>
-            <input type="text" class="outputs-filter-input outputs-filter-model" placeholder="输入模型名..." list="outputsModelList">
+            <label data-i18n="shell.model">模型</label>
+            <input type="text" class="outputs-filter-input outputs-filter-model" placeholder="输入模型名..." list="outputsModelList" data-i18n-placeholder="shell.modelPlaceholder">
             <datalist id="outputsModelList"></datalist>
           </div>
           <div class="outputs-filter-group" id="outputsFilterGroupLora" style="display:none">
             <label>LoRA</label>
-            <input type="text" class="outputs-filter-input outputs-filter-lora" placeholder="输入 LoRA 名..." list="outputsLoraList">
+            <input type="text" class="outputs-filter-input outputs-filter-lora" placeholder="输入 LoRA 名..." list="outputsLoraList" data-i18n-placeholder="shell.loraPlaceholder">
             <datalist id="outputsLoraList"></datalist>
           </div>
           <div class="outputs-filter-group">
-            <label>时间段</label>
+            <label data-i18n="shell.period">时间段</label>
             <div class="outputs-filter-quick-period">
-              <button class="outputs-period-btn" data-period="today">今日</button>
-              <button class="outputs-period-btn" data-period="3d">3天</button>
-              <button class="outputs-period-btn" data-period="week">本周</button>
-              <button class="outputs-period-btn" data-period="month">本月</button>
-              <button class="outputs-period-btn active" data-period="">全部</button>
+              <button class="outputs-period-btn" data-period="today"><span data-i18n="shell.today">今日</span></button>
+              <button class="outputs-period-btn" data-period="3d"><span data-i18n="shell.threeDays">3天</span></button>
+              <button class="outputs-period-btn" data-period="week"><span data-i18n="shell.thisWeek">本周</span></button>
+              <button class="outputs-period-btn" data-period="month"><span data-i18n="shell.thisMonth">本月</span></button>
+              <button class="outputs-period-btn active" data-period=""><span data-i18n="shell.all">全部</span></button>
             </div>
           </div>
           <div class="outputs-filter-group">
-            <label>日期范围</label>
+            <label data-i18n="shell.dateRange">日期范围</label>
             <div class="outputs-filter-range">
-              <input type="date" class="outputs-filter-input outputs-filter-date-min" title="开始日期">
+              <input type="date" class="outputs-filter-input outputs-filter-date-min" title="开始日期" data-i18n-title="shell.startDate">
               <span>~</span>
-              <input type="date" class="outputs-filter-input outputs-filter-date-max" title="结束日期">
+              <input type="date" class="outputs-filter-input outputs-filter-date-max" title="结束日期" data-i18n-title="shell.endDate">
             </div>
           </div>
           <div class="outputs-filter-group">
-            <label>筛选</label>
+            <label data-i18n="shell.filter">筛选</label>
             <div class="outputs-filter-quick-period">
-              <button class="outputs-filter-flag-btn" data-flag="favorite" data-icon="star"><span>已收藏</span></button>
-              <button class="outputs-filter-flag-btn" data-flag="rated" data-icon="thumbsUp"><span>已评分</span></button>
-              <button class="outputs-filter-flag-btn" data-flag="status" data-icon="tag"><span>有标签</span></button>
+              <button class="outputs-filter-flag-btn" data-flag="favorite" data-icon="star"><span data-i18n="shell.favorited">已收藏</span></button>
+              <button class="outputs-filter-flag-btn" data-flag="rated" data-icon="thumbsUp"><span data-i18n="shell.rated">已评分</span></button>
+              <button class="outputs-filter-flag-btn" data-flag="status" data-icon="tag"><span data-i18n="shell.tagged">有标签</span></button>
             </div>
           </div>
-          <button class="btn btn-ghost btn-xs outputs-filter-clear" style="display:none;margin-top:8px;width:100%" data-icon="x"><span>清除筛选</span></button>
+          <button class="btn btn-ghost btn-xs outputs-filter-clear" style="display:none;margin-top:8px;width:100%" data-icon="x"><span data-i18n="shell.clearFilters">清除筛选</span></button>
         </div>
       </div>
     </section>
   <div class="toolbox-sidebar-footer">
     <div id="toolkitThemeControl"></div>
-    <button type="button" class="btn btn-ghost" id="releaseNotesBtn" data-icon="info"><span>更新日志与 QQ 交流群</span></button>
+    <button type="button" class="btn btn-ghost" id="releaseNotesBtn" data-icon="info"><span data-i18n="shell.releaseNotes">更新日志与 QQ 交流群</span></button>
   </div>
 </aside>
 
 <header id="contentHeader">
   <div class="header-inner">
-    <button class="toolbox-folders-toggle" id="toolboxFoldersToggle" type="button" data-icon="grid" aria-label="切换工具箱栏目" aria-expanded="false" aria-controls="toolboxSidebar"><span>工具箱</span><span data-icon="chevronDown"></span></button>
+    <button class="toolbox-folders-toggle" id="toolboxFoldersToggle" type="button" data-icon="grid" aria-label="切换工具箱栏目" aria-expanded="false" aria-controls="toolboxSidebar" data-i18n-aria-label="shell.toggleSections"><span data-i18n="shell.toolbox">工具箱</span><span data-icon="chevronDown"></span></button>
     <h1 class="toolbox-page-title" id="pageTitle">本地 LoRA 管理</h1>
     <div class="toolbox-header-actions">
-      <button class="btn btn-ghost toolbox-url-download" id="localUrlBtn" type="button" title="从 C 站链接下载 LoRA、Checkpoint 等模型到 ComfyUI 目录" data-icon="downloadCloud"><span>URL 下载</span></button>
+      <button class="btn btn-ghost toolbox-url-download" id="localUrlBtn" type="button" title="从 C 站链接下载 LoRA、Checkpoint 等模型到 ComfyUI 目录" data-icon="downloadCloud" data-i18n-title="shell.urlDownloadTitle"><span data-i18n="shell.urlDownload">URL 下载</span></button>
       <span id="buildTime" class="build-time"></span>
-      <button class="icon-btn settings-btn" id="settingsBtn" type="button" data-icon="settings" title="设置 (Ctrl+,)" aria-label="设置"></button>
+      <button class="icon-btn settings-btn" id="settingsBtn" type="button" data-icon="settings" title="设置 (Ctrl+,)" aria-label="设置" data-i18n-title="shell.settingsShortcut" data-i18n-aria-label="shell.settings"></button>
     </div>
   </div>
 </header>
@@ -118,26 +118,26 @@ try {
   <div class="ctrl-group">
     <div class="search-wrap">
       <span class="icon" data-icon="search" aria-hidden="true"></span>
-      <input type="text" id="searchInput" placeholder="搜索名称、描述、标签、作者…" autocomplete="off" aria-label="搜索 LoRA">
+      <input type="text" id="searchInput" placeholder="搜索名称、描述、标签、作者…" autocomplete="off" aria-label="搜索 LoRA" data-i18n-placeholder="shell.loraSearchPlaceholder" data-i18n-aria-label="shell.searchLora">
       <div class="search-history" id="searchHistory" style="display:none"></div>
     </div>
-    <select id="sortSelect" aria-label="排序方式">
-      <option value="Most Downloaded">⬇ 下载量</option>
-      <option value="LikeRatio">📊 赞比（本地排序）</option>
-      <option value="Highest Rated">⭐ 评分</option>
-      <option value="Newest">🆕 最新发布</option>
-      <option value="Most Discussed">💬 讨论最多</option>
-      <option value="Most Collected">📌 收藏最多</option>
+    <select id="sortSelect" aria-label="排序方式" data-i18n-aria-label="shell.sortOrder">
+      <option value="Most Downloaded" data-i18n="shell.sortDownloads">⬇ 下载量</option>
+      <option value="LikeRatio" data-i18n="shell.sortLikeRatio">📊 赞比（本地排序）</option>
+      <option value="Highest Rated" data-i18n="shell.sortRating">⭐ 评分</option>
+      <option value="Newest" data-i18n="shell.sortNewest">🆕 最新发布</option>
+      <option value="Most Discussed" data-i18n="shell.sortDiscussed">💬 讨论最多</option>
+      <option value="Most Collected" data-i18n="shell.sortCollected">📌 收藏最多</option>
     </select>
-    <select id="qualityFilter" aria-label="质量筛选">
-      <option value="all">📋 全部</option>
-      <option value="rec">🏆 推荐</option>
-      <option value="new">🆕 新发布</option>
-      <option value="local">✅ 仅本地</option>
-      <option value="highq">🎯 高质（下载≥250 且 赞比≥5%）</option>
+    <select id="qualityFilter" aria-label="质量筛选" data-i18n-aria-label="shell.qualityFilter">
+      <option value="all" data-i18n="shell.allOption">📋 全部</option>
+      <option value="rec" data-i18n="shell.recommendedOption">🏆 推荐</option>
+      <option value="new" data-i18n="shell.newOption">🆕 新发布</option>
+      <option value="local" data-i18n="shell.localOption">✅ 仅本地</option>
+      <option value="highq" data-i18n="shell.highQualityOption">🎯 高质（下载≥250 且 赞比≥5%）</option>
     </select>
-    <select id="baseModelFilter" aria-label="基座模型" title="远程限定基座模型">
-      <option value="">🗂️ 全部基座</option>
+    <select id="baseModelFilter" aria-label="基座模型" title="远程限定基座模型" data-i18n-aria-label="shell.baseModel" data-i18n-title="shell.remoteBaseModel">
+      <option value="" data-i18n="shell.allBaseModels">🗂️ 全部基座</option>
       <option value="Anima" selected>🎬 Anima</option>
       <option value="SD 1.5">🎨 SD 1.5</option>
       <option value="Pony">🦄 Pony</option>
@@ -145,72 +145,74 @@ try {
       <option value="NoobAI">🤖 NoobAI</option>
       <option value="Flux.1 D">⚡ Flux.1 D</option>
       <option value="Krea 2">🟠 Krea 2</option>
+      <option value="MOSS Image">🌿 MOSS Image</option>
+      <option value="MOSS Image Base">🌱 MOSS Image Base</option>
       <option value="Other">📦 Other</option>
     </select>
-    <select id="nsfwFilter" aria-label="NSFW 过滤">
-      <option value="all">🔞 全部（含 NSFW）</option>
-      <option value="sfw">🛡️ 仅 SFW</option>
+    <select id="nsfwFilter" aria-label="NSFW 过滤" data-i18n-aria-label="shell.nsfwFilter">
+      <option value="all" data-i18n="shell.allNsfw">🔞 全部（含 NSFW）</option>
+      <option value="sfw" data-i18n="shell.sfwOnly">🛡️ 仅 SFW</option>
     </select>
-    <input type="text" id="tagInput" placeholder="🏷️ 标签过滤（逗号分隔）" autocomplete="off" style="width:150px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text);font-size:12px" aria-label="标签过滤">
-    <div class="period-group" role="group" aria-label="统计周期">
-      <button class="period-btn active" data-period="AllTime" data-icon="calendar"><span>全部</span></button>
-      <button class="period-btn" data-period="Year" data-icon="calendar"><span>今年</span></button>
-      <button class="period-btn" data-period="Month" data-icon="calendar"><span>本月</span></button>
-      <button class="period-btn" data-period="Week" data-icon="calendar"><span>本周</span></button>
-      <button class="period-btn" data-period="Day" data-icon="sun"><span>今日</span></button>
+    <input type="text" id="tagInput" placeholder="🏷️ 标签过滤（逗号分隔）" autocomplete="off" style="width:150px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text);font-size:12px" aria-label="标签过滤" data-i18n-placeholder="shell.tagFilterPlaceholder" data-i18n-aria-label="shell.tagFilter">
+    <div class="period-group" role="group" aria-label="统计周期" data-i18n-aria-label="shell.statsPeriod">
+      <button class="period-btn active" data-period="AllTime" data-icon="calendar"><span data-i18n="shell.all">全部</span></button>
+      <button class="period-btn" data-period="Year" data-icon="calendar"><span data-i18n="shell.thisYear">今年</span></button>
+      <button class="period-btn" data-period="Month" data-icon="calendar"><span data-i18n="shell.thisMonth">本月</span></button>
+      <button class="period-btn" data-period="Week" data-icon="calendar"><span data-i18n="shell.thisWeek">本周</span></button>
+      <button class="period-btn" data-period="Day" data-icon="sun"><span data-i18n="shell.today">今日</span></button>
     </div>
-    <button class="btn btn-ghost btn-border-green" id="batchModeBtn" data-icon="checkSquare" type="button" title="批量选择模式"></button>
-    <button class="btn btn-ghost btn-border-accent" id="addLoraBtn" data-icon="plus" type="button" title="手动添加 LoRA"></button>
-    <button class="btn btn-ghost" id="clearHiddenBtn" type="button" title="清空隐藏记录"></button>
+    <button class="btn btn-ghost btn-border-green" id="batchModeBtn" data-icon="checkSquare" type="button" title="批量选择模式" data-i18n-title="shell.batchSelection"></button>
+    <button class="btn btn-ghost btn-border-accent" id="addLoraBtn" data-icon="plus" type="button" title="手动添加 LoRA" data-i18n-title="shell.addLora"></button>
+    <button class="btn btn-ghost" id="clearHiddenBtn" type="button" title="清空隐藏记录" data-i18n-title="shell.clearHidden"></button>
   </div>
 
-  <div class="quick-fetch-group" role="group" aria-label="快速抓取">
-    <span class="qf-label">快速抓取</span>
-    <button class="btn btn-ghost qf-btn" id="fetchCharBtn" type="button" data-icon="user" title="抓取人物角色类 LoRA"></button>
-    <button class="btn btn-ghost qf-btn" id="fetchLightBtn" type="button" data-icon="zap" title="抓取光影类 LoRA"></button>
-    <button class="btn btn-ghost qf-btn" id="fetchStyleBtn" type="button" data-icon="palette" title="抓取画风类 LoRA"></button>
-    <button class="btn btn-primary qf-btn" id="fetchRandomBtn" type="button" data-icon="dice" data-label="随机探索" title="随机排序×周期×类别，只看没看过的"></button>
-    <button class="btn btn-ghost qf-btn" id="exploreHistBtn" type="button" title="回看最近的探索记录"></button>
+  <div class="quick-fetch-group" role="group" aria-label="快速抓取" data-i18n-aria-label="shell.quickFetch">
+    <span class="qf-label" data-i18n="shell.quickFetch">快速抓取</span>
+    <button class="btn btn-ghost qf-btn" id="fetchCharBtn" type="button" data-icon="user" title="抓取人物角色类 LoRA" data-i18n-title="shell.fetchCharacters"></button>
+    <button class="btn btn-ghost qf-btn" id="fetchLightBtn" type="button" data-icon="zap" title="抓取光影类 LoRA" data-i18n-title="shell.fetchLighting"></button>
+    <button class="btn btn-ghost qf-btn" id="fetchStyleBtn" type="button" data-icon="palette" title="抓取画风类 LoRA" data-i18n-title="shell.fetchStyles"></button>
+    <button class="btn btn-primary qf-btn" id="fetchRandomBtn" type="button" data-icon="dice" data-label="随机探索" title="随机排序×周期×类别，只看没看过的" data-i18n-data-label="shell.randomExplore" data-i18n-title="shell.randomExploreTitle"></button>
+    <button class="btn btn-ghost qf-btn" id="exploreHistBtn" type="button" title="回看最近的探索记录" data-i18n-title="shell.exploreHistory"></button>
   </div>
 
 
   <div class="stats-bar" role="status" aria-live="polite">
-    <span class="stat">📦 <strong id="totalCount">0</strong> 个LoRA</span>
+    <span class="stat">📦 <strong id="totalCount">0</strong> <span data-i18n="shell.loraCountUnit">个LoRA</span></span>
     <span class="stat">⬇ <strong id="totalDl">0</strong></span>
     <span class="stat">👍 <strong id="totalLike">0</strong></span>
-    <span class="stat">📊 均比 <strong id="avgRatio" class="ratio">-</strong></span>
-    <span class="stat">📄 <strong id="pageInfo">0/0</strong> 页</span>
+    <span class="stat"><span data-i18n="shell.averageRatio">📊 均比</span> <strong id="avgRatio" class="ratio">-</strong></span>
+    <span class="stat">📄 <strong id="pageInfo">0/0</strong> <span data-i18n="shell.pageUnit">页</span></span>
     <div class="loading-bar" aria-hidden="true"><div class="fill" id="loadingFill"></div></div>
   </div>
 
   <div class="tabs-wrap">
     <div class="tabs" id="tabsContainer" role="tablist">
-      <button class="tab active" data-cat="all" role="tab" data-icon="home"><span>全部</span> <span class="count" id="cAll">0</span></button>
-      <button class="tab" data-cat="artist" role="tab" data-icon="brush"><span>画师风格</span> <span class="count" id="cArtist">0</span></button>
-      <button class="tab" data-cat="character" role="tab" data-icon="user"><span>人物角色</span> <span class="count" id="cCharacter">0</span></button>
-      <button class="tab" data-cat="aesthetic" role="tab" data-icon="sparkles"><span>美学优化</span> <span class="count" id="cAesthetic">0</span></button>
-      <button class="tab" data-cat="background" role="tab" data-icon="sun"><span>背景环境</span> <span class="count" id="cBg">0</span></button>
-      <button class="tab" data-cat="other" role="tab" data-icon="package"><span>其他</span> <span class="count" id="cOther">0</span></button>
-      <button class="tab tab-fav" data-cat="fav" role="tab" data-icon="star"><span>收藏</span> <span class="count" id="cFav">0</span></button>
+      <button class="tab active" data-cat="all" role="tab" data-icon="home"><span data-i18n="shell.all">全部</span> <span class="count" id="cAll">0</span></button>
+      <button class="tab" data-cat="artist" role="tab" data-icon="brush"><span data-i18n="shell.artistStyle">画师风格</span> <span class="count" id="cArtist">0</span></button>
+      <button class="tab" data-cat="character" role="tab" data-icon="user"><span data-i18n="shell.characters">人物角色</span> <span class="count" id="cCharacter">0</span></button>
+      <button class="tab" data-cat="aesthetic" role="tab" data-icon="sparkles"><span data-i18n="shell.aesthetics">美学优化</span> <span class="count" id="cAesthetic">0</span></button>
+      <button class="tab" data-cat="background" role="tab" data-icon="sun"><span data-i18n="shell.backgrounds">背景环境</span> <span class="count" id="cBg">0</span></button>
+      <button class="tab" data-cat="other" role="tab" data-icon="package"><span data-i18n="shell.other">其他</span> <span class="count" id="cOther">0</span></button>
+      <button class="tab tab-fav" data-cat="fav" role="tab" data-icon="star"><span data-i18n="shell.favorites">收藏</span> <span class="count" id="cFav">0</span></button>
     </div>
     <div class="tabs col-tabs" id="colTabs" role="tablist"></div>
   </div>
 
   <div class="container">
     <div class="artist-preview-banner" id="artistPreviewBanner"></div>
-    <div class="grid" id="grid" role="list"><div class="empty-state"><div class="big">⏳</div><p>正在加载…</p></div></div>
+    <div class="grid" id="grid" role="list"><div class="empty-state"><div class="big">⏳</div><p data-i18n="shell.loading">正在加载…</p></div></div>
     <div class="load-more-wrap load-more-hidden" id="loadMoreWrap">
-      <button class="btn btn-primary" id="loadMoreBtn" type="button">加载更多</button>
-      <button class="btn btn-ghost" onclick="window.scrollTo({top:0,behavior:'smooth'})" type="button">回到顶部</button>
+      <button class="btn btn-primary" id="loadMoreBtn" type="button"><span data-i18n="shell.loadMore">加载更多</span></button>
+      <button class="btn btn-ghost" onclick="window.scrollTo({top:0,behavior:'smooth'})" type="button"><span data-i18n="shell.backToTop">回到顶部</span></button>
       <div id="scrollSentinel" style="height:1px"></div>
-      <span class="load-more-tip" id="loadMoreTip" style="display:none">✅ 已加载全部</span>
+      <span class="load-more-tip" id="loadMoreTip" style="display:none" data-i18n="shell.allLoaded">✅ 已加载全部</span>
       <div class="pager-wrap" id="pagerWrap">
-        <button class="btn btn-ghost btn-sm pager-btn" id="pagePrevBtn" type="button">上一页</button>
-        <span class="pager-info">第
-          <input type="number" id="pageJumpInput" min="1" max="20" value="1" class="pager-input" aria-label="页码跳转">
-          / <span id="pageTotalText">1</span> 页
+        <button class="btn btn-ghost btn-sm pager-btn" id="pagePrevBtn" type="button"><span data-i18n="shell.previousPage">上一页</span></button>
+        <span class="pager-info"><span data-i18n="shell.pagePrefix">第</span>
+          <input type="number" id="pageJumpInput" min="1" max="20" value="1" class="pager-input" aria-label="页码跳转" data-i18n-aria-label="shell.jumpPage">
+          / <span id="pageTotalText">1</span> <span data-i18n="shell.pageSuffix">页</span>
         </span>
-        <button class="btn btn-ghost btn-sm pager-btn" id="pageNextBtn" type="button">下一页</button>
+        <button class="btn btn-ghost btn-sm pager-btn" id="pageNextBtn" type="button"><span data-i18n="shell.nextPage">下一页</span></button>
       </div>
     </div>
   </div>
@@ -220,28 +222,28 @@ try {
   <div class="artist-layout">
     <aside class="artist-sidebar" id="artistSidebar">
       <div class="artist-sidebar-header">
-        <h3>📂 分类</h3>
+        <h3 data-i18n="shell.categoriesHeading">📂 分类</h3>
       </div>
       <div class="artist-sidebar-list" id="artistCatList">
-        <div class="artist-cat-item on" data-cat="all">📋 全部 <span class="artist-cat-count">0</span></div>
+        <div class="artist-cat-item on" data-cat="all"><span data-i18n="shell.allOption">📋 全部</span> <span class="artist-cat-count">0</span></div>
       </div>
     </aside>
     <div class="artist-main">
       <div class="artist-hero">
-        <h2>🖌️ 画师串 · 艺术风格参考</h2>
-        <p>Anima 模型常用画师 Prompt 标签，点击卡片选择组合</p>
+        <h2 data-i18n="shell.artistHeading">🖌️ 画师串 · 艺术风格参考</h2>
+        <p data-i18n="shell.artistDescription">Anima 模型常用画师 Prompt 标签，点击卡片选择组合</p>
         <div class="artist-toolbar">
           <div class="search-wrap search-wrap-fill">
             <span class="icon" data-icon="search" aria-hidden="true"></span>
-            <input type="text" id="artistSearch" placeholder="搜索画师名、Tag、描述…" autocomplete="off">
+            <input type="text" id="artistSearch" placeholder="搜索画师名、Tag、描述…" autocomplete="off" data-i18n-placeholder="shell.artistSearchPlaceholder">
           </div>
-          <button class="btn btn-ghost btn-border-accent" id="addArtistBtn" data-icon="plus"><span>添加</span></button>
-          <button class="btn btn-ghost btn-border-green" id="extractArtistBtn" data-icon="list"><span>提取</span></button>
-          <button class="btn btn-ghost btn-sm" id="artistSortBtn" data-icon="sortDesc"><span>默认</span></button>
-          <button class="btn btn-ghost btn-border-green" id="artistBatchToggleBtn" data-icon="checkSquare"><span>批量</span></button>
-          <button class="btn btn-ghost btn-border-accent2" id="artistImportBtn" data-icon="upload"><span>导入</span></button>
-          <button class="btn btn-ghost btn-border-accent2" id="artistExportBtn" data-icon="download"><span>导出</span></button>
-          <button class="btn btn-ghost btn-border-orange" id="artistDanbooruBtn" data-icon="refreshCw"><span>Danbooru 更新</span></button>
+          <button class="btn btn-ghost btn-border-accent" id="addArtistBtn" data-icon="plus"><span data-i18n="shell.add">添加</span></button>
+          <button class="btn btn-ghost btn-border-green" id="extractArtistBtn" data-icon="list"><span data-i18n="shell.extract">提取</span></button>
+          <button class="btn btn-ghost btn-sm" id="artistSortBtn" data-icon="sortDesc"><span data-i18n="shell.default">默认</span></button>
+          <button class="btn btn-ghost btn-border-green" id="artistBatchToggleBtn" data-icon="checkSquare"><span data-i18n="shell.batch">批量</span></button>
+          <button class="btn btn-ghost btn-border-accent2" id="artistImportBtn" data-icon="upload"><span data-i18n="shell.import">导入</span></button>
+          <button class="btn btn-ghost btn-border-accent2" id="artistExportBtn" data-icon="download"><span data-i18n="shell.export">导出</span></button>
+          <button class="btn btn-ghost btn-border-orange" id="artistDanbooruBtn" data-icon="refreshCw"><span data-i18n="shell.updateDanbooru">Danbooru 更新</span></button>
         </div>
       </div>
       <div class="artist-grid" id="artistGrid"></div>
@@ -250,28 +252,28 @@ try {
     </div>
     <aside class="artist-panel" id="artistPanel">
       <div class="artist-panel-header">
-        <h3>🎯 当前组合</h3>
+        <h3 data-i18n="shell.currentMix">🎯 当前组合</h3>
         <span id="artistSelCount" class="artist-sel-count">0</span>
       </div>
       <div class="artist-panel-list" id="artistSelList">
-        <div class="empty-state" style="padding:20px 12px"><div class="big" data-icon="mousePointer"></div><p class="empty-state-sub">点击画师卡片添加到组合</p></div>
+        <div class="empty-state" style="padding:20px 12px"><div class="big" data-icon="mousePointer"></div><p class="empty-state-sub" data-i18n="shell.artistMixEmpty">点击画师卡片添加到组合</p></div>
       </div>
       <div class="artist-panel-bottom">
         <div class="artist-prompt-box">
-          <button class="btn btn-ghost preset-format-btn" id="artistFormatBtn" data-icon="refreshCw"><span>NAI格式</span></button>
-          <textarea id="artistPromptPreview" class="artist-prompt-textarea" placeholder="选择画师后自动生成…" readonly></textarea>
-          <button class="btn btn-primary btn-md" id="artistCopyBtn" data-icon="copy"><span>复制</span></button>
+          <button class="btn btn-ghost preset-format-btn" id="artistFormatBtn" data-icon="refreshCw"><span data-i18n="shell.naiFormat">NAI格式</span></button>
+          <textarea id="artistPromptPreview" class="artist-prompt-textarea" placeholder="选择画师后自动生成…" readonly data-i18n-placeholder="shell.artistPromptPlaceholder"></textarea>
+          <button class="btn btn-primary btn-md" id="artistCopyBtn" data-icon="copy"><span data-i18n="shell.copy">复制</span></button>
         </div>
         <div class="preset-import-section">
-          <textarea id="artistPromptImportText" class="artist-prompt-textarea artist-import-textarea" placeholder="粘贴画师串 (WebUI/NAI格式) 一键导入…"></textarea>
-          <button class="btn btn-ghost artist-import-btn" id="artistPromptImportBtn" data-icon="upload"><span>解析导入画师串</span></button>
+          <textarea id="artistPromptImportText" class="artist-prompt-textarea artist-import-textarea" placeholder="粘贴画师串 (WebUI/NAI格式) 一键导入…" data-i18n-placeholder="shell.artistImportPlaceholder"></textarea>
+          <button class="btn btn-ghost artist-import-btn" id="artistPromptImportBtn" data-icon="upload"><span data-i18n="shell.importArtistMix">解析导入画师串</span></button>
         </div>
         <div class="artist-panel-actions">
-          <button class="btn btn-ghost btn-sm btn-border-green" id="artistSavePresetBtn" data-icon="book"><span>保存预设</span></button>
-          <button class="btn btn-ghost btn-sm" id="artistClearBtn" style="color:var(--text3)" data-icon="x"><span>清空</span></button>
+          <button class="btn btn-ghost btn-sm btn-border-green" id="artistSavePresetBtn" data-icon="book"><span data-i18n="shell.savePreset">保存预设</span></button>
+          <button class="btn btn-ghost btn-sm" id="artistClearBtn" style="color:var(--text3)" data-icon="x"><span data-i18n="shell.clear">清空</span></button>
         </div>
         <div class="artist-presets" id="artistPresets">
-          <div class="artist-presets-header">▼ 我的预设</div>
+          <div class="artist-presets-header" data-i18n="shell.myPresets">▼ 我的预设</div>
           <div id="artistPresetList" class="artist-preset-list"></div>
         </div>
       </div>
@@ -283,7 +285,7 @@ try {
   <div class="prompt-layout">
     <aside class="prompt-sidebar">
       <div class="prompt-sidebar-header">
-        <h3>📂 分类</h3>
+        <h3 data-i18n="shell.categoriesHeading">📂 分类</h3>
       </div>
       <div id="promptCategoryList"></div>
     </aside>
@@ -291,12 +293,12 @@ try {
       <div class="prompt-toolbar">
         <div class="search-wrap search-wrap-md">
           <span class="icon" data-icon="search" aria-hidden="true"></span>
-          <input type="text" id="promptSearch" placeholder="搜索 Prompt、标签、模型…" autocomplete="off">
+          <input type="text" id="promptSearch" placeholder="搜索 Prompt、标签、模型…" autocomplete="off" data-i18n-placeholder="shell.promptSearchPlaceholder">
         </div>
-        <button class="btn btn-ghost" id="promptBatchBtn" data-icon="checkSquare" title="批量操作：选择卡片后批量分类 / 命名 / 删除，或整库去重"><span>批量</span></button>
-        <button class="btn btn-primary" id="promptAddBtn" data-icon="plus"><span>新增 Prompt</span></button>
+        <button class="btn btn-ghost" id="promptBatchBtn" data-icon="checkSquare" title="批量操作：选择卡片后批量分类 / 命名 / 删除，或整库去重" data-i18n-title="shell.promptBatchTitle"><span data-i18n="shell.batch">批量</span></button>
+        <button class="btn btn-primary" id="promptAddBtn" data-icon="plus"><span data-i18n="shell.addPrompt">新增 Prompt</span></button>
       </div>
-      <div class="prompt-grid" id="promptGrid"><div class="empty-state empty-state-grid"><div class="big" data-icon="book"></div><p>Prompt 库为空</p><p class="sub">浏览 LoRA 列表，从卡片中提取触发词，或点击「新增 Prompt」手动添加</p></div></div>
+      <div class="prompt-grid" id="promptGrid"><div class="empty-state empty-state-grid"><div class="big" data-icon="book"></div><p data-i18n="shell.promptEmpty">Prompt 库为空</p><p class="sub" data-i18n="shell.promptEmptyHint">浏览 LoRA 列表，从卡片中提取触发词，或点击「新增 Prompt」手动添加</p></div></div>
     </main>
   </div>
 </div>
@@ -306,25 +308,25 @@ try {
     <div class="clothing-toolbar">
       <div class="search-wrap">
         <span class="icon" data-icon="search" aria-hidden="true"></span>
-        <input type="text" id="clothingSearch" placeholder="搜索服装、标签…" autocomplete="off" aria-label="搜索服装">
+        <input type="text" id="clothingSearch" placeholder="搜索服装、标签…" autocomplete="off" aria-label="搜索服装" data-i18n-placeholder="shell.clothingSearchPlaceholder" data-i18n-aria-label="shell.searchClothing">
       </div>
       <div class="spacer"></div>
-      <button class="btn btn-primary" id="clothingGachaBtn" data-icon="dice" title="从卡片库随机抽取组合"><span>抽卡</span></button>
-      <button class="btn btn-ghost" id="clothingAddBtn" data-icon="plus"><span>添加卡片</span></button>
-      <button class="btn btn-ghost" id="clothingImportBtn" data-icon="download" title="导入 clothing-import.json"><span>导入</span></button>
-      <button class="btn btn-ghost" id="clothingExportBtn" data-icon="upload" title="导出全部卡片（含图）为备份文件"><span>导出</span></button>
-      <button class="btn btn-ghost" id="clothingNewCatBtn" data-icon="tag"><span>新建分类</span></button>
-      <button class="btn btn-danger" id="clothingClearBtn" data-icon="trash" title="清空全部服装卡片，保留分类"><span>清空卡片</span></button>
+      <button class="btn btn-primary" id="clothingGachaBtn" data-icon="dice" title="从卡片库随机抽取组合" data-i18n-title="shell.randomOutfitTitle"><span data-i18n="shell.randomOutfit">抽卡</span></button>
+      <button class="btn btn-ghost" id="clothingAddBtn" data-icon="plus"><span data-i18n="shell.addCard">添加卡片</span></button>
+      <button class="btn btn-ghost" id="clothingImportBtn" data-icon="download" title="导入 clothing-import.json" data-i18n-title="shell.importClothingTitle"><span data-i18n="shell.import">导入</span></button>
+      <button class="btn btn-ghost" id="clothingExportBtn" data-icon="upload" title="导出全部卡片（含图）为备份文件" data-i18n-title="shell.exportClothingTitle"><span data-i18n="shell.export">导出</span></button>
+      <button class="btn btn-ghost" id="clothingNewCatBtn" data-icon="tag"><span data-i18n="shell.newCategory">新建分类</span></button>
+      <button class="btn btn-danger" id="clothingClearBtn" data-icon="trash" title="清空全部服装卡片，保留分类" data-i18n-title="shell.clearClothingTitle"><span data-i18n="shell.clearCards">清空卡片</span></button>
     </div>
     <div class="clothing-batch-bar" id="clothingBatchBar">
-      <span>已选 <b id="clothingSelCount">0</b> 张</span>
+      <span><span data-i18n="shell.selectedPrefix">已选</span> <b id="clothingSelCount">0</b> <span data-i18n="shell.cardUnit">张</span></span>
       <span style="flex:1"></span>
-      <button class="btn btn-ghost btn-sm" id="clothingMoveBtn" data-icon="folder" title="把选中的卡片移动到分类"><span>移动分类</span></button>
-      <button class="btn btn-danger btn-sm" id="clothingDelSelBtn" data-icon="trash"><span>删除选中</span></button>
-      <button class="btn btn-ghost btn-sm" id="clothingSelCancelBtn"><span>取消选择</span></button>
+      <button class="btn btn-ghost btn-sm" id="clothingMoveBtn" data-icon="folder" title="把选中的卡片移动到分类" data-i18n-title="shell.moveClothingTitle"><span data-i18n="shell.moveCategory">移动分类</span></button>
+      <button class="btn btn-danger btn-sm" id="clothingDelSelBtn" data-icon="trash"><span data-i18n="shell.deleteSelected">删除选中</span></button>
+      <button class="btn btn-ghost btn-sm" id="clothingSelCancelBtn"><span data-i18n="shell.cancelSelection">取消选择</span></button>
     </div>
     <div class="clothing-cats" id="clothingCats"></div>
-    <div class="clothing-grid" id="clothingGrid"><div class="empty-state empty-state-grid"><div class="big" data-icon="shirt"></div><p>服装库为空</p><p class="sub">点「导入」把 Prompt-Manager 的 92 条服装串搬进来，或点「添加卡片」手建</p></div></div>
+    <div class="clothing-grid" id="clothingGrid"><div class="empty-state empty-state-grid"><div class="big" data-icon="shirt"></div><p data-i18n="shell.clothingEmpty">服装库为空</p><p class="sub" data-i18n="shell.clothingEmptyHint">点「导入」把 Prompt-Manager 的 92 条服装串搬进来，或点「添加卡片」手建</p></div></div>
     <div class="clothing-pagination" id="clothingPagination"></div>
     <input type="file" id="clothingImportFile" accept=".json" style="display:none">
   </div>
@@ -333,23 +335,23 @@ try {
 <div id="sectionPromptFreq" class="section-hidden">
   <div class="container">
     <div class="prompt-freq-toolbar">
-      <h2>🖼️ 图片解析</h2>
+      <h2 data-i18n="shell.imageAnalysisHeading">🖼️ 图片解析</h2>
 
     </div>
     <div class="prompt-freq-content" id="promptFreqContent">
-      <div class="prompt-freq-empty"><div class="big" data-icon="file-text"></div><p>暂无数据</p><p class="sub">请先在 Outputs 中扫描图片目录</p></div>
+      <div class="prompt-freq-empty"><div class="big" data-icon="file-text"></div><p data-i18n="shell.noData">暂无数据</p><p class="sub" data-i18n="shell.scanOutputsFirst">请先在 Outputs 中扫描图片目录</p></div>
     </div>
   </div>
 </div>
 
 <div class="modal-overlay" id="addModal">
   <div class="modal-box">
-    <h3>➕ 手动添加 LoRA</h3>
-    <p class="sub">粘贴 Civitai LoRA 页面链接，将未自动收录的模型添加到列表中</p>
+    <h3 data-i18n="shell.addLoraHeading">➕ 手动添加 LoRA</h3>
+    <p class="sub" data-i18n="shell.addLoraDescription">粘贴 Civitai LoRA 页面链接，将未自动收录的模型添加到列表中</p>
     <input type="text" id="addUrlInput" placeholder="https://civitai.com/models/12345/name" autocomplete="off">
     <div class="modal-actions">
-      <button class="btn btn-primary" id="addConfirmBtn" data-icon="check"><span>确认添加</span></button>
-      <button class="btn btn-ghost" id="addCancelBtn" data-icon="x"><span>取消</span></button>
+      <button class="btn btn-primary" id="addConfirmBtn" data-icon="check"><span data-i18n="shell.confirmAdd">确认添加</span></button>
+      <button class="btn btn-ghost" id="addCancelBtn" data-icon="x"><span data-i18n="shell.cancel">取消</span></button>
     </div>
     <div class="modal-status" id="addStatus"></div>
   </div>
@@ -357,17 +359,17 @@ try {
 
 <div class="modal-overlay" id="colManageModal">
   <div class="modal-box modal-md">
-    <h3>📂 管理收藏夹</h3>
-    <p class="sub">创建、重命名或删除收藏夹</p>
+    <h3 data-i18n="shell.manageCollectionsHeading">📂 管理收藏夹</h3>
+    <p class="sub" data-i18n="shell.manageCollectionsDescription">创建、重命名或删除收藏夹</p>
     <div class="modal-scroll" id="colList"></div>
     <div class="modal-form-row">
-      <input type="text" id="newColName" placeholder="新收藏夹名称" style="flex:1">
-      <button class="btn btn-primary" id="createColBtn" data-icon="plus"><span>新建</span></button>
+      <input type="text" id="newColName" placeholder="新收藏夹名称" style="flex:1" data-i18n-placeholder="shell.newCollectionPlaceholder">
+      <button class="btn btn-primary" id="createColBtn" data-icon="plus"><span data-i18n="shell.create">新建</span></button>
     </div>
     <div class="modal-actions modal-mt">
-      <button class="btn btn-ghost" id="closeColManageBtn">关闭</button>
-      <button class="btn btn-ghost btn-border-accent" id="exportFavBtn" data-icon="download"><span>导出</span></button>
-      <button class="btn btn-ghost btn-border-accent" id="importFavBtn" data-icon="upload"><span>导入</span></button>
+      <button class="btn btn-ghost" id="closeColManageBtn"><span data-i18n="shell.close">关闭</span></button>
+      <button class="btn btn-ghost btn-border-accent" id="exportFavBtn" data-icon="download"><span data-i18n="shell.export">导出</span></button>
+      <button class="btn btn-ghost btn-border-accent" id="importFavBtn" data-icon="upload"><span data-i18n="shell.import">导入</span></button>
     </div>
     <input type="file" id="importFavFile" accept=".json" style="display:none">
     <div class="modal-status" id="colManageStatus"></div>
@@ -377,20 +379,20 @@ try {
 <div id="sectionLocal" class="section-hidden">
   <div class="local-container">
     <div class="local-toolbar">
-      <button class="btn btn-primary" id="localScanBtn" data-icon="folder" title="递归扫描选定目录中的 LoRA 文件"><span>扫描文件夹（含子目录）</span></button>
-      <button class="btn btn-ghost btn-border-green" id="localFolderCategoryBtn" data-icon="layers" title="根据扫描到的一级子目录自动创建分类并归类对应 LoRA"><span>子目录建分类</span></button>
-      <button class="btn btn-ghost btn-border-green" id="localMatchAllBtn" data-icon="refresh"><span>全部匹配</span></button>
-      <button class="btn btn-ghost btn-border-red" id="localClearBtn" data-icon="trash"><span>清空</span></button>
-      <button class="btn btn-ghost btn-border-green" id="localBatchToggleBtn" data-icon="checkSquare"><span>批量分类</span></button>
+      <button class="btn btn-primary" id="localScanBtn" data-icon="folder" title="递归扫描选定目录中的 LoRA 文件" data-i18n-title="shell.scanRecursiveTitle"><span data-i18n="shell.scanRecursive">扫描文件夹（含子目录）</span></button>
+      <button class="btn btn-ghost btn-border-green" id="localFolderCategoryBtn" data-icon="layers" title="根据扫描到的一级子目录自动创建分类并归类对应 LoRA" data-i18n-title="shell.folderCategoriesTitle"><span data-i18n="shell.folderCategories">子目录建分类</span></button>
+      <button class="btn btn-ghost btn-border-green" id="localMatchAllBtn" data-icon="refresh"><span data-i18n="shell.matchAll">全部匹配</span></button>
+      <button class="btn btn-ghost btn-border-red" id="localClearBtn" data-icon="trash"><span data-i18n="shell.clear">清空</span></button>
+      <button class="btn btn-ghost btn-border-green" id="localBatchToggleBtn" data-icon="checkSquare"><span data-i18n="shell.batchCategorize">批量分类</span></button>
       <span id="localScanStats" class="local-stats-bar"></span>
       <span id="localNewFileBadge" class="local-newfile-badge hidden"></span>
-      <div class="toolbox-local-category-slot" id="toolboxLocalCategorySlot" role="region" aria-label="本地分类"></div>
+      <div class="toolbox-local-category-slot" id="toolboxLocalCategorySlot" role="region" aria-label="本地分类" data-i18n-aria-label="shell.localCategories"></div>
     </div>
 
     <div class="local-progress local-progress-hidden" id="localProgress">
       <div class="local-progress-bar-wrap"><div class="local-progress-bar" id="localProgressBar"></div></div>
-      <span class="local-progress-text" id="localProgressText">准备中…</span>
-      <button class="btn btn-ghost local-progress-cancel" id="localProgressCancel" type="button">取消</button>
+      <span class="local-progress-text" id="localProgressText" data-i18n="shell.preparing">准备中…</span>
+      <button class="btn btn-ghost local-progress-cancel" id="localProgressCancel" type="button"><span data-i18n="shell.cancel">取消</span></button>
     </div>
 
     <div class="local-split">
@@ -398,42 +400,42 @@ try {
         <div class="local-sidebar-tools">
         <div class="local-sidebar-search">
           <span class="icon" data-icon="search" aria-hidden="true"></span>
-          <input type="text" id="localSearch" placeholder="搜索文件名、模型名…" autocomplete="off">
+          <input type="text" id="localSearch" placeholder="搜索文件名、模型名…" autocomplete="off" data-i18n-placeholder="shell.localSearchPlaceholder">
         </div>
         <div class="local-sidebar-filters">
           <select id="localSort">
-            <option value="name">名称 A-Z</option>
-            <option value="size">大小</option>
-            <option value="date" selected>扫描顺序（最新在前）</option>
-            <option value="match">匹配状态</option>
+            <option value="name" data-i18n="shell.sortNameAZ">名称 A-Z</option>
+            <option value="size" data-i18n="shell.size">大小</option>
+            <option value="date" selected data-i18n="shell.sortScanOrder">扫描顺序（最新在前）</option>
+            <option value="match" data-i18n="shell.matchStatus">匹配状态</option>
           </select>
           <select id="localFilter">
-            <option value="all">全部</option>
-            <option value="matched">已匹配</option>
-            <option value="unmatched">未匹配</option>
+            <option value="all" data-i18n="shell.all">全部</option>
+            <option value="matched" data-i18n="shell.matched">已匹配</option>
+            <option value="unmatched" data-i18n="shell.unmatched">未匹配</option>
           </select>
-          <div class="local-display-toggle" role="group" aria-label="文件视图">
-            <button class="local-display-btn" id="localListViewBtn" type="button" data-display-mode="list" aria-label="列表视图" title="列表视图" aria-pressed="true" data-icon="list"></button>
-            <button class="local-display-btn" id="localGridViewBtn" type="button" data-display-mode="grid" aria-label="网格视图" title="网格视图" aria-pressed="false" data-icon="grid"></button>
+          <div class="local-display-toggle" role="group" aria-label="文件视图" data-i18n-aria-label="shell.fileView">
+            <button class="local-display-btn" id="localListViewBtn" type="button" data-display-mode="list" aria-label="列表视图" title="列表视图" aria-pressed="true" data-icon="list" data-i18n-aria-label="shell.listView" data-i18n-title="shell.listView"></button>
+            <button class="local-display-btn" id="localGridViewBtn" type="button" data-display-mode="grid" aria-label="网格视图" title="网格视图" aria-pressed="false" data-icon="grid" data-i18n-aria-label="shell.gridView" data-i18n-title="shell.gridView"></button>
           </div>
         </div>
         <div id="localBaseModelPanel" class="local-basemodel-panel"></div>
         <div class="local-grid-stats" id="localGridStats"></div>
-        <div class="local-grid-sidebar-actions" aria-label="本地 LoRA 操作">
-          <button class="btn btn-ghost btn-sm" data-local-action="localScanBtn" data-icon="folder"><span>扫描文件夹</span></button>
-          <button class="btn btn-ghost btn-sm" data-local-action="localFolderCategoryBtn" data-icon="layers"><span>子目录建分类</span></button>
-          <button class="btn btn-ghost btn-sm" data-local-action="localMatchAllBtn" data-icon="refresh"><span>全部匹配</span></button>
-          <button class="btn btn-ghost btn-sm btn-border-red" data-local-action="localClearBtn" data-icon="trash"><span>清空</span></button>
-          <button class="btn btn-ghost btn-sm btn-border-green" data-local-action="localBatchToggleBtn" data-icon="checkSquare"><span>批量分类</span></button>
+        <div class="local-grid-sidebar-actions" aria-label="本地 LoRA 操作" data-i18n-aria-label="shell.localActions">
+          <button class="btn btn-ghost btn-sm" data-local-action="localScanBtn" data-icon="folder"><span data-i18n="shell.scanFolder">扫描文件夹</span></button>
+          <button class="btn btn-ghost btn-sm" data-local-action="localFolderCategoryBtn" data-icon="layers"><span data-i18n="shell.folderCategories">子目录建分类</span></button>
+          <button class="btn btn-ghost btn-sm" data-local-action="localMatchAllBtn" data-icon="refresh"><span data-i18n="shell.matchAll">全部匹配</span></button>
+          <button class="btn btn-ghost btn-sm btn-border-red" data-local-action="localClearBtn" data-icon="trash"><span data-i18n="shell.clear">清空</span></button>
+          <button class="btn btn-ghost btn-sm btn-border-green" data-local-action="localBatchToggleBtn" data-icon="checkSquare"><span data-i18n="shell.batchCategorize">批量分类</span></button>
         </div>
         <div id="localGridCategoryList" class="local-grid-category-list"></div>
         </div>
         <div class="local-file-list" id="localFileList">
-          <div class="empty-state"><div class="big" data-icon="folder"></div><p>点击「扫描文件夹」<br>选择 LoRA 目录</p></div>
+          <div class="empty-state"><div class="big" data-icon="folder"></div><p><span data-i18n="shell.scanFolderEmptyAction">点击「扫描文件夹」</span><br><span data-i18n="shell.selectLoraDirectory">选择 LoRA 目录</span></p></div>
         </div>
         <div class="local-batch-bar batch-bar-hidden" id="localBatchBar">
-          <span id="localBatchCount" class="local-batch-count">已选 0 项</span>
-          <button class="btn btn-ghost btn-sm" id="localBatchAssignBtn" style="flex:1" data-icon="tag"><span>分类</span></button>
+          <span id="localBatchCount" class="local-batch-count" data-i18n="shell.selectedItemsZero">已选 0 项</span>
+          <button class="btn btn-ghost btn-sm" id="localBatchAssignBtn" style="flex:1" data-icon="tag"><span data-i18n="shell.category">分类</span></button>
           <div class="local-batch-dd-wrap" id="localBatchDDWrap"><div class="local-tree-dropdown hidden" id="localBatchDropdown"></div></div>
           <button class="btn btn-ghost btn-xs" id="localBatchClearBtn" style="color:var(--text3)" data-icon="x"></button>
         </div>
@@ -441,9 +443,9 @@ try {
 
       <main class="local-main">
         <div class="local-view-tabs">
-          <button class="local-view-tab active" data-view="home" data-icon="monitor"><span>首页</span></button>
-          <button class="local-view-tab" data-view="gallery" data-icon="image"><span>PNG 解析</span></button>
-          <button class="local-view-tab" data-view="models" data-icon="package"><span>模型</span></button>
+          <button class="local-view-tab active" data-view="home" data-icon="monitor"><span data-i18n="shell.home">首页</span></button>
+          <button class="local-view-tab" data-view="gallery" data-icon="image"><span data-i18n="shell.pngAnalysis">PNG 解析</span></button>
+          <button class="local-view-tab" data-view="models" data-icon="package"><span data-i18n="shell.model">模型</span></button>
         </div>
         <div class="local-view-pages">
           <div class="local-page active" id="pageLocalHome">
@@ -451,19 +453,19 @@ try {
 
           <div class="local-page" id="pageLocalGallery">
             <div id="localPngDropZone" class="local-png-dropzone">
-              <p>点击选择或拖入 PNG 图片（解析提示词 / LoRA / 参数）</p>
+              <p data-i18n="shell.pngDropHint">点击选择或拖入 PNG 图片（解析提示词 / LoRA / 参数）</p>
             </div>
             <div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0 4px">
-              <h4 style="margin:0">PNG 提示词画廊</h4>
-              <button class="btn btn-ghost btn-sm" id="localPngClearBtn" data-icon="trash"><span>清空</span></button>
+              <h4 style="margin:0" data-i18n="shell.pngPromptGallery">PNG 提示词画廊</h4>
+              <button class="btn btn-ghost btn-sm" id="localPngClearBtn" data-icon="trash"><span data-i18n="shell.clear">清空</span></button>
             </div>
             <div id="localPngList"></div>
-            <h4 style="margin:14px 0 4px">标签频率统计</h4>
+            <h4 style="margin:14px 0 4px" data-i18n="shell.tagFrequency">标签频率统计</h4>
             <div id="localTagList" class="local-tag-cloud"></div>
           </div>
 
           <div class="local-page" id="pageLocalDetail">
-            <div class="empty-state" id="detailEmpty"><div class="big" data-icon="chevronLeft"></div><p>从左侧列表选择一个模型</p></div>
+            <div class="empty-state" id="detailEmpty"><div class="big" data-icon="chevronLeft"></div><p data-i18n="shell.selectModelHint">从左侧列表选择一个模型</p></div>
             <div id="detailContent" style="display:none"></div>
           </div>
 
@@ -482,90 +484,90 @@ try {
 
     <main class="outputs-main">
       <div class="outputs-toolbar">
-        <div class="outputs-search-wrap"><input type="search" class="outputs-search" id="outputsSearch" aria-label="搜索图片" placeholder="角色、作品、标签、文件名… 多个条件同时匹配" autocomplete="off"></div>
-        <select class="outputs-toolbar-select outputs-group-select" aria-label="浏览分组"><option value="none">文件夹浏览</option><option value="flat">全部平铺</option><option value="work">作品 → 角色</option><option value="character">按角色浏览</option></select>
-        <button type="button" class="outputs-toolbar-btn outputs-select-btn" data-icon="plus" title="添加图片目录" aria-label="添加图片目录"><span>添加目录</span></button>
-        <button type="button" class="outputs-toolbar-btn outputs-refresh-btn" data-icon="refreshCw" title="核对磁盘并刷新目录" aria-label="刷新图片目录"></button>
-        <div class="outputs-toolbar-group outputs-view-switch" role="group" aria-label="图片视图">
-          <button type="button" class="outputs-toolbar-btn outputs-view-grid active" data-icon="grid" title="网格视图" aria-label="网格视图"></button>
-          <button type="button" class="outputs-toolbar-btn outputs-view-list" data-icon="list" title="列表视图" aria-label="列表视图"></button>
+        <div class="outputs-search-wrap"><input type="search" class="outputs-search" id="outputsSearch" aria-label="搜索图片" placeholder="角色、作品、标签、文件名… 多个条件同时匹配" autocomplete="off" data-i18n-aria-label="shell.searchImages" data-i18n-placeholder="shell.imageSearchPlaceholder"></div>
+        <select class="outputs-toolbar-select outputs-group-select" aria-label="浏览分组" data-i18n-aria-label="shell.browseGrouping"><option value="none" data-i18n="shell.browseFolders">文件夹浏览</option><option value="flat" data-i18n="shell.browseFlat">全部平铺</option><option value="work" data-i18n="shell.browseWorkCharacter">作品 → 角色</option><option value="character" data-i18n="shell.browseCharacter">按角色浏览</option></select>
+        <button type="button" class="outputs-toolbar-btn outputs-select-btn" data-icon="plus" title="添加图片目录" aria-label="添加图片目录" data-i18n-title="shell.addImageDirectory" data-i18n-aria-label="shell.addImageDirectory"><span data-i18n="shell.addDirectory">添加目录</span></button>
+        <button type="button" class="outputs-toolbar-btn outputs-refresh-btn" data-icon="refreshCw" title="核对磁盘并刷新目录" aria-label="刷新图片目录" data-i18n-title="shell.refreshDiskDirectories" data-i18n-aria-label="shell.refreshImageDirectories"></button>
+        <div class="outputs-toolbar-group outputs-view-switch" role="group" aria-label="图片视图" data-i18n-aria-label="shell.imageView">
+          <button type="button" class="outputs-toolbar-btn outputs-view-grid active" data-icon="grid" title="网格视图" aria-label="网格视图" data-i18n-title="shell.gridView" data-i18n-aria-label="shell.gridView"></button>
+          <button type="button" class="outputs-toolbar-btn outputs-view-list" data-icon="list" title="列表视图" aria-label="列表视图" data-i18n-title="shell.listView" data-i18n-aria-label="shell.listView"></button>
         </div>
         <details class="outputs-more">
-          <summary class="outputs-toolbar-btn" data-icon="slidersHorizontal"><span>浏览与筛选</span></summary>
+          <summary class="outputs-toolbar-btn" data-icon="slidersHorizontal"><span data-i18n="shell.browseAndFilter">浏览与筛选</span></summary>
           <div class="outputs-more-panel">
-            <label class="outputs-menu-field">组内排序<select class="outputs-toolbar-select outputs-sort-select" aria-label="图片排序"><option value="date">按日期</option><option value="name">按名称</option><option value="size">按大小</option></select></label>
-            <button type="button" class="outputs-toolbar-btn outputs-sort-order-btn" data-icon="arrowUpDown" title="切换排序方向" aria-label="切换排序方向"><span>切换排序方向</span></button>
-            <label class="outputs-menu-field">自定义分类<select class="outputs-toolbar-select outputs-filter-category" aria-label="进入分类"><option value="">全部图片</option><option value="__none__">未分类</option></select></label>
+            <label class="outputs-menu-field"><span data-i18n="shell.sortWithinGroup">组内排序</span><select class="outputs-toolbar-select outputs-sort-select" aria-label="图片排序" data-i18n-aria-label="shell.imageSort"><option value="date" data-i18n="shell.sortByDate">按日期</option><option value="name" data-i18n="shell.sortByName">按名称</option><option value="size" data-i18n="shell.sortBySize">按大小</option></select></label>
+            <button type="button" class="outputs-toolbar-btn outputs-sort-order-btn" data-icon="arrowUpDown" title="切换排序方向" aria-label="切换排序方向" data-i18n-title="shell.toggleSortOrder" data-i18n-aria-label="shell.toggleSortOrder"><span data-i18n="shell.toggleSortOrder">切换排序方向</span></button>
+            <label class="outputs-menu-field"><span data-i18n="shell.customCategory">自定义分类</span><select class="outputs-toolbar-select outputs-filter-category" aria-label="进入分类" data-i18n-aria-label="shell.enterCategory"><option value="" data-i18n="shell.allImages">全部图片</option><option value="__none__" data-i18n="shell.uncategorized">未分类</option></select></label>
             <hr>
-            <button type="button" class="outputs-toolbar-btn outputs-select-all-btn" id="outputsSelectAllBtn" data-icon="checkSquare"><span>全选当前视图</span></button>
-            <button type="button" class="outputs-toolbar-btn outputs-filter-btn" data-filter="all" data-icon="image"><span>显示全部图片</span></button>
-            <button type="button" class="outputs-toolbar-btn outputs-filter-btn" data-filter="favorites" data-icon="heart"><span>只看收藏</span></button>
-            <button type="button" class="outputs-toolbar-btn outputs-filter-btn" data-filter="rated" data-icon="star"><span>只看评分</span></button>
-            <button type="button" class="outputs-toolbar-btn outputs-filter-btn" data-filter="missingMetadata" data-icon="file-text"><span>没有已保存的提示词</span></button>
-            <button type="button" class="outputs-toolbar-btn outputs-filter-btn" data-filter="inferred" data-icon="tag"><span>WD14 补标签的图片</span></button>
-            <button type="button" class="outputs-toolbar-btn outputs-category-manage-btn" data-icon="folder"><span>管理分类</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-select-all-btn" id="outputsSelectAllBtn" data-icon="checkSquare"><span data-i18n="shell.selectCurrentView">全选当前视图</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-filter-btn" data-filter="all" data-icon="image"><span data-i18n="shell.showAllImages">显示全部图片</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-filter-btn" data-filter="favorites" data-icon="heart"><span data-i18n="shell.favoritesOnly">只看收藏</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-filter-btn" data-filter="rated" data-icon="star"><span data-i18n="shell.ratedOnly">只看评分</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-filter-btn" data-filter="missingMetadata" data-icon="file-text"><span data-i18n="shell.missingPrompts">没有已保存的提示词</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-filter-btn" data-filter="inferred" data-icon="tag"><span data-i18n="shell.wd14TaggedImages">WD14 补标签的图片</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-category-manage-btn" data-icon="folder"><span data-i18n="shell.manageCategories">管理分类</span></button>
             <hr>
-            <button type="button" class="outputs-toolbar-btn outputs-restore-output-btn" data-icon="folder"><span>恢复默认 output 目录</span></button>
-            <button type="button" class="outputs-toolbar-btn outputs-shortcuts-btn" data-icon="keyboard"><span>快捷键</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-restore-output-btn" data-icon="folder"><span data-i18n="shell.restoreOutputDirectory">恢复默认 output 目录</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-shortcuts-btn" data-icon="keyboard"><span data-i18n="shell.shortcuts">快捷键</span></button>
           </div>
         </details>
-        <button type="button" class="outputs-toolbar-btn outputs-organize-btn" data-icon="refreshCw" title="按已保存的提示词重新分类全部已启用目录，不重新扫描目录"><span>开始整理</span></button>
+        <button type="button" class="outputs-toolbar-btn outputs-organize-btn" data-icon="refreshCw" title="按已保存的提示词重新分类全部已启用目录，不重新扫描目录" data-i18n-title="shell.organizeTitle"><span data-i18n="shell.organize">开始整理</span></button>
         <details class="outputs-more outputs-recognition-menu">
-          <summary class="outputs-toolbar-btn" data-icon="tag"><span>识别设置</span></summary>
+          <summary class="outputs-toolbar-btn" data-icon="tag"><span data-i18n="shell.recognitionSettings">识别设置</span></summary>
           <div class="outputs-more-panel">
-            <small class="outputs-menu-label">整理与识别 · 全部已启用目录</small>
+            <small class="outputs-menu-label" data-i18n="shell.recognitionScope">整理与识别 · 全部已启用目录</small>
             <p class="outputs-menu-help" id="outputsOrganizationCounts" aria-live="polite"></p>
             <p class="outputs-menu-help" id="outputsRecognitionStatus" aria-live="polite"></p>
-            <p class="outputs-menu-help">待整理：尚未完成读取或分类。未识别：已整理，但没有确认角色。先整理提示词，再用 WD14 反推缺少角色的图片。</p>
-            <button type="button" class="outputs-toolbar-btn outputs-organize-btn" data-icon="refreshCw"><span>按提示词重新整理</span></button>
+            <p class="outputs-menu-help" data-i18n="shell.recognitionExplanation">待整理：尚未完成读取或分类。未识别：已整理，但没有确认角色。先整理提示词，再用 WD14 反推缺少角色的图片。</p>
+            <button type="button" class="outputs-toolbar-btn outputs-organize-btn" data-icon="refreshCw"><span data-i18n="shell.reorganizeByPrompts">按提示词重新整理</span></button>
             <hr>
-            <label class="outputs-menu-field"><input type="checkbox" id="outputsFallbackEnabled">启用空闲时 WD14 反推</label>
-            <label class="outputs-menu-field"><input type="checkbox" id="outputsFallbackUnrecognized">包括已有元数据但未识别角色的图片</label>
-            <label class="outputs-menu-field"><input type="checkbox" id="outputsFallbackLibrary">优先复用本机已验证的识别结果</label>
-            <label class="outputs-menu-field">WD14 模型<select id="outputsFallbackModel" aria-label="WD14 反推模型"><option value="">自动选择已安装模型</option></select></label>
-            <label class="outputs-menu-field">普通标签阈值<input type="number" id="outputsFallbackThreshold" min="0" max="1" step="0.05" value="0.35"></label>
-            <label class="outputs-menu-field">角色阈值<input type="number" id="outputsFallbackCharacterThreshold" min="0" max="1" step="0.05" value="0.85"></label>
-            <p class="outputs-menu-help" id="outputsFallbackHint">没有已保存提示词时用本地 WD14 补标签；只保存搜索摘要，原图保持。正在生图时暂停。</p>
-            <button type="button" class="outputs-toolbar-btn outputs-fallback-refresh-btn" data-icon="refreshCw"><span>刷新本地模型列表</span></button>
-            <button type="button" class="outputs-toolbar-btn outputs-recognize-unknown-btn" data-icon="tag"><span>用所选模型重试未识别</span></button>
-            <button type="button" class="outputs-toolbar-btn outputs-fallback-pause-btn" data-icon="pause"><span>暂停 WD14 反推</span></button>
+            <label class="outputs-menu-field"><input type="checkbox" id="outputsFallbackEnabled"><span data-i18n="shell.fallbackEnabled">启用空闲时 WD14 反推</span></label>
+            <label class="outputs-menu-field"><input type="checkbox" id="outputsFallbackUnrecognized"><span data-i18n="shell.fallbackUnrecognized">包括已有元数据但未识别角色的图片</span></label>
+            <label class="outputs-menu-field"><input type="checkbox" id="outputsFallbackLibrary"><span data-i18n="shell.fallbackLibrary">优先复用本机已验证的识别结果</span></label>
+            <label class="outputs-menu-field"><span data-i18n="shell.wd14Model">WD14 模型</span><select id="outputsFallbackModel" aria-label="WD14 反推模型" data-i18n-aria-label="shell.wd14InferenceModel"><option value="" data-i18n="shell.autoInstalledModel">自动选择已安装模型</option></select></label>
+            <label class="outputs-menu-field"><span data-i18n="shell.tagThreshold">普通标签阈值</span><input type="number" id="outputsFallbackThreshold" min="0" max="1" step="0.05" value="0.35"></label>
+            <label class="outputs-menu-field"><span data-i18n="shell.characterThreshold">角色阈值</span><input type="number" id="outputsFallbackCharacterThreshold" min="0" max="1" step="0.05" value="0.85"></label>
+            <p class="outputs-menu-help" id="outputsFallbackHint" data-i18n="shell.fallbackHint">没有已保存提示词时用本地 WD14 补标签；只保存搜索摘要，原图保持。正在生图时暂停。</p>
+            <button type="button" class="outputs-toolbar-btn outputs-fallback-refresh-btn" data-icon="refreshCw"><span data-i18n="shell.refreshLocalModels">刷新本地模型列表</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-recognize-unknown-btn" data-icon="tag"><span data-i18n="shell.retryUnrecognized">用所选模型重试未识别</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-fallback-pause-btn" data-icon="pause"><span data-i18n="shell.pauseWd14">暂停 WD14 反推</span></button>
           </div>
         </details>
         <details class="outputs-more outputs-export-menu">
-          <summary class="outputs-toolbar-btn" data-icon="download"><span>导出设置</span></summary>
+          <summary class="outputs-toolbar-btn" data-icon="download"><span data-i18n="shell.exportSettings">导出设置</span></summary>
           <div class="outputs-more-panel">
-            <small class="outputs-menu-label">复制、下载的默认方式</small>
-            <button type="button" class="outputs-toolbar-btn outputs-metadata-btn" id="outputsMetadataBtn" data-icon="shield" aria-pressed="false"><span>保留生成信息（原图）</span></button>
-            <button type="button" class="outputs-toolbar-btn outputs-metadata-config-btn" id="outputsMetadataConfigBtn" data-icon="user"><span>署名与自定义元数据…</span></button>
-            <p class="outputs-menu-help">仅处理导出副本，磁盘原图保持。去除生成信息后，图片不能还原工作流。</p>
+            <small class="outputs-menu-label" data-i18n="shell.defaultExportMethod">复制、下载的默认方式</small>
+            <button type="button" class="outputs-toolbar-btn outputs-metadata-btn" id="outputsMetadataBtn" data-icon="shield" aria-pressed="false"><span data-i18n="shell.keepGenerationInfo">保留生成信息（原图）</span></button>
+            <button type="button" class="outputs-toolbar-btn outputs-metadata-config-btn" id="outputsMetadataConfigBtn" data-icon="user"><span data-i18n="shell.customMetadata">署名与自定义元数据…</span></button>
+            <p class="outputs-menu-help" data-i18n="shell.exportHelp">仅处理导出副本，磁盘原图保持。去除生成信息后，图片不能还原工作流。</p>
           </div>
         </details>
       </div>
-      <div class="outputs-results-line"><span id="outputsLocation">所有已选目录</span><button type="button" class="outputs-toolbar-btn" id="outputsNewImages" hidden title="按日期查看 output 新图，会切换到全部图片并清除当前筛选"></button><span id="outputsIndexStatus" aria-live="polite"></span><span id="outputsRefreshStatus" aria-live="polite"></span><div class="outputs-stats"></div></div>
+      <div class="outputs-results-line"><span id="outputsLocation" data-i18n="shell.selectedDirectories">所有已选目录</span><button type="button" class="outputs-toolbar-btn" id="outputsNewImages" hidden title="按日期查看 output 新图，会切换到全部图片并清除当前筛选" data-i18n-title="shell.newImagesTitle"></button><span id="outputsIndexStatus" aria-live="polite"></span><span id="outputsRefreshStatus" aria-live="polite"></span><div class="outputs-stats"></div></div>
 
       <div class="outputs-batch-bar" id="outputsBatchBar" style="display:none">
-        <span id="outputsBatchCount">已选 0 张</span>
-        <button class="outputs-batch-btn outputs-batch-fav-btn" data-icon="heart"><span>收藏</span></button>
-        <div class="outputs-split-action"><button class="outputs-batch-btn outputs-batch-copy-btn" data-icon="copy"><span>复制</span></button><details class="outputs-more"><summary class="outputs-batch-btn" aria-label="复制选项" data-icon="chevronDown"></summary><div class="outputs-more-panel"><button type="button" class="outputs-toolbar-btn" data-output-export="copy" data-export-mode="original">复制原图</button><button type="button" class="outputs-toolbar-btn" data-output-export="copy" data-export-mode="clean">去除生成信息后复制</button></div></details></div>
-        <div class="outputs-split-action"><button class="outputs-batch-btn outputs-batch-download-btn" data-icon="download"><span>下载</span></button><details class="outputs-more"><summary class="outputs-batch-btn" aria-label="下载选项" data-icon="chevronDown"></summary><div class="outputs-more-panel"><button type="button" class="outputs-toolbar-btn" data-output-export="download" data-export-mode="original">下载原图</button><button type="button" class="outputs-toolbar-btn" data-output-export="download" data-export-mode="clean">去除生成信息后下载</button></div></details></div>
-        <details class="outputs-more"><summary class="outputs-batch-btn" data-icon="moreHorizontal"><span>更多</span></summary><div class="outputs-more-panel"><button class="outputs-toolbar-btn outputs-batch-rate-btn" data-icon="star"><span>评分</span></button><button class="outputs-toolbar-btn outputs-batch-unfav-btn" data-icon="x"><span>取消收藏</span></button><hr><button class="outputs-toolbar-btn danger outputs-batch-delete-btn" data-icon="trash"><span>删除磁盘图片…</span></button></div></details>
+        <span id="outputsBatchCount" data-i18n="shell.selectedImagesZero">已选 0 张</span>
+        <button class="outputs-batch-btn outputs-batch-fav-btn" data-icon="heart"><span data-i18n="shell.favorites">收藏</span></button>
+        <div class="outputs-split-action"><button class="outputs-batch-btn outputs-batch-copy-btn" data-icon="copy"><span data-i18n="shell.copy">复制</span></button><details class="outputs-more"><summary class="outputs-batch-btn" aria-label="复制选项" data-icon="chevronDown" data-i18n-aria-label="shell.copyOptions"></summary><div class="outputs-more-panel"><button type="button" class="outputs-toolbar-btn" data-output-export="copy" data-export-mode="original"><span data-i18n="shell.copyOriginal">复制原图</span></button><button type="button" class="outputs-toolbar-btn" data-output-export="copy" data-export-mode="clean"><span data-i18n="shell.copyClean">去除生成信息后复制</span></button></div></details></div>
+        <div class="outputs-split-action"><button class="outputs-batch-btn outputs-batch-download-btn" data-icon="download"><span data-i18n="shell.download">下载</span></button><details class="outputs-more"><summary class="outputs-batch-btn" aria-label="下载选项" data-icon="chevronDown" data-i18n-aria-label="shell.downloadOptions"></summary><div class="outputs-more-panel"><button type="button" class="outputs-toolbar-btn" data-output-export="download" data-export-mode="original"><span data-i18n="shell.downloadOriginal">下载原图</span></button><button type="button" class="outputs-toolbar-btn" data-output-export="download" data-export-mode="clean"><span data-i18n="shell.downloadClean">去除生成信息后下载</span></button></div></details></div>
+        <details class="outputs-more"><summary class="outputs-batch-btn" data-icon="moreHorizontal"><span data-i18n="shell.more">更多</span></summary><div class="outputs-more-panel"><button class="outputs-toolbar-btn outputs-batch-rate-btn" data-icon="star"><span data-i18n="shell.rating">评分</span></button><button class="outputs-toolbar-btn outputs-batch-unfav-btn" data-icon="x"><span data-i18n="shell.unfavorite">取消收藏</span></button><hr><button class="outputs-toolbar-btn danger outputs-batch-delete-btn" data-icon="trash"><span data-i18n="shell.deleteDiskImages">删除磁盘图片…</span></button></div></details>
       </div>
-      <div id="outputsExportProgress" class="outputs-export-progress" hidden><span aria-live="polite"></span><button type="button" class="outputs-batch-btn outputs-export-cancel">取消</button></div>
+      <div id="outputsExportProgress" class="outputs-export-progress" hidden><span aria-live="polite"></span><button type="button" class="outputs-batch-btn outputs-export-cancel"><span data-i18n="shell.cancel">取消</span></button></div>
 
       <div class="outputs-scan-progress" id="outputsScanProgress" style="display:none">
         <div class="outputs-scan-progress-bar" id="outputsScanProgressBar"></div>
-        <span class="outputs-scan-progress-text" id="outputsScanProgressText">扫描中...</span><button type="button" class="outputs-cancel-scan-btn">取消扫描</button>
+        <span class="outputs-scan-progress-text" id="outputsScanProgressText" data-i18n="shell.scanning">扫描中...</span><button type="button" class="outputs-cancel-scan-btn"><span data-i18n="shell.cancelScan">取消扫描</span></button>
       </div>
 
       <div class="outputs-grid" id="outputsGrid">
         <div class="outputs-empty">
           <div class="big" data-icon="image"></div>
-          <p>浏览 output 和归档目录中的图片</p>
-          <button class="btn btn-primary outputs-select-btn" data-icon="folder"><span>添加目录</span></button>
+          <p data-i18n="shell.outputsEmptyHint">浏览 output 和归档目录中的图片</p>
+          <button class="btn btn-primary outputs-select-btn" data-icon="folder"><span data-i18n="shell.addDirectory">添加目录</span></button>
         </div>
       </div>
 
-      <button class="btn btn-ghost outputs-load-more" style="display:none;margin:16px auto">加载更多</button>
+      <button class="btn btn-ghost outputs-load-more" style="display:none;margin:16px auto"><span data-i18n="shell.loadMore">加载更多</span></button>
     </main>
   </div>
 </div>
@@ -574,16 +576,16 @@ try {
 
 <div class="modal-overlay" id="artistImgModal">
   <div class="modal-box modal-sm">
-    <h3>🖼️ 管理画师预览图</h3>
-    <p class="sub" id="artistImgModalDesc">为画师管理自定义预览图片</p>
+    <h3 data-i18n="shell.manageArtistImagesHeading">🖼️ 管理画师预览图</h3>
+    <p class="sub" id="artistImgModalDesc" data-i18n="shell.manageArtistImagesDescription">为画师管理自定义预览图片</p>
     <div class="artist-img-grid" id="artistImgList"></div>
     <div class="modal-form-row">
-      <input type="text" id="artistImgUrl" placeholder="粘贴图片 URL 添加" style="flex:1">
-      <button class="btn btn-primary" id="artistImgAddBtn" data-icon="plus"><span>添加</span></button>
+      <input type="text" id="artistImgUrl" placeholder="粘贴图片 URL 添加" style="flex:1" data-i18n-placeholder="shell.artistImagePlaceholder">
+      <button class="btn btn-primary" id="artistImgAddBtn" data-icon="plus"><span data-i18n="shell.add">添加</span></button>
     </div>
     <div class="modal-actions modal-mt">
-      <button class="btn btn-ghost" id="closeArtistImgBtn">关闭</button>
-      <span class="section-hint" style="flex:1">💡 自定义预览图替换默认图，点击图片可删除</span>
+      <button class="btn btn-ghost" id="closeArtistImgBtn"><span data-i18n="shell.close">关闭</span></button>
+      <span class="section-hint" style="flex:1" data-i18n="shell.artistImagesHint">💡 自定义预览图替换默认图，点击图片可删除</span>
     </div>
     <div class="modal-status" id="artistImgStatus">    </div>
   </div>
@@ -591,17 +593,17 @@ try {
 
 <div class="modal-overlay" id="artistExtractModal">
   <div class="modal-box modal-sm">
-    <h3>📊 从当前搜索结果提取</h3>
-    <p class="sub" id="artistExtractDesc">从当前已加载 LoRA 的触发词中提取（结果范围 = 当前远程搜索结果）</p>
+    <h3 data-i18n="shell.extractHeading">📊 从当前搜索结果提取</h3>
+    <p class="sub" id="artistExtractDesc" data-i18n="shell.extractDescription">从当前已加载 LoRA 的触发词中提取（结果范围 = 当前远程搜索结果）</p>
     <div style="display:flex;gap:6px;padding:6px 10px;border-bottom:1px solid var(--border)">
-      <button class="btn btn-primary extract-type-btn active" data-type="artist" style="flex:1;padding:4px;font-size:11px" data-icon="brush"><span>画师</span></button>
-      <button class="btn btn-ghost extract-type-btn" data-type="character" style="flex:1;padding:4px;font-size:11px" data-icon="user"><span>角色</span></button>
-      <button class="btn btn-ghost extract-type-btn" data-type="style" style="flex:1;padding:4px;font-size:11px" data-icon="tag"><span>风格词</span></button>
-      <button class="btn btn-ghost" id="extractMinCountBtn" style="padding:4px 8px;font-size:11px" title="出现次数阈值">≥1次</button>
+      <button class="btn btn-primary extract-type-btn active" data-type="artist" style="flex:1;padding:4px;font-size:11px" data-icon="brush"><span data-i18n="shell.artist">画师</span></button>
+      <button class="btn btn-ghost extract-type-btn" data-type="character" style="flex:1;padding:4px;font-size:11px" data-icon="user"><span data-i18n="shell.character">角色</span></button>
+      <button class="btn btn-ghost extract-type-btn" data-type="style" style="flex:1;padding:4px;font-size:11px" data-icon="tag"><span data-i18n="shell.styleTags">风格词</span></button>
+      <button class="btn btn-ghost" id="extractMinCountBtn" style="padding:4px 8px;font-size:11px" title="出现次数阈值" data-i18n-title="shell.occurrenceThreshold"><span data-i18n="shell.minimumOne">≥1次</span></button>
     </div>
     <div class="modal-scroll-lg" id="artistExtractList"></div>
     <div class="modal-actions">
-      <button class="btn btn-ghost" id="closeArtistExtractBtn">关闭</button>
+      <button class="btn btn-ghost" id="closeArtistExtractBtn"><span data-i18n="shell.close">关闭</span></button>
     </div>
     <div class="modal-status" id="artistExtractStatus"></div>
   </div>
@@ -609,46 +611,46 @@ try {
 
 <div class="modal-overlay" id="promptEditModal">
   <div class="modal-box modal-sm">
-    <h3>✏️ 编辑 Prompt</h3>
-    <p class="sub">编辑 Prompt 内容和元信息</p>
+    <h3 data-i18n="shell.editPromptHeading">✏️ 编辑 Prompt</h3>
+    <p class="sub" data-i18n="shell.editPromptDescription">编辑 Prompt 内容和元信息</p>
     <div id="promptEditForm"></div>
     <div class="modal-actions">
-      <button class="btn btn-primary" id="promptEditSaveBtn" data-icon="check"><span>保存</span></button>
-      <button class="btn btn-ghost" id="promptEditCancelBtn" data-icon="x"><span>取消</span></button>
+      <button class="btn btn-primary" id="promptEditSaveBtn" data-icon="check"><span data-i18n="shell.save">保存</span></button>
+      <button class="btn btn-ghost" id="promptEditCancelBtn" data-icon="x"><span data-i18n="shell.cancel">取消</span></button>
     </div>
     <div class="modal-status" id="promptEditStatus"></div>
   </div>
 </div>
 
-<div class="lightbox" id="lightbox" role="dialog" aria-label="图片预览" aria-modal="true">
-  <button class="close" aria-label="关闭">✕</button>
-  <button class="lb-nav prev" aria-label="上一张">‹</button>
-  <button class="lb-nav next" aria-label="下一张">›</button>
-  <div class="lb-toolbars" aria-label="图片编辑工具">
+<div class="lightbox" id="lightbox" role="dialog" aria-label="图片预览" aria-modal="true" data-i18n-aria-label="shell.imagePreview">
+  <button class="close" aria-label="关闭" data-i18n-aria-label="shell.close">✕</button>
+  <button class="lb-nav prev" aria-label="上一张" data-i18n-aria-label="shell.previousImage">‹</button>
+  <button class="lb-nav next" aria-label="下一张" data-i18n-aria-label="shell.nextImage">›</button>
+  <div class="lb-toolbars" aria-label="图片编辑工具" data-i18n-aria-label="shell.imageEditingTools">
   <div class="lb-editbar" id="lbEditBar">
-    <button data-act="rotl" title="向左旋转 90°" data-icon="rotateCcw"><span>左转</span></button>
-    <button data-act="rotr" title="向右旋转 90°" data-icon="rotateCw"><span>右转</span></button>
-    <button data-act="fliph" title="水平翻转" data-icon="flipHorizontal"><span>水平</span></button>
-    <button data-act="flipv" title="垂直翻转" data-icon="flipVertical"><span>垂直</span></button>
-    <button data-act="crop" title="框选保留区域" data-icon="crop"><span>裁剪</span></button>
-    <button data-act="save" title="另存副本，保留原图" data-icon="download"><span>另存副本</span></button>
-    <button data-act="overwrite" title="备份后覆盖原图"><span>覆盖原图</span></button>
-    <button data-act="reset" title="重置编辑" data-icon="undo"><span>重置</span></button>
+    <button data-act="rotl" title="向左旋转 90°" data-icon="rotateCcw" data-i18n-title="shell.rotateLeftTitle"><span data-i18n="shell.rotateLeft">左转</span></button>
+    <button data-act="rotr" title="向右旋转 90°" data-icon="rotateCw" data-i18n-title="shell.rotateRightTitle"><span data-i18n="shell.rotateRight">右转</span></button>
+    <button data-act="fliph" title="水平翻转" data-icon="flipHorizontal" data-i18n-title="shell.flipHorizontal"><span data-i18n="shell.horizontal">水平</span></button>
+    <button data-act="flipv" title="垂直翻转" data-icon="flipVertical" data-i18n-title="shell.flipVertical"><span data-i18n="shell.vertical">垂直</span></button>
+    <button data-act="crop" title="框选保留区域" data-icon="crop" data-i18n-title="shell.cropTitle"><span data-i18n="shell.crop">裁剪</span></button>
+    <button data-act="save" title="另存副本，保留原图" data-icon="download" data-i18n-title="shell.saveCopyTitle"><span data-i18n="shell.saveCopy">另存副本</span></button>
+    <button data-act="overwrite" title="备份后覆盖原图" data-i18n-title="shell.overwriteTitle"><span data-i18n="shell.overwrite">覆盖原图</span></button>
+    <button data-act="reset" title="重置编辑" data-icon="undo" data-i18n-title="shell.resetEdits"><span data-i18n="shell.reset">重置</span></button>
   </div>
-  <div class="lb-paintbar" id="lbPaintBar" aria-label="预览编辑">
-    <div class="lb-paint-modes" role="group" aria-label="工具">
-      <button data-paint="view" aria-pressed="true">浏览</button>
-      <button data-paint="pen" aria-pressed="false">涂鸦</button>
-      <button data-paint="mosaic" aria-pressed="false">马赛克</button>
-      <button data-paint="cover" aria-pressed="false">色块遮盖</button>
+  <div class="lb-paintbar" id="lbPaintBar" aria-label="预览编辑" data-i18n-aria-label="shell.previewEditing">
+    <div class="lb-paint-modes" role="group" aria-label="工具" data-i18n-aria-label="shell.tools">
+      <button data-paint="view" aria-pressed="true"><span data-i18n="shell.browse">浏览</span></button>
+      <button data-paint="pen" aria-pressed="false"><span data-i18n="shell.draw">涂鸦</span></button>
+      <button data-paint="mosaic" aria-pressed="false"><span data-i18n="shell.mosaic">马赛克</span></button>
+      <button data-paint="cover" aria-pressed="false"><span data-i18n="shell.cover">色块遮盖</span></button>
     </div>
-    <label data-paint-controls="pen cover" hidden title="画笔与遮盖颜色">颜色 <input id="lbPaintColor" type="color" value="#000000" aria-label="画笔颜色"></label>
-    <label data-paint-controls="pen" hidden title="画笔宽度，单位为原图像素">笔宽 <input id="lbPaintSize" type="range" min="2" max="128" value="24" aria-label="画笔大小"><output id="lbPaintSizeValue" for="lbPaintSize">24</output></label>
-    <label data-paint-controls="mosaic" hidden title="颗粒越小越细腻，单位为原图像素">颗粒 <input id="lbMosaicSize" type="range" min="2" max="128" value="8" aria-label="马赛克颗粒大小"><output id="lbMosaicSizeValue" for="lbMosaicSize">8</output></label>
-    <label data-paint-controls="mosaic" hidden title="马赛克与原图混合的强度">强度 <input id="lbMosaicStrength" type="range" min="1" max="100" value="100" aria-label="马赛克强度"><output id="lbMosaicStrengthValue" for="lbMosaicStrength">100%</output></label>
-    <button id="lbPaintUndo">撤销</button>
-    <button id="lbPreviewDrag" draggable="true" data-output-preview-drag data-output-drag="" title="拖动到 Pixiv 等接收位置；无需另存">拖出当前图</button>
-    <span id="lbEditHint" role="status">涂鸦可直接画；打码请拖出矩形</span>
+    <label data-paint-controls="pen cover" hidden title="画笔与遮盖颜色" data-i18n-title="shell.paintColorTitle"><span data-i18n="shell.color">颜色</span> <input id="lbPaintColor" type="color" value="#000000" aria-label="画笔颜色" data-i18n-aria-label="shell.brushColor"></label>
+    <label data-paint-controls="pen" hidden title="画笔宽度，单位为原图像素" data-i18n-title="shell.brushWidthTitle"><span data-i18n="shell.brushWidth">笔宽</span> <input id="lbPaintSize" type="range" min="2" max="128" value="24" aria-label="画笔大小" data-i18n-aria-label="shell.brushSize"><output id="lbPaintSizeValue" for="lbPaintSize">24</output></label>
+    <label data-paint-controls="mosaic" hidden title="颗粒越小越细腻，单位为原图像素" data-i18n-title="shell.mosaicSizeTitle"><span data-i18n="shell.mosaicSize">颗粒</span> <input id="lbMosaicSize" type="range" min="2" max="128" value="8" aria-label="马赛克颗粒大小" data-i18n-aria-label="shell.mosaicBlockSize"><output id="lbMosaicSizeValue" for="lbMosaicSize">8</output></label>
+    <label data-paint-controls="mosaic" hidden title="马赛克与原图混合的强度" data-i18n-title="shell.mosaicStrengthTitle"><span data-i18n="shell.strength">强度</span> <input id="lbMosaicStrength" type="range" min="1" max="100" value="100" aria-label="马赛克强度" data-i18n-aria-label="shell.mosaicStrength"><output id="lbMosaicStrengthValue" for="lbMosaicStrength">100%</output></label>
+    <button id="lbPaintUndo"><span data-i18n="shell.undo">撤销</span></button>
+    <button id="lbPreviewDrag" draggable="true" data-output-preview-drag data-output-drag="" title="拖动到 Pixiv 等接收位置；无需另存" data-i18n-title="shell.dragPreviewTitle"><span data-i18n="shell.dragPreview">拖出当前图</span></button>
+    <span id="lbEditHint" role="status" data-i18n="shell.paintHint">涂鸦可直接画；打码请拖出矩形</span>
   </div>
   </div>
   <div class="lb-edit-wrap" id="lbEditWrap" style="display:none">
@@ -656,8 +658,8 @@ try {
     <div class="lb-crop-layer" id="lbCropLayer">
       <div class="lb-crop-rect" id="lbCropRect"></div>
       <div class="lb-crop-btns">
-        <button class="lb-crop-confirm" id="lbCropConfirm" data-icon="check"><span>确认裁剪</span></button>
-        <button class="lb-crop-cancel" id="lbCropCancel" data-icon="x"><span>取消</span></button>
+        <button class="lb-crop-confirm" id="lbCropConfirm" data-icon="check"><span data-i18n="shell.confirmCrop">确认裁剪</span></button>
+        <button class="lb-crop-cancel" id="lbCropCancel" data-icon="x"><span data-i18n="shell.cancel">取消</span></button>
       </div>
     </div>
   </div>
@@ -666,11 +668,11 @@ try {
 </div>
 <div class="toast" id="toast" role="alert" aria-live="assertive"></div>
 <div id="batchBar" class="batch-bar batch-bar-hidden">
-  <span id="batchCount" class="batch-bar-count">已选 0 项</span>
-  <button class="btn btn-primary batch-bar-item" id="batchFavBtn" data-icon="heart"><span>批量收藏</span></button>
-  <button class="btn btn-danger batch-bar-item batch-bar-del" id="batchHideBtn" data-icon="trash"><span>批量删除</span></button>
-  <button class="btn btn-ghost batch-bar-item" id="batchCopyBtn" data-icon="copy"><span>复制触发词</span></button>
-  <button class="btn btn-ghost batch-bar-item" id="batchCloseBtn" data-icon="x"><span>退出</span></button>
+  <span id="batchCount" class="batch-bar-count" data-i18n="shell.selectedItemsZero">已选 0 项</span>
+  <button class="btn btn-primary batch-bar-item" id="batchFavBtn" data-icon="heart"><span data-i18n="shell.batchFavorite">批量收藏</span></button>
+  <button class="btn btn-danger batch-bar-item batch-bar-del" id="batchHideBtn" data-icon="trash"><span data-i18n="shell.batchDelete">批量删除</span></button>
+  <button class="btn btn-ghost batch-bar-item" id="batchCopyBtn" data-icon="copy"><span data-i18n="shell.copyTriggers">复制触发词</span></button>
+  <button class="btn btn-ghost batch-bar-item" id="batchCloseBtn" data-icon="x"><span data-i18n="shell.exit">退出</span></button>
 </div>
 </body>
 </html>
