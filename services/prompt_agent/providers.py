@@ -308,7 +308,7 @@ class OpenAICompatibleProvider:
                         break
         except (asyncio.TimeoutError, TimeoutError):
             elapsed = round(time.monotonic() - started, 1)
-            raise ProviderError(f"LLM 请求超时：模型 {config["model"]}，接口 {protocol}，阶段 {phase}，已收 {received} 字节，累计 {elapsed} 秒，单次请求上限 {config["timeout"]} 秒。") from None
+            raise ProviderError(f"LLM 请求超时：模型 {config['model']}，接口 {protocol}，阶段 {phase}，已收 {received} 字节，累计 {elapsed} 秒，单次请求上限 {config['timeout']} 秒。") from None
         except aiohttp.ClientError:
             raise ProviderError("无法连接 LLM 服务；请检查 Base URL、代理和网络。") from None
         if self.protocol == "responses":
