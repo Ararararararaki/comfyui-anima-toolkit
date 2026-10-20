@@ -1,4 +1,5 @@
 import { icon } from '../utils/icon'
+import { t } from '../i18n'
 
 /** 21st-inspired palettes adapted to the Toolkit's existing tokens, not copied
  * React components. Theme selection shares the established anima_theme key. */
@@ -17,17 +18,17 @@ export interface ToolkitThemePreset {
 }
 
 export const TOOLKIT_THEMES: readonly ToolkitThemePreset[] = [
-  { id: 'graphite-mono', name: 'Graphite Mono · 石墨', description: '克制的中性色，让图片成为焦点', sourceUrl: 'https://21st.dev/@serafimcloud/themes/graphite-mono', lightPreview: ['#f4f5f6', '#ffffff', '#34373b'], darkPreview: ['#17191d', '#202328', '#dee1e6'] },
-  { id: 'modern-minimal', name: 'Modern Minimal · 简约', description: '清爽灰白，蓝色强调操作状态', sourceUrl: 'https://21st.dev/@serafimcloud/themes/modern-minimal', lightPreview: ['#f5f7fa', '#ffffff', '#286bd1'], darkPreview: ['#151b25', '#1d2633', '#8db5fb'] },
-  { id: 'sage-garden', name: 'Sage Garden · 鼠尾草', description: '柔和绿灰，适合长时间整理图片', sourceUrl: 'https://21st.dev/@serafimcloud/themes/sage-garden', lightPreview: ['#f3f5ef', '#fcfdf9', '#426b48'], darkPreview: ['#18201b', '#222d25', '#a5c49e'] },
-  { id: 'claude-amber', name: 'Claude Amber · 琥珀', description: '温暖纸色与琥珀色强调', sourceUrl: 'https://21st.dev/@serafimcloud/themes/claude-amber', lightPreview: ['#f7f4ee', '#fffdf8', '#986829'], darkPreview: ['#211d19', '#2c2721', '#ecc08f'] },
-  { id: 'catppuccin', name: 'Catppuccin · 柔紫', description: '淡紫底色，清楚区分选中与悬停', sourceUrl: 'https://21st.dev/@serafimcloud/themes/catppuccin', lightPreview: ['#f2f0f7', '#fcfbff', '#7756ba'], darkPreview: ['#1e1e2e', '#29293d', '#c4acee'] },
+  { id: 'graphite-mono', get name() { return t('shell.themeGraphite') }, get description() { return t('shell.themeGraphiteDescription') }, sourceUrl: 'https://21st.dev/@serafimcloud/themes/graphite-mono', lightPreview: ['#f4f5f6', '#ffffff', '#34373b'], darkPreview: ['#17191d', '#202328', '#dee1e6'] },
+  { id: 'modern-minimal', get name() { return t('shell.themeMinimal') }, get description() { return t('shell.themeMinimalDescription') }, sourceUrl: 'https://21st.dev/@serafimcloud/themes/modern-minimal', lightPreview: ['#f5f7fa', '#ffffff', '#286bd1'], darkPreview: ['#151b25', '#1d2633', '#8db5fb'] },
+  { id: 'sage-garden', get name() { return t('shell.themeSage') }, get description() { return t('shell.themeSageDescription') }, sourceUrl: 'https://21st.dev/@serafimcloud/themes/sage-garden', lightPreview: ['#f3f5ef', '#fcfdf9', '#426b48'], darkPreview: ['#18201b', '#222d25', '#a5c49e'] },
+  { id: 'claude-amber', get name() { return t('shell.themeAmber') }, get description() { return t('shell.themeAmberDescription') }, sourceUrl: 'https://21st.dev/@serafimcloud/themes/claude-amber', lightPreview: ['#f7f4ee', '#fffdf8', '#986829'], darkPreview: ['#211d19', '#2c2721', '#ecc08f'] },
+  { id: 'catppuccin', get name() { return t('shell.themeCatppuccin') }, get description() { return t('shell.themeCatppuccinDescription') }, sourceUrl: 'https://21st.dev/@serafimcloud/themes/catppuccin', lightPreview: ['#f2f0f7', '#fcfbff', '#7756ba'], darkPreview: ['#1e1e2e', '#29293d', '#c4acee'] },
 ]
 
 const LEGACY_THEMES: readonly { id: LegacyThemeId; name: string }[] = [
-  { id: 'drinkit', name: '原有主题 · 蓝白' },
-  { id: 'mono', name: '原有主题 · 纯黑' },
-  { id: 'mono-light', name: '原有主题 · 纯白' },
+  { id: 'drinkit', get name() { return t('shell.themeLegacyBlue') } },
+  { id: 'mono', get name() { return t('shell.themeLegacyBlack') } },
+  { id: 'mono-light', get name() { return t('shell.themeLegacyWhite') } },
 ]
 const THEME_KEY = 'anima_theme'
 const MODE_KEY = 'anima_theme_mode'
@@ -125,16 +126,16 @@ export function mountToolkitThemeSelector(host: HTMLElement, options: { compact?
   root.className = `toolkit-theme-selector${options.compact ? ' toolkit-theme-selector--compact' : ''}`
   const heading = document.createElement('div')
   heading.className = 'toolkit-theme-selector-heading'
-  heading.innerHTML = `${icon('palette', 15)}<span>外观主题</span>`
+  heading.innerHTML = `${icon('palette', 15)}<span>${t('shell.appearanceTheme')}</span>`
   root.append(heading)
 
   const id = ++selectorSequence
   const themeLabel = document.createElement('label')
   themeLabel.className = 'toolkit-theme-field'
-  themeLabel.textContent = '配色'
+  themeLabel.textContent = t('shell.themePalette')
   const select = document.createElement('select')
   select.id = `toolkit-theme-${id}`
-  select.setAttribute('aria-label', '工具箱外观主题')
+  select.setAttribute('aria-label', t('shell.themeAria'))
   themeLabel.htmlFor = select.id
   LEGACY_THEMES.forEach(theme => select.add(new Option(theme.name, theme.id)))
   TOOLKIT_THEMES.forEach(theme => select.add(new Option(theme.name, theme.id)))
@@ -142,14 +143,14 @@ export function mountToolkitThemeSelector(host: HTMLElement, options: { compact?
 
   const modeLabel = document.createElement('label')
   modeLabel.className = 'toolkit-theme-field'
-  modeLabel.textContent = '明暗'
+  modeLabel.textContent = t('shell.themeMode')
   const mode = document.createElement('select')
   mode.id = `toolkit-theme-mode-${id}`
-  mode.setAttribute('aria-label', '工具箱主题明暗')
+  mode.setAttribute('aria-label', t('shell.themeModeAria'))
   modeLabel.htmlFor = mode.id
-  mode.add(new Option('浅色', 'light'))
-  mode.add(new Option('深色', 'dark'))
-  mode.add(new Option('跟随系统', 'system'))
+  mode.add(new Option(t('shell.themeLight'), 'light'))
+  mode.add(new Option(t('shell.themeDark'), 'dark'))
+  mode.add(new Option(t('shell.themeSystem'), 'system'))
   modeLabel.append(mode)
   root.append(themeLabel, modeLabel)
 
@@ -165,7 +166,7 @@ export function mountToolkitThemeSelector(host: HTMLElement, options: { compact?
   source.className = 'toolkit-theme-source'
   source.target = '_blank'
   source.rel = 'noopener noreferrer'
-  source.innerHTML = `查看 21st 参考 ${icon('external', 12)}`
+  source.innerHTML = `${t('shell.themeReference')} ${icon('external', 12)}`
   const status = document.createElement('span')
   status.className = 'toolkit-theme-status'
   status.setAttribute('role', 'status')
@@ -190,14 +191,14 @@ export function mountToolkitThemeSelector(host: HTMLElement, options: { compact?
       description.textContent = preset.description
       source.href = preset.sourceUrl
     } else {
-      description.textContent = '保留原有主题，可随时切回。'
+      description.textContent = t('shell.themeLegacyDescription')
       source.removeAttribute('href')
     }
     source.hidden = !preset
   }
   const onChange = () => {
     const { saved } = setToolkitTheme(select.value as ToolkitThemeChoice, mode.value as ToolkitThemeMode)
-    status.textContent = saved ? '已应用并保存' : '已应用；浏览器未允许保存偏好'
+    status.textContent = saved ? t('shell.themeSaved') : t('shell.themeNotSaved')
     sync()
   }
   select.addEventListener('change', onChange, { signal: abort.signal })

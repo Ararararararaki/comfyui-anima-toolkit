@@ -10,6 +10,7 @@ from . import creation, direct
 from .profiles import Profile, ProfileRegistry, SECTIONS, split_fragments
 from .protocol import IMPORT_SCHEMA, complete_structured, edit_schema
 from .storage import PresetStore, SessionStore, empty_state, public_state, snapshot
+from .moss import MOSS_SKILL_ID, validate_skill_prompt, is_layout_prompt
 
 MODES = ("create", "modify", "expand", "rewrite", "convert", "optimize")
 PROTOCOL_RULES = (
@@ -48,9 +49,10 @@ def allowed_sections(scope: list[str], locks: list[str]) -> set[str]:
 class PromptAgent:
     def __init__(self, profiles: ProfileRegistry, sessions: SessionStore, presets: PresetStore,
                  provider_factory: Callable[[], Provider], references=None, *,
-                 native_provider_factory=None, native_generator=None):
+                 native_provider_factory=None, native_generator=None, request_provider_factory=None):
         self.profiles, self.sessions, self.presets = profiles, sessions, presets
         self.provider_factory = provider_factory
+        self.request_provider_factory = request_provider_factory
         self.references = references
         self.native_provider_factory = native_provider_factory
         self.native_generator = native_generator
@@ -61,7 +63,8 @@ class PromptAgent:
                 raise AgentError("DSH 原生执行尚未连接，请检查原生运行设置。")
             provider = self.native_provider_factory(session_id, request)
         else:
-            provider = self.provider_factory()
+            provider = (self.request_provider_factory(request or {}) if self.request_provider_factory and request and "model_selection" in request
+                        else self.provider_factory())
         bind = getattr(provider, "bind_session", None)
         if callable(bind):
             bind(session_id)
@@ -111,7 +114,10 @@ class PromptAgent:
                 if not committed["last_request"] or committed["retry_base"] is None:
                     raise AgentError("没有可以重试的上一轮")
                 native_operation_id = request.get("native_operation_id", "")
+                selection = copy.deepcopy(request.get("model_selection"))
                 request = copy.deepcopy(committed["last_request"])
+                if selection is not None:
+                    request["model_selection"] = selection
                 # Retry owns a new native operation. A previous cancellation
                 # must neither block it nor let an old UI cancel this run.
                 if request.get("generation_strategy") == "native":
@@ -136,6 +142,9 @@ class PromptAgent:
                 raise AgentError("输入过长")
             if not instruction.strip() and mode not in ("optimize", "convert"):
                 raise AgentError("请输入本轮编辑指令")
+            if not start_new and (is_layout_prompt(state["prompt"], state.get("prompt_skill", "")) or
+                                  is_layout_prompt(seed, request.get("expansion_skill") or state.get("prompt_skill", ""))):
+                raise AgentError("MOSS Layout 是结构化 Final Prompt，当前分区编辑不支持；请重新看图扩写 Layout，或清空后创建 Caption。")
             profile = self.profiles.get(request.get("profile") or "anima")
             request.update(mode=mode, instruction=instruction, locks=_section_list(request.get("locks", []), "锁定"),
                            scope=_section_list(request.get("scope", []), "编辑范围"))
@@ -250,7 +259,7 @@ class PromptAgent:
                 if profile.clean({name: previous[name]})[name] != candidate[name]:
                     raise AgentError(f"本次规范化会改变锁定分区：{name}，请先解除该锁定")
             prompt = plain_prompt if plain_prompt is not None else profile.render(candidate)
-            state.update(profile=profile.id, sections=candidate, prompt=prompt, locks=request["locks"],
+            state.update(profile=profile.id, sections=candidate, prompt=prompt, prompt_skill="", locks=request["locks"],
                          needs_classification=plain, unclassified_prompt=prompt if plain else "",
                          revision=committed["revision"] + 1, last_request=request, retry_base=before)
             state["undo"] = (committed["undo"] + [snapshot(committed)])[-12:]
@@ -269,7 +278,7 @@ class PromptAgent:
             self.sessions.end(session_id)
 
     def accept_interrogation(self, request: dict) -> dict:
-        """Confirm a raw caption without a model call; classify on the next edit."""
+        """Confirm a caption or compiled skill prompt without a model call."""
         sid = request.get("session_id", "")
         self.sessions.begin(sid)
         try:
@@ -282,6 +291,12 @@ class PromptAgent:
                 raise AgentError("反推导入方式必须是 replace 或 append")
             profile = self.profiles.get(request.get("profile") or "anima")
             locks = _section_list(request.get("locks", state["locks"]), "锁定")
+            options = request.get("options") or {}
+            if not isinstance(options, dict):
+                raise AgentError("反推选项必须是对象")
+            skill_id = request.get("expansion_skill") or options.get("expansion_skill") or request.get("skill") or ""
+            if not isinstance(skill_id, str):
+                raise AgentError("扩写 Skill 必须是文字")
             raw = request.get("prompt", "")
             if not isinstance(raw, str) or not raw.strip() or len(raw) > 12000:
                 raise AgentError("请先取得有效的反推 Prompt")
@@ -289,19 +304,26 @@ class PromptAgent:
                 raise AgentError("追加前请先 Convert 到当前目标 Profile")
             if action == "replace" and state["prompt"] and locks:
                 raise AgentError("替换会覆盖锁定内容，请先解除锁定或选择追加")
-            raw = profile.validate_snapshot(raw)
+            raw = validate_skill_prompt(profile, raw, skill_id)
+            layout = is_layout_prompt(raw, skill_id)
+            if action == "append" and state["prompt"] and (layout or
+                    is_layout_prompt(state["prompt"], state.get("prompt_skill", ""))):
+                raise AgentError("MOSS Layout 不能追加或拼接为文本；请选择替换，或重新扩写完整 Layout。")
             prompt, pending = raw, raw
             if action == "append" and state["prompt"]:
                 separator = ", " if profile.data["style"] == "tags" else " "
                 prompt = state["prompt"] + separator + raw
                 if state["unclassified_prompt"]:
                     pending = state["unclassified_prompt"] + separator + raw
-            prompt = profile.validate_snapshot(prompt)
+            if action == "append" and state["prompt"] and state.get("prompt_skill") == MOSS_SKILL_ID:
+                skill_id = MOSS_SKILL_ID
+            prompt = validate_skill_prompt(profile, prompt, skill_id)
             before = snapshot(state)
             if action == "replace":
                 state["sections"] = {name: [] for name in SECTIONS}
-            state.update(profile=profile.id, prompt=prompt, locks=locks, unclassified_prompt=pending,
-                         needs_classification=True, revision=revision + 1, last_request=None, retry_base=None)
+            state.update(profile=profile.id, prompt=prompt, prompt_skill=skill_id, locks=locks,
+                         unclassified_prompt="" if layout else pending, needs_classification=not layout,
+                         revision=revision + 1, last_request=None, retry_base=None)
             state["undo"] = (state["undo"] + [before])[-12:]
             message = "已替换为反推结果。" if action == "replace" else "已追加反推结果。"
             state["history"] = (state["history"] + [{"instruction": "导入图片反推", "message": message, "prompt": prompt}])[-12:]
@@ -319,6 +341,7 @@ class PromptAgent:
             if action == "undo":
                 if not state["undo"]:
                     raise AgentError("没有可撤销的编辑")
+                state["prompt_skill"] = ""  # Old snapshots predate skill metadata.
                 state.update(state["undo"].pop())
                 state.update(last_request=None, retry_base=None)
                 message = "已撤销上一轮。"

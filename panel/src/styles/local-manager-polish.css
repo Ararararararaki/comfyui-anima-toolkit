@@ -352,6 +352,15 @@
 .local-manager-polished .local-grid-meta > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .local-manager-polished .local-grid-version { color: var(--text); font-weight: 550; }
 .local-manager-polished .local-grid-base { color: var(--text2); }
+/* 底模只来自本地 safetensors 元数据（无 C 站匹配值）——自训/离线下载的 LoRA，
+   用淡底 + 左侧细线做低强度区分，颜色跟随宿主主题（--fg-color 系列优先，回落本项目令牌） */
+.local-manager-polished .local-grid-base.local-base-only {
+  padding: 1px 6px;
+  border-left: 2px solid var(--p-primary-color, var(--accent));
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--comfy-input-bg, var(--bg3)) 60%, transparent);
+  color: var(--fg-color, var(--text));
+}
 .local-manager-polished .local-grid-tags { display: flex; grid-column: 1 / -1; min-width: 0; max-width: none; gap: 4px; overflow: hidden; white-space: nowrap; }
 .local-manager-polished .local-grid-tags span { min-width: 0; max-width: min(45%, 110px); flex: 0 1 auto; overflow: hidden; padding: 2px 6px; border-radius: 5px; color: var(--text2); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -557,4 +566,36 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .local-manager-polished *, #toolboxLocalCategorySlot * { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+}
+
+/* ── 详情「基座模型」行（2026-10-19 合并本地元数据源）──
+   以前只有 C 站匹配成功才渲染该行；现在本地 safetensors 认出底模也会显示，
+   用来源徽标区分「Civitai / 本地」，避免把本地识别值误当成 C 站匹配值 */
+.local-manager-polished .detail-fi-base {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+}
+.local-manager-polished .detail-base-badge {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid var(--border-color, var(--border));
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--comfy-input-bg, var(--bg3)) 60%, transparent);
+  color: var(--descrip-text, var(--text2));
+  font-size: 10px;
+  line-height: 1.5;
+}
+.local-manager-polished .detail-base-badge.from-civitai {
+  border-color: var(--p-primary-color, var(--accent));
+  color: var(--p-primary-color, var(--accent));
+}
+.local-manager-polished .detail-base-value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-color, var(--text));
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

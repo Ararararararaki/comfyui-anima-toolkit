@@ -129,3 +129,41 @@
   .tk-pa-strategies .tk-pa-strategy { flex: 1; padding: 5px 6px; }
   .tk-pa-native-options { grid-template-columns: 1fr; }
 }
+
+/* Skill 管理弹层。dialog 挂在 body 下，拿不到 .tk-pa-panel 的作用域变量，这里重新声明。 */
+.tk-pa-dialog {
+  --tk-pa-text: var(--fg-color, var(--p-text-color, currentColor));
+  --tk-pa-muted: var(--descrip-text, var(--p-text-muted-color, currentColor));
+  --tk-pa-border: var(--border-color, var(--p-content-border-color, currentColor));
+  --tk-pa-input: var(--comfy-input-bg, var(--p-form-field-background, transparent));
+  --tk-pa-primary: var(--p-primary-color, var(--fg-color, currentColor));
+  width: min(520px, 92vw);
+  max-height: min(560px, 86vh);
+  padding: 0;
+  border: 1px solid var(--tk-pa-border);
+  border-radius: 10px;
+  background: var(--comfy-menu-bg, #1b1e20);
+  color: var(--tk-pa-text);
+  font: 12px/1.45 var(--font-family, system-ui, sans-serif);
+  overflow: hidden;
+}
+.tk-pa-dialog::backdrop { background: rgba(0, 0, 0, .55); }
+.tk-pa-dialog-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--tk-pa-border); }
+.tk-pa-dialog-head span { color: var(--tk-pa-muted); font-size: 11px; }
+.tk-pa-dialog-search { display: block; margin: 10px 12px 0; padding: 6px 9px; border: 1px solid var(--tk-pa-border); border-radius: 6px; background: var(--tk-pa-input); color: var(--tk-pa-text); font: inherit; }
+.tk-pa-dialog-search:focus { outline: none; border-color: var(--tk-pa-primary); }
+.tk-pa-dialog-list { display: flex; flex-direction: column; gap: 2px; max-height: 340px; overflow: auto; padding: 8px 12px; }
+.tk-pa-skill-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 5px; cursor: pointer; }
+.tk-pa-skill-row:hover { background: color-mix(in srgb, var(--tk-pa-primary) 10%, transparent); }
+.tk-pa-skill-name { min-width: 0; overflow-wrap: anywhere; font-size: 11px; }
+.tk-pa-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--tk-pa-border); }
+.tk-pa-dialog-save { border-color: var(--tk-pa-primary); background: color-mix(in srgb, var(--tk-pa-primary) 18%, var(--tk-pa-input)); font-weight: 600; }
+
+/* Configuration is outside the graph canvas and keeps native dialog focus behavior. */
+.tk-pa-settings-dialog { width: min(720px, 94vw); max-height: 88vh; }
+.tk-pa-settings-dialog .tk-pa-dialog-head { position: sticky; top: 0; background: var(--comfy-menu-bg); z-index: 1; }
+.tk-pa-settings-content { display: flex; flex-direction: column; gap: 16px; padding: 16px; max-height: calc(88vh - 66px); overflow: auto; }
+.tk-pa-settings-section { display: flex; flex-direction: column; gap: 12px; }
+.tk-pa-settings-dialog .tk-pa-input { width: 100%; box-sizing: border-box; }
+.tk-pa-panel > .tk-pa-actions { align-items: center; justify-content: space-between; }
+.tk-pa-field:has(> input[type=checkbox]) { flex-direction: row; align-items: center; justify-content: space-between; }

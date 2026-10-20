@@ -5,29 +5,31 @@ import { openModal, closeModal, confirmModal, promptModal } from '../components/
 import { showToast } from '../utils'
 import { icon } from '../utils/icon'
 import { getCivitaiHost, setCivitaiHost } from '../api/civitai'
+import { t, setLocale, getLocale, type MessageKey } from '../i18n'
 
 const SETTINGS_MODAL_ID = 'settingsModal'
+let cssDraftTimer: ReturnType<typeof setTimeout> | undefined
 
 // ── Background presets ──
-const BG_PRESETS: { name: string; gradient: string }[] = [
-  { name: '星空', gradient: 'radial-gradient(ellipse at 20% 50%, #1a1a3e 0%, #0a0a14 50%, #060610 100%)' },
-  { name: '极光', gradient: 'linear-gradient(135deg, #0a1628 0%, #0d2137 30%, #0a2a1f 60%, #0e1a2e 100%)' },
-  { name: '日落', gradient: 'linear-gradient(180deg, #1a0a1e 0%, #2d1520 30%, #3d1a15 60%, #1a0a0a 100%)' },
-  { name: '海洋', gradient: 'linear-gradient(180deg, #040a12 0%, #061420 40%, #081e2e 70%, #040a12 100%)' },
-  { name: '森林', gradient: 'linear-gradient(180deg, #060e08 0%, #0a1a0e 40%, #0e2414 70%, #060e08 100%)' },
-  { name: '霓虹', gradient: 'radial-gradient(ellipse at 50% 50%, #1a0a2e 0%, #0a0a1a 60%, #060610 100%)' },
+const BG_PRESETS: { name: MessageKey; gradient: string }[] = [
+  { name: 'settings.background.starry', gradient: 'radial-gradient(ellipse at 20% 50%, #1a1a3e 0%, #0a0a14 50%, #060610 100%)' },
+  { name: 'settings.background.aurora', gradient: 'linear-gradient(135deg, #0a1628 0%, #0d2137 30%, #0a2a1f 60%, #0e1a2e 100%)' },
+  { name: 'settings.background.sunset', gradient: 'linear-gradient(180deg, #1a0a1e 0%, #2d1520 30%, #3d1a15 60%, #1a0a0a 100%)' },
+  { name: 'settings.background.ocean', gradient: 'linear-gradient(180deg, #040a12 0%, #061420 40%, #081e2e 70%, #040a12 100%)' },
+  { name: 'settings.background.forest', gradient: 'linear-gradient(180deg, #060e08 0%, #0a1a0e 40%, #0e2414 70%, #060e08 100%)' },
+  { name: 'settings.background.neon', gradient: 'radial-gradient(ellipse at 50% 50%, #1a0a2e 0%, #0a0a1a 60%, #060610 100%)' },
 ]
 
 // ── Font options ──
-const FONT_OPTIONS = [
-  { label: '系统默认', value: '' },
-  { label: '系统无衬线', value: "'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" },
-  { label: '系统衬线', value: "Georgia, 'Songti SC', 'SimSun', serif" },
-  { label: '系统等宽', value: "'Cascadia Code', Consolas, 'Courier New', monospace" },
-  { label: 'Inter', value: "'Inter', sans-serif" },
-  { label: 'JetBrains Mono', value: "'JetBrains Mono', monospace" },
-  { label: 'Noto Sans SC', value: "'Noto Sans SC', sans-serif" },
-  { label: 'Source Han Sans', value: "'Source Han Sans SC', sans-serif" },
+const FONT_OPTIONS: { label: MessageKey; value: string }[] = [
+  { label: 'settings.font.default', value: '' },
+  { label: 'settings.font.sans', value: "'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" },
+  { label: 'settings.font.serif', value: "Georgia, 'Songti SC', 'SimSun', serif" },
+  { label: 'settings.font.mono', value: "'Cascadia Code', Consolas, 'Courier New', monospace" },
+  { label: 'settings.font.inter', value: "'Inter', sans-serif" },
+  { label: 'settings.font.jetbrains', value: "'JetBrains Mono', monospace" },
+  { label: 'settings.font.noto', value: "'Noto Sans SC', sans-serif" },
+  { label: 'settings.font.sourceHan', value: "'Source Han Sans SC', sans-serif" },
 ]
 
 const DEFAULT_TOOLBOX_ICON = '../img/anima-btn.jpg'
@@ -66,7 +68,7 @@ function setToolboxIconPreview(value: unknown) {
   }
   preview.src = custom || fallback
   const status = document.getElementById('toolboxIconStatus')
-  if (status) status.textContent = custom ? '当前使用自定义图标' : '当前使用默认菲比图标'
+  if (status) status.textContent = custom ? t('settings.toolbox.customActive') : t('settings.toolbox.defaultActive')
 }
 
 function renderSettingsHTML(s: AppSettings): string {
@@ -74,74 +76,86 @@ function renderSettingsHTML(s: AppSettings): string {
     <div class="modal-box settings-modal-box">
       <div class="settings-header">
         <div class="settings-heading">
-          <h3>${icon('settings', 18)} 设置</h3>
-          <p>所有改动即时作用于当前页面，并自动保存在本地。</p>
+          <h3>${icon('settings', 18)} ${t('settings.title')}</h3>
+          <p>${t('settings.intro')}</p>
         </div>
         <div class="settings-header-actions">
-          <span class="settings-live-status" id="settingsLiveStatus" role="status" aria-live="polite">已应用 · 已保存</span>
-          <button class="icon-btn" id="settingsCloseBtn" title="关闭">${icon('x', 18)}</button>
+          <span class="settings-live-status" id="settingsLiveStatus" role="status" aria-live="polite">${t('settings.status.saved')}</span>
+          <button class="icon-btn" id="settingsCloseBtn" title="${t('settings.close')}">${icon('x', 18)}</button>
         </div>
       </div>
       <div class="settings-shell">
         <div class="settings-body">
 
+        <div class="settings-section">
+          <h4 class="settings-section-title">${t('settings.language.title')}</h4>
+          <div class="settings-row">
+            <label class="settings-label" for="settingsLanguage">${t('settings.language.label')}</label>
+            <select class="settings-select" id="settingsLanguage">
+              <option value="zh-CN" ${s.locale === 'zh-CN' ? 'selected' : ''}>简体中文</option>
+              <option value="en" ${s.locale === 'en' ? 'selected' : ''}>English</option>
+            </select>
+          </div>
+          <p class="settings-help">${t('settings.language.help')}</p>
+        </div>
+
         <!-- 📷 Background -->
         <div class="settings-section">
-          <h4 class="settings-section-title">${icon('image', 14)} 背景图</h4>
+          <h4 class="settings-section-title">${icon('image', 14)} ${t('settings.background.title')}</h4>
           <div class="settings-row">
             <div class="settings-presets" id="bgPresets">
               ${BG_PRESETS.map(p => `
-                <button class="settings-preset-chip" data-gradient="${p.gradient}" title="${p.name}">
+                <button class="settings-preset-chip" data-gradient="${p.gradient}" title="${t(p.name)}">
                   <span class="settings-preset-preview" style="background:${p.gradient}"></span>
-                  <span>${p.name}</span>
+                  <span>${t(p.name)}</span>
                 </button>
               `).join('')}
             </div>
           </div>
           <div class="settings-row">
-            <label class="settings-label">图片</label>
+            <label class="settings-label">${t('settings.image')}</label>
             <div class="settings-actions-inline">
-              <button class="btn btn-sm" id="bgUploadBtn">${icon('upload', 12)} 上传</button>
-              <button class="btn btn-sm" id="bgUrlBtn">${icon('external', 12)} URL</button>
-              <button class="btn btn-sm btn-ghost" id="bgClearBtn">${icon('trash', 12)} 清除</button>
+              <button class="btn btn-sm" id="bgUploadBtn">${icon('upload', 12)} ${t('settings.upload')}</button>
+              <button class="btn btn-sm" id="bgUrlBtn">${icon('external', 12)} ${t('settings.url')}</button>
+              <button class="btn btn-sm btn-ghost" id="bgClearBtn">${icon('trash', 12)} ${t('settings.clear')}</button>
             </div>
             <input type="file" id="bgFileInput" accept="image/*" style="display:none">
           </div>
           <div class="settings-row">
-            <label class="settings-label">模式</label>
+            <label class="settings-label">${t('settings.mode')}</label>
             <select class="settings-select" id="bgMode">
-              <option value="cover" ${s.bgMode === 'cover' ? 'selected' : ''}>覆盖</option>
-              <option value="contain" ${s.bgMode === 'contain' ? 'selected' : ''}>包含</option>
-              <option value="center" ${s.bgMode === 'center' ? 'selected' : ''}>居中</option>
-              <option value="tile" ${s.bgMode === 'tile' ? 'selected' : ''}>平铺</option>
-              <option value="stretch" ${s.bgMode === 'stretch' ? 'selected' : ''}>拉伸</option>
+              <option value="cover" ${s.bgMode === 'cover' ? 'selected' : ''}>${t('settings.background.cover')}</option>
+              <option value="contain" ${s.bgMode === 'contain' ? 'selected' : ''}>${t('settings.background.contain')}</option>
+              <option value="center" ${s.bgMode === 'center' ? 'selected' : ''}>${t('settings.background.center')}</option>
+              <option value="tile" ${s.bgMode === 'tile' ? 'selected' : ''}>${t('settings.background.tile')}</option>
+              <option value="stretch" ${s.bgMode === 'stretch' ? 'selected' : ''}>${t('settings.background.stretch')}</option>
             </select>
           </div>
           <div class="settings-row">
-            <label class="settings-label">模糊 ${s.bgBlur}px</label>
+            <label class="settings-label">${t('settings.background.blur', { value: s.bgBlur })}</label>
             <input type="range" class="settings-range" id="bgBlur" min="0" max="20" step="1" value="${s.bgBlur}">
           </div>
           <div class="settings-row">
-            <label class="settings-label">透明度 ${Math.round(s.bgOpacity * 100)}%</label>
+            <label class="settings-label">${t('settings.background.opacity', { value: Math.round(s.bgOpacity * 100) })}</label>
             <input type="range" class="settings-range" id="bgOpacity" min="30" max="100" step="5" value="${Math.round(s.bgOpacity * 100)}">
           </div>
         </div>
 
         <!-- 🧩 Toolbox entry icon -->
         <div class="settings-section">
-          <h4 class="settings-section-title">${icon('image', 14)} 工具箱入口图标</h4>
+          <h4 class="settings-section-title">${icon('image', 14)} ${t('settings.toolbox.title')}</h4>
           <div class="settings-toolbox-icon-row">
             <div class="settings-toolbox-icon-preview">
-              <img id="toolboxIconPreview" src="${DEFAULT_TOOLBOX_ICON}" alt="工具箱入口图标预览">
+              <img id="toolboxIconPreview" src="${DEFAULT_TOOLBOX_ICON}" alt="${t('settings.toolbox.preview')}">
             </div>
             <div class="settings-toolbox-icon-content">
               <div class="settings-actions-inline">
-                <button class="btn btn-sm" id="toolboxIconUploadBtn">${icon('upload', 12)} 上传图片</button>
-                <button class="btn btn-sm" id="toolboxIconUrlBtn">${icon('external', 12)} 图片 URL</button>
-                <button class="btn btn-sm btn-ghost" id="toolboxIconResetBtn">${icon('refresh', 12)} 恢复菲比</button>
+                <button class="btn btn-sm" id="toolboxIconUploadBtn">${icon('upload', 12)} ${t('settings.toolbox.upload')}</button>
+                <button class="btn btn-sm" id="toolboxIconUrlBtn">${icon('external', 12)} ${t('settings.toolbox.url')}</button>
+                <button class="btn btn-sm btn-ghost" id="toolboxIconResetBtn">${icon('refresh', 12)} ${t('settings.toolbox.restore')}</button>
               </div>
-              <span id="toolboxIconStatus" class="settings-hint">当前使用默认菲比图标</span>
-              <span class="settings-hint">用于 ComfyUI 顶部打开工具箱的按钮；上传图片会压缩为 128px 图标并保存到当前浏览器。</span>
+              <span id="toolboxIconStatus" class="settings-hint">${t('settings.toolbox.defaultActive')}</span>
+              <span class="settings-hint">${t('settings.toolbox.help')}</span>
             </div>
           </div>
           <input type="file" id="toolboxIconFileInput" accept="image/*" style="display:none">
@@ -149,109 +163,109 @@ function renderSettingsHTML(s: AppSettings): string {
 
         <!-- 📐 Layout -->
         <div class="settings-section">
-          <h4 class="settings-section-title">布局</h4>
+          <h4 class="settings-section-title">${t('settings.layout.title')}</h4>
           <div class="settings-row">
-            <label class="settings-label">密度</label>
+            <label class="settings-label">${t('settings.layout.density')}</label>
             <div class="settings-btn-group">
-              <button class="settings-btn ${s.density === 'compact' ? 'active' : ''}" data-density="compact">紧凑</button>
-              <button class="settings-btn ${s.density === 'default' ? 'active' : ''}" data-density="default">默认</button>
-              <button class="settings-btn ${s.density === 'comfortable' ? 'active' : ''}" data-density="comfortable">宽松</button>
+              <button class="settings-btn ${s.density === 'compact' ? 'active' : ''}" data-density="compact">${t('settings.layout.compact')}</button>
+              <button class="settings-btn ${s.density === 'default' ? 'active' : ''}" data-density="default">${t('settings.layout.default')}</button>
+              <button class="settings-btn ${s.density === 'comfortable' ? 'active' : ''}" data-density="comfortable">${t('settings.layout.comfortable')}</button>
             </div>
           </div>
           <div class="settings-row">
-            <label class="settings-label">最小卡片宽度 ${s.cardSize}px</label>
+            <label class="settings-label">${t('settings.layout.cardSize', { value: s.cardSize })}</label>
             <input type="range" class="settings-range" id="cardSize" min="160" max="400" step="10" value="${s.cardSize}">
-            <span class="settings-hint">作用于 LoRA 探索 / Prompt 库 / Outputs 卡片</span>
+            <span class="settings-hint">${t('settings.layout.cardHelp')}</span>
           </div>
           <div class="settings-row">
-            <label class="settings-label">本地卡片宽度 ${s.localCardSize}px</label>
+            <label class="settings-label">${t('settings.layout.localCardSize', { value: s.localCardSize })}</label>
             <input type="range" class="settings-range" id="localCardSize" min="120" max="320" step="10" value="${s.localCardSize}">
-            <span class="settings-hint">作用于本地 lora 管理 / 服装库网格，调小可一行放更多卡片</span>
+            <span class="settings-hint">${t('settings.layout.localCardHelp')}</span>
           </div>
           <div class="settings-row">
-            <label class="settings-label">内容区宽度</label>
+            <label class="settings-label">${t('settings.layout.contentWidth')}</label>
             <div class="settings-btn-group">
-              <button class="settings-btn ${s.contentWidth === 'standard' ? 'active' : ''}" data-content-width="standard">标准</button>
-              <button class="settings-btn ${s.contentWidth === 'wide' ? 'active' : ''}" data-content-width="wide">宽</button>
-              <button class="settings-btn ${s.contentWidth === 'full' ? 'active' : ''}" data-content-width="full">全屏</button>
+              <button class="settings-btn ${s.contentWidth === 'standard' ? 'active' : ''}" data-content-width="standard">${t('settings.layout.standard')}</button>
+              <button class="settings-btn ${s.contentWidth === 'wide' ? 'active' : ''}" data-content-width="wide">${t('settings.layout.wide')}</button>
+              <button class="settings-btn ${s.contentWidth === 'full' ? 'active' : ''}" data-content-width="full">${t('settings.layout.full')}</button>
             </div>
           </div>
         </div>
 
         <!-- ◐ Surface opacity -->
         <div class="settings-section">
-          <h4 class="settings-section-title">界面质感</h4>
-          <p class="settings-help">调整表面底色浓度；数值越低，背景图越清晰，文字和边框仍保持可读。</p>
+          <h4 class="settings-section-title">${t('settings.surface.title')}</h4>
+          <p class="settings-help">${t('settings.surface.help')}</p>
           <div class="settings-row">
-            <label class="settings-label">面板底色浓度 ${Math.round(s.panelOpacity * 100)}%</label>
+            <label class="settings-label">${t('settings.surface.panelOpacity', { value: Math.round(s.panelOpacity * 100) })}</label>
             <input type="range" class="settings-range" id="panelOpacity" min="20" max="100" step="5" value="${Math.round(s.panelOpacity * 100)}">
           </div>
           <div class="settings-row">
-            <label class="settings-label">按钮底色浓度 ${Math.round(s.buttonOpacity * 100)}%</label>
+            <label class="settings-label">${t('settings.surface.buttonOpacity', { value: Math.round(s.buttonOpacity * 100) })}</label>
             <input type="range" class="settings-range" id="buttonOpacity" min="10" max="90" step="5" value="${Math.round(s.buttonOpacity * 100)}">
           </div>
         </div>
 
         <!-- ✨ Motion -->
         <div class="settings-section">
-          <h4 class="settings-section-title">动画</h4>
+          <h4 class="settings-section-title">${t('settings.motion.title')}</h4>
           <div class="settings-row">
-            <label class="settings-label">模式</label>
+            <label class="settings-label">${t('settings.mode')}</label>
             <div class="settings-btn-group">
-              <button class="settings-btn ${s.motionMode === 'full' ? 'active' : ''}" data-motion="full">完整</button>
-              <button class="settings-btn ${s.motionMode === 'reduced' ? 'active' : ''}" data-motion="reduced">减弱</button>
-              <button class="settings-btn ${s.motionMode === 'none' ? 'active' : ''}" data-motion="none">关闭</button>
+              <button class="settings-btn ${s.motionMode === 'full' ? 'active' : ''}" data-motion="full">${t('settings.motion.full')}</button>
+              <button class="settings-btn ${s.motionMode === 'reduced' ? 'active' : ''}" data-motion="reduced">${t('settings.motion.reduced')}</button>
+              <button class="settings-btn ${s.motionMode === 'none' ? 'active' : ''}" data-motion="none">${t('settings.motion.none')}</button>
             </div>
           </div>
           <div class="settings-row">
-            <label class="settings-label">速度 ${s.transitionSpeed}ms</label>
+            <label class="settings-label">${t('settings.motion.speed', { value: s.transitionSpeed })}</label>
             <input type="range" class="settings-range" id="transitionSpeed" min="0" max="500" step="25" value="${s.transitionSpeed}">
           </div>
         </div>
 
         <!-- 🔤 Typography -->
         <div class="settings-section">
-          <h4 class="settings-section-title">字体</h4>
+          <h4 class="settings-section-title">${t('settings.font.title')}</h4>
           <div class="settings-row settings-row-3col">
             <div>
-              <label class="settings-label">正文</label>
+              <label class="settings-label">${t('settings.font.body')}</label>
               <select class="settings-select" id="fontBody">
-                ${FONT_OPTIONS.map(f => `<option value="${f.value}" ${s.fontBody === f.value ? 'selected' : ''}>${f.label}</option>`).join('')}
+                ${FONT_OPTIONS.map(f => `<option value="${f.value}" ${s.fontBody === f.value ? 'selected' : ''}>${t(f.label)}</option>`).join('')}
               </select>
             </div>
             <div>
-              <label class="settings-label">标题</label>
+              <label class="settings-label">${t('settings.font.heading')}</label>
               <select class="settings-select" id="fontHeading">
-                ${FONT_OPTIONS.map(f => `<option value="${f.value}" ${s.fontHeading === f.value ? 'selected' : ''}>${f.label}</option>`).join('')}
+                ${FONT_OPTIONS.map(f => `<option value="${f.value}" ${s.fontHeading === f.value ? 'selected' : ''}>${t(f.label)}</option>`).join('')}
               </select>
             </div>
             <div>
-              <label class="settings-label">代码</label>
+              <label class="settings-label">${t('settings.font.code')}</label>
               <select class="settings-select" id="fontMono">
-                ${FONT_OPTIONS.map(f => `<option value="${f.value}" ${s.fontMono === f.value ? 'selected' : ''}>${f.label}</option>`).join('')}
+                ${FONT_OPTIONS.map(f => `<option value="${f.value}" ${s.fontMono === f.value ? 'selected' : ''}>${t(f.label)}</option>`).join('')}
               </select>
             </div>
           </div>
-          <p class="settings-help">系统字体无需联网即可生效；在线字体不可用时会自动回退。</p>
+          <p class="settings-help">${t('settings.font.help')}</p>
           <div class="settings-row">
-            <label class="settings-label">字号 ${s.fontSize}px</label>
+            <label class="settings-label">${t('settings.font.size', { value: s.fontSize })}</label>
             <input type="range" class="settings-range" id="fontSize" min="12" max="18" step="1" value="${s.fontSize}">
           </div>
           <div class="settings-row">
-            <label class="settings-label">行高 ${s.lineHeight.toFixed(1)}</label>
+            <label class="settings-label">${t('settings.font.lineHeight', { value: s.lineHeight.toFixed(1) })}</label>
             <input type="range" class="settings-range" id="lineHeight" min="12" max="20" step="1" value="${Math.round(s.lineHeight * 10)}">
           </div>
         </div>
 
         <!-- 🎨 Custom CSS -->
         <div class="settings-section">
-          <h4 class="settings-section-title">${icon('edit3', 14)} 自定义 CSS</h4>
-          <textarea class="settings-textarea" id="customCSS" placeholder="在此输入自定义 CSS 样式...">${s.customCSS}</textarea>
+          <h4 class="settings-section-title">${icon('edit3', 14)} ${t('settings.css.title')}</h4>
+          <textarea class="settings-textarea" id="customCSS" placeholder="${t('settings.css.placeholder')}">${s.customCSS}</textarea>
         </div>
 
         <!-- ⌨️ Shortcuts -->
         <div class="settings-section">
-          <h4 class="settings-section-title">快捷键</h4>
+          <h4 class="settings-section-title">${t('settings.shortcuts.title')}</h4>
           <div class="settings-shortcuts" id="shortcutsList">
             ${Object.entries(s.shortcuts).map(([key, val]) => `
               <div class="settings-shortcut-row">
@@ -264,15 +278,15 @@ function renderSettingsHTML(s: AppSettings): string {
 
         <!-- 📦 Import/Export -->
         <div class="settings-section">
-          <h4 class="settings-section-title">${icon('copy', 14)} 导入/导出</h4>
+          <h4 class="settings-section-title">${icon('copy', 14)} ${t('settings.transfer.title')}</h4>
           <div class="settings-row settings-actions-inline">
-            <button class="btn btn-sm" id="exportSettingsBtn">${icon('upload', 12)} 导出设置</button>
-            <button class="btn btn-sm" id="importSettingsBtn">${icon('download', 12)} 导入设置</button>
-            <button class="btn btn-sm btn-danger" id="resetSettingsBtn">${icon('refresh', 12)} 重置默认</button>
+            <button class="btn btn-sm" id="exportSettingsBtn">${icon('upload', 12)} ${t('settings.transfer.exportSettings')}</button>
+            <button class="btn btn-sm" id="importSettingsBtn">${icon('download', 12)} ${t('settings.transfer.importSettings')}</button>
+            <button class="btn btn-sm btn-danger" id="resetSettingsBtn">${icon('refresh', 12)} ${t('settings.transfer.reset')}</button>
           </div>
           <div class="settings-row settings-actions-inline">
-            <button class="btn btn-sm" id="exportAllBtn">${icon('upload', 12)} 导出全部数据</button>
-            <button class="btn btn-sm" id="importAllBtn">${icon('download', 12)} 导入全部数据</button>
+            <button class="btn btn-sm" id="exportAllBtn">${icon('upload', 12)} ${t('settings.transfer.exportAll')}</button>
+            <button class="btn btn-sm" id="importAllBtn">${icon('download', 12)} ${t('settings.transfer.importAll')}</button>
           </div>
           <input type="file" id="importFileInput" accept=".json" style="display:none">
           <input type="file" id="backupFileInput" accept=".json" style="display:none">
@@ -280,39 +294,39 @@ function renderSettingsHTML(s: AppSettings): string {
 
         <!-- 🔗 ComfyUI -->
         <div class="settings-section">
-          <h4 class="settings-section-title">${icon('settings', 14)} ComfyUI 集成</h4>
+          <h4 class="settings-section-title">${icon('settings', 14)} ${t('settings.comfy.title')}</h4>
           <div class="settings-row">
-            <label class="settings-label">桥接状态</label>
+            <label class="settings-label">${t('settings.comfy.bridge')}</label>
             <div class="settings-actions-inline">
-              <span id="comfyDirStatus" style="font-size:11px;color:var(--text3)">${s.comfyUIPath ? '已配置' : 'HTTP API (自动)'}</span>
-              <button class="btn btn-sm" id="comfyDirSelectBtn" style="display:none">${icon('folder', 12)} 桥接目录 (旧版)</button>
+              <span id="comfyDirStatus" style="font-size:11px;color:var(--text3)">${s.comfyUIPath ? t('settings.comfy.configured') : t('settings.comfy.automatic')}</span>
+              <button class="btn btn-sm" id="comfyDirSelectBtn" style="display:none">${icon('folder', 12)} ${t('settings.comfy.legacyDirectory')}</button>
             </div>
           </div>
           <div class="settings-row">
-            <label class="settings-label">C 站 API Key</label>
-            <input type="password" id="civitaiApiKey" value="${(() => { try { return localStorage.getItem('anima_civitai_token') || '' } catch { return '' } })()}" placeholder="只读权限即可，下载需登录的模型用" style="flex:1;padding:6px 8px;background:var(--bg1);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:11px;outline:none;">
+            <label class="settings-label">${t('settings.civitai.apiKey')}</label>
+            <input type="password" id="civitaiApiKey" value="${(() => { try { return localStorage.getItem('anima_civitai_token') || '' } catch { return '' } })()}" placeholder="${t('settings.civitai.keyPlaceholder')}" style="flex:1;padding:6px 8px;background:var(--bg1);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:11px;outline:none;">
           </div>
           <div class="settings-row">
-            <label class="settings-label">C 站线路</label>
+            <label class="settings-label">${t('settings.civitai.route')}</label>
             <select id="civitaiHost" style="flex:1;padding:6px 8px;background:var(--bg1);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:11px;outline:none;">
-              <option value="">默认 · civitai.com</option>
-              <option value="https://civitai.red">镜像 · civitai.red</option>
-              <option value="custom">自定义域名…</option>
+              <option value="">${t('settings.civitai.defaultRoute')}</option>
+              <option value="https://civitai.red">${t('settings.civitai.mirrorRoute')}</option>
+              <option value="custom">${t('settings.civitai.customRoute')}</option>
             </select>
           </div>
           <div class="settings-row" id="civitaiHostCustomRow" style="display:none">
-            <label class="settings-label">自定义域名</label>
+            <label class="settings-label">${t('settings.civitai.customDomain')}</label>
             <input type="text" id="civitaiHostCustomInput" value="${(() => { try { return localStorage.getItem('anima_civitai_host') || '' } catch { return '' } })()}" placeholder="https://civitai.com" style="flex:1;padding:6px 8px;background:var(--bg1);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:11px;outline:none;">
           </div>
           <div class="settings-row">
-            <span style="font-size:10px;color:var(--text3);line-height:1.5">线路只影响 API 请求与模型/作者链接（图片仍走 image.civitai.com，由 ComfyUI 后端代理）。部分网络下 civitai.com 不可达时可切镜像站，切换后需重新抓取才生效。</span>
+            <span style="font-size:10px;color:var(--text3);line-height:1.5">${t('settings.civitai.routeHelp')}</span>
           </div>
           <div class="settings-row">
-            <label class="settings-label">本地 LoRA 扫描目录</label>
-            <input type="text" id="localScanDir" value="${(() => { try { return (s.localScanDir || '') } catch { return '' } })()}" placeholder="留空 = 使用 ComfyUI 注册的 loras 目录（自动扫描用，静默免弹窗）" style="flex:1;padding:6px 8px;background:var(--bg1);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:11px;outline:none;">
+            <label class="settings-label">${t('settings.scan.directory')}</label>
+            <input type="text" id="localScanDir" value="${(() => { try { return (s.localScanDir || '') } catch { return '' } })()}" placeholder="${t('settings.scan.placeholder')}" style="flex:1;padding:6px 8px;background:var(--bg1);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:11px;outline:none;">
           </div>
           <div class="settings-row">
-            <span style="font-size:10px;color:var(--text3);line-height:1.5">面板由 ComfyUI 直接提供（clone 即用），无需额外部署。数据通过 HTTP API 与节点桥接。</span>
+            <span style="font-size:10px;color:var(--text3);line-height:1.5">${t('settings.comfy.help')}</span>
           </div>
         </div>
 
@@ -321,37 +335,37 @@ function renderSettingsHTML(s: AppSettings): string {
         <aside class="settings-preview" id="settingsPreview" data-density="${s.density}" data-motion="${s.motionMode}">
           <div class="settings-preview-header">
             <div>
-              <span class="settings-preview-label">预览</span>
-              <h4>当前设置</h4>
+              <span class="settings-preview-label">${t('settings.preview.label')}</span>
+              <h4>${t('settings.preview.title')}</h4>
             </div>
           </div>
-          <p class="settings-preview-intro">修改左侧参数，示例控件会立即同步。</p>
+          <p class="settings-preview-intro">${t('settings.preview.intro')}</p>
 
           <div class="settings-preview-stage">
             <div class="settings-preview-card">
-              <div class="settings-preview-card-meta"><span class="settings-preview-dot"></span><span>当前控件</span><span class="settings-preview-card-code">UI</span></div>
-              <span class="settings-preview-kicker">当前页面</span>
-              <h5 class="settings-preview-title">示例控件</h5>
-              <p class="settings-preview-body">字号、间距和动画速度会在这里即时反映。</p>
-              <div class="settings-preview-ruler"><span>最小卡片宽度</span><strong data-preview-value="cardSize">${s.cardSize}px</strong></div>
+              <div class="settings-preview-card-meta"><span class="settings-preview-dot"></span><span>${t('settings.preview.currentControl')}</span><span class="settings-preview-card-code">UI</span></div>
+              <span class="settings-preview-kicker">${t('settings.preview.page')}</span>
+              <h5 class="settings-preview-title">${t('settings.preview.sample')}</h5>
+              <p class="settings-preview-body">${t('settings.preview.body')}</p>
+              <div class="settings-preview-ruler"><span>${t('settings.preview.cardWidth')}</span><strong data-preview-value="cardSize">${s.cardSize}px</strong></div>
               <div class="settings-preview-ruler-track"><i></i></div>
               <div class="settings-preview-actions">
-                <span class="btn btn-primary settings-preview-button">保存偏好</span>
-                <span class="btn btn-ghost settings-preview-button">查看变化</span>
+                <span class="btn btn-primary settings-preview-button">${t('settings.preview.save')}</span>
+                <span class="btn btn-ghost settings-preview-button">${t('settings.preview.changes')}</span>
               </div>
-              <code class="settings-preview-code">font: <span data-preview-value="fontMono">系统等宽</span> · line <span data-preview-value="lineHeight">${s.lineHeight.toFixed(1)}</span></code>
+              <code class="settings-preview-code">${t('settings.preview.fontCode')}: <span data-preview-value="fontMono">${t('settings.font.mono')}</span> · ${t('settings.preview.lineCode')} <span data-preview-value="lineHeight">${s.lineHeight.toFixed(1)}</span></code>
             </div>
           </div>
 
           <div class="settings-preview-values">
-            <div><span>布局</span><strong data-preview-value="density">${s.density === 'compact' ? '紧凑' : s.density === 'comfortable' ? '宽松' : '默认'}</strong></div>
-            <div><span>动画</span><strong data-preview-value="motion">${s.motionMode === 'none' ? '关闭' : s.motionMode === 'reduced' ? '减弱' : `${s.transitionSpeed}ms`}</strong></div>
-            <div><span>字号</span><strong data-preview-value="fontSize">${s.fontSize}px</strong></div>
-            <div><span>正文</span><strong data-preview-value="fontBody">${settingsOptionLabel(s.fontBody)}</strong></div>
-            <div><span>面板底色</span><strong data-preview-value="panelOpacity">${Math.round(s.panelOpacity * 100)}%</strong></div>
-            <div><span>按钮底色</span><strong data-preview-value="buttonOpacity">${Math.round(s.buttonOpacity * 100)}%</strong></div>
+            <div><span>${t('settings.layout.title')}</span><strong data-preview-value="density">${s.density === 'compact' ? t('settings.layout.compact') : s.density === 'comfortable' ? t('settings.layout.comfortable') : t('settings.layout.default')}</strong></div>
+            <div><span>${t('settings.motion.title')}</span><strong data-preview-value="motion">${s.motionMode === 'none' ? t('settings.motion.none') : s.motionMode === 'reduced' ? t('settings.motion.reduced') : `${s.transitionSpeed}ms`}</strong></div>
+            <div><span>${t('settings.preview.fontSize')}</span><strong data-preview-value="fontSize">${s.fontSize}px</strong></div>
+            <div><span>${t('settings.font.body')}</span><strong data-preview-value="fontBody">${settingsOptionLabel(s.fontBody)}</strong></div>
+            <div><span>${t('settings.preview.panel')}</span><strong data-preview-value="panelOpacity">${Math.round(s.panelOpacity * 100)}%</strong></div>
+            <div><span>${t('settings.preview.button')}</span><strong data-preview-value="buttonOpacity">${Math.round(s.buttonOpacity * 100)}%</strong></div>
           </div>
-          <p class="settings-preview-note">关闭动画后，悬停位移和过渡会同步停用。</p>
+          <p class="settings-preview-note">${t('settings.preview.note')}</p>
         </aside>
       </div>
     </div>
@@ -360,16 +374,16 @@ function renderSettingsHTML(s: AppSettings): string {
 
 function shortcutLabel(key: string): string {
   const labels: Record<string, string> = {
-    search: '搜索',
-    toggleTheme: '切换主题',
-    copyPrompt: '复制 Prompt',
-    toggleSettings: '打开设置',
+    search: t('settings.shortcut.search'),
+    toggleTheme: t('settings.shortcut.toggleTheme'),
+    copyPrompt: t('settings.shortcut.copyPrompt'),
+    toggleSettings: t('settings.shortcut.toggleSettings'),
   }
   return labels[key] || key
 }
 
 function settingsOptionLabel(value: string): string {
-  return FONT_OPTIONS.find(option => option.value === value)?.label || '系统默认'
+  return t(FONT_OPTIONS.find(option => option.value === value)?.label || 'settings.font.default')
 }
 
 function updateSettingsPreview(st: AppSettings) {
@@ -388,8 +402,8 @@ function updateSettingsPreview(st: AppSettings) {
   preview.style.setProperty('--preview-card-width', `${previewWidth}%`)
 
   const values: Record<string, string> = {
-    density: st.density === 'compact' ? '紧凑' : st.density === 'comfortable' ? '宽松' : '默认',
-    motion: st.motionMode === 'none' ? '关闭' : st.motionMode === 'reduced' ? '减弱' : `${st.transitionSpeed}ms`,
+    density: st.density === 'compact' ? t('settings.layout.compact') : st.density === 'comfortable' ? t('settings.layout.comfortable') : t('settings.layout.default'),
+    motion: st.motionMode === 'none' ? t('settings.motion.none') : st.motionMode === 'reduced' ? t('settings.motion.reduced') : `${st.transitionSpeed}ms`,
     fontSize: `${st.fontSize}px`,
     fontBody: settingsOptionLabel(st.fontBody),
     fontMono: settingsOptionLabel(st.fontMono),
@@ -407,7 +421,7 @@ function updateSettingsPreview(st: AppSettings) {
 
   const status = document.getElementById('settingsLiveStatus')
   if (status) {
-    status.textContent = '已应用 · 已保存'
+    status.textContent = t('settings.status.saved')
     status.dataset.state = 'applied'
   }
 }
@@ -425,7 +439,7 @@ function syncSettingsRanges() {
 function markSettingsPending() {
   const status = document.getElementById('settingsLiveStatus')
   if (!status) return
-  status.textContent = '输入中 · 即将应用'
+  status.textContent = t('settings.status.pending')
   status.dataset.state = 'pending'
 }
 
@@ -629,6 +643,7 @@ function openSettings() {
   document.getElementById('settingsCloseBtn')?.addEventListener('click', () => closeModal(SETTINGS_MODAL_ID))
 
   // Bind all events
+  bindLanguageEvents()
   bindBackgroundEvents()
   setToolboxIconPreview(s.toolboxIcon)
   bindToolboxIconEvents()
@@ -646,7 +661,7 @@ function openSettings() {
     const v = ((e.target as HTMLInputElement).value || '').trim()
     if (v) localStorage.setItem('anima_civitai_token', v)
     else localStorage.removeItem('anima_civitai_token')
-    showToast(v ? '✅ C 站 API Key 已保存' : '已清除 C 站 API Key')
+    showToast(v ? t('settings.civitai.keySaved') : t('settings.civitai.keyCleared'))
   })
 
   // C 站线路：默认 civitai.com；部分网络不可达时可切镜像站（civitai.red）
@@ -668,12 +683,12 @@ function openSettings() {
       }
       if (hostCustomRow) hostCustomRow.style.display = 'none'
       setCivitaiHost(hostSel.value)
-      showToast(hostSel.value ? `✅ C 站线路已切到 ${getCivitaiHost()}` : '已恢复默认线路 civitai.com')
+      showToast(hostSel.value ? t('settings.civitai.routeChanged', { host: getCivitaiHost() }) : t('settings.civitai.defaultRestored'))
     })
     hostCustomInput?.addEventListener('change', () => {
       const v = hostCustomInput.value.trim()
       setCivitaiHost(v)
-      showToast(v ? `✅ C 站线路已切到 ${getCivitaiHost()}` : '已恢复默认线路 civitai.com')
+      showToast(v ? t('settings.civitai.routeChanged', { host: getCivitaiHost() }) : t('settings.civitai.defaultRestored'))
     })
   }
 
@@ -681,18 +696,51 @@ function openSettings() {
   document.getElementById('localScanDir')?.addEventListener('change', (e) => {
     const v = ((e.target as HTMLInputElement).value || '').trim()
     saveSettings({ localScanDir: v })
-    showToast(v ? '✅ 扫描目录已保存，下次扫描生效' : '已清除预设目录，将使用上次路径或 loras 目录')
+    showToast(v ? t('settings.scan.saved') : t('settings.scan.cleared'))
   })
 }
 
+function bindLanguageEvents() {
+  const select = document.getElementById('settingsLanguage') as HTMLSelectElement | null
+  select?.addEventListener('change', () => {
+    const locale = select.value === 'en' ? 'en' : 'zh-CN'
+    if (locale === getLocale()) return
+    const previous = getSettings()
+    const textarea = document.getElementById('customCSS') as HTMLTextAreaElement | null
+    clearTimeout(cssDraftTimer)
+    // CSS has a debounce; save its current draft before reinitializing the page.
+    if (!saveSettings({ locale, customCSS: textarea?.value ?? previous.customCSS })) {
+      saveSettings(previous)
+      select.value = previous.locale
+      showToast(t('settings.language.saveFailed'))
+      return
+    }
+    setLocale(locale)
+    window.location.reload()
+  })
+}
+
+function applyRestoredSettings() {
+  clearTimeout(cssDraftTimer)
+  const settings = loadSettings()
+  if (settings.locale !== getLocale()) {
+    setLocale(settings.locale)
+    window.location.reload()
+    return
+  }
+  applySettings(settings)
+  closeModal(SETTINGS_MODAL_ID)
+  setTimeout(openSettings, 100)
+}
+
 function readToolboxIconFile(file: File): Promise<string> {
-  if (!file.type.startsWith('image/')) return Promise.reject(new Error('请选择图片文件'))
+  if (!file.type.startsWith('image/')) return Promise.reject(new Error(t('settings.image.choose')))
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
-    reader.onerror = () => reject(new Error('图片读取失败'))
+    reader.onerror = () => reject(new Error(t('settings.image.readFailed')))
     reader.onload = () => {
       const image = new Image()
-      image.onerror = () => reject(new Error('图片解析失败'))
+      image.onerror = () => reject(new Error(t('settings.image.decodeFailed')))
       image.onload = () => {
         const max = 128
         const scale = Math.min(1, max / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height))
@@ -701,7 +749,7 @@ function readToolboxIconFile(file: File): Promise<string> {
         canvas.height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale))
         const context = canvas.getContext('2d')
         if (!context) {
-          reject(new Error('浏览器不支持图标处理'))
+          reject(new Error(t('settings.toolbox.unsupported')))
           return
         }
         context.drawImage(image, 0, 0, canvas.width, canvas.height)
@@ -725,30 +773,30 @@ function bindToolboxIconEvents() {
       const iconData = await readToolboxIconFile(file)
       saveSettings({ toolboxIcon: iconData })
       setToolboxIconPreview(iconData)
-      showToast('✅ 工具箱入口图标已保存')
+      showToast(t('settings.toolbox.saved'))
     } catch (error) {
-      showToast('⚠️ 图标设置失败：' + String((error as Error)?.message || error))
+      showToast(t('settings.toolbox.failedPrefix') + String((error as Error)?.message || error))
     }
   })
 
   document.getElementById('toolboxIconUrlBtn')?.addEventListener('click', async () => {
     const current = normalizeToolboxIcon(getSettings().toolboxIcon)
-    const value = await promptModal('输入工具箱入口图标 URL', current.startsWith('data:') ? '' : current, '支持 http(s) 图片地址；也可以直接上传图片')
+    const value = await promptModal(t('settings.toolbox.urlPrompt'), current.startsWith('data:') ? '' : current, t('settings.toolbox.urlHelp'))
     if (value == null) return
     const normalized = normalizeToolboxIcon(value)
     if (!normalized) {
-      showToast('⚠️ URL 无效，请填写 http(s) 图片地址')
+      showToast(t('settings.toolbox.invalidUrl'))
       return
     }
     saveSettings({ toolboxIcon: normalized })
     setToolboxIconPreview(normalized)
-    showToast('✅ 工具箱入口图标已保存')
+    showToast(t('settings.toolbox.saved'))
   })
 
   document.getElementById('toolboxIconResetBtn')?.addEventListener('click', () => {
     saveSettings({ toolboxIcon: '' })
     setToolboxIconPreview('')
-    showToast('已恢复默认菲比图标')
+    showToast(t('settings.toolbox.restored'))
   })
 }
 
@@ -778,7 +826,7 @@ function bindBackgroundEvents() {
         applySettings()
       } catch (e) {
         console.error('[背景图] IndexedDB 保存失败:', e)
-        showToast('⚠️ 背景图保存失败，请换一张较小的图片')
+        showToast(t('settings.background.saveFailed'))
       }
     }
     reader.readAsDataURL(file)
@@ -786,7 +834,7 @@ function bindBackgroundEvents() {
 
   // URL
   document.getElementById('bgUrlBtn')?.addEventListener('click', async () => {
-    const url = await promptModal('输入图片 URL', '', '支持 jpg/png/webp 格式')
+    const url = await promptModal(t('settings.background.urlPrompt'), '', t('settings.background.urlHelp'))
     if (url) {
       saveSettings({ bgImage: url })
       applySettings()
@@ -814,7 +862,7 @@ function bindBackgroundEvents() {
     const label = document.querySelector('label[for="bgBlur"], .settings-row label')
     // Update label text
     const row = (e.target as HTMLElement).closest('.settings-row')
-    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = `模糊 ${v}px`)
+    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = t('settings.background.blur', { value: v }))
   })
 
   // Opacity
@@ -823,7 +871,7 @@ function bindBackgroundEvents() {
     saveSettings({ bgOpacity: v })
     applySettings()
     const row = (e.target as HTMLElement).closest('.settings-row')
-    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = `透明度 ${Math.round(v * 100)}%`)
+    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = t('settings.background.opacity', { value: Math.round(v * 100) }))
   })
 }
 
@@ -843,7 +891,7 @@ function bindLayoutEvents() {
     saveSettings({ cardSize: v })
     applySettings()
     const row = (e.target as HTMLElement).closest('.settings-row')
-    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = `最小卡片宽度 ${v}px`)
+    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = t('settings.layout.cardSize', { value: v }))
   })
 
   document.getElementById('localCardSize')?.addEventListener('input', (e) => {
@@ -851,7 +899,7 @@ function bindLayoutEvents() {
     saveSettings({ localCardSize: v })
     applySettings()
     const row = (e.target as HTMLElement).closest('.settings-row')
-    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = `本地卡片宽度 ${v}px`)
+    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = t('settings.layout.localCardSize', { value: v }))
   })
 
   document.querySelectorAll('[data-content-width]').forEach(btn => {
@@ -865,18 +913,18 @@ function bindLayoutEvents() {
 }
 
 function bindSurfaceEvents() {
-  const bindOpacity = (id: 'panelOpacity' | 'buttonOpacity', key: 'panelOpacity' | 'buttonOpacity', label: string) => {
+  const bindOpacity = (id: 'panelOpacity' | 'buttonOpacity', key: 'panelOpacity' | 'buttonOpacity', labelKey: MessageKey) => {
     document.getElementById(id)?.addEventListener('input', (e) => {
       const percent = Number((e.target as HTMLInputElement).value)
       saveSettings({ [key]: percent / 100 })
       applySettings()
       const row = (e.target as HTMLElement).closest('.settings-row')
-      row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = `${label} ${percent}%`)
+      row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = t(labelKey, { value: percent }))
     })
   }
 
-  bindOpacity('panelOpacity', 'panelOpacity', '面板底色浓度')
-  bindOpacity('buttonOpacity', 'buttonOpacity', '按钮底色浓度')
+  bindOpacity('panelOpacity', 'panelOpacity', 'settings.surface.panelOpacity')
+  bindOpacity('buttonOpacity', 'buttonOpacity', 'settings.surface.buttonOpacity')
 }
 
 function bindMotionEvents() {
@@ -894,7 +942,7 @@ function bindMotionEvents() {
     saveSettings({ transitionSpeed: v })
     applySettings()
     const row = (e.target as HTMLElement).closest('.settings-row')
-    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = `速度 ${v}ms`)
+    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = t('settings.motion.speed', { value: v }))
   })
 }
 
@@ -916,24 +964,23 @@ function bindTypographyEvents() {
     saveSettings({ fontSize: v })
     applySettings()
     const row = (e.target as HTMLElement).closest('.settings-row')
-    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = `字号 ${v}px`)
+    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = t('settings.font.size', { value: v }))
   })
   document.getElementById('lineHeight')?.addEventListener('input', (e) => {
     const v = Number((e.target as HTMLInputElement).value) / 10
     saveSettings({ lineHeight: v })
     applySettings()
     const row = (e.target as HTMLElement).closest('.settings-row')
-    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = `行高 ${v.toFixed(1)}`)
+    row?.querySelector('.settings-label')?.textContent && ((row.querySelector('.settings-label') as HTMLElement).textContent = t('settings.font.lineHeight', { value: v.toFixed(1) }))
   })
 }
 
 function bindCSSEvents() {
   const textarea = document.getElementById('customCSS') as HTMLTextAreaElement
-  let timer: ReturnType<typeof setTimeout>
   textarea?.addEventListener('input', () => {
     markSettingsPending()
-    clearTimeout(timer)
-    timer = setTimeout(() => {
+    clearTimeout(cssDraftTimer)
+    cssDraftTimer = setTimeout(() => {
       saveSettings({ customCSS: textarea.value })
       applySettings()
     }, 500)
@@ -950,7 +997,7 @@ function bindShortcutEvents() {
     if (recording) return
     recording = true
     currentAction = btn.dataset.action || ''
-    btn.textContent = '按下快捷键...'
+    btn.textContent = t('settings.shortcut.record')
     btn.classList.add('recording')
 
     const handler = (ev: KeyboardEvent) => {
@@ -997,10 +1044,7 @@ function bindImportExportEvents() {
     const text = await file.text()
     const ok = importSettings(text)
     if (ok) {
-      applySettings(loadSettings())
-      closeModal(SETTINGS_MODAL_ID)
-      // Re-open to refresh UI
-      setTimeout(openSettings, 100)
+      applyRestoredSettings()
     }
   })
 
@@ -1016,9 +1060,9 @@ function bindImportExportEvents() {
       a.download = `anima-backup-${new Date().toISOString().slice(0, 10)}.json`
       a.click()
       URL.revokeObjectURL(url)
-      showToast('✅ 已导出全部数据（含 Prompt 库，不含缩略图）')
+      showToast(t('settings.transfer.exported'))
     } catch (e) {
-      showToast('⚠️ 导出失败：' + String((e && (e as Error).message) || e))
+      showToast(t('settings.transfer.exportFailedPrefix') + String((e && (e as Error).message) || e))
     }
   })
 
@@ -1043,23 +1087,19 @@ function bindImportExportEvents() {
     } catch (e) { /* 自动备份失败不阻塞导入 */ }
     const res = await importAll(text)
     if (res.ok) {
-      applySettings(loadSettings())
-      closeModal(SETTINGS_MODAL_ID)
-      setTimeout(openSettings, 100)
-      showToast('✅ 全部数据已恢复')
+      applyRestoredSettings()
+      showToast(t('settings.transfer.restored'))
     } else {
-      showToast('⚠️ 导入失败：' + (res.error || '未知错误'))
+      showToast(t('settings.transfer.importFailedPrefix') + (res.error || t('settings.transfer.unknownError')))
     }
   })
 
   // Reset
   document.getElementById('resetSettingsBtn')?.addEventListener('click', async () => {
-    const ok = await confirmModal('重置所有设置', '将恢复默认设置，自定义背景、CSS、快捷键等将丢失。')
+    const ok = await confirmModal(t('settings.transfer.resetTitle'), t('settings.transfer.resetBody'))
     if (ok) {
       resetSettings()
-      applySettings()
-      closeModal(SETTINGS_MODAL_ID)
-      setTimeout(openSettings, 100)
+      applyRestoredSettings()
     }
   })
 }

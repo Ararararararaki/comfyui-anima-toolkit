@@ -538,13 +538,13 @@ h1::after { content: '/ LOCAL KIT'; margin-left: 4px; color: var(--accent); font
 .settings-preview-title { margin: 7px 0 7px; line-height: 1.12; }
 .settings-preview-title { font-size: clamp(20px, calc(var(--font-size-base, 14px) + 7px), 28px); }
 .settings-preview-body { margin: 0; color: var(--text2); font-family: var(--font-body, var(--font-default)); font-size: var(--font-size-base, 14px); line-height: var(--line-height, 1.6); }
-.settings-preview-ruler { display: flex; align-items: baseline; justify-content: space-between; margin-top: 18px; color: var(--text3); font-size: 10px; }
+.settings-preview-ruler { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; justify-content: space-between; margin-top: 18px; color: var(--text3); font-size: 10px; }
 .settings-preview-ruler strong { color: var(--text); font-family: var(--font-mono, monospace); font-size: 11px; }
 .settings-preview-ruler-track { height: 5px; margin-top: 7px; overflow: hidden; border-radius: 999px; background: var(--surface-muted); }
 .settings-preview-ruler-track { background: var(--surface-muted); }
 .settings-preview-ruler-track i { background: var(--accent); }
-.settings-preview-actions { display: flex; gap: 8px; margin-top: 18px; }
-.settings-preview-button { flex: 1; min-height: 34px; padding: 8px 10px; border-radius: 13px 10px 12px 9px; font-size: 10px; }
+.settings-preview-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.settings-preview-button { flex: 1 1 80px; min-height: 34px; padding: 8px 10px; border-radius: 13px 10px 12px 9px; font-size: 10px; white-space: normal; text-align: center; }
 .settings-preview-code { display: block; margin-top: 16px; color: var(--text3); font-family: var(--font-mono, monospace); font-size: 9px; line-height: 1.45; }
 .settings-preview-values { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 15px; }
 .settings-preview-values > div { display: flex; min-width: 0; flex-direction: column; gap: 4px; padding: 11px; border-color: var(--border); border-radius: 14px 10px 13px 11px; background: var(--surface); transition: transform var(--transition-fast) var(--ease-out), border-color var(--transition-normal) var(--ease-standard); }

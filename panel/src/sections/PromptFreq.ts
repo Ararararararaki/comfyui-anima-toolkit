@@ -1,3 +1,4 @@
+import { t as tr } from '../i18n'
 import { esc, showToast, copyText, icon, setBtnIcon } from '../utils'
 import { useOutputStore } from '../store/outputStore'
 import { addPrompt, generatePromptId } from '../store/prompts'
@@ -14,18 +15,18 @@ const _transCache = new Map<string, string>()
 
 // ── 翻译源（与后端 __init__.py /api/translate 的 source 参数一一对应）──
 const TRANS_SOURCES = [
-  { id: 'auto', label: '自动' },
-  { id: 'local', label: '本地词典' },
+  { id: 'auto', label: tr("workspace.auto2") },
+  { id: 'local', label: tr("workspace.localDictionary") },
   { id: 'deeplx', label: 'DeepLX' },
   { id: 'mymemory', label: 'MyMemory' },
   { id: 'google', label: 'Google' },
-  { id: 'dashscope', label: '通义' },
+  { id: 'dashscope', label: tr("workspace.qwen") },
 ]
 const TRANS_SOURCE_KEY = 'anima_tk_trans_source'
 
 function transSourceLabel(): string {
   const hit = TRANS_SOURCES.find(s => s.id === _transSource)
-  return hit ? hit.label : '自动'
+  return hit ? hit.label : tr("workspace.auto2")
 }
 
 function readSavedTransSource(): string {
@@ -98,7 +99,7 @@ async function parsePngFile(file: File): Promise<UploadedPng | null> {
       sent: false,
     }
   } catch {
-    showToast('图片元数据读取失败，请重试')
+    showToast(tr("workspace.couldNotReadImageMetadataPleaseRetry"))
     return null
   }
 }
@@ -147,7 +148,7 @@ function buildSrcMenu(anchor: HTMLElement): void {
   const menu = document.createElement('div')
   menu.className = 'trans-src-menu'
   menu.innerHTML = TRANS_SOURCES.map(s =>
-    `<button type="button" class="trans-src-item ${s.id === _transSource ? 'active' : ''}" data-src="${s.id}" title="${s.id === 'auto' ? '按 本地词典 → DeepLX → MyMemory → Google → 通义 顺序自动回退' : ''}">${s.id === _transSource ? icon('check', 12) : ''}<span>${esc(s.label)}</span></button>`
+    `<button type="button" class="trans-src-item ${s.id === _transSource ? 'active' : ''}" data-src="${s.id}" title="${s.id === 'auto' ? tr("workspace.tryLocalDictionaryDeeplxMymemoryGoogleQwen") : ''}">${s.id === _transSource ? icon('check', 12) : ''}<span>${esc(s.label)}</span></button>`
   ).join('')
   const rect = anchor.getBoundingClientRect()
   menu.style.cssText = `position:fixed;z-index:99999;top:${rect.bottom + 4}px;left:${Math.max(4, Math.min(rect.left, window.innerWidth - 168))}px;`
@@ -165,7 +166,7 @@ function buildSrcMenu(anchor: HTMLElement): void {
     document.querySelectorAll<HTMLElement>('.prompt-freq-png-seg-trans').forEach(s => {
       s.removeAttribute('data-src')
     })
-    showToast('翻译源：' + transSourceLabel())
+    showToast(tr("workspace.translationSource") + transSourceLabel())
   })
   document.body.appendChild(menu)
   _srcMenuEl = menu
@@ -191,7 +192,7 @@ function buildSrcMenu(anchor: HTMLElement): void {
 // ── 保存到 Prompt 库 ──
 
 async function savePngToLibrary(p: UploadedPng): Promise<void> {
-  if (!p.positive.trim() || p.metadata.promptStatus === 'ambiguous' || p.metadata.promptStatus === 'missing') { showToast('该图片未解析出可靠 Prompt'); return }
+  if (!p.positive.trim() || p.metadata.promptStatus === 'ambiguous' || p.metadata.promptStatus === 'missing') { showToast(tr("workspace.noReliablePromptWasParsedFromThis2")); return }
 
   const displayName = p.fileName.replace(/\.(png|jpe?g|webp)$/i, '') || '图片 Prompt'
   const params = [
@@ -223,7 +224,7 @@ async function savePngToLibrary(p: UploadedPng): Promise<void> {
   await addPrompt(entry)
   p.saved = true
   renderPromptFreq()
-  showToast('✅ 已保存到 Prompt 库，可在顶部「Prompt 库」查看')
+  showToast(tr("workspace.savedToThePromptLibraryOpenIt2"))
 }
 
 // ── 发送到 Outputs ──
@@ -232,7 +233,7 @@ async function savePngToLibrary(p: UploadedPng): Promise<void> {
 function sendPngToOutputs(p: UploadedPng) {
   const state = useOutputStore.getState()
   if (!state.dirHandle) {
-    showToast('⚠️ 请先在 Outputs 中选择输出目录')
+    showToast(tr("workspace.selectAnOutputFolderInOutputsFirst2"))
     return
   }
   showCategoryPick(async (cat) => {
@@ -240,16 +241,16 @@ function sendPngToOutputs(p: UploadedPng) {
       await doSendPngToOutputs(p, cat)
       p.sent = true
       renderPromptFreq()
-      showToast(cat ? `✅ 已发送到 Outputs（分类：${cat}）` : '✅ 已发送到 Outputs')
+      showToast(cat ? tr("workspace.sentToOutputsCategory", { p0: cat }) : tr("workspace.sentToOutputs2"))
     } catch (e: any) {
-      showToast('❌ 发送失败: ' + (e?.message || e))
+      showToast(tr("workspace.couldNotSend") + (e?.message || e))
     }
   })
 }
 
 async function doSendPngToOutputs(p: UploadedPng, category: string): Promise<void> {
   const dirHandle = useOutputStore.getState().dirHandle
-  if (!dirHandle) throw new Error('未选择输出目录')
+  if (!dirHandle) throw new Error(tr("workspace.noOutputFolderSelected"))
 
   // 文件名去重（避免覆盖已有文件）
   const used = new Set(useOutputStore.getState().files.map(f => f.filename))
@@ -299,7 +300,7 @@ function showCategoryPick(onPick: (cat: string) => void) {
   const panel = document.createElement('div')
   // 主题化替代行内硬编码深色（#1b1d22/#333 在 mono-light 下违和）
   panel.style.cssText = 'background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:14px;width:250px;max-height:70vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.5);'
-  panel.innerHTML = '<h4 style="margin:0 0 8px;font-size:13px">选择分类</h4>'
+  panel.innerHTML = `<h4 style="margin:0 0 8px;font-size:13px">${tr("workspace.chooseCategory")}</h4>`
   const mk = (label: string, val: string) => {
     const btn = document.createElement('button')
     btn.textContent = label
@@ -314,10 +315,10 @@ function showCategoryPick(onPick: (cat: string) => void) {
   const newWrap = document.createElement('div')
   newWrap.style.cssText = 'display:flex;gap:6px;margin-top:8px;'
   const input = document.createElement('input')
-  input.placeholder = '新建分类…'
+  input.placeholder = tr("workspace.newCategory")
   input.style.cssText = 'flex:1;padding:6px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;outline:none;'
   const addBtn = document.createElement('button')
-  addBtn.textContent = '新建'
+  addBtn.textContent = tr("workspace.create")
   addBtn.style.cssText = 'padding:6px 10px;border:none;border-radius:6px;cursor:pointer;font-size:12px;background:var(--accent);color:#fff;'
   addBtn.onclick = () => { const v = input.value.trim(); if (v) { overlay.remove(); onPick(v) } }
   input.onkeydown = (e) => { if (e.key === 'Enter') addBtn.click() }
@@ -345,7 +346,7 @@ export function renderPromptFreq() {
 
   // 已上传图片的提示词与保存配置
   if (_uploadedPngs.length > 0) {
-    html += `<div class="prompt-freq-png-section"><h4>${icon('image', 14)} 上传的图片 (${_uploadedPngs.length})</h4>`
+    html += `<div class="prompt-freq-png-section"><h4>${tr("workspace.uploadedImages", { p0: icon('image', 14), p1: _uploadedPngs.length })}</h4>`
     for (const p of _uploadedPngs) {
       const pngId = esc(p.id)
       const posSegments = p.positive ? p.positive.split(/[,，]/).map(t => t.trim()).filter(Boolean) : []
@@ -354,19 +355,19 @@ export function renderPromptFreq() {
 
       html += `<div class="prompt-freq-png-card" data-uploaded-id="${pngId}">
         <div class="prompt-freq-png-header">
-          ${p.previewThumb ? `<img class="prompt-freq-png-thumb" src="${esc(p.previewThumb)}" alt="" data-pid="${esc(p.id)}" title="点击放大预览">` : ''}
-          <span>${esc(p.fileName)}${p.uiWorkflow ? `<span class="prompt-freq-png-flow" title="已内嵌 UI 格式工作流，可导入 ComfyUI">${icon('file-text', 12)} UI</span>` : (p.workflowJson ? `<span class="prompt-freq-png-flow" title="仅 API 执行参数，无画布工作流">${icon('file-text', 12)} API</span>` : '')}</span>
+          ${p.previewThumb ? `<img class="prompt-freq-png-thumb" src="${esc(p.previewThumb)}" alt="" data-pid="${esc(p.id)}" title="${tr("workspace.clickToPreview")}">` : ''}
+          <span>${esc(p.fileName)}${p.uiWorkflow ? `<span class="prompt-freq-png-flow" title="${tr("workspace.containsAUiWorkflowThatCanBe")}">${icon('file-text', 12)} UI</span>` : (p.workflowJson ? `<span class="prompt-freq-png-flow" title="${tr("workspace.apiParametersOnlyNoCanvasWorkflow")}">${icon('file-text', 12)} API</span>` : '')}</span>
           <span class="prompt-freq-png-ops">
-            <button class="prompt-freq-png-send ${p.sent ? 'sent' : ''} ${!state.dirHandle ? 'needs-dir' : ''}" data-pid="${esc(p.id)}" title="${p.sent ? '已发送到 Outputs' : (state.dirHandle ? '发送到 Outputs（先选分类再保存文件）' : '未选择输出目录，点击前往 Outputs 选择')}" ${p.sent ? 'disabled' : ''}>${p.sent ? icon('check', 12) + '已发送' : (state.dirHandle ? icon('upload', 12) + '发送到 Outputs' : icon('folder', 12) + '选择输出目录')}</button>
-            <button class="prompt-freq-png-save ${p.saved ? 'saved' : ''} ${!canSave ? 'no-prompt' : ''}" data-pid="${esc(p.id)}" title="${p.saved ? '已保存到 Prompt 库，可在顶部「Prompt 库」查看' : (canSave ? '保存到 Prompt 库' : '该图未解析出可靠 Prompt，无法保存')}" ${p.saved || !canSave ? 'disabled' : ''}>${p.saved ? icon('check', 12) + '已保存' : icon('book', 12) + '保存到 Prompt 库'}</button>
-            <button class="prompt-freq-png-del" data-pid="${esc(p.id)}" title="移除" aria-label="移除">${icon('x', 12)}</button>
+            <button class="prompt-freq-png-send ${p.sent ? 'sent' : ''} ${!state.dirHandle ? 'needs-dir' : ''}" data-pid="${esc(p.id)}" title="${p.sent ? tr("workspace.sentToOutputs") : (state.dirHandle ? tr("workspace.sendToOutputsChooseACategoryBefore") : tr("workspace.noOutputFolderSelectedClickToChoose"))}" ${p.sent ? 'disabled' : ''}>${p.sent ? icon('check', 12) + tr("workspace.sent") : (state.dirHandle ? icon('upload', 12) + tr("workspace.sendToOutputs") : icon('folder', 12) + tr("workspace.chooseOutputFolder"))}</button>
+            <button class="prompt-freq-png-save ${p.saved ? 'saved' : ''} ${!canSave ? 'no-prompt' : ''}" data-pid="${esc(p.id)}" title="${p.saved ? tr("workspace.savedToThePromptLibraryOpenIt") : (canSave ? tr("workspace.saveToPromptLibrary") : tr("workspace.noReliablePromptWasParsedFromThis"))}" ${p.saved || !canSave ? 'disabled' : ''}>${p.saved ? icon('check', 12) + tr("workspace.saved") : icon('book', 12) + tr("workspace.saveToPromptLibrary")}</button>
+            <button class="prompt-freq-png-del" data-pid="${esc(p.id)}" title="${tr("workspace.remove")}" aria-label="${tr("workspace.remove")}">${icon('x', 12)}</button>
           </span>
         </div>
         ${renderMetadataReliability(p.metadata)}`
 
       // 正面提示词 — 每个逗号片段独立卡片
       if (posSegments.length > 0) {
-        html += `<div class="prompt-freq-png-label-bar">正 Prompt</div>
+        html += `<div class="prompt-freq-png-label-bar">${tr("workspace.positivePrompt")}</div>
           <div class="prompt-freq-png-segments" id="seg_pos_${pngId}" data-role="pos">
             ${posSegments.map((seg, si) => {
               const safe = esc(seg)
@@ -377,15 +378,15 @@ export function renderPromptFreq() {
             }).join('')}
           </div>
           <div class="prompt-freq-png-actions">
-            <button class="prompt-freq-png-copyall" data-text="${esc(p.positive)}">${icon('copy', 12)}复制全部</button>
-            <button class="prompt-freq-png-transall" data-role="pos">${icon('globe', 12)}翻译全部</button>
-            <button class="prompt-freq-png-src" data-role="pos" title="选择翻译源（当前：${esc(transSourceLabel())}）">${icon('languages', 11)}<span>${esc(transSourceLabel())}</span>${icon('chevronDown', 10)}</button>
+            <button class="prompt-freq-png-copyall" data-text="${esc(p.positive)}">${tr("workspace.copyAll", { p3: icon('copy', 12) })}</button>
+            <button class="prompt-freq-png-transall" data-role="pos">${tr("workspace.translateAll2", { p4: icon('globe', 12) })}</button>
+            <button class="prompt-freq-png-src" data-role="pos" title="${tr("workspace.translationSourceCurrent", { p5: esc(transSourceLabel()) })}">${icon('languages', 11)}<span>${esc(transSourceLabel())}</span>${icon('chevronDown', 10)}</button>
           </div>`
       }
 
       // 负面提示词
       if (negSegments.length > 0) {
-        html += `<div class="prompt-freq-png-label-bar" style="margin-top:8px">负 Prompt</div>
+        html += `<div class="prompt-freq-png-label-bar" style="margin-top:8px">${tr("workspace.negativePrompt2")}</div>
           <div class="prompt-freq-png-segments" id="seg_neg_${pngId}" data-role="neg">
             ${negSegments.map((seg, si) => {
               const safe = esc(seg)
@@ -396,28 +397,28 @@ export function renderPromptFreq() {
             }).join('')}
           </div>
           <div class="prompt-freq-png-actions">
-            <button class="prompt-freq-png-copyall" data-text="${esc(p.negative)}">${icon('copy', 12)}复制全部</button>
-            <button class="prompt-freq-png-transall" data-role="neg">${icon('globe', 12)}翻译全部</button>
-            <button class="prompt-freq-png-src" data-role="neg" title="选择翻译源（当前：${esc(transSourceLabel())}）">${icon('languages', 11)}<span>${esc(transSourceLabel())}</span>${icon('chevronDown', 10)}</button>
+            <button class="prompt-freq-png-copyall" data-text="${esc(p.negative)}">${tr("workspace.copyAll", { p3: icon('copy', 12) })}</button>
+            <button class="prompt-freq-png-transall" data-role="neg">${tr("workspace.translateAll2", { p4: icon('globe', 12) })}</button>
+            <button class="prompt-freq-png-src" data-role="neg" title="${tr("workspace.translationSourceCurrent", { p5: esc(transSourceLabel()) })}">${icon('languages', 11)}<span>${esc(transSourceLabel())}</span>${icon('chevronDown', 10)}</button>
           </div>`
       }
 
       // LoRA 标签（点击复制）
       if (p.loras.length > 0) {
         const loraList = p.loraTags?.length ? p.loraTags : p.loras
-        html += `<div class="prompt-freq-png-label-bar" style="margin-top:8px">🧩 LoRA（点击复制 ${p.loraTags?.length ? '标签' : '名称'}）</div>
+        html += `<div class="prompt-freq-png-label-bar" style="margin-top:8px">${tr("workspace.loraClickToCopy", { p0: p.loraTags?.length ? tr("workspace.tag") : tr("workspace.name") })}</div>
           <div class="prompt-freq-png-loras">${loraList.map(l => `<code class="local-tw-item lora" data-copy="${esc(l)}">${esc(l)}</code>`).join('')}</div>
           <div class="prompt-freq-png-actions">
-            <button class="prompt-freq-png-copyall-lora" data-text="${esc(loraList.join(', '))}">${icon('copy', 12)}复制全部 LoRA</button>
+            <button class="prompt-freq-png-copyall-lora" data-text="${esc(loraList.join(', '))}">${tr("workspace.copyAllLoras", { p3: icon('copy', 12) })}</button>
           </div>`
       }
 
-      html += `<details style="margin-top:10px;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg2)"><summary style="cursor:pointer;color:var(--text2);font-size:12px">${icon('slidersHorizontal', 12)} 生成配置与原始字段</summary><div style="margin-top:12px">${renderGenerationDetails(p.metadata, false)}</div></details>`
+      html += `<details style="margin-top:10px;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg2)"><summary style="cursor:pointer;color:var(--text2);font-size:12px">${tr("workspace.generationSettingsAndRawMetadata", { p0: icon('slidersHorizontal', 12) })}</summary><div style="margin-top:12px">${renderGenerationDetails(p.metadata, false)}</div></details>`
 
       // 工作流操作（下载 .json 拖入 ComfyUI 导入最稳妥，不再提供复制——画布 Ctrl+V 易误导）
       if (p.uiWorkflow || p.workflowJson) {
         html += `<div class="prompt-freq-png-actions" style="margin-top:8px">
-          <button class="prompt-freq-png-dlflow" data-pid="${esc(p.id)}" title="保存为 .json 文件，拖入 ComfyUI 画布即可导入">${icon('download', 12)} 下载工作流 .json</button>
+          <button class="prompt-freq-png-dlflow" data-pid="${esc(p.id)}" title="${tr("workspace.saveAsJsonThenDragItOnto")}">${tr("workspace.downloadWorkflowJson", { p1: icon('download', 12) })}</button>
         </div>`
       }
 
@@ -428,12 +429,12 @@ export function renderPromptFreq() {
 
   // 上传区域始终可用。
   html += `<div class="prompt-freq-upload" id="promptFreqUpload">
-    <span>${icon('upload', 16)} 拖拽或点击上传图片 · PNG / JPEG / WebP</span>
+    <span>${tr("workspace.dropImagesHereOrClickToUpload", { p0: icon('upload', 16) })}</span>
   </div>`
 
   if (!html && state.files.length === 0 && _uploadedPngs.length === 0) {
     // 无任何数据：显示空态提示 + 上传区
-    el.innerHTML = '<div class="prompt-freq-empty"><div class="big">' + icon('file-text', 28) + '</div><p>暂无数据</p><p class="sub">请先在 Outputs 中扫描图片目录，或上传 PNG / JPEG / WebP 图片</p></div>' + html
+    el.innerHTML = '<div class="prompt-freq-empty"><div class="big">' + icon('file-text', 28) + `</div><p>${tr("workspace.noDataYet")}</p><p class="sub">${tr("workspace.scanAFolderInOutputsOrUpload")}</p></div>` + html
     return
   }
 
@@ -455,7 +456,7 @@ export function bindPromptFreqEvents() {
     const seg = target.closest('.prompt-freq-png-seg') as HTMLElement
     if (seg) {
       const txt = seg.dataset.copy
-      if (txt) { copyText(txt + ', '); showToast(`已复制: ${txt},`) }
+      if (txt) { copyText(txt + ', '); showToast(tr("workspace.copied3", { p0: txt })) }
       return
     }
 
@@ -463,7 +464,7 @@ export function bindPromptFreqEvents() {
     const copyAllBtn = target.closest('.prompt-freq-png-copyall') as HTMLElement
     if (copyAllBtn) {
       const txt = copyAllBtn.dataset.text
-      if (txt) { copyText(txt + ','); showToast('已复制全部') }
+      if (txt) { copyText(txt + ','); showToast(tr("workspace.copiedAll")) }
       return
     }
 
@@ -499,7 +500,7 @@ export function bindPromptFreqEvents() {
       }
       if (texts.length === 0) return
 
-      setBtnIcon(transAllBtn, 'spinner', '翻译中…')
+      setBtnIcon(transAllBtn, 'spinner', tr("workspace.translating"))
 
       // 并行翻译本区片段（带内存缓存，节省配额）
       const results = await Promise.all(texts.map(t => translateText(t)))
@@ -512,10 +513,10 @@ export function bindPromptFreqEvents() {
         els[i].dataset.src = _transSource
       }
 
-      setBtnIcon(transAllBtn, 'globe', '翻译全部')
+      setBtnIcon(transAllBtn, 'globe', tr("workspace.translateAll"))
       segWrap.dataset.translated = '1'
       if (results.every(r => !r)) {
-        showToast('⚠️ 翻译失败：请检查网络后重试，或点「翻译源」换一个试试')
+        showToast(tr("workspace.translationFailedCheckYourConnectionOrChoose"))
       }
       return
     }
@@ -552,7 +553,7 @@ export function bindPromptFreqEvents() {
       const p = _uploadedPngs.find(x => x.id === sendBtn.dataset.pid)
       if (!p || p.sent) return
       if (!useOutputStore.getState().dirHandle) {
-        showToast('⚠️ 请先在 Outputs 栏目选择输出目录')
+        showToast(tr("workspace.selectAnOutputFolderInOutputsFirst"))
         ;(document.querySelector('.main-tab[data-section="outputs"]') as HTMLElement)?.click()
         return
       }
@@ -564,7 +565,7 @@ export function bindPromptFreqEvents() {
     const loraChip = target.closest('.prompt-freq-png-loras code[data-copy]') as HTMLElement
     if (loraChip) {
       const l = loraChip.dataset.copy
-      if (l) { copyText(l); showToast(`已复制 LoRA: ${l}`) }
+      if (l) { copyText(l); showToast(tr("workspace.copiedLora", { p0: l })) }
       return
     }
 
@@ -580,7 +581,7 @@ export function bindPromptFreqEvents() {
     const copyAllLora = target.closest('.prompt-freq-png-copyall-lora') as HTMLElement
     if (copyAllLora) {
       const txt = copyAllLora.dataset.text || ''
-      if (txt) { copyText(txt); showToast('📋 已复制全部 LoRA 标签') }
+      if (txt) { copyText(txt); showToast(tr("workspace.allLoraTagsCopied")) }
       return
     }
 
@@ -589,7 +590,7 @@ export function bindPromptFreqEvents() {
     if (dlFlowBtn) {
       const p = _uploadedPngs.find(x => x.id === dlFlowBtn.dataset.pid)
       const wf = p?.uiWorkflow || p?.workflowJson
-      if (!p || !wf) { showToast('⚠️ 该图片无工作流数据'); return }
+      if (!p || !wf) { showToast(tr("workspace.thisImageHasNoWorkflowData2")); return }
       try {
         const baseName = (p.fileName || 'workflow').replace(/\.(png|jpe?g|webp)$/i, '')
         const blob = new Blob([wf], { type: 'application/json' })
@@ -599,9 +600,9 @@ export function bindPromptFreqEvents() {
         a.download = baseName + '.json'
         a.click()
         URL.revokeObjectURL(url)
-        showToast('⬇️ 工作流 .json 已下载，拖入 ComfyUI 画布即可导入')
+        showToast(tr("workspace.workflowJsonDownloadedDragItOntoThe"))
       } catch {
-        showToast('⚠️ 下载失败')
+        showToast(tr("workspace.downloadFailed"))
       }
       return
     }
@@ -624,9 +625,9 @@ export function bindPromptFreqEvents() {
             const png = await parsePngFile(f)
             if (png) { _uploadedPngs.push(png); existingKeys.add(key) }
           }
-          showToast(`已处理 ${files.length} 张图片`)
+          showToast(tr("workspace.processedImages", { p0: files.length }))
         } catch {
-          showToast('图片解析失败，请重试')
+          showToast(tr("workspace.couldNotParseTheImagePleaseRetry"))
         } finally {
           renderPromptFreq()
         }
@@ -661,9 +662,9 @@ export function bindPromptFreqEvents() {
         const png = await parsePngFile(f)
         if (png) { _uploadedPngs.push(png); existingKeys.add(key) }
       }
-      showToast('已处理图片文件')
+      showToast(tr("workspace.imageFilesProcessed"))
     } catch {
-      showToast('图片解析失败，请重试')
+      showToast(tr("workspace.couldNotParseTheImagePleaseRetry"))
     } finally {
       renderPromptFreq()
     }

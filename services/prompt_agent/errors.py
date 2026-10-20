@@ -7,3 +7,7 @@ class AgentError(ValueError):
 
 class SessionConflict(AgentError):
     """A stale or concurrent edit needs the current revision before retrying."""
+
+
+class ModelRefusal(AgentError):
+    """An explicit refusal is terminal, not a response-format repair task."""

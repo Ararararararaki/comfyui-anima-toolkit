@@ -51,7 +51,8 @@ def register_routes(routes, runtime_getter=get_runtime) -> None:
         return runtime_getter().activate_provider(data.get("id", ""))
 
     async def native_meta(request):
-        return await runtime_getter().native_meta()
+        source = request.query.get("source")
+        return await runtime_getter().native_meta(source) if source else await runtime_getter().native_meta()
 
     async def native_config(request):
         runtime = runtime_getter()
@@ -80,16 +81,30 @@ def register_routes(routes, runtime_getter=get_runtime) -> None:
         return {"ok": True}
 
     async def edit(request):
-        return await runtime_getter().agent.edit(await body(request))
+        return await runtime_getter().execution.execute("edit", await body(request))
 
     async def interrogate(request):
-        return await runtime_getter().interrogation.run(await body(request))
+        return await runtime_getter().execution.execute("interrogate", await body(request))
 
     async def accept_interrogation(request):
         return runtime_getter().agent.accept_interrogation(await body(request))
 
     async def expand_interrogation(request):
-        return await runtime_getter().interrogation.expand(await body(request))
+        return await runtime_getter().execution.execute("expand-interrogation", await body(request))
+
+    async def character_candidates(request):
+        from .image_options import character_queries
+        options = await body(request)
+        queries, _ = character_queries(options)
+        if not queries:
+            raise AgentError("请填写角色名，或在扩写要求中明确写出换成／加入的角色。")
+        return await runtime_getter().references.lookup({"tags": [], "characters": queries})
+
+    async def vision_models(request):
+        from .providers import OpenAICompatibleProvider
+        data = await body(request)
+        config = runtime_getter().interrogation.vision_config(data.get("source", "current"))
+        return {"models": await OpenAICompatibleProvider(config).list_models()}
 
     async def interrogation_config(request):
         return runtime_getter().interrogation.config.save(await body(request))
@@ -101,10 +116,27 @@ def register_routes(routes, runtime_getter=get_runtime) -> None:
         data = await body(request)
         sid, action = request.match_info["session_id"], request.match_info["action"]
         if action == "retry":
-            return await runtime_getter().agent.edit({"session_id": sid, "revision": data.get("revision"),
-                **({"native_operation_id": data["native_operation_id"]} if "native_operation_id" in data else {})}, retry=True)
+            return await runtime_getter().execution.execute("retry", {"session_id": sid, "revision": data.get("revision"),
+                **({"native_operation_id": data["native_operation_id"]} if "native_operation_id" in data else {}),
+                **({"model_selection": data["model_selection"]} if "model_selection" in data else {})})
         return runtime_getter().agent.control(sid, data.get("revision"), action)
 
+    async def submit_task(request):
+        data = await body(request)
+        if not isinstance(data.get("request"), dict):
+            raise AgentError("任务 request 必须是对象")
+        return runtime_getter().execution.start(data.get("kind"), data["request"])
+
+    async def task_status(request):
+        return runtime_getter().execution.status(request.match_info["task_id"], request.query.get("session_id", ""))
+
+    async def cancel_task(request):
+        data = await body(request)
+        return runtime_getter().execution.cancel(request.match_info["task_id"], data.get("session_id", ""))
+
+    routes.post(PREFIX + "/tasks")(endpoint(submit_task))
+    routes.get(PREFIX + "/tasks/{task_id}")(endpoint(task_status))
+    routes.post(PREFIX + "/tasks/{task_id}/cancel")(endpoint(cancel_task))
     routes.get(PREFIX + "/meta")(endpoint(meta))
     routes.post(PREFIX + "/config")(endpoint(config))
     routes.post(PREFIX + "/activate-provider")(endpoint(activate_provider))
@@ -118,6 +150,8 @@ def register_routes(routes, runtime_getter=get_runtime) -> None:
     routes.post(PREFIX + "/interrogate")(endpoint(interrogate))
     routes.post(PREFIX + "/accept-interrogation")(endpoint(accept_interrogation))
     routes.post(PREFIX + "/expand-interrogation")(endpoint(expand_interrogation))
+    routes.post(PREFIX + "/character-candidates")(endpoint(character_candidates))
+    routes.post(PREFIX + "/vision-models")(endpoint(vision_models))
     routes.post(PREFIX + "/interrogation-config")(endpoint(interrogation_config))
     routes.get(PREFIX + "/session/{session_id}")(endpoint(session))
     routes.post(PREFIX + "/session/{session_id}/{action}")(endpoint(control))

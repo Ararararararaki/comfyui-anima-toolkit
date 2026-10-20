@@ -1,3 +1,4 @@
+import { t, getLocale } from '../i18n'
 import { useModelStore } from '../store/models'
 import { renderCard, refreshLocalNames } from '../components/ModelCard'
 import { renderArtists } from './ArtistSeries'
@@ -63,17 +64,17 @@ const EXPLORE_WALK_MAX = 6
 const EXPLORE_MIN_FRESH = 60
 
 const EXPLORE_SORTS: { key: SortKey; w: number; label: string }[] = [
-  { key: 'Most Downloaded', w: 3, label: '下载量' },
-  { key: 'Highest Rated', w: 2.5, label: '评分' },
-  { key: 'Most Collected', w: 1.5, label: '收藏' },
-  { key: 'Newest', w: 2, label: '最新发布' },
-  { key: 'Most Discussed', w: 1, label: '讨论' },
+  { key: 'Most Downloaded', w: 3, label: t('lora.sort.downloads') },
+  { key: 'Highest Rated', w: 2.5, label: t('lora.sort.rating') },
+  { key: 'Most Collected', w: 1.5, label: t('lora.sort.collections') },
+  { key: 'Newest', w: 2, label: t('lora.sort.newest') },
+  { key: 'Most Discussed', w: 1, label: t('lora.sort.discussed') },
 ]
 const EXPLORE_PERIODS: { key: PeriodKey; w: number; label: string }[] = [
-  { key: 'Month', w: 3, label: '本月' },
-  { key: 'Week', w: 2, label: '本周' },
-  { key: 'Year', w: 2.5, label: '今年' },
-  { key: 'AllTime', w: 2.5, label: '全部' },
+  { key: 'Month', w: 3, label: t('lora.period.month') },
+  { key: 'Week', w: 2, label: t('lora.period.week') },
+  { key: 'Year', w: 2.5, label: t('lora.period.year') },
+  { key: 'AllTime', w: 2.5, label: t('lora.period.all') },
 ]
 function weightedPick<T extends { w: number }>(arr: T[]): T {
   const total = arr.reduce((s, x) => s + x.w, 0)
@@ -158,7 +159,11 @@ function bindGridRefreshEvents() {
   })
 }
 
-/** 缓存 key 包含全部远程筛选参数，防止不同搜索条件互相串数据 */
+/**
+ * 缓存 key 包含全部远程筛选参数，防止不同搜索条件互相串数据。
+ * filterBaseModel 必须在内：MOSS 等底模在 C 站是两个独立取值（不接受逗号多值），
+ * 漏掉它会让换底模后直接读到上一个底模的缓存。
+ */
 function cacheKey(store: ReturnType<typeof useModelStore.getState>): string {
   return `models_${store.period}_${store.sort}_${store.filterBaseModel || 'all'}_${store.nsfw}_${store.remoteQuery}_${store.remoteTags.join(',')}`
 }
@@ -181,6 +186,7 @@ function currentParams(): ModelFetchParams {
   const store = useModelStore.getState()
   return {
     query: store.remoteQuery,
+    // '' = 全部基座（不带该参数）；其余逐字传给 C 站，含带空格的 "MOSS Image" / "MOSS Image Base"
     baseModels: store.filterBaseModel || undefined,
     sort: store.sort,
     nsfw: store.nsfw,
@@ -219,7 +225,7 @@ export async function initLoraExplorer() {
       const newCount = await localStore.detectNewFiles().catch(() => 0)
       if (newCount > 0) {
         localStore.setNewFileCount(newCount)
-        showToast(`📁 本地 LoRA 有新文件 (${newCount} 个)，切到「本地 lora 管理」可增量扫描`)
+        showToast(t('lora.local.newFilesNotice', { count: newCount }))
       }
     }
   }
@@ -264,7 +270,7 @@ async function fetchPage(p: number, options?: { quietError?: boolean; append?: b
   if (options?.cursor && usedCursors.has(options.cursor)) {
     store.setNextPage(null)
     store.setPagination(p, Math.max(p, store.maxPage), false)
-    showToast('✅ 已加载全部内容')
+    showToast(t('lora.allLoaded'))
     return
   }
 
@@ -323,7 +329,7 @@ async function fetchPage(p: number, options?: { quietError?: boolean; append?: b
           // 本页全是看过的：继续翻下一页找新内容（有页数上限，不无限请求）
           continueTo = () => { void fetchPage(p + 1, { append: true, cursor: nextCursor, quietError: true }) }
         } else if (!options?.quietError) {
-          showToast('🎲 这一组合的新内容探索完了，再点一次「随机探索」换个角度', 'success')
+          showToast(t('lora.exploreFinished'), 'success')
         }
       } else if (p === 1 && appended < EXPLORE_MIN_FRESH && nextCursor) {
         // 首屏新内容太少：自动再续一页补足
@@ -340,7 +346,7 @@ async function fetchPage(p: number, options?: { quietError?: boolean; append?: b
     const status = typeof e?.status === 'number' ? e.status : 0
     // 数据层已新增 error / setError：把失败写入 store，UI 顶部 banner 展示可重试的错误态
     useModelStore.getState().setError({ status, message: String(e?.message || err) })
-    if (!options?.quietError) showToast('❌ 抓取出错: ' + (err as Error).message)
+    if (!options?.quietError) showToast(t('lora.fetchError', { error: (err as Error).message }))
     return null
   } finally {
     // 仅当本次请求仍是最新一次时才把 loading 归位，避免被已 abort 的旧请求 finally 提前清零
@@ -356,7 +362,7 @@ export function quickFetchByTag(tag: string | null) {
   store.setRemoteTags([pick])
   const tagInput = document.getElementById('tagInput') as HTMLInputElement
   if (tagInput) tagInput.value = pick
-  showToast(tag ? `⏳ 正在抓取「${pick}」类 LoRA…` : `🎲 随机抓取「${pick}」类…`)
+  showToast(tag ? t('lora.fetchCategory', { name: pick }) : t('lora.fetchRandomCategory', { name: pick }))
   resetAndFetch()
 }
 
@@ -396,7 +402,7 @@ async function queueLoraDownload(versionId: string | number | undefined, url: st
     if (mv) vid = mv[1]
     else if (mm) modelId = mm[1]
   }
-  if (!vid && !modelId && !url) { showToast('⚠️ 缺少下载链接，请从 C 站页面复制链接后手动下载'); return }
+  if (!vid && !modelId && !url) { showToast(t('lora.missingDownloadUrl')); return }
   try {
     const item: Record<string, string> = {
       target: 'auto',
@@ -413,9 +419,9 @@ async function queueLoraDownload(versionId: string | number | undefined, url: st
     })
     const result = await res.json()
     if (!res.ok || !result.ok) throw new Error(result.error || `HTTP ${res.status}`)
-    showToast(`📥 「${label}」已加入后台下载，完成后 LoRA 管理页会自动发现`, 'success')
+    showToast(t('lora.download.queuedNotice', { name: label }), 'success')
   } catch (error) {
-    showToast(`❌ 加入后台下载失败：${error instanceof Error ? error.message : String(error)}`)
+    showToast(t('lora.download.queueError', { error: error instanceof Error ? error.message : String(error) }))
   }
 }
 
@@ -450,7 +456,7 @@ async function pollLoraDlBar(): Promise<void> {
     bar.style.display = 'flex'
     const head = document.createElement('div')
     head.className = 'ldb-head'
-    head.textContent = `⬇ 后台下载中 ${jobs.length} 个`
+    head.textContent = t('lora.download.activeCount', { count: jobs.length })
     bar.replaceChildren(head)
     for (const j of jobs) {
       const row = document.createElement('div')
@@ -464,11 +470,11 @@ async function pollLoraDlBar(): Promise<void> {
       pct.className = 'ldb-pct'
       const total = Number(j.total) || 0
       const done = Number(j.done) || 0
-      pct.textContent = total > 0 ? `${Math.min(100, Math.round((done / total) * 100))}%` : (j.status === 'queued' ? '排队中' : '…')
+      pct.textContent = total > 0 ? `${Math.min(100, Math.round((done / total) * 100))}%` : (j.status === 'queued' ? t('lora.download.queued') : '…')
       const cancel = document.createElement('button')
       cancel.className = 'ldb-cancel'
       cancel.textContent = '✕'
-      cancel.title = '取消该下载'
+      cancel.title = t('lora.download.cancel')
       cancel.addEventListener('click', () => {
         void fetch(`/anima/lora/download/cancel?progressId=${encodeURIComponent(String(j.progressId))}`).catch(() => {})
       })
@@ -513,7 +519,7 @@ export function randomExploreFetch() {
   const tagInput = document.getElementById('tagInput') as HTMLInputElement
   if (tagInput) tagInput.value = tag
   _exploreEntry = { time: Date.now(), sort: sort.key, period: period.key, tag, items: [] }
-  showToast(`🎲 探索：${sort.label} · ${period.label}${tag ? ' · ' + tag : ' · 全类别'}`)
+  showToast(t('lora.exploreCombination', { sort: sort.label, period: period.label, tag: tag ? ' · ' + tag : t('lora.allCategoriesSuffix') }))
   resetAndFetch(true)
 }
 
@@ -521,7 +527,7 @@ export async function loadMore() {
   const store = useModelStore.getState()
   if (store.loading || !store.hasMore) return
   const next = store.page + 1
-  if (next > MAX_PAGES) { showToast('⚠️ 已达最大页数'); return }
+  if (next > MAX_PAGES) { showToast(t('lora.maxPages')); return }
   // append: true — 增量追加渲染，不重建已渲染的卡片 DOM
   await fetchPage(next, { append: true, cursor: store.nextPage })
 }
@@ -539,11 +545,11 @@ export async function goToPage(target: number) {
     await fetchPage(page, { cursor: st.pageCursors[page] || null })
   } else if (page > st.page) {
     // 未加载页：连续请求到目标页（增量追加）
-    showToast(`⏳ 加载到第 ${page} 页…`)
+    showToast(t('lora.loadingPage', { page }))
     let cur = st.page
     while (cur < page) {
       const s = useModelStore.getState()
-      if (!s.hasMore) { showToast('⚠️ 已无更多内容'); break }
+      if (!s.hasMore) { showToast(t('lora.noMore')); break }
       await fetchPage(cur + 1, { append: true, cursor: s.nextPage, quietError: true })
       cur = useModelStore.getState().page
       if (cur >= page) break
@@ -558,7 +564,7 @@ export function setPeriod(period: PeriodKey) {
   const store = useModelStore.getState()
   if (store.period === period) return
   useModelStore.getState().setPeriod(period)
-  showToast(`📊 切换到「${{ AllTime: '全部', Year: '今年', Month: '本月', Week: '本周', Day: '今日' }[period]}」`)
+  showToast(t('lora.periodChanged', { name: { AllTime: t('lora.period.all'), Year: t('lora.period.year'), Month: t('lora.period.month'), Week: t('lora.period.week'), Day: t('lora.period.day') }[period] }))
   document.querySelectorAll('.period-btn').forEach(b => b.classList.toggle('active', (b as HTMLElement).dataset.period === period))
   resetAndFetch()
 }
@@ -626,9 +632,9 @@ function renderColTabs() {
   const cols = getCollections()
   const activeCol = getActiveCol()
   container.innerHTML = cols.map(c =>
-    `<button class="tab ${c.id === activeCol ? 'active' : ''}" data-colid="${c.id}" role="tab">${c.icon} ${esc(c.name)} <span class="count">${c.count}</span></button>`
+    `<button class="tab ${c.id === activeCol ? 'active' : ''}" data-colid="${c.id}" role="tab">${c.icon} ${esc(c.id === 'default' ? t('lora.collection.default') : c.name)} <span class="count">${c.count}</span></button>`
   ).join('') +
-    `<button class="tab" id="manageColBtn" role="tab" style="border-color:var(--accent);color:var(--accent);font-size:11px">${icon('settings', 12)} 管理</button>`
+    `<button class="tab" id="manageColBtn" role="tab" style="border-color:var(--accent);color:var(--accent);font-size:11px">${icon('settings', 12)} ${t('lora.manage')}</button>`
 }
 
 /** 上一次虚拟网格的布局签名：签名不变时不重建 DOM，避免缩放/设置变更时整块闪烁 */
@@ -645,6 +651,20 @@ function clearEmptyState(grid: HTMLElement) {
   grid.querySelectorAll(':scope > .empty-state').forEach(el => el.remove())
 }
 
+function filterStageLabel(key: string, fallback: string, store: ReturnType<typeof useModelStore.getState>): string {
+  if (key === 'hidden') return t('lora.filter.hidden', { count: getHiddenIds().length })
+  if (key === 'baseModel') return t('lora.filter.baseValue', { name: store.filterBaseModel })
+  if (key === 'search') return t('lora.filter.queryValue', { name: store.search.trim() })
+  if (key === 'quality') return ({ rec: t('lora.filter.recommended'), new: t('lora.filter.new'), local: t('lora.filter.local'), highq: t('lora.filter.highQuality') } as Record<string, string>)[store.qualityFilter] || fallback
+  if (key === 'category') {
+    if (store.category === 'fav') return t('lora.filter.favorites')
+    if (store.category === 'hidden') return t('lora.filter.hiddenHistory')
+    const name = ({ artist: t('lora.category.artist'), character: t('lora.category.character'), aesthetic: t('lora.category.aesthetic'), background: t('lora.category.background'), other: t('lora.category.other') } as Record<string, string>)[store.category] || store.category
+    return t('lora.filter.category', { name })
+  }
+  return fallback
+}
+
 function emptyStateHtml(store: ReturnType<typeof useModelStore.getState>): string {
   const b = store.filterBreakdown()
   const esc = (s: string) => s.replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c] as string))
@@ -652,13 +672,13 @@ function emptyStateHtml(store: ReturnType<typeof useModelStore.getState>): strin
   // ① 远程就没有数据
   if (b.remote === 0) {
     if (store.page === 0 && !store.loading) {
-      return `<div class="big">${icon('package', 28)}</div><p>还没有数据，点击上方「快速抓取」或搜索开始</p>`
+      return `<div class="big">${icon('package', 28)}</div><p>${t('lora.emptyStart')}</p>`
     }
-    const conds = [store.remoteQuery ? `关键词「${esc(store.remoteQuery)}」` : '', store.filterBaseModel ? `基座 ${esc(store.filterBaseModel)}` : '', store.remoteTags.length ? `标签 ${esc(store.remoteTags.join(','))}` : ''].filter(Boolean).join(' · ')
-    return `<div class="big">${icon('search', 28)}</div><p>C 站没有匹配结果</p><p class="sub">当前条件：${conds || '无'}</p>` +
+    const conds = [store.remoteQuery ? t('lora.filter.query', { name: esc(store.remoteQuery) }) : '', store.filterBaseModel ? t('lora.filter.base', { name: esc(store.filterBaseModel) }) : '', store.remoteTags.length ? t('lora.filter.tags', { name: esc(store.remoteTags.join(',')) }) : ''].filter(Boolean).join(' · ')
+    return `<div class="big">${icon('search', 28)}</div><p>${t('lora.noCivitaiResults')}</p><p class="sub">${t('lora.currentFilters')}${conds || t('lora.none')}</p>` +
       `<div class="empty-actions">` +
-      (store.filterBaseModel ? `<button class="btn btn-primary btn-sm" data-clear="baseModel" data-research="1">放宽为「全部基座」重搜</button>` : '') +
-      (store.remoteQuery ? `<button class="btn btn-ghost btn-sm" data-clear="search" data-research="1">清空关键词重搜</button>` : '') +
+      (store.filterBaseModel ? `<button class="btn btn-primary btn-sm" data-clear="baseModel" data-research="1">${t('lora.searchAllBases')}</button>` : '') +
+      (store.remoteQuery ? `<button class="btn btn-ghost btn-sm" data-clear="search" data-research="1">${t('lora.searchWithoutQuery')}</button>` : '') +
       `</div>`
   }
 
@@ -666,11 +686,11 @@ function emptyStateHtml(store: ReturnType<typeof useModelStore.getState>): strin
   const culprit = b.stages.find(s => s.count === 0)
   if (culprit) {
     const clearable = culprit.key !== 'hidden' && culprit.key !== 'category'
-    return `<div class="big">${icon('search', 28)}</div><p>C 站返回 ${b.remote} 个结果，但都被「${esc(culprit.label)}」筛掉了</p>` +
-      (clearable ? `<div class="empty-actions"><button class="btn btn-primary btn-sm" data-clear="${culprit.key}">清除「${esc(culprit.label)}」并显示</button></div>` : '<p class="sub">切回「全部」标签页即可看到这些结果</p>')
+    return `<div class="big">${icon('search', 28)}</div><p>${t('lora.filter.allExcluded', { count: b.remote, filter: esc(filterStageLabel(culprit.key, culprit.label, store)) })}</p>` +
+      (clearable ? `<div class="empty-actions"><button class="btn btn-primary btn-sm" data-clear="${culprit.key}">${t('lora.filter.clearAndShow', { filter: esc(filterStageLabel(culprit.key, culprit.label, store)) })}</button></div>` : `<p class="sub">${t('lora.switchAllTab')}</p>`)
   }
 
-  return `<div class="big">${icon('package', 28)}</div><p>没有匹配的 LoRA</p>`
+  return `<div class="big">${icon('package', 28)}</div><p>${t('lora.noMatchingLora')}</p>`
 }
 
 function renderGrid(append = false) {
@@ -796,11 +816,11 @@ function renderErrorBanner(store: ReturnType<typeof useModelStore.getState>) {
     container.insertBefore(banner, grid)
   }
   const code = err.status
-  let title = '加载失败'
-  let hint = '请稍后重试，或检查网络与线路设置'
-  if (code === 401 || code === 403) { title = '🔑 API Key / 线路异常'; hint = '请检查 Civitai API Key 是否填写，或切换镜像线路' }
-  else if (code === 429) { title = '⏳ 请求过于频繁'; hint = 'C 站正在限流，请稍候再试' }
-  else if (code === 0) { title = '🌐 网络请求失败'; hint = '请检查网络连接、代理或防火墙设置' }
+  let title = t('lora.loadFailed')
+  let hint = t('lora.loadFailedHint')
+  if (code === 401 || code === 403) { title = t('lora.apiKeyError'); hint = t('lora.apiKeyHint') }
+  else if (code === 429) { title = t('lora.rateLimited'); hint = t('lora.rateLimitedHint') }
+  else if (code === 0) { title = t('lora.networkError'); hint = t('lora.networkHint') }
   // 所有插值走 esc()，避免 XSS / 样式注入
   banner.innerHTML =
     `<div class="leb-icon">⚠️</div>` +
@@ -808,7 +828,7 @@ function renderErrorBanner(store: ReturnType<typeof useModelStore.getState>) {
     `<div class="leb-hint">${esc(hint)}</div>` +
     (err.message ? `<div class="leb-detail">${esc(err.message)}</div>` : '') +
     `</div>` +
-    `<button class="btn btn-primary btn-sm leb-retry" type="button">↻ 重试</button>`
+    `<button class="btn btn-primary btn-sm leb-retry" type="button">${t('lora.retry')}</button>`
   const retry = banner.querySelector('.leb-retry') as HTMLButtonElement | null
   if (retry) retry.onclick = () => { resetAndFetch() }
 }
@@ -821,7 +841,7 @@ function setText(id: string, text: string) {
 function randomPick() {
   const store = useModelStore.getState()
   const filtered = store.getFiltered()
-  if (filtered.length === 0) { showToast('⚠️ 当前筛选结果为空'); return }
+  if (filtered.length === 0) { showToast(t('lora.emptyFiltered')); return }
   const pick = filtered[Math.floor(Math.random() * filtered.length)]
   // 虚拟化下卡片可能未渲染：滚动到所在行再高亮
   const idx = filtered.indexOf(pick)
@@ -837,7 +857,7 @@ function randomPick() {
       }
     }, 300)
   }
-  showToast('🎲 随机选中: ' + pick.name, 'success')
+  showToast(t('lora.randomPicked', { name: pick.name }), 'success')
 }
 
 function renderArtistImgList(tag: string) {
@@ -845,7 +865,7 @@ function renderArtistImgList(tag: string) {
   if (!list) return
   const imgs = getCustomImages(tag)
   if (imgs.length === 0) {
-    list.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:16px;color:var(--text3);font-size:12px">暂无自定义图片，下方粘贴URL添加</div>'
+    list.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:16px;color:var(--text3);font-size:12px">${t('lora.customImagesEmpty')}</div>`
   } else {
     list.innerHTML = imgs.map((url) =>
       `<div style="position:relative;aspect-ratio:1"><img src="${esc(url)}" style="width:100%;height:100%;object-fit:cover;border-radius:6px"><button class="btn btn-danger" style="position:absolute;top:2px;right:2px;padding:1px 5px;font-size:9px;opacity:.8" onclick="window.__removeArtistImg('${esc(tag)}','${esc(url)}')">${icon('x', 11)}</button></div>`
@@ -885,20 +905,26 @@ function renderSearchHistory() {
   let html = ''
   // 「💡 触发词联想」已随触发词一起移除（2026-09-10，用户要求）
   if (searches.length > 0) {
-    html += `<div class="sh-title">${icon('search', 11)} 搜索历史 <button type="button" onclick="clearSearches();renderSearchHistory();showToast('已清空搜索历史')">清空</button></div>`
+    html += `<div class="sh-title">${icon('search', 11)} ${t('lora.searchHistory')} <button type="button" class="sh-clear">${t('lora.clear')}</button></div>`
     for (const q of searches) {
       html += `<div class="sh-item" data-action="search" data-query="${esc(q)}"><span class="sh-icon">🕐</span><span class="sh-text">${esc(q)}</span></div>`
     }
   }
   if (views.length > 0) {
-    html += `<div class="sh-title" style="margin-top:4px">👁️ 最近浏览</div>`
+    html += `<div class="sh-title" style="margin-top:4px">👁️ ${t('lora.recentViews')}</div>`
     for (const v of views) {
       html += `<div class="sh-item" data-action="view" data-url="${esc(v.url)}">${
         v.thumb ? `<img src="${esc(thumbUrl(v.thumb))}" style="width:28px;height:28px;border-radius:4px;object-fit:cover;flex-shrink:0">` : '<span class="sh-icon">📦</span>'
-      }<span class="sh-text">${esc(v.name || '未知')}</span></div>`
+      }<span class="sh-text">${esc(v.name || t('lora.unknown'))}</span></div>`
     }
   }
   dd.innerHTML = html
+  dd.querySelector('.sh-clear')?.addEventListener('click', event => {
+    event.stopPropagation()
+    clearSearches()
+    renderSearchHistory()
+    showToast(t('lora.searchHistoryCleared'))
+  })
   dd.style.display = 'block'
   dd.querySelectorAll('.sh-item').forEach(el => {
     el.addEventListener('click', function (this: HTMLElement, e) {
@@ -929,7 +955,7 @@ function renderColManageList() {
   const cols = getCollections()
   list.innerHTML = cols.map(c => {
     const isDefault = c.id === 'default'
-    const safeName = esc(c.name)
+    const safeName = esc(c.id === 'default' ? t('lora.collection.default') : c.name)
     const safeId = esc(c.id)
     return '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border)">' +
       '<span style="font-size:16px">' + c.icon + '</span>' +
@@ -937,7 +963,7 @@ function renderColManageList() {
         ? '<span style="flex:1;font-size:13px">' + safeName + '</span>'
         : '<input class="col-rename-input" data-colid="' + safeId + '" type="text" value="' + safeName + '" style="flex:1;padding:4px 8px;border-radius:5px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:13px;font-family:var(--font);outline:none">'
       ) +
-      '<span style="font-size:11px;color:var(--text3);white-space:nowrap">' + c.count + ' 项</span>' +
+      '<span style="font-size:11px;color:var(--text3);white-space:nowrap">' + t('lora.itemCount', { count: c.count }) + '</span>' +
       (isDefault ? '' : '<button class="btn btn-danger col-del-btn" style="padding:3px 8px;font-size:10px;opacity:.6" data-colid="' + safeId + '" data-colname="' + safeName + '">' + icon('x', 11) + '</button>') +
       '</div>'
   }).join('')
@@ -956,7 +982,7 @@ function renderColManageList() {
     if (delBtn) {
       const colId = delBtn.dataset.colid
       const colName = delBtn.dataset.colname
-      if (colId && await confirmModal('删除合集', `确认删除「${colName}」？`)) {
+      if (colId && await confirmModal(t('lora.collection.delete'), t('lora.collection.confirmDelete', { name: colName || '' }))) {
         deleteCollection(colId)
         refreshView()
       }
@@ -1000,7 +1026,7 @@ export function setupGlobalHandlers() {
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
           <span style="font-size:20px;font-weight:700;color:var(--accent)">${esc(artist.tag)}</span>
           <span style="font-size:13px;color:var(--text2)">${esc(artist.name)}</span>
-          <span style="font-size:11px;color:var(--text3)">— ${imgs.length} 张示例图</span>
+          <span style="font-size:11px;color:var(--text3)">— ${t('lora.exampleCount', { count: imgs.length })}</span>
         </div>
         <p style="font-size:12px;color:var(--text2);margin-bottom:10px;line-height:1.5">${esc(artist.desc)}</p>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px">${imgs.map((u,i) => `<img src="${esc(u)}" alt="" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;cursor:pointer;transition:transform .2s" loading="lazy" onclick="window.__openLightbox(${JSON.stringify(imgs)},${i})">`).join('')}</div>
@@ -1020,7 +1046,7 @@ export function setupGlobalHandlers() {
     addSearch(name)
     resetAndFetch()
     switchSection('lora')
-    showToast(`🔍 按作者搜索: ${name}`)
+    showToast(t('lora.creatorSearchNotice', { name }))
   }
 
   w.__toggleFav = (id: number, btn: HTMLElement) => {
@@ -1038,7 +1064,7 @@ export function setupGlobalHandlers() {
   w.__deleteCard = async (id: number) => {
     const m = useModelStore.getState().processed.find(p => p.id === id)
     const name = m?.name || `#${id}`
-    if (!await confirmModal('永久删除', `确认永久删除「${name}」？\n此操作不可恢复！`)) return
+    if (!await confirmModal(t('lora.deletePermanent'), t('lora.confirmPermanentDelete', { name }))) return
     // 永久删除：从已加载数据与缓存中剔除，并清除隐藏记录（不可恢复）
     const store = useModelStore.getState()
     const raw = store.raw.filter(m => m.id !== id)
@@ -1048,7 +1074,7 @@ export function setupGlobalHandlers() {
     Cache.save(cacheKey(store), raw)
     refreshView()
     updateTabs()
-    showToast('🗑️ 已永久删除', 'success')
+    showToast(t('lora.deleted'), 'success')
   }
 
   w.__addViewHistory = (data: { id: number; uid: number; name: string; creator: string; url: string; category: string; thumb: string }) => {
@@ -1061,8 +1087,8 @@ export function setupGlobalHandlers() {
   w.__showExploreHistory = () => {
     document.getElementById('exploreHistOverlay')?.remove()
     const list = loadExploreHist()
-    const SORT_LBL: Record<string, string> = { 'Most Downloaded': '下载量', 'Highest Rated': '评分', 'Most Collected': '收藏', 'Newest': '最新发布', 'Most Discussed': '讨论', 'LikeRatio': '赞比' }
-    const PERIOD_LBL: Record<string, string> = { AllTime: '全部', Year: '今年', Month: '本月', Week: '本周', Day: '今日' }
+    const SORT_LBL: Record<string, string> = { 'Most Downloaded': t('lora.sort.downloads'), 'Highest Rated': t('lora.sort.rating'), 'Most Collected': t('lora.sort.collections'), 'Newest': t('lora.sort.newest'), 'Most Discussed': t('lora.sort.discussed'), 'LikeRatio': t('lora.sort.likeRatio') }
+    const PERIOD_LBL: Record<string, string> = { AllTime: t('lora.period.all'), Year: t('lora.period.year'), Month: t('lora.period.month'), Week: t('lora.period.week'), Day: t('lora.period.day') }
     const overlay = document.createElement('div')
     overlay.id = 'exploreHistOverlay'
     overlay.style.cssText = 'position:fixed;inset:0;z-index:10050;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:24px'
@@ -1070,15 +1096,15 @@ export function setupGlobalHandlers() {
     panel.style.cssText = 'background:var(--bg1);border:1px solid var(--border);border-radius:14px;max-width:880px;width:100%;max-height:80vh;display:flex;flex-direction:column;overflow:hidden'
     panel.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)">
-        <div style="font-weight:700;font-size:14px">🕘 探索历史${list.length ? `（最近 ${list.length} 次）` : ''}</div>
+        <div style="font-weight:700;font-size:14px">🕘 ${t('lora.exploreHistory')}${list.length ? t('lora.exploreHistoryCount', { count: list.length }) : ''}</div>
         <button class="eh-close btn btn-ghost" style="padding:4px 8px">${icon('x', 14)}</button>
       </div>
       <div style="overflow:auto;padding:12px 16px;display:flex;flex-direction:column;gap:16px">
-        ${list.length === 0 ? '<div style="color:var(--text3);font-size:13px;padding:24px;text-align:center">还没有探索记录，点「随机探索」开始</div>' : list.map(e => `
+        ${list.length === 0 ? `<div style="color:var(--text3);font-size:13px;padding:24px;text-align:center">${t('lora.noExploreHistory')}</div>` : list.map(e => `
           <div>
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px;color:var(--text2)">
-              <span style="font-weight:600">${esc(SORT_LBL[e.sort] || e.sort)} · ${esc(PERIOD_LBL[e.period] || e.period)}${e.tag ? ' · ' + esc(e.tag) : ' · 全类别'}</span>
-              <span style="color:var(--text3)">${new Date(e.time).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${e.items.length} 个</span>
+              <span style="font-weight:600">${esc(SORT_LBL[e.sort] || e.sort)} · ${esc(PERIOD_LBL[e.period] || e.period)}${e.tag ? ' · ' + esc(e.tag) : t('lora.allCategoriesSuffix')}</span>
+              <span style="color:var(--text3)">${new Date(e.time).toLocaleString(getLocale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${t('lora.itemCount', { count: e.items.length })}</span>
             </div>
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(126px,1fr));gap:8px">
               ${e.items.map(it => `
@@ -1087,7 +1113,7 @@ export function setupGlobalHandlers() {
                   <div style="padding:6px 8px">
                     <div style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escAttr(it.name)}">${esc(it.name)}</div>
                     <div style="font-size:10px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.creator)}</div>
-                    ${it.versionId ? `<button class="eh-dl" data-vid="${it.versionId}" data-url="${escAttr(it.url)}" data-nm="${escAttr(it.name)}" style="margin-top:4px;width:100%;border:none;border-radius:6px;background:var(--accent-soft);color:var(--accent);font-size:10px;padding:3px 0;cursor:pointer">⬇ 后台下载</button>` : ''}
+                    ${it.versionId ? `<button class="eh-dl" data-vid="${it.versionId}" data-url="${escAttr(it.url)}" data-nm="${escAttr(it.name)}" style="margin-top:4px;width:100%;border:none;border-radius:6px;background:var(--accent-soft);color:var(--accent);font-size:10px;padding:3px 0;cursor:pointer">⬇ ${t('lora.backgroundDownload')}</button>` : ''}
                   </div>
                 </div>`).join('')}
             </div>
@@ -1119,7 +1145,7 @@ export function setupGlobalHandlers() {
     const comfyui = m.trainedWords.map(w => `<lora:${m.name.replace(/[^a-zA-Z0-9_]/g, '_')}:${weight}>`).join(' ')
     const prompt = `${words}, masterpiece, best quality, high quality, ${comfyui}`
     copyText(prompt, btn)
-    showToast('⚡ 工作流 Prompt 已复制', 'success')
+    showToast(t('lora.promptCopied'), 'success')
   }
 
   w.__toggleBatchMode = () => {
@@ -1128,13 +1154,13 @@ export function setupGlobalHandlers() {
     document.body.classList.toggle('batch-mode', mode)
     document.getElementById('batchBar')!.style.display = mode ? 'flex' : 'none'
     if (!mode) refreshView()
-    showToast(mode ? '✂️ 选择模式已开启' : '✂️ 选择模式已关闭')
+    showToast(mode ? t('lora.selectionOn') : t('lora.selectionOff'))
   }
 
   w.__toggleBatchSelect = (id: number) => {
     useModelStore.getState().toggleBatchSelect(id)
     const count = useModelStore.getState().batchSelected.size
-    document.getElementById('batchCount')!.textContent = `已选 ${count} 项`
+    document.getElementById('batchCount')!.textContent = t('lora.selectedCount', { count })
     refreshView()
   }
 
@@ -1145,7 +1171,7 @@ export function setupGlobalHandlers() {
       const m = store.processed.find(p => p.id === id)
       if (m) toggleFav(m)
     }
-    showToast(`⭐ 已收藏 ${ids.length} 个模型`, 'success')
+    showToast(t('lora.favoritesAdded', { count: ids.length }), 'success')
     store.clearBatch()
     document.body.classList.remove('batch-mode')
     document.getElementById('batchBar')!.style.display = 'none'
@@ -1157,7 +1183,7 @@ export function setupGlobalHandlers() {
     const store = useModelStore.getState()
     const ids = [...store.batchSelected]
     if (ids.length === 0) return
-    if (!await confirmModal('批量永久删除', `确认永久删除选中的 ${ids.length} 个模型？\n此操作不可恢复！`)) return
+    if (!await confirmModal(t('lora.batchDeletePermanent'), t('lora.confirmBatchDelete', { count: ids.length }))) return
     // 批量永久删除：从已加载数据与缓存中剔除（不可恢复）
     const idSet = new Set(ids)
     const raw = store.raw.filter(m => !idSet.has(m.id))
@@ -1165,7 +1191,7 @@ export function setupGlobalHandlers() {
     store.rebuild()
     ids.forEach(id => removeHidden(id))
     Cache.save(cacheKey(store), raw)
-    showToast(`🗑️ 已永久删除 ${ids.length} 个模型`, 'success')
+    showToast(t('lora.batchDeleted', { count: ids.length }), 'success')
     store.clearBatch()
     document.body.classList.remove('batch-mode')
     document.getElementById('batchBar')!.style.display = 'none'
@@ -1180,16 +1206,16 @@ export function setupGlobalHandlers() {
       const m = store.processed.find(p => p.id === id)
       if (m?.trainedWords) words.push(...m.trainedWords)
     }
-    if (words.length === 0) { showToast('⚠️ 所选模型没有触发词'); return }
+    if (words.length === 0) { showToast(t('lora.noTriggerWords')); return }
     copyText(words.join(', '))
-    showToast(`📋 已复制 ${words.length} 个触发词`, 'success')
+    showToast(t('lora.trigger.copiedCount', { count: words.length }), 'success')
   }
 
   w.__extractPrompt = async (modelId: number, word: string, btn: HTMLElement) => {
     try {
       const store = useModelStore.getState()
       const m = store.processed.find(p => p.id === modelId)
-      if (!m) { showToast('⚠️ 未找到模型数据'); return }
+      if (!m) { showToast(t('lora.modelNotFound')); return }
 
       // Check if already extracted
       const count = await getPromptCountByModel(modelId)
@@ -1217,7 +1243,7 @@ export function setupGlobalHandlers() {
         tags: m.tags || [],
         loras: [],
         categoryId: 'uncategorized',
-        notes: count > 0 ? `📦 已从该模型提取 ${count + 1} 个 Prompt` : '',
+        notes: count > 0 ? t('lora.prompt.extractedCount', { count: count + 1 }) : '',
         images: m.images || [],
         primaryImage: m.images?.[0] || '',
       })
@@ -1225,16 +1251,16 @@ export function setupGlobalHandlers() {
       const { openModal } = await import('../components/Modal')
       openModal('promptEditModal')
 
-      showToast('📥 已预填 Prompt 信息，点击保存即可加入库中', 'success')
+      showToast(t('lora.promptPrefilled'), 'success')
     } catch (err) {
-      showToast('❌ 提取失败: ' + (err as Error).message)
+      showToast(t('lora.extractError', { error: (err as Error).message }))
     }
   }
 
   w.__editArtistImages = (tag: string) => {
     const modal = document.getElementById('artistImgModal')
     const desc = document.getElementById('artistImgModalDesc')
-    if (desc) desc.textContent = '为 ' + tag + ' 管理自定义预览图片'
+    if (desc) desc.textContent = t('lora.artist.managePreviews', { name: tag })
     if (modal) {
       modal.setAttribute('data-artist-tag', tag)
       renderArtistImgList(tag)
@@ -1250,14 +1276,14 @@ export function setupGlobalHandlers() {
     const tag = modal?.getAttribute('data-artist-tag') || ''
     const input = document.getElementById('artistImgUrl') as HTMLInputElement
     const url = (input?.value || '').trim()
-    if (!tag) { showToast('⚠️ 请先打开某位画师的「管理预览图」'); return }
-    if (!url) { showToast('⚠️ 请粘贴图片 URL'); return }
+    if (!tag) { showToast(t('lora.openArtistImages')); return }
+    if (!url) { showToast(t('lora.pasteImageUrl')); return }
     addArtistImage(tag, url)
     if (input) input.value = ''
-    setText('artistImgStatus', '✅ 已添加')
+    setText('artistImgStatus', t('lora.added'))
     renderArtistImgList(tag)
     renderArtists()
-    showToast('✅ 已添加预览图')
+    showToast(t('lora.previewAdded'))
   })
 
   w.__removeArtistImg = (tag: string, url: string) => {
@@ -1269,7 +1295,7 @@ export function setupGlobalHandlers() {
   w.__deleteArtist = (tag: string) => {
     deleteArtist(tag)
     renderArtists()
-    showToast('🗑️ 已删除画师 ' + tag)
+    showToast(t('lora.artistDeleted', { name: tag }))
   }
 
   w.renderArtists = renderArtists
@@ -1410,20 +1436,20 @@ export function setupBindingListeners() {
       store.setFilterBaseModel('')
       const sel = document.getElementById('baseModelFilter') as HTMLSelectElement | null
       if (sel) sel.value = ''
-      showToast('🗂️ 已放宽为「全部基座」')
+      showToast(t('lora.allBasesRestored'))
     } else if (key === 'search') {
       store.setSearch('')
       const input = document.getElementById('searchInput') as HTMLInputElement | null
       if (input) input.value = ''
-      showToast('🔍 已清空关键词')
+      showToast(t('lora.queryCleared'))
     } else if (key === 'quality') {
       store.setQualityFilter('all')
       const sel = document.getElementById('qualityFilter') as HTMLSelectElement | null
       if (sel) sel.value = 'all'
-      showToast('📋 已恢复「全部」质量筛选')
+      showToast(t('lora.qualityReset'))
     } else if (key === 'category') {
       store.setCategory('all')
-      showToast('📂 已切回「全部」分类')
+      showToast(t('lora.categoryReset'))
     } else return
     updateTabs()
     if (reSearch) resetAndFetch()
@@ -1435,7 +1461,7 @@ export function setupBindingListeners() {
     const sort = (e.target as HTMLSelectElement).value as SortKey
     useModelStore.getState().setSort(sort)
     if (sort === 'LikeRatio') {
-      showToast('📊 已按赞比（点赞/下载）排序已加载结果')
+      showToast(t('lora.likeRatioSorted'))
       refreshView()
       return
     }
@@ -1448,7 +1474,9 @@ export function setupBindingListeners() {
     refreshView()
   })
 
-  // BaseModel —— 远程限定（Civitai API baseModels 参数）
+  // BaseModel —— 远程限定（Civitai API baseModels 参数）。
+  // 值逐字取自下拉（含带空格的 MOSS 两个独立选项），必须 resetAndFetch：
+  // 这是服务端筛选，本地过滤筛不出没抓回来的数据；该值同时决定卡片展示哪个版本（见 store/models.ts）
   document.getElementById('baseModelFilter')?.addEventListener('change', (e) => {
     useModelStore.getState().setFilterBaseModel((e.target as HTMLSelectElement).value)
     resetAndFetch()
@@ -1492,7 +1520,7 @@ export function setupBindingListeners() {
     if (w.__batchFavorite) w.__batchFavorite()
   })
   const batchHideBtn = document.getElementById('batchHideBtn') as HTMLButtonElement
-  if (batchHideBtn) batchHideBtn.innerHTML = icon('trash', 14) + '<span style="margin-left:5px">批量删除</span>'
+  if (batchHideBtn) batchHideBtn.innerHTML = icon('trash', 14) + `<span style="margin-left:5px">${t('lora.batchDelete')}</span>`
   document.getElementById('batchHideBtn')?.addEventListener('click', () => {
     const w = window as any
     if (w.__batchHide) w.__batchHide()
@@ -1502,12 +1530,12 @@ export function setupBindingListeners() {
   if (clearHiddenBtn) clearHiddenBtn.innerHTML = icon('trash', 14)
   document.getElementById('clearHiddenBtn')?.addEventListener('click', async () => {
     const n = hiddenCount()
-    if (n === 0) { showToast('没有隐藏记录'); return }
-    if (await confirmModal('清空隐藏记录', `确认清除 ${n} 条历史隐藏记录？清理后这些 LoRA 可被再次抓取显示。`)) {
+    if (n === 0) { showToast(t('lora.noHiddenHistory')); return }
+    if (await confirmModal(t('lora.clearHidden'), t('lora.confirmClearHidden', { count: n }))) {
       clearHidden()
       refreshView()
       updateTabs()
-      showToast('🧹 隐藏记录已清空', 'success')
+      showToast(t('lora.hiddenCleared'), 'success')
     }
   })
   document.getElementById('batchCopyBtn')?.addEventListener('click', () => {
@@ -1517,17 +1545,17 @@ export function setupBindingListeners() {
 
   // Buttons
   const loadMoreBtn = document.getElementById('loadMoreBtn') as HTMLButtonElement
-  if (loadMoreBtn) loadMoreBtn.innerHTML = icon('arrowDown', 14) + '<span style="margin-left:5px">加载更多</span>'
+  if (loadMoreBtn) loadMoreBtn.innerHTML = icon('arrowDown', 14) + `<span style="margin-left:5px">${t('lora.loadMore')}</span>`
   document.getElementById('loadMoreBtn')?.addEventListener('click', () => loadMore())
   // 页码导航：上一页 / 下一页 / 输入跳转
   const pagePrevBtn = document.getElementById('pagePrevBtn') as HTMLButtonElement
   if (pagePrevBtn) {
-    pagePrevBtn.innerHTML = icon('chevronLeft', 14) + '<span style="margin-left:5px">上一页</span>'
+    pagePrevBtn.innerHTML = icon('chevronLeft', 14) + `<span style="margin-left:5px">${t('lora.previousPage')}</span>`
     pagePrevBtn.addEventListener('click', () => goToPage(useModelStore.getState().page - 1))
   }
   const pageNextBtn = document.getElementById('pageNextBtn') as HTMLButtonElement
   if (pageNextBtn) {
-    pageNextBtn.innerHTML = '<span style="margin-right:5px">下一页</span>' + icon('chevronRight', 14)
+    pageNextBtn.innerHTML = `<span style="margin-right:5px">${t('lora.nextPage')}</span>` + icon('chevronRight', 14)
     pageNextBtn.addEventListener('click', () => goToPage(useModelStore.getState().page + 1))
   }
   const pageJumpInput = document.getElementById('pageJumpInput') as HTMLInputElement
@@ -1577,21 +1605,21 @@ export function setupBindingListeners() {
   document.getElementById('addConfirmBtn')?.addEventListener('click', async () => {
     const url = (document.getElementById('addUrlInput') as HTMLInputElement).value.trim()
     const status = document.getElementById('addStatus')
-    if (!url) { if (status) status.textContent = '⚠️ 请输入 Civitai URL'; return }
-    if (status) status.textContent = '⏳ 正在获取…'
+    if (!url) { if (status) status.textContent = t('lora.enterCivitaiUrl'); return }
+    if (status) status.textContent = t('lora.fetching')
     try {
       const idStr = parseCivitaiModelId(url)
-      if (!idStr) throw new Error('❌ 无效的 Civitai URL（civitai.com / civitai.red 均可）')
+      if (!idStr) throw new Error(t('lora.invalidCivitaiUrl'))
       const id = parseInt(idStr)
-      if (isNaN(id) || id <= 0) throw new Error('❌ 无法从 URL 中提取模型 ID')
+      if (isNaN(id) || id <= 0) throw new Error(t('lora.invalidModelId'))
       const customList = Cache.load<any[]>('custom_loras', 365 * 24 * 60 * 60 * 1000) || []
-      if (customList.some((c: any) => c.id === id)) throw new Error('⚠️ 该 LoRA 已添加过')
+      if (customList.some((c: any) => c.id === id)) throw new Error(t('lora.alreadyAdded'))
       const data = await fetchModelById(id)
-      if (!data?.id) throw new Error('❌ 未能获取模型信息')
+      if (!data?.id) throw new Error(t('lora.modelFetchFailed'))
       customList.unshift(data)
       if (customList.length > 100) customList.length = 100
       Cache.save('custom_loras', customList)
-      if (status) status.textContent = '✅ 添加成功！'
+      if (status) status.textContent = t('lora.addSuccess')
       useModelStore.getState().rebuild()
       refreshView()
       setTimeout(() => closeModal('addModal'), 1500)
@@ -1604,16 +1632,16 @@ export function setupBindingListeners() {
   document.getElementById('createColBtn')?.addEventListener('click', () => {
     const input = document.getElementById('newColName') as HTMLInputElement
     const name = input.value.trim()
-    if (!name) { showToast('⚠️ 请输入收藏夹名称'); return }
+    if (!name) { showToast(t('lora.collection.enterName')); return }
     createCollection(name)
     input.value = ''
     renderColManageList()
     refreshView()
-    showToast('✅ 收藏夹「' + name + '」已创建', 'success')
+    showToast(t('lora.collection.created', { name }), 'success')
   })
   document.getElementById('exportFavBtn')?.addEventListener('click', () => {
     const data = exportFavData()
-    if (!data) { showToast('⚠️ 没有可导出的数据'); return }
+    if (!data) { showToast(t('lora.noExportData')); return }
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -1621,7 +1649,7 @@ export function setupBindingListeners() {
     a.download = 'civitai_favorites_' + new Date().toISOString().slice(0, 10) + '.json'
     a.click()
     URL.revokeObjectURL(url)
-    showToast('📤 收藏夹已导出', 'success')
+    showToast(t('lora.collection.exported'), 'success')
   })
   document.getElementById('importFavBtn')?.addEventListener('click', () => {
     document.getElementById('importFavFile')?.click()
@@ -1636,12 +1664,12 @@ export function setupBindingListeners() {
         if (importFavData(data)) {
           renderColManageList()
           refreshView()
-          showToast('📥 收藏夹已导入', 'success')
+          showToast(t('lora.collection.imported'), 'success')
         } else {
-          showToast('⚠️ 无效的收藏夹数据格式')
+          showToast(t('lora.collection.invalidData'))
         }
       } catch (err) {
-        showToast('❌ 导入失败: ' + (err as Error).message)
+        showToast(t('lora.importError', { error: (err as Error).message }))
       }
     }
     reader.readAsText(file)
@@ -1658,36 +1686,36 @@ export function setupBindingListeners() {
     const container = document.getElementById('artistExtractList')
     if (!container) return
     const desc = document.getElementById('artistExtractDesc')
-    if (desc) desc.textContent = `从当前搜索结果（${processed.length} 个 LoRA）的触发词中提取`
+    if (desc) desc.textContent = t('lora.extract.description', { count: processed.length })
     const found = extractTagsFromModels(processed, extractType, extractMinCount)
     const existing = new Set(getArtists().map(a => a.tag))
     const newCount = found.filter(f => !existing.has(f.tag)).length
     const typeIcon = extractType === 'artist' ? '🎨' : extractType === 'character' ? '👤' : '🏷️'
-    const label = { artist: '画师', character: '角色', style: '风格词' }[extractType]
+    const label = { artist: t('lora.tag.artist'), character: t('lora.tag.character'), style: t('lora.tag.style') }[extractType]
 
     if (found.length === 0) {
-      container.innerHTML = `<div style="padding:16px;text-align:center;color:var(--text3);font-size:12px">当前结果中未提取到${label}标签<br>（可先远程搜索缩小范围，或调低阈值）</div>`
+      container.innerHTML = `<div style="padding:16px;text-align:center;color:var(--text3);font-size:12px">${t('lora.extract.noneFound', { type: label })}<br>${t('lora.extract.tryNarrower')}</div>`
       return
     }
 
     container.innerHTML = `<div style="padding:8px 10px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center">
-      <span style="font-size:12px;color:var(--text2)">发现 <b>${found.length}</b> 个${label}，<b style="color:var(--green)">${newCount}</b> 个可添加</span>
-      ${extractType === 'artist' && newCount > 0 ? `<button class="btn btn-primary" id="extractAddAllBtn" style="padding:4px 12px;font-size:10px;margin-left:auto">${icon('plus', 12)} 添加全部 (${newCount})</button>` : ''}
+      <span style="font-size:12px;color:var(--text2)">${t('lora.extract.found', { count: '<b>' + found.length + '</b>', type: label, newCount: '<b style="color:var(--green)">' + newCount + '</b>' })}</span>
+      ${extractType === 'artist' && newCount > 0 ? `<button class="btn btn-primary" id="extractAddAllBtn" style="padding:4px 12px;font-size:10px;margin-left:auto">${icon('plus', 12)} ${t('lora.extract.addAll', { count: newCount })}</button>` : ''}
     </div>`
     + found.map(f => {
       const already = existing.has(f.tag)
       const sources = f.sources || []
       const action = extractType === 'artist'
         ? (already
-          ? '<span style="font-size:10px;color:var(--text3);white-space:nowrap">✅ 已存在</span>'
-          : `<button class="btn btn-primary extract-add-one" data-tag="${escAttr(f.tag)}" data-count="${f.count}" style="padding:3px 10px;font-size:10px;white-space:nowrap">${icon('plus', 12)} 添加</button>`)
-        : `<button class="btn btn-ghost extract-search-one" data-tag="${escAttr(f.tag)}" style="padding:3px 10px;font-size:10px;white-space:nowrap">${icon('search', 12)} 搜索</button>`
+          ? `<span style="font-size:10px;color:var(--text3);white-space:nowrap">${t('lora.alreadyExists')}</span>`
+          : `<button class="btn btn-primary extract-add-one" data-tag="${escAttr(f.tag)}" data-count="${f.count}" style="padding:3px 10px;font-size:10px;white-space:nowrap">${icon('plus', 12)} ${t('lora.add')}</button>`)
+        : `<button class="btn btn-ghost extract-search-one" data-tag="${escAttr(f.tag)}" style="padding:3px 10px;font-size:10px;white-space:nowrap">${icon('search', 12)} ${t('lora.search')}</button>`
       return `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border)">
         <span style="font-size:16px;width:24px;text-align:center">${typeIcon}</span>
         <div style="flex:1;min-width:0">
           <div style="font-size:13px;font-family:'Courier New',monospace;color:var(--accent)">${esc(f.tag)}</div>
           <div style="font-size:9px;color:var(--text3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-            出现 ${f.count} 次 · 来源: ${sources.slice(0, 3).join(', ')}${sources.length > 3 ? ` 等 ${sources.length} 个模型` : ''}
+            ${t('lora.extract.sources', { count: f.count, names: sources.slice(0, 3).map(esc).join(', '), more: sources.length > 3 ? t('lora.extract.moreSources', { count: sources.length }) : '' })}
           </div>
         </div>
         ${action}
@@ -1697,7 +1725,7 @@ export function setupBindingListeners() {
 
   document.getElementById('extractArtistBtn')?.addEventListener('click', () => {
     const store = useModelStore.getState()
-    if (store.processed.length === 0) { showToast('⚠️ 当前没有已加载的 LoRA，先搜索或抓取'); return }
+    if (store.processed.length === 0) { showToast(t('lora.noLoadedModels')); return }
     renderExtractList()
     openModal('artistExtractModal')
   })
@@ -1718,7 +1746,7 @@ export function setupBindingListeners() {
     }
     if (target.id === 'extractMinCountBtn') {
       extractMinCount = extractMinCount >= 3 ? 1 : extractMinCount + 1
-      target.textContent = `≥${extractMinCount}次`
+      target.textContent = t('lora.extract.minCount', { count: extractMinCount })
       renderExtractList()
       return
     }
@@ -1749,7 +1777,7 @@ export function setupBindingListeners() {
         btn.setAttribute('disabled', 'disabled')
       })
       if (added > 0) {
-        showToast(`✅ 已添加 ${added} 个画师`, 'success')
+        showToast(t('lora.artist.addedCount', { count: added }), 'success')
         renderArtists()
         renderExtractList()
       }
@@ -1761,7 +1789,7 @@ export function setupBindingListeners() {
       const tag = addBtn.dataset.tag
       const count = parseInt(addBtn.dataset.count || '1')
       if (tag && addArtistFromExtraction(tag, count)) {
-        showToast(`✅ 已添加 ${tag}`, 'success')
+        showToast(t('lora.tag.added', { name: tag }), 'success')
         renderArtists()
         renderExtractList()
       }

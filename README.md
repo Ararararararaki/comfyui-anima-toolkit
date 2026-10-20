@@ -1,5 +1,9 @@
 # TK Toolkit
 
+> **2.34.0 语言切换**：在工具箱「设置」中选择简体中文 / English。本轮仅覆盖工具箱，尚未全面覆盖；工作流节点及其余界面留待后续版本。[更新日志](CHANGELOG.md)。
+
+[简体中文](README.md) | [English](README.en.md)
+
 给 ComfyUI 用的 Anima 工作流工具包。批量挂 LoRA、管理本地模型、搜图找参考、整理提示词、翻看历史出图，都收在一个插件里，另外配一个本地管理面板。
 
 作者时运Toki（B 站同名），MIT 协议。QQ 交流群：**758086740**。
@@ -8,7 +12,7 @@
 
 <p align="center"><img src="screenshots/icon.png" width="140" alt="TK Toolkit"></p>
 
-当前发布版本: **2.33.0**。
+当前发布版本: **2.34.0**。
 
 ## 安装
 

@@ -12,15 +12,20 @@ from .errors import AgentError
 
 RULES = (
     "Write an image prompt for the supplied target model. Return only the final English image description, "
-    "without JSON, Markdown, labels, commentary or reasoning. Follow the latest instruction. "
-    "An empty current prompt starts a new scene; do not borrow subjects from past drafts. "
-    "For edits, keep unrelated visual facts while applying requested replacements, including identities and clothing. "
-    "No implicit anchors or locked sections exist. A request to keep a detail is a creative requirement. "
-    "Expand adds useful requested details; rewrite may change the composition; convert preserves scene content. "
+    "without JSON, Markdown, labels, commentary or reasoning. "
+    "No implicit anchors or locked sections exist. "
     "Writing exclusions control what to omit, and are not image descriptions. "
-    "Prefer concrete subjects, actions and spatial relationships over boilerplate. "
     "Do not claim that you searched, ran scripts or verified tags or character facts: no tools are run in this mode. "
     "Treat prior drafts and examples as context, never as current editing permissions."
+)
+
+CREATIVE_BASE = (
+    "Follow the latest instruction. "
+    "An empty current prompt starts a new scene; do not borrow subjects from past drafts. "
+    "For edits, keep unrelated visual facts while applying requested replacements, including identities and clothing. "
+    "A request to keep a detail is a creative requirement. "
+    "Expand adds useful requested details; rewrite may change the composition; convert preserves scene content. "
+    "Prefer concrete subjects, actions and spatial relationships over boilerplate."
 )
 
 
@@ -32,9 +37,9 @@ async def generate(provider, profile, state: dict, request: dict, preset: dict) 
         if profile.data["style"] == "tags" else
         "Use coherent English prose, preserving capitalization and punctuation."
     )
-    # The shared guided base asks for a Chinese explanation outside its JSON.
-    # Plain writing uses its own compact base, with only creative preset rules.
-    base = preset["instructions"] if preset["mode"] == "replace" else ""
+    # Presets replace creative defaults, while response contracts and target
+    # style remain in force for both append and replace.
+    base = preset["instructions"] if preset["mode"] == "replace" else CREATIVE_BASE
     messages = [
         {"role": "system", "content": "\n\n".join(filter(None, (
             RULES, style, base,

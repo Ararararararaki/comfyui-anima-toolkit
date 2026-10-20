@@ -1,3 +1,4 @@
+import { t as tr } from '../i18n'
 let images: string[] = []
 let index = 0
 let touchStartX = 0
@@ -25,7 +26,7 @@ function paintView() {
   el.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`
   el.style.cursor = locked ? '' : scale > 1 ? (drag ? 'grabbing' : 'grab') : 'zoom-in'
   const fit = document.getElementById('lbFitView') as HTMLButtonElement | null
-  if (fit) { fit.textContent = `适应 · ${Math.round(scale * 100)}%`; fit.disabled = locked }
+  if (fit) { fit.textContent = tr("workspace.fit", { p0: Math.round(scale * 100) }); fit.disabled = locked }
 }
 
 /** View transforms never change the image or editor canvas pixels. */
@@ -54,7 +55,7 @@ export function setupLightboxView() {
   const fit = document.createElement('button')
   fit.id = 'lbFitView'
   fit.className = 'lb-fit-view'
-  fit.title = '滚轮缩放 · 放大后拖动 · 双击恢复适应窗口（百分比相对适应尺寸）'
+  fit.title = tr("workspace.scrollToZoomDragToPanDouble")
   fit.addEventListener('click', e => { e.stopPropagation(); resetLightboxView() })
   lb.appendChild(fit)
   const isPicture = (target: EventTarget | null) => target instanceof Element && !!target.closest('#lbImg, #lbEditWrap')

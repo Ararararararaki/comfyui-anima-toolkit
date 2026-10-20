@@ -1,3 +1,4 @@
+import { t as tr } from '../i18n'
 import type { ClothingCard } from '../types'
 import { esc, icon } from '../utils'
 
@@ -27,13 +28,13 @@ export function renderClothingCard(card: ClothingCard, objUrl?: string, selected
     <div class="clothing-card-body">
       <div class="clothing-card-header">
         <span class="clothing-card-name" title="${esc(card.prompt)}">${esc(card.name)}</span>
-        <span class="clothing-card-fav ${card.favorite ? 'on' : ''}" onclick="event.stopPropagation();window.__clothingToggleFav('${esc(card.id)}')" title="收藏">${icon(card.favorite ? 'heart' : 'heart', 13)}</span>
+        <span class="clothing-card-fav ${card.favorite ? 'on' : ''}" onclick="event.stopPropagation();window.__clothingToggleFav('${esc(card.id)}')" title="${tr("workspace.favorite")}">${icon(card.favorite ? 'heart' : 'heart', 13)}</span>
       </div>
       <div class="clothing-card-prompt"><code>${esc(promptPreview)}</code></div>
       <div class="clothing-card-actions">
-        <button class="btn btn-primary" data-copy="${esc(card.prompt)}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${icon('copy', 12)} 复制</button>
-        <button class="btn btn-ghost" onclick="event.stopPropagation();window.__clothingEdit('${esc(card.id)}')" title="编辑">${icon('edit3', 12)}</button>
-        <button class="btn btn-danger" onclick="event.stopPropagation();window.__clothingDelete('${esc(card.id)}')" title="删除">${icon('trash', 12)}</button>
+        <button class="btn btn-primary" data-copy="${esc(card.prompt)}" onclick="event.stopPropagation();window.__copyText(this.dataset.copy,this)">${tr("workspace.copy2", { p13: icon('copy', 12) })}</button>
+        <button class="btn btn-ghost" onclick="event.stopPropagation();window.__clothingEdit('${esc(card.id)}')" title="${tr("workspace.edit")}">${icon('edit3', 12)}</button>
+        <button class="btn btn-danger" onclick="event.stopPropagation();window.__clothingDelete('${esc(card.id)}')" title="${tr("workspace.delete")}">${icon('trash', 12)}</button>
       </div>
     </div>
   </div>`

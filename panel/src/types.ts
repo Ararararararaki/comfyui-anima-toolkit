@@ -228,6 +228,14 @@ export interface LocalLoraFile {
   matchData: LocalLoraMatch | null
   matchError: string
   scanning: boolean
+  /**
+   * 本地 safetensors 头部 ss_base_model_version 归一化后的底模（2026-10-19 加，让未上传 C 站的
+   * 自训 LoRA —— 例如本机 26 个 moss_image 的 MOSS LoRA —— 也能参与「按底模」筛选）。
+   * 空串 = 未识别。C 站匹配值更精确时优先，合并口径见 baseModelCatalog.resolveFileBaseModel。
+   */
+  localBaseModel: string
+  /** 头部里 ss_base_model_version 的原值，仅用于详情排查（保留大小写/写法差异） */
+  localBaseModelRaw: string
 }
 
 export interface LocalLoraMatch {

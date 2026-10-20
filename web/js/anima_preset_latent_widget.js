@@ -82,6 +82,11 @@
       .anima-preset-latent .apl-current-main { color:#c8c9cb; }
       .anima-preset-latent .apl-ratio-trigger { display:inline-flex; align-items:center; gap:4px; margin-left:auto; }
       .anima-preset-latent .apl-ratio-trigger .apl-chevron { color:#8a8f98; font-size:9px; }
+      .anima-preset-latent .apl-anchor-row { gap:6px; }
+      .anima-preset-latent .apl-anchor-select { flex:1 1 auto; min-width:0; height:22px; box-sizing:border-box; padding:0 6px; border:1px solid rgba(255,255,255,.12); border-radius:5px; background:rgba(255,255,255,.05); color:#c8c9cb; font-size:11px; font-variant-numeric:tabular-nums; cursor:pointer; transition:.15s ease; }
+      .anima-preset-latent .apl-anchor-select:hover { border-color:rgba(122,134,230,.55); color:#fff; }
+      .anima-preset-latent .apl-anchor-select:focus-visible { outline:none; border-color:#7b83e0; color:#fff; }
+      .anima-preset-latent .apl-anchor-select option { background:#1b1c20; color:#e8e8eb; }
       .apl-ratio-menu { position:fixed; z-index:100010; min-width:176px; padding:5px; border:1px solid rgba(255,255,255,.13); border-radius:8px; background:linear-gradient(180deg,#24252a,#151619); color:#e8e8eb; box-shadow:0 0 0 1px rgba(255,255,255,.035),0 16px 38px rgba(0,0,0,.62),inset 0 1px rgba(255,255,255,.05); font:12px Inter,system-ui,sans-serif; }
       .apl-ratio-row { position:relative; }
       .apl-ratio-row > .apl-ratio-row-button { display:flex; align-items:center; width:100%; min-height:27px; box-sizing:border-box; border:0; border-radius:5px; background:transparent; color:#c8c9cb; text-align:left; }
@@ -110,6 +115,7 @@
       this.ratioMenu = null;
       this.ratioCloseTimer = 0;
       this.ratioTrigger = null;
+      this.anchorSelect = null;
     }
 
     currentResolution() {
@@ -139,6 +145,36 @@
       setWidgetValue(this.node, this.heightWidget, normalizeWidgetResolution(this.heightWidget, next.height));
       this.closeRatioMenu();
       this.render();
+    }
+
+    /**
+     * 以「当前长边」为锚应用比例：
+     * 上面的比例菜单以标准长边 1536 为基准，会把两条边一起改掉；
+     * 这里保持用户已经填好的长边数值不动，只按比例算另一条边 ——
+     * 当前长边 2048 选 3:2 得 2048 × 1360（16 的倍数）。
+     * 比例的横竖由比例自身决定（3:2 必为横向），所以是一条边保持、另一条边跟随。
+     */
+    applyRatioByLongEdge(ratio) {
+      const current = this.currentResolution();
+      const longEdge = Math.max(current.width, current.height);
+      const next = calculateRatioResolution(longEdge, ratio.width, ratio.height, 1);
+      setWidgetValue(this.node, this.widthWidget, normalizeWidgetResolution(this.widthWidget, next.width));
+      setWidgetValue(this.node, this.heightWidget, normalizeWidgetResolution(this.heightWidget, next.height));
+      this.render();
+      this.refreshRatioMenu();
+    }
+
+    /** 下拉项文案直接带出结果分辨率，省掉「先选一次再看对不对」的来回 */
+    refreshAnchorOptions() {
+      if (!this.anchorSelect) return;
+      const current = this.currentResolution();
+      const longEdge = Math.max(current.width, current.height);
+      for (const option of this.anchorSelect.options) {
+        const ratio = RATIO_DEFINITIONS.find((item) => item.id === option.value);
+        if (!ratio) continue;
+        const next = calculateRatioResolution(longEdge, ratio.width, ratio.height, 1);
+        option.textContent = `${ratio.label} → ${next.width} × ${next.height}`;
+      }
     }
 
     scheduleRatioMenuClose() {
@@ -305,6 +341,41 @@
         }
       });
       controlRow.appendChild(ratioTrigger);
+
+      // 「按长边」下拉框：以当前长边为锚换算比例（2026-10-19 按用户要求新增）。
+      // 与上面的比例菜单分工不同 —— 菜单是「标准长边 1536 × 倍率」重建两条边，
+      // 这里是「保持我填的长边，只算短边」，适合已经定好长边、只想配比例的用法。
+      const anchorRow = document.createElement("div");
+      anchorRow.className = "anima-preset-latent-row apl-anchor-row";
+      const anchorLabel = document.createElement("span");
+      anchorLabel.className = "apl-control-label";
+      anchorLabel.textContent = "按长边";
+      const anchorSelect = document.createElement("select");
+      anchorSelect.className = "apl-anchor-select";
+      anchorSelect.title = "保持当前长边不变，只按所选比例换算另一条边";
+      anchorSelect.setAttribute("aria-label", "按当前长边换算比例");
+      const anchorPlaceholder = document.createElement("option");
+      anchorPlaceholder.value = "";
+      anchorPlaceholder.textContent = "选比例换算…";
+      anchorSelect.appendChild(anchorPlaceholder);
+      for (const ratio of RATIO_DEFINITIONS) {
+        const option = document.createElement("option");
+        option.value = ratio.id;
+        option.textContent = ratio.label;
+        anchorSelect.appendChild(option);
+      }
+      anchorSelect.addEventListener("change", (event) => {
+        event.stopPropagation();
+        const ratio = RATIO_DEFINITIONS.find((item) => item.id === anchorSelect.value);
+        if (!ratio) return;
+        this.applyRatioByLongEdge(ratio);
+        // 一次性换算动作：应用后回到占位，这样反复选同一个比例也能再次触发 change
+        anchorSelect.value = "";
+      });
+      anchorSelect.addEventListener("pointerdown", (event) => event.stopPropagation());
+      this.anchorSelect = anchorSelect;
+      anchorRow.append(anchorLabel, anchorSelect);
+
       const scaleColumns = document.createElement("div");
       scaleColumns.className = "apl-scale-columns";
       for (const [side, factors] of [["down", [0.5, 0.6, 0.7, 0.8, 0.9]], ["up", [1.1, 1.2, 1.3, 1.4, 1.5]]]) {
@@ -340,7 +411,7 @@
       const currentScale = document.createElement("span");
       currentScale.className = "apl-current-scale";
       current.append(currentMain, currentScale);
-      container.append(controlRow, scaleColumns, current);
+      container.append(controlRow, anchorRow, scaleColumns, current);
       // 新版 ComfyUI 的节点容器会把指针事件当作拖拽；控件区域必须截获它们。
       for (const eventName of ["pointerdown", "pointerup", "mousedown", "mouseup", "dblclick", "contextmenu", "wheel"]) {
         container.addEventListener(eventName, (event) => event.stopPropagation());
@@ -387,6 +458,7 @@
       chevron.textContent = "▾";
       ratioTrigger.append(ratioLabel, chevron);
       ratioTrigger.setAttribute("aria-label", ratio ? `选择比例，当前 ${ratio.label}` : "选择自定义比例");
+      this.refreshAnchorOptions();
     }
 
     destroy() {

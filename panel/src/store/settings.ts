@@ -1,6 +1,9 @@
 /* ── App Settings Store ── */
 
+export type Locale = 'zh-CN' | 'en'
+
 export interface AppSettings {
+  locale: Locale
   // Background
   bgImage: string
   bgMode: 'cover' | 'contain' | 'center' | 'tile' | 'stretch'
@@ -47,6 +50,7 @@ const STORAGE_KEY = 'anima_settings'
 const LAYOUT_VERSION = 2
 
 const DEFAULTS: AppSettings = {
+  locale: 'zh-CN',
   bgImage: '',
   bgMode: 'cover',
   bgBlur: 0,
@@ -82,29 +86,41 @@ const DEFAULTS: AppSettings = {
 let _settings: AppSettings = { ...DEFAULTS }
 
 export function loadSettings(): AppSettings {
+  _settings = { ...DEFAULTS }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
-      const saved = JSON.parse(raw) as Partial<AppSettings>
+      const parsed = JSON.parse(raw)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ..._settings }
+      const saved = parsed as Partial<AppSettings>
+      let migrated = false
       // 旧构建的默认值是 320px + 1480px 定宽。在 8188 与 5173 不同源时，
       // 旧 localStorage 会让“部署版很挤、dev 正常”。只迁移一次旧布局版本。
       if ((Number(saved.layoutVersion) || 0) < LAYOUT_VERSION) {
         if (saved.cardSize === undefined || saved.cardSize === 320) saved.cardSize = DEFAULTS.cardSize
         if (saved.contentWidth === undefined || saved.contentWidth === 'standard') saved.contentWidth = 'full'
         saved.layoutVersion = LAYOUT_VERSION
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(saved))
+        migrated = true
+      }
+      const locale: Locale = saved.locale === 'en' ? 'en' : 'zh-CN'
+      if (saved.locale !== locale) {
+        saved.locale = locale
+        migrated = true
       }
       _settings = { ...DEFAULTS, ...saved }
+      if (migrated) localStorage.setItem(STORAGE_KEY, JSON.stringify(saved))
     }
   } catch { /* ignore */ }
   return { ..._settings }
 }
 
-export function saveSettings(partial: Partial<AppSettings>) {
+export function saveSettings(partial: Partial<AppSettings>): boolean {
   Object.assign(_settings, partial)
+  _settings.locale = _settings.locale === 'en' ? 'en' : 'zh-CN'
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(_settings))
-  } catch { /* quota exceeded */ }
+    return true
+  } catch { return false }
 }
 
 export function getSettings(): AppSettings {

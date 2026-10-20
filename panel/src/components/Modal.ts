@@ -1,3 +1,5 @@
+import { t } from '../i18n'
+
 let _lastFocused: HTMLElement | null = null
 
 function focusableIn(el: Element): HTMLElement[] {
@@ -69,12 +71,12 @@ function getPromptModal(): HTMLElement {
     modal.className = 'modal-overlay'
     modal.innerHTML = `
       <div class="modal-box" style="max-width:400px">
-        <h3 id="cpmTitle">输入</h3>
+        <h3 id="cpmTitle">${t('shell.input')}</h3>
         <p class="sub" id="cpmDesc"></p>
         <input type="text" id="cpmInput" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:13px;outline:none;font-family:var(--font)">
         <div class="modal-actions">
-          <button class="btn btn-ghost" id="cpmCancelBtn">取消</button>
-          <button class="btn btn-primary" id="cpmConfirmBtn">确定</button>
+          <button class="btn btn-ghost" id="cpmCancelBtn">${t('shell.cancel')}</button>
+          <button class="btn btn-primary" id="cpmConfirmBtn">${t('shell.ok')}</button>
         </div>
       </div>`
     document.body.appendChild(modal)
@@ -128,11 +130,11 @@ function getConfirmModal(): HTMLElement {
     modal.className = 'modal-overlay'
     modal.innerHTML = `
       <div class="modal-box" style="max-width:400px">
-        <h3 id="ccmTitle">确认</h3>
+        <h3 id="ccmTitle">${t('shell.confirm')}</h3>
         <p class="sub" id="ccmDesc" style="white-space:pre-wrap"></p>
         <div class="modal-actions">
-          <button class="btn btn-ghost" id="ccmCancelBtn">取消</button>
-          <button class="btn btn-danger" id="ccmConfirmBtn" data-primary>确定</button>
+          <button class="btn btn-ghost" id="ccmCancelBtn">${t('shell.cancel')}</button>
+          <button class="btn btn-danger" id="ccmConfirmBtn" data-primary>${t('shell.ok')}</button>
         </div>
       </div>`
     document.body.appendChild(modal)

@@ -4,6 +4,7 @@
 
 import { icon } from '../utils/icon'
 import { esc } from '../utils'
+import { t } from '../i18n'
 
 interface Command {
   id: string
@@ -15,15 +16,15 @@ interface Command {
 
 function buildCommands(): Command[] {
   return [
-    { id: 'local', label: '本地 LoRA 管理', hint: '扫描 / 分类 / 发送', iconName: 'monitor', run: () => switchSectionSafe('local') },
-    { id: 'lora', label: 'LoRA 探索', hint: 'C 站浏览 / 下载', iconName: 'package', run: () => switchSectionSafe('lora') },
-    { id: 'artist', label: '画师系列', hint: '画师串 / 预设', iconName: 'brush', run: () => switchSectionSafe('artist') },
-    { id: 'prompt', label: 'Prompt 库', hint: '提示词归档 / 搜索', iconName: 'book', run: () => switchSectionSafe('prompt') },
-    { id: 'prompt-freq', label: '图片解析', hint: 'PNG 元数据 / 高频词', iconName: 'image', run: () => switchSectionSafe('prompt-freq') },
-    { id: 'outputs', label: 'Outputs 图片管理', hint: '返图浏览 / 收藏 / 编辑', iconName: 'grid', run: () => switchSectionSafe('outputs') },
-    { id: 'settings', label: '打开设置', hint: '主题 / 布局 / API Key', iconName: 'settings', run: () => document.getElementById('settingsBtn')?.click() },
-    { id: 'theme-dark', label: '切换暗色主题', hint: 'Monochrome 暗', iconName: 'moon', run: () => setTheme('mono') },
-    { id: 'theme-light', label: '切换亮色主题', hint: 'Monochrome 亮', iconName: 'sun', run: () => setTheme('mono-light') },
+    { id: 'local', label: t('shell.localTitle'), hint: t('shell.commandLocalHint'), iconName: 'monitor', run: () => switchSectionSafe('local') },
+    { id: 'lora', label: t('shell.loraTitle'), hint: t('shell.commandLoraHint'), iconName: 'package', run: () => switchSectionSafe('lora') },
+    { id: 'artist', label: t('shell.artistTitle'), hint: t('shell.commandArtistHint'), iconName: 'brush', run: () => switchSectionSafe('artist') },
+    { id: 'prompt', label: t('shell.promptTitle'), hint: t('shell.commandPromptHint'), iconName: 'book', run: () => switchSectionSafe('prompt') },
+    { id: 'prompt-freq', label: t('shell.imageAnalysis'), hint: t('shell.commandImageHint'), iconName: 'image', run: () => switchSectionSafe('prompt-freq') },
+    { id: 'outputs', label: t('shell.commandOutputs'), hint: t('shell.commandOutputsHint'), iconName: 'grid', run: () => switchSectionSafe('outputs') },
+    { id: 'settings', label: t('shell.openSettings'), hint: t('shell.commandSettingsHint'), iconName: 'settings', run: () => document.getElementById('settingsBtn')?.click() },
+    { id: 'theme-dark', label: t('shell.switchDarkTheme'), hint: t('shell.commandDarkHint'), iconName: 'moon', run: () => setTheme('mono') },
+    { id: 'theme-light', label: t('shell.switchLightTheme'), hint: t('shell.commandLightHint'), iconName: 'sun', run: () => setTheme('mono-light') },
   ]
 }
 
@@ -86,16 +87,16 @@ function openCommandPalette() {
     el.id = PALETTE_ID
     el.className = 'cmdk-overlay'
     el.innerHTML = `
-      <div class="cmdk-box" role="dialog" aria-label="命令面板" aria-modal="true">
+      <div class="cmdk-box" role="dialog" aria-label="${esc(t('shell.commandPalette'))}" aria-modal="true">
         <div class="cmdk-search">
           ${icon('search', 16)}
-          <input type="text" class="cmdk-input" placeholder="搜索命令…（↑↓ 选择，Enter 执行，Esc 关闭）" autocomplete="off">
+          <input type="text" class="cmdk-input" placeholder="${esc(t('shell.commandSearchPlaceholder'))}" autocomplete="off">
         </div>
         <div class="cmdk-list" role="listbox"></div>
         <div class="cmdk-footer">
-          <span>${icon('arrowUp', 12)}${icon('arrowDown', 12)} 选择</span>
-          <span>Enter 执行</span>
-          <span>Esc 关闭</span>
+          <span>${icon('arrowUp', 12)}${icon('arrowDown', 12)} ${esc(t('shell.commandChoose'))}</span>
+          <span>${esc(t('shell.commandRun'))}</span>
+          <span>${esc(t('shell.commandClose'))}</span>
         </div>
       </div>`
     document.body.appendChild(el)
@@ -127,7 +128,7 @@ function renderCommands(el: HTMLElement, query: string) {
     !q || c.label.toLowerCase().includes(q) || c.hint.toLowerCase().includes(q) || c.id.toLowerCase().includes(q)
   )
   if (!cmds.length) {
-    listEl.innerHTML = `<div class="cmdk-empty">无匹配命令</div>`
+    listEl.innerHTML = `<div class="cmdk-empty">${esc(t('shell.commandEmpty'))}</div>`
     return
   }
   listEl.innerHTML = cmds.map(c => `

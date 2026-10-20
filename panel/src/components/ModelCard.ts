@@ -1,3 +1,4 @@
+import { t } from '../i18n'
 import type { ProcessedModel } from '../types'
 import { esc, escAttr, icon } from '../utils'
 import { loraImgTag } from '../services/loraCardImage'
@@ -17,6 +18,7 @@ function isLocalModel(name: string): boolean {
 export function refreshLocalNames() { _localNames = null }
 
 export function renderCard(m: ProcessedModel, currentCategory?: string): string {
+  const categoryLabel = { artist: t('lora.category.artist'), character: t('lora.category.character'), aesthetic: t('lora.category.aesthetic'), background: t('lora.category.background'), other: t('lora.category.other') }[m.category] || m.categoryLabel
   const imgs = m.images.slice(0, 8)
   const hasImgs = imgs.length > 0
   const multi = imgs.length > 1
@@ -27,10 +29,10 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
     : m.fallbackLoading
       ? `<div class="lora-gallery" style="height:200px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text3);font-size:13px;gap:6px;background:var(--bg2)">
           <div style="width:24px;height:24px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:sp .6s linear infinite"></div>
-          <span>🔍 搜索公开图片…</span>
+          <span>🔍 ${t('lora.card.searchPublicImages')}</span>
           <style>@keyframes sp{to{transform:rotate(360deg)}}</style>
         </div>`
-      : `<div class="lora-gallery" style="height:200px;display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:13px;background:var(--bg2)">🖼️ 暂无预览图</div>`
+      : `<div class="lora-gallery" style="height:200px;display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:13px;background:var(--bg2)">🖼️ ${t('lora.noPreview')}</div>`
 
   // 描述浮层：同节点浏览卡样式——半透明渐变覆盖在预览图底部，点击展开（容器 pointer-events:none 穿透，保住画廊圆点/按钮）
   const descOverlayHtml = m.description
@@ -63,25 +65,25 @@ export function renderCard(m: ProcessedModel, currentCategory?: string): string 
     <div class="card-body">
       <div class="card-header">
         <div>
-          <div class="card-title" style="font-size:12.5px"><a href="${esc(m.url)}" target="_blank" rel="noopener" data-history="${esc(JSON.stringify(historyObj))}" onclick="window.__addViewHistory(JSON.parse(this.dataset.history))">${esc(m.name)}</a> <span class="badge badge-sm ${m.badgeClass}">${m.categoryLabel}</span></div>
-          <div class="card-creator" style="font-size:10px">👤 <a href="${esc(m.creatorUrl)}" target="_blank">${esc(m.creator)}</a><button class="creator-search" title="按作者搜索" onclick="event.stopPropagation();window.__searchCreator('${escAttr(m.creator)}')">${icon('search', 11)}</button>${m.versionName ? ' · <span style="color:var(--text3)">' + esc(m.versionName) + '</span>' : ''}</div>
+          <div class="card-title" style="font-size:12.5px"><a href="${esc(m.url)}" target="_blank" rel="noopener" data-history="${esc(JSON.stringify(historyObj))}" onclick="window.__addViewHistory(JSON.parse(this.dataset.history))">${esc(m.name)}</a> <span class="badge badge-sm ${m.badgeClass}">${esc(categoryLabel)}</span></div>
+          <div class="card-creator" style="font-size:10px">👤 <a href="${esc(m.creatorUrl)}" target="_blank">${esc(m.creator)}</a><button class="creator-search" title="${t('lora.card.searchCreator')}" onclick="event.stopPropagation();window.__searchCreator('${escAttr(m.creator)}')">${icon('search', 11)}</button>${m.versionName ? ' · <span style="color:var(--text3)">' + esc(m.versionName) + '</span>' : ''}</div>
         </div>
-        ${m.customAdded ? '<span class="custom-badge">📌 手动</span>' : ''}
+        ${m.customAdded ? `<span class="custom-badge">📌 ${t('lora.card.manual')}</span>` : ''}
       </div>
       ${tagsHtml ? `<div class="tags-wrap">${tagsHtml}</div>` : ''}
       ${recHtml}
       <div style="display:flex;gap:6px;margin-top:2px;flex-wrap:wrap">
         ${m.versions && m.versions.length > 0
           ? `<div class="version-dropdown-wrap" data-mid="${m.id}" data-vid="${esc(m.versionId ? String(m.versionId) : '')}" data-url="${esc(m.downloadUrl || '')}" data-label="${esc(m.versionName || m.versions[0].name)}">
-              <button class="btn btn-primary version-dropdown-btn" style="flex:1;padding:5px;font-size:10px;min-width:80px" title="展开版本列表，选择要下载的版本">${icon('download', 12)} 选择版本 <span style="margin-left:4px">▾</span></button>
+              <button class="btn btn-primary version-dropdown-btn" style="flex:1;padding:5px;font-size:10px;min-width:80px" title="${t('lora.card.selectVersionHint')}">${icon('download', 12)} ${t('lora.card.selectVersion')} <span style="margin-left:4px">▾</span></button>
               <div class="version-dropdown" style="display:none">${m.versions.map(v =>
-                `<div class="version-option" data-vid="${esc(String(v.id))}" data-url="${esc(v.files?.[0]?.downloadUrl || '')}" data-nm="${esc(v.name)}">${esc(v.name)}${v.files?.[0]?.name ? '<span class="version-file">' + esc(v.files[0].name) + '</span>' : ''}<span class="version-dl-glyph" title="后台下载此版本">${icon('download', 11)}</span></div>`
+                `<div class="version-option" data-vid="${esc(String(v.id))}" data-url="${esc(v.files?.[0]?.downloadUrl || '')}" data-nm="${esc(v.name)}">${esc(v.name)}${v.files?.[0]?.name ? '<span class="version-file">' + esc(v.files[0].name) + '</span>' : ''}<span class="version-dl-glyph" title="${t('lora.card.downloadVersion')}">${icon('download', 11)}</span></div>`
               ).join('')}</div>
             </div>`
-          : m.downloadUrl ? `<button class="btn btn-primary" style="flex:1;padding:5px;font-size:10px;min-width:80px" onclick="window.open('${esc(m.downloadUrl)}','_blank')">${icon('download', 12)} 下载</button>` : ''}
+          : m.downloadUrl ? `<button class="btn btn-primary" style="flex:1;padding:5px;font-size:10px;min-width:80px" onclick="window.open('${esc(m.downloadUrl)}','_blank')">${icon('download', 12)} ${t('lora.download')}</button>` : ''}
         ${currentCategory === 'hidden'
-          ? '<button class="btn" style="flex:1;padding:5px;font-size:10px;min-width:60px;background:var(--green-dim);color:var(--green)" onclick="event.stopPropagation();window.__restoreCard(' + m.id + ')">' + icon('refresh', 12) + ' 恢复</button>'
-          : '<button class="btn btn-danger" style="flex:0;padding:5px 10px;font-size:10px" onclick="event.stopPropagation();window.__deleteCard(' + m.id + ')" title="永久删除此 LoRA">' + icon('trash', 12) + ' 删除</button>'}
+          ? '<button class="btn" style="flex:1;padding:5px;font-size:10px;min-width:60px;background:var(--green-dim);color:var(--green)" onclick="event.stopPropagation();window.__restoreCard(' + m.id + ')">' + icon('refresh', 12) + ` ${t('lora.restore')}</button>`
+          : '<button class="btn btn-danger" style="flex:0;padding:5px 10px;font-size:10px" onclick="event.stopPropagation();window.__deleteCard(' + m.id + `)" title="${t('lora.card.deleteHint')}">` + icon('trash', 12) + ` ${t('lora.delete')}</button>`}
       </div>
     </div>
   </div>`
@@ -94,7 +96,7 @@ function renderGalleryHtml(m: ProcessedModel, imgs: string[], multi: boolean): s
     `<span class="${i === 0 ? 'active' : ''}" data-uid="${m.uid}" data-imgidx="${i}"></span>`
   ).join('') : ''
   const fbBadge = m.fallbackDone
-    ? `<span class="img-count" style="right:6px;left:auto;top:auto;bottom:74px">${icon('refreshCw', 10)} 公开图库</span>`
+    ? `<span class="img-count" style="right:6px;left:auto;top:auto;bottom:74px">${icon('refreshCw', 10)} ${t('lora.card.publicGallery')}</span>`
     : ''
   const isFavStatus = isFav(m.id)
   return `<div class="gallery" data-uid="${m.uid}">

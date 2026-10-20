@@ -48,6 +48,7 @@ async def interrogate_vision(image: bytes, options: dict, config: dict, *, sessi
         raise AgentError("视觉反推补充指令最多 4000 个字符。")
     profile = ProfileRegistry().get(options.get("profile") or "anima")
     provider = OpenAICompatibleProvider(dict(config))
+    provider.require_model_match = bool(options.get("vision_model", "").strip())
     provider.bind_session(session_id or "visual-interrogation")
     messages = [
         {"role": "system", "content": OBSERVATION_INSTRUCTIONS + " JSON schema: " + json.dumps(OBSERVATION_SCHEMA)},

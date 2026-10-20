@@ -49,18 +49,21 @@ def write_json(path: Path, value: object) -> None:
 
 
 def empty_state(session_id: str) -> dict:
-    return {"session_id": identifier(session_id), "revision": 0, "profile": "anima", "prompt": "",
+    return {"session_id": identifier(session_id), "revision": 0, "profile": "anima", "prompt": "", "prompt_skill": "",
             "sections": {name: [] for name in SECTIONS}, "locks": [], "history": [], "undo": [],
             "last_request": None, "retry_base": None, "needs_classification": False, "unclassified_prompt": ""}
 
 
 def public_state(state: dict) -> dict:
-    return {key: copy.deepcopy(state[key]) for key in
-            ("session_id", "revision", "profile", "prompt", "sections", "locks", "history")}
+    value = {key: copy.deepcopy(state[key]) for key in
+             ("session_id", "revision", "profile", "prompt", "sections", "locks", "history")}
+    value["prompt_skill"] = state.get("prompt_skill", "")
+    return value
 
 
 def snapshot(state: dict) -> dict:
     value = {key: copy.deepcopy(state[key]) for key in ("profile", "prompt", "sections", "locks", "history")}
+    value["prompt_skill"] = state.get("prompt_skill", "")
     value["needs_classification"] = state.get("needs_classification", False)
     value["unclassified_prompt"] = state.get("unclassified_prompt", "")
     value["history"] = value["history"][-4:]
@@ -94,11 +97,16 @@ class SessionStore:
                 or any(not isinstance(value.get(name), list) for name in ("history", "undo", "locks"))
                 or not isinstance(value.get("prompt"), str)):
             raise AgentError("会话语义状态无效")
+        value.setdefault("prompt_skill", "")
+        if not isinstance(value["prompt_skill"], str):
+            raise AgentError("会话扩写 Skill 无效")
         value.setdefault("needs_classification", False)
         value.setdefault("unclassified_prompt", value["prompt"] if value["needs_classification"] else "")
         return value
 
     def save(self, state: dict) -> None:
+        from .execution import check_current
+        check_current()
         write_json(self.directory / f"{identifier(state['session_id'])}.json", state)
 
 

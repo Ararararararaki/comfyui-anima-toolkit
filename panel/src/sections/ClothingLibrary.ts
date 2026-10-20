@@ -1,3 +1,5 @@
+import { clothingCategoryLabel } from '../i18n/display'
+import { t as tr } from '../i18n'
 import {
   getAllCards, getCardsByCategory,
   getCard, addCard, updateCard, deleteCard, bulkAddCards, bulkUpdateCards, bulkDeleteCards,
@@ -129,7 +131,7 @@ function renderPagination(total: number, totalPages: number) {
       ? '<span class="clothing-page-dots">…</span>'
       : `<button class="clothing-page-btn ${p === page ? 'active' : ''}" data-page="${p}">${p}</button>`).join('')}
     <button class="clothing-page-btn" data-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''}>${icon('chevronRight', 12)}</button>
-    <span class="clothing-page-info">共 ${total} 张 · 第 ${page}/${totalPages} 页</span>`
+    <span class="clothing-page-info">${tr("workspace.cardsPage", { p7: total, p8: page, p9: totalPages })}</span>`
 }
 
 async function gotoPage(n: number) {
@@ -166,10 +168,10 @@ function clearSelection() {
 
 async function deleteSelected() {
   if (!selectedIds.size) return
-  const ok = await confirmModal('批量删除', `确认删除选中的 ${selectedIds.size} 张卡片？\n删除后不可恢复！`)
+  const ok = await confirmModal(tr("workspace.deleteSelected"), tr("workspace.deleteSelectedCardsThisCannotBeUndone", { p0: selectedIds.size }))
   if (!ok) return
   await bulkDeleteCards([...selectedIds])
-  showToast(`🗑️ 已删除 ${selectedIds.size} 张卡片`)
+  showToast(tr("workspace.deletedCards", { p0: selectedIds.size }))
   selectedIds.clear()
   await renderClothingLibrary()
 }
@@ -189,9 +191,9 @@ async function renderCats() {
     `<button class="clothing-cat-tab ${currentCategory === id ? 'active' : ''}" data-cat="${esc(id)}">${esc(name)}<span class="count">${count}</span></button>`
 
   catsEl.innerHTML =
-    tab('', '全部', allCount) +
-    tab('fav', '收藏', favCount) +
-    cats.map((c, i) => tab(c.id, c.name, catCounts[i])).join('')
+    tab('', tr("workspace.all2"), allCount) +
+    tab('fav', tr("workspace.favorite"), favCount) +
+    cats.map((c, i) => tab(c.id, clothingCategoryLabel(c), catCounts[i])).join('')
 }
 
 // ── 工具栏绑定 ──
@@ -215,7 +217,7 @@ function bindToolbar() {
       const text = await file.text()
       await importClothingJson(text)
     } catch (e) {
-      showToast('导入失败：' + (e as Error).message)
+      showToast(tr("workspace.importFailed") + (e as Error).message)
     } finally {
       fileInput.value = ''
     }
@@ -239,15 +241,15 @@ const debounceSearch = debounce(async () => {
 let importing = false   // 导入锁：防止快速重复触发导致双写
 
 export async function importClothingJson(text: string) {
-  if (importing) { showToast('⏳ 正在导入，请稍候…'); return }
+  if (importing) { showToast(tr("workspace.importingPleaseWait")); return }
   importing = true
   try {
     const data = JSON.parse(text)
     if (data.schemaVersion !== 1 || !Array.isArray(data.cards)) {
-      throw new Error('文件格式不对（不是服装库导入文件）')
+      throw new Error(tr("workspace.invalidClothingLibraryImportFile"))
     }
     const selected = await showImportPreview(data.cards)
-    if (!selected) { showToast('已取消导入'); return }
+    if (!selected) { showToast(tr("workspace.importCanceled")); return }
     await doImport(data, selected.cards, selected.useFileCats)
   } finally {
     importing = false
@@ -265,19 +267,19 @@ function showImportPreview(allCards: any[]): Promise<{ cards: any[]; useFileCats
     modal.className = 'modal-overlay'
     modal.innerHTML = `
       <div class="modal-box" style="max-width:760px">
-        <h3>${icon('download', 16)} 导入服装卡片</h3>
-        <p class="sub" style="margin:6px 0 10px">点分类行展开看卡片图，勾选到单张；分类前的框 = 一键全选/全不选该类</p>
+        <h3>${tr("workspace.importClothingCards", { p0: icon('download', 16) })}</h3>
+        <p class="sub" style="margin:6px 0 10px">${tr("workspace.expandACategoryToSelectIndividualCards")}</p>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);margin-bottom:8px;cursor:pointer">
           <input type="checkbox" id="ciUseFileCats">
-          按文件分类导入（不勾 = 全部进「未分类」，导入后你自己分类/收藏）
+          ${tr("workspace.useCategoriesFromTheFileOtherwiseImport")}
         </label>
         <div id="ciCats" style="display:flex;flex-direction:column;gap:4px;max-height:400px;overflow-y:auto;padding-right:4px"></div>
         <div class="modal-actions" style="margin-top:12px">
-          <button class="btn btn-ghost" id="ciAllBtn">全选</button>
-          <button class="btn btn-ghost" id="ciNoneBtn">全不选</button>
+          <button class="btn btn-ghost" id="ciAllBtn">${tr("workspace.selectAll")}</button>
+          <button class="btn btn-ghost" id="ciNoneBtn">${tr("workspace.selectNone")}</button>
           <span style="flex:1"></span>
-          <button class="btn btn-ghost" id="ciCancelBtn">取消</button>
-          <button class="btn btn-primary" id="ciOkBtn" data-primary>导入选中 (0 张)</button>
+          <button class="btn btn-ghost" id="ciCancelBtn">${tr("workspace.cancel")}</button>
+          <button class="btn btn-primary" id="ciOkBtn" data-primary>${tr("workspace.importSelected0Cards")}</button>
         </div>
       </div>`
     document.body.appendChild(modal)
@@ -326,7 +328,7 @@ function showImportPreview(allCards: any[]): Promise<{ cards: any[]; useFileCats
     const updateCount = () => {
       const n = selectedIdx.size
       const okBtn = document.getElementById('ciOkBtn')
-      if (okBtn) okBtn.textContent = `导入选中 (${n} 张)`
+      if (okBtn) okBtn.textContent = tr("workspace.importSelectedCards", { p0: n })
     }
 
     // 分类行：checkbox + 名称 + 数量 + 展开箭头
@@ -336,8 +338,8 @@ function showImportPreview(allCards: any[]): Promise<{ cards: any[]; useFileCats
         <div class="ci-cat-head">
           <input type="checkbox" data-catcheck="${esc(cat)}" checked>
           <span class="ci-cat-name">${esc(cat)}</span>
-          <span class="ci-cat-count">${cnt} 张</span>
-          <button class="ci-cat-toggle" data-cat="${esc(cat)}" title="展开/收起">▸</button>
+          <span class="ci-cat-count">${tr("workspace.cards", { p3: cnt })}</span>
+          <button class="ci-cat-toggle" data-cat="${esc(cat)}" title="${tr("workspace.expandCollapse")}">▸</button>
         </div>
         <div class="ci-cat-cards" data-catbox="${esc(cat)}" style="display:none"></div>
       </div>`
@@ -411,7 +413,7 @@ function showImportPreview(allCards: any[]): Promise<{ cards: any[]; useFileCats
 
 // 执行导入（合并模式：只加不删 + 查重跳过；useFileCats=false 时全部进「未分类」由用户自己分类）
 async function doImport(data: any, selectedCards: any[], useFileCats: boolean) {
-  if (!selectedCards.length) { showToast('没有选中的卡片'); return }
+  if (!selectedCards.length) { showToast(tr("workspace.noCardsSelected")); return }
   // 现有卡片 prompt 索引（查重用）
   const existing = await getAllCards()
   const promptToCard = new Map<string, ClothingCard>()   // norm(prompt) -> 现有卡
@@ -476,10 +478,10 @@ async function doImport(data: any, selectedCards: any[], useFileCats: boolean) {
     })
   }
   if (cards.length) await bulkAddCards(cards)
-  const parts = [`导入 ${cards.length} 张`]
-  if (skipped) parts.push(`跳过重复 ${skipped} 张`)
-  if (recategorized) parts.push(`更新分类 ${recategorized} 张`)
-  if (newCatCount) parts.push(`新增分类 ${newCatCount} 个`)
+  const parts = [tr("workspace.cardsImported", { p0: cards.length })]
+  if (skipped) parts.push(tr("workspace.duplicatesSkipped", { p0: skipped }))
+  if (recategorized) parts.push(tr("workspace.cardsRecategorized", { p0: recategorized }))
+  if (newCatCount) parts.push(tr("workspace.categoriesAdded", { p0: newCatCount }))
   showToast(`✅ ${parts.join('，')}`)
   currentCategory = ''
   currentSearch = ''
@@ -544,7 +546,7 @@ async function exportClothing() {
   a.download = `clothing-export-${new Date().toISOString().slice(0, 10)}.json`
   a.click()
   URL.revokeObjectURL(url)
-  showToast(`✅ 已导出 ${count} 张卡片（含图片，可随时再导入恢复）`)
+  showToast(tr("workspace.exportedCardsWithImagesImportTheFile", { p0: count }))
 }
 
 // ── 从 Outputs 选图配卡（读 outputs-db 最近出图的缩略图，点选即用）──
@@ -562,14 +564,14 @@ async function openOutputsPicker() {
   modal.className = 'modal-overlay'
   modal.innerHTML = `
     <div class="modal-box" style="max-width:640px">
-      <h3>${icon('image', 16)} 从 Outputs 选图</h3>
-      <p class="sub" style="margin:6px 0 10px">最近 ${thumbs.length} 张出图（点选即配到卡片；没有可用图时请先扫描 Outputs 或手动上传）</p>
+      <h3>${tr("workspace.chooseFromOutputs", { p0: icon('image', 16) })}</h3>
+      <p class="sub" style="margin:6px 0 10px">${tr("workspace.recentImagesClickToAssignOneTo", { p1: thumbs.length })}</p>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px;max-height:380px;overflow-y:auto">
-        ${thumbs.map((t, i) => `<img src="${t.dataUrl}" data-idx="${i}" title="${esc(t.path)}" style="width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">`).join('') || '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">Outputs 里还没有图</div>'}
+        ${thumbs.map((t, i) => `<img src="${t.dataUrl}" data-idx="${i}" title="${esc(t.path)}" style="width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">`).join('') || `<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">${tr("workspace.noImagesInOutputsYet")}</div>`}
       </div>
       <div class="modal-actions" style="margin-top:12px">
         <span style="flex:1"></span>
-        <button class="btn btn-ghost" id="copCloseBtn">关闭</button>
+        <button class="btn btn-ghost" id="copCloseBtn">${tr("workspace.close")}</button>
       </div>
     </div>`
   document.body.appendChild(modal)
@@ -583,9 +585,9 @@ async function openOutputsPicker() {
         editingBlob = blob
         const preview = document.getElementById('ceImgPreview')
         if (preview) preview.innerHTML = `<img src="${t.dataUrl}" style="max-width:120px;border-radius:6px;border:1px solid var(--border)">`
-        showToast(`✅ 已选用 Outputs 图片：${t.path.slice(0, 30)}`)
+        showToast(tr("workspace.selectedOutputsImage", { p0: t.path.slice(0, 30) }))
       } catch {
-        showToast('❌ 读取图片失败')
+        showToast(tr("workspace.couldNotReadImage"))
       }
       modal.remove()
     })
@@ -596,7 +598,7 @@ async function openOutputsPicker() {
 // ── 批量移动分类（选中卡片 → 指定分类）──
 
 async function moveSelectedToCategory() {
-  if (!selectedIds.size) { showToast('先选中卡片'); return }
+  if (!selectedIds.size) { showToast(tr("workspace.selectCardsFirst")); return }
   const cats = await getAllCategories()
   // 轻量选择弹窗：下拉选已有分类 + 或输入新分类名
   const modal = document.createElement('div')
@@ -604,15 +606,15 @@ async function moveSelectedToCategory() {
   modal.className = 'modal-overlay'
   modal.innerHTML = `
     <div class="modal-box" style="max-width:400px">
-      <h3>${icon('folder', 16)} 移动选中卡片到分类</h3>
-      <p class="sub" style="margin:6px 0 10px">已选 ${selectedIds.size} 张；选已有分类或输入新分类名</p>
+      <h3>${tr("workspace.moveSelectedCards", { p0: icon('folder', 16) })}</h3>
+      <p class="sub" style="margin:6px 0 10px">${tr("workspace.cardsSelectedChooseACategoryOrEnter", { p1: selectedIds.size })}</p>
       <select id="cmCatSel" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:13px;outline:none;font-family:var(--font)">
-        ${cats.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}
+        ${cats.map(c => `<option value="${esc(c.id)}">${esc(clothingCategoryLabel(c))}</option>`).join('')}
       </select>
-      <input type="text" id="cmNewCat" placeholder="或输入新分类名（留空用上面的）" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:13px;outline:none;font-family:var(--font);margin-top:8px;box-sizing:border-box">
+      <input type="text" id="cmNewCat" placeholder="${tr("workspace.orEnterANewCategoryNameLeave")}" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:13px;outline:none;font-family:var(--font);margin-top:8px;box-sizing:border-box">
       <div class="modal-actions" style="margin-top:12px">
-        <button class="btn btn-ghost" id="cmCancelBtn">取消</button>
-        <button class="btn btn-primary" id="cmOkBtn" data-primary>移动</button>
+        <button class="btn btn-ghost" id="cmCancelBtn">${tr("workspace.cancel")}</button>
+        <button class="btn btn-primary" id="cmOkBtn" data-primary>${tr("workspace.move")}</button>
       </div>
     </div>`
   document.body.appendChild(modal)
@@ -633,7 +635,7 @@ async function moveSelectedToCategory() {
     }
     await bulkUpdateCards([...selectedIds], { categoryId: catId })
     close()
-    showToast(`✅ 已移动 ${selectedIds.size} 张卡片到「${newName || cats.find(c => c.id === sel?.value)?.name || '未分类'}」`)
+    showToast(tr("workspace.movedCardsTo", { p0: selectedIds.size, p1: newName || cats.find(c => c.id === sel?.value)?.name || '未分类' }))
     selectedIds.clear()
     await renderClothingLibrary()
   })
@@ -657,32 +659,32 @@ function getEditorModal(): HTMLElement {
   modal.className = 'modal-overlay'
   modal.innerHTML = `
     <div class="modal-box" style="max-width:480px">
-      <h3 id="ceTitle">添加服装卡片</h3>
+      <h3 id="ceTitle">${tr("workspace.addClothingCard")}</h3>
       <div style="display:flex;flex-direction:column;gap:10px;margin-top:12px">
         <div>
-          <label style="font-size:12px;color:var(--text2)">名称（无图时卡片大字显示）</label>
-          <input type="text" id="ceName" placeholder="如：旗袍 / 兔女郎" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:13px;outline:none;font-family:var(--font);margin-top:4px;box-sizing:border-box">
+          <label style="font-size:12px;color:var(--text2)">${tr("workspace.nameShownOnCardsWithoutAnImage")}</label>
+          <input type="text" id="ceName" placeholder="${tr("workspace.eGCheongsamBunnySuit")}" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:13px;outline:none;font-family:var(--font);margin-top:4px;box-sizing:border-box">
         </div>
         <div>
-          <label style="font-size:12px;color:var(--text2)">分类</label>
+          <label style="font-size:12px;color:var(--text2)">${tr("workspace.category2")}</label>
           <select id="ceCat" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:13px;outline:none;font-family:var(--font);margin-top:4px"></select>
         </div>
         <div>
-          <label style="font-size:12px;color:var(--text2)">提示词（英文 tag 串，逗号分隔）</label>
+          <label style="font-size:12px;color:var(--text2)">${tr("workspace.promptEnglishTagsSeparatedByCommas")}</label>
           <textarea id="cePrompt" rows="4" placeholder="black dress, black gloves, frills, ..." style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:12px;outline:none;font-family:var(--font);margin-top:4px;box-sizing:border-box;resize:vertical"></textarea>
         </div>
         <div>
-          <label style="font-size:12px;color:var(--text2)">图片（可选，不选则为文字卡）</label>
+          <label style="font-size:12px;color:var(--text2)">${tr("workspace.imageOptionalLeaveEmptyForAText")}</label>
           <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
             <input type="file" id="ceImg" accept="image/*" style="font-size:12px;color:var(--text2)">
-            <button class="btn btn-ghost btn-sm" id="ceFromOutputs" type="button">${icon('image', 12)} 从 Outputs 选图</button>
+            <button class="btn btn-ghost btn-sm" id="ceFromOutputs" type="button">${tr("workspace.chooseFromOutputs", { p0: icon('image', 12) })}</button>
           </div>
           <div id="ceImgPreview" style="margin-top:6px"></div>
         </div>
       </div>
       <div class="modal-actions">
-        <button class="btn btn-ghost" id="ceCancelBtn">取消</button>
-        <button class="btn btn-primary" id="ceSaveBtn" data-primary>保存</button>
+        <button class="btn btn-ghost" id="ceCancelBtn">${tr("workspace.cancel")}</button>
+        <button class="btn btn-primary" id="ceSaveBtn" data-primary>${tr("workspace.save")}</button>
       </div>
     </div>`
   document.body.appendChild(modal)
@@ -711,7 +713,7 @@ async function openClothingEditor(card?: ClothingCard) {
   const modal = getEditorModal()
   const cats = await getAllCategories()
   const catSel = document.getElementById('ceCat') as HTMLSelectElement
-  catSel.innerHTML = cats.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')
+  catSel.innerHTML = cats.map(c => `<option value="${esc(c.id)}">${esc(clothingCategoryLabel(c))}</option>`).join('')
   editingId = card?.id || null
   editingBlob = null
   const nameEl = document.getElementById('ceName') as HTMLInputElement
@@ -721,7 +723,7 @@ async function openClothingEditor(card?: ClothingCard) {
   const imgInput = document.getElementById('ceImg') as HTMLInputElement
   if (imgInput) imgInput.value = ''
   const title = document.getElementById('ceTitle')
-  if (title) title.textContent = card ? '编辑服装卡片' : '添加服装卡片'
+  if (title) title.textContent = card ? tr("workspace.editClothingCard") : tr("workspace.addClothingCard")
   if (card) {
     nameEl.value = card.name
     promptEl.value = card.prompt
@@ -743,21 +745,21 @@ async function saveEditor() {
   const name = (document.getElementById('ceName') as HTMLInputElement).value.trim()
   const prompt = (document.getElementById('cePrompt') as HTMLTextAreaElement).value.trim()
   const catId = (document.getElementById('ceCat') as HTMLSelectElement).value || 'uncategorized'
-  if (!prompt) { showToast('⚠️ 提示词不能为空'); return }
+  if (!prompt) { showToast(tr("workspace.aPromptIsRequired2")); return }
   const imgInput = document.getElementById('ceImg') as HTMLInputElement
   const file = imgInput?.files?.[0]
   const blob = file || editingBlob
   const now = Date.now()
   if (editingId) {
     await updateCard(editingId, { name: name || prompt.slice(0, 20), prompt, categoryId: catId, tags: prompt.split(',').map(t => t.trim()).filter(Boolean), imageBlob: blob ?? undefined })
-    showToast('✅ 已保存')
+    showToast(tr("workspace.saved2"))
   } else {
     await addCard({
       id: generateCardId(), name: name || prompt.slice(0, 20), prompt, categoryId: catId,
       tags: prompt.split(',').map(t => t.trim()).filter(Boolean), imageBlob: blob ?? undefined,
       favorite: false, useCount: 0, source: 'manual', createdAt: now, updatedAt: now,
     })
-    showToast('✅ 已添加')
+    showToast(tr("workspace.added4"))
   }
   closeModal('clothingEditorModal')
   await renderClothingLibrary()
@@ -778,15 +780,15 @@ function getGachaModal(): HTMLElement {
   modal.className = 'modal-overlay'
   modal.innerHTML = `
     <div class="modal-box" style="max-width:640px">
-      <h3>${icon('dice', 16)} 服装抽卡</h3>
+      <h3>${tr("workspace.randomOutfits", { p0: icon('dice', 16) })}</h3>
       <div class="gacha-controls" style="margin-top:12px">
-        <label>范围</label>
+        <label>${tr("workspace.scope")}</label>
         <select id="gaScope"></select>
-        <label>数量</label>
+        <label>${tr("workspace.count")}</label>
         <input type="number" id="gaCount" min="1" max="10" value="3">
-        <button class="btn btn-primary" id="gaDrawBtn">${icon('dice', 13)} 抽卡</button>
-        <button class="btn btn-ghost" id="gaCopyBtn" style="display:none">${icon('copy', 13)} 复制合并</button>
-        <button class="btn btn-ghost" id="gaCloseBtn">关闭</button>
+        <button class="btn btn-primary" id="gaDrawBtn">${tr("workspace.draw", { p1: icon('dice', 13) })}</button>
+        <button class="btn btn-ghost" id="gaCopyBtn" style="display:none">${tr("workspace.copyCombined", { p2: icon('copy', 13) })}</button>
+        <button class="btn btn-ghost" id="gaCloseBtn">${tr("workspace.close")}</button>
       </div>
       <div class="gacha-results" id="gaResults" style="margin-top:10px"></div>
       <div class="gacha-merged" id="gaMerged" style="display:none"></div>
@@ -801,7 +803,7 @@ function getGachaModal(): HTMLElement {
   document.getElementById('gaCopyBtn')?.addEventListener('click', () => {
     const text = joinCardPrompts(gachaResult)
     if (!text) return
-    navigator.clipboard.writeText(text).then(() => showToast('✅ 已复制合并提示词')).catch(() => showToast('❌ 复制失败'))
+    navigator.clipboard.writeText(text).then(() => showToast(tr("workspace.combinedPromptCopied"))).catch(() => showToast(tr("workspace.copyFailed")))
   })
   return modal
 }
@@ -812,9 +814,9 @@ async function openGachaModal() {
   const all = await getAllCards()
   const scopeSel = document.getElementById('gaScope') as HTMLSelectElement
   scopeSel.innerHTML =
-    `<option value="">全部 (${all.length})</option>` +
-    `<option value="fav">收藏 (${all.filter(c => c.favorite).length})</option>` +
-    cats.map(c => `<option value="${esc(c.id)}">${esc(c.name)} (${all.filter(x => x.categoryId === c.id).length})</option>`).join('')
+    `<option value="">${tr("workspace.all3", { p0: all.length })}</option>` +
+    `<option value="fav">${tr("workspace.favorites", { p0: all.filter(c => c.favorite).length })}</option>` +
+    cats.map(c => `<option value="${esc(c.id)}">${esc(clothingCategoryLabel(c))} (${all.filter(x => x.categoryId === c.id).length})</option>`).join('')
   scopeSel.value = gachaScope || ''
   gachaResult = []
   gachaLocked.clear()
@@ -834,7 +836,7 @@ async function gachaDraw() {
   } else {
     pool = await getAllCards()
   }
-  if (!pool.length) { showToast('⚠️ 该范围没有卡片'); return }
+  if (!pool.length) { showToast(tr("workspace.noCardsInThisSelection")); return }
   // 锁定卡保留；从池中排除锁定卡后重抽
   const lockedCards = pool.filter(c => gachaLocked.has(c.id))
   const rest = pool.filter(c => !gachaLocked.has(c.id))
@@ -857,7 +859,7 @@ function renderGachaResults() {
   const merged = document.getElementById('gaMerged')
   if (!box) return
   if (!gachaResult.length) {
-    box.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px 0;text-align:center">点「抽卡」开始——锁定的卡不会被换掉</div>'
+    box.innerHTML = `<div style="color:var(--text3);font-size:12px;padding:20px 0;text-align:center">${tr("workspace.chooseDrawToStartLockedCardsStay")}</div>`
     if (copyBtn) copyBtn.style.display = 'none'
     if (merged) merged.style.display = 'none'
     return
@@ -874,8 +876,8 @@ function renderGachaResults() {
       ${img}
       <div class="gacha-result-text">${esc(c.prompt.slice(0, 80))}</div>
       <div class="gacha-result-actions">
-        <button class="lock-btn ${locked ? 'on' : ''}" title="锁定（重抽不换掉）">${locked ? '🔒 已锁' : '🔓 锁定'}</button>
-        <button class="rm-btn" title="移除这张">✕ 移除</button>
+        <button class="lock-btn ${locked ? 'on' : ''}" title="${tr("workspace.lockKeepWhenDrawingAgain")}">${locked ? tr("workspace.locked") : tr("workspace.lock")}</button>
+        <button class="rm-btn" title="${tr("workspace.removeThisCard")}">${tr("workspace.remove2")}</button>
       </div>
     </div>`
   }).join('')
@@ -918,10 +920,10 @@ export function setupClothingHandlers() {
     if (c) await openClothingEditor(c)
   }
   w.__clothingDelete = async (id: string) => {
-    const ok = await confirmModal('删除这张服装卡片？', '删除后不可恢复')
+    const ok = await confirmModal(tr("workspace.deleteThisClothingCard"), tr("workspace.thisCannotBeUndone"))
     if (!ok) return
     await deleteCard(id)
-    showToast('🗑️ 已删除')
+    showToast(tr("workspace.deleted"))
     await renderClothingLibrary()
   }
   w.__clothingSetCat = async (catId: string) => {
@@ -935,7 +937,7 @@ export function setupClothingHandlers() {
   w.__clothingBuildIndexText = () => buildIndexText()
   w.__clothingAdd = () => openClothingEditor()
   w.__clothingAddCategory = async () => {
-    const name = await promptModal('新建分类', '', '输入分类名称（一个名字一组）')
+    const name = await promptModal(tr("workspace.newCategory2"), '', tr("workspace.enterACategoryName2"))
     if (!name) return
     const cats = await getAllCategories()
     await addCategory({ id: generateCategoryId(), name, sortOrder: 100 + cats.length })
@@ -945,13 +947,13 @@ export function setupClothingHandlers() {
     const cats = await getAllCategories()
     const cat = cats.find(c => c.id === id)
     if (!cat) return
-    const name = await promptModal('重命名分类', cat.name)
+    const name = await promptModal(tr("workspace.renameCategory"), cat.name)
     if (!name) return
     await updateCategory(id, { name })
     await renderClothingLibrary()
   }
   w.__clothingDeleteCategory = async (id: string) => {
-    const ok = await confirmModal('删除这个分类？', '该分类下的卡片会移到「未分类」')
+    const ok = await confirmModal(tr("workspace.deleteThisCategory"), tr("workspace.cardsInThisCategoryWillMoveTo"))
     if (!ok) return
     await dbDeleteCategory(id)
     await renderClothingLibrary()
@@ -1000,8 +1002,8 @@ function showCatMenu(x: number, y: number, catId: string) {
   menu.className = 'clothing-cat-menu'
   menu.style.cssText = `position:fixed;left:${Math.min(x, window.innerWidth - 160)}px;top:${Math.min(y, window.innerHeight - 90)}px;z-index:9999`
   menu.innerHTML = `
-    <button data-act="rename">${icon('edit3', 12)} 重命名分类</button>
-    <button data-act="del" class="danger">${icon('trash', 12)} 删除分类</button>`
+    <button data-act="rename">${tr("workspace.renameCategory2", { p0: icon('edit3', 12) })}</button>
+    <button data-act="del" class="danger">${tr("workspace.deleteCategory2", { p1: icon('trash', 12) })}</button>`
   document.body.appendChild(menu)
   const close = () => menu.remove()
   menu.addEventListener('click', async (e) => {

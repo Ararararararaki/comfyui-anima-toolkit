@@ -140,7 +140,7 @@ def _selection(capabilities: dict, connection: dict, settings: dict) -> dict:
     if connection.get("id") not in _SOURCES:
         raise AgentError("DSH 原生执行需要选择 DSH 模型来源。")
     catalog = capabilities.get("models", {})
-    route = catalog.get("default", {}) if connection["id"] == "dsh-active" else connection
+    route = catalog.get("default", {}) if connection["id"] == "dsh-active" and not connection.get("model_override") else connection
     provider, model = route.get("provider"), route.get("model")
     found = next((entry for group in catalog.get("groups", []) if group.get("id") == provider
                   for entry in group.get("models", []) if entry.get("id") == model), None)

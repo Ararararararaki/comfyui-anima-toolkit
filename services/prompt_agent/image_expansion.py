@@ -5,6 +5,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
+import io
 import json
 import re
 import time
@@ -14,11 +15,33 @@ from .errors import AgentError
 from .protocol import object_schema, complete_structured
 from .providers import OpenAICompatibleProvider
 from .interrogators.vision import _data_uri
+from .moss import (MOSS_SKILL_ID, MOSS_DRAFT_RULES, compile_expansion_prompt,
+                   validate_skill_prompt, retain_moss_names, layout_dimensions, normalize_layout_draft, _requested_canvas, requested_format,
+                   requested_lettering_language, validate_lettering_language)
 
 EXPANSION_SCHEMA = object_schema({
     "caption": {"type": "string"},
     "prompt": {"type": "string"},
 })
+
+
+# One JSON layer on the model wire; strings remain readable for saved/older callers.
+MOSS_PROMPT_SCHEMA = {"anyOf": [
+    {"type": "string"},
+    object_schema({"caption": {"type": "string"}}),
+    object_schema({"width": {"type": "integer"}, "height": {"type": "integer"},
+        "bbox_coord_space": {"type": "string", "enum": ["abs"]},
+        "bbox_format": {"type": "string", "enum": ["xyxy"]},
+        "summary": object_schema({"caption": {"type": "string"},
+            "meta": {"type": "array", "items": {"type": "string"}},
+            "canvas": {"type": "string", "enum": ["single", "multi_panel", "collage"]},
+            "palette": {"type": "array", "items": {"type": "string"}}}),
+        "items": {"type": "array", "items": {"anyOf": [
+            object_schema({"label": {"type": "string", "enum": ["object", "character"]},
+                "caption": {"type": "string"}, "bbox": {"type": "array", "items": {"type": "number"}}}),
+            object_schema({"label": {"type": "string", "enum": ["text"]},
+                "caption": {"type": "string"}, "text": {"type": "string"},
+                "bbox": {"type": "array", "items": {"type": "number"}}})]}}})]}
 
 
 def character_references(observation):
@@ -86,7 +109,7 @@ class ImageObservations:
         return row
 
 
-async def expand_image(image, observation, profile, options, config, *, session_id=""):
+async def expand_image(image, observation, profile, options, config, *, session_id="", skill=None, detect_operations=False):
     mode = options.get("expansion_mode", "faithful")
     instruction = options.get("expansion_instruction", "")
     preserve_identity = options.get("preserve_identity", True)
@@ -107,41 +130,123 @@ async def expand_image(image, observation, profile, options, config, *, session_
                       "from the source image and tagger hints, including for prose target profiles. Creative changes apply to the requested scene details; keep the character identity. "
                       if preserve_identity else
                       "Character identity is editable: follow the user's requested character and appearance changes. ")
-    context = {"tagger_tags": observation.get("tags", []), "tagger_caption": observation.get("caption", ""),
-               "character_references": character_references(observation),
+    skill_id = skill.id if skill is not None else ""
+    moss = skill_id == MOSS_SKILL_ID
+    if moss:
+        style = ""
+    skill_rules = ""
+    if skill is not None and skill.instructions:
+        # The selected skill controls the draft; application owns final compilation.
+        skill_rules = (" Additionally follow this expansion skill's rules when writing the prompt field "
+                       "(it does not change the required return shape): " + skill.instructions + " ")
+    from PIL import Image
+    with Image.open(io.BytesIO(image)) as opened:
+        image_dimensions = {"width": opened.width, "height": opened.height}
+    source_dimensions = observation.get("source_dimensions") or image_dimensions
+    canvas = _requested_canvas(instruction)
+    if not canvas and observation.get("source_dimensions"):
+        canvas = (source_dimensions["width"], source_dimensions["height"])
+    context = {"source_dimensions": source_dimensions, "image_dimensions": image_dimensions,
+               "requested_output_mode": (requested_format(instruction) or "auto") if moss else "profile",
+               "layout_canvas": ({"width": canvas[0], "height": canvas[1]} if canvas else None),
+               "tagger_tags": observation.get("tags", []), "tagger_caption": observation.get("caption", ""),
+               "character_references": options.get("source_identities", character_references(observation)),
                "copyright_references": observation.get("categories", {}).get("copyright", []),
-               "user_instruction": instruction, "target_profile": profile.data["label"]}
+               "user_instruction": instruction,
+               "rendered_text_target_language": requested_lettering_language(instruction) or "source_unless_requested",
+               "reference_evidence": options.get("reference_evidence", {}),
+               "replacement_characters": options.get("replacement_characters", []),
+               "requested_characters": options.get("requested_characters", []),
+               "character_operations": options.get("character_operations", []),
+               "tag_filter_report": options.get("filter_report", {}),
+               # 选了 skill 就不再向模型暴露 profile 名（用户要求不分模型）；
+               # 字段本身保留，旧调用方和模板不必改。
+               "target_profile": skill.label if skill is not None else profile.data["label"],
+               "target_skill": skill.label if skill is not None else ""}
+    schema = object_schema({"caption": {"type": "string"},
+                            "prompt": MOSS_PROMPT_SCHEMA if moss else {"type": "string"}})
+    if detect_operations:
+        from .image_options import CHARACTER_OPERATIONS_SCHEMA, CHARACTER_OPERATION_RULES
+        schema = object_schema({**schema["properties"], **CHARACTER_OPERATIONS_SCHEMA["properties"]})
     provider = OpenAICompatibleProvider(dict(config))
+    from .interrogation_progress import reporter
+    provider.on_progress = reporter(session_id)
+    provider.require_model_match = bool(options.get("vision_model", "").strip())
     provider.bind_session(session_id or "image-expansion")
     messages = [
         {"role": "system", "content": "Read the attached image, then use the supplied tagger observations as fallible hints. "
          + identity_rules +
          "Correct non-identity tags that contradict the pixels. Pay attention to subjects, pose, interaction, viewpoint, composition, lighting, environment and materials. "
+         + "Use verified character reference evidence for requested identity changes. Apply character_operations to each specified source only; "
+         "preserve other subjects and attach each appearance, expression and pose to the correct subject. "
+         "Unresolved catalog queries remain natural-language names, not verified tags. Do not restore replaced source identities. "
+         "Follow tag_filter_report.settings: when watermarks is true omit watermarks, signatures and usernames; "
+         "when text is true omit scene lettering; otherwise follow explicit text translation or replacement requests, and preserve visible wording only when no such change is requested. "
+         "Do not reintroduce filtered artist or quality tags. "
+         "When rendered_text_target_language is zh, translate EVERY visible dialogue/narration into Chinese in each text item; "
+         "source-image caption metadata may describe the original, but the prompt describes the target. "
+         "Keep each speaker, panel, bubble, bbox and emotion attached to the same region. "
+         "Describe target text items as Chinese lettering, never Japanese/English dialogue after translation. "
          + behavior + style + " caption is an English description of what you actually see; prompt is the final usable prompt. "
-         'Return exactly two string fields: {"caption":"visible image description","prompt":"usable generation prompt"}. '
-         "No other fields, Markdown or explanation. JSON schema: " + json.dumps(EXPANSION_SCHEMA)},
+         + skill_rules + (MOSS_DRAFT_RULES if moss else "") +
+         "Use the supplied source_dimensions and image_dimensions, never guess pixel dimensions. If layout_canvas is supplied it is authoritative; place absolute boxes on that canvas. " +
+         ("Return caption describing the source image and prompt as a Caption object or a pixel Layout draft object. " if moss else
+          "Return caption describing the source image and prompt as the usable generation prompt string. ") +
+         (CHARACTER_OPERATION_RULES if detect_operations else "") +
+         "No other fields, Markdown or explanation. JSON schema: " + json.dumps(schema)},
         {"role": "user", "content": [{"type": "text", "text": json.dumps(context, ensure_ascii=False)},
                                       {"type": "image_url", "image_url": {"url": _data_uri(image), "detail": "auto"}}]},
     ]
     def validate(result):
-        if not result["caption"].strip() or not result["prompt"].strip():
-            raise AgentError("看图模型必须返回非空 caption 和 prompt，原始标签仍保留。")
-        profile.validate_snapshot(result["prompt"].strip())
+        if detect_operations:
+            from .image_options import validate_character_operations
+            validate_character_operations(result["operations"], options.get("source_identities", character_references(observation)))
+        # caption is auxiliary UI metadata, never the generation input.
+        # Keep a valid prompt even when the model leaves that description blank.
+        if not result["prompt"] or (isinstance(result["prompt"], str) and not result["prompt"].strip()):
+            lengths = {name: len(result[name].strip()) for name in ("caption", "prompt")}
+            requested = re.sub(r"[^a-zA-Z0-9._:/-]", "?", str(config.get("model", "")))[:120]
+            raise AgentError("看图模型返回的 prompt 为空，未生成可用提示词"
+                             f"（caption_chars={lengths['caption']}, prompt_chars={lengths['prompt']}, model={requested}）。")
+        if moss:
+            compiled = compile_expansion_prompt(normalize_layout_draft(result["prompt"], canvas), instruction)
+            validate_skill_prompt(profile, compiled, skill_id)
+        else:
+            profile.validate_snapshot(result["prompt"].strip())
     try:
-        result = await complete_structured(provider, messages, EXPANSION_SCHEMA, validate,
+        result = await complete_structured(provider, messages, schema, validate,
                                            unwrap_json_string=True)
     except AgentError as error:
         raise AgentError(f"所选看图模型未完成图片扩写：{error} 原始标签仍保留。") from error
-    prompt = profile.validate_snapshot(result["prompt"].strip())
+    prompt = (compile_expansion_prompt(normalize_layout_draft(result["prompt"], canvas), instruction) if moss else
+              profile.validate_snapshot(result["prompt"].strip()))
     if not prompt:
         raise AgentError("看图模型未返回有效 Prompt，原始标签仍保留。")
-    retained_names = character_references(observation) if preserve_identity else []
+    retained_names = list(dict.fromkeys([*options.get("requested_characters", []),
+        *(options.get("replacement_characters", []) or (character_references(observation) if preserve_identity else []))]))
     if retained_names:
         # Prose conversion must not erase the tagger's named character.
-        copyrights = observation.get("categories", {}).get("copyright", [])
-        prompt = retain_character_names(prompt, retained_names, profile,
-                                        [name for name in copyrights if isinstance(name, str) and name != "original"])
-    return {"expanded": True, "expansion_caption": result["caption"].strip(), "formatted_prompt": prompt,
-            "expansion_error": "",
+        copyrights = [] if (options.get("replacement_characters") or any(op.get("action") == "replace" for op in options.get("character_operations", []))) else observation.get("categories", {}).get("copyright", [])
+        copyrights = [name for name in copyrights if isinstance(name, str) and name != "original"]
+        prompt = (retain_moss_names(prompt, retained_names, copyrights) if moss else
+                  retain_character_names(prompt, retained_names, profile, copyrights))
+    prompt = validate_skill_prompt(profile, prompt, skill_id)
+    # Language heuristics assess quality, not structural usability. Never regenerate
+    # the whole scene or discard valid geometry for an untranslated text region.
+    quality_warnings = []
+    if moss and not options.get("tag_filters", {}).get("text", False):
+        expect_text = any(tag in {"text", "speech_bubble", "english_text", "japanese_text", "korean_text", "subtitles"}
+                          for tag in observation.get("tags", []))
+        try:
+            validate_lettering_language(prompt, instruction, expect_text=expect_text)
+        except AgentError as error:
+            quality_warnings.append("中文翻译可能未完成（自动检查）："+str(error)+"。已保留本轮有效 Prompt，请检查文字区域。")
+    return {**({"character_operations": result["operations"]} if detect_operations else {}), "expanded": True, "model_usage": {"source": options.get("vision_provider", "current"),
+                "requested": config.get("model", ""), "reported": getattr(provider, "last_model", {}).get("reported", ""),
+                "completed_at": time.time(), "protocol": getattr(provider, "protocol", "chat_completions"),
+                "reasoning_effort": getattr(provider, "reasoning_effort", "")},
+            "expansion_caption": result["caption"].strip(), "formatted_prompt": prompt,
+            "expansion_error": "", "quality_warnings": quality_warnings,
+            **(layout_dimensions(normalize_layout_draft(result["prompt"], canvas)) if moss else {}),
             "retained_characters": retained_names,
-            "expansion_mode": mode, "message": "看图扩写完成，确认后更新 Final Prompt；原始标签仍保留。"}
+            "expansion_mode": mode, "message": "看图扩写完成，确认后更新 Final Prompt；原始标签仍保留。" + " ".join(quality_warnings)}

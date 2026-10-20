@@ -8,7 +8,9 @@ from pathlib import Path
 from .config import ConfigStore
 from .core import PromptAgent
 from .creation import WORKFLOW_ID, WORKFLOW_VERSION
+from .direct import CREATIVE_BASE as DIRECT_CREATIVE_BASE
 from .profiles import ProfileRegistry, SECTION_LABELS
+from .skills import SkillRegistry
 from .providers import OpenAICompatibleProvider
 from .native_config import NativeConfigSource
 from .references import host_references
@@ -20,6 +22,8 @@ class Runtime:
         self.directory = directory
         self.config = ConfigStore(directory / "config.json")
         self.profiles = ProfileRegistry()
+        # 扩写 skill：内置（复用 profile 规则）+ DSH skills 目录里的 SKILL.md
+        self.skills = SkillRegistry(self.profiles)
         self.presets = PresetStore(directory / "presets.json")
         self.sessions = SessionStore(directory / "sessions")
         self.native_source = native_source or NativeConfigSource()
@@ -29,9 +33,12 @@ class Runtime:
         self.agent = PromptAgent(self.profiles, self.sessions, self.presets,
                                  lambda: OpenAICompatibleProvider(self.provider_config()), self.references,
                                  native_generator=self.native_generate,
-                                 native_provider_factory=self.native_provider)
+                                 native_provider_factory=self.native_provider,
+                                 request_provider_factory=self.request_provider)
         from .interrogation import InterrogationService
         self.interrogation = InterrogationService(self)
+        from .execution import ExecutionCore
+        self.execution = ExecutionCore(self)
 
     def native_settings(self) -> dict:
         return {"workspace": "", "agent_preset": "", "skill": "anima-prompt-universal",
@@ -51,7 +58,7 @@ class Runtime:
         write_json(self.directory / "native-runtime.json", settings)
         return settings
 
-    async def native_meta(self) -> dict:
+    async def native_meta(self, source=None) -> dict:
         from .errors import AgentError
         settings = self.native_settings()
         try:
@@ -74,7 +81,7 @@ class Runtime:
             presets = presets.get("presets", []) if isinstance(presets, dict) else presets
             if not settings["agent_preset"]:
                 settings["agent_preset"] = next((p["id"] for p in presets if p.get("isDefault")), "")
-            source = self.preferences()["provider_source"]
+            source = source or self.preferences()["provider_source"]
             connection = (capabilities.get("models", {}).get("default", {}) if source == "dsh-active" else
                           self.native_source.describe(source) if source != "manual" else {})
             return {"available": True, "error": "", **settings, "workspaces": rows,
@@ -84,18 +91,23 @@ class Runtime:
         except AgentError as error:
             return {"available": False, "error": str(error), **settings, "workspaces": [], "presets": []}
 
-    async def native_context(self):
+    async def native_context(self, request=None):
         from .errors import AgentError
-        source = self.preferences()["provider_source"]
-        if source == "manual":
+        selection = (request or {}).get("model_selection")
+        self.model_config(selection)  # Validate the public selection before native dispatch.
+        source = (selection or {}).get("source", "current")
+        source = self.preferences()["provider_source"] if source == "current" else source
+        if not isinstance(source, str) or not source.startswith("dsh-"):
             raise AgentError("DSH 原生模式请先选择 DSH 当前模型、WorkBuddy 或 OpenCode 连接。")
-        metadata = await self.native_meta()
+        metadata = await self.native_meta(source)
         if not metadata["available"]:
             raise AgentError(metadata["error"])
-        return metadata, {"id": source, "provider": metadata["provider"], "model": metadata["model"]}
+        model = (selection or {}).get("model", "").strip()
+        return metadata, {"id": source, "provider": metadata["provider"],
+                          "model": model or metadata["model"], "model_override": bool(model)}
 
     async def native_generate(self, profile, state, request, preset):
-        settings, connection = await self.native_context()
+        settings, connection = await self.native_context(request)
         return await self.native.generate(profile, state, request, preset, settings, connection)
 
     def native_provider(self, session_id, request):
@@ -106,7 +118,7 @@ class Runtime:
 
             async def complete(self, messages, schema):
                 if self.delegate is None:
-                    settings, connection = await runtime.native_context()
+                    settings, connection = await runtime.native_context(request)
                     self.delegate = runtime.native.provider(settings, connection, session_id,
                                                             operation_id=request.get("native_operation_id", ""))
                 reply = await self.delegate.complete(messages, schema)
@@ -129,6 +141,43 @@ class Runtime:
                      if name not in ("base_url", "model", "api_key_env", "api_key", "session_header")}
         return self.native_source.resolve(source, overrides)
 
+    def model_config(self, selection=None) -> dict:
+        """Resolve one node's public selection afresh; credentials never enter its workflow."""
+        from .errors import AgentError
+        from .native_config import transport_options
+        from .execution import model_snapshot
+        snapshot = model_snapshot()
+        if snapshot is not None:
+            return snapshot
+        if selection is None:
+            selection = {}
+        if not isinstance(selection, dict):
+            raise AgentError("模型选择必须是对象。")
+        source, model = selection.get("source", "current"), selection.get("model", "")
+        if not isinstance(source, str) or not isinstance(model, str) or len(model) > 256 or any(ord(c) < 32 for c in model):
+            raise AgentError("模型连接或模型 ID 无效。")
+        if source == "current":
+            config = self.provider_config()
+        elif source == "manual":
+            config = self.config.load()
+        elif source in ("dsh-active", "dsh-workbuddy", "dsh-opencode"):
+            config = self.native_source.resolve(source, transport_options(self.config.load()))
+        elif source in {item["id"] for item in self.provider_presets()}:
+            config = {**ConfigStore(self.directory / "providers" / f"{identifier(source)}.json").load(),
+                      **transport_options(self.config.load())}
+        elif source == "workbuddy" and (self.directory / "providers" / "workbuddy.json").is_file():
+            config = {**ConfigStore(self.directory / "providers" / "workbuddy.json").load(),
+                      **transport_options(self.config.load())}
+        else:
+            raise AgentError("所选模型连接不存在，请重新选择连接。")
+        return {**config, **({"model": model.strip()} if model.strip() else {})}
+
+    def request_provider(self, request):
+        selection = request.get("model_selection")
+        provider = OpenAICompatibleProvider(self.model_config(selection))
+        provider.require_model_match = bool(selection and selection.get("model", "").strip())
+        return provider
+
     def public_config(self) -> dict:
         return ConfigStore._public(self.provider_config())
 
@@ -137,15 +186,16 @@ class Runtime:
         mode = data.get("reference_mode", self.preferences()["reference_mode"])
         if mode not in ("local", "online"):
             raise AgentError("资料核验模式必须是 local 或 online")
-        update = {key: value for key, value in data.items() if key != "reference_mode"}
-        if self.preferences()["provider_source"] != "manual" and any(name in update for name in
+        local_connection = data.get("connection_scope") == "manual"
+        update = {key: value for key, value in data.items() if key not in ("reference_mode", "connection_scope")}
+        if not local_connection and self.preferences()["provider_source"] != "manual" and any(name in update for name in
                 ("base_url", "model", "api_key_env", "api_key", "clear_api_key", "session_header")):
             raise AgentError("当前连接跟随 DSH；请在 DSH 修改模型或凭据，或切回本机独立配置。")
         if update:
             self.config.save(update)
         if "reference_mode" in data:
             write_json(self.directory / "preferences.json", {**self.preferences(), "reference_mode": mode})
-        return {**self.public_config(), "reference_mode": mode}
+        return {**(self.config.public() if local_connection else self.public_config()), "reference_mode": mode}
 
     def provider_presets(self) -> list[dict]:
         items = read_json(self.directory / "provider-presets.json", [])
@@ -187,11 +237,15 @@ class Runtime:
             # Settings must remain reachable to select another connection.
             # Actual generation still fails explicitly, without fallback.
             config, provider_error = self.config.public(), str(error)
-        return {"profiles": [{"id": p.id, "label": p.data["label"], "style": p.data["style"]}
+        return {"profiles": [{"id": p.id, "label": p.data["label"], "style": p.data["style"],
+                              "base_agent_prompt": p.data["base_agent_prompt"],
+                              "direct_base_agent_prompt": DIRECT_CREATIVE_BASE}
                              for p in self.profiles.all()],
+                # 扩写 skill 列表（内置 + DSH）；前端只暴露这一层，不再让用户选模型
+                "skills": self.skills.list_public(),
                 "sections": [{"id": name, "label": label} for name, label in SECTION_LABELS.items()],
                 "presets": [{**p, "builtin": p["id"] in builtins} for p in self.presets.all()],
-                "config": config, "provider_presets": self.provider_presets(), **self.preferences(),
+                "config": config, "manual_config": self.config.public(), "provider_presets": self.provider_presets(), **self.preferences(),
                 "native_providers": self.native_source.public(), "provider_error": provider_error,
                 "interrogation": self.interrogation.meta(),
                 "creation_workflow": {"id": WORKFLOW_ID, "version": WORKFLOW_VERSION}}

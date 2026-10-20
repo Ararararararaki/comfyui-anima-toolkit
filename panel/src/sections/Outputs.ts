@@ -1,5 +1,4 @@
-// ── Outputs 模块主页面 ──
-
+import { t as tr } from '../i18n'
 import { restoreOutputSources, outputSources, sourceForFile, fileSourceIdentity, outputContentKey, outputFileId, readOutputSourceFile, requestOutputSourcePermission, setOutputSource, subscribeOutputSources } from '../services/outputSources'
 import { scanOutputSource, refreshOutputSources, cancelOutputScan } from '../services/outputScanner'
 import { renderOutputSourcesView, mountOutputSourcesView } from '../renderers/outputSourcesView'
@@ -98,10 +97,10 @@ const _summaryIndex = createOutputSummaryIndex({
     if (!rows.length) return []
     const response = await fetch('/anima/gallery/classify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
       body: JSON.stringify({ items: rows.map(row => ({ id: row.imageId, positivePrompt: row.prompt || row.identityPrompt || '', tags: row.manualTags || [], inferredTags: row.inferredTags || [] })) }) })
-    if (!response.ok) throw new Error(`本地词库分类 HTTP ${response.status}`)
+    if (!response.ok) throw new Error(tr("workspace.localDictionaryClassificationHttp", { p0: response.status }))
     const result = await response.json() as { items: OutputClassification[]; version?: string }
     if (result.version) _classificationVersion = result.version
-    if (!Array.isArray(result.items)) throw new Error('本地分类返回格式无效')
+    if (!Array.isArray(result.items)) throw new Error(tr("workspace.invalidResponseFromLocalClassification"))
     return result.items
   },
   canRead: () => isOutputsActive() && (_indexCanRead || _indexDeferReason === 'memory-pressure' && outputFallbackSettings().libraryMatching && outputFallbackCatalog().libraryMatches.count > 0),
@@ -120,13 +119,13 @@ function syncIndexProgress(): void {
   const element = document.getElementById('outputsIndexStatus')
   if (!element) return
   const state = useOutputStore.getState()
-  const reason = _indexProgress.deferredReason === 'memory-pressure' ? '内存不足，等待恢复'
-    : _indexProgress.deferredReason === 'generation-active' ? '正在生图，等待空闲'
-      : _indexProgress.deferredReason === 'tagger-busy' ? 'WD14 正被其他任务使用' : '等待资源或目录授权'
-  const text = _indexProgress.error ? `处理待重试：${_indexProgress.error}`
-    : _indexProgress.stage === 'wd14' ? `WD14 ${_indexProgress.done}/${_indexProgress.total}${_indexProgress.deferred ? ` · ${reason}` : _indexProgress.running ? ' · 反推中' : ' · 本轮完成'}`
-      : _indexProgress.total ? `整理 ${_indexProgress.done}/${_indexProgress.total}${_indexProgress.deferred ? ` · ${reason}` : _indexProgress.running ? ' · 处理中' : ' · 本轮完成'}` : ''
-  element.textContent = state.queryPending ? '搜索中…' : text
+  const reason = _indexProgress.deferredReason === 'memory-pressure' ? tr("workspace.lowMemoryWaitingToRecover")
+    : _indexProgress.deferredReason === 'generation-active' ? tr("workspace.generatingImagesWaitingForIdle")
+      : _indexProgress.deferredReason === 'tagger-busy' ? tr("workspace.wd14IsInUseByAnotherTask") : tr("workspace.waitingForResourcesOrFolderAccess")
+  const text = _indexProgress.error ? tr("workspace.retryNeeded", { p0: _indexProgress.error })
+    : _indexProgress.stage === 'wd14' ? `WD14 ${_indexProgress.done}/${_indexProgress.total}${_indexProgress.deferred ? ` · ${reason}` : _indexProgress.running ? tr("workspace.tagging") : tr("workspace.passComplete")}`
+      : _indexProgress.total ? tr("workspace.organizing", { p0: _indexProgress.done, p1: _indexProgress.total, p2: _indexProgress.deferred ? ` · ${reason}` : _indexProgress.running ? tr("workspace.processing") : tr("workspace.passComplete") }) : ''
+  element.textContent = state.queryPending ? tr("workspace.searching") : text
   const status = document.getElementById('outputsRecognitionStatus'); if (status) status.textContent = text
   const counts = document.getElementById('outputsOrganizationCounts')
   if (counts) {
@@ -138,7 +137,7 @@ function syncIndexProgress(): void {
       else if (group.rank === 3) failed++
       else if (!group.characterId) unknown++
     }
-    counts.textContent = `共 ${files.length} 张 · 待整理 ${pending} · 未识别 ${unknown} · 失败 ${failed}`
+    counts.textContent = tr("workspace.imagesPendingUnrecognizedFailed", { p0: files.length, p1: pending, p2: unknown, p3: failed })
   }
 }
 async function syncGalleryCatalog(): Promise<boolean> {
@@ -152,8 +151,8 @@ async function syncGalleryCatalog(): Promise<boolean> {
     _outputsWarmupBusy = !!changes.pending && !useOutputStore.getState().files.length
     const refresh = changes.refresh, refreshElement = document.getElementById('outputsRefreshStatus')
     if (refresh && refreshElement && _manualRefreshId && String(refresh.requestId) === _manualRefreshId) {
-      refreshElement.textContent = refresh.state === 'complete' ? '目录已核对' : refresh.state === 'failed' ? `核对失败：${refresh.error || '请重试'}`
-        : refresh.state === 'deferred' ? `核对待恢复：${refresh.reason || '等待资源'}` : '正在核对 output 目录…'
+      refreshElement.textContent = refresh.state === 'complete' ? tr("workspace.folderChecked") : refresh.state === 'failed' ? tr("workspace.folderCheckFailed", { p0: refresh.error || tr("workspace.pleaseRetry") })
+        : refresh.state === 'deferred' ? tr("workspace.folderCheckWaiting", { p0: refresh.reason || tr("workspace.waitingForResources") }) : tr("workspace.checkingTheOutputFolder")
     }
     const reason = changes.budgetReason || ''
     _indexDeferReason = reason
@@ -372,7 +371,7 @@ async function refreshNativeOutputs() {
  */
 async function downloadOutputWorkflow(meta: OutputMetadata | undefined, baseName: string) {
   const workflowJson = meta?.workflowJson || ''
-  if (!workflowJson) { showToast('该图片无工作流数据'); return }
+  if (!workflowJson) { showToast(tr("workspace.thisImageHasNoWorkflowData")); return }
   try {
     const safeName = (baseName || 'workflow').replace(/\.png$/i, '').replace(/[\\/:*?"<>|]/g, '_')
     const blob = new Blob([workflowJson], { type: 'application/json' })
@@ -382,9 +381,9 @@ async function downloadOutputWorkflow(meta: OutputMetadata | undefined, baseName
     a.download = safeName + '.json'
     a.click()
     URL.revokeObjectURL(url)
-    showToast('⬇️ 工作流 .json 已下载，拖入 ComfyUI 画布即可导入')
+    showToast(tr("workspace.workflowJsonDownloadedDragItOntoThe"))
   } catch {
-    showToast('⚠️ 下载失败')
+    showToast(tr("workspace.downloadFailed"))
   }
 }
 
@@ -471,9 +470,9 @@ async function copyOutputPrompt(snapshot: ImageSnapshot | null): Promise<void> {
   const meta = await getImageMetadata(snapshot)
   if (token !== _copyToken || !snapshot || !snapshotIsCurrent(snapshot)) return
   const text = promptBody(meta)
-  if (!text) { showToast(meta?.promptStatus === 'ambiguous' ? '无法确定本图对应的生成分支，暂不能可靠复制' : '未取得可靠 Prompt，请重试'); return }
+  if (!text) { showToast(meta?.promptStatus === 'ambiguous' ? tr("workspace.theImageSGenerationBranchIsUncertain") : tr("workspace.noReliablePromptFoundPleaseRetry")); return }
   const ok = await writeClipboard(text)
-  if (token === _copyToken) showToast(ok ? (meta?.promptStatus === 'partial' ? '已复制已解析的 Prompt；部分连接无法解析' : 'Prompt 已复制到剪贴板') : '复制失败：浏览器拒绝了剪贴板访问')
+  if (token === _copyToken) showToast(ok ? (meta?.promptStatus === 'partial' ? tr("workspace.parsedPromptCopiedSomeConnectionsCouldNot") : tr("workspace.promptCopiedToClipboard")) : tr("workspace.copyFailedClipboardAccessDenied2"))
 }
 
 /**
@@ -912,7 +911,7 @@ function renderOutputsView() {
   const state = useOutputStore.getState()
   syncIndexProgress()
   const newImages = document.getElementById('outputsNewImages')
-  if (newImages) { newImages.hidden = _newOutputIds.size === 0; newImages.textContent = `查看 ${_newOutputIds.size} 张新图` }
+  if (newImages) { newImages.hidden = _newOutputIds.size === 0; newImages.textContent = tr("workspace.viewNewImages", { p0: _newOutputIds.size }) }
   const groupSelect = document.querySelector<HTMLSelectElement>('.outputs-group-select')
   if (groupSelect) groupSelect.value = state.groupMode
   renderImageGrid(state)
@@ -1020,8 +1019,8 @@ function updateCategorySelects(state: ReturnType<typeof useOutputStore.getState>
   // 顶栏分类导航是唯一的“进入分类”入口；选择后下方网格直接切到该分类。
   const nav = document.querySelector('.outputs-filter-category') as HTMLSelectElement | null
   if (nav) {
-    nav.innerHTML = `<option value="">全部图片（${state.files.length}）</option>` +
-      `<option value="__none__">未分类（${uncategorized}）</option>` +
+    nav.innerHTML = `<option value="">${tr("workspace.allImages", { p0: state.files.length })}</option>` +
+      `<option value="__none__">${tr("workspace.uncategorized", { p0: uncategorized })}</option>` +
       categories.map(({ name, count }) => `<option value="${escAttr(name)}">${esc(name)}（${count}）</option>`).join('')
     nav.value = state.filterCategory || ''
   }
@@ -1300,7 +1299,7 @@ function updateOutputsStats(state: ReturnType<typeof useOutputStore.getState>) {
 
 /** 「后端正在预备新图…」提示（状态栏 / 空态共用）。图标走 icon()（禁 emoji），颜色跟随宿主主题变量。 */
 function outputsWarmupHintHtml(): string {
-  return `<span class="outputs-warmup-hint" style="display:inline-flex;align-items:center;gap:6px;color:var(--text2);font-size:12px">${icon('spinner', 12)}<span>后端正在预备新图…</span></span>`
+  return `<span class="outputs-warmup-hint" style="display:inline-flex;align-items:center;gap:6px;color:var(--text2);font-size:12px">${icon('spinner', 12)}<span>${tr("workspace.preparingNewImages")}</span></span>`
 }
 
 /**
@@ -1311,7 +1310,7 @@ function decorateOutputsEmpty(root: HTMLElement) {
   if (!galleryIndexEnabled()) return
   const p = root.querySelector('.outputs-empty p')
   if (!p) return
-  p.textContent = _outputsWarmupBusy ? '后端正在预备新图，完成后会自动出现' : '后端索引里还没有图片'
+  p.textContent = _outputsWarmupBusy ? tr("workspace.theBackendIsPreparingNewImagesThey") : tr("workspace.theBackendIndexHasNoImagesYet")
   if (_outputsWarmupBusy) p.insertAdjacentHTML('afterend', outputsWarmupHintHtml())
 }
 
@@ -1348,7 +1347,7 @@ function bindOutputsEvents() {
     if ((event.target as HTMLElement).closest('[data-output-preview-drag]')) {
       const target = _currentPreviewSnapshot
       const copy = target && !_editCropping && !_painter?.active && _editDragSession.get(target)
-      if (!copy || !event.dataTransfer) { event.preventDefault(); showToast('正在准备当前编辑结果，就绪后请从“拖出当前图”拖动'); void prepareEditedDrag(); return }
+      if (!copy || !event.dataTransfer) { event.preventDefault(); showToast(tr("workspace.preparingEditedImageUseDragCurrentImage")); void prepareEditedDrag(); return }
       try { writeOutputDragData(event.dataTransfer, copy) }
       catch (error) { event.preventDefault(); showToast((error as Error).message) }
       return
@@ -1356,7 +1355,7 @@ function bindOutputsEvents() {
     const target = event.target as HTMLElement, snapshot = dragSnapshot(target)
     if (!snapshot || !event.dataTransfer) return
     const copy = _dragSession.get(snapshot)
-    if (!copy) { event.preventDefault(); showToast('正在准备导出副本，准备好后再次拖出'); void _dragSession.prepare(snapshot).then(result => { if (result) showToast('导出副本已就绪，可以拖出') }).catch(error => { if (error.name !== 'AbortError') showToast(`准备拖出失败：${error.message}`) }); return }
+    if (!copy) { event.preventDefault(); showToast(tr("workspace.preparingExportCopyDragAgainWhenReady")); void _dragSession.prepare(snapshot).then(result => { if (result) showToast(tr("workspace.exportCopyReadyToDrag")) }).catch(error => { if (error.name !== 'AbortError') showToast(tr("workspace.couldNotPrepareDrag", { p0: error.message })) }); return }
     try { writeOutputDragData(event.dataTransfer, copy) }
     catch (error) { event.preventDefault(); showToast((error as Error).message); return }
     const image = target.closest('[data-output-drag]')?.querySelector('img')
@@ -1368,12 +1367,12 @@ function bindOutputsEvents() {
     if (!folder) return
     try {
       if (folder.source) {
-        if (folder.source.kind === 'directory' && !await requestOutputSourcePermission(folder.source.id)) { showToast('需要授权这个目录才能读取图片'); return }
+        if (folder.source.kind === 'directory' && !await requestOutputSourcePermission(folder.source.id)) { showToast(tr("workspace.grantFolderAccessToReadItsImages")); return }
         if (!folder.source.enabled) await setOutputSourceEnabled(folder.source.id, true)
       }
       if (_viewEpoch !== epoch || useOutputStore.getState().browsePath !== st.browsePath || !isOutputsActive()) return
       st.setBrowsePath([...st.browsePath, folder.step]); renderOutputsView()
-    } catch (error) { showToast(`打开目录失败：${(error as Error).message}`) }
+    } catch (error) { showToast(tr("workspace.couldNotOpenFolder", { p0: (error as Error).message })) }
   }
   document.addEventListener('dblclick', event => { const target = (event.target as HTMLElement).closest<HTMLElement>('[data-output-folder]'); if (target && !(event.target as HTMLElement).closest('button')) { event.preventDefault(); void openFolder(target) } })
   document.addEventListener('keydown', event => { const target = event.target as HTMLElement; if (target.matches('[data-output-folder]') && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); void openFolder(target) } })
@@ -1424,8 +1423,8 @@ function bindOutputsEvents() {
       if (!source) return
       const rect = sourceMenu.getBoundingClientRect()
       openContextMenu(rect.right, rect.bottom, [{ items: [
-        { label: source.enabled ? '从全部图片汇总中取消' : '加入全部图片汇总', icon: 'checkSquare', handler: () => { void setOutputSourceEnabled(source.id, !source.enabled) } },
-        { label: '从图片库移除目录', icon: 'x', handler: () => { void removeOutputSource(source.id).then(() => { if (useOutputStore.getState().currentSourceId === source.id) useOutputStore.getState().setBrowsePath([]); renderOutputsView(); showToast('已移除目录，磁盘图片与收藏评分保留') }) } },
+        { label: source.enabled ? tr("workspace.excludeFromAllImages") : tr("workspace.includeInAllImages"), icon: 'checkSquare', handler: () => { void setOutputSourceEnabled(source.id, !source.enabled) } },
+        { label: tr("workspace.removeFolderFromLibrary"), icon: 'x', handler: () => { void removeOutputSource(source.id).then(() => { if (useOutputStore.getState().currentSourceId === source.id) useOutputStore.getState().setBrowsePath([]); renderOutputsView(); showToast(tr("workspace.folderRemovedImagesFavoritesAndRatingsAre")) }) } },
       ] }])
       return
     }
@@ -1451,29 +1450,29 @@ function bindOutputsEvents() {
       await exportOutputs(ids, exportAction.dataset.outputExport === 'copy' ? 'copy' : 'download', mode)
       return
     }
-    if (target.closest('.outputs-restore-output-btn')) { await setOutputSourceEnabled('output', true); renderOutputsView(); showToast('已恢复默认 ComfyUI output 目录'); return }
+    if (target.closest('.outputs-restore-output-btn')) { await setOutputSourceEnabled('output', true); renderOutputsView(); showToast(tr("workspace.defaultComfyuiOutputFolderRestored")); return }
     if (target.closest('.outputs-organize-btn')) {
       _summaryIndex.retry({ reclassify: true, metadataOnly: true })
-      showToast('已开始按提示词重新整理全部启用目录；未授权目录请进入文件夹授权')
+      showToast(tr("workspace.organizingEnabledFoldersByPromptOpenAny"))
       return
     }
     if (target.closest('.outputs-fallback-refresh-btn')) {
-      try { await refreshOutputFallbackCatalog(); showToast(`找到 ${outputFallbackCatalog().models.length} 个本地 WD14 模型`) }
-      catch (error) { showToast(`模型列表读取失败：${(error as Error).message}`) }
+      try { await refreshOutputFallbackCatalog(); showToast(tr("workspace.foundLocalWd14Models", { p0: outputFallbackCatalog().models.length })) }
+      catch (error) { showToast(tr("workspace.couldNotReadModelList", { p0: (error as Error).message })) }
       return
     }
     if (target.closest('.outputs-fallback-pause-btn')) {
-      setOutputFallbackSettings({ enabled: false }); showToast('WD14 反推已暂停，已完成的识别结果保留'); return
+      setOutputFallbackSettings({ enabled: false }); showToast(tr("workspace.wd14TaggingPausedCompletedResultsAreKept")); return
     }
     if (target.closest('.outputs-recognize-unknown-btn')) {
       try {
         await refreshOutputFallbackCatalog()
         const settings = outputFallbackSettings(), catalog = outputFallbackCatalog(), model = settings.model || catalog.defaultModel
-        if (!catalog.models.includes(model)) { showToast('请先选择已安装的 WD14 模型'); return }
+        if (!catalog.models.includes(model)) { showToast(tr("workspace.selectAnInstalledWd14ModelFirst")); return }
         setOutputFallbackSettings({ enabled: true, includeUnrecognized: true })
         _summaryIndex.retry({ reinfer: true })
-        showToast(`已加入 WD14 识别队列：${model}；正在生图或内存不足时等待`)
-      } catch (error) { showToast(`无法启动 WD14：${(error as Error).message}`) }
+        showToast(tr("workspace.queuedForWd14WithWaitingWhileGeneration", { p0: model }))
+      } catch (error) { showToast(tr("workspace.couldNotStartWd14", { p0: (error as Error).message })) }
       return
     }
 
@@ -1486,11 +1485,11 @@ function bindOutputsEvents() {
         await scanOutputDir(handle)
         if (action === _scanActionEpoch) renderOutputsView()
       } catch (error) {
-        if ((error as Error).name !== 'AbortError') showToast(`添加目录失败：${(error as Error).message || '无法读取'}`)
+        if ((error as Error).name !== 'AbortError') showToast(tr("workspace.couldNotAddFolder", { p0: (error as Error).message || tr("workspace.couldNotRead") }))
       }
       return
     }
-    if (target.closest('.outputs-cancel-scan-btn')) { _scanActionEpoch++; cancelOutputScan(); renderOutputsView(); showToast('扫描已取消'); return }
+    if (target.closest('.outputs-cancel-scan-btn')) { _scanActionEpoch++; cancelOutputScan(); renderOutputsView(); showToast(tr("workspace.scanCanceled")); return }
     if (target.closest('.outputs-refresh-btn')) {
       const action = ++_scanActionEpoch
       try {
@@ -1500,29 +1499,29 @@ function bindOutputsEvents() {
           _manualRefreshId = String(status?.requestId || '')
           await syncGalleryCatalog()
           const element = document.getElementById('outputsRefreshStatus')
-          if (element) element.textContent = status?.state === 'complete' ? '目录已核对' : '正在核对 output 目录…'
+          if (element) element.textContent = status?.state === 'complete' ? tr("workspace.folderChecked") : tr("workspace.checkingTheOutputFolder")
         }
         await refreshOutputSources()
         if (action !== _scanActionEpoch || !isOutputsActive()) return
         renderOutputsView()
         _summaryIndex.retry()
-        showToast(_nativeOutputs ? '所选目录已刷新' : '已开始核对目录，新图将自动补入')
-      } catch (error) { showToast(`刷新失败：${(error as Error).message}`) }
+        showToast(_nativeOutputs ? tr("workspace.folderRefreshed") : tr("workspace.folderCheckStartedNewImagesWillAppear"))
+      } catch (error) { showToast(tr("workspace.refreshFailed", { p0: (error as Error).message })) }
       return
     }
     if (target.closest('.outputs-reparse-btn')) {
       const action = ++_scanActionEpoch
       try {
         const selected = outputSources().filter(source => source.enabled && source.kind === 'directory' && source.handle)
-        if (!selected.length) { showToast('output 元数据由后端自动解析；归档目录可添加后重新解析'); return }
+        if (!selected.length) { showToast(tr("workspace.theBackendParsesOutputMetadataAutomaticallyAdd")); return }
         for (const source of selected) {
           if (action !== _scanActionEpoch) return
           await reparseAllMetadata(source.handle!)
         }
         if (action !== _scanActionEpoch || !isOutputsActive()) return
         renderOutputsView()
-        showToast('所选目录元数据已更新')
-      } catch (error) { showToast(`重新解析失败：${(error as Error).message}`) }
+        showToast(tr("workspace.folderMetadataUpdated"))
+      } catch (error) { showToast(tr("workspace.couldNotReparse", { p0: (error as Error).message })) }
       return
     }
 
@@ -1599,12 +1598,12 @@ function bindOutputsEvents() {
           const tags = extractLoraTagsFromWorkflow(full.workflowJson, full.rawMetadata)
           if (tags.length > 0) {
             const ok = await writeClipboard(tags.join(', '))
-            showToast(ok ? `已复制 ${tags.length} 个 LoRA 标签` : '⚠️ 复制失败：浏览器拒绝了剪贴板访问')
+            showToast(ok ? tr("workspace.copiedLoraTags", { p0: tags.length }) : tr("workspace.copyFailedClipboardAccessDenied"))
           } else {
-            showToast('未检测到 LoRA 节点')
+            showToast(tr("workspace.noLoraNodesDetected"))
           }
         } else {
-          showToast('该图片无 LoRA 数据')
+          showToast(tr("workspace.thisImageHasNoLoraData"))
         }
       }
       return
@@ -1650,7 +1649,7 @@ function bindOutputsEvents() {
       const id = renameBtn.dataset.id
       const oldName = renameBtn.dataset.name
       if (id && oldName) {
-        const newName = await promptModal('重命名文件', oldName, '输入新的文件名（包含扩展名）')
+        const newName = await promptModal(tr("workspace.renameFile"), oldName, tr("workspace.enterTheNewFilenameIncludingItsExtension"))
         if (newName && newName.trim() && newName.trim() !== oldName) {
           await renameFile(id, newName.trim())
           renderOutputsView()
@@ -1737,7 +1736,7 @@ function bindOutputsEvents() {
     if (target.closest('.outputs-batch-delete-btn')) {
       const ids = Array.from(useOutputStore.getState().selectedIds)
       if (ids.length > 0) {
-        const confirmed = await confirmModal('批量删除', `确认删除选中的 ${ids.length} 个文件？\n此操作不可撤销！`)
+        const confirmed = await confirmModal(tr("workspace.deleteSelected"), tr("workspace.deleteSelectedFilesThisCannotBeUndone", { p0: ids.length }))
         if (confirmed) {
           await deleteOutputsAndTrack(ids)
           updateBatchBar()
@@ -1861,20 +1860,20 @@ function bindOutputsEvents() {
       const popup = document.createElement('div')
       popup.className = 'outputs-shortcuts-popup'
       popup.style.cssText = `position:fixed;bottom:60px;right:24px;z-index:9999;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px 20px;box-shadow:0 4px 20px rgba(0,0,0,0.3);min-width:300px;font-size:13px;line-height:1.6`
-      popup.innerHTML = `<div style="font-weight:700;margin-bottom:10px;font-size:14px;color:var(--text)">⌨️ 快捷键</div>
+      popup.innerHTML = `<div style="font-weight:700;margin-bottom:10px;font-size:14px;color:var(--text)">${tr("workspace.keyboardShortcuts")}</div>
         <table style="width:100%;border-collapse:collapse">
-          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">Ctrl/Cmd+A</kbd></td><td style="color:var(--text);padding:2px 0">全选所有图片</td></tr>
-          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">Ctrl/Cmd+C</kbd></td><td style="color:var(--text);padding:2px 0">复制选中图片</td></tr>
-          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">Ctrl/Cmd+D/S</kbd></td><td style="color:var(--text);padding:2px 0">下载选中图片</td></tr>
-          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">Shift+点击</kbd></td><td style="color:var(--text);padding:2px 0">连续范围选中</td></tr>
-          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">Delete</kbd></td><td style="color:var(--text);padding:2px 0">删除选中图片</td></tr>
-          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">F2</kbd></td><td style="color:var(--text);padding:2px 0">重命名文件</td></tr>
-          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">Q</kbd></td><td style="color:var(--text);padding:2px 0">切换专注模式</td></tr>
-          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">0-5</kbd></td><td style="color:var(--text);padding:2px 0">设置/取消状态标签（重复按取消）</td></tr>
-          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">拖拽</kbd></td><td style="color:var(--text);padding:2px 0">框选图片（仅网格区域）</td></tr>
-          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">Escape</kbd></td><td style="color:var(--text);padding:2px 0">取消所有选中</td></tr>
+          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">Ctrl/Cmd+A</kbd></td><td style="color:var(--text);padding:2px 0">${tr("workspace.selectAllImages")}</td></tr>
+          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">Ctrl/Cmd+C</kbd></td><td style="color:var(--text);padding:2px 0">${tr("workspace.copySelectedImages")}</td></tr>
+          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">Ctrl/Cmd+D/S</kbd></td><td style="color:var(--text);padding:2px 0">${tr("workspace.downloadSelectedImages")}</td></tr>
+          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">${tr("workspace.shiftClick")}</kbd></td><td style="color:var(--text);padding:2px 0">${tr("workspace.selectARange")}</td></tr>
+          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">Delete</kbd></td><td style="color:var(--text);padding:2px 0">${tr("workspace.deleteSelectedImages")}</td></tr>
+          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">F2</kbd></td><td style="color:var(--text);padding:2px 0">${tr("workspace.renameFile")}</td></tr>
+          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">Q</kbd></td><td style="color:var(--text);padding:2px 0">${tr("workspace.toggleFocusMode")}</td></tr>
+          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">0-5</kbd></td><td style="color:var(--text);padding:2px 0">${tr("workspace.setOrClearAStatusPressAgain")}</td></tr>
+          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">${tr("workspace.drag")}</kbd></td><td style="color:var(--text);padding:2px 0">${tr("workspace.selectImagesByRectangleImageGridOnly")}</td></tr>
+          <tr><td style="padding:2px 10px 2px 0;color:var(--text2);white-space:nowrap"><kbd style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:11px;font-family:inherit;border:1px solid var(--border)">Escape</kbd></td><td style="color:var(--text);padding:2px 0">${tr("workspace.clearSelection")}</td></tr>
         </table>
-        <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border);font-size:11px;color:var(--text3)">💡 拖拽框选只作用于图片网格区域，不影响目录树和工具栏</div>`
+        <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border);font-size:11px;color:var(--text3)">${tr("workspace.rectangleSelectionOnlyAffectsTheImageGrid")}</div>`
       document.body.appendChild(popup)
       const close = (e2: MouseEvent) => { if (!popup.contains(e2.target as Node)) { popup.remove(); document.removeEventListener('click', close) } }
       setTimeout(() => document.addEventListener('click', close), 0)
@@ -2008,14 +2007,14 @@ function bindOutputsEvents() {
       onRename: async (id) => {
         const file = useOutputStore.getState().files.find(f => f.id === id)
         if (!file) return
-        const newName = await promptModal('重命名文件', file.filename, '输入新的文件名（包含扩展名）')
+        const newName = await promptModal(tr("workspace.renameFile"), file.filename, tr("workspace.enterTheNewFilenameIncludingItsExtension"))
         if (newName && newName.trim() && newName.trim() !== file.filename) {
           await renameFile(id, newName.trim())
           renderOutputsView()
         }
       },
       onDelete: async (id) => {
-        const confirmed = await confirmModal('删除文件', '确认删除这个文件？\n此操作不可撤销！')
+        const confirmed = await confirmModal(tr("workspace.deleteFile"), tr("workspace.deleteThisFileThisCannotBeUndone"))
         if (confirmed) {
           await deleteOutputsAndTrack([id])
         }
@@ -2025,14 +2024,14 @@ function bindOutputsEvents() {
         const meta = await getImageMetadata(contextTarget(id))
         if (meta) {
           copyText(JSON.stringify(meta, null, 2))
-          showToast('元数据已复制')
+          showToast(tr("workspace.metadataCopied"))
         }
       },
       onCopyPrompt: async (id) => {
         await copyOutputPrompt(contextTarget(id))
       },
       onSavePrompt: id => { void saveOutputPromptToLibrary(id, contextTarget(id)) },
-      onCopyLoras: async id => { const meta = await getImageMetadata(contextTarget(id)); const tags = meta?.workflowJson ? extractLoraTagsFromWorkflow(meta.workflowJson, meta.rawMetadata) : []; if (tags.length) { const ok = await writeClipboard(tags.join(', ')); showToast(ok ? `已复制 ${tags.length} 个 LoRA 标签` : '剪贴板访问被拒绝') } else showToast('该图片没有已记录的 LoRA') },
+      onCopyLoras: async id => { const meta = await getImageMetadata(contextTarget(id)); const tags = meta?.workflowJson ? extractLoraTagsFromWorkflow(meta.workflowJson, meta.rawMetadata) : []; if (tags.length) { const ok = await writeClipboard(tags.join(', ')); showToast(ok ? tr("workspace.copiedLoraTags", { p0: tags.length }) : tr("workspace.clipboardAccessDenied")) } else showToast(tr("workspace.thisImageHasNoRecordedLoras")) },
       onWorkflow: async id => { const meta = await getImageMetadata(contextTarget(id)); await downloadOutputWorkflow(meta || undefined, contextTarget(id)?.file.filename || 'workflow') },
       onMetadata: id => { void openMetaPanel(id, contextTarget(id)) },
       onExport: (ids, action, mode) => { void exportOutputs(ids, action, mode, contextSnapshot) },
@@ -2044,7 +2043,7 @@ function bindOutputsEvents() {
         renderOutputsView()
       },
       onBatchDelete: async (ids) => {
-        const confirmed = await confirmModal('批量删除', `确认删除选中的 ${ids.length} 个文件？\n此操作不可撤销！`)
+        const confirmed = await confirmModal(tr("workspace.deleteSelected"), tr("workspace.deleteSelectedFilesThisCannotBeUndone", { p0: ids.length }))
         if (confirmed) {
           await deleteOutputsAndTrack(ids)
         }
@@ -2086,7 +2085,7 @@ function bindOutputsEvents() {
         const file = state.files.find(f => f.id === id)
         if (file) {
           e.preventDefault()
-          promptModal('重命名文件', file.filename, '输入新的文件名（包含扩展名）').then(newName => {
+          promptModal(tr("workspace.renameFile"), file.filename, tr("workspace.enterTheNewFilenameIncludingItsExtension")).then(newName => {
             if (newName && newName.trim() && newName.trim() !== file.filename) {
               renameFile(id, newName.trim()).then(() => renderOutputsView())
             }
@@ -2100,7 +2099,7 @@ function bindOutputsEvents() {
       const state = useOutputStore.getState()
       if (state.selectedIds.size > 0) {
         e.preventDefault()
-        confirmModal('批量删除', `确认删除选中的 ${state.selectedIds.size} 个文件？\n此操作不可撤销！`).then(confirmed => {
+        confirmModal(tr("workspace.deleteSelected"), tr("workspace.deleteSelectedFilesThisCannotBeUndone", { p0: state.selectedIds.size })).then(confirmed => {
           if (confirmed) {
             const ids = Array.from(state.selectedIds)
             deleteOutputsAndTrack(ids)
@@ -2629,7 +2628,7 @@ function updateBatchBar() {
   const selected = useOutputStore.getState().selectedIds.size
   if (selected > 0) {
     bar.style.display = 'flex'
-    count.textContent = `已选 ${selected} 张`
+    count.textContent = tr("workspace.imagesSelected", { p0: selected })
   } else {
     bar.style.display = 'none'
   }
@@ -2656,7 +2655,7 @@ function updateScanProgress(status: OutputScanStatus, progress: { done: number; 
     el.style.display = 'flex'
     const pct = progress.total > 0 ? Math.round(progress.done / progress.total * 100) : 0
     bar.style.setProperty('--progress', pct + '%')
-    text.textContent = `扫描中... ${progress.done}/${progress.total}`
+    text.textContent = tr("workspace.scanning", { p0: progress.done, p1: progress.total })
   } else {
     el.style.display = 'none'
   }
@@ -2792,8 +2791,8 @@ function showCompatMessage() {
   // 无句柄时已缓存内容仍可浏览，提示用户可用的替代路径
   const cached = useOutputStore.getState().files.length
   showToast(cached > 0
-    ? `⚠️ 当前浏览器/访问方式不支持目录选择（需 Chrome/Edge + localhost/HTTPS）；已缓存 ${cached} 张图片仍可浏览，但无法增量刷新`
-    : '⚠️ 当前浏览器/访问方式不支持目录选择：请用 Chrome/Edge 并通过 localhost 或 HTTPS 访问（局域网 IP 访问不支持目录权限）')
+    ? tr("workspace.folderAccessRequiresChromeOrEdgeOver", { p0: cached })
+    : tr("workspace.folderAccessIsUnavailableUseChromeOr"))
 }
 
 /**
@@ -2863,11 +2862,11 @@ function syncMetadataButton() {
   btn.classList.toggle('active', st.enabled)
   btn.setAttribute('aria-pressed', String(st.enabled))
   const label = btn.querySelector('span')
-  if (label) label.textContent = st.enabled ? '去除生成信息 · 已开启' : '保留生成信息（原图）'
+  if (label) label.textContent = st.enabled ? tr("workspace.removeGenerationMetadataOn") : tr("workspace.keepGenerationMetadataOriginal")
   const filled = st.entries.filter(e => e.key.trim() !== '' && e.value !== '').length
   btn.title = st.enabled
-    ? `导出时去除元数据：已开启${filled > 0 ? `（另写入 ${filled} 项署名）` : '（未填署名 = 只去不写）'}`
-    : '导出时去除元数据（当前：关闭）'
+    ? tr("workspace.removeExportMetadataOn", { p0: filled > 0 ? tr("workspace.addCreditFields", { p0: filled }) : tr("workspace.noCreditsRemoveOnly") })
+    : tr("workspace.removeExportMetadataCurrentlyOff")
 }
 
 function syncFallbackControls(): void {
@@ -2881,13 +2880,13 @@ function syncFallbackControls(): void {
   const model = document.getElementById('outputsFallbackModel') as HTMLSelectElement | null
   if (model) {
     const names = [...catalog.models]; if (settings.model && !names.includes(settings.model)) names.push(settings.model)
-    model.innerHTML = `<option value="">自动${catalog.defaultModel ? `（${esc(catalog.defaultModel)}）` : '选择已安装模型'}</option>` + names.map(name => `<option value="${escAttr(name)}">${esc(name)}${catalog.models.includes(name) ? '' : '（未安装）'}</option>`).join('')
+    model.innerHTML = `<option value="">${tr("workspace.auto", { p0: catalog.defaultModel ? `（${esc(catalog.defaultModel)}）` : tr("workspace.chooseAnInstalledModel") })}</option>` + names.map(name => `<option value="${escAttr(name)}">${esc(name)}${catalog.models.includes(name) ? '' : tr("workspace.notInstalled")}</option>`).join('')
     model.value = settings.model
   }
   for (const [id, value] of [['outputsFallbackThreshold', settings.threshold], ['outputsFallbackCharacterThreshold', settings.characterThreshold]] as const) { const input = document.getElementById(id) as HTMLInputElement | null; if (input) input.value = String(value) }
   const hint = document.getElementById('outputsFallbackHint')
-  if (hint) hint.textContent = catalog.models.length ? `当前：${settings.model || catalog.defaultModel} · CPU。${settings.enabled ? '反推已启用' : '反推已暂停'}。${settings.includeUnrecognized ? '包括已有提示词但未识别角色的图片。' : '自动反推仅处理确认无元数据的图片。'}切换模型或阈值后可点击“用所选模型重试未识别”。角色置信度不足时仍保留未识别，不强行归类。` : '没有完整的本地 WD14 ONNX+CSV 模型；在 WD14 Tagger 安装后刷新列表。'
-  if (hint && catalog.libraryMatches.count) hint.textContent += ` 本机有 ${catalog.libraryMatches.count} 项识别缓存，${settings.libraryMatching ? '优先复用相似匹配与本机模型结果，未命中时再用所选 WD14；内存不足时仍可读取已有结果' : '当前未启用复用'}。识别标签不属于原始提示词。`
+  if (hint) hint.textContent = catalog.models.length ? tr("workspace.currentCpuAfterChangingTheModelOr", { p0: settings.model || catalog.defaultModel, p1: settings.enabled ? tr("workspace.taggingEnabled") : tr("workspace.taggingPaused"), p2: settings.includeUnrecognized ? tr("workspace.alsoIncludesImagesWithPromptsButNo") : tr("workspace.automaticTaggingOnlyProcessesImagesConfirmedTo") }) : tr("workspace.noCompleteLocalWd14OnnxCsvModel")
+  if (hint && catalog.libraryMatches.count) hint.textContent += tr("workspace.localRecognitionCacheEntriesInferredTagsAre", { p0: catalog.libraryMatches.count, p1: settings.libraryMatching ? tr("workspace.reuseSimilarMatchesAndLocalModelResults") : tr("workspace.reuseIsDisabled") })
 }
 
 /** 开关按钮：切换 + 同步 UI + 明确告知影响面（这是会改变用户拿到的东西的开关，不能静默） */
@@ -2896,8 +2895,8 @@ function toggleMetadataExport() {
   st.setEnabled(!st.enabled)
   syncMetadataButton()
   showToast(st.enabled
-    ? '已开启：导出副本将去除提示词、工作流与提示词来源记录（磁盘原图保留）'
-    : '已关闭：导出恢复为原图字节')
+    ? tr("workspace.enabledExportCopiesRemovePromptsWorkflowsAnd")
+    : tr("workspace.disabledExportsUseTheOriginalBytes"))
 }
 
 /**
@@ -2917,31 +2916,30 @@ function openMetadataConfigPanel() {
     const st = useExportMetadataStore.getState()
     panel.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-        <strong style="font-size:14px">导出元数据</strong>
+        <strong style="font-size:14px">${tr("workspace.exportMetadata")}</strong>
         <span style="flex:1"></span>
-        <button class="outputs-meta-close-btn" data-cfg="close" title="关闭">${icon('x', 14)}</button>
+        <button class="outputs-meta-close-btn" data-cfg="close" title="${tr("workspace.close")}">${icon('x', 14)}</button>
       </div>
       <div style="font-size:12px;color:var(--descrip-text);line-height:1.7;margin-bottom:12px">
-        开启后，<b>下载 / 打包下载 / 复制到剪贴板 / 大图预览 / 编辑器副本</b>会清理 PNG 中的
-        提示词、工作流和本插件的提示词来源记录，并写入下面的署名。像素、色彩信息及无关元数据保留。<br>
-        <b>磁盘上的原图不会被改动</b>；去掉 workflow 后图片拖回 ComfyUI 无法恢复工作流。
+        ${tr("workspace.whenEnabled")}<b>${tr("workspace.downloadsZipArchivesClipboardCopiesPreviewsEditor")}</b>${tr("workspace.removePromptsWorkflowsAndPromptProvenanceFrom")}<br>
+        <b>${tr("workspace.originalFilesOnDiskArePreserved")}</b>${tr("workspace.withoutTheWorkflowMetadataDraggingTheImage")}
       </div>
       <label style="display:flex;align-items:center;gap:8px;margin-bottom:14px;cursor:pointer">
         <input type="checkbox" data-cfg="enabled" ${st.enabled ? 'checked' : ''}>
-        <span style="font-size:13px">启用（默认关闭）</span>
+        <span style="font-size:13px">${tr("workspace.enableOffByDefault")}</span>
       </label>
       <div style="font-size:12px;color:var(--descrip-text);margin-bottom:6px">
-        署名与自定义元数据（<b>留空 = 不写入该项</b>；也不会去清除图里已有的同名块）
+        ${tr("workspace.creditsAndCustomMetadata")}<b>${tr("workspace.leaveBlankToSkip")}</b>${tr("workspace.existingFieldsWithTheSameNamesAre")}
       </div>
       ${st.entries.map((e, i) => `
         <div style="display:flex;gap:6px;margin-bottom:6px">
-          <input class="outputs-filter-input" data-cfg="key" data-idx="${i}" value="${escAttr(e.key)}" placeholder="键名" style="width:38%">
-          <input class="outputs-filter-input" data-cfg="value" data-idx="${i}" value="${escAttr(e.value)}" placeholder="值" style="flex:1">
-          <button class="outputs-batch-btn danger" data-cfg="remove" data-idx="${i}" title="删除该行">${icon('trash', 12)}</button>
+          <input class="outputs-filter-input" data-cfg="key" data-idx="${i}" value="${escAttr(e.key)}" placeholder="${tr("workspace.key")}" style="width:38%">
+          <input class="outputs-filter-input" data-cfg="value" data-idx="${i}" value="${escAttr(e.value)}" placeholder="${tr("workspace.value")}" style="flex:1">
+          <button class="outputs-batch-btn danger" data-cfg="remove" data-idx="${i}" title="${tr("workspace.removeRow")}">${icon('trash', 12)}</button>
         </div>`).join('')}
       <div style="display:flex;gap:8px;margin-top:10px">
-        <button class="outputs-batch-btn" data-cfg="add">${icon('plus', 12)}<span>添加自定义键</span></button>
-        <button class="outputs-batch-btn" data-cfg="reset">恢复默认四键</button>
+        <button class="outputs-batch-btn" data-cfg="add">${icon('plus', 12)}<span>${tr("workspace.addCustomField")}</span></button>
+        <button class="outputs-batch-btn" data-cfg="reset">${tr("workspace.restoreFourDefaultFields")}</button>
       </div>`
   }
 
@@ -3006,13 +3004,13 @@ async function saveOutputPromptToLibrary(fileId: string, snapshot?: ImageSnapsho
   const file = target?.file
   const meta = await getImageMetadata(target)
   if (!file || !promptBody(meta)) {
-    showToast('该图片无 Prompt，无法保存')
+    showToast(tr("workspace.thisImageHasNoPromptToSave"))
     return
   }
 
   const result = await getFileBlob(fileId, target)
   if (!result) {
-    showToast('保存失败：找不到原图片')
+    showToast(tr("workspace.couldNotSaveTheOriginalImageWas"))
     return
   }
 
@@ -3048,19 +3046,19 @@ async function saveOutputPromptToLibrary(fileId: string, snapshot?: ImageSnapsho
       updatedAt: Date.now(),
     }
     await addPrompt(entry)
-    showToast('✅ Prompt 与图片已保存到 Prompt 库', 'success')
+    showToast(tr("workspace.promptAndImageSavedToThePrompt"), 'success')
   } catch (error) {
     console.warn('[outputs] 保存 Prompt 失败:', error)
-    showToast('保存失败，请重试')
+    showToast(tr("workspace.couldNotSavePleaseRetry"))
   }
 }
 
 /** Every export freezes file revisions and policy before any asynchronous read. */
 async function exportOutputs(ids: string[], action: 'copy' | 'download', mode: ExportMetadataMode = 'default', target?: ImageSnapshot | null): Promise<void> {
   if (!ids.length) return
-  if (_exportSession) { showToast('已有导出任务，完成或取消后再试'); return }
+  if (_exportSession) { showToast(tr("workspace.anExportIsRunningWaitForIt")); return }
   const snapshots = [...new Set(ids)].map(id => target?.file.id === id ? target : imageSnapshot(id)).filter((snapshot): snapshot is ImageSnapshot => !!snapshot)
-  if (!snapshots.length) { showToast('找不到可导出的图片'); return }
+  if (!snapshots.length) { showToast(tr("workspace.noImagesAvailableToExport")); return }
   const byId = new Map(snapshots.map(snapshot => [snapshot.file.id, snapshot]))
   const session = createOutputExportSession(snapshots.map(snapshot => ({
     id: snapshot.file.id, sourceId: snapshot.file.sourceId || 'output',
@@ -3070,11 +3068,11 @@ async function exportOutputs(ids: string[], action: 'copy' | 'download', mode: E
     readBlob: async (item, signal) => {
       const snapshot = byId.get(item.id)
       const result = await getFileBlob(item.id, snapshot, signal)
-      if (!result) throw new Error('图片已移动、目录未授权或文件读取失败')
+      if (!result) throw new Error(tr("workspace.theImageMovedFolderAccessIsMissing"))
       return result.blob
     },
     download: async (artifact, signal) => {
-      if (signal.aborted) throw new DOMException('导出已取消', 'AbortError')
+      if (signal.aborted) throw new DOMException(tr("workspace.exportCanceled"), 'AbortError')
       const url = URL.createObjectURL(artifact.blob)
       const link = document.createElement('a')
       link.href = url; link.download = artifact.name
@@ -3090,16 +3088,16 @@ async function exportOutputs(ids: string[], action: 'copy' | 'download', mode: E
     if (_exportSession !== session || !progress) return
     const text = progress.querySelector('span')
     const labels: Record<OutputExportProgress['phase'], string> = {
-      reading: '读取', processing: '处理生成信息', packing: '打包', copying: '复制', downloading: '交付下载', complete: '完成', cancelled: '已取消',
+      reading: tr("workspace.read"), processing: tr("workspace.processMetadata"), packing: tr("workspace.package"), copying: tr("workspace.copy"), downloading: tr("workspace.startDownload"), complete: tr("workspace.done"), cancelled: tr("workspace.canceled"),
     }
-    if (text) text.textContent = `${labels[state.phase]} ${state.completed}/${state.total}${state.part ? ` · 第${state.part}包` : ''}${state.failed ? ` · ${state.failed}张失败` : ''}`
+    if (text) text.textContent = `${labels[state.phase]} ${state.completed}/${state.total}${state.part ? tr("workspace.part", { p0: state.part }) : ''}${state.failed ? tr("workspace.failed2", { p0: state.failed }) : ''}`
   })
   try {
     const result = await session.run(action === 'download' && snapshots.length > 1 ? 'zip' : action)
     if (_exportSession !== session || !isOutputsActive()) return
     const text = progress?.querySelector('span')
-    const message = result.status === 'cancelled' ? `已取消，已交付 ${result.succeeded} 张`
-      : `${action === 'copy' ? '已复制' : '已提交下载'} ${result.succeeded}/${result.total} 张${result.failures.length ? `，${result.failures.length} 张失败` : ''}${result.warnings.length ? `，${result.warnings.length} 项提示` : ''}`
+    const message = result.status === 'cancelled' ? tr("workspace.canceledDeliveredImages", { p0: result.succeeded })
+      : tr("workspace.images", { p0: action === 'copy' ? tr("workspace.copied2") : tr("workspace.downloadStarted"), p1: result.succeeded, p2: result.total, p3: result.failures.length ? tr("workspace.failed", { p0: result.failures.length }) : '', p4: result.warnings.length ? tr("workspace.notices", { p0: result.warnings.length }) : '' })
     if (text) text.textContent = message
     if (progress) {
       progress.title = [...result.failures.map(failure => `${failure.name}：${failure.message}`), ...result.warnings.map(warning => `${warning.name}：${warning.message}`)].join('\n')
@@ -3107,7 +3105,7 @@ async function exportOutputs(ids: string[], action: 'copy' | 'download', mode: E
     }
     showToast(message)
   } catch (error) {
-    if (_exportSession === session && isOutputsActive()) showToast(`导出失败：${(error as Error).message}`)
+    if (_exportSession === session && isOutputsActive()) showToast(tr("workspace.exportFailed", { p0: (error as Error).message }))
   } finally {
     unsubscribe()
     if (_exportSession === session) _exportSession = undefined
@@ -3194,7 +3192,7 @@ const _editDragSession = createOutputDragSession({
 function invalidateEditedDrag() {
   _editDragSession.cancel(); clearTimeout(_editDragTimer)
   const button = document.getElementById('lbPreviewDrag')
-  if (button) button.textContent = '准备拖出…'
+  if (button) button.textContent = tr("workspace.preparingDrag")
   _editDragTimer = window.setTimeout(() => { if (!_painter?.active && !_editCropping) void prepareEditedDrag() }, 350)
 }
 async function prepareEditedDrag() {
@@ -3204,12 +3202,12 @@ async function prepareEditedDrag() {
     const copy = await _editDragSession.prepare(snapshot)
     if (copy && _currentPreviewSnapshot?.key === snapshot.key) {
       const button = document.getElementById('lbPreviewDrag')
-      if (button) button.textContent = '拖出当前图'
+      if (button) button.textContent = tr("workspace.dragCurrentImage")
     }
   } catch (error) {
     if ((error as Error).name === 'AbortError') return
     const button = document.getElementById('lbPreviewDrag')
-    if (button) { button.textContent = '重试准备拖出'; button.title = (error as Error).message }
+    if (button) { button.textContent = tr("workspace.retryPreparingDrag"); button.title = (error as Error).message }
   }
 }
 function setPaintMode(mode: 'view' | 'pen' | 'mosaic' | 'cover') {
@@ -3217,7 +3215,7 @@ function setPaintMode(mode: 'view' | 'pen' | 'mosaic' | 'cover') {
   document.querySelectorAll<HTMLElement>('[data-paint]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.paint === mode)))
   document.querySelectorAll<HTMLElement>('[data-paint-controls]').forEach(control => { control.hidden = !control.dataset.paintControls?.split(' ').includes(mode) })
   const hint = document.getElementById('lbEditHint')
-  if (hint) hint.textContent = mode === 'mosaic' ? '拖出矩形；调整颗粒与强度可预览最后一块效果' : mode === 'pen' ? '在图片上直接涂画；放大后也可绘制' : mode === 'cover' ? '拖出矩形，用当前颜色遮盖' : '滚轮缩放，放大后拖动查看'
+  if (hint) hint.textContent = mode === 'mosaic' ? tr("workspace.dragARectangleAdjustSizeAndStrength") : mode === 'pen' ? tr("workspace.drawDirectlyOnTheImageIncludingWhile") : mode === 'cover' ? tr("workspace.dragARectangleToCoverItWith") : tr("workspace.scrollToZoomThenDragToPan")
 }
 
 /** Navigate within an already authorized directory (also used by bulk export). */
@@ -3402,22 +3400,22 @@ async function saveEditedImage(overwrite = false) {
   if (!_editBase || _saving || _painter?.active) return
   const target = _editSnapshot
   const file = target?.file
-  if (!file || !target || !snapshotIsCurrent(target)) { showToast('图片来源已变化，请重新打开后保存'); return }
-  if (!['png', 'jpg', 'jpeg', 'webp'].includes(file.extension.toLowerCase())) { showToast('保存编辑仅支持 PNG、JPEG、WebP 静态图片'); return }
+  if (!file || !target || !snapshotIsCurrent(target)) { showToast(tr("workspace.theImageSourceChangedReopenTheImage")); return }
+  if (!['png', 'jpg', 'jpeg', 'webp'].includes(file.extension.toLowerCase())) { showToast(tr("workspace.editingSupportsStaticPngJpegAndWebp")); return }
   _saving = true
   try {
-    if (overwrite && !await confirmModal('覆盖原图', `将覆盖 ${file.filename}。\n会先核验并保留原图备份；也可取消后选择“另存副本”。`)) return
+    if (overwrite && !await confirmModal(tr("workspace.overwriteOriginal"), tr("workspace.overwriteTheOriginalWillBeVerifiedAnd", { p0: file.filename }))) return
     if (_editCropping) confirmCrop()
     const cv = buildEditedCanvas(), ext = file.extension.toLowerCase(), mime = EXT_MIME[ext]
     const dh = sourceForFile(file).handle
-    if (target.source !== 'gallery' && (!dh || !await requestOutputSourcePermission(file.sourceId || 'output', 'readwrite'))) { showToast('保存需要目录写入权限'); return }
+    if (target.source !== 'gallery' && (!dh || !await requestOutputSourcePermission(file.sourceId || 'output', 'readwrite'))) { showToast(tr("workspace.savingRequiresWriteAccessToThisFolder")); return }
     const blob = await new Promise<Blob | null>(res => cv.toBlob(res, mime))
-    if (!blob || blob.type !== mime) throw Error('浏览器无法按原图片格式导出')
+    if (!blob || blob.type !== mime) throw Error(tr("workspace.theBrowserCannotExportTheOriginalImage"))
     let savedBlob = blob
     if (ext === 'png') {
       if (isExportMetadataNoop(exportMetadataOptions())) {
         const original = await getFileBlob(target.file.id, target)
-        if (!original) throw Error('无法读取原图元数据，未保存')
+        if (!original) throw Error(tr("workspace.couldNotReadTheOriginalMetadataNothing"))
         const bytes = injectPngTextChunks(new Uint8Array(await blob.arrayBuffer()), extractPngTextChunks(new Uint8Array(await original.blob.arrayBuffer())))
         savedBlob = new Blob([bytes], { type: mime })
       } else savedBlob = await applyExportMetadata(blob, exportMetadataOptions())
@@ -3441,9 +3439,9 @@ async function saveEditedImage(overwrite = false) {
     useOutputStore.getState().applyFilters(); renderOutputsView()
     if (target.source === 'gallery') void requestGalleryRefresh().catch(() => {})
     else if (dh) void scanOutputDirIncremental(dh).catch(() => {})
-    showToast(overwrite ? `已覆盖 ${saved.filename}，原图备份：${saved.backup}` : `已另存 ${saved.filename}`)
+    showToast(overwrite ? tr("workspace.overwroteOriginalBackup", { p0: saved.filename, p1: saved.backup }) : tr("workspace.savedACopyAs", { p0: saved.filename }))
     if (_currentPreviewSnapshot?.key === target.key) await openPreview(newId, imageSnapshot(newFile))
-  } catch (error) { showToast(`保存失败：${(error as Error).message}`) }
+  } catch (error) { showToast(tr("workspace.saveFailed", { p0: (error as Error).message })) }
   finally { _saving = false }
 }
 
@@ -3457,7 +3455,7 @@ function bindEditToolbar() {
     const mode = (e.target as HTMLElement).closest<HTMLElement>('[data-paint]')?.dataset.paint as 'view' | 'pen' | 'mosaic' | 'cover' | undefined
     if (!mode || _saving || !_currentPreviewFileId) return
     if (mode !== 'view') {
-      if (!await ensureEditSrc(_currentPreviewFileId)) { showToast('读取图片失败'); return }
+      if (!await ensureEditSrc(_currentPreviewFileId)) { showToast(tr("workspace.couldNotReadTheImage2")); return }
       renderEdit()
     }
     setPaintMode(mode)
@@ -3491,12 +3489,12 @@ function bindEditToolbar() {
     if (!fileId || _saving || _painter?.active) return
     if (act === 'save' || act === 'overwrite') {
       // 未编辑也允许保存原图副本：先确保原图已加载
-      if (!_editBase && !(await ensureEditSrc(fileId))) { showToast('⚠️ 读取图片失败'); return }
+      if (!_editBase && !(await ensureEditSrc(fileId))) { showToast(tr("workspace.couldNotReadTheImage")); return }
       void saveEditedImage(act === 'overwrite')
       return
     }
     if (act === 'reset') { resetEdit(); invalidateEditedDrag(); return }
-    if (!_editBase && !(await ensureEditSrc(fileId))) { showToast('⚠️ 读取图片失败'); return }
+    if (!_editBase && !(await ensureEditSrc(fileId))) { showToast(tr("workspace.couldNotReadTheImage")); return }
     switch (act) {
       case 'rotl': rotateEdit(-90); break
       case 'rotr': rotateEdit(90); break
@@ -3596,7 +3594,7 @@ async function openPreview(fileId: string, snapshot?: ImageSnapshot | null) {
 
   // 获取图片 URL
   const dh = sourceForFile(file).handle
-  if (target.source === 'directory' && !dh) { showToast('请在目录栏重新授权该目录'); return }
+  if (target.source === 'directory' && !dh) { showToast(tr("workspace.grantAccessToThisFolderAgainIn")); return }
 
   let imgUrl = ''
   // 开关开启时预览也走「干净副本」——否则用户在预览界面「右键 → 图片另存为」拿到的仍是
@@ -3605,7 +3603,7 @@ async function openPreview(fileId: string, snapshot?: ImageSnapshot | null) {
   // 既不动字节也不额外占内存。
   if (!isExportMetadataNoop(exportMetadataOptions())) {
     const r = await getExportBlob(fileId, target)
-    if (!r) { if (token === _previewToken) showToast('图片读取失败，保留当前预览，请重试'); return }
+    if (!r) { if (token === _previewToken) showToast(tr("workspace.couldNotReadTheImageTheCurrent")); return }
     imgUrl = URL.createObjectURL(r.blob)
   } else if (target.source === 'gallery') {
     // 画廊来源：必须走 ComfyUI **原生** `/view`。
@@ -3621,7 +3619,7 @@ async function openPreview(fileId: string, snapshot?: ImageSnapshot | null) {
     try {
       if (!dh) return
       const r = await getFileBlob(fileId, target)
-      if (!r) { if (token === _previewToken) showToast("图片已变化或读取失败，保留当前预览，请重试"); return }
+      if (!r) { if (token === _previewToken) showToast(tr("workspace.theImageChangedOrCouldNotBe")); return }
       imgUrl = URL.createObjectURL(r.blob)
     } catch {
       return
@@ -3635,7 +3633,7 @@ async function openPreview(fileId: string, snapshot?: ImageSnapshot | null) {
   const ready = await preparePreviewImage(imgUrl)
   if (!ready || token !== _previewToken || !snapshotIsCurrent(target)) {
     if (imgUrl.startsWith('blob:')) URL.revokeObjectURL(imgUrl)
-    if (!ready && token === _previewToken) showToast('图片加载失败，保留当前预览，请重试')
+    if (!ready && token === _previewToken) showToast(tr("workspace.couldNotLoadTheImageTheCurrent"))
     return
   }
   if (_previewBlobUrl) URL.revokeObjectURL(_previewBlobUrl)
@@ -3689,18 +3687,18 @@ function showStarPicker(idOrIds: string | string[], anchorEl?: HTMLElement) {
       if (ids.length === 1) {
         try {
           await useOutputStore.getState().setRating(ids[0], i)
-          showToast(`已评分 ${i} 星`)
+          showToast(tr("workspace.ratedStars", { p0: i }))
         } catch (err) {
           console.warn('[Outputs] setRating 调用失败:', err)
-          showToast('评分失败')
+          showToast(tr("workspace.couldNotSaveRating"))
         }
       } else {
         try {
           await batchRate(ids, i)
-          showToast(`已批量评分 ${i} 星`)
+          showToast(tr("workspace.ratedSelectedFilesStars", { p0: i }))
         } catch (err) {
           console.warn('[Outputs] batchRate 调用失败:', err)
-          showToast('批量评分失败')
+          showToast(tr("workspace.couldNotRateTheSelectedFiles"))
         }
       }
       popup.remove()
@@ -3745,7 +3743,7 @@ function showCategoryPicker(ids: string[]) {
   overlay.style.cssText = 'position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;'
   const panel = document.createElement('div')
   panel.style.cssText = 'background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:14px;width:260px;max-height:70vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.5);'
-  panel.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;"><h4 style="margin:0;font-size:13px">设置分类（${ids.length} 个文件）</h4></div>`
+  panel.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;"><h4 style="margin:0;font-size:13px">${tr("workspace.setCategoryFiles", { p0: ids.length })}</h4></div>`
 
   const mkCat = (label: string, val: string) => {
     const btn = document.createElement('button')
@@ -3762,12 +3760,12 @@ function showCategoryPicker(ids: string[]) {
     overlay.remove()
     if (ids.length === 1) {
       await useOutputStore.getState().setCategory(ids[0], cat)
-      showToast(cat ? `已设置分类「${cat}」` : '已清除分类')
+      showToast(cat ? tr("workspace.assignedTo", { p0: cat }) : tr("workspace.categoryCleared"))
     } else {
       const failed = await useOutputStore.getState().batchSetCategory(ids, cat)
       showToast(failed > 0
-        ? `${ids.length - failed} 个文件已设分类「${cat}」（${failed} 个失败）`
-        : `${ids.length} 个文件已设分类「${cat}」`)
+        ? tr("workspace.assignedFilesToFailed", { p0: ids.length - failed, p1: cat, p2: failed })
+        : tr("workspace.assignedFilesTo", { p0: ids.length, p1: cat }))
     }
     renderOutputsView()
     updateFilterPanel()
@@ -3778,10 +3776,10 @@ function showCategoryPicker(ids: string[]) {
   const newWrap = document.createElement('div')
   newWrap.style.cssText = 'display:flex;gap:6px;margin-top:8px;'
   const input = document.createElement('input')
-  input.placeholder = '新建分类…'
+  input.placeholder = tr("workspace.newCategory")
   input.style.cssText = 'flex:1;padding:6px;background:var(--bg1);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;outline:none;'
   const addBtn = document.createElement('button')
-  addBtn.textContent = '新建'
+  addBtn.textContent = tr("workspace.create")
   addBtn.style.cssText = 'padding:6px 10px;border:none;border-radius:6px;cursor:pointer;font-size:12px;background:var(--accent);color:#fff;'
   addBtn.onclick = () => { const v = input.value.trim(); if (v) apply(v) }
   input.onkeydown = (e) => { if (e.key === 'Enter') addBtn.click() }
@@ -3804,10 +3802,10 @@ function showCategoryManager() {
   overlay.style.cssText = 'position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;'
   const panel = document.createElement('div')
   panel.style.cssText = 'background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:14px;width:300px;max-height:70vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.5);'
-  panel.innerHTML = `<h4 style="margin:0 0 8px;font-size:13px">分类管理（${cats.length} 个分类）</h4>`
+  panel.innerHTML = `<h4 style="margin:0 0 8px;font-size:13px">${tr("workspace.manageCategories", { p0: cats.length })}</h4>`
 
   if (cats.length === 0) {
-    panel.innerHTML += `<p style="color:var(--text-dim);font-size:12px;margin:12px 0;">暂无分类，点击卡片右上角的分类按钮即可创建</p>`
+    panel.innerHTML += `<p style="color:var(--text-dim);font-size:12px;margin:12px 0;">${tr("workspace.noCategoriesYetCreateOneUsingThe")}</p>`
   }
 
   for (const c of cats) {
@@ -3816,10 +3814,10 @@ function showCategoryManager() {
     row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid var(--border);'
     row.innerHTML = `<span style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">🏷 ${esc(c)} <small style="color:var(--text-dim)">(${count})</small></span>`
     const renameBtn = document.createElement('button')
-    renameBtn.textContent = '重命名'
+    renameBtn.textContent = tr("workspace.rename")
     renameBtn.style.cssText = 'padding:3px 8px;border:1px solid var(--border);border-radius:5px;cursor:pointer;font-size:11px;background:transparent;color:var(--text);'
     renameBtn.onclick = async () => {
-      const n = (await promptModal('重命名分类', c, '输入新分类名'))?.trim()
+      const n = (await promptModal(tr("workspace.renameCategory"), c, tr("workspace.enterANewCategoryName")))?.trim()
       if (n && n !== c) {
         await useOutputStore.getState().renameCategory(c, n)
         if (useOutputStore.getState().filterCategory === c) {
@@ -3828,14 +3826,14 @@ function showCategoryManager() {
         overlay.remove()
         renderOutputsView()
         updateFilterPanel()
-        showToast(`已重命名「${c}」→「${n}」`)
+        showToast(tr("workspace.renamedTo", { p0: c, p1: n }))
       }
     }
     const delBtn = document.createElement('button')
-    delBtn.textContent = '删除'
+    delBtn.textContent = tr("workspace.delete")
     delBtn.style.cssText = 'padding:3px 8px;border:1px solid var(--danger, #f44);border-radius:5px;cursor:pointer;font-size:11px;background:transparent;color:#f66;'
     delBtn.onclick = async () => {
-      const ok = await confirmModal('删除分类', `删除分类「${c}」？${count} 个文件将变为未分类`)
+      const ok = await confirmModal(tr("workspace.deleteCategory"), tr("workspace.deleteCategoryFilesWillBecomeUncategorized", { p0: c, p1: count }))
       if (ok) {
         await useOutputStore.getState().deleteCategory(c)
         if (useOutputStore.getState().filterCategory === c) {
@@ -3845,7 +3843,7 @@ function showCategoryManager() {
         overlay.remove()
         renderOutputsView()
         updateFilterPanel()
-        showToast(`已删除分类「${c}」`)
+        showToast(tr("workspace.deletedCategory", { p0: c }))
       }
     }
     row.append(renameBtn, delBtn)

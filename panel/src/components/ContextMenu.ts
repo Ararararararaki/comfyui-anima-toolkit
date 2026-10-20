@@ -1,5 +1,4 @@
-// ── 轻量级右键菜单组件 ──
-// Vanilla TS 实现，支持分组、分隔线、危险操作、子菜单
+import { t as tr } from '../i18n'
 import { icon } from '../utils/icon'
 import { esc } from '../utils'
 
@@ -339,55 +338,55 @@ export function createOutputContextMenu(
     const id = fileIds[0]
     groups.push({
       items: [
-        { label: '预览', icon: 'eye', handler: () => handlers.onPreview?.(id), shortcut: 'Enter' },
-        { label: '收藏', icon: 'star', handler: () => handlers.onFavorite?.(id) },
-        { label: '评分', icon: 'thumbsUp', handler: () => handlers.onRate?.(id) },
-        { label: '置顶', icon: 'pin', handler: () => handlers.onPin?.(id, true) },
-        { label: '设置分类', icon: 'tag', handler: () => handlers.onSetCategory?.([id]) },
-        { label: '复制', icon: 'copy', handler: () => handlers.onCopyImage?.(id) },
-        { label: '下载', icon: 'download', handler: () => handlers.onDownloadImage?.(id) },
-        { label: '重命名', icon: 'edit3', handler: () => handlers.onRename?.(id), shortcut: 'F2' },
+        { label: tr("workspace.preview"), icon: 'eye', handler: () => handlers.onPreview?.(id), shortcut: 'Enter' },
+        { label: tr("workspace.favorite"), icon: 'star', handler: () => handlers.onFavorite?.(id) },
+        { label: tr("workspace.rate"), icon: 'thumbsUp', handler: () => handlers.onRate?.(id) },
+        { label: tr("workspace.pin"), icon: 'pin', handler: () => handlers.onPin?.(id, true) },
+        { label: tr("workspace.setCategory"), icon: 'tag', handler: () => handlers.onSetCategory?.([id]) },
+        { label: tr("workspace.copy"), icon: 'copy', handler: () => handlers.onCopyImage?.(id) },
+        { label: tr("workspace.download"), icon: 'download', handler: () => handlers.onDownloadImage?.(id) },
+        { label: tr("workspace.rename"), icon: 'edit3', handler: () => handlers.onRename?.(id), shortcut: 'F2' },
       ]
     })
     groups.push({
       items: [
-        { label: '复制元数据', icon: 'file-text', handler: () => handlers.onCopyMetadata?.(id) },
-        { label: '复制 Prompt', icon: 'copy', handler: () => handlers.onCopyPrompt?.(id) },
-        { label: '存入 Prompt 库', icon: 'book', handler: () => handlers.onSavePrompt?.(id) },
-        { label: '复制 LoRA 标签', icon: 'tag', handler: () => handlers.onCopyLoras?.(id) },
-        { label: '下载工作流', icon: 'fileJson', handler: () => handlers.onWorkflow?.(id) },
-        { label: '查看元数据', icon: 'info', handler: () => handlers.onMetadata?.(id) },
+        { label: tr("workspace.copyMetadata"), icon: 'file-text', handler: () => handlers.onCopyMetadata?.(id) },
+        { label: tr("workspace.copyPrompt2"), icon: 'copy', handler: () => handlers.onCopyPrompt?.(id) },
+        { label: tr("workspace.saveToPromptLibrary2"), icon: 'book', handler: () => handlers.onSavePrompt?.(id) },
+        { label: tr("workspace.copyLoraTags"), icon: 'tag', handler: () => handlers.onCopyLoras?.(id) },
+        { label: tr("workspace.downloadWorkflow"), icon: 'fileJson', handler: () => handlers.onWorkflow?.(id) },
+        { label: tr("workspace.viewMetadata"), icon: 'info', handler: () => handlers.onMetadata?.(id) },
       ]
     })
     groups.push({
       items: [
-        { label: '删除', icon: 'trash', handler: () => handlers.onDelete?.(id), danger: true, shortcut: 'Del' },
+        { label: tr("workspace.delete"), icon: 'trash', handler: () => handlers.onDelete?.(id), danger: true, shortcut: 'Del' },
       ]
     })
   } else if (fileIds.length > 1) {
     groups.push({
-      label: `已选 ${fileIds.length} 个文件`,
+      label: tr("workspace.filesSelected", { p0: fileIds.length }),
       items: [
-        { label: '批量收藏', icon: 'star', handler: () => handlers.onBatchFavorite?.(fileIds) },
-        { label: '批量评分', icon: 'thumbsUp', handler: () => handlers.onBatchRate?.(fileIds) },
-        { label: '批量置顶', icon: 'pin', handler: () => handlers.onBatchPin?.(fileIds, true) },
-        { label: '批量设置分类', icon: 'tag', handler: () => handlers.onSetCategory?.(fileIds) },
-        { label: '批量复制', icon: 'copy', handler: () => handlers.onBatchCopyImage?.(fileIds) },
-        { label: '批量下载', icon: 'download', handler: () => handlers.onBatchDownloadImage?.(fileIds) },
-        { label: '批量删除', icon: 'trash', handler: () => handlers.onBatchDelete?.(fileIds), danger: true },
+        { label: tr("workspace.favoriteSelected"), icon: 'star', handler: () => handlers.onBatchFavorite?.(fileIds) },
+        { label: tr("workspace.rateSelected"), icon: 'thumbsUp', handler: () => handlers.onBatchRate?.(fileIds) },
+        { label: tr("workspace.pinSelected"), icon: 'pin', handler: () => handlers.onBatchPin?.(fileIds, true) },
+        { label: tr("workspace.categorizeSelected2"), icon: 'tag', handler: () => handlers.onSetCategory?.(fileIds) },
+        { label: tr("workspace.copySelected"), icon: 'copy', handler: () => handlers.onBatchCopyImage?.(fileIds) },
+        { label: tr("workspace.downloadSelected"), icon: 'download', handler: () => handlers.onBatchDownloadImage?.(fileIds) },
+        { label: tr("workspace.deleteSelected"), icon: 'trash', handler: () => handlers.onBatchDelete?.(fileIds), danger: true },
       ]
     })
   }
 
   if (fileIds.length && handlers.onExport) groups.splice(groups.length - 1, 0, {
-    label: '导出副本', items: [
-      { label: '复制选项', icon: 'copy', handler: () => {}, children: [
-        { label: '复制原图', handler: () => handlers.onExport?.(fileIds, 'copy', 'original') },
-        { label: '去除生成信息后复制', handler: () => handlers.onExport?.(fileIds, 'copy', 'clean') },
+    label: tr("workspace.exportCopy"), items: [
+      { label: tr("workspace.copyOptions"), icon: 'copy', handler: () => {}, children: [
+        { label: tr("workspace.copyOriginal"), handler: () => handlers.onExport?.(fileIds, 'copy', 'original') },
+        { label: tr("workspace.copyWithoutGenerationMetadata"), handler: () => handlers.onExport?.(fileIds, 'copy', 'clean') },
       ] },
-      { label: '下载选项', icon: 'download', handler: () => {}, children: [
-        { label: '下载原图', handler: () => handlers.onExport?.(fileIds, 'download', 'original') },
-        { label: '去除生成信息后下载', handler: () => handlers.onExport?.(fileIds, 'download', 'clean') },
+      { label: tr("workspace.downloadOptions"), icon: 'download', handler: () => {}, children: [
+        { label: tr("workspace.downloadOriginal"), handler: () => handlers.onExport?.(fileIds, 'download', 'original') },
+        { label: tr("workspace.downloadWithoutGenerationMetadata"), handler: () => handlers.onExport?.(fileIds, 'download', 'clean') },
       ] },
     ],
   })

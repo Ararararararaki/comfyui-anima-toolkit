@@ -1,9 +1,11 @@
+import { t as tr, getLocale } from '../i18n'
 import { icon } from './icon'
 
 export { icon }
 
 export function fmtNum(n: number): string {
-  if (n >= 10000) return (n / 10000).toFixed(1) + '万'
+  if (getLocale() === 'en') return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(n)
+  if (n >= 10000) return (n / 10000).toFixed(1) + tr("workspace.10k")
   if (n >= 1000) return (n / 1000).toFixed(1) + 'k'
   return String(n)
 }
@@ -71,7 +73,7 @@ export function copyText(text: string, el?: HTMLElement) {
   }
   navigator.clipboard.writeText(text).then(() => {
     if (el) {
-      el.innerHTML = '✅ 已复制!'
+      el.innerHTML = tr("workspace.copied")
       el.classList.add('copied')
       setTimeout(() => restore(el), 1500)
     }
@@ -82,7 +84,7 @@ export function copyText(text: string, el?: HTMLElement) {
     try { document.execCommand('copy') } catch { /* ignore */ }
     ta.remove()
     if (el) {
-      el.innerHTML = '✅ 已复制!'
+      el.innerHTML = tr("workspace.copied")
       el.classList.add('copied')
       setTimeout(() => restore(el), 1500)
     }
@@ -128,8 +130,8 @@ export function attachSearchClear(input: HTMLInputElement, onClear: () => void):
   const btn = document.createElement('button')
   btn.type = 'button'
   btn.className = 'search-clear'
-  btn.title = '清空搜索'
-  btn.setAttribute('aria-label', '清空搜索')
+  btn.title = tr("workspace.clearSearch")
+  btn.setAttribute('aria-label', tr("workspace.clearSearch"))
   btn.innerHTML = icon('x', 14)
   const update = () => { btn.style.display = input.value ? 'flex' : 'none' }
   btn.addEventListener('click', () => {

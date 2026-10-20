@@ -1,3 +1,5 @@
+import { artistCategoryLabel } from '../i18n/display'
+import { t as tr } from '../i18n'
 import { esc, escAttr, copyText, showToast, fmtNum, setBtnIcon, icon, attachSearchClear } from '../utils'
 import { openLightbox } from '../components/Lightbox'
 import {
@@ -82,10 +84,10 @@ export function renderArtists() {
     destroyArtistVS()
     const hasAny = artists.length > 0
     const msg = !hasAny
-      ? '还没有画师，点击工具栏「添加」或「提取」创建'
+      ? tr("workspace.noArtistsYetUseAddOrExtract")
       : q
-        ? '没有匹配的画师，换个关键词试试'
-        : '该分类下暂无画师'
+        ? tr("workspace.noMatchingArtistsTryAnotherSearch")
+        : tr("workspace.noArtistsInThisCategoryYet")
     grid.innerHTML = '<div class="empty-state" style="padding:40px"><div class="big">' + icon('mailOpen', 28) + '</div><p>' + msg + '</p></div>'
     renderSidebarLeft()
     renderSidebarRight()
@@ -151,7 +153,7 @@ function renderArtistCard(a: ArtistData, store: ReturnType<typeof useArtistStore
   // 图片预览按钮（不嵌入图片，节省卡片空间）
   const imgCount = (a.images || []).length
   const previewBtn = imgCount > 0
-    ? `<button class="artist-card-preview-btn" data-id="${escAttr(id)}" onclick="event.stopPropagation(); window.__openArtistLightbox('${escAttr(id)}', 0)" title="预览图片">${icon('image', 12)} ${imgCount}张</button>`
+    ? `<button class="artist-card-preview-btn" data-id="${escAttr(id)}" onclick="event.stopPropagation(); window.__openArtistLightbox('${escAttr(id)}', 0)" title="${tr("workspace.previewImages")}">${tr("workspace.images2", { p2: icon('image', 12), p3: imgCount })}</button>`
     : ''
 
   // Danbooru 统计
@@ -217,24 +219,24 @@ function renderSidebarLeft() {
 
   // 全部
   items.push('<div class="artist-cat-item' + (store.filterCat === 'all' ? ' on' : '') + '" data-cat="all">' +
-    getCatIcon('全部画师') + ' 全部 <span class="artist-cat-count">' + totalCount + '</span></div>')
+    getCatIcon('全部画师') + ` ${tr("workspace.all2")} <span class="artist-cat-count">` + totalCount + '</span></div>')
 
   // 分类
   for (const cat of cats) {
     const count = catCounts.get(cat) || 0
     items.push('<div class="artist-cat-item' + (store.filterCat === cat ? ' on' : '') + '" data-cat="' + escAttr(cat) + '">' +
-      getCatIcon(cat) + ' ' + esc(cat) + ' <span class="artist-cat-count">' + count + '</span></div>')
+      getCatIcon(cat) + ' ' + esc(artistCategoryLabel(cat)) + ' <span class="artist-cat-count">' + count + '</span></div>')
   }
 
   // 幽灵画师
   if (ghostCount > 0) {
     items.push('<div class="artist-cat-item' + (store.filterCat === '__ghost' ? ' on' : '') + '" data-cat="__ghost">' +
-      icon('ghost', 12) + ' 占位 <span class="artist-cat-count">' + ghostCount + '</span></div>')
+      icon('ghost', 12) + ` ${tr("workspace.placeholders2")} <span class="artist-cat-count">` + ghostCount + '</span></div>')
   }
 
   // 预设
   items.push('<div class="artist-cat-item' + (store.filterCat === '__presets' ? ' on' : '') + '" data-cat="__presets">' +
-    icon('save', 12) + ' 预设 <span class="artist-cat-count">' + store.presets.length + '</span></div>')
+    icon('save', 12) + ` ${tr("workspace.presets")} <span class="artist-cat-count">` + store.presets.length + '</span></div>')
 
   list.innerHTML = items.join('')
 }
@@ -256,7 +258,7 @@ function renderSidebarRight() {
 
   // 已选画师列表
   if (tags.length === 0) {
-    selList.innerHTML = '<div class="empty-state" style="padding:20px 12px"><div class="big">' + icon('mousePointer', 28) + '</div><p style="font-size:11px">点击画师卡片添加到组合</p></div>'
+    selList.innerHTML = '<div class="empty-state" style="padding:20px 12px"><div class="big">' + icon('mousePointer', 28) + `</div><p style="font-size:11px">${tr("workspace.clickAnArtistCardToAddIt")}</p></div>`
   } else {
     selList.innerHTML = tags.map((tag, i) => {
       const artist = getArtists().find(a => a.tag === tag)
@@ -269,10 +271,11 @@ function renderSidebarRight() {
         '  <span class="artist-sel-tag">' + esc(tag) + '</span>\n' +
         '  <span class="artist-sel-name">' + esc(name) + '</span>\n' +
         '  <input type="range" class="artist-sel-weight" min="0.1" max="2" step="0.1" value="' + weight + '" data-tag="' + escAttr(tag) + '">\n' +
-        '  <input type="number" class="artist-sel-weight-input" min="0.1" max="2" step="0.1" value="' + weight.toFixed(1) + '" data-tag="' + escAttr(tag) + '" title="直接输入权重 (0.1-2)">\n' +
-        '  <button class="artist-sel-up" data-tag="' + escAttr(tag) + '" title="上移">' + icon('arrowUp', 12) + '</button>\n' +
-        '  <button class="artist-sel-down" data-tag="' + escAttr(tag) + '" title="下移">' + icon('arrowDown', 12) + '</button>\n' +
-        '  <button class="artist-sel-remove" data-tag="' + escAttr(tag) + '" title="移除">' + icon('x', 12) + '</button>\n' +
+        '  <input type="number" class="artist-sel-weight-input" min="0.1" max="2" step="0.1" value="' + weight.toFixed(1) + '" data-tag="' + escAttr(tag) + `" title="${tr("workspace.enterWeight012")}">
+` +
+        '  <button class="artist-sel-up" data-tag="' + escAttr(tag) + `" title="${tr("workspace.moveUp")}">` + icon('arrowUp', 12) + '</button>\n' +
+        '  <button class="artist-sel-down" data-tag="' + escAttr(tag) + `" title="${tr("workspace.moveDown")}">` + icon('arrowDown', 12) + '</button>\n' +
+        '  <button class="artist-sel-remove" data-tag="' + escAttr(tag) + `" title="${tr("workspace.remove")}">` + icon('x', 12) + '</button>\n' +
         '</div>'
     }).join('')
   }
@@ -291,12 +294,13 @@ function renderSidebarRight() {
   // 预设列表
   if (presetList) {
     presetList.innerHTML = store.presets.length === 0
-      ? '<div class="empty-state" style="padding:8px;font-size:10px"><p>暂无预设</p></div>'
+      ? `<div class="empty-state" style="padding:8px;font-size:10px"><p>${tr("workspace.noPresetsYet")}</p></div>`
       : store.presets.map(p => '<div class="artist-preset-item" data-id="' + escAttr(p.id) + '">\n' +
           '  <span class="preset-name">' + esc(p.name) + '</span>\n' +
-          '  <span class="preset-count">' + p.artists.length + '位</span>\n' +
-          '  <button class="preset-load-btn" data-id="' + escAttr(p.id) + '" title="加载">' + icon('download', 12) + '</button>\n' +
-          '  <button class="preset-del-btn" data-id="' + escAttr(p.id) + '" title="删除">' + icon('x', 12) + '</button>\n' +
+          '  <span class="preset-count">' + p.artists.length + `${tr("workspace.artists3")}</span>
+` +
+          '  <button class="preset-load-btn" data-id="' + escAttr(p.id) + `" title="${tr("workspace.load")}">` + icon('download', 12) + '</button>\n' +
+          '  <button class="preset-del-btn" data-id="' + escAttr(p.id) + `" title="${tr("workspace.delete")}">` + icon('x', 12) + '</button>\n' +
           '</div>').join('')
   }
 }
@@ -417,8 +421,8 @@ function bindPanelEvents() {
   // 保存预设
   document.getElementById('artistSavePresetBtn')?.addEventListener('click', async () => {
     const store = useArtistStore.getState()
-    if (store.selectedTags.length === 0) { showToast('请先选择画师'); return }
-    const name = await promptModal('保存预设', '', '输入预设名称:')
+    if (store.selectedTags.length === 0) { showToast(tr("workspace.selectArtistsFirst")); return }
+    const name = await promptModal(tr("workspace.savePreset"), '', tr("workspace.enterAPresetName"))
     if (name) { store.savePreset(name); updateView() }
   })
 
@@ -427,7 +431,7 @@ function bindPanelEvents() {
     const store = useArtistStore.getState()
     const next = store.promptFormat === 'webui' ? 'nai' : 'webui'
     useArtistStore.setState({ promptFormat: next })
-    setBtnIcon(document.getElementById('artistFormatBtn'), 'refreshCw', next === 'webui' ? 'NAI格式' : 'WebUI格式')
+    setBtnIcon(document.getElementById('artistFormatBtn'), 'refreshCw', next === 'webui' ? tr("workspace.naiFormat") : tr("workspace.webuiFormat"))
     renderSidebarRight()
   })
 
@@ -444,11 +448,11 @@ function bindPanelEvents() {
         if (preset) {
           store.loadPreset(preset)
           updateView()
-          showToast('已加载预设: ' + preset.name)
+          showToast(tr("workspace.presetLoaded") + preset.name)
         }
       } else if (target.classList.contains('preset-del-btn')) {
         const id = target.dataset.id
-        if (id && await confirmModal('删除预设', '确认删除该预设？')) {
+        if (id && await confirmModal(tr("workspace.deletePreset"), tr("workspace.deleteThisPreset"))) {
           store.deletePreset(id)
           updateView()
         }
@@ -509,7 +513,7 @@ function bindToolbarEvents() {
     const modes = ['default', 'alpha', 'hot'] as const
     const next = modes[(modes.indexOf(store.sortMode) + 1) % 3]
     store.setSortMode(next)
-    const labels: Record<string, string> = { default: '默认', alpha: '字母', hot: '热度' }
+    const labels: Record<string, string> = { default: tr("workspace.default"), alpha: tr("workspace.alphabetical"), hot: tr("workspace.popularity") }
     const icons: Record<string, string> = { default: 'sortDesc', alpha: 'sortAsc', hot: 'trendingUp' }
     setBtnIcon(document.getElementById('artistSortBtn'), icons[next], labels[next])
     updateView()
@@ -525,7 +529,7 @@ function bindToolbarEvents() {
     a.download = 'artist_backup_' + new Date().toISOString().slice(0, 10) + '.json'
     document.body.appendChild(a); a.click(); document.body.removeChild(a)
     URL.revokeObjectURL(url)
-    showToast('导出成功')
+    showToast(tr("workspace.exportComplete"))
   })
 
   // 导入
@@ -543,8 +547,8 @@ function bindToolbarEvents() {
           const { added, updated } = importArtists(artists)
           refreshArtists()
           updateView()
-          showToast('导入完成: 新增 ' + added + '，更新 ' + updated)
-        } catch { showToast('导入失败: 文件格式错误') }
+          showToast(tr("workspace.importCompleteAdded") + added + tr("workspace.updated") + updated)
+        } catch { showToast(tr("workspace.importFailedInvalidFileFormat")) }
       }
       reader.readAsText(file)
     }
@@ -568,7 +572,7 @@ function bindBatchEvents() {
       updateView()
     } else if (target.id === 'artistBatchDelBtn') {
       const tags = store.batchSelection
-      if (tags.length && await confirmModal('批量删除', `确认删除选中的 ${tags.length} 位画师？`)) {
+      if (tags.length && await confirmModal(tr("workspace.deleteSelected"), tr("workspace.deleteSelectedArtists", { p0: tags.length }))) {
         // 获取对应的 id 并删除
         const artists = getArtists()
         tags.forEach(tag => {
@@ -588,7 +592,7 @@ function bindBatchEvents() {
         updateView()
       }
     } else if (target.id === 'artistBatchCatBtn') {
-      const cat = await promptModal('批量分类', '', '输入分类名称 (用逗号分隔多个):')
+      const cat = await promptModal(tr("workspace.categorizeSelected"), '', tr("workspace.enterCategoriesSeparatedByCommas"))
       if (!cat) return
       const cats = cat.split(',').map(c => c.trim()).filter(Boolean)
       if (cats.length === 0) return
@@ -603,7 +607,7 @@ function bindBatchEvents() {
       refreshArtists()
       useArtistStore.setState({ batchMode: false, batchSelection: [] })
       updateView()
-      showToast('分类已更新')
+      showToast(tr("workspace.categoriesUpdated"))
     } else if (target.id === 'artistBatchCancelBtn') {
       useArtistStore.setState({ batchMode: false, batchSelection: [] })
       updateView()
@@ -629,10 +633,10 @@ function getFilteredTags(): string[] {
 function bindImportEvents() {
   document.getElementById('artistPromptImportBtn')?.addEventListener('click', () => {
     const textarea = document.getElementById('artistPromptImportText') as HTMLTextAreaElement
-    if (!textarea?.value.trim()) { showToast('请粘贴画师串'); return }
+    if (!textarea?.value.trim()) { showToast(tr("workspace.pasteArtistTagsFirst")); return }
 
     const parsed = parsePromptInput(textarea.value)
-    if (parsed.length === 0) { showToast('未检测到有效画师标签'); return }
+    if (parsed.length === 0) { showToast(tr("workspace.noValidArtistTagsDetected")); return }
 
     clearGhostArtists()
     refreshArtists()
@@ -661,7 +665,7 @@ function bindImportEvents() {
     }
 
     updateView()
-    showToast('导入完成: ' + found + ' 位已匹配' + (ghost > 0 ? '，' + ghost + ' 位占位' : ''))
+    showToast(tr("workspace.importComplete") + found + tr("workspace.matched") + (ghost > 0 ? '，' + ghost + tr("workspace.placeholders") : ''))
   })
 }
 
@@ -677,7 +681,7 @@ function bindDanbooruEvents() {
     if ((btn as HTMLButtonElement).disabled) return
     ;(btn as HTMLButtonElement).disabled = true
     cancelled = false
-    setBtnIcon(btn, 'spinner', '更新中…')
+    setBtnIcon(btn, 'spinner', tr("workspace.updating"))
 
     const rate = 3
     const concurrency = 3
@@ -693,8 +697,10 @@ function bindDanbooruEvents() {
       if (container) {
         container.innerHTML = '<div class="danbooru-progress">\n' +
           '<div class="danbooru-progress-bar"><div class="danbooru-progress-fill" style="width:' + pct + '%"></div></div>\n' +
-          '<span>' + done + '/' + total + ' (' + errors + ' 错误)</span>\n' +
-          '<button class="btn btn-ghost" id="danbooruCancelBtn" style="font-size:10px">' + icon('x', 12) + ' 停止</button>\n' +
+          '<span>' + done + '/' + total + ' (' + errors + ` ${tr("workspace.errors")}</span>
+` +
+          '<button class="btn btn-ghost" id="danbooruCancelBtn" style="font-size:10px">' + icon('x', 12) + ` ${tr("workspace.stop")}</button>
+` +
           '</div>'
         document.getElementById('danbooruCancelBtn')?.addEventListener('click', () => {
           cancelled = true
@@ -734,8 +740,8 @@ function bindDanbooruEvents() {
     updateView()
     container.style.display = 'none'
     ;(btn as HTMLButtonElement).disabled = false
-    setBtnIcon(btn, 'refreshCw', 'Danbooru 更新')
-    const msg = cancelled ? '更新已取消' : '更新完成: ' + done + '/' + total
+    setBtnIcon(btn, 'refreshCw', tr("workspace.updateFromDanbooru"))
+    const msg = cancelled ? tr("workspace.updateCanceled") : tr("workspace.updateComplete") + done + '/' + total
     showToast(msg)
   }
 }
@@ -791,7 +797,7 @@ function renderPresets() {
   const artists = getArtists()
 
   if (store.presets.length === 0) {
-    grid.innerHTML = '<div class="empty-state" style="padding:40px"><div class="big">' + icon('book', 28) + '</div><p>暂无风格预设</p><p class="sub">选择画师组合后点击"保存预设"</p></div>'
+    grid.innerHTML = '<div class="empty-state" style="padding:40px"><div class="big">' + icon('book', 28) + `</div><p>${tr("workspace.noStylePresetsYet")}</p><p class="sub">${tr("workspace.selectArtistsThenChooseSavePreset")}</p></div>`
     renderSidebarLeft()
     renderSidebarRight()
     return
@@ -810,7 +816,8 @@ function renderPresets() {
       '      <span class="artist-card-tag">' + esc(p.name) + '</span>\n' +
       '      <span class="artist-card-badge">' + icon('save', 12) + '</span>\n' +
       '    </div>\n' +
-      '    <div class="artist-card-name">' + p.artists.length + ' 位画师</div>\n' +
+      '    <div class="artist-card-name">' + p.artists.length + ` ${tr("workspace.artists2")}</div>
+` +
       '    <div class="artist-card-desc">' + esc(artistTags).slice(0, 120) + (artistTags.length > 120 ? '…' : '') + '</div>\n' +
       '  </div>\n' +
       '</div>'
@@ -830,21 +837,29 @@ function showAddArtistModal() {
   const catOpts = cats.map(c => '<option value="' + escAttr(c) + '">' + getCatIcon(c) + ' ' + esc(c) + '</option>').join('')
 
   modal.innerHTML = '<div class="modal-box">\n' +
-    '  <h3>' + icon('plus', 14) + ' 添加画师</h3>\n' +
+    '  <h3>' + icon('plus', 14) + ` ${tr("workspace.addArtist")}</h3>
+` +
     '  <div style="display:flex;flex-direction:column;gap:8px">\n' +
-    '    <input type="text" id="addArtistTag" placeholder="Tag (不含@前缀，如 g0w0ru)" autocomplete="off">\n' +
-    '    <input type="text" id="addArtistName" placeholder="显示名称 (如 g0w0ru)" autocomplete="off">\n' +
-    '    <textarea id="addArtistDesc" placeholder="风格描述..." rows="2" style="resize:vertical"></textarea>\n' +
-    '    <div><label style="font-size:11px;color:var(--text3)">分类:</label>\n' +
+    `    <input type="text" id="addArtistTag" placeholder="${tr("workspace.tagWithoutThePrefixEGG0w0ru")}" autocomplete="off">
+` +
+    `    <input type="text" id="addArtistName" placeholder="${tr("workspace.displayNameEGG0w0ru")}" autocomplete="off">
+` +
+    `    <textarea id="addArtistDesc" placeholder="${tr("workspace.styleDescription")}" rows="2" style="resize:vertical"></textarea>
+` +
+    `    <div><label style="font-size:11px;color:var(--text3)">${tr("workspace.category")}</label>
+` +
     '      <select id="addArtistCat" multiple style="width:100%;height:80px">\n' +
     '        ' + catOpts + '\n' +
     '      </select>\n' +
-    '      <input type="text" id="addArtistNewCat" placeholder="或输入新分类 (逗号分隔)" style="margin-top:4px">\n' +
+    `      <input type="text" id="addArtistNewCat" placeholder="${tr("workspace.orEnterNewCategoriesSeparatedByCommas")}" style="margin-top:4px">
+` +
     '    </div>\n' +
     '  </div>\n' +
     '  <div class="modal-actions" style="margin-top:12px">\n' +
-    '    <button class="btn btn-primary" id="addArtistConfirm">' + icon('check', 12) + ' 确认</button>\n' +
-    '    <button class="btn btn-ghost" id="addArtistCancel">取消</button>\n' +
+    '    <button class="btn btn-primary" id="addArtistConfirm">' + icon('check', 12) + ` ${tr("workspace.confirm")}</button>
+` +
+    `    <button class="btn btn-ghost" id="addArtistCancel">${tr("workspace.cancel")}</button>
+` +
     '  </div>\n' +
     '</div>'
 
@@ -862,18 +877,18 @@ function showAddArtistModal() {
     const newCatEl = document.getElementById('addArtistNewCat') as HTMLInputElement
 
     const tag = tagEl.value.trim()
-    if (!tag) { showToast('Tag 必填'); return }
+    if (!tag) { showToast(tr("workspace.aTagIsRequired")); return }
 
     const selectedCats = Array.from(catEl.selectedOptions).map(o => o.value)
     const newCats = newCatEl.value.split(',').map(c => c.trim()).filter(Boolean)
     const cats = [...new Set([...selectedCats, ...newCats])]
 
     const result = addArtist(tag, nameEl.value.trim(), descEl.value.trim(), cats.length > 0 ? cats : undefined)
-    if (!result) { showToast('Tag 已存在!'); return }
+    if (!result) { showToast(tr("workspace.thisTagAlreadyExists")); return }
     close()
     refreshArtists()
     updateView()
-    showToast('添加成功')
+    showToast(tr("workspace.added3"))
   }
 }
 
@@ -882,14 +897,19 @@ function showExtractModal() {
   if (!modal) return
 
   modal.innerHTML = '<div class="modal-box" style="max-width:400px">\n' +
-    '  <h3>' + icon('barChart', 14) + ' 提取画师</h3>\n' +
-    '  <p class="sub">从已加载 LoRA 的 trainedWords 中自动检测 @ 开头的画师标签</p>\n' +
+    '  <h3>' + icon('barChart', 14) + ` ${tr("workspace.extractArtists")}</h3>
+` +
+    `  <p class="sub">${tr("workspace.findArtistTagsStartingWithInThe")}</p>
+` +
     '  <div id="extractResult" style="max-height:200px;overflow-y:auto;font-size:11px">\n' +
-    '    <p style="color:var(--text3)">点击下方按钮开始提取…</p>\n' +
+    `    <p style="color:var(--text3)">${tr("workspace.clickBelowToStartExtraction")}</p>
+` +
     '  </div>\n' +
     '  <div class="modal-actions" style="margin-top:12px">\n' +
-    '    <button class="btn btn-primary" id="extractStartBtn">' + icon('search', 12) + ' 开始提取</button>\n' +
-    '    <button class="btn btn-ghost" id="extractCancelBtn">关闭</button>\n' +
+    '    <button class="btn btn-primary" id="extractStartBtn">' + icon('search', 12) + ` ${tr("workspace.startExtraction")}</button>
+` +
+    `    <button class="btn btn-ghost" id="extractCancelBtn">${tr("workspace.close")}</button>
+` +
     '  </div>\n' +
     '</div>'
 
@@ -909,18 +929,19 @@ function showExtractModal() {
     const resultEl = document.getElementById('extractResult')!
 
     if (extracted.length === 0) {
-      resultEl.innerHTML = '<p>未检测到 @ 开头的画师标签</p>'
+      resultEl.innerHTML = `<p>${tr("workspace.noArtistTagsStartingWithWereFound")}</p>`
       return
     }
 
-    let html = '<p>检测到 <strong>' + extracted.length + '</strong> 个候选:</p>'
+    let html = `<p>${tr("workspace.detected")} <strong>` + extracted.length + `</strong> ${tr("workspace.candidates")}</p>`
     for (const item of extracted) {
       html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)">\n' +
-        '  <span><strong>' + esc(item.tag) + '</strong> <span style="color:var(--text3)">(' + item.count + '次)</span></span>\n' +
-        '  <button class="btn btn-ghost extract-add-btn" data-tag="' + escAttr(item.tag) + '" data-count="' + item.count + '" style="font-size:9px;padding:2px 6px" title="添加">' + icon('plus', 12) + '</button>\n' +
+        '  <span><strong>' + esc(item.tag) + '</strong> <span style="color:var(--text3)">(' + item.count + `${tr("workspace.times")}</span></span>
+` +
+        '  <button class="btn btn-ghost extract-add-btn" data-tag="' + escAttr(item.tag) + '" data-count="' + item.count + `" style="font-size:9px;padding:2px 6px" title="${tr("workspace.add")}">` + icon('plus', 12) + '</button>\n' +
         '</div>'
     }
-    html += '<div style="margin-top:8px"><button class="btn btn-primary" id="extractAllBtn" style="font-size:10px">' + icon('download', 12) + ' 全部添加</button></div>'
+    html += '<div style="margin-top:8px"><button class="btn btn-primary" id="extractAllBtn" style="font-size:10px">' + icon('download', 12) + ` ${tr("workspace.addAll")}</button></div>`
     resultEl.innerHTML = html
 
     resultEl.addEventListener('click', (e2) => {
@@ -933,7 +954,7 @@ function showExtractModal() {
           t.innerHTML = icon('check', 12)
           t.classList.replace('btn-ghost', 'btn-primary')
         } else {
-          t.textContent = '已有'
+          t.textContent = tr("workspace.added2")
           ;(t as HTMLButtonElement).disabled = true
         }
         // 刷新主网格与侧边栏，让刚添加的画师立即显示
@@ -947,7 +968,7 @@ function showExtractModal() {
         refreshArtists()
         updateView()
         close()
-        showToast('添加了 ' + extracted.length + ' 位画师')
+        showToast(tr("workspace.added") + extracted.length + tr("workspace.artists"))
       }
     })
   }

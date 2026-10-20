@@ -202,6 +202,11 @@ class NativeConfigSource:
             if not isinstance(overrides, dict) or set(overrides) - _TRANSPORT_FIELDS:
                 raise ConfigError("DSH 来源仅允许覆盖节点传输参数，不能覆盖原生模型、地址或凭据。")
             settings.update(overrides)
+        # OpenCode Go requires a stable conversation header even when the
+        # DSH static patch relies on its native adapter to supply that header.
+        # This adapter sends HTTP itself, so owns the same transport obligation.
+        if route == "opencode-go":
+            settings["session_header"] = "x-opencode-session"
         key, credential_source = self._credential(reference)
         settings["api_key"] = key
         normalized = validate_config(settings)

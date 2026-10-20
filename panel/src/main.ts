@@ -1,3 +1,4 @@
+import { t as tr, initLocale } from './i18n'
 import './styles/global.css'
 import './styles/outputs.css'
 import './styles/clothing.css'
@@ -50,7 +51,7 @@ function initBuildFreshnessCheck() {
       const latest = (/(index-[A-Za-z0-9_-]+\.js)/.exec(html) || [])[1]
       if (latest && latest !== running) {
         console.warn(`[panel] 有新版可用：运行中 ${running} → 服务器上 ${latest}（请 Ctrl+Shift+R 刷新）`)
-        showToast('🔄 面板有新版本，按 Ctrl+Shift+R 刷新即可生效')
+        showToast(tr("workspace.aPanelUpdateIsAvailablePressCtrl"))
       }
     } catch { /* 离线/服务未起：忽略 */ }
   }
@@ -63,8 +64,8 @@ function initBuildFreshnessCheck() {
 function initBuildTime() {
   const el = document.getElementById('buildTime')
   if (el && typeof __BUILD_TIME__ !== 'undefined') {
-    el.textContent = `构建 ${__BUILD_TIME__}`
-    el.title = `面板构建时间：${__BUILD_TIME__}（发布新版后重开面板窗口即更新）`
+    el.textContent = tr("workspace.built", { p0: __BUILD_TIME__ })
+    el.title = tr("workspace.panelBuiltAtReopenThePanelAfter", { p0: __BUILD_TIME__ })
   }
 }
 
@@ -170,6 +171,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // 库结构预检（异步）：历史版本/外部工具留下的主键不符库会让 Dexie 升级抛
   // UpgradeError，这里先探测并自愈，扫描等 DataBase 操作都在其之后触发。
   ensureOutputsDbCompatible().catch(err => console.warn('[outputsDb] 预检/自愈异常:', err))
+  initLocale()
+  document.title = tr('shell.appTitle')
   initIconButtons()
   initThemeSwitcher()
   const disposeTheme = initToolkitTheme()

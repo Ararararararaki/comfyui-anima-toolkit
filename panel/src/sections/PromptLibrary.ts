@@ -1,3 +1,5 @@
+import { promptCategoryLabel } from '../i18n/display'
+import { t as tr } from '../i18n'
 import { getAllPrompts, countAllPrompts, countPromptsByCategory, searchPrompts, getPromptsByCategory, searchPromptsByCategory, getAllCategories, addCategory, deleteCategory, updateCategory, generateCategoryId, addPrompt, updatePrompt, deletePrompt, deletePromptsBulk, getPromptsByModel, getPrompt, generatePromptId } from '../store/prompts'
 import { renderPromptCard } from '../components/PromptCard'
 import { renderPromptEditor } from '../components/PromptEditor'
@@ -43,12 +45,12 @@ function ensureBatchBar() {
   batchBar = document.createElement('div')
   batchBar.id = 'promptBatchBar'
   batchBar.innerHTML = `
-    <span class="pbb-info">已选 <b class="pbb-count">0</b> 项</span>
-    <button class="btn btn-primary pbb-cat" disabled>${icon('folder', 12)} 批量分类</button>
-    <button class="btn btn-ghost pbb-ren" disabled>${icon('edit3', 12)} 批量命名</button>
-    <button class="btn btn-danger pbb-del" disabled>${icon('trash', 12)} 删除选中</button>
-    <button class="btn btn-ghost pbb-dedup">${icon('copy', 12)} 整库去重</button>
-    <button class="btn btn-ghost pbb-exit">${icon('x', 12)} 退出</button>`
+    <span class="pbb-info">${tr("workspace.selected")} <b class="pbb-count">0</b> ${tr("workspace.items")}</span>
+    <button class="btn btn-primary pbb-cat" disabled>${tr("workspace.categorize", { p0: icon('folder', 12) })}</button>
+    <button class="btn btn-ghost pbb-ren" disabled>${tr("workspace.rename2", { p1: icon('edit3', 12) })}</button>
+    <button class="btn btn-danger pbb-del" disabled>${tr("workspace.deleteSelected2", { p2: icon('trash', 12) })}</button>
+    <button class="btn btn-ghost pbb-dedup">${tr("workspace.removeDuplicates2", { p3: icon('copy', 12) })}</button>
+    <button class="btn btn-ghost pbb-exit">${tr("workspace.exit", { p4: icon('x', 12) })}</button>`
   document.body.appendChild(batchBar)
 
   batchBar.querySelector('.pbb-exit')?.addEventListener('click', () => { if (w.__togglePromptBatch) w.__togglePromptBatch() })
@@ -56,7 +58,7 @@ function ensureBatchBar() {
   batchBar.querySelector('.pbb-cat')?.addEventListener('click', async () => {
     if (!batchSelected.size) return
     const cats = await getAllCategories()
-    const name = await promptModal('批量分类', '', `输入目标分类名（现有: ${cats.map(c => c.name).join(' / ')}；不存在则自动新建）:`)
+    const name = await promptModal(tr("workspace.categorizeSelected"), '', tr("workspace.enterACategoryExistingANewName", { p0: cats.map(c => c.name).join(' / ') }))
     const trimmed = name?.trim()
     if (!trimmed) return
     const target = cats.find(c => c.name === trimmed)
@@ -64,7 +66,7 @@ function ensureBatchBar() {
       ? target.id
       : await addCategory({ id: generateCategoryId(), name: trimmed, icon: '📁', sortOrder: (await getAllCategories()).length })
     for (const id of batchSelected) await updatePrompt(id, { categoryId: catId })
-    showToast(`✅ 已将 ${batchSelected.size} 条移入「${trimmed}」`, 'success')
+    showToast(tr("workspace.movedPromptsTo", { p0: batchSelected.size, p1: trimmed }), 'success')
     batchSelected.clear()
     updateBatchBar()
     promptListCache.clear()
@@ -73,7 +75,7 @@ function ensureBatchBar() {
 
   batchBar.querySelector('.pbb-ren')?.addEventListener('click', async () => {
     if (!batchSelected.size) return
-    const base = await promptModal('批量命名', '', '输入名称前缀（自动按创建时间从旧到新编号 01、02…）:')
+    const base = await promptModal(tr("workspace.renameSelected"), '', tr("workspace.enterANamePrefixEntriesAreNumbered"))
     const prefix = base?.trim()
     if (!prefix) return
     const ids = new Set(batchSelected)
@@ -81,7 +83,7 @@ function ensureBatchBar() {
     for (let i = 0; i < entries.length; i++) {
       await updatePrompt(entries[i].id, { displayText: `${prefix} ${String(i + 1).padStart(2, '0')}` })
     }
-    showToast(`✅ 已重命名 ${entries.length} 条`, 'success')
+    showToast(tr("workspace.renamedPrompts", { p0: entries.length }), 'success')
     batchSelected.clear()
     updateBatchBar()
     promptListCache.clear()
@@ -90,9 +92,9 @@ function ensureBatchBar() {
 
   batchBar.querySelector('.pbb-del')?.addEventListener('click', async () => {
     if (!batchSelected.size) return
-    if (!await confirmModal('批量删除', `确认删除选中的 ${batchSelected.size} 条 Prompt？此操作不可恢复！`)) return
+    if (!await confirmModal(tr("workspace.deleteSelected"), tr("workspace.deleteSelectedPromptsThisCannotBeUndone", { p0: batchSelected.size }))) return
     await deletePromptsBulk([...batchSelected])
-    showToast(`🗑️ 已删除 ${batchSelected.size} 条`, 'success')
+    showToast(tr("workspace.deletedPrompts", { p0: batchSelected.size }), 'success')
     batchSelected.clear()
     updateBatchBar()
     promptListCache.clear()
@@ -115,10 +117,10 @@ function ensureBatchBar() {
       arr.sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt))
       for (let i = 1; i < arr.length; i++) dead.push(arr[i].id)
     }
-    if (!dead.length) { showToast('✅ 没有发现重复 Prompt', 'success'); return }
-    if (!await confirmModal('整库去重', `发现 ${dead.length} 条重复 Prompt（每组保留最新一条）。确认删除其余重复项？`)) return
+    if (!dead.length) { showToast(tr("workspace.noDuplicatePromptsFound"), 'success'); return }
+    if (!await confirmModal(tr("workspace.removeDuplicates"), tr("workspace.foundDuplicatePromptsKeepTheNewestIn", { p0: dead.length }))) return
     await deletePromptsBulk(dead)
-    showToast(`🧹 去重完成，已删除 ${dead.length} 条`, 'success')
+    showToast(tr("workspace.removedDuplicatePrompts", { p0: dead.length }), 'success')
     batchSelected.clear()
     updateBatchBar()
     promptListCache.clear()
@@ -166,17 +168,17 @@ async function renderCategories(sidebar: HTMLElement | null) {
 
   sidebar.innerHTML = `
     <button class="prompt-cat-item ${currentCategory === '' ? 'active' : ''}" data-catid="">
-      ${icon('grid', 12)} 全部 <span class="count">${allCount}</span>
+      ${tr("workspace.all", { p1: icon('grid', 12) })} <span class="count">${allCount}</span>
     </button>
     ${cats.map(c => `
       <div class="prompt-cat-row">
         <button class="prompt-cat-item ${currentCategory === c.id ? 'active' : ''}" data-catid="${c.id}">
-          ${c.icon ? c.icon + ' ' : ''}${c.name} <span class="count">${catCounts[c.id] || 0}</span>
+          ${c.icon ? c.icon + ' ' : ''}${esc(promptCategoryLabel(c))} <span class="count">${catCounts[c.id] || 0}</span>
         </button>
-        ${c.id !== 'uncategorized' ? `<button class="prompt-cat-del" data-catid="${c.id}" title="删除分类">${icon('x', 12)}</button>` : ''}
+        ${c.id !== 'uncategorized' ? `<button class="prompt-cat-del" data-catid="${c.id}" title="${tr("workspace.deleteCategory")}">${icon('x', 12)}</button>` : ''}
       </div>
     `).join('')}
-    <button class="prompt-cat-add" onclick="window.__addPromptCategory()">${icon('plus', 12)} 新建分类</button>
+    <button class="prompt-cat-add" onclick="window.__addPromptCategory()">${tr("workspace.newCategory3", { p4: icon('plus', 12) })}</button>
   `
 
   // Bind category clicks
@@ -193,7 +195,7 @@ async function renderCategories(sidebar: HTMLElement | null) {
     el.addEventListener('click', async (e) => {
       e.stopPropagation()
       const catId = (el as HTMLElement).dataset.catid || ''
-      if (!await confirmModal('删除分类', '删除此分类？其中的 Prompt 将移至"未分类"')) return
+      if (!await confirmModal(tr("workspace.deleteCategory"), tr("workspace.deleteThisCategoryItsPromptsWillMove"))) return
       await deleteCategory(catId)
       if (currentCategory === catId) currentCategory = ''
       await renderPromptLibrary()
@@ -203,7 +205,7 @@ async function renderCategories(sidebar: HTMLElement | null) {
 
 function renderListContent(container: HTMLElement, prompts: PromptEntry[]) {
   if (prompts.length === 0) {
-    container.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><div class="big">${icon('book', 28)}</div><p>${currentSearch ? '没有匹配的 Prompt' : 'Prompt 库为空'}</p><p class="sub">浏览 LoRA 列表，从卡片中提取触发词</p></div>`
+    container.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><div class="big">${icon('book', 28)}</div><p>${currentSearch ? tr("workspace.noMatchingPrompts") : tr("workspace.yourPromptLibraryIsEmpty")}</p><p class="sub">${tr("workspace.browseLorasAndExtractTriggerWordsFrom")}</p></div>`
     return
   }
   container.innerHTML = prompts.map(p => renderPromptCard(p, currentSearch)).join('')
@@ -309,7 +311,7 @@ export function setupPromptHandlers() {
     const container = document.getElementById('promptGrid')
     if (!container) return
     const prompts = await getPromptsByModel(modelId)
-    if (prompts.length === 0) { showToast('⚠️ 该模型暂无已提取的 Prompt'); return }
+    if (prompts.length === 0) { showToast(tr("workspace.noPromptsHaveBeenExtractedForThis")); return }
     // Switch to prompt tab and show filtered results
     const mainTab = document.querySelector('.main-tab[data-section="prompt"]') as HTMLElement
     if (mainTab) mainTab.click()
@@ -328,7 +330,7 @@ export function setupPromptHandlers() {
     await deletePrompt(id)
     promptListCache.clear()
     await renderPromptList()
-    showToast('🗑️ Prompt 已删除')
+    showToast(tr("workspace.promptDeleted"))
   }
 
   // ── 批量模式开关 ──
@@ -341,7 +343,7 @@ export function setupPromptHandlers() {
     document.getElementById('promptBatchBtn')?.classList.add('active')
     ensureBatchBar()
     updateBatchBar()
-    showToast('🖱️ 批量模式：点击卡片选择/取消，底部操作条执行批量操作')
+    showToast(tr("workspace.batchModeSelectCardsThenUseThe"))
   }
 
   w.__editPrompt = async (id: string) => {
@@ -358,7 +360,7 @@ export function setupPromptHandlers() {
   }
 
   w.__addPromptCategory = async () => {
-    const name = await promptModal('新建分类', '', '输入分类名称:')
+    const name = await promptModal(tr("workspace.newCategory2"), '', tr("workspace.enterACategoryName"))
     if (!name?.trim()) return
     const id = generateCategoryId()
     const order = (await getAllCategories()).length
@@ -379,7 +381,7 @@ export function setupPromptHandlers() {
     const tags = collectChips('pe_tags')
     const loras = collectChips('pe_loras')
 
-    if (!prompt) { showToast('⚠️ Prompt 不能为空'); return }
+    if (!prompt) { showToast(tr("workspace.aPromptIsRequired")); return }
 
     if (id.startsWith('new_')) {
       // Merge images: peImages (uploaded) + promptImages (model extraction)
@@ -420,7 +422,7 @@ export function setupPromptHandlers() {
 
     closeModal('promptEditModal')
     await renderPromptLibrary()
-    showToast(id.startsWith('new_') ? '✅ Prompt 已添加' : '✅ Prompt 已更新', 'success')
+    showToast(id.startsWith('new_') ? tr("workspace.promptAdded") : tr("workspace.promptUpdated"), 'success')
   }
 
   w.__addPromptEditTag = () => {
@@ -519,10 +521,10 @@ export function setupPromptHandlers() {
     if (delBtn) {
       e.stopPropagation()
       const id = delBtn.dataset.promptId
-      if (id && await confirmModal('删除 Prompt', '确认删除此 Prompt?')) {
+      if (id && await confirmModal(tr("workspace.deletePrompt"), tr("workspace.deleteThisPrompt"))) {
         await deletePrompt(id)
         await renderPromptList()
-        showToast('🗑️ Prompt 已删除')
+        showToast(tr("workspace.promptDeleted"))
       }
       return
     }
@@ -545,7 +547,7 @@ export function setupPromptHandlers() {
   // 批量模式入口按钮
   const batchBtn = document.getElementById('promptBatchBtn') as HTMLButtonElement | null
   if (batchBtn) {
-    batchBtn.innerHTML = icon('checkSquare', 12) + '<span>批量</span>'
+    batchBtn.innerHTML = icon('checkSquare', 12) + `<span>${tr("workspace.batch")}</span>`
     batchBtn.addEventListener('click', () => { if (w.__togglePromptBatch) w.__togglePromptBatch() })
   }
 }

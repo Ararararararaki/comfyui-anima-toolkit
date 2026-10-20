@@ -3,6 +3,12 @@ import { normalizeRelativeLoraPath } from './localLoraScanner'
 
 export type ManifestEntry = { name: string; size: number; lastModified: number; sha256: string }
 export type ScanSource = { size: number; lastModified: number }
+/**
+ * 头部元数据读取结果（2026-10-19 加）。baseModel 是**已归一化**的面板口径底模，空串=未识别。
+ * 归一化刻意放在调用方（localModels 的 readMeta 钩子）做，本模块保持零运行时依赖 ——
+ * `scripts/verify-local-lora-scan.mjs` 会把本文件转译后裸跑，新增运行时 import 会让它直接失败。
+ */
+export type LocalLoraMetaReading = { baseModel: string; raw: string }
 export type ScanListing<Source extends ScanSource> = {
   entries: { name: string; file: Source }[]
   directory: string
@@ -13,6 +19,12 @@ export type LocalScanSnapshot = {
   descriptions: Record<string, string>
 }
 type ScanUpdate = Partial<LocalScanSnapshot> & { scanPath?: string; newFileCount?: number }
+/** Structured UI notification data; the legacy notice text stays unchanged. */
+export type LocalScanNotice =
+  | { type: 'cancelled'; operation: 'scan' | 'match' }
+  | { type: 'failed'; error: string }
+  | { type: 'scan-complete'; added: number; changed: number; removed: number; unchanged: number; removedDescriptions: number }
+  | { type: 'match-complete'; done: number; total: number; errors: number }
 export type LocalScanProgress = {
   status: LocalScanStatus
   done: number
@@ -21,12 +33,18 @@ export type LocalScanProgress = {
   partial: number
   directory: string
   notice?: string
+  noticeDetails?: LocalScanNotice
 }
 type Dependencies<Source extends ScanSource> = {
   read: () => LocalScanSnapshot
   commit: (update: ScanUpdate) => void
   hash: (file: Source, options: { signal: AbortSignal; onProgress: (p: { bytesRead: number; totalBytes: number }) => void }) => Promise<string>
   match: (hash: string, signal: AbortSignal) => Promise<LocalLoraMatch | null>
+  /**
+   * 可选：读文件头部的训练器元数据，用于离线判定底模（未上传 C 站的 LoRA 只有这条路能拿到底模）。
+   * 不传 / 返回 null 时扫描照常，该文件的本地底模保持空串。
+   */
+  readMeta?: (file: Source, signal: AbortSignal) => Promise<LocalLoraMetaReading | null>
   persist: () => void
   removePreviews: (names: string[]) => void
 }
@@ -60,7 +78,8 @@ export class LocalScanSession<Source extends ScanSource> {
     this.deps.commit({ files: this.deps.read().files.map(file => ({ ...file, scanning: false })) })
     if (run.accepted) this.deps.persist()
     this.publish({ status: 'idle', done: 0, total: 0, partial: 0, label: '', directory: this.progress.directory,
-      notice: this.progress.status === 'matching' ? '匹配已取消' : '扫描已取消' })
+      notice: this.progress.status === 'matching' ? '匹配已取消' : '扫描已取消',
+      noticeDetails: { type: 'cancelled', operation: this.progress.status === 'matching' ? 'match' : 'scan' } })
   }
 
   async run(request: LocalScanRequest<Source>): Promise<void> {
@@ -83,7 +102,7 @@ export class LocalScanSession<Source extends ScanSource> {
         await this.match(run, request.names, request.resolve)
       }
       this.check(run)
-      this.report(run, { ...this.progress, status: 'done', partial: 0, notice: undefined })
+      this.report(run, { ...this.progress, status: 'done', partial: 0, notice: undefined, noticeDetails: undefined })
     } catch (error) {
       if (this.current !== run) return
       if (run.controller.signal.aborted || (error as Error).name === 'AbortError') {
@@ -91,7 +110,8 @@ export class LocalScanSession<Source extends ScanSource> {
       } else {
         this.deps.commit({ files: this.deps.read().files.map(file => ({ ...file, scanning: false })) })
         this.report(run, { ...this.progress, status: 'error', partial: 0,
-          notice: `扫描失败：${(error as Error).message || '未知错误'}` })
+          notice: `扫描失败：${(error as Error).message || '未知错误'}`,
+          noticeDetails: { type: 'failed', error: (error as Error).message || '' } })
       }
     } finally {
       if (this.current === run) this.current = null
@@ -121,7 +141,7 @@ export class LocalScanSession<Source extends ScanSource> {
     const partial = totalBytes > 0 ? Math.min(1, Math.max(0, bytesRead / totalBytes)) : 0
     const fileName = name.split('/').pop() || name
     const shortName = fileName.length > 42 ? `${fileName.slice(0, 18)}…${fileName.slice(-21)}` : fileName
-    this.report(run, { ...this.progress, done, total, partial, notice: undefined,
+    this.report(run, { ...this.progress, done, total, partial, notice: undefined, noticeDetails: undefined,
       label: `扫描中 ${shortName} ${Math.round(partial * 100)}%` })
   }
 
@@ -138,7 +158,10 @@ export class LocalScanSession<Source extends ScanSource> {
       return { name, path: name, size: file.size, lastModified: file.lastModified,
         sha256: unchanged ? cached.sha256 : '', matched: unchanged ? previous?.matched || false : false,
         matchData: unchanged ? previous?.matchData || null : null,
-        matchError: unchanged ? previous?.matchError || '' : '', scanning: !unchanged }
+        matchError: unchanged ? previous?.matchError || '' : '', scanning: !unchanged,
+        // 未变的文件复用上次读到的本地底模，避免每次全库重读文件头
+        localBaseModel: unchanged ? previous?.localBaseModel || '' : '',
+        localBaseModelRaw: unchanged ? previous?.localBaseModelRaw || '' : '' }
     })
     let unchanged = 0, changed = 0, added = 0
     const total = entries.length
@@ -158,7 +181,12 @@ export class LocalScanSession<Source extends ScanSource> {
             onProgress: p => this.fileProgress(run, i, total, name, p.bytesRead, p.totalBytes) })
           this.check(run)
         }
-        results[i] = { ...results[i], sha256 }
+        // 底模元数据只读文件头几十 KB，与哈希相互独立：
+        // 超大文件即便哈希被推迟到匹配阶段，这里也照样先把底模读出来（否则 MOSS 这类自训 LoRA 会一直显示未知底模）
+        const meta = await this.readMeta(run, file)
+        this.check(run)
+        results[i] = { ...results[i], sha256,
+          localBaseModel: meta?.baseModel || '', localBaseModelRaw: meta?.raw || '' }
         manifest[name] = { name, size: file.size, lastModified: file.lastModified, sha256 }
         if (cached) changed++; else added++
       }
@@ -180,7 +208,8 @@ export class LocalScanSession<Source extends ScanSource> {
     const changedFiles = added + changed + removed.length > 0
     this.report(run, { ...this.progress, status: 'done', notice: changedFiles
       ? `扫描完成: 新增 ${added} · 变更 ${changed} · 移除 ${removed.length} · 跳过 ${unchanged}${removedDescriptions ? `（含 ${removedDescriptions} 条描述清理）` : ''}`
-      : `扫描完成: 无变化（${unchanged} 个未变）` })
+      : `扫描完成: 无变化（${unchanged} 个未变）`,
+      noticeDetails: { type: 'scan-complete', added, changed, removed: removed.length, unchanged, removedDescriptions } })
     return changedFiles && results.some(file => !file.matched)
   }
 
@@ -232,7 +261,22 @@ export class LocalScanSession<Source extends ScanSource> {
     this.check(run)
     this.deps.persist()
     this.report(run, { ...this.progress, status: 'done', notice: errors
-      ? `${errors} 个匹配异常` : files.length ? `匹配完成 (${done} 个)` : '所有文件已匹配' })
+      ? `${errors} 个匹配异常` : files.length ? `匹配完成 (${done} 个)` : '所有文件已匹配',
+      noticeDetails: { type: 'match-complete', done, total: files.length, errors } })
+  }
+
+  /**
+   * 读头部元数据失败一律降级为「底模未知」：个别文件损坏、被占用或非 safetensors 不能中断整库扫描。
+   * 取消信号必须照常向外抛 —— 否则用户点取消后扫描不会停下。
+   */
+  private async readMeta(run: Run, file: Source): Promise<LocalLoraMetaReading | null> {
+    if (!this.deps.readMeta) return null
+    try {
+      return await this.deps.readMeta(file, run.controller.signal)
+    } catch (error) {
+      if (run.controller.signal.aborted || (error as Error)?.name === 'AbortError') throw error
+      return null
+    }
   }
 
   private updateFile(run: Run, name: string, update: Partial<LocalLoraFile>): void {

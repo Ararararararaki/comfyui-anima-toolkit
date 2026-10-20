@@ -972,6 +972,7 @@ import {
       this.translateInputEl = null; // ②区独立中文翻译输入
       this.translateSuggestEl = null; // ②区中文输入联想下拉
       this.translateSourceEl = null; // ②区翻译源选择
+      this.translateDigestEl = null; // ②区「整体译文」区（不随逐片段结果一起清空）
       this.chipsEl = null;
       this.catTabsEl = null;
       this.cardGridEl = null;
@@ -985,6 +986,11 @@ import {
       this.suggestEl = null;    // ②区联想下拉
       this.resolveEl = null;   // ②区中文翻译 + Danbooru 校准结果
       this.resolveItems = [];
+      // 「整体译文」：把逐片段译文拼成一条完整 prompt，独立于 resolveItems 存活。
+      // 中文输入框每敲一个字都会触发 _hideResolve() 清空逐片段结果，
+      // 若整体译文也挂在 resolveItems 上就会跟着一起丢 —— 这里单独留快照。
+      this.translateDigest = "";
+      this.translateDigestStats = null;
       this.translateStatusEl = null; // provider 实时状态
       this.lastTranslationMode = "calibrate";
       this.actualTranslationProvider = "";
@@ -3504,6 +3510,8 @@ import {
         input.addEventListener("input", () => {
           const item = this.resolveItems[parseInt(input.getAttribute("data-i"), 10)];
           if (item) item.translation = input.value;
+          // 手动修正某段译文后，整体译文要跟着变，否则复制/覆盖拿到的是旧文本
+          this._updateTranslateDigest();
         });
       });
       this.resolveEl.querySelectorAll('[data-a="save-glossary"]').forEach((button) => {
@@ -3530,6 +3538,98 @@ import {
       this.resolveEl.querySelectorAll('[data-a="init-semantic"]').forEach((button) => {
         button.addEventListener("click", () => this._startSemanticEngine(button));
       });
+      // 每次渲染逐片段结果都刷新整体译文（首次翻完、切换来源、手动改译文都会走到这里）
+      this._updateTranslateDigest();
+    }
+
+    /**
+     * 把逐片段译文拼成一条完整 prompt。
+     * 没有译文的片段保留中文原文并计数 —— 宁可混一段原文，也不让整体缺句。
+     */
+    _computeTranslateDigest() {
+      const items = Array.isArray(this.resolveItems) ? this.resolveItems : [];
+      const parts = [];
+      let missing = 0;
+      for (const item of items) {
+        const translated = String(item?.translation || "").trim();
+        if (translated) {
+          parts.push(translated);
+          continue;
+        }
+        const source = String(item?.text || "").trim();
+        if (source) {
+          parts.push(source);
+          missing += 1;
+        }
+      }
+      const text = parts.join(", ").replace(/(?:,\s*)+/g, ", ").trim().replace(/\s+,/g, ",");
+      return { text, total: items.length, missing };
+    }
+
+    /**
+     * 刷新整体译文。resolveItems 为空（例如用户又回去改中文输入框）时**保留上次快照**，
+     * 这是「上面提示词一变、翻译就丢」的核心修复点：逐片段结果该清就清，整体译文留着。
+     */
+    _updateTranslateDigest() {
+      const items = Array.isArray(this.resolveItems) ? this.resolveItems : [];
+      if (items.length) {
+        const digest = this._computeTranslateDigest();
+        this.translateDigest = digest.text;
+        this.translateDigestStats = digest;
+      }
+      this._renderTranslateDigest();
+    }
+
+    _renderTranslateDigest() {
+      const el = this.translateDigestEl;
+      if (!el) return;
+      const text = String(this.translateDigest || "").trim();
+      if (!text) {
+        el.style.display = "none";
+        el.innerHTML = "";
+        return;
+      }
+      const stats = this.translateDigestStats || { total: 0, missing: 0 };
+      const note = stats.missing
+        ? `整体译文（${stats.total} 段，其中 ${stats.missing} 段暂无译文，已保留中文）`
+        : `整体译文（${stats.total} 段，已全部译出）`;
+      el.style.display = "";
+      el.innerHTML = `<div class="tk-cards-digest-head"><b>${esc(note)}</b><span>可直接复制，或覆盖当前提示词</span></div>
+        <textarea class="tk-cards-digest-text" rows="3" readonly title="整体译文；用「复制」或「覆盖当前提示词」取用"></textarea>
+        <div class="tk-cards-digest-actions">
+          <button type="button" class="tk-cards-btn" data-a="digest-copy">复制整体译文</button>
+          <button type="button" class="tk-cards-btn" data-a="digest-overwrite">覆盖当前提示词</button>
+          <button type="button" class="tk-cards-btn" data-a="digest-clear">清空</button>
+        </div>`;
+      const area = el.querySelector(".tk-cards-digest-text");
+      if (area) area.value = text; // 用 value 赋值，避免换行/引号被当作 HTML
+      el.querySelector('[data-a="digest-copy"]')?.addEventListener("click", () => this._copyTranslateDigest());
+      el.querySelector('[data-a="digest-overwrite"]')?.addEventListener("click", () => this._overwritePromptWithDigest());
+      el.querySelector('[data-a="digest-clear"]')?.addEventListener("click", () => {
+        this.translateDigest = "";
+        this.translateDigestStats = null;
+        this._renderTranslateDigest();
+      });
+      this._scheduleNodeResize();
+    }
+
+    async _copyTranslateDigest() {
+      const text = String(this.translateDigest || "").trim();
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        this._flash("已复制整体译文");
+      } catch {
+        // 非安全上下文或拒绝授权时剪贴板不可用：明确告知，不静默失败
+        this._flash("复制失败：剪贴板不可用，请手动选中复制", 4000);
+      }
+    }
+
+    _overwritePromptWithDigest() {
+      const text = String(this.translateDigest || "").trim();
+      if (!text) return;
+      this._setPromptText(text);
+      this._flash("已用整体译文覆盖当前提示词");
     }
 
     _replaceResolvedPiece(index, replacement) {
@@ -5503,6 +5603,11 @@ import {
       translateBox.appendChild(translateSourceRow);
       translateBox.appendChild(translateStatusDetails);
       translateBox.appendChild(translateInputRow);
+      // 整体译文区：独立于下面的 resolveEl（逐片段结果），_hideResolve() 不会清它
+      this.translateDigestEl = document.createElement("div");
+      this.translateDigestEl.className = "tk-cards-digest";
+      this.translateDigestEl.style.display = "none";
+      translateBox.appendChild(this.translateDigestEl);
       this.resolveEl = document.createElement("div");
       this.resolveEl.className = "tk-cards-resolve";
       this.resolveEl.style.display = "none";
@@ -5808,6 +5913,12 @@ import {
  .tk-cards-suggest-item:hover, .tk-cards-suggest-item.sel { background:rgba(94,106,210,.28); }
 /* ②区中文翻译 + Danbooru 规范校准 */
  .tk-cards-resolve { display:flex; flex-direction:column; gap:6px; padding:7px; border:1px solid rgba(155,178,182,.55); border-radius:5px; background:#171b1d; }
+/* ②区「整体译文」：独立于逐片段结果，跨多次翻译存活 */
+ .tk-cards-digest { display:flex; flex-direction:column; gap:5px; padding:7px; border:1px solid rgba(155,178,182,.55); border-radius:5px; background:#141618; }
+ .tk-cards-digest-head { display:flex; align-items:baseline; justify-content:space-between; gap:8px; color:var(--tk-info); font-size:11px; }
+ .tk-cards-digest-head span { color:var(--tk-muted); font-size:10px; }
+ .tk-cards-digest-text { width:100%; box-sizing:border-box; min-height:54px; padding:5px 6px; border:1px solid var(--tk-border-soft); border-radius:4px; background:#0f1112; color:#d6d7d9; font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; resize:vertical; }
+ .tk-cards-digest-actions { display:flex; flex-wrap:wrap; gap:5px; }
  .tk-cards-resolve-head { display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--tk-info); font-size:11px; }
  .tk-cards-resolve-head span { color:var(--tk-muted); font-size:10px; }
  .tk-cards-resolve-list { display:flex; flex-direction:column; gap:5px; max-height:300px; overflow:auto; padding-right:2px; }

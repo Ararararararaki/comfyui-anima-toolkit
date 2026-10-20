@@ -4,6 +4,8 @@ const NODE_NAME = "TkPromptAgent";
 const SESSION_OWNERS = new Map();
 const API_ROOT = "/anima/prompt-agent";
 const MODES = [["create", "创作"], ["modify", "修改"], ["expand", "扩写"], ["rewrite", "重写"], ["convert", "转换"], ["optimize", "优化"]];
+// 扩写 skill 下拉里固定追加的「管理」哨兵值，选中它不写节点值、只打开管理面板
+const MANAGE_SKILLS_VALUE = "__manage__";
 const INPUT_NAMES = ["profile", "mode", "current_prompt", "user_instruction", "execution", "session_id", "preset", "custom_instructions", "locked_sections", "edit_scope", "approved_prompt", "agent_response", "approved_profile", "interrogation_source", "interrogation_image", "interrogation_action", "interrogation_options", "generation_strategy"];
 const GENERATION_STRATEGIES = [["direct", "快速直写"], ["guided", "按流程创作"], ["native", "DSH 原生"]];
 const CONNECTION_FIELDS = ["base_url", "model", "api_key", "api_key_env", "clear_api_key"];
@@ -44,7 +46,7 @@ function injectStylesheet() {
   const link = element("link");
   link.id = "tk-prompt-agent-style";
   link.rel = "stylesheet";
-  link.href = new URL("../css/anima_prompt_agent.css?v=20261010-2", import.meta.url).href;
+  link.href = new URL("../css/anima_prompt_agent.css?v=20261020-optional-characters", import.meta.url).href;
   document.head.appendChild(link);
 }
 
@@ -83,6 +85,9 @@ export class PromptAgentUI {
     this.revision = 0;
     this.history = [];
     this.meta = { profiles: [], presets: [], sections: [], config: {} };
+    // 已添加的 DSH skill：默认只内置两个基础 skill，其余由用户自己挑，
+    // 否则本机上百个 skill 全塞进下拉根本没法用。存本机偏好（换工作流仍生效）。
+    this.addedSkills = this.loadAddedSkills();
     this.disposed = false;
     this.busy = false;
     this.requestVersion = 0;
@@ -91,6 +96,7 @@ export class PromptAgentUI {
     this.nativeMetaVersion = 0;
     this.nativeSettingsDirty = false;
     this.nativeOperation = null;
+    this.activeTask = null;
     this.activeTab = node.properties?.tkPromptAgentTab === "interrogate" ? "interrogate" : "create";
     this.interrogationResult = null;
     this.claimSession();
@@ -106,11 +112,57 @@ export class PromptAgentUI {
       let message = labels[progress.stage];
       if (progress.stage === "queued" && Number.isFinite(progress.rank)) message += ` 前方 ${Math.max(0, progress.rank)} 个任务。`;
       if (progress.stage === "queued" && Number.isFinite(progress.rank_eta)) message += ` 预计 ${Math.ceil(progress.rank_eta)} 秒。`;
+      if (progress.stage === "llm_waiting") message = `正在请求 ${progress.model} · ${progress.protocol}，等待模型回复…`;
+      if (progress.stage === "llm_receiving") message = `${progress.model} · ${progress.protocol} 正在返回内容，已收 ${Math.ceil((progress.received_bytes || 0) / 1024)} KiB，等待完整结果…`;
       if (progress.stage === "failed") message = `反推失败：${progress.message}`;
       if (progress.stage === "expansion_failed") message = `看图扩写失败：${progress.message}。已保留原始反推结果和原来的 Final Prompt。`;
       if (message) this.status(message, ["failed", "expansion_failed"].includes(progress.stage));
     };
     this.progressAPI?.addEventListener?.("tk_prompt_agent_interrogation", this.interrogationProgressListener);
+    this.graphExecutionActive = false;
+    this.graphPromptId = null;
+    this.graphListeners = {
+      executing: (event) => {
+        // ComfyApi emits only the node id; older hosts expose the socket envelope.
+        const detail = event.detail;
+        const data = detail !== null && typeof detail === "object" ? detail : { node: detail };
+        if (this.disposed) return;
+        if (this.node.id != null && data.node != null && String(data.node) === String(this.node.id)) {
+          this.graphExecutionActive = true;
+          this.graphPromptId = data.prompt_id || null;
+          const selected = this.interrogationOptions().vision_model || "连接默认模型";
+          this.markFinalPromptState("本轮正在执行；下方是上次保存的结果，新结果尚未返回。");
+          this.status("节点正在执行 · 本节点模型：" + selected + "，等待本轮结果…");
+        } else if (data.node == null && this.graphExecutionActive && this.matchesGraphPrompt(data)) {
+          this.finishGraphExecution("本轮执行已结束，未收到新的 Prompt。", true);
+        }
+      },
+      execution_error: (event) => {
+        const data = event.detail || {};
+        if (this.disposed || this.node.id == null || String(data.node_id) !== String(this.node.id) || !this.matchesGraphPrompt(data)) return;
+        this.finishGraphExecution("本轮执行失败：" + String(data.exception_message || "请查看 ComfyUI 错误报告。").slice(0, 2000), true);
+      },
+      execution_interrupted: (event) => {
+        if (!this.disposed && this.graphExecutionActive && this.matchesGraphPrompt(event.detail || {})) this.finishGraphExecution("本轮执行已中断。", true);
+      },
+    };
+    for (const [type, listener] of Object.entries(this.graphListeners)) this.progressAPI?.addEventListener?.(type, listener);
+  }
+
+  matchesGraphPrompt(data) {
+    return !this.graphPromptId || !data.prompt_id || data.prompt_id === this.graphPromptId;
+  }
+
+  markFinalPromptState(message = "") {
+    if (!this.dom.finalPromptState) return;
+    this.dom.finalPromptState.textContent = message;
+    this.dom.finalPromptState.hidden = !message;
+  }
+
+  finishGraphExecution(message, error) {
+    this.graphExecutionActive = false;
+    this.status(message, error);
+    this.markFinalPromptState(error ? "本轮执行失败或中断；下方仍是上次保存的结果，并非本轮输出。" : "");
   }
 
   widget(name) { return this.node.widgets?.find((item) => item?.name === name); }
@@ -176,7 +228,12 @@ export class PromptAgentUI {
     const select = element("select", "tk-pa-input");
     select.setAttribute("aria-label", label);
     for (const [value, text] of choices) select.append(option(value, text));
-    select.addEventListener("change", () => { this.write(name, select.value); this.invalidate(); });
+    select.addEventListener("change", () => {
+      // profile 是 COMBO 输入，只能取后端声明的 anima/krea2；skill id 不能直接写进去，
+      // 统一由 writeSelectedSkill 处理（写 interrogation_options + 推导合法 profile）。
+      if (name !== "profile") this.write(name, select.value);
+      this.invalidate();
+    });
     this.dom[name] = select;
     return select;
   }
@@ -202,6 +259,7 @@ export class PromptAgentUI {
         if (normalizeGenerationStrategy(this.value("generation_strategy")) === id) return;
         this.write("generation_strategy", id);
         this.invalidate();
+        this.loadPresetEditor();
         this.renderWorkflow();
         if (id === "native") void this.refreshNativeMeta();
       };
@@ -235,23 +293,37 @@ export class PromptAgentUI {
     for (const type of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick", "wheel", "keydown", "keyup", "contextmenu"]) {
       root.addEventListener(type, (event) => event.stopPropagation(), type === "wheel" ? { passive: true } : undefined);
     }
+    this.dom.imageSettings = element("div", "tk-pa-settings-section");
     const toolbar = element("div", "tk-pa-toolbar");
     toolbar.append(
-      field("模型 Profile", this.select("profile", [], "模型 Profile")),
-      field("操作", this.select("mode", MODES, "操作")),
-      field("创作预设", this.select("preset", [["", "默认"]], "创作预设")),
+      field("扩写 Skill", this.select("profile", [], "扩写 Skill")),
+
     );
+    const creationOptions = element("div", "tk-pa-toolbar");
+    creationOptions.append(field("操作", this.select("mode", MODES, "操作")),
+      field("创作预设", this.select("preset", [["", "默认"]], "创作预设")));
+    this.dom.editPreset = this.button("查看／编辑规则", () => this.openPresetEditor());
+    creationOptions.append(this.dom.editPreset);
     this.dom.presetHint = element("div", "tk-pa-note tk-pa-preset-hint");
     this.dom.preset.addEventListener("change", () => this.updatePresetHint());
     this.dom.profile.addEventListener("change", () => {
+      const picked = this.dom.profile.value;
+      if (picked === MANAGE_SKILLS_VALUE) {
+        // 哨兵选项：不写节点值，只打开管理面板
+        this.dom.profile.value = this.selectedSkillId() || "";
+        this.openSkillManager();
+        return;
+      }
+      this.writeSelectedSkill(picked);
       if (String(this.value("current_prompt")).trim()) {
         this.write("mode", "convert");
         this.dom.mode.value = "convert";
-        this.status("已切换模型 Profile，请发送转换指令后使用新的 Final Prompt。");
+        this.status("已切换扩写 Skill，请发送转换指令后使用新的 Final Prompt。");
       }
       this.interrogationResult = null;
       this.renderInterrogationResult();
       this.updateProfileHint();
+      this.loadPresetEditor();
       this.renderWorkflow();
     });
     const tabs = element("div", "tk-pa-tabs");
@@ -318,7 +390,10 @@ export class PromptAgentUI {
     this.dom.copy = this.button("复制", () => this.copyPrompt(), "tk-pa-copy");
     this.dom.copy.dataset.keepEnabled = "true";
     finalHeader.append(element("span", "tk-pa-label", "Final Prompt"), this.dom.copy);
-    final.append(finalHeader, this.textarea("approved_prompt", "编辑成功后的 Prompt 会显示在这里", 4, true));
+    this.dom.finalPromptState = element("div", "tk-pa-note");
+    this.dom.finalPromptState.setAttribute("role", "status");
+    this.dom.finalPromptState.hidden = true;
+    final.append(finalHeader, this.dom.finalPromptState, this.textarea("approved_prompt", "编辑成功后的 Prompt 会显示在这里", 4, true));
     const execution = element("div", "tk-pa-execution");
     execution.append(field("文字编辑行为", this.select("execution", [["snapshot", "只输出已确认 Prompt"], ["execute", "运行时执行文字指令"]], "文字编辑行为")));
     this.dom.executionHint = element("div", "tk-pa-note");
@@ -328,18 +403,133 @@ export class PromptAgentUI {
     advanced.append(field("本次附加指令", this.textarea("custom_instructions", "补充画面、风格或写法要求", 2)));
     this.dom.locks = element("div", "tk-pa-chips");
     this.dom.scope = element("div", "tk-pa-chips");
-    advanced.append(field("锁定部分", this.dom.locks), field("仅编辑这些部分 · 留空按指令修改，不设默认锁定", this.dom.scope), this.buildReferences(), this.buildPresetEditor(), this.buildInterrogationConfig(), this.buildConfig());
-    creative.append(this.buildGenerationStrategies(), this.buildNativeSettings(), field("当前 Prompt", prompt),
+    advanced.append(field("锁定部分", this.dom.locks), field("仅编辑这些部分 · 留空按指令修改，不设默认锁定", this.dom.scope), this.buildReferences(), this.buildInterrogationConfig());
+    this.buildConfig();
+    creative.append(creationOptions, this.dom.presetHint, this.buildGenerationStrategies(), this.buildNativeSettings(), field("当前 Prompt", prompt),
       element("div", "tk-pa-note", "当前 Prompt 留空时按本次指令创作新稿；明确锁定仍保留。"),
       this.dom.connectionHint, field("你的指令", instruction), this.dom.workflowHint, actions, this.buildNativeProgress(), response);
     this.dom.mode.addEventListener("change", () => this.renderWorkflow());
-    root.append(toolbar, this.dom.presetHint, this.dom.profileHint, tabs, creative, this.buildInterrogation(), this.dom.status, final, execution, advanced);
+    const presetEditor = this.buildPresetEditor();
+    const imagePane = this.buildInterrogation();
+    this.dom.settingsContent = element("div", "tk-pa-settings-content");
+    this.dom.settingsContent.append(toolbar, this.dom.profileHint,
+      this.dom.modelSettings, this.buildAuxiliarySkills(), this.dom.imageSettings, execution, advanced);
+    const tools = element("div", "tk-pa-actions");
+    this.dom.settingsButton = this.button("配置", () => this.openSettings());
+    this.dom.settingsSummary = element("span", "tk-pa-note", "模型、Skill、反推与过滤");
+    tools.append(this.dom.settingsButton, this.dom.settingsSummary);
+    this.dom.modelUsage = element("div", "tk-pa-note");
+    root.append(tabs, tools, this.dom.modelUsage, creative, imagePane, this.dom.status, final);
     this.restoreEditors();
     this.setTab(this.activeTab);
     this.refreshConnections();
     this.updateExecutionHint();
     this.refreshMeta();
     return root;
+  }
+
+  openSettings() {
+    if (!this.dom.settingsDialog) {
+      const dialog = element("dialog", "tk-pa-dialog tk-pa-settings-dialog");
+      dialog.setAttribute("aria-label", "Prompt Agent 配置");
+      const head = element("div", "tk-pa-dialog-head");
+      head.append(element("b", "", "Prompt Agent 配置"), this.button("完成", () => dialog.close()));
+      dialog.append(head, this.dom.settingsContent);
+      dialog.addEventListener("close", () => this.dom.settingsButton.focus?.());
+      for (const type of ["pointerdown", "click", "wheel", "keydown"]) dialog.addEventListener(type, event => event.stopPropagation());
+      document.body.append(dialog);
+      this.dom.settingsDialog = dialog;
+    }
+    this.renderAuxiliarySkills();
+    this.dom.settingsDialog.showModal();
+  }
+
+  openConnectionManager() {
+    if (!this.dom.connectionDialog) {
+      const dialog = element("dialog", "tk-pa-dialog tk-pa-settings-dialog");
+      dialog.setAttribute("aria-label", "连接管理");
+      const head = element("div", "tk-pa-dialog-head");
+      head.append(element("strong", "", "连接管理"), this.button("完成", () => dialog.close()));
+      const content = element("div", "tk-pa-settings-content");
+      content.append(this.dom.providerSettings);
+      dialog.append(head, content);
+      for (const type of ["pointerdown", "click", "wheel", "keydown"]) dialog.addEventListener(type, event => event.stopPropagation());
+      dialog.addEventListener("close", () => this.dom.manageConnection?.focus?.());
+      document.body.append(dialog);
+      this.dom.connectionDialog = dialog;
+    }
+    this.dom.providerSettings.open = true;
+    if (!this.dom.connectionDialog.open) this.dom.connectionDialog.showModal();
+  }
+
+  openPresetEditor() {
+    if (!this.dom.presetDialog) {
+      const dialog = element("dialog", "tk-pa-dialog tk-pa-settings-dialog");
+      const head = element("div", "tk-pa-dialog-head");
+      head.append(element("strong", "", "创作预设 · 查看与编辑"), this.button("完成", () => dialog.close()));
+      const content = element("div", "tk-pa-settings-content");
+      content.append(this.dom.presetEditor);
+      dialog.append(head, content);
+      for (const type of ["pointerdown", "pointerup", "click", "dblclick", "wheel", "keydown"]) dialog.addEventListener(type, event => event.stopPropagation());
+      dialog.addEventListener("close", () => this.dom.editPreset?.focus?.());
+      document.body.append(dialog);
+      this.dom.presetDialog = dialog;
+    }
+    this.loadPresetEditor();
+    this.dom.presetEditor.hidden = false;
+    this.dom.presetEditor.open = true;
+    if (!this.dom.presetDialog.open) this.dom.presetDialog.showModal();
+  }
+
+  buildTagFilters() {
+    const wrap = detail("标签过滤与角色检索");
+    this.dom.filters = {};
+    for (const [key, title, fallback] of [["watermarks", "过滤水印与署名", true], ["text", "过滤画面文字（关闭则保留文字）", false], ["quality", "过滤质量元词", false], ["artist", "过滤画师标签", false]]) {
+      const input = element("input"); input.type = "checkbox";
+      input.checked = this.interrogationOptions().tag_filters?.[key] ?? fallback;
+      this.dom.filters[key] = input;
+      input.addEventListener("change", () => this.writeExpansionOption("tag_filters", {
+        ...this.interrogationOptions().tag_filters, [key]: input.checked,
+      }));
+      wrap.append(field(title, input));
+    }
+    wrap.append(element("div", "tk-pa-note", "角色替换可选：直接在扩写要求写出换谁／加入谁，LLM 会自动查询本地词库与 AnimaDex；未要求就不替换，无需在设置里填写。"));
+    return wrap;
+  }
+
+  buildAuxiliarySkills() {
+    const wrap = detail("辅助 Skill · 可多选");
+    wrap.append(element("div", "tk-pa-note", "上方主 Skill 决定输出格式；最多叠加 4 个辅助 Skill。辅助规则不能改变主格式。"));
+    this.dom.auxiliarySkills = element("div", "tk-pa-dialog-list");
+    wrap.append(this.dom.auxiliarySkills);
+    return wrap;
+  }
+
+  renderAuxiliarySkills() {
+    if (!this.dom.auxiliarySkills) return;
+    const picked = new Set(this.interrogationOptions().auxiliary_skills || []);
+    this.dom.auxiliarySkills.replaceChildren();
+    for (const item of this.meta.skills || []) {
+      if (item.source === "builtin" || item.id === this.selectedSkillId() || item.id === "dsh:moss-image-prompt-enhancer") continue;
+      const input = element("input"); input.type = "checkbox"; input.checked = picked.has(item.id);
+      input.addEventListener("change", () => {
+        if (input.checked && picked.size >= 4) { input.checked = false; this.status("最多选择 4 个辅助 Skill。", true); return; }
+        if (input.checked) picked.add(item.id); else picked.delete(item.id);
+        this.writeExpansionOption("auxiliary_skills", [...picked]);
+      });
+      const row = element("label", "tk-pa-skill-row");
+      row.append(input, element("span", "tk-pa-skill-name", item.label || item.id));
+      this.dom.auxiliarySkills.append(row);
+    }
+  }
+
+  async loadVisionModels() {
+    const source = this.dom.expansion.vision_provider.value;
+    const payload = await this.operation(() => this.fetch("/vision-models", { source }), "模型列表已读取；未知能力的模型需要自行确认是否支持图片。");
+    if (!payload || source !== this.dom.expansion.vision_provider.value) return;
+    this.dom.visionModels.replaceChildren(option("", "选择模型（留空跟随默认）"), ...payload.models.map(item => option(item.id, item.id + (item.vision === true ? " · 支持图片" : item.vision === false ? " · 仅文字" : " · 图片能力未知"))));
+    // Text-only models remain selectable for creation; catalog labels disclose image capability.
+    this.updateModelHint();
   }
 
   setTab(id) {
@@ -353,7 +543,7 @@ export class PromptAgentUI {
     }
     if (this.dom.creative) this.dom.creative.hidden = this.activeTab !== "create";
     if (this.dom.interrogate) this.dom.interrogate.hidden = this.activeTab !== "interrogate";
-    const fields = [this.dom.mode?.parentElement, this.dom.preset?.parentElement, this.dom.presetHint];
+    const fields = [this.dom.mode?.parentElement, this.dom.preset?.parentElement, this.dom.presetHint, this.dom.presetEditor];
     for (const item of fields) if (item) item.hidden = this.activeTab !== "create";
     this.sizeSync?.request?.();
   }
@@ -427,35 +617,61 @@ export class PromptAgentUI {
     this.dom.formattedInterrogation.rows = 3;
     this.dom.formattedInterrogation.placeholder = "反推后按当前模型 Profile 整理";
     this.dom.interrogationMessage = element("div", "tk-pa-note");
+    this.dom.filterReport = element("div", "tk-pa-note");
     const accept = element("div", "tk-pa-actions");
     this.dom.replaceInterrogation = this.button("替换当前 Prompt", () => this.acceptInterrogation("replace"));
     this.dom.appendInterrogation = this.button("加入当前内容", () => this.acceptInterrogation("append"));
     accept.append(this.dom.replaceInterrogation, this.dom.appendInterrogation);
     const auto = this.select("interrogation_action", [["none", "继续执行文字指令"], ["replace", "反推并替换 Prompt"], ["append", "反推并加入当前内容"]], "节点运行方式");
-    auto.addEventListener("change", () => this.updateExecutionHint());
-    pane.append(drop, this.dom.imageConnectionHint, field("反推来源", source), this.dom.sourceHint,
-      this.dom.interrogationConfig.wd14_model_field, this.dom.interrogationConfig.threshold_fieldset, run, raw, expansion,
-      field("候选 Prompt · 确认后更新 Final Prompt", this.dom.formattedInterrogation), this.dom.interrogationMessage, accept,
-      field("节点运行方式 · 选择反推后，排队会直接处理 IMAGE 并输出 Prompt", auto));
+    auto.addEventListener("change", () => { this.node.properties.tkPromptAgentImageConfigured = true; this.updateExecutionHint(); });
+    const upload = detail("手动上传参考图片");
+    upload.append(drop, this.dom.imageConnectionHint);
+    const debug = detail("手动调试与原始结果");
+    debug.append(run, raw, this.dom.filterReport, field("候选 Prompt · 确认后更新 Final Prompt", this.dom.formattedInterrogation), this.dom.interrogationMessage, accept);
+    this.dom.imageSettings.append(upload, field("反推来源", source), this.dom.sourceHint,
+      this.dom.interrogationConfig.wd14_model_field, this.dom.interrogationConfig.threshold_fieldset,
+      field("节点运行方式", auto), this.buildTagFilters(), debug);
+    pane.append(expansion);
     return pane;
   }
 
   buildImageExpansion() {
     const wrap = element("div", "tk-pa-field");
-    wrap.append(element("div", "tk-pa-note", "看图扩写同时读取最近反推的原图和标签；保留识别出的角色名、作品名及人物特征，K2 也会保留角色身份。图片发送给所选看图模型。"));
+    this.dom.imageSettings.append(element("div", "tk-pa-note", "看图扩写读取原图与过滤后的标签。图片发送给所选模型；配置即时保存到工作流。"));
     this.dom.expansion = {};
+    this.dom.modelSettings = element("section", "tk-pa-field");
+    this.dom.modelSettings.append(element("div", "tk-pa-label", "本节点模型"), element("div", "tk-pa-note", "创作、角色指令解析和看图扩写共用此连接与模型。更改即时保存，下次请求生效；不会修改其他节点。"));
     for (const [name, label, choices] of [
       ["expansion_mode", "扩写方式", [["faithful", "忠实描述 · 还原原图"], ["creative", "创作扩写 · 按指令调整"]]],
-      ["vision_provider", "看图模型来源", [["current", "当前模型配置"], ["workbuddy", "WorkBuddy"], ["dsh-workbuddy", "DSH 实时 · WorkBuddy"], ["dsh-opencode", "DSH 实时 · OpenCode"]]],
+      ["vision_provider", "连接来源", [["current", "已保存的默认连接"], ["manual", "本机独立连接"], ["workbuddy", "WorkBuddy"], ["dsh-active", "DSH 当前连接"], ["dsh-workbuddy", "DSH 实时 · WorkBuddy"], ["dsh-opencode", "DSH 实时 · OpenCode"]]],
     ]) {
       const control = element("select", "tk-pa-input");
       control.append(...choices.map(([id, title]) => option(id, title)));
       this.dom.expansion[name] = control;
-      control.addEventListener("change", () => this.writeExpansionOption(name, control.value));
-      wrap.append(field(label, control));
+      control.addEventListener("change", () => {
+        this.writeExpansionOption(name, control.value);
+        if (name === "vision_provider") {
+          this.writeExpansionOption("vision_model", "");
+          if (this.dom.expansion.vision_model) this.dom.expansion.vision_model.value = "";
+          this.dom.visionModels?.replaceChildren(option("", "读取该连接的模型列表"));
+        }
+      });
+      (name === "vision_provider" ? this.dom.modelSettings : this.dom.imageSettings).append(field(label, control));
     }
+    const model = element("input", "tk-pa-input");
+    model.placeholder = "留空跟随连接默认模型；也可填写模型 ID";
+    this.dom.expansion.vision_model = model;
+    for (const event of ["input", "change"]) model.addEventListener(event, () => this.writeExpansionOption("vision_model", model.value.trim()));
+    const models = element("select", "tk-pa-input");
+    models.append(option("", "读取模型列表后选择"));
+    this.dom.visionModels = models;
+    models.addEventListener("change", () => { model.value = models.value; this.writeExpansionOption("vision_model", model.value); });
+    this.dom.loadVisionModels = this.button("读取该连接的模型", () => this.loadVisionModels());
+    this.dom.modelHint = element("div", "tk-pa-note");
+    this.dom.manageConnection = this.button("管理连接与请求参数", () => this.openConnectionManager());
+    this.dom.modelSettings.append(field("模型 ID · 留空使用连接默认模型", model), models, this.dom.loadVisionModels, this.dom.modelHint, this.dom.manageConnection);
     const instruction = element("textarea", "tk-pa-input tk-pa-textarea");
-    instruction.rows = 2;
+    instruction.rows = 3;
     instruction.placeholder = "可留空。例如：保留角色与动作，加强电影感。";
     this.dom.expansion.expansion_instruction = instruction;
     instruction.addEventListener("input", () => this.writeExpansionOption("expansion_instruction", instruction.value));
@@ -473,14 +689,24 @@ export class PromptAgentUI {
     const actions = element("div", "tk-pa-actions");
     this.dom.expandInterrogation = this.button("看图扩写", () => this.expandInterrogation(), "tk-pa-primary");
     actions.append(this.dom.expandInterrogation);
-    wrap.append(actions);
+    this.dom.imageSettings.append(actions);
     return wrap;
   }
 
   writeExpansionOption(name, value) {
+    const previous = this.interrogationOptions()[name];
     this.write("interrogation_options", JSON.stringify({ ...this.interrogationOptions(), [name]: value }));
     this.invalidate();
     // Changing expansion settings reuses the observation; it never reruns the tagger.
+    if (name === "vision_model" || name === "vision_provider") {
+      this.renderInterrogationResult();
+      this.updateModelHint();
+      if (normalizeGenerationStrategy(this.value("generation_strategy")) === "native") this.renderNativeMeta();
+      if (previous !== value) {
+        this.markFinalPromptState("模型设置已切换；下方是上次保存的结果，尚未生成新结果。请重新运行节点。");
+        this.status(this.graphExecutionActive ? "模型设置已改变；正在执行的请求仍使用原设置，下次执行生效。" : "模型设置已切换，重新运行节点后生成新结果。");
+      }
+    }
     this.updateActionState();
   }
 
@@ -526,7 +752,13 @@ export class PromptAgentUI {
   }
 
   buildPresetEditor() {
-    const wrap = detail("编辑创作预设");
+    const wrap = detail("创作预设 · 查看与修改");
+    this.dom.presetEditor = wrap;
+    this.dom.presetEditorNote = element("div", "tk-pa-note");
+    this.dom.presetEffective = element("textarea", "tk-pa-input tk-pa-textarea");
+    this.dom.presetEffective.rows = 5;
+    this.dom.presetEffective.readOnly = true;
+    this.dom.presetEffective.setAttribute("aria-label", "当前生效的基础创作规则");
     const name = element("input", "tk-pa-input");
     name.type = "text";
     name.placeholder = "预设名称";
@@ -544,7 +776,7 @@ export class PromptAgentUI {
     this.dom.deletePreset = this.button("删除预设", () => this.deletePreset());
     this.dom.preset.addEventListener("change", () => this.loadPresetEditor());
     actions.append(this.dom.savePreset, this.dom.updatePreset, this.dom.deletePreset);
-    wrap.append(element("div", "tk-pa-note", "只改变基础创作指令，不能覆盖模型规则、协议或响应格式。"), field("名称", name), field("使用方式", mode), field("基础创作指令", instructions), actions);
+    wrap.append(this.dom.presetEditorNote, field("当前生效的基础创作规则 · 只读", this.dom.presetEffective), field("我的预设名称", name), field("规则如何生效", mode), field("编辑预设规则 · 保存后生效", instructions), actions);
     return wrap;
   }
 
@@ -567,9 +799,9 @@ export class PromptAgentUI {
     this.dom.nativeSettings = wrap;
     this.dom.nativeHint = element("div", "tk-pa-note");
     this.dom.nativeConnection = this.button("选择 DSH 模型连接", () => {
-      if (this.dom.providerSettings) this.dom.providerSettings.open = true;
-      this.dom.providerSelect?.focus?.();
-      this.status("在模型连接来源中选用 DSH 当前模型、WorkBuddy 或 OpenCode，然后点击‘使用此连接’。");
+      if (!this.dom.settingsDialog?.open) this.openSettings();
+      this.dom.expansion?.vision_provider?.focus?.();
+      this.status("在‘本节点模型’中选择 DSH 当前连接、WorkBuddy 或 OpenCode，即时生效于下次请求。");
     });
     const row = element("div", "tk-pa-native-options");
     this.dom.nativeWorkspace = element("select", "tk-pa-input");
@@ -600,7 +832,7 @@ export class PromptAgentUI {
     this.dom.nativeProgressLabel = element("span", "tk-pa-label", "DSH 原生");
     this.dom.cancelNative = this.button("取消本次执行", () => {
       this.invalidate();
-      this.status("已请求取消本次 DSH 执行，保留已确认的 Final Prompt。");
+      this.status("已请求取消本次执行，保留已确认的 Final Prompt。");
     });
     this.dom.cancelNative.dataset.keepEnabled = "true";
     this.dom.nativeProcessLink = element("a", "tk-pa-native-link", "查看 DSH 过程");
@@ -622,7 +854,7 @@ export class PromptAgentUI {
   async refreshNativeMeta() {
     const version = ++this.nativeMetaVersion;
     try {
-      const payload = await this.fetch("/native/meta");
+      const payload = await this.fetch("/native/meta?source=" + encodeURIComponent(this.selectedProviderSource()));
       if (this.disposed || version !== this.nativeMetaVersion) return;
       this.nativeMeta = payload;
       this.renderNativeMeta();
@@ -651,13 +883,13 @@ export class PromptAgentUI {
       this.dom.nativePreset.value = preset;
       this.dom.nativeSkill.value = String(info.skill || "");
     }
-    const nativeSource = String(this.meta.provider_source || "manual").startsWith("dsh-");
+    const nativeSource = this.selectedProviderSource().startsWith("dsh-");
     this.dom.nativeConnection.hidden = nativeSource;
     this.dom.nativeHint.textContent = !nativeSource
       ? "先选用一个 DSH 模型连接。原生执行使用它的模型，不会自动切换账号。"
       : !info ? "正在读取 DSH 工作目录和原生预设…"
         : info.error ? String(info.error)
-          : [info.provider, info.model].filter(Boolean).join(" · ") || "使用已选 DSH 模型连接。";
+          : [this.selectedProviderSource(), this.modelSelection().model || "连接默认模型"].join(" · ");
     if (!nativeSource) this.dom.nativeSettings.open = true;
     this.updateActionState();
   }
@@ -672,19 +904,14 @@ export class PromptAgentUI {
   }
 
   buildConfig() {
-    const wrap = detail("模型连接与请求设置");
+    const wrap = detail("连接管理 · 地址、凭据与请求参数");
     this.dom.providerSettings = wrap;
     this.dom.config = {};
-    const providerRow = element("div", "tk-pa-provider-row");
-    this.dom.providerSelect = element("select", "tk-pa-input");
-    this.dom.providerSelect.setAttribute("aria-label", "模型连接来源");
-    this.dom.providerSelect.addEventListener("change", () => this.updateActionState());
-    this.dom.useProvider = this.button("使用此连接", () => this.activateProvider());
-    providerRow.append(field("模型连接来源", this.dom.providerSelect), this.dom.useProvider);
+    wrap.append(element("div", "tk-pa-note", "这里维护本机独立连接的地址与凭据。DSH 连接由 DSH 管理；当前使用的连接和模型只在上方‘本节点模型’选择。请求参数适用于本机 API 调用。"));
     this.dom.providerHint = element("div", "tk-pa-note");
     this.dom.providerError = element("div", "tk-pa-status tk-pa-provider-error");
     this.dom.providerError.setAttribute("role", "alert");
-    wrap.append(providerRow, this.dom.providerHint, this.dom.providerError);
+    wrap.append(this.dom.providerHint, this.dom.providerError);
     const input = (name, label, type = "text") => {
       const control = element("input", "tk-pa-input");
       control.type = type;
@@ -694,7 +921,7 @@ export class PromptAgentUI {
       return control;
     };
     input("base_url", "Base URL");
-    input("model", "模型名称");
+
     const key = input("api_key", "API Key · 留空保留已有 Key", "password");
     key.autocomplete = "new-password";
     this.dom.keyStatus = element("div", "tk-pa-note");
@@ -718,7 +945,7 @@ export class PromptAgentUI {
     responseMode.append(option("json_schema", "JSON Schema"), option("json_object", "JSON Object"), option("text", "兼容文本"));
     this.dom.config.response_mode = responseMode;
     tuning.append(field("响应模式", responseMode));
-    for (const [name, label] of [["stream", "流式传输"], ["disable_thinking", "关闭模型思考输出"]]) {
+    for (const [name, label] of [["stream", "流式传输"], ["disable_thinking", "减少模型思考（支持时关闭）"]]) {
       const control = element("input");
       control.type = "checkbox";
       this.dom.config[name] = control;
@@ -726,12 +953,13 @@ export class PromptAgentUI {
       check.prepend(control);
       tuning.append(check);
     }
+    tuning.append(element("div", "tk-pa-note", "Grok 4.5／4.6／4.7 不能完全关闭思考；勾选后使用低强度，未勾选跟随服务默认。"));
     for (const [name, label] of [["proxy", "代理 URL · 留空自动检测"], ["api_key_env", "API Key 环境变量名称"]]) {
       const control = element("input", "tk-pa-input");
       this.dom.config[name] = control;
       tuning.append(field(label, control));
     }
-    this.dom.saveConfig = this.button("保存 API 配置", () => this.saveConfig());
+    this.dom.saveConfig = this.button("保存连接与请求参数", () => this.saveConfig());
     wrap.append(tuning, this.dom.saveConfig);
     return wrap;
   }
@@ -742,6 +970,7 @@ export class PromptAgentUI {
 
   invalidate() {
     this.requestVersion++;
+    if (this.activeTask) void this.cancelTask(this.activeTask);
     if (this.nativeOperation) void this.cancelNativeRun(this.nativeOperation);
   }
 
@@ -844,13 +1073,13 @@ export class PromptAgentUI {
 
   setBusy(value) {
     this.busy = value;
-    if (this.root) for (const control of this.root.querySelectorAll("button, input, select, textarea")) {
+    if (this.root) for (const control of [...this.root.querySelectorAll("button, input, select, textarea"), ...(this.dom.settingsContent?.querySelectorAll("button, input, select, textarea") || []), ...(this.dom.presetDialog?.querySelectorAll("button, input, select, textarea") || []), ...(this.dom.connectionDialog?.querySelectorAll("button, input, select, textarea") || [])]) {
       if (control.dataset.keepEnabled === "true") continue;
       if (value && control.dataset.nativeStrategy === "true" && normalizeGenerationStrategy(this.value("generation_strategy")) === "native") continue;
       control.disabled = value;
     }
     if (this.dom.send) this.dom.send.textContent = value ? "处理中…" : "发送编辑";
-    if (this.dom.cancelNative) this.dom.cancelNative.disabled = !this.nativeOperation || this.nativeOperation.cancelled;
+    if (this.dom.cancelNative) this.dom.cancelNative.disabled = !this.activeTask && (!this.nativeOperation || this.nativeOperation.cancelled);
     if (!value) this.updateActionState();
   }
 
@@ -863,10 +1092,8 @@ export class PromptAgentUI {
     if (this.dom.updatePreset) this.dom.updatePreset.disabled = !editable;
     if (this.dom.deletePreset) this.dom.deletePreset.disabled = !editable;
     if (this.dom.copy) this.dom.copy.disabled = !String(this.value("approved_prompt"));
-    if (this.dom.providerSelect) this.dom.providerSelect.disabled = false;
-    if (this.dom.useProvider) this.dom.useProvider.disabled = !this.dom.providerSelect?.value;
     if (this.dom.send && normalizeGenerationStrategy(this.value("generation_strategy")) === "native") {
-      this.dom.send.disabled = !String(this.meta.provider_source || "manual").startsWith("dsh-") || this.nativeMeta?.available === false;
+      this.dom.send.disabled = !this.selectedProviderSource().startsWith("dsh-") || this.nativeMeta?.available === false;
     } else if (this.dom.send) this.dom.send.disabled = false;
     this.updateProviderState();
     const image = parseImageDescriptor(this.value("interrogation_image"));
@@ -879,27 +1106,20 @@ export class PromptAgentUI {
   }
 
   updateProviderState() {
-    const native = String(this.meta.provider_source || "manual").startsWith("dsh-");
     for (const name of CONNECTION_FIELDS) {
       const control = this.dom.config?.[name];
       if (!control) continue;
-      control.disabled = this.busy || native;
-      if (control.type !== "checkbox") control.readOnly = native;
+      control.disabled = this.busy;
+      if (control.type !== "checkbox") control.readOnly = false;
     }
-    const nativeExecution = normalizeGenerationStrategy(this.value("generation_strategy")) === "native";
-    if (this.dom.providerHint) this.dom.providerHint.textContent = native
-      ? nativeExecution ? "实时使用 DSH 模型连接，在原生会话中执行 skill 与工具；模型、地址与凭据由 DSH 管理。"
-        : "实时读取 DSH 的模型连接；在 DSH 修改模型、地址与凭据。快速直写与按流程创作只继承连接，不执行 DSH skill、工具或 MCP。"
-      : "本机独立保存模型连接；也可选择实时读取 DSH 的连接。";
-    const error = String(this.meta.provider_error || "");
+    if (this.dom.providerHint) this.dom.providerHint.textContent = "本机连接的修改会影响使用此连接的节点。DSH 地址和 Key 请在 DSH 管理。";
+    const error = this.modelSelection().source === "current" ? String(this.meta.provider_error || "") : "";
     if (this.dom.providerError) {
       this.dom.providerError.textContent = error;
       this.dom.providerError.hidden = !error;
     }
-    if (this.dom.keyStatus) this.dom.keyStatus.textContent = native
-      ? error ? "DSH 连接不可用：请修正 DSH 配置或切回本机独立设置。"
-        : this.meta.config?.api_key_set ? "使用 DSH 凭据 · 不会回传到浏览器或复制到节点设置" : "DSH 尚未提供可用凭据"
-      : this.meta.config?.api_key_set ? "本机已配置 Key · 不会回传到浏览器或工作流" : "尚未配置 Key · 可使用环境变量";
+    if (this.dom.keyStatus) this.dom.keyStatus.textContent = (this.meta.manual_config || this.meta.config)?.api_key_set
+      ? "本机已配置 Key · 不会回传到浏览器或工作流" : "本机尚未配置 Key · 可使用环境变量";
   }
 
   async fetch(path, body, method = body === undefined ? "GET" : "POST", { controller = new AbortController(), track = true } = {}) {
@@ -909,6 +1129,9 @@ export class PromptAgentUI {
     try {
       const response = await api.fetchApi(`${API_ROOT}${path}`, {
         method, cache: "no-store", signal: controller.signal,
+        // Generation already has a bounded provider/native deadline. The host
+        // defaults to 60s and would abort the browser while paid work continues.
+        ...((method !== "GET" && (["/edit", "/interrogate", "/expand-interrogation"].includes(path) || /^\/session\/[^/]+\/retry$/.test(path))) ? { timeoutMs: null } : {}),
         ...(body !== undefined ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
       });
       const payload = await response.json().catch(() => ({}));
@@ -918,7 +1141,55 @@ export class PromptAgentUI {
         throw error;
       }
       return payload;
+    } catch (error) {
+      if (error.name === "TimeoutError" || error.message === "Fetch timeout") {
+        throw new Error("等待 ComfyUI 本机接口响应超时；不能据此判断模型请求是否失败。未自动重发，请先检查工作流队列状态。", { cause: error });
+      }
+      throw error;
     } finally { this.controllers.delete(controller); }
+  }
+
+  async cancelTask(task) {
+    if (task.cancelled) return;
+    task.cancelled = true;
+    task.controller.abort();
+    try { await this.fetch(`/tasks/${encodeURIComponent(task.id)}/cancel`, { session_id: task.session }, "POST", { track: false }); }
+    catch (error) { if (!this.disposed) this.status(`取消请求未确认：${error.message}；请检查任务状态，勿重复提交。`, true); }
+  }
+
+  async runTask(path, body, { controller = new AbortController() } = {}) {
+    const retry = /^\/session\/[^/]+\/retry$/.test(path);
+    const request = retry ? { ...body, session_id: this.session } : body;
+    const ticket = await this.fetch("/tasks", { kind: retry ? "retry" : path.slice(1), request }, "POST", { controller });
+    if (!ticket.task_id) throw new Error("服务未返回任务编号；未自动重发，请刷新后检查服务版本。");
+    const task = { id: ticket.task_id, session: ticket.session_id, controller, cancelled: false };
+    this.activeTask = task;
+    this.dom.nativeProgress.hidden = false;
+    this.dom.nativeProgressLabel.textContent = "本轮任务 " + task.id.slice(0, 8);
+    this.dom.cancelNative.hidden = false;
+    this.dom.cancelNative.disabled = false;
+    try {
+      while (true) {
+        if (controller.signal.aborted || task.cancelled) throw new DOMException("Cancelled", "AbortError");
+        const state = await this.fetch(`/tasks/${encodeURIComponent(task.id)}?session_id=${encodeURIComponent(task.session)}`, undefined, "GET", { controller });
+        if (controller.signal.aborted || task.cancelled) throw new DOMException("Cancelled", "AbortError");
+        this.dom.nativeProgressMessage.textContent = `模型：${state.model || "—"} · 阶段：${state.phase || state.status} · ${state.elapsed || 0} 秒`;
+        if (state.status === "completed") return state.result;
+        if (state.status === "failed") {
+          const error = new Error(state.error || "本轮任务失败，未确认结果。");
+          error.status = state.error_status; throw error;
+        }
+        if (state.status === "cancelled") throw new DOMException("Cancelled", "AbortError");
+        await new Promise((resolve, reject) => {
+          const abort = () => { clearTimeout(timer); reject(new DOMException("Cancelled", "AbortError")); };
+          const timer = setTimeout(() => { controller.signal.removeEventListener("abort", abort); resolve(); }, 500);
+          controller.signal.addEventListener("abort", abort, { once: true });
+        });
+      }
+    } finally {
+      if (this.activeTask === task) this.activeTask = null;
+      if (!this.nativeOperation) { this.dom.nativeProgress.hidden = true; this.dom.cancelNative.hidden = true; }
+    }
   }
 
   async refreshMeta({ quiet = false } = {}) {
@@ -933,17 +1204,138 @@ export class PromptAgentUI {
     } catch (error) { if (!this.disposed) this.status(`无法加载 Agent 配置：${error.message}`, true); }
   }
 
+  loadAddedSkills() {
+    try {
+      const raw = localStorage.getItem("tkPromptAgentAddedSkills");
+      const list = raw ? JSON.parse(raw) : [];
+      return Array.isArray(list) ? list.filter((id) => typeof id === "string" && id) : [];
+    } catch { return []; }
+  }
+
+  saveAddedSkills(ids) {
+    this.addedSkills = [...new Set(ids.filter((id) => typeof id === "string" && id))];
+    try { localStorage.setItem("tkPromptAgentAddedSkills", JSON.stringify(this.addedSkills)); } catch { /* 隐私模式下不可写，本次会话内仍生效 */ }
+  }
+
+  /** 当前下拉应显示的 skill：内置始终在，DSH 的只显示已添加的；当前值永远保留。 */
+  visibleSkills() {
+    const all = Array.isArray(this.meta.skills) ? this.meta.skills : [];
+    const builtin = all.filter((item) => item.source === "builtin");
+    const added = all.filter((item) => item.source !== "builtin" && this.addedSkills.includes(item.id));
+    const visible = [...builtin, ...added];
+    const current = this.selectedSkillId() || String(this.value("profile", "") || "").trim();
+    const resolved = current && !current.includes(":") ? `builtin:${current}` : current;
+    if (resolved && !visible.some((item) => item.id === resolved)) {
+      const found = all.find((item) => item.id === resolved);
+      if (found) visible.push(found);
+    }
+    return visible;
+  }
+
+  /**
+   * 扩写 skill 存在 interrogation_options.expansion_skill 里。
+   * 它是自由 STRING，不像 profile 那样受 COMBO 校验 —— 把 dsh:xxx 写进 profile
+   * 会让 ComfyUI 直接判「输入值不可用」并拒绝运行工作流（实测踩过）。
+   */
+  selectedSkillId() {
+    const id = this.interrogationOptions().expansion_skill;
+    return typeof id === "string" ? id.trim() : "";
+  }
+
+  writeSelectedSkill(id) {
+    // Older servers expose profiles only; keep their legal combo values.
+    if (!Array.isArray(this.meta.skills) && !String(id).includes(":")) {
+      this.write("profile", id);
+      return;
+    }
+    const skill = (this.meta.skills || []).find((item) => item.id === id);
+    const options = { ...this.interrogationOptions(), expansion_skill: id || "" };
+    this.write("interrogation_options", JSON.stringify(options));
+    // profile 由 skill 的 style 推导：标签串 → anima，自然语言 → krea2，始终是合法 COMBO 值
+    const profileId = skill ? (skill.style === "tags" ? "anima" : "krea2") : "";
+    if (profileId && this.value("profile") !== profileId) this.write("profile", profileId);
+  }
+
+  /** 管理面板：内置 skill 恒可用，DSH 的勾选后才进下拉（否则上百个 skill 会撑爆下拉）。 */
+  openSkillManager() {
+    const all = (Array.isArray(this.meta.skills) ? this.meta.skills : []).filter((item) => item.source !== "builtin");
+    const picked = new Set(this.addedSkills);
+    const dialog = document.createElement("dialog");
+    dialog.className = "tk-pa-dialog";
+
+    const head = element("div", "tk-pa-dialog-head");
+    head.append(element("b", "", `选择要添加的 Skill（共 ${all.length} 个）`), element("span", "", "内置基础 skill 始终可用"));
+    const search = element("input", "tk-pa-dialog-search");
+    search.placeholder = "搜索名称或描述，例如 moss";
+    const list = element("div", "tk-pa-dialog-list");
+    const actions = element("div", "tk-pa-dialog-actions");
+    const cancel = element("button", "tk-pa-button", "取消");
+    cancel.type = "button";
+    const save = element("button", "tk-pa-button tk-pa-dialog-save", "保存");
+    save.type = "button";
+    actions.append(cancel, save);
+    dialog.append(head, search, list, actions);
+
+    const renderList = (keyword = "") => {
+      const key = keyword.trim().toLowerCase();
+      const rows = all.filter((item) => !key || `${item.id} ${item.label} ${item.description || ""}`.toLowerCase().includes(key));
+      list.replaceChildren();
+      if (!rows.length) { list.append(element("div", "tk-pa-note", "没有匹配的 skill")); return; }
+      for (const item of rows) {
+        const row = element("label", "tk-pa-skill-row");
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = picked.has(item.id);
+        box.addEventListener("change", () => { if (box.checked) picked.add(item.id); else picked.delete(item.id); });
+        const text = element("span", "tk-pa-skill-name", item.label || item.id);
+        text.title = item.description || item.id;
+        row.append(box, text);
+        list.append(row);
+      }
+    };
+    renderList();
+    search.addEventListener("input", () => renderList(search.value));
+    cancel.addEventListener("click", () => dialog.close());
+    save.addEventListener("click", () => {
+      this.saveAddedSkills([...picked]);
+      dialog.close();
+      this.renderMeta();
+      this.status(`已添加 ${picked.size} 个 Skill`);
+    });
+    dialog.addEventListener("close", () => dialog.remove());
+    document.body.append(dialog);
+    dialog.showModal();
+    search.focus();
+  }
+
+  restoreSkillSelection() {
+    if (!this.dom.profile) return;
+    if (!Array.isArray(this.meta.skills)) {
+      this.dom.profile.replaceChildren(...(this.meta.profiles || []).map(item => option(item.id, item.label || item.id)));
+      this.dom.profile.value = String(this.value("profile"));
+      return;
+    }
+    const skills = this.visibleSkills();
+    const stored = this.selectedSkillId();
+    const profile = String(this.value("profile", "") || "").trim();
+    const legacy = profile.includes(":") ? profile : `builtin:${profile}`;
+    const active = stored || (skills.some(item => item.id === legacy) ? legacy : (skills[0]?.id || ""));
+    this.dom.profile.replaceChildren(...skills.map(item => option(item.id, item.label || item.id)));
+    if (active && !skills.some(item => item.id === active)) this.dom.profile.append(option(active, `${active}（不可用）`));
+    this.dom.profile.append(option(MANAGE_SKILLS_VALUE, "＋ 管理 Skill…"));
+    this.dom.profile.value = active;
+    if (active && !stored) this.writeSelectedSkill(active);
+  }
+
   renderMeta() {
-    const profile = String(this.value("profile", "anima"));
     if (!this.node.properties?.tkPromptAgentDefaultApplied) {
       if ((!this.value("preset") || this.value("preset") === "default") && !String(this.value("current_prompt")).trim() && !this.history.length && this.meta.default_preset
         && this.meta.presets.some((entry) => entry.id === this.meta.default_preset)) this.write("preset", this.meta.default_preset);
       this.node.properties = { ...(this.node.properties || {}), tkPromptAgentDefaultApplied: true };
     }
     const preset = String(this.value("preset"));
-    this.dom.profile.replaceChildren(...this.meta.profiles.map((item) => option(item.id, item.label || item.id)));
-    if (!this.meta.profiles.some((item) => item.id === profile)) this.dom.profile.append(option(profile, `${profile}（不可用）`));
-    this.dom.profile.value = profile;
+    this.restoreSkillSelection();
+    this.renderAuxiliarySkills();
     const defaultPreset = this.meta.presets.find((item) => item.id === "default");
     const choices = this.meta.presets.map((item) => option(item.id, item.name || item.id));
     if (!preset && defaultPreset) {
@@ -951,23 +1343,22 @@ export class PromptAgentUI {
     } else this.dom.preset.replaceChildren(...choices);
     if (preset && !this.meta.presets.some((item) => item.id === preset)) this.dom.preset.append(option(preset, "已保存预设（不可用）"));
     this.dom.preset.value = preset;
-    if (this.dom.providerSelect) {
-      const nativeChoices = (this.meta.native_providers || []).map((item) => option(item.id,
-        [item.name || item.id, item.live ? "实时" : "", item.model].filter(Boolean).join(" · ")));
-      this.dom.providerSelect.replaceChildren(option("manual", "本机独立设置"), ...nativeChoices,
-        ...(this.meta.provider_presets || []).map((item) => option(item.id, item.name || item.id)));
-      const source = this.meta.provider_source || this.meta.active_provider || "manual";
-      if (!Array.from(this.dom.providerSelect.children).some((item) => item.value === source)) {
-        this.dom.providerSelect.append(option(source, `${source}（当前来源不可用）`));
-      }
-      this.dom.providerSelect.value = source;
+    const picker = this.dom.expansion?.vision_provider;
+    if (picker) {
+      const selected = this.interrogationOptions().vision_provider || "current";
+      const nativeChoices = (this.meta.native_providers || []).map(item => option(item.id, [item.name || item.id, item.model].filter(Boolean).join(" · ")));
+      picker.replaceChildren(option("current", "已保存的默认连接 · " + (this.meta.provider_source || "manual") + " · " + (this.meta.config?.model || "未配置")), option("manual", "本机独立连接"), ...nativeChoices,
+        ...(this.meta.provider_presets || []).map(item => option(item.id, item.name || item.id)));
+      if (!Array.from(picker.children).some(item => item.value === selected)) picker.append(option(selected, selected + "（当前连接不可用）"));
+      picker.value = selected;
     }
+    this.updateModelHint();
     this.renderSections();
     this.loadPresetEditor();
     this.updatePresetHint();
     this.updateProfileHint();
-    const config = this.meta.config || {};
-    const failedNative = String(this.meta.provider_source || "").startsWith("dsh-") && this.meta.provider_error;
+    const config = this.meta.manual_config || this.meta.config || {};
+    const failedNative = false;
     this.dom.referenceMode.value = this.meta.reference_mode || "local";
     for (const [name, control] of Object.entries(this.dom.config || {})) {
       if (name === "api_key" || name === "clear_api_key") continue;
@@ -1025,10 +1416,12 @@ export class PromptAgentUI {
       if (controls[name]) controls[name].value = String(options[name] ?? fallback);
     }
     if (controls.wd14_model && options.model) controls.wd14_model.value = options.model;
-    for (const [name, fallback] of [["expansion_mode", "faithful"], ["vision_provider", "current"], ["expansion_instruction", ""]]) {
+    for (const [name, fallback] of [["expansion_mode", "faithful"], ["vision_provider", "current"], ["expansion_instruction", ""], ["vision_model", ""]]) {
       if (this.dom.expansion?.[name]) this.dom.expansion[name].value = String(options[name] ?? fallback);
     }
     if (this.dom.expansion?.auto_expand) this.dom.expansion.auto_expand.checked = options.auto_expand === true;
+    for (const [key, control] of Object.entries(this.dom.filters || {})) control.checked = options.tag_filters?.[key] ?? (key === "watermarks");
+    if (this.dom.characterQuery) this.dom.characterQuery.value = options.character_query || "";
     if (this.dom.expansion?.preserve_identity) this.dom.expansion.preserve_identity.checked = options.preserve_identity !== false;
   }
 
@@ -1070,12 +1463,28 @@ export class PromptAgentUI {
   renderInterrogationResult() {
     if (!this.dom.rawInterrogation) return;
     const result = this.interrogationResult;
+    if (this.dom.modelUsage) {
+      const usage = result?.model_usage;
+      const options = this.interrogationOptions();
+      const changed = usage && ((options.vision_model && options.vision_model !== usage.requested) ||
+        (usage.source && usage.source !== (options.vision_provider || "current")));
+      const completed = Number.isFinite(usage?.completed_at) ? new Date(usage.completed_at * 1000).toLocaleString() : "时间未记录";
+      this.dom.modelUsage.textContent = usage ? `看图设置：${options.vision_model || "跟随所选连接默认模型"}。${changed ? "设置已更改，需重新运行才生效。" : ""}上次完成：${completed} · 最近一次请求：${usage.requested} · 服务返回：${usage.reported || "未提供模型名"}${usage.protocol ? " · 接口：" + usage.protocol : ""}${usage.reasoning_effort === "low" ? " · 思考：低强度" : ""}${usage.reported && usage.reported !== usage.requested ? "（名称不同，请核对中转映射）" : ""}` : `本节点模型：${options.vision_model || "跟随所选连接默认模型"} · ${options.vision_provider || "默认连接"}`;
+    }
     const tags = Array.isArray(result?.tags) ? result.tags.map((item) => typeof item === "string" ? item : item.tag || item.name || "").filter(Boolean).join(", ") : String(result?.tags || "");
     this.dom.rawInterrogation.value = [result?.caption, tags].filter(Boolean).join("\n\n");
     this.dom.formattedInterrogation.value = result?.formatted_prompt || "";
+    if (this.dom.filterReport) {
+      const report = result?.filter_report;
+      const references = result?.reference_evidence?.characters || [];
+      this.dom.filterReport.textContent = report ? "过滤后保留 " + report.kept.length + " 个标签；移除：" + (report.removed.map(item => item.tag + "（" + item.reason + "）").join("、") || "无") +
+        (references.length ? "；角色资料：" + references.map(item => item.query + " · " + item.source).join("、") : "") : "";
+    }
+    const dimensions = Number.isInteger(result?.layout_width) && Number.isInteger(result?.layout_height)
+      ? ` Layout 画布：${result.layout_width}×${result.layout_height}；下游图像尺寸需一致。` : "";
     this.dom.interrogationMessage.textContent = result?.expansion_error
       ? `看图扩写失败：${result.expansion_error}。原始结果已保留，Final Prompt 未改变。`
-      : result ? String(result.message || "确认候选结果后才会更新 Final Prompt；可继续在创作页修改。") : "反推先生成候选结果，不会自动覆盖当前 Prompt。";
+      : result ? String(result.message || "确认候选结果后才会更新 Final Prompt；可继续在创作页修改。") + dimensions : "反推先生成候选结果，不会自动覆盖当前 Prompt。";
     this.updateActionState();
   }
 
@@ -1105,15 +1514,22 @@ export class PromptAgentUI {
   }
 
   loadPresetEditor() {
-    const preset = this.meta.presets.find((item) => item.id === (this.value("preset") || "default"));
-    if (this.dom.presetName) this.dom.presetName.value = preset?.name || "";
-    if (this.dom.presetMode) this.dom.presetMode.value = preset?.mode === "replace" ? "replace" : "append";
-    if (this.dom.presetInstructions) this.dom.presetInstructions.value = preset?.instructions || "";
+    const preset = this.meta.presets.find(item => item.id === (this.value("preset") || "default"));
+    const profile = (this.meta.profiles || []).find(item => item.id === this.value("profile"));
+    const strategy = normalizeGenerationStrategy(this.value("generation_strategy"));
+    const base = strategy === "native" ? "" : strategy === "direct" ? profile?.direct_base_agent_prompt || "" : profile?.base_agent_prompt || "";
+    const isDefault = preset?.id === "default";
+    if (this.dom.presetName) this.dom.presetName.value = preset?.builtin ? `${preset.name || "默认"} · 我的副本` : preset?.name || "";
+    if (this.dom.presetMode) this.dom.presetMode.value = isDefault || preset?.mode === "replace" ? "replace" : "append";
+    if (this.dom.presetInstructions) this.dom.presetInstructions.value = isDefault ? base : preset?.instructions || "";
+    if (this.dom.savePreset) this.dom.savePreset.textContent = preset?.builtin ? "保存为我的预设" : "另存为新预设";
+    this.updatePresetHint();
     this.updateActionState();
   }
 
   restoreEditors() {
-    for (const name of ["profile", "mode", "preset", "current_prompt", "user_instruction", "custom_instructions", "approved_prompt", "interrogation_source", "interrogation_action"]) {
+    this.restoreSkillSelection();
+    for (const name of ["mode", "preset", "current_prompt", "user_instruction", "custom_instructions", "approved_prompt", "interrogation_source", "interrogation_action"]) {
       if (this.dom[name]) this.dom[name].value = String(this.value(name));
     }
     if (this.dom.agent_response) this.dom.agent_response.textContent = String(this.value("agent_response"));
@@ -1153,8 +1569,15 @@ export class PromptAgentUI {
   }
 
   updateProfileHint() {
-    const item = this.meta.profiles.find((entry) => entry.id === this.value("profile"));
-    if (this.dom.profileHint) this.dom.profileHint.textContent = item?.style || "";
+    // 提示改成「这个 skill 来自哪、做什么」，不再显示标签/自然语言这种模型侧术语
+    const skills = Array.isArray(this.meta.skills) ? this.meta.skills : [];
+    const item = skills.find((entry) => entry.id === this.selectedSkillId())
+      || (this.meta.profiles || []).find((entry) => entry.id === this.value("profile"));
+    if (this.dom.profile) this.dom.profile.title = item?.label || this.selectedSkillId() || "扩写 Skill";
+    if (!this.dom.profileHint) return;
+    if (!item) { this.dom.profileHint.textContent = ""; return; }
+    const source = item.source === "dsh" ? "DSH skill" : item.source === "builtin" ? "内置" : "";
+    this.dom.profileHint.textContent = [item.description || item.style || "", source].filter(Boolean).join(" · ");
   }
 
   updateExecutionHint() {
@@ -1184,7 +1607,18 @@ export class PromptAgentUI {
     };
     const description = descriptions[selected] || (preset?.mode === "replace"
       ? "用此自定义预设替换默认创作基础。" : "在默认创作规则上追加此自定义预设。");
-    this.dom.presetHint.textContent = `${description}仅影响 LLM 创作编辑，不改变 Profile 格式、WD14 模型或反推来源。`;
+    const native = normalizeGenerationStrategy(this.value("generation_strategy")) === "native";
+    this.dom.presetHint.textContent = native ? `${description}DSH 原生会话会收到预设正文；规则合并由 DSH Agent 与 Skill 决定。点击“查看／编辑规则”调整。` : `${description}仅影响文字创作，不改变 WD14 或看图扩写。点击“查看／编辑规则”可查看全文、调整并保存。`;
+    const profile = (this.meta.profiles || []).find(item => item.id === this.value("profile"));
+    const base = normalizeGenerationStrategy(this.value("generation_strategy")) === "direct" ? profile?.direct_base_agent_prompt || "" : profile?.base_agent_prompt || "";
+    const instructions = preset?.instructions || "";
+    if (this.dom.presetEffective) this.dom.presetEffective.value = native ? instructions || "默认预设没有附加正文；基础规则由 DSH Agent 与 Skill 提供。"
+      : (preset?.mode === "replace" ? instructions : [base, instructions].filter(Boolean).join("\n\n")) || "当前服务未提供规则正文，请刷新或更新服务。";
+    if (this.dom.presetEditorNote) this.dom.presetEditorNote.textContent = native
+      ? "原生会话会收到下方预设正文；此处的追加/替换选项不控制 DSH 的规则合并。修改后保存为自己的预设即可选用。"
+      : preset?.builtin
+      ? "内置预设可查看、修改后保存为自己的副本；保存后会自动选用。这里显示基础创作规则，Skill、格式及本次指令另行生效。"
+      : "修改后点击“更新预设”生效，也可另存副本。这里显示基础创作规则，Skill、格式及本次指令另行生效。";
   }
 
   refreshConnections() {
@@ -1202,6 +1636,13 @@ export class PromptAgentUI {
       this.renderInterrogationResult();
     }
     this.imageLink = imageLink;
+    if (imageConnected && !this.node.properties?.tkPromptAgentImageConfigured) {
+      this.node.properties = { ...this.node.properties, tkPromptAgentImageConfigured: true };
+      if (this.value("interrogation_action") === "none") this.write("interrogation_action", "replace");
+      if (this.interrogationOptions().auto_expand === undefined) this.writeExpansionOption("auto_expand", true);
+      this.setTab("interrogate");
+      this.restoreEditors();
+    }
     if (this.dom.imageConnectionHint) this.dom.imageConnectionHint.textContent = imageConnected
       ? "IMAGE 已连接。选择‘反推并替换/加入’，排队时会直接读取这张图并把 Prompt 输出到下游；无需填写文字输入。此页‘开始反推’使用上传的图片。"
       : "连接 IMAGE 后选择‘反推并替换/加入’，排队时会直接反推并把 Prompt 输出到下游。";
@@ -1299,6 +1740,7 @@ export class PromptAgentUI {
   }
 
   applyResult(payload) {
+    if (typeof (payload.prompt ?? payload.state?.prompt) === "string") this.markFinalPromptState();
     this.acceptState(payload.state);
     if (typeof payload.state?.profile === "string" && payload.state.profile) this.write("profile", payload.state.profile);
     const prompt = payload.prompt ?? payload.state?.prompt;
@@ -1341,9 +1783,31 @@ export class PromptAgentUI {
     } finally { if (!this.disposed) this.setBusy(false); }
   }
 
+  updateModelHint() {
+    if (!this.dom.modelHint) return;
+    const selection = this.modelSelection();
+    const connection = selection.source === "current" ? this.meta.config
+      : selection.source === "manual" ? this.meta.manual_config || this.meta.config
+      : (this.meta.native_providers || []).find(item => item.id === selection.source)
+        || (this.meta.provider_presets || []).find(item => item.id === selection.source)?.config;
+    const model = selection.model || connection?.model;
+    this.dom.modelHint.textContent = "生效模型：" + (model || "连接未提供默认模型，请填写模型 ID") + "。仅影响本节点，下次请求使用；图片任务需要模型支持图片输入。";
+    if (this.dom.expansion?.vision_model) this.dom.expansion.vision_model.placeholder = connection?.model ? "默认：" + connection.model : "填写该连接的模型 ID";
+  }
+
+  modelSelection() {
+    const options = this.interrogationOptions();
+    return { source: options.vision_provider || "current", model: options.vision_model || "" };
+  }
+
+  selectedProviderSource() {
+    const source = this.modelSelection().source;
+    return source === "current" ? this.meta.provider_source || "manual" : source;
+  }
+
   async edit() {
     if (normalizeGenerationStrategy(this.value("generation_strategy")) === "native") {
-      if (!String(this.meta.provider_source || "manual").startsWith("dsh-")) {
+      if (!this.selectedProviderSource().startsWith("dsh-")) {
         this.renderNativeMeta();
         this.status("请先在模型连接来源中选用一个 DSH 连接。", true);
         return;
@@ -1362,14 +1826,15 @@ export class PromptAgentUI {
       const strategy = normalizeGenerationStrategy(this.value("generation_strategy"));
       const operation = strategy === "native" ? this.beginNativeRun(capture) : null;
       try {
-        const payload = await this.fetch("/edit", {
+        const payload = await this.runTask("/edit", {
       session_id: this.session, revision: this.revision, profile: this.value("profile"), mode: this.value("mode"),
       start_new: startNew,
       generation_strategy: strategy,
+      model_selection: this.modelSelection(),
       ...(operation ? { native_operation_id: operation.id } : {}),
       current_prompt: this.value("current_prompt"), instruction: this.value("user_instruction"), preset: this.value("preset"),
       custom_instructions: this.value("custom_instructions"), locks: parseSectionIds(this.value("locked_sections")), scope: parseSectionIds(this.value("edit_scope")),
-        }, "POST", operation ? { controller: operation.controller } : {});
+        }, operation ? { controller: operation.controller } : {});
         if (operation && !operation.cancelled && this.matches(capture)) this.renderNativeProgress({ status: "completed", message: "原生创作已完成。" }, operation);
         return payload;
       } catch (error) {
@@ -1411,7 +1876,7 @@ export class PromptAgentUI {
   async interrogate() {
     const image = parseImageDescriptor(this.value("interrogation_image"));
     if (!image) { this.status("请先上传或粘贴一张图片；IMAGE 连线在运行节点时读取。", true); return; }
-    const payload = await this.operation(() => this.fetch("/interrogate", {
+    const payload = await this.operation(() => this.runTask("/interrogate", {
       session_id: this.session, profile: this.value("profile"), source: this.value("interrogation_source"), image, options: this.interrogationOptions(),
     }), "反推完成 · 确认后更新 Final Prompt。");
     if (!payload) return;
@@ -1428,7 +1893,7 @@ export class PromptAgentUI {
     }
     const payload = await this.operation(() => {
       this.status("正在结合原图与反推结果扩写…");
-      return this.fetch("/expand-interrogation", {
+      return this.runTask("/expand-interrogation", {
         session_id: this.session, profile: this.value("profile"), observation_id: observation.observation_id,
         options: this.interrogationOptions(),
       });
@@ -1444,6 +1909,7 @@ export class PromptAgentUI {
     if (!prompt?.trim()) return;
     const payload = await this.operation(() => this.fetch("/accept-interrogation", {
       session_id: this.session, revision: this.revision, profile: this.value("profile"), prompt, action,
+      ...(this.selectedSkillId() ? { expansion_skill: this.selectedSkillId() } : {}),
       locks: parseSectionIds(this.value("locked_sections")),
     }));
     if (payload) {
@@ -1474,8 +1940,10 @@ export class PromptAgentUI {
     const payload = await this.operation(async (capture) => {
       const operation = retryNative ? this.beginNativeRun(capture) : null;
       try {
-        const result = await this.fetch(`/session/${encodeURIComponent(this.session)}/${action}`, {
+        const run = action === "retry" ? this.runTask.bind(this) : this.fetch.bind(this);
+        const result = await run(`/session/${encodeURIComponent(this.session)}/${action}`, {
           revision: this.revision,
+          ...(action === "retry" ? { model_selection: this.modelSelection() } : {}),
           ...(operation ? { native_operation_id: operation.id } : {}),
         }, "POST", operation ? { controller: operation.controller } : {});
         if (operation && !operation.cancelled && this.matches(capture)) this.renderNativeProgress({ status: "completed", message: "原生重试已完成。" }, operation);
@@ -1497,8 +1965,8 @@ export class PromptAgentUI {
   async saveConfig() {
     const controls = this.dom.config;
     const body = {};
-    const native = String(this.meta.provider_source || "manual").startsWith("dsh-");
-    const fields = native ? ["proxy", "response_mode"] : ["base_url", "model", "proxy", "api_key_env", "response_mode"];
+    body.connection_scope = "manual";
+    const fields = ["base_url", "proxy", "api_key_env", "response_mode"];
     for (const name of fields) body[name] = controls[name].value.trim();
     for (const name of ["temperature", "max_tokens", "timeout"]) {
       const control = controls[name];
@@ -1508,23 +1976,12 @@ export class PromptAgentUI {
       }
       body[name] = value;
     }
-    if (!native && controls.api_key.value.trim()) body.api_key = controls.api_key.value.trim();
-    if (!native && controls.clear_api_key.checked) body.clear_api_key = true;
+    if (controls.api_key.value.trim()) body.api_key = controls.api_key.value.trim();
+    if (controls.clear_api_key.checked) body.clear_api_key = true;
     body.stream = Boolean(controls.stream.checked);
     body.disable_thinking = Boolean(controls.disable_thinking.checked);
     const payload = await this.operation(() => this.fetch("/config", body), "API 配置已保存。");
     if (payload) { controls.api_key.value = ""; controls.clear_api_key.checked = false; await this.refreshMeta({ quiet: true }); }
-  }
-
-  async activateProvider() {
-    const id = this.dom.providerSelect.value;
-    if (!id) return;
-    const payload = await this.operation(() => this.fetch("/activate-provider", { id }), "已切换 API 连接。");
-    if (payload) {
-      this.dom.config.api_key.value = "";
-      this.dom.config.clear_api_key.checked = false;
-      await this.refreshMeta({ quiet: true });
-    }
   }
 
   async savePreset(update) {
@@ -1559,6 +2016,10 @@ export class PromptAgentUI {
     if (this.disposed || this.busy) return;
     const unwrap = (value) => Array.isArray(value) ? value[0] : value;
     const prompt = unwrap(message?.prompt ?? message?.final_prompt);
+    if (typeof prompt === "string") {
+      this.graphExecutionActive = false;
+      this.markFinalPromptState();
+    }
     const response = unwrap(message?.message ?? message?.agent_response);
     const state = unwrap(message?.state);
     const interrogation = unwrap(message?.interrogation);
@@ -1583,11 +2044,15 @@ export class PromptAgentUI {
     if (this.disposed) return;
     this.disposed = true;
     this.progressAPI?.removeEventListener?.("tk_prompt_agent_interrogation", this.interrogationProgressListener);
+    for (const [type, listener] of Object.entries(this.graphListeners || {})) this.progressAPI?.removeEventListener?.(type, listener);
     this.invalidate();
     for (const controller of this.controllers) controller.abort();
     this.controllers.clear();
     if (SESSION_OWNERS.get(this.session) === this) SESSION_OWNERS.delete(this.session);
     this.sizeSync?.dispose();
+    this.dom.settingsDialog?.remove();
+    this.dom.presetDialog?.remove();
+    this.dom.connectionDialog?.remove();
     this.root?.remove();
   }
 }

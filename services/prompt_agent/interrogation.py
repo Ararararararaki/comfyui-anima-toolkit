@@ -13,7 +13,7 @@ SOURCES = [
     {"id": "local-wd14", "label": "WD14 本地", "kind": "local", "note": "使用已安装模型；默认 CPU，不自动下载。"},
     {"id": "pixai-online", "label": "PixAI 在线", "kind": "online", "note": "PixAI 官方 Hugging Face Space；公开演示可能排队或限额。"},
     {"id": "toriigate-online", "label": "ToriiGate 在线（需 HF 账号权限）", "kind": "online", "note": "作者 Space 当前申请 270 秒 GPU 时长，匿名调用被账号等级限制拦截。有 HF PRO 可配置对应 Token；免费使用优先选本地 WD14 或 PixAI。"},
-    {"id": "workbuddy-vision", "label": "WorkBuddy 看图", "kind": "llm", "note": "使用 WorkBuddy 配置中的视觉模型；每次只发当前图片和短描述指令。"},
+    {"id": "workbuddy-vision", "label": "所选模型看图", "kind": "llm", "note": "使用本节点统一选择的连接与模型；每次只发当前图片和短描述指令。"},
 ]
 
 
@@ -86,19 +86,8 @@ class InterrogationService:
         from .image_expansion import ImageObservations
         self.observations = ImageObservations()
 
-    def vision_config(self, choice):
-        if choice == "current":
-            return self.runtime.provider_config()
-        if choice in ("dsh-workbuddy", "dsh-opencode"):
-            from .native_config import transport_options
-            overrides = transport_options(self.runtime.config.load())
-            return self.runtime.native_source.resolve(choice, overrides)
-        if choice == "workbuddy":
-            path = self.runtime.directory / "providers" / "workbuddy.json"
-            if not path.exists():
-                raise AgentError("请先保存 WorkBuddy 看图模型配置，或选择当前模型连接。")
-            return ConfigStore(path).load()
-        raise AgentError("未知看图模型连接。")
+    def vision_config(self, choice, model=""):
+        return self.runtime.model_config({"source": choice, "model": model})
 
     async def expand(self, request):
         from .image_expansion import expand_image
@@ -111,9 +100,68 @@ class InterrogationService:
         image = (await asyncio.to_thread(prepare_image, request["image"]) if request.get("image") else None)
         row = self.observations.get(sid, request.get("observation_id", ""), image)
         progress({"stage": "expanding"})
-        expanded = await expand_image(row.image, row.result, self.runtime.profiles.get(request.get("profile") or "anima"),
-                                      options, self.vision_config(options.get("vision_provider", "current")), session_id=sid)
-        result = {**row.result, **expanded, "observation_id": request["observation_id"]}
+        # 扩写 skill 优先（内置基础 skill / DSH skill）；没选则沿用 profile，兼容旧工作流。
+        # skill 的 style 决定用哪套输出契约，因此 profile 由 skill 反查而不是让用户手选。
+        skill = None
+        skill_id = str(request.get("skill") or options.get("expansion_skill") or "").strip()
+        if not skill_id:
+            # 前端把 skill id 存在既有的 profile 字段里（不改节点 input 定义，旧工作流照旧）。
+            # profile id 是不带冒号的短名（anima / krea2），skill id 一定带前缀。
+            legacy = str(request.get("profile") or "").strip()
+            if ":" in legacy:
+                skill_id = legacy
+        if skill_id:
+            skill = self.runtime.skills.get(skill_id)
+            skill = self.runtime.skills.compose(skill, options.get("auxiliary_skills", []))
+            profile = self.runtime.skills.profile_for(skill)
+        else:
+            profile = self.runtime.profiles.get(request.get("profile") or "anima")
+        from .image_options import (filter_observation, classify_host_tag,
+                                    plan_character_operations, select_character_candidate)
+        from .image_expansion import OpenAICompatibleProvider, character_references
+        filtered, report = await asyncio.to_thread(filter_observation, row.result, options, classify_host_tag)
+        model = options.get("vision_model", "")
+        config = dict(self.vision_config(options.get("vision_provider", "current"), model))
+        planning = OpenAICompatibleProvider({**config, "max_tokens": min(config.get("max_tokens", 1024), 1024)})
+        planning.on_progress = progress
+        planning.require_model_match = bool(model.strip())
+        planning.bind_session(sid + ":character-plan")
+        identities = character_references(row.result)
+        instruction = options.get("expansion_instruction", "")
+        # The image pass also detects optional identity edits. Ordinary rewrites
+        # now make one model call, with no mandatory standalone planning request.
+        expanded = await expand_image(row.image, filtered, profile,
+            {**options, "filter_report": report, "source_identities": identities}, config, session_id=sid, skill=skill,
+            detect_operations=True)
+        operations = expanded["character_operations"]
+        queries = list(dict.fromkeys(op["target"].strip() for op in operations))
+        evidence = await self.runtime.references.lookup({"tags": queries, "characters": queries}) if queries else {}
+        resolved, warnings = {}, []
+        for entry in evidence.get("characters", []):
+            candidates = entry.get("candidates", [])
+            exact = [c for c in candidates if entry["query"].casefold() in
+                     [str(c.get(k) or "").casefold() for k in ("zh", "name", "slug", "trigger")]]
+            matches = exact or candidates
+            picked = matches[0] if len(matches) == 1 else (
+                await select_character_candidate(instruction, entry["query"], matches, planning) if matches else None)
+            if picked:
+                resolved[entry["query"]] = picked.get("trigger") or picked.get("slug") or picked.get("name")
+            else:
+                warnings.append("角色资料未能唯一匹配：" + entry["query"] + "；按扩写要求使用原名称，不虚构词条。可在扩写要求补充作品名。")
+        operations = [{**op, "target": op["target"].strip(), "resolved": resolved.get(op["target"].strip()) or op["target"].strip()} for op in operations]
+        targets = list(dict.fromkeys(resolved[query] for query in queries if resolved.get(query)))
+        replacements = [op for op in operations if op["action"] == "replace"]
+        remaining = [name for name in identities if not any(not op["source"] or op["source"] == name for op in replacements)]
+        effective = {**options, "reference_evidence": evidence, "filter_report": report,
+                     "character_operations": operations,
+                     "requested_characters": list(dict.fromkeys(targets + (remaining if options.get("preserve_identity", True) else [])))}
+        if replacements:
+            effective.update(preserve_identity=False, replacement_characters=[resolved[op["target"]] for op in replacements if resolved.get(op["target"])])
+        if operations:
+            expanded = await expand_image(row.image, filtered, profile,
+                                          effective, config, session_id=sid, skill=skill)
+        result = {**row.result, **expanded, "filter_report": report, "reference_evidence": evidence, "reference_warnings": warnings, "character_operations": operations, "observation_id": request["observation_id"],
+                  "message": expanded.get("message", "看图扩写完成。") + (" 资料提示：" + "；".join(warnings) if warnings else "")}
         progress({"stage": "completed"})
         return result
 
@@ -145,7 +193,8 @@ class InterrogationService:
         if not isinstance(options, dict):
             raise AgentError("反推参数必须是 JSON 对象")
         profile = self.runtime.profiles.get(request.get("profile") or "anima")
-        image = await asyncio.to_thread(prepare_image, request.get("image"), tensor)
+        prepared = await asyncio.to_thread(prepare_image, request.get("image"), tensor, True)
+        image, source_dimensions = prepared if isinstance(prepared, tuple) else (prepared, {})
         config = self.config.load()
         if source == "local-wd14":
             on_progress({"stage": "processing"})
@@ -158,17 +207,18 @@ class InterrogationService:
         else:
             on_progress({"stage": "processing"})
             from .interrogators.vision import interrogate_vision
-            path = self.runtime.directory / "providers" / "workbuddy.json"
-            if not path.exists():
-                raise AgentError("请先保存 WorkBuddy Provider 配置")
-            result = await interrogate_vision(image, {**options, "profile": profile.id}, ConfigStore(path).load(),
+            connection = self.vision_config(options.get("vision_provider", "current"), options.get("vision_model", ""))
+            result = await interrogate_vision(image, {**options, "profile": profile.id}, connection,
                                               session_id=request.get("session_id", ""))
+        report = {}
         message = "反推完成，确认后可导入并继续编辑。"
         try:
-            formatted = format_result(result, profile)
+            from .image_options import filter_observation, classify_host_tag
+            filtered, report = await asyncio.to_thread(filter_observation, result, options, classify_host_tag)
+            formatted = format_result(filtered, profile)
         except AgentError as error:
             formatted, message = "", f"已取得原始结果，但尚不能直接导入：{error}"
-        result = {**result, "formatted_prompt": formatted, "message": message}
+        result = {**result, "source_dimensions": source_dimensions, "filter_report": report, "formatted_prompt": formatted, "message": message}
         sid = request.get("session_id", "")
         result["observation_id"] = self.observations.store(sid, image, result)
         if options.get("auto_expand"):

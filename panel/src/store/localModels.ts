@@ -1,11 +1,14 @@
+import { formatLocalScanNotice } from '../i18n/localScanNotice'
 import { create } from 'zustand'
 import type { LocalLoraFile, PngMeta, TagFreq, LocalScanStatus } from '../types'
 import { Cache } from './cache'
 import { fetchModelVersionByHash, fetchModelById, parseCivitaiModelId } from '../api/civitai'
 import { showToast, stripExt } from '../utils'
 import { collectLoraFiles, groupLoraNamesByTopLevelFolder, normalizeRelativeLoraPath, removeLoraFile } from '../services/localLoraScanner'
-import { LocalScanSession, type ManifestEntry, type ScanListing } from '../services/localScanSession'
+import { LocalScanSession, type ManifestEntry, type ScanListing, type LocalLoraMetaReading } from '../services/localScanSession'
 import { hashFileSha256 } from '../services/fileHashWorker'
+import { readSafetensorsLoraMeta } from '../services/safetensorsMeta'
+import { normalizeLocalBaseModel } from '../services/baseModelCatalog'
 import { getSettings } from './settings'
 
 let _lastBackendSync = 0
@@ -17,6 +20,7 @@ export const localScanSession: LocalScanSession<ScanFile> = new LocalScanSession
   commit: update => useLocalModelStore.setState(update),
   hash: hashScanFile,
   match: (hash, signal) => fetchModelVersionByHash(hash, signal),
+  readMeta: (file, signal) => readScanFileMeta(file, signal),
   persist: () => {
     useLocalModelStore.getState().saveToCache()
     useLocalModelStore.getState().rebuildTagFreq()
@@ -238,6 +242,34 @@ async function hashScanFile(
     return String(data.sha256 || '')
   }
   return hashFileSha256(file as File, opts)
+}
+
+/**
+ * 底模离线判定（2026-10-19）：本地 LoRA 此前只有「C 站 by-hash 匹配」一条底模来源，
+ * 未上传 C 站的自训 LoRA（本机 26 个 moss_image 的 MOSS LoRA 即此情况）因此永远显示未知底模、
+ * 也无法参与「按底模」筛选。训练器本来就把底模写进了 safetensors 头部，这里按扫描源分派读取：
+ *   · 浏览器 File —— 直接读文件头几十 KB；
+ *   · 后端静默扫描的 BackendFileRef —— 没有 File 对象，走 /anima/panel_scan/meta（后端与文件系统同权）。
+ * 两条路都只回原文，归一化统一交给 baseModelCatalog，保证与 LoRA 探索下拉同一套口径。
+ */
+async function readScanFileMeta(file: ScanFile, signal?: AbortSignal): Promise<LocalLoraMetaReading | null> {
+  if (isBackendRef(file)) {
+    if (!file.__path) return null
+    try {
+      const resp = await fetch('/anima/panel_scan/meta?path=' + encodeURIComponent(file.__path), { signal })
+      if (!resp.ok) return null
+      const data = await resp.json() as { baseModelVersion?: string; sdModelName?: string }
+      const raw = String(data.baseModelVersion || data.sdModelName || '').trim()
+      return raw ? { baseModel: normalizeLocalBaseModel(raw), raw } : null
+    } catch (error) {
+      if ((error as Error)?.name === 'AbortError') throw error
+      return null
+    }
+  }
+  const meta = await readSafetensorsLoraMeta(file as File, { signal, fileName: (file as File).name })
+  if (!meta) return null
+  const raw = meta.baseModelVersion || meta.sdModelName
+  return raw ? { baseModel: meta.baseModel, raw } : null
 }
 
 /** 列目录与哈希是 I/O 适配；扫描身份、取消和提交由 session 管理。 */
@@ -626,7 +658,9 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     const YEAR = 365 * 24 * 60 * 60 * 1000
     const cached = Cache.load<LocalLoraFile[]>(SCAN_CACHE_KEY, YEAR)
     if (cached && cached.length > 0) {
-      set({ files: cached, dirHandle: null })
+      // 2026-10-19 之前的缓存没有本地底模字段，补成空串，避免 UI 读到 undefined（字段来自 safetensors 头部）
+      set({ files: cached.map(file => ({ ...file,
+        localBaseModel: file.localBaseModel || '', localBaseModelRaw: file.localBaseModelRaw || '' })), dirHandle: null })
       const pngs = Cache.load<PngMeta[]>(PNG_CACHE_KEY, YEAR) || []
       const tagFreq = Cache.load<TagFreq[]>(TAG_CACHE_KEY, YEAR) || []
       const categories = Cache.load<string[]>(CAT_CACHE_KEY, YEAR) || ['人物', '风格', '背景', '姿势']
@@ -766,5 +800,5 @@ localScanSession.subscribe(progress => {
     scanProgress: { done: progress.done, total: progress.total },
     scanningDir: progress.directory,
   })
-  if (progress.notice) showToast(progress.notice)
+  if (progress.notice) showToast(formatLocalScanNotice(progress))
 })

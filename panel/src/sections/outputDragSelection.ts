@@ -1,3 +1,4 @@
+import { t as tr } from '../i18n'
 import { useOutputStore } from '../store/outputStore'
 import { computeMasonryLayout } from '../components/masonry'
 
@@ -80,7 +81,7 @@ export function initOutputDragSelection(options: OutputDragSelectionOptions): vo
     if (prev.size === next.size && Array.from(next).every(id => prev.has(id))) return
     useOutputStore.setState({ selectedIds: next })
     const batchCount = document.getElementById('outputsBatchCount')
-    if (batchCount) batchCount.textContent = `已选 ${next.size} 张`
+    if (batchCount) batchCount.textContent = tr("workspace.imagesSelected", { p0: next.size })
     document.querySelectorAll('.outputs-card, .outputs-list-card').forEach(el => {
       const id = (el as HTMLElement).dataset.id
       if (id) el.classList.toggle('selected', next.has(id))

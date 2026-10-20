@@ -12,6 +12,7 @@ except ImportError:
 import re
 import json
 import os
+import struct
 import hashlib
 import math
 import threading
@@ -716,6 +717,61 @@ async def panel_scan_hash(request):
     except OSError as exc:
         return web.json_response({"error": str(exc)}, status=500)
     return web.json_response({"sha256": sha, "path": path})
+
+
+_SAFETENSORS_HEADER_LIMIT = 16 * 1024 * 1024
+
+
+def _read_safetensors_header_meta(path: str) -> dict:
+    """只读 safetensors 头部，取训练器写入的底模元数据（面板离线判定底模用）。
+
+    面板的本地 LoRA 底模此前只有「C 站 by-hash 匹配」一条来源，未上传 C 站的自训 LoRA
+    （如 moss_image 的 MOSS LoRA）永远显示未知底模。而训练器本来就把底模写进了头部：
+    __metadata__.ss_base_model_version = "moss_image" / "anima" / "krea2" …
+
+    格式：前 8 字节为 header 字节数（uint64 小端），随后是该长度的 UTF-8 JSON，
+    内含 __metadata__ 与张量偏移表。正常 LoRA 头部 20-80 KB，读到 16 MB 即视为异常。
+    取不到（非 safetensors / 头部损坏 / 无 __metadata__）返回空 dict，由面板按「底模未知」处理。
+    """
+    if not str(path).lower().endswith(".safetensors"):
+        return {}
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read(8)
+            if len(raw) < 8:
+                return {}
+            (header_len,) = struct.unpack("<Q", raw)
+            if header_len <= 0 or header_len > _SAFETENSORS_HEADER_LIMIT:
+                return {}
+            header = json.loads(fh.read(header_len).decode("utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return {}
+    meta = header.get("__metadata__") if isinstance(header, dict) else None
+    if not isinstance(meta, dict):
+        return {}
+    return {
+        "baseModelVersion": str(meta.get("ss_base_model_version") or "").strip(),
+        "sdModelName": str(meta.get("ss_sd_model_name") or "").strip(),
+        "outputName": str(meta.get("ss_output_name") or "").strip(),
+    }
+
+
+@PromptServer.instance.routes.get("/anima/panel_scan/meta")
+async def panel_scan_meta(request):
+    """Read one LoRA's safetensors header metadata (panel supplies the absolute path).
+
+    与 list/hash 同为只读端点，路径信任策略与二者一致（单机本地工具，见上方说明）。
+    刻意不做底模归一化：口径统一由面板的 baseModelCatalog 负责，后端只回文件里的原值，
+    避免同一套底模映射在 Python 与 TypeScript 两侧各维护一份而漂移。
+    """
+    path = str(request.query.get("path") or "")
+    if not path or not os.path.isfile(path):
+        return web.json_response({"error": "文件不存在"}, status=400)
+    try:
+        meta = await asyncio.to_thread(_read_safetensors_header_meta, path)
+    except OSError as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+    return web.json_response({"path": path, **meta})
 
 
 # ── On-disk thumbnail service (M1, docs/后端图片管线可行性评估-2026-09-11.md) ──

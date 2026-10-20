@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ProcessedModel, CivitaiModel, ModelCategory, SortKey, PeriodKey, SectionKey, ModelError } from '../types'
+import type { ProcessedModel, CivitaiModel, CivitaiModelVersion, ModelCategory, SortKey, PeriodKey, SectionKey, ModelError } from '../types'
 import { Cache } from './cache'
 import { stripHtml } from '../utils'
 import { getCivitaiHost } from '../api/civitai'
@@ -14,6 +14,27 @@ function isLocalMatch(name: string, localNames: string[]): boolean {
   if (localNames.length === 0) return false
   const q = name.toLowerCase().replace(/[\s_-]/g, '')
   return localNames.some(n => n.includes(q) || q.includes(n))
+}
+
+/**
+ * 选「卡片展示用」的模型版本：优先与当前筛选底模一致的那个版本，没有（或未筛基座）才退回首个版本。
+ *
+ * 旧实现把 'Anima' 硬编码在此处，切到任何别的基座后卡片仍优先挑 Anima 版本 ——
+ * 于是展示的底模、触发词、示例图与下载链接全对不上筛选结果（新增 MOSS 等底模后尤其明显）。
+ *
+ * 比较必须逐字（仅大小写不敏感）：C 站的 baseModel 是单一取值，
+ * "MOSS Image" 与 "MOSS Image Base" 是两个不同版本，不能用前缀/包含关系混为一谈。
+ *
+ * 没有可用版本时返回 undefined，由调用方用可选链读字段：旧写法 `|| {}` 在 strict 下会被
+ * 类型归并成 `{}`（空对象类型被当作可能为假），读字段直接报错；空对象本来也不是个版本。
+ */
+function pickDisplayVersion(model: CivitaiModel, filterBaseModel: string): CivitaiModelVersion | undefined {
+  const versions = model.modelVersions || []
+  if (versions.length === 0) return undefined
+  const target = String(filterBaseModel || '').trim().toLowerCase()
+  // 空串 = 下拉的「全部基座」：没有偏好，按首个版本展示
+  if (!target) return versions[0]
+  return versions.find(v => String(v.baseModel || '').trim().toLowerCase() === target) || versions[0]
 }
 
 const CAT_LABEL: Record<ModelCategory, string> = {
@@ -246,14 +267,14 @@ export const useModelStore = create<ModelState>((set, get) => ({
     const like = m.stats?.thumbsUpCount ?? 0
     const ratio = dl > 0 ? like / dl : 0
     const cat = get().categorize(m)
-    const ver = (m.modelVersions || []).find(v => v.baseModel === 'Anima') || (m.modelVersions || [])[0] || {}
-    const imgs = (ver.images || []).filter(i => i.type === 'image' && i.url).map(i => {
+    const ver = pickDisplayVersion(m, get().filterBaseModel)
+    const imgs = (ver?.images || []).filter(i => i.type === 'image' && i.url).map(i => {
       let u = i.url.trim()
       if (u.startsWith('//')) u = 'https:' + u
       return u.startsWith('http') ? u : ''
     }).filter(Boolean) as string[]
-    const trained = ver.trainedWords || []
-    const pf = (ver.files || []).find(f => f.primary) || (ver.files || [])[0]
+    const trained = ver?.trainedWords || []
+    const pf = (ver?.files || []).find(f => f.primary) || (ver?.files || [])[0]
     const desc = stripHtml(m.description || '')
     const uid = ++get().cardUid
     // 详情/作者链接跟随当前 C 站线路（镜像站下 .com 链接打不开）
@@ -272,10 +293,10 @@ export const useModelStore = create<ModelState>((set, get) => ({
       badgeClass: CAT_BADGE[cat] || 'badge-other',
       images: imgs,
       trainedWords: trained,
-      versionId: ver.id,
-      versionName: (ver.name || '').replace(/^v/i, ''),
-      versionCreatedAt: ver.createdAt || '',
-      baseModel: ver.baseModel || '',
+      versionId: ver?.id ?? 0,
+      versionName: (ver?.name || '').replace(/^v/i, ''),
+      versionCreatedAt: ver?.createdAt || '',
+      baseModel: ver?.baseModel || '',
       versions: (m.modelVersions || []).map(v => ({
         id: v.id,
         name: (v.name || '').replace(/^v/i, ''),
@@ -300,8 +321,10 @@ export const useModelStore = create<ModelState>((set, get) => ({
       const dl = m.stats?.downloadCount ?? 0
       const like = m.stats?.thumbsUpCount ?? 0
       const ratio = dl > 0 ? like / dl : 0
-      const ver = (m.modelVersions || []).find(v => v.baseModel === 'Anima') || (m.modelVersions || [])[0] || {}
-      const hasImgs = (ver.images || []).some(i => i.type === 'image' && i.url)
+      // 与 processModel 用同一套版本选择：否则这里判断「有没有图」看的是一个版本，
+      // 卡片上展示的却是另一个版本（换底模后两者会不一致）
+      const ver = pickDisplayVersion(m, state.filterBaseModel)
+      const hasImgs = (ver?.images || []).some(i => i.type === 'image' && i.url)
       cardUid++
       const p = state.processModel(m, !hasImgs)
       p.uid = cardUid

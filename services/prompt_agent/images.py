@@ -26,7 +26,7 @@ def uploaded_image_path(descriptor: dict) -> Path:
     return path
 
 
-def prepare_image(descriptor: dict | None = None, tensor=None) -> bytes:
+def prepare_image(descriptor: dict | None = None, tensor=None, include_dimensions=False):
     from PIL import Image, ImageOps
     if tensor is not None:
         import numpy as np
@@ -51,8 +51,10 @@ def prepare_image(descriptor: dict | None = None, tensor=None) -> bytes:
         image = background.convert("RGB")
     else:
         image = image.convert("RGB")
+    source_width, source_height = image.size
     image.thumbnail((1024, 1024))
     image.info.clear()
     output = io.BytesIO()
     image.save(output, format="PNG")
-    return output.getvalue()
+    data = output.getvalue()
+    return (data, {"width": source_width, "height": source_height}) if include_dimensions else data

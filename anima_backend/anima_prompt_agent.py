@@ -7,6 +7,7 @@ import uuid
 from .services.prompt_agent.core import MODES
 from .services.prompt_agent.errors import AgentError
 from .services.prompt_agent.profiles import ProfileRegistry
+from .services.prompt_agent.moss import validate_skill_prompt
 from .services.prompt_agent.runtime import get_runtime
 from .services.prompt_agent.execution_wait import await_interruptible
 
@@ -67,12 +68,19 @@ class TkPromptAgent:
         # workflows into interrogation. Use the selected text behavior instead.
         if image is None and not interrogation_image:
             interrogation_action = "none"
+        try:
+            options = json.loads(interrogation_options or "{}")
+        except ValueError as error:
+            raise AgentError("反推参数必须是有效 JSON 对象") from error
+        if not isinstance(options, dict):
+            raise AgentError("反推参数必须是 JSON 对象")
+        skill_id = options.get("expansion_skill", "")
         if execution == "snapshot" and interrogation_action == "none":
             if not approved_prompt.strip():
                 raise AgentError("Final Prompt 为空。创作请先发送文字指令；图片反推请连接 IMAGE，并在‘节点运行方式’选‘反推并替换/加入’，然后运行节点。")
             if approved_profile != profile:
                 raise AgentError("目标 Profile 与已确认 Prompt 不一致，请先 Convert 并确认新 Prompt")
-            prompt = model_profile.validate_snapshot(approved_prompt)
+            prompt = validate_skill_prompt(model_profile, approved_prompt, skill_id)
             return {"ui": {"prompt": [prompt], "message": [agent_response]}, "result": (agent_response, prompt)}
         if execution not in ("snapshot", "execute"):
             raise AgentError("未知执行方式")
@@ -89,19 +97,16 @@ class TkPromptAgent:
                 options = json.loads(interrogation_options or "{}")
             except ValueError as error:
                 raise AgentError("反推图片与参数必须是有效 JSON") from error
-            raw = await await_interruptible(runtime.interrogation.run({"session_id": sid, "profile": profile,
-                "source": interrogation_source, "image": descriptor, "options": options}, tensor=image))
-            if raw.get("expansion_error"):
-                raise AgentError("标签反推已完成，但看图扩写失败：" + raw["expansion_error"])
-            if not raw["formatted_prompt"]:
-                raise AgentError(raw["message"])
-            result = runtime.agent.accept_interrogation({"session_id": sid, "revision": state["revision"],
-                "profile": profile, "prompt": raw["formatted_prompt"], "action": interrogation_action, "locks": locks})
+            result = await await_interruptible(runtime.execution.execute("interrogate-accept", {
+                "session_id": sid, "revision": state["revision"], "profile": profile,
+                "source": interrogation_source, "image": descriptor, "options": options,
+                "action": interrogation_action, "locks": locks}, tensor=image))
             return {"ui": {"prompt": [result["prompt"]], "message": [result["message"]], "state": [result["state"]],
-                           "interrogation": [raw]}, "result": (result["message"], result["prompt"])}
-        result = await await_interruptible(runtime.agent.edit({"session_id": sid, "revision": state["revision"], "profile": profile,
+                           "interrogation": [result["interrogation"]], "warnings": [result.get("warnings", [])]}, "result": (result["message"], result["prompt"])}
+        result = await await_interruptible(runtime.execution.execute("edit", {"session_id": sid, "revision": state["revision"], "profile": profile,
             "mode": mode or "create", "current_prompt": current_prompt, "instruction": user_instruction,
             "preset": preset or "default", "custom_instructions": custom_instructions, "locks": locks, "scope": scope,
+            "model_selection": {"source": options.get("vision_provider", "current"), "model": options.get("vision_model", "")},
             "generation_strategy": generation_strategy or "guided"}))
         return {"ui": {"prompt": [result["prompt"]], "message": [result["message"]], "state": [result["state"]]},
                 "result": (result["message"], result["prompt"])}

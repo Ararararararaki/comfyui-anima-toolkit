@@ -1,3 +1,4 @@
+import { t as tr } from '../i18n'
 import { openModal, closeModal } from '../components/Modal'
 import { icon } from '../utils/icon'
 
@@ -19,10 +20,10 @@ export function initReleaseNotes(): () => void {
   modal.id = 'releaseNotesModal'
   modal.className = 'modal-overlay release-notes-overlay'
   modal.innerHTML = `<section class="modal-box release-notes-box" role="dialog" aria-modal="true" aria-labelledby="releaseNotesTitle" aria-describedby="releaseNotesIntro">
-    <header class="release-notes-header"><div><span class="release-notes-kicker">TK Toolkit · ${release.version}</span><h3 id="releaseNotesTitle">更新日志</h3></div><button type="button" class="icon-btn" data-close aria-label="关闭更新日志">${icon('x', 18)}</button></header>
-    <div class="release-notes-body"><p id="releaseNotesIntro" class="release-notes-intro">${release.date} · 同一版本仅在首次进入时自动显示，可从工具箱菜单再次打开。</p><div id="releaseNotesChanges"></div>
-    <section class="release-notes-bridge"><h4>把图片拖到 Pixiv</h4><p>本机 Chrome / Edge：下载并解压接收桥，在浏览器扩展页开启开发者模式，加载解压后的文件夹。安装后刷新工具箱和 Pixiv 两端即可，地址与端口自动识别，无需填 Key。仅添加图片，不会自动投稿。</p><a class="btn btn-sm" href="./tk-pixiv-drop-bridge.zip" download="TK-Pixiv接收桥.zip">${icon('download', 14)} 下载 Pixiv 接收桥</a></section></div>
-    <footer class="release-notes-footer"><div class="release-notes-community"><span>QQ 交流群 <strong>${QQ_GROUP}</strong></span><button type="button" class="btn btn-sm btn-ghost" data-copy-group>${icon('copy', 14)} 复制群号</button><span class="release-notes-status" role="status" aria-live="polite"></span></div><button type="button" class="btn btn-primary" data-close data-primary>开始使用</button></footer>
+    <header class="release-notes-header"><div><span class="release-notes-kicker">TK Toolkit · ${release.version}</span><h3 id="releaseNotesTitle">${tr("workspace.releaseNotes")}</h3></div><button type="button" class="icon-btn" data-close aria-label="${tr("workspace.closeReleaseNotes")}">${icon('x', 18)}</button></header>
+    <div class="release-notes-body"><p id="releaseNotesIntro" class="release-notes-intro">${tr("workspace.shownAutomaticallyOncePerVersionReopenFrom", { p2: release.date })}</p><div id="releaseNotesChanges"></div>
+    <section class="release-notes-bridge"><h4>${tr("workspace.dragImagesToPixiv")}</h4><p>${tr("workspace.onLocalChromeOrEdgeDownloadAnd")}</p><a class="btn btn-sm" href="./tk-pixiv-drop-bridge.zip" download="TK-Pixiv接收桥.zip">${tr("workspace.downloadPixivBridge", { p3: icon('download', 14) })}</a></section></div>
+    <footer class="release-notes-footer"><div class="release-notes-community"><span>${tr("workspace.qqCommunity")} <strong>${QQ_GROUP}</strong></span><button type="button" class="btn btn-sm btn-ghost" data-copy-group>${tr("workspace.copyGroupNumber", { p5: icon('copy', 14) })}</button><span class="release-notes-status" role="status" aria-live="polite"></span></div><button type="button" class="btn btn-primary" data-close data-primary>${tr("workspace.getStarted")}</button></footer>
   </section>`
   const changes = modal.querySelector('#releaseNotesChanges')!
   for (const section of release.sections) {
@@ -37,8 +38,8 @@ export function initReleaseNotes(): () => void {
   modal.addEventListener('click', event => { if (event.target === modal) close() }, { signal: abort.signal })
   modal.querySelector('[data-copy-group]')?.addEventListener('click', async () => {
     const status = modal.querySelector<HTMLElement>('.release-notes-status')!
-    try { await navigator.clipboard.writeText(QQ_GROUP); status.textContent = '群号已复制' }
-    catch { status.textContent = '请选中群号后复制' }
+    try { await navigator.clipboard.writeText(QQ_GROUP); status.textContent = tr("workspace.groupNumberCopied") }
+    catch { status.textContent = tr("workspace.selectTheGroupNumberAndCopyIt") }
   }, { signal: abort.signal })
   const show = () => {
     openModal(modal.id)

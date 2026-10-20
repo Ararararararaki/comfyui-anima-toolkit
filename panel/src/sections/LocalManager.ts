@@ -1,3 +1,4 @@
+import { t, getLocale } from '../i18n'
 import { sourceForFile, fileSourceIdentity, readOutputSourceFile } from '../services/outputSources'
 import { createImageSnapshot, imageRevision } from '../services/outputIdentity'
 import { deleteLocalLoraPreview, loadLocalLoraPreviews, saveLocalLoraPreview, useLocalModelStore, localScanSession } from '../store/localModels'
@@ -7,7 +8,7 @@ import { esc, escAttr, copyText, showToast, fmtNum, thumbUrl, debounce, stripExt
 import { openLightbox } from '../components/Lightbox'
 import { ImageNodeCache } from '../components/ImageNodeCache'
 import { localCategoryEntries } from '../services/localCategoryNavigation'
-import type { PngMeta, LocalLoraFile, TagFreq } from '../types'
+import type { PngMeta, LocalLoraFile, LocalLoraMatch, TagFreq } from '../types'
 import type { OutputMetadata } from '../types/outputs'
 import { promptModal, confirmModal } from '../components/Modal'
 import { openContextMenu, type ContextMenuAction } from '../components/ContextMenu'
@@ -19,6 +20,8 @@ import { extractLorasFromWorkflow, parseOutputMetadataBlob, outputLoraNames, typ
 import { renderMetadataReliability, renderGenerationDetails, bindRawMetadataDetails } from '../renderers/outputGenerationDetails'
 import { metadataForFile, outputRootIdentity } from '../services/outputIdentity'
 import { localLoraTriggerOverrides, normalizeLocalLoraIdentity } from '../services/localLoraTriggerOverrides'
+// 底模口径单一真源：C 站匹配值优先，其次本地 safetensors 元数据识别值
+import { resolveFileBaseModel, baseModelKey } from '../services/baseModelCatalog'
 import type { LocalLoraTriggerOverrideEntry } from '../services/localLoraTriggerOverrides'
 
 // ── 搜索高亮工具 ──
@@ -37,6 +40,21 @@ let _scanProgressUnsubscribe: (() => void) | null = null
 const _localImageNodes = new ImageNodeCache(128, 16 * 1024 * 1024)
 window.addEventListener('pagehide', () => _localImageNodes.clear(), { once: true })
 
+function localProgressLabel(progress: LocalScanProgress): string {
+  if (getLocale() === 'zh-CN') return progress.label
+  if (progress.status === 'matching') return t('lora.scan.matching')
+  const reading = progress.label.match(/^扫描中 (.+) (\d+)%$/)
+  if (reading) return t('lora.scan.reading', { name: reading[1], percent: reading[2] })
+  const summary = progress.label.match(/^扫描 \(新(\d+) 变(\d+) 同(\d+)\)$/)
+  if (summary) return t('lora.scan.summary', { added: summary[1], changed: summary[2], unchanged: summary[3] })
+  return progress.status === 'scanning' ? t('lora.scan.scanning') : progress.label
+}
+
+function localCategoryLabel(value: string, fallback: string): string {
+  if (!value) return t('lora.all')
+  return value === '__uncategorized__' ? t('lora.category.uncategorized') : fallback
+}
+
 function renderScanProgress(progress: LocalScanProgress): void {
   const busy = progress.status === 'scanning' || progress.status === 'matching'
   const wrap = document.getElementById('localProgress')
@@ -49,7 +67,7 @@ function renderScanProgress(progress: LocalScanProgress): void {
   if (wrap) wrap.style.display = busy ? 'flex' : 'none'
   const pct = progress.total > 0 ? Math.round(((progress.done + progress.partial) / progress.total) * 100) : 0
   if (bar) bar.style.width = busy ? `${pct}%` : '0%'
-  if (text) text.textContent = `${progress.label} ${progress.done}/${progress.total} (${pct}%)`
+  if (text) text.textContent = `${localProgressLabel(progress)} ${progress.done}/${progress.total} (${pct}%)`
 }
 
 // ── 渲染调度：扫描/匹配期间 store 高频变化（每个文件 updateFile 一次），
@@ -151,7 +169,7 @@ function ensureTriggerEditor(f: LocalLoraFile): LocalTriggerEditorState {
   setActiveTriggerName(_detailDrawerOpen || useLocalModelStore.getState().currentView === 'detail' ? f.name : null)
   if (!triggerServiceAvailable()) {
     editor.status = 'error'
-    editor.error = '共享触发词服务不可用。'
+    editor.error = t('lora.trigger.unavailable')
     return editor
   }
 
@@ -174,18 +192,18 @@ function ensureTriggerEditor(f: LocalLoraFile): LocalTriggerEditorState {
 }
 
 function triggerEditorStatus(editor: LocalTriggerEditorState): string {
-  if (editor.status === 'saving') return '正在保存到 ComfyUI…'
-  if (editor.status === 'error') return `同步读取或保存失败：${editor.error} 草稿已保留，可重试。`
-  if (editor.dirty) return '草稿未保存；复制仍使用下方已保存有效词。'
-  if (editor.status === 'loading') return '正在读取 ComfyUI 当前保存的有效词…'
+  if (editor.status === 'saving') return t('lora.trigger.saving')
+  if (editor.status === 'error') return t('lora.trigger.syncError', { error: editor.error })
+  if (editor.dirty) return t('lora.trigger.dirty')
+  if (editor.status === 'loading') return t('lora.trigger.loadingSaved')
   if (editor.status === 'uneditable' || (editor.entry && !editor.entry.editable)) {
-    return '此 LoRA 路径无法在 ComfyUI 中唯一匹配。请使用完整相对路径及扩展名。'
+    return t('lora.trigger.ambiguous')
   }
-  if (!editor.entry) return '尚未读取 ComfyUI 当前保存的有效词。'
-  if (editor.entry.hasOverride && !(editor.entry.words || []).length) return '当前使用空的自定义词（已停用自动词）。'
+  if (!editor.entry) return t('lora.trigger.notLoadedSaved')
+  if (editor.entry.hasOverride && !(editor.entry.words || []).length) return t('lora.trigger.emptyOverride')
   return editor.entry.hasOverride
-    ? `当前使用已保存的自定义词 · ${editor.entry.words?.length || 0} 段`
-    : `当前使用自动词 · ${(editor.automaticWords ?? editor.entry.automaticWords ?? []).length} 段`
+    ? t('lora.trigger.usingCustom', { count: editor.entry.words?.length || 0 })
+    : t('lora.trigger.usingAutomatic', { count: (editor.automaticWords ?? editor.entry.automaticWords ?? []).length })
 }
 
 function updateTriggerEditorDom(): void {
@@ -197,12 +215,12 @@ function updateTriggerEditorDom(): void {
   const effectiveEl = editorEl.querySelector('[data-trigger-effective]')
   if (effectiveEl) {
     const words = state.entry ? effectiveTriggerWords(state.entry, state.automaticWords) : null
-    effectiveEl.textContent = words === null ? '尚未读取' : words.length ? words.join('\n') : '（空：当前不使用触发词）'
+    effectiveEl.textContent = words === null ? t('lora.trigger.notLoaded') : words.length ? words.join('\n') : t('lora.trigger.empty')
   }
   const autoEl = editorEl.querySelector('[data-trigger-automatic]')
   if (autoEl) {
     const words = state.automaticWords ?? state.entry?.automaticWords
-    autoEl.textContent = words ? (words.join('\n') || '自动词为空') : '读取中…'
+    autoEl.textContent = words ? (words.join('\n') || t('lora.trigger.automaticEmpty')) : t('lora.reading')
   }
   const input = editorEl.querySelector('.local-trigger-draft') as HTMLTextAreaElement | null
   if (input && (document.activeElement !== input || !state.dirty)) input.value = state.draft
@@ -213,13 +231,13 @@ function updateTriggerEditorDom(): void {
   const retry = editorEl.querySelector('.local-trigger-retry') as HTMLButtonElement | null
   if (save) {
     save.disabled = state.status === 'saving' || state.status === 'uneditable'
-    save.textContent = state.dirty ? '保存自定义词' : '保存'
+    save.textContent = state.dirty ? t('lora.trigger.saveCustom') : t('lora.save')
   }
   if (reset) reset.disabled = state.status === 'saving' || !state.entry?.editable || !state.entry.hasOverride
   if (copy) {
     copy.disabled = state.copying || state.status === 'loading' || state.status === 'saving' || !state.entry || !effectiveTriggerWords(state.entry, state.automaticWords).length
     copy.setAttribute('aria-busy', String(state.copying))
-    copy.innerHTML = state.copying ? '读取最新值…' : `${icon('copy', 14)} 复制已保存`
+    copy.innerHTML = state.copying ? t('lora.trigger.readLatest') : `${icon('copy', 14)} ${t('lora.trigger.copySaved')}`
   }
   if (retry) retry.hidden = state.status !== 'error'
 }
@@ -247,8 +265,8 @@ function ensureLocalManagerLayout(): void {
   more.className = 'local-toolbar-more'
   if (!more.querySelector('summary')) {
     const summary = document.createElement('summary')
-    summary.setAttribute('aria-label', '更多本地 LoRA 操作')
-    summary.textContent = '更多'
+    summary.setAttribute('aria-label', t('lora.local.moreActions'))
+    summary.textContent = t('lora.more')
     const actions = document.createElement('div')
     actions.className = 'local-toolbar-more-actions'
     more.append(summary, actions)
@@ -271,7 +289,7 @@ function ensureLocalManagerLayout(): void {
       viewGroup = document.createElement('div')
       viewGroup.className = 'local-toolbar-more-views'
       viewGroup.setAttribute('role', 'group')
-      viewGroup.setAttribute('aria-label', '本地管理视图')
+      viewGroup.setAttribute('aria-label', t('lora.local.views'))
       moreActions.append(viewGroup)
     }
     if (viewTabs.parentElement !== viewGroup) viewGroup.append(viewTabs)
@@ -355,7 +373,7 @@ function setCategoryRailOpen(open: boolean): void {
 function ensureCategoryMenu(slot: HTMLElement, toolbar: HTMLElement): void {
   if (!_categoryToggleEventsBound) {
     const quick = document.createElement('nav')
-    quick.id = 'localCategoryQuickFilters'; quick.className = 'local-category-strip'; quick.setAttribute('aria-label', '快速切换 LoRA 分类')
+    quick.id = 'localCategoryQuickFilters'; quick.className = 'local-category-strip'; quick.setAttribute('aria-label', t('lora.category.quickSwitch'))
     quick.addEventListener('click', handleCategorySlotClick)
     const menu = document.createElement('details')
     menu.id = 'localCategoryMenu'; menu.className = 'local-category-menu'
@@ -363,11 +381,11 @@ function ensureCategoryMenu(slot: HTMLElement, toolbar: HTMLElement): void {
     toggle.className = 'toolbox-local-category-toggle'
     toggle.setAttribute('aria-controls', slot.id)
     toggle.setAttribute('aria-expanded', 'false')
-    toggle.setAttribute('aria-label', '搜索与管理 LoRA 分类')
-    toggle.title = '搜索、新建、重命名或删除分类'
-    toggle.innerHTML = `${icon('folder', 14)}<span>分类</span>${icon('chevronDown', 12)}`
+    toggle.setAttribute('aria-label', t('lora.category.manageAria'))
+    toggle.title = t('lora.category.manageTitle')
+    toggle.innerHTML = `${icon('folder', 14)}<span>${t('lora.category.label')}</span>${icon('chevronDown', 12)}`
     const panel = document.createElement('div'); panel.className = 'local-category-panel'
-    const search = document.createElement('input'); search.type = 'search'; search.placeholder = '搜索分类…'; search.setAttribute('aria-label', '搜索 LoRA 分类')
+    const search = document.createElement('input'); search.type = 'search'; search.placeholder = t('lora.category.searchPlaceholder'); search.setAttribute('aria-label', t('lora.category.searchAria'))
     panel.append(search, slot); menu.append(toggle, panel); toolbar.append(quick, menu)
     const filter = () => { const query = search.value.trim().toLocaleLowerCase(); slot.querySelectorAll<HTMLElement>('.local-grid-category-row').forEach(row => { row.hidden = query !== '' && !row.textContent?.toLocaleLowerCase().includes(query) }) }
     search.addEventListener('input', filter)
@@ -401,7 +419,7 @@ async function handleCategorySlotClick(event: Event): Promise<void> {
   const del = target.closest('.local-cat-del-btn') as HTMLElement | null
   if (del) {
     const category = del.dataset.cat
-    if (category && await confirmModal('删除分类', `确认删除分类「${category}」？\n已归入该分类的 LoRA 不会被删除，仅移除分类标记。`)) {
+    if (category && await confirmModal(t('lora.category.delete'), t('lora.category.confirmDelete', { name: category }))) {
       const store = useLocalModelStore.getState()
       store.removeCategory(category)
       store.saveToCache()
@@ -414,19 +432,19 @@ async function handleCategorySlotClick(event: Event): Promise<void> {
     const category = rename.dataset.cat
     if (!category) return
     const store = useLocalModelStore.getState()
-    const newName = await promptModal('重命名分类', category)
+    const newName = await promptModal(t('lora.category.rename'), category)
     if (!newName || !newName.trim() || newName.trim() === category) return
-    if (store.categories.includes(newName.trim())) { showToast('⚠️ 分类名已存在'); return }
+    if (store.categories.includes(newName.trim())) { showToast(t('lora.category.duplicateName')); return }
     store.renameCategory(category, newName.trim())
     store.saveToCache()
     renderSidebarList(store)
     return
   }
   if (target.closest('.local-new-cat-btn')) {
-    const category = await promptModal('新建分类')
+    const category = await promptModal(t('lora.category.create'))
     if (!category || !category.trim()) return
     const store = useLocalModelStore.getState()
-    if (store.categories.includes(category.trim())) { showToast('⚠️ 分类已存在'); return }
+    if (store.categories.includes(category.trim())) { showToast(t('lora.category.duplicate')); return }
     store.addCategory(category.trim())
     store.saveToCache()
     renderSidebarList(store)
@@ -594,19 +612,19 @@ function activateLocalView(view: LocalViewKey): void {
 function renderTriggerEditor(f: LocalLoraFile, editor: LocalTriggerEditorState): string {
   const saved = editor.entry ? effectiveTriggerWords(editor.entry, editor.automaticWords) : null
   const automatic = editor.automaticWords || editor.entry?.automaticWords || []
-  const savedText = saved === null ? '尚未读取' : saved.length ? saved.join('\n') : '（空：当前不使用触发词）'
+  const savedText = saved === null ? t('lora.trigger.notLoaded') : saved.length ? saved.join('\n') : t('lora.trigger.empty')
   return `<section class="local-trigger-editor" id="localTriggerEditor" data-name="${escAttr(f.name)}">
-    <div class="local-trigger-heading"><div><h4>共享触发词</h4><span data-trigger-status role="status" aria-live="polite">${esc(triggerEditorStatus(editor))}</span></div>
-      <button class="local-trigger-copy" type="button" title="复制已保存的有效触发词" aria-label="复制已保存的有效触发词">${icon('copy', 14)} 复制已保存</button>
+    <div class="local-trigger-heading"><div><h4>${t('lora.trigger.shared')}</h4><span data-trigger-status role="status" aria-live="polite">${esc(triggerEditorStatus(editor))}</span></div>
+      <button class="local-trigger-copy" type="button" title="${t('lora.trigger.copySavedTitle')}" aria-label="${t('lora.trigger.copySavedTitle')}">${icon('copy', 14)} ${t('lora.trigger.copySaved')}</button>
     </div>
-    <div class="local-trigger-saved"><span>ComfyUI 当前使用</span><pre data-trigger-effective>${esc(savedText)}</pre></div>
-    <label class="local-trigger-label" for="localTriggerDraft">编辑草稿（每行一段）</label>
-    <textarea id="localTriggerDraft" class="local-trigger-draft" data-name="${escAttr(f.name)}" maxlength="20000" rows="4" placeholder="每行输入一段触发词；保存空白表示停用自动词。">${esc(editor.draft)}</textarea>
-    <details class="local-trigger-auto"><summary>查看自动提取词</summary><pre data-trigger-automatic>${esc(automatic.length ? automatic.join('\n') : '自动词为空')}</pre></details>
+    <div class="local-trigger-saved"><span>${t('lora.trigger.current')}</span><pre data-trigger-effective>${esc(savedText)}</pre></div>
+    <label class="local-trigger-label" for="localTriggerDraft">${t('lora.trigger.draft')}</label>
+    <textarea id="localTriggerDraft" class="local-trigger-draft" data-name="${escAttr(f.name)}" maxlength="20000" rows="4" placeholder="${t('lora.trigger.placeholder')}">${esc(editor.draft)}</textarea>
+    <details class="local-trigger-auto"><summary>${t('lora.trigger.showAutomatic')}</summary><pre data-trigger-automatic>${esc(automatic.length ? automatic.join('\n') : t('lora.trigger.automaticEmpty'))}</pre></details>
     <div class="local-trigger-actions">
-      <button class="local-trigger-save" data-name="${escAttr(f.name)}" type="button">保存</button>
-      <button class="local-trigger-reset" data-name="${escAttr(f.name)}" type="button">恢复自动</button>
-      <button class="local-trigger-retry" data-name="${escAttr(f.name)}" type="button" hidden>重试读取</button>
+      <button class="local-trigger-save" data-name="${escAttr(f.name)}" type="button">${t('lora.save')}</button>
+      <button class="local-trigger-reset" data-name="${escAttr(f.name)}" type="button">${t('lora.trigger.restoreAutomatic')}</button>
+      <button class="local-trigger-retry" data-name="${escAttr(f.name)}" type="button" hidden>${t('lora.trigger.retryRead')}</button>
     </div>
   </section>`
 }
@@ -633,7 +651,7 @@ function clearDragHighlight() {
 // 右键菜单：单个 LoRA 切换分类，或拖拽多选时批量添加分类
 // 菜单为「连续勾选」模式：点击分类后菜单保持打开（sticky），可一次勾选多个分类，点「✅ 完成」收尾
 async function deleteLocalLora(name: string): Promise<void> {
-  if (!await confirmModal('删除文件', `确认从磁盘删除「${name}」？\n此操作不可撤销！`)) return
+  if (!await confirmModal(t('lora.local.deleteFile'), t('lora.local.confirmDeleteFile', { name }))) return
   await useLocalModelStore.getState().deleteFile(name)
   const state = useLocalModelStore.getState()
   if (state.selectedModel === name) state.selectModel(null)
@@ -646,11 +664,11 @@ function loraContextActions(name: string): ContextMenuAction[] {
   if (!file) return []
   const url = localModelUrl(file)
   return [
-    { label: '查看模型详情', icon: 'file-text', handler: () => openLocalDetail(name) },
-    { label: '上传/替换预览图', icon: 'image', handler: () => openLocalPreviewPicker(name) },
-    ...(url ? [{ label: '打开对应 LoRA 页面', icon: 'globe', handler: () => { window.open(url, '_blank', 'noopener,noreferrer') } }] : []),
-    ...(state.previewImages[name] ? [{ label: '恢复 C 站预览图', icon: 'refresh', handler: () => { void resetLocalPreview(name) } }] : []),
-    { label: '删除本地文件…', icon: 'trash', danger: true, handler: () => { void deleteLocalLora(name) } },
+    { label: t('lora.local.viewDetails'), icon: 'file-text', handler: () => openLocalDetail(name) },
+    { label: t('lora.local.uploadPreview'), icon: 'image', handler: () => openLocalPreviewPicker(name) },
+    ...(url ? [{ label: t('lora.local.openLoraPage'), icon: 'globe', handler: () => { window.open(url, '_blank', 'noopener,noreferrer') } }] : []),
+    ...(state.previewImages[name] ? [{ label: t('lora.local.restorePreview'), icon: 'refresh', handler: () => { void resetLocalPreview(name) } }] : []),
+    { label: t('lora.local.deleteFileMenu'), icon: 'trash', danger: true, handler: () => { void deleteLocalLora(name) } },
   ]
 }
 
@@ -678,12 +696,12 @@ function openLoraContextMenu(e: Pick<MouseEvent, 'clientX' | 'clientY'>, name: s
         return it
       })
       catItems.push({
-        label: '➕ 新建分类…',
+        label: t('lora.category.createMenu'),
         handler: async () => {
-          const n = (await promptModal('新建分类'))?.trim()
+          const n = (await promptModal(t('lora.category.create')))?.trim()
           if (!n) return
           const st = useLocalModelStore.getState()
-          if (st.categories.includes(n)) { showToast('分类已存在'); return }
+          if (st.categories.includes(n)) { showToast(t('lora.category.duplicatePlain')); return }
           st.addCategory(n)
           st.setBatchModelCategories(names, n)
           st.saveToCache()
@@ -692,18 +710,18 @@ function openLoraContextMenu(e: Pick<MouseEvent, 'clientX' | 'clientY'>, name: s
         },
       })
       catItems.push({
-        label: '✅ 完成',
+        label: t('lora.done'),
         handler: () => {
           _dragSelected.clear()
           clearDragHighlight()
           renderLocalView()
-          if (addedCount > 0) showToast(`✅ ${names.length} 个 LoRA 已添加 ${addedCount} 项分类`)
+          if (addedCount > 0) showToast(t('lora.category.batchAdded', { count: names.length, categories: addedCount }))
         },
       })
       openContextMenu(x, y, [
         {
-          label: `已选 ${names.length} 个 LoRA`,
-          items: [{ label: '添加到分类', icon: '🏷️', handler: () => {}, children: catItems }],
+          label: t('lora.local.selectedLoras', { count: names.length }),
+          items: [{ label: t('lora.category.addTo'), icon: '🏷️', handler: () => {}, children: catItems }],
         },
         { label: name, items: loraContextActions(name) },
       ], focus)
@@ -734,12 +752,12 @@ function openLoraContextMenu(e: Pick<MouseEvent, 'clientX' | 'clientY'>, name: s
       return it
     })
     catItems.push({
-      label: '➕ 新建分类…',
+      label: t('lora.category.createMenu'),
       handler: async () => {
-        const n = (await promptModal('新建分类'))?.trim()
+        const n = (await promptModal(t('lora.category.create')))?.trim()
         if (!n) return
         const st = useLocalModelStore.getState()
-        if (st.categories.includes(n)) { showToast('分类已存在'); return }
+        if (st.categories.includes(n)) { showToast(t('lora.category.duplicatePlain')); return }
         st.addCategory(n)
         st.setModelCategories(name, [...(st.modelCategories[key] || []), n])
         st.saveToCache()
@@ -747,13 +765,13 @@ function openLoraContextMenu(e: Pick<MouseEvent, 'clientX' | 'clientY'>, name: s
         openSingleMenu() // 重开菜单以纳入新分类并显示 ☑
       },
     })
-    catItems.push({ label: '✅ 完成', handler: () => {} }) // 点击即关闭菜单（默认行为）
+    catItems.push({ label: t('lora.done'), handler: () => {} }) // 点击即关闭菜单（默认行为）
     openContextMenu(x, y, [
       {
         label: name.replace(/\.\w+$/, ''),
         items: loraContextActions(name),
       },
-      { items: [{ label: '分类', icon: 'tag', handler: () => {}, children: catItems }] },
+      { items: [{ label: t('lora.category.label'), icon: 'tag', handler: () => {}, children: catItems }] },
     ], focus)
   }
   openSingleMenu()
@@ -850,7 +868,7 @@ function initDragSelect() {
     if (rectEl) { rectEl.remove(); rectEl = null }
     if (_dragSelected.size > 0) {
       _justBoxed = true
-      showToast(`已选中 ${_dragSelected.size} 个，右键可批量添加分类`)
+      showToast(t('lora.local.dragSelected', { count: _dragSelected.size }))
     }
   })
 
@@ -921,7 +939,7 @@ export async function initLocalManager() {
     if (changed && isLocalManagerActive()) renderSidebarList(useLocalModelStore.getState())
   })
   // The saved initial tab is activated before this module is initialized. Catch up once ready.
-  if (isLocalManagerActive()) void activateLocalManager().catch(() => showToast('自动扫描失败，请点扫描文件夹重试'))
+  if (isLocalManagerActive()) void activateLocalManager().catch(() => showToast(t('lora.local.autoScanFailed')))
 }
 
 /** 激活流程并发守卫：快速反复切页时，上一次激活流程没走完就不再叠加 */
@@ -968,16 +986,16 @@ async function activateLocalManagerInner() {
         // 自动增量扫描：用户痛点——新下载的 LoRA 必须手动重选目录扫描才会出现。
         // 有已授权句柄时直接后台扫描 + 自动匹配，免弹窗。
         store.setNewFileCount(newCount)
-        showToast(`📁 发现 ${newCount} 个新 LoRA 文件，自动扫描中…`)
+        showToast(t('lora.local.autoScanning', { count: newCount }))
         await store.scanIncremental()
         if (isLocalManagerActive()) renderLocalView()
       } else {
-        showToast('🔄 已恢复上次扫描会话')
+        showToast(t('lora.local.sessionRestored'))
       }
     } else {
       // 句柄已失效（页面刷新后的常态）：静默回退后端扫描，全程无需交互、不弹任何对话框。
       // ⚠️ 后端扫描是全目录遍历，反复切页不能反复跑 —— 受 5 分钟节流约束。
-      showToast('已恢复缓存数据，后台同步中…')
+      showToast(t('lora.local.cacheRestored'))
       await store.scanIncremental()
       if (isLocalManagerActive()) renderLocalView()
     }
@@ -1017,7 +1035,9 @@ function renderListFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalM
   const label = f.matchData?.modelName || f.name
   const localSuffix = f.matchData?.modelName ? `<span class="local-list-localname">${esc(f.name.replace(/\.\w+$/, ''))}</span>` : ''
   const categories = state.modelCategories[stripExt(f.name)] || []
-  const metaParts = [f.matchData?.versionName, f.matchData?.baseModel, ...categories].filter(Boolean)
+  // 底模走统一口径（C 站优先、其次本地元数据），否则未上传 C 站的自训 LoRA 在这里没有底模
+  const listBaseModel = resolveFileBaseModel(f.matchData?.baseModel, f.localBaseModel)
+  const metaParts = [f.matchData?.versionName, listBaseModel, ...categories].filter(Boolean)
   const query = state.searchQuery || ''
   const chk = state.batchMode
     ? `<input type="checkbox" class="local-list-chk" data-name="${escAttr(f.name)}" ${state.batchSelection.includes(f.name) ? 'checked' : ''}>`
@@ -1034,7 +1054,7 @@ function renderListFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalM
 
 function localStatusDot(f: LocalLoraFile): string {
   const status = f.scanning ? 'scanning' : f.matched ? 'matched' : 'unmatched'
-  const label = f.scanning ? 'ComfyUI 匹配中' : f.matched ? '已与本地模型匹配' : f.matchError ? '匹配失败' : '尚未匹配'
+  const label = f.scanning ? t('lora.local.matching') : f.matched ? t('lora.local.matched') : f.matchError ? t('lora.local.matchFailed') : t('lora.local.notMatched')
   return `<span class="local-grid-status-dot ${status}" title="${label}" role="img" aria-label="${label}"></span>`
 }
 
@@ -1055,14 +1075,21 @@ function renderGridFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalM
   const categories = (state.modelCategories[stripExt(f.name)] || []).slice(0, 2)
   const image = localPreviewImg(f, state, 'local-grid-preview-img', 240) // 卡片实际显示 ~180px，240 覆盖 2x DPI；480 是解码内存浪费
   const preview = image
-    ? `<div class="local-grid-preview">${image}${custom ? '<span class="local-grid-custom">自定义</span>' : ''}</div>`
-    : `<div class="local-grid-preview local-grid-preview-empty"><span>${icon('package', 30)}</span><small>暂无预览图</small></div>`
+    ? `<div class="local-grid-preview">${image}${custom ? `<span class="local-grid-custom">${t('lora.custom')}</span>` : ''}</div>`
+    : `<div class="local-grid-preview local-grid-preview-empty"><span>${icon('package', 30)}</span><small>${t('lora.noPreview')}</small></div>`
   const chk = state.batchMode
     ? `<input type="checkbox" class="local-list-chk local-grid-check" data-name="${escAttr(f.name)}" ${state.batchSelection.includes(f.name) ? 'checked' : ''}>`
     : ''
-  const baseModel = f.matchData?.baseModel || ''
+  // 底模走统一口径：C 站匹配值优先，未匹配时退回本地 safetensors 元数据识别值
+  const civitaiBaseModel = f.matchData?.baseModel || ''
+  const baseModel = resolveFileBaseModel(civitaiBaseModel, f.localBaseModel)
+  const localOnlyBaseModel = !civitaiBaseModel && !!baseModel
+  // 本地来源的底模在 title 里给出头部原值，便于排查（如 moss_image / KREA2 大小写差异）
+  const baseModelTitle = localOnlyBaseModel
+    ? t('lora.baseModel.localTooltip', { raw: f.localBaseModelRaw ? ` (ss_base_model_version=${f.localBaseModelRaw})` : '' })
+    : t('lora.baseModel')
   const versionName = f.matchData?.versionName || ''
-  return `<div class="local-list-item local-grid-card ${isSel ? 'active' : ''} ${isBatchSelected ? 'batch-selected' : ''}" data-name="${escAttr(f.name)}" draggable="true" tabindex="0" role="group" aria-label="${escAttr(label)}" aria-haspopup="menu" title="右键打开操作菜单；Shift+F10 也可打开">
+  return `<div class="local-list-item local-grid-card ${isSel ? 'active' : ''} ${isBatchSelected ? 'batch-selected' : ''}" data-name="${escAttr(f.name)}" draggable="true" tabindex="0" role="group" aria-label="${escAttr(label)}" aria-haspopup="menu" title="${t('lora.local.contextHint')}">
     ${preview}
     ${chk}
     <div class="local-grid-overlay">
@@ -1072,9 +1099,9 @@ function renderGridFileItem(f: LocalLoraFile, state: ReturnType<typeof useLocalM
       <div class="local-grid-name" title="${escAttr(label)}">${highlightText(label, query)}</div>
       ${localName ? `<div class="local-grid-localname" title="${escAttr(localName)}">${esc(localName)}</div>` : ''}
       ${(versionName || baseModel || categories.length) ? `<div class="local-grid-meta">
-        ${versionName ? `<span class="local-grid-version" title="版本">${esc(versionName)}</span>` : ''}
-        ${baseModel ? `<span class="local-grid-base" title="底模">${esc(baseModel)}</span>` : ''}
-        ${categories.length ? `<span class="local-grid-tags" title="分类">${categories.map(category => `<span>${esc(category)}</span>`).join('')}</span>` : ''}
+        ${versionName ? `<span class="local-grid-version" title="${t('lora.version')}">${esc(versionName)}</span>` : ''}
+        ${baseModel ? `<span class="local-grid-base ${localOnlyBaseModel ? 'local-base-only' : ''}" title="${escAttr(baseModelTitle)}">${esc(baseModel)}</span>` : ''}
+        ${categories.length ? `<span class="local-grid-tags" title="${t('lora.category.label')}">${categories.map(category => `<span>${esc(category)}</span>`).join('')}</span>` : ''}
       </div>` : ''}
     </div>
   </div>`
@@ -1181,7 +1208,7 @@ function renderGridCategoryRail(state: ReturnType<typeof useLocalModelStore.getS
     const signature = JSON.stringify([entries, state.filterCategory])
     if (quick.dataset.signature !== signature) {
       const scroll = quick.scrollLeft
-      quick.innerHTML = entries.map(entry => `<button type="button" class="local-grid-cat-btn ${state.filterCategory === (entry.value || null) ? 'active' : ''}" data-cat="${escAttr(entry.value)}" aria-pressed="${state.filterCategory === (entry.value || null)}"><span>${esc(entry.label)}</span><small>${entry.count}</small></button>`).join('')
+      quick.innerHTML = entries.map(entry => `<button type="button" class="local-grid-cat-btn ${state.filterCategory === (entry.value || null) ? 'active' : ''}" data-cat="${escAttr(entry.value)}" aria-pressed="${state.filterCategory === (entry.value || null)}"><span>${esc(localCategoryLabel(entry.value, entry.label))}</span><small>${entry.count}</small></button>`).join('')
       quick.dataset.signature = signature; quick.scrollLeft = scroll
     }
   }
@@ -1189,23 +1216,32 @@ function renderGridCategoryRail(state: ReturnType<typeof useLocalModelStore.getS
     <button class="local-grid-cat-btn ${state.filterCategory === cat ? 'active' : ''}" data-cat="${escAttr(cat || '')}" type="button">
       <span class="local-grid-cat-label">${icon(cat === null ? 'grid' : 'folder', 12)}${esc(label)}</span><span class="local-grid-cat-count">${count}</span>
     </button>
-    ${editable ? `<button class="local-cat-rename-btn local-grid-cat-action" data-cat="${escAttr(label)}" title="重命名">${icon('edit3', 11)}</button><button class="local-cat-del-btn local-grid-cat-action" data-cat="${escAttr(label)}" title="删除分类">${icon('x', 11)}</button>` : ''}
+    ${editable ? `<button class="local-cat-rename-btn local-grid-cat-action" data-cat="${escAttr(label)}" title="${t('lora.rename')}">${icon('edit3', 11)}</button><button class="local-cat-del-btn local-grid-cat-action" data-cat="${escAttr(label)}" title="${t('lora.category.delete')}">${icon('x', 11)}</button>` : ''}
   </div>`
-  return `<div class="local-grid-category-heading"><span>分类</span><span class="local-grid-category-total">${files.length}</span></div>
-    ${entries.map(entry => row(entry.value || null, entry.label, entry.count, entry.editable)).join('')}
-    <button class="btn btn-ghost btn-sm local-new-cat-btn local-grid-new-category" type="button">${icon('plus', 12)} 新建分类</button>`
+  return `<div class="local-grid-category-heading"><span>${t('lora.category.label')}</span><span class="local-grid-category-total">${files.length}</span></div>
+    ${entries.map(entry => row(entry.value || null, localCategoryLabel(entry.value, entry.label), entry.count, entry.editable)).join('')}
+    <button class="btn btn-ghost btn-sm local-new-cat-btn local-grid-new-category" type="button">${icon('plus', 12)} ${t('lora.category.create')}</button>`
 }
 
 /**
- * 「按底模」展开面板（2026-09-11）：动态汇总已匹配 LoRA 的 Civitai baseModel + 各自数量，
- * 点击过滤、再点取消；未匹配的归入「未匹配」项。网格/列表两种视图都渲染，与分类筛选叠加。
+ * 「未匹配」筛选项的哨兵值：底模既无 C 站匹配值、也无本地元数据识别值
+ * （面板计数与下方主过滤共用这一常量，避免两处字符串写歪导致计数与结果不一致）
+ */
+const BM_UNMATCHED = '__unmatched__'
+
+/**
+ * 「按底模」展开面板（2026-09-11；2026-10-19 合并本地元数据源）：
+ * 汇总的底模来自**统一口径** resolveFileBaseModel —— C 站匹配值优先（更精确，能区分 MOSS SFT/Base），
+ * 其次本地 safetensors 头部 ss_base_model_version 识别的值。
+ * 这样未上传 C 站的自训 LoRA（本机 26 个 moss_image）也有底模标签、也能被筛出来；
+ * 「未匹配」现在只装「两种来源都没有」的文件。点击过滤、再点取消；网格/列表两种视图都渲染。
  * 计数来源 = 搜索 + 匹配状态筛选后的集合（不受底模/分类筛选影响，各底模分布稳定可点选）。
  */
 function renderBaseModelPanel(state: ReturnType<typeof useLocalModelStore.getState>, files: LocalLoraFile[]): string {
   const counts = new Map<string, number>()
   let unmatched = 0
   for (const f of files) {
-    const bm = (f.matchData?.baseModel || '').trim()
+    const bm = resolveFileBaseModel(f.matchData?.baseModel, f.localBaseModel)
     if (bm) counts.set(bm, (counts.get(bm) || 0) + 1)
     else unmatched++
   }
@@ -1216,14 +1252,14 @@ function renderBaseModelPanel(state: ReturnType<typeof useLocalModelStore.getSta
     </button>`
   const list = state.baseModelPanelOpen
     ? `<div class="local-bm-list">
-        ${row('', '全部底模', files.length, 'grid')}
+        ${row('', t('lora.baseModel.all'), files.length, 'grid')}
         ${rows.map(([bm, n]) => row(bm, bm, n, 'tag')).join('')}
-        ${unmatched > 0 ? row('__unmatched__', '未匹配', unmatched, 'alertCircle') : ''}
+        ${unmatched > 0 ? row(BM_UNMATCHED, t('lora.local.unmatched'), unmatched, 'alertCircle') : ''}
       </div>`
     : ''
-  const activeLabel = state.filterBaseModel === '__unmatched__' ? '未匹配' : state.filterBaseModel
-  return `<button class="local-bm-toggle ${state.filterBaseModel ? 'has-filter' : ''}" type="button" aria-expanded="${state.baseModelPanelOpen}" title="按底模（Civitai 基座）筛选本库 LoRA">
-      <span class="local-grid-cat-label">${icon('layers', 12)}按底模${activeLabel ? `：${esc(activeLabel)}` : ''}</span>
+  const activeLabel = state.filterBaseModel === BM_UNMATCHED ? t('lora.local.unmatched') : state.filterBaseModel
+  return `<button class="local-bm-toggle ${state.filterBaseModel ? 'has-filter' : ''}" type="button" aria-expanded="${state.baseModelPanelOpen}" title="${t('lora.baseModel.filterTitle')}">
+      <span class="local-grid-cat-label">${icon('layers', 12)}${t('lora.baseModel.filter')}${activeLabel ? `：${esc(activeLabel)}` : ''}</span>
       <span class="local-bm-chevron ${state.baseModelPanelOpen ? 'open' : ''}">${icon('chevronDown', 12)}</span>
     </button>${list}`
 }
@@ -1231,11 +1267,11 @@ function renderBaseModelPanel(state: ReturnType<typeof useLocalModelStore.getSta
 function readPreviewFile(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     if (!/^image\/(png|jpeg|webp|gif)$/i.test(file.type)) {
-      reject(new Error('只支持 PNG、JPG、WebP 或 GIF 图片'))
+      reject(new Error(t('lora.preview.unsupportedType')))
       return
     }
     if (file.size > 20 * 1024 * 1024) {
-      reject(new Error('预览图不能超过 20 MB'))
+      reject(new Error(t('lora.preview.tooLarge')))
       return
     }
     const objectUrl = URL.createObjectURL(file)
@@ -1248,7 +1284,7 @@ function readPreviewFile(file: File): Promise<string> {
         canvas.width = Math.max(1, Math.round(image.naturalWidth * scale))
         canvas.height = Math.max(1, Math.round(image.naturalHeight * scale))
         const ctx = canvas.getContext('2d')
-        if (!ctx) throw new Error('浏览器不支持图片压缩')
+        if (!ctx) throw new Error(t('lora.preview.compressionUnsupported'))
         ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
         const result = canvas.toDataURL('image/webp', 0.82)
         URL.revokeObjectURL(objectUrl)
@@ -1260,7 +1296,7 @@ function readPreviewFile(file: File): Promise<string> {
     }
     image.onerror = () => {
       URL.revokeObjectURL(objectUrl)
-      reject(new Error('预览图读取失败'))
+      reject(new Error(t('lora.preview.readFailed')))
     }
     image.src = objectUrl
   })
@@ -1271,12 +1307,12 @@ async function setLocalPreview(name: string, image: string): Promise<boolean> {
   s.setPreviewImage(name, image)
   if (!await saveLocalLoraPreview(name, image)) {
     s.clearPreviewImage(name)
-    showToast('⚠️ 预览图保存失败，可能是浏览器存储空间不足')
+    showToast(t('lora.preview.saveFailed'))
     return false
   }
   renderSidebarList(useLocalModelStore.getState())
   renderDetail(useLocalModelStore.getState())
-  showToast('✅ 已更新本地预览图')
+  showToast(t('lora.preview.updated'))
   return true
 }
 
@@ -1288,19 +1324,19 @@ function openLocalPreviewPicker(name: string) {
   overlay.className = 'modal-overlay open local-preview-modal-overlay'
   overlay.innerHTML = `<section class="modal-box local-preview-modal-box" role="dialog" aria-modal="true" aria-labelledby="localPreviewModalTitle">
     <div class="local-preview-modal-head">
-      <h3 id="localPreviewModalTitle">设置自定义预览图</h3>
-      <button type="button" class="local-preview-modal-close" data-local-preview-close aria-label="关闭">${icon('x', 15)}</button>
+      <h3 id="localPreviewModalTitle">${t('lora.preview.setTitle')}</h3>
+      <button type="button" class="local-preview-modal-close" data-local-preview-close aria-label="${t('lora.close')}">${icon('x', 15)}</button>
     </div>
-    <p class="sub">为「${esc(name)}」设置本地预览图。图片会压缩后保存在当前浏览器中。</p>
-    <div class="local-preview-dropzone" id="localPreviewDropzone" tabindex="0" role="button" aria-label="拖拽图片或选择文件">
+    <p class="sub">${t('lora.preview.description', { name: esc(name) })}</p>
+    <div class="local-preview-dropzone" id="localPreviewDropzone" tabindex="0" role="button" aria-label="${t('lora.preview.dropAria')}">
       <div class="local-preview-dropzone-icon">${icon('image', 28)}</div>
-      <strong>拖拽图片到这里</strong>
-      <span>支持 PNG、JPG、WebP、GIF，最大 20 MB</span>
-      <button type="button" class="btn btn-primary btn-sm" id="localPreviewFileBtn">选择文件</button>
+      <strong>${t('lora.preview.drop')}</strong>
+      <span>${t('lora.preview.formats')}</span>
+      <button type="button" class="btn btn-primary btn-sm" id="localPreviewFileBtn">${t('lora.chooseFile')}</button>
       <input type="file" id="localPreviewFileInput" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
     </div>
     <div class="modal-actions local-preview-modal-actions">
-      <button type="button" class="btn btn-ghost btn-sm" data-local-preview-close>取消</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-local-preview-close>${t('lora.cancel')}</button>
     </div>
   </section>`
   document.body.appendChild(overlay)
@@ -1325,7 +1361,7 @@ function openLocalPreviewPicker(name: string) {
       const saved = await setLocalPreview(name, await readPreviewFile(file))
       if (saved) close()
     } catch (error) {
-      showToast(`⚠️ ${error instanceof Error ? error.message : '预览图读取失败'}`)
+      showToast(`⚠️ ${error instanceof Error ? error.message : t('lora.preview.readFailed')}`)
     } finally {
       busy = false
       dropzone.classList.remove('is-processing')
@@ -1367,11 +1403,11 @@ function openLocalPreviewPicker(name: string) {
 
 async function setLocalPreviewFromUrl(name: string) {
   const current = useLocalModelStore.getState().previewImages[name]
-  const url = await promptModal('设置预览图 URL', current?.startsWith('http') ? current : '', '支持 http(s) 图片地址；保存后会优先显示这张图')
+  const url = await promptModal(t('lora.preview.urlTitle'), current?.startsWith('http') ? current : '', t('lora.preview.urlHint'))
   if (url === null) return
   const normalized = url.trim()
   if (!/^https?:\/\//i.test(normalized)) {
-    showToast('⚠️ 预览图 URL 必须以 http:// 或 https:// 开头')
+    showToast(t('lora.preview.invalidUrl'))
     return
   }
   await setLocalPreview(name, normalized)
@@ -1383,7 +1419,7 @@ async function resetLocalPreview(name: string) {
   await deleteLocalLoraPreview(name)
   renderSidebarList(useLocalModelStore.getState())
   renderDetail(useLocalModelStore.getState())
-  showToast('已恢复 C 站预览图')
+  showToast(t('lora.preview.restored'))
 }
 
 function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>) {
@@ -1408,14 +1444,18 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
   if (state.filterKey === 'matched') files = files.filter(f => f.matched)
   if (state.filterKey === 'unmatched') files = files.filter(f => !f.matched && !f.scanning)
 
-  // ── 「按底模」面板 + 过滤（2026-09-11）：网格/列表都渲染，与分类筛选叠加 ──
+  // ── 「按底模」面板 + 过滤（2026-09-11；2026-10-19 合并本地元数据源）：网格/列表都渲染，与分类筛选叠加 ──
   const baseModelSourceFiles = [...files]
   const bmPanel = $$('localBaseModelPanel')
   if (bmPanel) setLocalHtml(bmPanel, renderBaseModelPanel(state, baseModelSourceFiles))
   if (state.filterBaseModel) {
-    files = files.filter(f => state.filterBaseModel === '__unmatched__'
-      ? !(f.matched && f.matchData?.baseModel)
-      : f.matchData?.baseModel === state.filterBaseModel)
+    // 与面板计数同一口径：C 站匹配值优先，其次本地 safetensors 元数据识别的底模
+    const bmGroupKey = baseModelKey(state.filterBaseModel)
+    files = files.filter(f => {
+      const resolved = resolveFileBaseModel(f.matchData?.baseModel, f.localBaseModel)
+      if (state.filterBaseModel === BM_UNMATCHED) return !resolved
+      return !!resolved && baseModelKey(resolved) === bmGroupKey
+    })
   }
 
   const categorySourceFiles = [...files]
@@ -1446,7 +1486,7 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
 
   if (files.length === 0) {
     disconnectGridObserver()
-    setLocalHtml(el, '<div class="empty-state empty-state-wide"><div class="big">' + icon('mailOpen', 28) + '</div><p class="empty-state-text">没有匹配的文件</p></div>')
+    setLocalHtml(el, '<div class="empty-state empty-state-wide"><div class="big">' + icon('mailOpen', 28) + `</div><p class="empty-state-text">${t('lora.noMatchingFiles')}</p></div>`)
     updateBatchBar(state)
     return
   }
@@ -1487,9 +1527,9 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
         <span class="local-tree-cat-arrow ${isExpanded ? 'expanded' : ''}">▶</span>
         <span class="local-tree-cat-name">${esc(cat)}</span>
         <span class="local-tree-cat-count">${catFiles.length}</span>
-        <button class="local-cat-rename-btn" data-cat="${escAttr(cat)}" title="重命名">${icon('edit3', 12)}</button>
-        <button class="local-cat-del-btn" data-cat="${escAttr(cat)}" title="删除分类">${icon('x', 12)}</button>
-        <button class="local-new-cat-btn" title="新建分类">${icon('plus', 12)}</button>
+        <button class="local-cat-rename-btn" data-cat="${escAttr(cat)}" title="${t('lora.rename')}">${icon('edit3', 12)}</button>
+        <button class="local-cat-del-btn" data-cat="${escAttr(cat)}" title="${t('lora.category.delete')}">${icon('x', 12)}</button>
+        <button class="local-new-cat-btn" title="${t('lora.category.create')}">${icon('plus', 12)}</button>
       </div>
       <div class="local-tree-cat-items ${isExpanded ? '' : 'collapsed'}">
         ${isExpanded ? catFiles.map(f => renderFileItem(f, state)).join('') : ''}
@@ -1503,7 +1543,7 @@ function renderSidebarList(state: ReturnType<typeof useLocalModelStore.getState>
     html += `<div class="local-tree-cat" data-cat="__uncategorized__">
       <div class="local-tree-cat-header" data-cat="__uncategorized__">
         <span class="local-tree-cat-arrow ${isExpanded ? 'expanded' : ''}">▶</span>
-        <span class="local-tree-cat-name">未分类</span>
+        <span class="local-tree-cat-name">${t('lora.category.uncategorized')}</span>
         <span class="local-tree-cat-count">${uncatFiles.length}</span>
       </div>
       <div class="local-tree-cat-items ${isExpanded ? '' : 'collapsed'}">
@@ -1525,7 +1565,7 @@ function updateBatchBar(state: ReturnType<typeof useLocalModelStore.getState>) {
   const bar = $$('localBatchBar')
   const count = $$('localBatchCount')
   if (!bar || !count) return
-  count.textContent = `已选 ${state.batchSelection.length} 项`
+  count.textContent = t('lora.local.selectedCount', { count: state.batchSelection.length })
   if (!state.batchMode || state.batchSelection.length === 0) {
     bar.style.display = 'none'
     return
@@ -1606,7 +1646,7 @@ async function renderModelsTab() {
   if (!el) return
   // 已加载过：列表 DOM 保留在页面上（tab 切换只改 display），无需重复 fetch
   if (_modelsLoaded) return
-  el.innerHTML = `<div class="empty-state"><div class="big">⏳</div><p>加载模型中…</p></div>`
+  el.innerHTML = `<div class="empty-state"><div class="big">⏳</div><p>${t('lora.local.loadingModels')}</p></div>`
   try {
     const resp = await fetch('/anima/models')
     if (!resp.ok) throw new Error(`http ${resp.status}`)
@@ -1618,14 +1658,14 @@ async function renderModelsTab() {
     const total = data.total || 0
 
     if (total === 0) {
-      el.innerHTML = `<div class="empty-state"><div class="big">${icon('package', 28)}</div><p>未发现模型文件</p><p class="sub">模型需放在 ComfyUI 的 models/ 对应子目录（checkpoints、vae、embeddings 等）</p></div>`
+      el.innerHTML = `<div class="empty-state"><div class="big">${icon('package', 28)}</div><p>${t('lora.local.noModelFiles')}</p><p class="sub">${t('lora.local.modelLocation')}</p></div>`
       return
     }
 
     el.innerHTML = `
       <div class="local-models-toolbar">
-        <span style="font-size:12px;color:var(--text2)">共 <strong style="color:var(--text)">${total}</strong> 个模型</span>
-        <span style="font-size:11px;color:var(--text3)">点击模型名复制到剪贴板</span>
+        <span style="font-size:12px;color:var(--text2)">${t('lora.local.modelCount', { count: '<strong style="color:var(--text)">' + total + '</strong>' })}</span>
+        <span style="font-size:11px;color:var(--text3)">${t('lora.local.copyModelHint')}</span>
       </div>
       ${groups.filter(g => g.count > 0).map(g => `
         <div class="local-models-group">
@@ -1635,7 +1675,7 @@ async function renderModelsTab() {
           </div>
           <div class="local-models-list">
             ${g.items.map(it => `
-              <div class="local-models-row" data-name="${escAttr(it.name)}" title="点击复制模型名">
+              <div class="local-models-row" data-name="${escAttr(it.name)}" title="${t('lora.local.copyModelTitle')}">
                 <span class="local-models-name">${esc(trunc(it.name, 42))}</span>
                 <span class="local-models-meta">${esc(it.ext)} · ${fmtSize(it.size)} · ${fmtDate(it.lastModified)}</span>
               </div>`).join('')}
@@ -1649,7 +1689,7 @@ async function renderModelsTab() {
       })
     })
   } catch (e: any) {
-    el.innerHTML = `<div class="empty-state"><div class="big">${icon('alertCircle', 28)}</div><p>加载模型失败</p><p class="sub">${esc(String(e.message || e))}（需 ComfyUI 后端 /anima/models 接口，旧版插件请更新）</p></div>`
+    el.innerHTML = `<div class="empty-state"><div class="big">${icon('alertCircle', 28)}</div><p>${t('lora.local.loadModelsFailed')}</p><p class="sub">${esc(String(e.message || e))}${t('lora.local.modelsBackendHint')}</p></div>`
   }
 }
 
@@ -1686,18 +1726,39 @@ function renderHome(state: ReturnType<typeof useLocalModelStore.getState>) {
 
   let html = `
     <div class="local-home-summary">
-      <div class="local-stat-card"><div class="local-stat-num">${totalFiles}</div><div class="local-stat-label">LoRA 总数</div></div>
-      <div class="local-stat-card"><div class="local-stat-num">${matchedFiles}</div><div class="local-stat-label">已匹配</div></div>
-      <div class="local-stat-card"><div class="local-stat-num">${outputTotal}</div><div class="local-stat-label">Outputs 总数</div></div>
-      <div class="local-stat-card"><div class="local-stat-num">${outputWithLocalLora}</div><div class="local-stat-label">关联 LoRA</div></div>
+      <div class="local-stat-card"><div class="local-stat-num">${totalFiles}</div><div class="local-stat-label">${t('lora.stats.totalLoras')}</div></div>
+      <div class="local-stat-card"><div class="local-stat-num">${matchedFiles}</div><div class="local-stat-label">${t('lora.stats.matched')}</div></div>
+      <div class="local-stat-card"><div class="local-stat-num">${outputTotal}</div><div class="local-stat-label">${t('lora.stats.totalOutputs')}</div></div>
+      <div class="local-stat-card"><div class="local-stat-num">${outputWithLocalLora}</div><div class="local-stat-label">${t('lora.stats.linkedLoras')}</div></div>
     </div>`
 
   if (!outputWithLocalLora) {
-    html += `<div class="empty-state"><div class="big">${icon('trendingUp', 28)}</div><p>暂无使用数据，扫描 Outputs 目录后自动生成</p></div>`
+    html += `<div class="empty-state"><div class="big">${icon('trendingUp', 28)}</div><p>${t('lora.stats.noUsage')}</p></div>`
   }
 
   setLocalHtml(el, html)
 }
+/**
+ * 详情「文件信息」里的基座模型行。
+ * 显示值走统一口径；C 站匹配回来的值带「Civitai」来源标记，
+ * 没有 C 站数据但本地 safetensors 头部认出了底模时也照样显示，并把原值放进 title 便于排查。
+ */
+function detailBaseModelRow(f: LocalLoraFile, d: LocalLoraMatch | null): string {
+  const civitaiValue = (d?.baseModel || '').trim()
+  const resolved = resolveFileBaseModel(civitaiValue, f.localBaseModel)
+  if (!resolved) return ''
+  const hint = civitaiValue
+    ? t('lora.baseModel.civitaiSource')
+    : t('lora.baseModel.localSource', { raw: f.localBaseModelRaw ? ` (ss_base_model_version=${f.localBaseModelRaw})` : '' })
+  return `<div class="detail-fi-row">
+      <span>${t('lora.baseModel.label')}</span>
+      <span class="detail-fi-base">
+        <span class="detail-base-badge ${civitaiValue ? 'from-civitai' : 'from-local'}">${civitaiValue ? 'Civitai' : t('lora.local')}</span>
+        <span class="detail-base-value" title="${escAttr(`${resolved} · ${hint}`)}">${esc(resolved)}</span>
+      </span>
+    </div>`
+}
+
 function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
   const empty = $$('detailEmpty')
   const content = $$('detailContent')
@@ -1740,31 +1801,31 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
     ? `<img src="${escAttr(customPreview ? previewSources[0] : thumbUrl(previewSources[0], 400))}" class="detail-hero-img" loading="lazy" alt="${escAttr(d?.modelName || f.name)}" onerror="this.style.display='none'">`
     : '<div class="detail-no-img">📦</div>'
   const previewTools = `<div class="detail-preview-tools">
-    <button class="btn btn-ghost btn-sm local-preview-upload" data-name="${escAttr(f.name)}">${icon('image', 12)} ${customPreview ? '替换预览图' : '自定义预览图'}</button>
-    <button class="btn btn-ghost btn-sm local-preview-url" data-name="${escAttr(f.name)}">${icon('globe', 12)} 图片 URL</button>
-    ${customPreview ? `<button class="btn btn-ghost btn-sm local-preview-reset" data-name="${escAttr(f.name)}">${icon('x', 12)} 恢复 C 站图片</button>` : ''}
+    <button class="btn btn-ghost btn-sm local-preview-upload" data-name="${escAttr(f.name)}">${icon('image', 12)} ${customPreview ? t('lora.preview.replace') : t('lora.preview.custom')}</button>
+    <button class="btn btn-ghost btn-sm local-preview-url" data-name="${escAttr(f.name)}">${icon('globe', 12)} ${t('lora.preview.imageUrl')}</button>
+    ${customPreview ? `<button class="btn btn-ghost btn-sm local-preview-reset" data-name="${escAttr(f.name)}">${icon('x', 12)} ${t('lora.preview.restoreCivitai')}</button>` : ''}
   </div>`
 
   const actionBtn = !f.matched && !f.scanning
-    ? `<button class="btn btn-ghost detail-match-btn btn-md" data-name="${escAttr(f.name)}">${icon('search', 12)} 匹配</button>`
+    ? `<button class="btn btn-ghost detail-match-btn btn-md" data-name="${escAttr(f.name)}">${icon('search', 12)} ${t('lora.match')}</button>`
     : ''
 
   const trainedWords = renderTriggerEditor(f, triggerEditor)
 
   const tags = d?.tags?.length
-    ? `<div class="detail-section"><h4>模型标签</h4><div class="detail-tags">${d.tags.map(t => `<span class="detail-tag" data-copy="${esc(t)}">${esc(t)}</span>`).join('')}</div></div>`
+    ? `<div class="detail-section"><h4>${t('lora.modelTags')}</h4><div class="detail-tags">${d.tags.map(t => `<span class="detail-tag" data-copy="${esc(t)}">${esc(t)}</span>`).join('')}</div></div>`
     : ''
 
   const description = d?.description
-    ? `<div class="detail-section"><h4>简介</h4><p class="detail-desc">${esc(d.description.slice(0, 300))}${d.description.length > 300 ? '…' : ''}</p></div>`
+    ? `<div class="detail-section"><h4>${t('lora.description')}</h4><p class="detail-desc">${esc(d.description.slice(0, 300))}${d.description.length > 300 ? '…' : ''}</p></div>`
     : ''
 
   const modelCats = state.modelCategories[stripExt(f.name)] || []
-  const catHtml = `<div class="detail-section"><h4>分类</h4>
+  const catHtml = `<div class="detail-section"><h4>${t('lora.category.label')}</h4>
     <div class="detail-cats" id="detailCats">
       ${modelCats.map(c => `<span class="detail-cat-chip" data-cat="${escAttr(c)}">${esc(c)} <span class="detail-cat-rm" data-name="${escAttr(f.name)}" data-cat="${escAttr(c)}">✕</span></span>`).join('')}
       <div class="detail-cat-add-wrap">
-        <button class="btn btn-ghost btn-sm" id="detailCatAddBtn">+ 分类</button>
+        <button class="btn btn-ghost btn-sm" id="detailCatAddBtn">+ ${t('lora.category.label')}</button>
         <div class="local-catfilter-dropdown detail-cat-dd" id="detailCatDropdown" style="display:none"></div>
       </div>
     </div></div>`
@@ -1772,28 +1833,28 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
   // LoRA 标签构建器（权重滑块 + 复制）
   const localBase = f.name.replace(/\.\w+$/, '')
   const loraWeight = state.promptWeights?.[f.name] ?? 1.0
-  const loraTagHtml = `<div class="detail-section"><h4>🏷️ LoRA 标签</h4>
+  const loraTagHtml = `<div class="detail-section"><h4>🏷️ ${t('lora.local.loraTag')}</h4>
     <div class="detail-lora-builder" data-name="${escAttr(f.name)}">
       <div class="detail-lora-preview" id="loraPreview_${escAttr(f.name)}"><code>&lt;lora:${esc(localBase)}:${loraWeight.toFixed(2)}&gt;</code></div>
       <div class="detail-lora-controls">
         <input type="range" class="detail-lora-slider" min="0" max="2" step="0.05" value="${loraWeight}" data-name="${escAttr(f.name)}">
         <input type="number" class="detail-lora-input" min="0" max="2" step="0.05" value="${loraWeight.toFixed(2)}" data-name="${escAttr(f.name)}" style="width:56px;padding:2px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:12px;text-align:center">
-        <button class="btn btn-ghost btn-sm detail-lora-copy" data-tag="${esc(localBase)}" data-w="${loraWeight.toFixed(2)}">${icon('copy', 12)} 复制</button>
+        <button class="btn btn-ghost btn-sm detail-lora-copy" data-tag="${esc(localBase)}" data-w="${loraWeight.toFixed(2)}">${icon('copy', 12)} ${t('lora.copy')}</button>
       </div>
     </div></div>`
 
   const manualMatchHtml = !f.matched && !f.scanning
-    ? `<div class="detail-section"><h4>🔗 手动匹配</h4>
+    ? `<div class="detail-section"><h4>🔗 ${t('lora.manualMatch')}</h4>
       <div class="detail-manual-match">
-        <input type="text" id="manualMatchUrl" placeholder="粘贴 Civitai 链接 (https://civitai.com/models/...)" class="input-sm">
-        <button class="btn btn-primary btn-sm" id="manualMatchBtn" data-name="${escAttr(f.name)}">确认</button>
+        <input type="text" id="manualMatchUrl" placeholder="${t('lora.manualMatchPlaceholder')}" class="input-sm">
+        <button class="btn btn-primary btn-sm" id="manualMatchBtn" data-name="${escAttr(f.name)}">${t('lora.confirm')}</button>
       </div></div>`
     : ''
 
   const descText = state.descriptions[f.name] || ''
-  const descHtml = `<div class="detail-section"><h4>📝 我的备注</h4>
-    <textarea class="detail-desc-edit" data-name="${escAttr(f.name)}" placeholder="写下你对此 LoRA 的使用心得、推荐搭配、注意事项…" rows="4">${esc(descText)}</textarea>
-    <div class="detail-desc-save" id="descSave_${escAttr(f.name)}">已保存</div></div>`
+  const descHtml = `<div class="detail-section"><h4>📝 ${t('lora.notes')}</h4>
+    <textarea class="detail-desc-edit" data-name="${escAttr(f.name)}" placeholder="${t('lora.notesPlaceholder')}" rows="4">${esc(descText)}</textarea>
+    <div class="detail-desc-save" id="descSave_${escAttr(f.name)}">${t('lora.saved')}</div></div>`
 
   const html = `<div class="detail-hero">${imgHtml}${previewTools}</div>
     <div class="detail-actions">
@@ -1803,12 +1864,12 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
       <div class="detail-actions-right">
         ${d ? `<button class="btn btn-ghost detail-open-url btn-sm" data-id="${d.modelId}">${icon('globe', 12)} Civitai</button>` : ''}
         ${actionBtn}
-        <button class="local-detail-close" type="button" title="关闭详情" aria-label="关闭详情">${icon('x', 16)}</button>
+        <button class="local-detail-close" type="button" title="${t('lora.closeDetails')}" aria-label="${t('lora.closeDetails')}">${icon('x', 16)}</button>
       </div>
     </div>
     <div class="detail-body">
       <div class="detail-body-left">
-        ${previewSources.length > 1 ? `<div class="detail-section"><h4>图片预览</h4><div class="detail-gallery">${previewSources.slice(1, 6).map((im, i) => `<img src="${escAttr(customPreview && i === 0 ? im : thumbUrl(im, 200))}" class="detail-gallery-thumb" loading="lazy" onerror="this.style.display='none'">`).join('')}</div></div>` : ''}
+        ${previewSources.length > 1 ? `<div class="detail-section"><h4>${t('lora.imagePreviews')}</h4><div class="detail-gallery">${previewSources.slice(1, 6).map((im, i) => `<img src="${escAttr(customPreview && i === 0 ? im : thumbUrl(im, 200))}" class="detail-gallery-thumb" loading="lazy" onerror="this.style.display='none'">`).join('')}</div></div>` : ''}
         ${trainedWords}
         ${tags}
         ${catHtml}
@@ -1817,13 +1878,13 @@ function renderDetail(state: ReturnType<typeof useLocalModelStore.getState>) {
       </div>
       <div class="detail-body-right">
         ${description}
-        <div class="detail-section"><h4>文件信息</h4>
+        <div class="detail-section"><h4>${t('lora.fileInfo')}</h4>
           <div class="detail-fileinfo">
-            <div class="detail-fi-row"><span>文件名</span><span>${esc(f.name)}</span></div>
-            <div class="detail-fi-row"><span>大小</span><span>${fmtSize(f.size)}</span></div>
+            <div class="detail-fi-row"><span>${t('lora.filename')}</span><span>${esc(f.name)}</span></div>
+            <div class="detail-fi-row"><span>${t('lora.fileSize')}</span><span>${fmtSize(f.size)}</span></div>
             <div class="detail-fi-row"><span>SHA256</span><span class="detail-sha" title="${esc(f.sha256)}">${esc(f.sha256.slice(0, 20))}…</span></div>
-            ${d ? `<div class="detail-fi-row"><span>基座模型</span><span>${esc(d.baseModel)}</span></div>` : ''}
-            ${d?.versionName ? `<div class="detail-fi-row"><span>版本</span><span>${esc(d.versionName)} <span style="color:var(--text3);font-size:10px">(ID: ${d.versionId})</span></span></div>` : ''}
+            ${detailBaseModelRow(f, d)}
+            ${d?.versionName ? `<div class="detail-fi-row"><span>${t('lora.version')}</span><span>${esc(d.versionName)} <span style="color:var(--text3);font-size:10px">(ID: ${d.versionId})</span></span></div>` : ''}
           </div>
         </div>
         ${descHtml}
@@ -1851,7 +1912,7 @@ function renderRelatedOutputs(f: LocalLoraFile): string {
   }
 
   if (matches.length === 0) {
-    return '<div class="detail-section"><h4>🖼️ 关联出图</h4><p style="font-size:11px;color:var(--text3)">暂无关联出图</p></div>'
+    return `<div class="detail-section"><h4>🖼️ ${t('lora.linkedOutputs')}</h4><p style="font-size:11px;color:var(--text3)">${t('lora.noLinkedOutputs')}</p></div>`
   }
 
   matches.sort((a, b) => b.mtime - a.mtime)
@@ -1869,7 +1930,7 @@ function renderRelatedOutputs(f: LocalLoraFile): string {
     </div>`
   }).join('')
 
-  return `<div class="detail-section"><h4>🖼️ 关联出图 <small>${matches.length} 张</small></h4>
+  return `<div class="detail-section"><h4>🖼️ ${t('lora.linkedOutputs')} <small>${t('lora.local.linkedImageCount', { count: matches.length })}</small></h4>
     <div class="detail-output-grid">${items}</div></div>`
 }
 
@@ -1898,7 +1959,7 @@ function renderGallery(state: ReturnType<typeof useLocalModelStore.getState>) {
   if (!el) return
   const pngs = state.pngs
   if (pngs.length === 0) {
-    el.innerHTML = '<div class="empty-state"><div class="big">' + icon('image', 28) + '</div><p>尚未添加图片，点击上方区域选择或拖入 PNG / JPEG / WebP</p></div>'
+    el.innerHTML = '<div class="empty-state"><div class="big">' + icon('image', 28) + `</div><p>${t('lora.gallery.empty')}</p></div>`
     return
   }
   el.innerHTML = pngs.map((p, index) => {
@@ -1910,8 +1971,8 @@ function renderGallery(state: ReturnType<typeof useLocalModelStore.getState>) {
         <span class="local-png-size">${fmtSize(p.fileSize)}</span>
       </div>
       ${metadata.metadataState ? renderMetadataReliability(metadata) : ''}
-      ${p.positive ? `<div class="local-png-field"><label>正 Prompt</label><div class="local-png-text" data-copy="${esc(p.positive)}">${esc(trunc(p.positive, 200))}</div></div>` : ''}
-      ${p.negative ? `<div class="local-png-field"><label>负 Prompt</label><div class="local-png-text" data-copy="${esc(p.negative)}">${esc(trunc(p.negative, 150))}</div></div>` : ''}
+      ${p.positive ? `<div class="local-png-field"><label>${t('lora.positivePrompt')}</label><div class="local-png-text" data-copy="${esc(p.positive)}">${esc(trunc(p.positive, 200))}</div></div>` : ''}
+      ${p.negative ? `<div class="local-png-field"><label>${t('lora.negativePrompt')}</label><div class="local-png-text" data-copy="${esc(p.negative)}">${esc(trunc(p.negative, 150))}</div></div>` : ''}
       <div class="local-png-params">
         ${p.seed ? `<span>🌰 ${esc(p.seed)}</span>` : ''}
         ${p.steps ? `<span>👣 ${esc(p.steps)}</span>` : ''}
@@ -1921,7 +1982,7 @@ function renderGallery(state: ReturnType<typeof useLocalModelStore.getState>) {
       </div>
       ${tags.length > 0 ? `<div class="local-png-tags">${tags.map(t => `<code class="local-tw-item" data-copy="${esc(t)}">${esc(t)}</code>`).join('')}</div>` : ''}
       ${p.loras.length > 0 ? `<div class="local-png-loras">${p.loras.map(l => `<code class="local-tw-item lora" data-copy="${esc(l)}">${esc(l)}</code>`).join('')}</div>` : ''}
-      <details style="margin-top:8px"><summary style="cursor:pointer;color:var(--text2);font-size:12px">${icon('slidersHorizontal', 12)} 生成配置与原始字段</summary><div style="margin-top:10px">${renderGenerationDetails(metadata, false)}</div></details>
+      <details style="margin-top:8px"><summary style="cursor:pointer;color:var(--text2);font-size:12px">${icon('slidersHorizontal', 12)} ${t('lora.generationDetails')}</summary><div style="margin-top:10px">${renderGenerationDetails(metadata, false)}</div></details>
     </div>`
   }).join('')
   el.querySelectorAll<HTMLElement>('[data-local-image-index]').forEach(card => {
@@ -1934,24 +1995,24 @@ function renderTagFreq(tags: TagFreq[]) {
   const el = $$('localTagList')
   if (!el) return
   if (tags.length === 0) {
-    el.innerHTML = '<div class="empty-state"><div class="big">' + icon('tag', 28) + '</div><p>暂无数据，扫描 LoRA 或添加 PNG 后自动生成</p></div>'
+    el.innerHTML = '<div class="empty-state"><div class="big">' + icon('tag', 28) + `</div><p>${t('lora.tags.empty')}</p></div>`
     return
   }
   const maxCount = tags[0]?.count || 1
-  el.innerHTML = tags.slice(0, 100).map(t => {
-    const pct = (t.count / maxCount) * 100
+  el.innerHTML = tags.slice(0, 100).map(tag => {
+    const pct = (tag.count / maxCount) * 100
     const fontSize = 11 + pct * 0.06
-    return `<span class="local-tag-item" style="font-size:${fontSize.toFixed(1)}px" data-copy="${esc(t.tag)}" title="出现 ${t.count} 次">
-      ${esc(t.tag)} <small>${t.count}</small>
+    return `<span class="local-tag-item" style="font-size:${fontSize.toFixed(1)}px" data-copy="${esc(tag.tag)}" title="${t('lora.tags.occurrenceCount', { count: tag.count })}">
+      ${esc(tag.tag)} <small>${tag.count}</small>
     </span>`
   }).join('')
 }
 
 function updateStats(state: ReturnType<typeof useLocalModelStore.getState>) {
   const el = $$('localScanStats')
-  if (el) el.textContent = `📦 ${state.files.length} 个 LoRA`
+  if (el) el.textContent = t('lora.local.totalNotice', { count: state.files.length })
   const gridStats = $$('localGridStats')
-  if (gridStats) gridStats.textContent = `${state.files.length} 个 LoRA`
+  if (gridStats) gridStats.textContent = t('lora.local.total', { count: state.files.length })
   const fc = $$('statFileCount')
   const mc = $$('statMatchedCount')
   const pc = $$('statPngCount')
@@ -1966,7 +2027,7 @@ function updateStats(state: ReturnType<typeof useLocalModelStore.getState>) {
     const n = state.newFileCount
     if (n > 0 && state.files.length === 0) {
       badge.style.display = 'inline-block'
-      badge.textContent = `🆕 发现 ${n} 个新文件，点击扫描`
+      badge.textContent = t('lora.local.newFilesBadge', { count: n })
       badge.onclick = () => useLocalModelStore.getState().scanDir()
     } else {
       badge.style.display = 'none'
@@ -2280,10 +2341,10 @@ function bindLocalEvents() {
     if (!header) return
     const cat = header.dataset.cat
     if (!cat || cat === '__uncategorized__') return
-    const newName = await promptModal('重命名分类', nameEl.textContent || '')
+    const newName = await promptModal(t('lora.category.rename'), nameEl.textContent || '')
     if (!newName || !newName.trim() || newName.trim() === nameEl.textContent) return
     const s = useLocalModelStore.getState()
-    if (s.categories.includes(newName.trim())) { showToast('⚠️ 分类名已存在'); return }
+    if (s.categories.includes(newName.trim())) { showToast(t('lora.category.duplicateName')); return }
     s.renameCategory(cat, newName.trim())
     s.saveToCache()
     renderSidebarList(s)
@@ -2445,7 +2506,7 @@ function bindLocalEvents() {
     const delCatBtn = target.closest('.local-cat-del-btn') as HTMLElement
     if (delCatBtn) {
       const cat = delCatBtn.dataset.cat
-      if (cat && await confirmModal('删除分类', `确认删除分类「${cat}」？\n已归入该分类的 LoRA 不会被删除，仅移除分类标记。`)) {
+      if (cat && await confirmModal(t('lora.category.delete'), t('lora.category.confirmDelete', { name: cat }))) {
         useLocalModelStore.getState().removeCategory(cat)
         useLocalModelStore.getState().saveToCache()
         renderSidebarList(useLocalModelStore.getState())
@@ -2458,9 +2519,9 @@ function bindLocalEvents() {
       const cat = renameBtn.dataset.cat
       if (!cat) return
       const s = useLocalModelStore.getState()
-      const newName = await promptModal('重命名分类', cat)
+      const newName = await promptModal(t('lora.category.rename'), cat)
       if (!newName || !newName.trim() || newName.trim() === cat) return
-      if (s.categories.includes(newName.trim())) { showToast('⚠️ 分类名已存在'); return }
+      if (s.categories.includes(newName.trim())) { showToast(t('lora.category.duplicateName')); return }
       s.renameCategory(cat, newName.trim())
       s.saveToCache()
       renderSidebarList(s)
@@ -2479,10 +2540,10 @@ function bindLocalEvents() {
 
     const newCatBtn = target.closest('.local-new-cat-btn') as HTMLElement
     if (newCatBtn) {
-      const cat = await promptModal('新建分类')
+      const cat = await promptModal(t('lora.category.create'))
       if (!cat || !cat.trim()) return
       const s = useLocalModelStore.getState()
-      if (s.categories.includes(cat.trim())) { showToast('⚠️ 分类已存在'); return }
+      if (s.categories.includes(cat.trim())) { showToast(t('lora.category.duplicate')); return }
       s.addCategory(cat.trim())
       s.saveToCache()
       renderSidebarList(s)
@@ -2659,7 +2720,7 @@ function bindLocalEvents() {
       const available = s.categories.filter(c => !existing.includes(c))
       dd.innerHTML = available.length
         ? available.map(c => `<div class="td-opt" data-cat="${escAttr(c)}">${esc(c)}</div>`).join('')
-        : '<div class="td-opt dropdown-empty">无更多分类</div>'
+        : `<div class="td-opt dropdown-empty">${t('lora.category.noMore')}</div>`
       dd.style.display = dd.style.display === 'block' ? 'none' : 'block'
       return
     }
@@ -2730,7 +2791,7 @@ function bindLocalEvents() {
       const w = copyLora.dataset.w
       if (tag) {
         copyText(`<lora:${tag}:${w}>`)
-        showToast('✅ 已复制')
+        showToast(t('lora.copied'))
       }
       return
     }
@@ -2748,7 +2809,7 @@ async function parsePngFile(file: File): Promise<LocalImageMetadata | null> {
       loras: outputLoraNames(metadata),
     }
   } catch {
-    showToast('图片元数据读取失败，请重试')
+    showToast(t('lora.metadataReadFailed'))
     return null
   }
 }

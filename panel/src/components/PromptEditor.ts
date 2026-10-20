@@ -1,3 +1,5 @@
+import { promptCategoryLabel } from '../i18n/display'
+import { t as tr } from '../i18n'
 import type { PromptEntry } from '../types'
 import { esc, icon } from '../utils'
 import { getAllCategories } from '../store/prompts'
@@ -26,25 +28,25 @@ export function renderPromptEditor(p: Partial<PromptEntry> & { id: string }) {
     : ''
 
   el.innerHTML = `
-    <input type="text" id="pe_displayText" value="${esc(p.displayText || '')}" placeholder="显示名称（可选）" class="mb-8">
-    <textarea id="pe_prompt" placeholder="Prompt 全文" class="textarea-md min-h-60 mb-8">${esc(p.prompt || '')}</textarea>
+    <input type="text" id="pe_displayText" value="${esc(p.displayText || '')}" placeholder="${tr("workspace.displayNameOptional")}" class="mb-8">
+    <textarea id="pe_prompt" placeholder="${tr("workspace.fullPrompt")}" class="textarea-md min-h-60 mb-8">${esc(p.prompt || '')}</textarea>
     <div class="form-row">
       <select id="pe_category" class="select-md" style="flex:2"></select>
     </div>
     <div class="form-row-stretch">
-      <input type="text" id="pe_newTag" placeholder="添加标签后回车" style="flex:1" onkeydown="if(event.key==='Enter'){event.preventDefault();window.__addPromptEditTag()}">
+      <input type="text" id="pe_newTag" placeholder="${tr("workspace.enterATagAndPressEnter")}" style="flex:1" onkeydown="if(event.key==='Enter'){event.preventDefault();window.__addPromptEditTag()}">
     </div>
     <div id="pe_tags" class="form-row-stretch">${tagsHtml}</div>
     <div class="form-row-stretch" style="margin-top:8px">
-      <input type="text" id="pe_newLora" placeholder="添加 LoRA 后回车（如 lora:foo:0.8）" style="flex:1" onkeydown="if(event.key==='Enter'){event.preventDefault();window.__addPromptEditLora()}">
+      <input type="text" id="pe_newLora" placeholder="${tr("workspace.enterALoraAndPressEnterE")}" style="flex:1" onkeydown="if(event.key==='Enter'){event.preventDefault();window.__addPromptEditLora()}">
     </div>
     <div id="pe_loras" class="form-row-stretch">${lorasHtml}</div>
     <div id="pe_images">${imgsHtml}</div>
     <div class="form-gap-sm">
-      <button type="button" class="btn btn-ghost btn-md" onclick="document.getElementById('pe_fileInput').click()">${icon('image', 12)} 添加预览图</button>
+      <button type="button" class="btn btn-ghost btn-md" onclick="document.getElementById('pe_fileInput').click()">${tr("workspace.addPreviewImage", { p5: icon('image', 12) })}</button>
       <input type="file" id="pe_fileInput" accept="image/*" multiple style="display:none">
     </div>
-    <textarea id="pe_notes" placeholder="个人备注" class="textarea-md min-h-40">${esc(p.notes || '')}</textarea>
+    <textarea id="pe_notes" placeholder="${tr("workspace.personalNotes")}" class="textarea-md min-h-40">${esc(p.notes || '')}</textarea>
   `
 
   // Wire file input
@@ -84,6 +86,6 @@ export function renderPromptEditor(p: Partial<PromptEntry> & { id: string }) {
   getAllCategories().then(cats => {
     const sel = document.getElementById('pe_category') as HTMLSelectElement
     if (!sel) return
-    sel.innerHTML = cats.map(c => `<option value="${esc(c.id)}" ${(p.categoryId || 'uncategorized') === c.id ? 'selected' : ''}>${c.icon ? esc(c.icon) + ' ' : ''}${esc(c.name)}</option>`).join('')
+    sel.innerHTML = cats.map(c => `<option value="${esc(c.id)}" ${(p.categoryId || 'uncategorized') === c.id ? 'selected' : ''}>${c.icon ? esc(c.icon) + ' ' : ''}${esc(promptCategoryLabel(c))}</option>`).join('')
   })
 }
