@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "sha256": "4f73508a47d0e7ed42db529169304301cc81d1cf532edf97b09685dc61c12afb",
+  "sha256": "5c3dfe86eb4ac2fb9bcba4b0743caab4720f1da7a068cf32edb80469786e6a87",
   "files": [
     {
       "path": "CHANGELOG.md",
-      "sha256": "d8fcbb3d7ea4c44e4a2afddc294af2c9aae151419b35f89aa92da96ea0d6c312"
+      "sha256": "b26b38d50a9752f76780579ce477efb46f0e85e62b7a1f7d7aec13a5ef630fe0"
     },
     {
       "path": "integrations/pixiv-drop-bridge/core.js",
@@ -564,7 +564,7 @@
     },
     {
       "path": "VERSION",
-      "sha256": "1bdc125edf369a8741564350bbb3a3241ac94ea0583cf309ad2784488f8f3398"
+      "sha256": "929cb892dec8dd60c27530a08c79a960889531bed05425ade4f89d355ae60418"
     },
     {
       "path": "web/js/shared/image_node_cache.d.ts",
