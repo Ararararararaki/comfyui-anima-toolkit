@@ -1,4 +1,4 @@
-// Anima Batch LoRA Widget — 中文界面 + 桥接自动加载 + 触发词复制
+import { uiText } from "./anima_node_i18n.js";
 import { triggerOverrides, openTriggerWordEditor } from "./anima_lora_trigger_overrides.js";
 import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 import { LoRASyntax } from "./shared/lora_syntax.js";
@@ -228,7 +228,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           const img = document.createElement("img");
           img.className = "anima-menu-icon";
           setAnimaIcon(img);
-          img.alt = "工具箱";
+          img.alt = uiText("工具箱", "Toolkit");
           img.style.cssText = "display:block;width:100%;height:100%;object-fit:cover;";
           // 让菲比图片撑满整个按钮（固定按钮尺寸 + 去 padding）
           if (!document.getElementById("anima-menu-style")) {
@@ -243,7 +243,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
               const { ComfyButtonGroup } = await import("/scripts/ui/components/buttonGroup.js");
               const btn = new ComfyButton({
                 content: img,
-                tooltip: "打开 TK 工具箱（面板）",
+                tooltip: uiText("打开 TK 工具箱（面板）", "Open TK Toolkit"),
                 action: () => window.open(PANEL_BASE, "_blank"),
                 classList: "comfyui-button comfyui-menu-mobile-collapse primary",
               });
@@ -257,11 +257,11 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
               const fb = document.createElement("button");
               const fbImg = document.createElement("img");
               fbImg.className = "anima-menu-icon";
-              fbImg.alt = "工具箱";
+              fbImg.alt = uiText("工具箱", "Toolkit");
               fbImg.style.cssText = "width:18px;height:18px;border-radius:4px;vertical-align:middle;";
               setAnimaIcon(fbImg);
               fb.appendChild(fbImg);
-              fb.title = "打开 TK 工具箱（面板）";
+              fb.title = uiText("打开 TK 工具箱（面板）", "Open TK Toolkit");
               fb.style.cssText = "background:none;border:none;cursor:pointer;padding:4px;";
               fb.onclick = () => window.open(PANEL_BASE, "_blank");
               menu.prepend(fb);
@@ -308,7 +308,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
     overlay.style.cssText = "position:fixed;inset:0;background:rgba(2,2,3,0.72);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);";
     const modal = document.createElement("div");
     modal.style.cssText = "background:#14141c;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:16px;width:94vw;max-width:520px;max-height:80vh;display:flex;flex-direction:column;color:#EDEDEF;box-shadow:0 0 0 1px rgba(255,255,255,0.05),0 20px 60px rgba(0,0,0,0.6);";
-    modal.innerHTML = `<h3 style="margin:0 0 8px;font-size:13px;">🔗 从 C 站链接批量下载模型</h3>
+    modal.innerHTML = uiText(`<h3 style="margin:0 0 8px;font-size:13px;">🔗 从 C 站链接批量下载模型</h3>
       <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">支持 LoRA、Checkpoint、VAE 等模型；提交后由 ComfyUI 后台下载，关闭窗口或页面不影响任务</div>
       <textarea class="bd-urls" rows="6" placeholder="https://civitai.com/models/2658471/denia-wuthering-wavesanima&#10;https://civitai.com/models/2529695/xxx?modelVersionId=3094753" style="flex:1;padding:8px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;font-family:monospace;resize:vertical;outline:none;"></textarea>
       <div style="display:flex;gap:6px;margin-top:8px;">
@@ -328,7 +328,27 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       <div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end;">
         <button class="bd-cancel" style="padding:5px 12px;background:rgba(255,255,255,0.08);color:#8A8F98;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;font-size:11px;">关闭窗口</button>
         <button class="bd-start" style="padding:5px 14px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:6px;cursor:pointer;font-size:11px;">⬇️ 加入后台下载</button>
-      </div>`;
+      </div>`, `<h3 style="margin:0 0 8px;font-size:13px;">Download models from Civitai links</h3>
+      <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">Supports LoRAs, checkpoints and VAEs. ComfyUI downloads them in the background; closing this window does not stop downloads.</div>
+      <textarea class="bd-urls" rows="6" placeholder="https://civitai.com/models/2658471/denia-wuthering-wavesanima&#10;https://civitai.com/models/2529695/xxx?modelVersionId=3094753" style="flex:1;padding:8px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:11px;font-family:monospace;resize:vertical;outline:none;"></textarea>
+      <div style="display:flex;gap:6px;margin-top:8px;">
+        <input class="bd-token" type="password" value="${(function(){ try { return localStorage.getItem('anima_civitai_token') || ''; } catch(e){ return ''; } })()}" placeholder="Civitai API Key (read-only; for downloads requiring login)" style="flex:1;padding:7px 9px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:10px;outline:none;min-width:0;">
+        <button class="bd-tokenlink" title="Open Civitai account settings → API Keys (read-only)" style="padding:7px 10px;background:rgba(94,106,210,0.2);color:#9aa5ff;border:1px solid rgba(94,106,210,0.3);border-radius:6px;cursor:pointer;font-size:10px;flex-shrink:0;white-space:nowrap;">Create API Key</button>
+      </div>
+      <div style="font-size:9px;color:#8A8F98;margin-top:4px;">A read-only API Key can download models requiring login</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:8px;">
+        <label style="font-size:10px;color:#BFC2CE;flex:0 0 auto;">Save to</label>
+        <select class="bd-target" title="Choose a registered ComfyUI model directory" style="flex:1;min-width:0;padding:7px 8px;background:#0a0a0c;color:#EDEDEF;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-size:10px;outline:none;">
+          <option value="auto">Automatic (by Civitai model type)</option>
+        </select>
+      </div>
+      <div class="bd-target-tip" style="font-size:9px;color:#8A8F98;margin-top:4px;">Automatic: checkpoints → models/checkpoints; LoRAs → models/loras. Other registered directories are also available.</div>
+      <div class="bd-list" style="margin-top:8px;max-height:130px;overflow-y:auto;"></div>
+      <div class="bd-log" style="margin-top:8px;max-height:60px;overflow-y:auto;font-size:10px;color:#8A8F98;white-space:pre-wrap;"></div>
+      <div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end;">
+        <button class="bd-cancel" style="padding:5px 12px;background:rgba(255,255,255,0.08);color:#8A8F98;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;font-size:11px;">Close window</button>
+        <button class="bd-start" style="padding:5px 14px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:6px;cursor:pointer;font-size:11px;">Queue background downloads</button>
+      </div>`);
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
     let pollTimer = null;
@@ -357,7 +377,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         targetSelect.replaceChildren(...targets.map((target) => new Option(target.label, target.key)));
         targetSelect.value = targets.some((target) => target.key === savedTarget) ? savedTarget : "auto";
       })
-      .catch(() => { if (targetTip) targetTip.textContent = "目录列表加载失败，将使用自动目录；请确认 ComfyUI 后端在线。"; });
+      .catch(() => { if (targetTip) targetTip.textContent = uiText("目录列表加载失败，将使用自动目录；请确认 ComfyUI 后端在线。", "Could not load directories. Using automatic directories; check that ComfyUI is online."); });
 
     const renderJob = (job) => {
       const progressId = String(job.progressId || "");
@@ -376,15 +396,15 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       const pctEl = document.createElement("span");
       pctEl.className = "bd-pct";
       pctEl.style.cssText = "width:48px;text-align:right;color:#8A8F98;flex-shrink:0;";
-      pctEl.textContent = "排队中";
+      pctEl.textContent = uiText("排队中", "Queued");
       const cancelBtn = document.createElement("button");
       cancelBtn.textContent = "✕";
-      cancelBtn.title = "取消后台任务";
+      cancelBtn.title = uiText("取消后台任务", "Cancel background task");
       cancelBtn.style.cssText = "padding:2px 6px;background:rgba(255,80,80,0.15);color:#ff6b6b;border:1px solid rgba(255,80,80,0.3);border-radius:4px;cursor:pointer;font-size:10px;flex-shrink:0;line-height:1;";
       cancelBtn.onclick = async () => {
         cancelBtn.disabled = true;
         try { await fetch(`/anima/lora/download/cancel?progressId=${encodeURIComponent(progressId)}`); } catch {}
-        pctEl.textContent = "已取消";
+        pctEl.textContent = uiText("已取消", "Cancelled");
       };
       row.append(nameEl, barWrap, pctEl, cancelBtn);
       modal.querySelector(".bd-list").appendChild(row);
@@ -401,9 +421,9 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         const pc = Math.max(0, Math.min(100, Math.round(done / total * 100)));
         row.bar.style.width = pc + "%";
         row.pctEl.textContent = s.status === "done" ? "✓" : `${pc}%`;
-      } else if (s.status === "queued") row.pctEl.textContent = "排队中";
-      else if (s.status === "downloading") row.pctEl.textContent = "下载中";
-      if (s.status === "retrying") row.pctEl.textContent = total > 0 ? `${Math.round(done / total * 100)}% 续传` : "重试中";
+      } else if (s.status === "queued") row.pctEl.textContent = uiText("排队中", "Queued");
+      else if (s.status === "downloading") row.pctEl.textContent = uiText("下载中", "Downloading");
+      if (s.status === "retrying") row.pctEl.textContent = total > 0 ? uiText(`${Math.round(done / total * 100)}% 续传`, `${Math.round(done / total * 100)}% resumed`) : uiText("重试中", "Retrying");
       if (s.status === "done") {
         row.bar.style.width = "100%";
         row.pctEl.textContent = "✓";
@@ -414,13 +434,13 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           if (!completionNotified && typeof onDone === "function") { completionNotified = true; onDone(); }
         }
       } else if (s.status === "error") {
-        row.pctEl.textContent = s.resumable ? "✗ 可续传" : "✗";
+        row.pctEl.textContent = s.resumable ? uiText("✗ 可续传", "Interrupted · Resumable") : "✗";
         row.cancelBtn.disabled = true;
-        if (!row.reported) { row.reported = true; modal.querySelector(".bd-log").textContent += `✗ ${s.error || "下载失败"}\n`; }
+        if (!row.reported) { row.reported = true; modal.querySelector(".bd-log").textContent += `✗ ${s.error || uiText("下载失败", "Download failed")}\n`; }
       } else if (s.status === "cancelled") {
-        row.pctEl.textContent = "已取消";
+        row.pctEl.textContent = uiText("已取消", "Cancelled");
         row.cancelBtn.disabled = true;
-        if (!row.reported) { row.reported = true; modal.querySelector(".bd-log").textContent += `✗ ${row.job.label || progressId} 已取消\n`; }
+        if (!row.reported) { row.reported = true; modal.querySelector(".bd-log").textContent += uiText(`✗ ${row.job.label || progressId} 已取消\n`, `✗ ${row.job.label || progressId} Cancelled\n`); }
       }
     };
 
@@ -452,7 +472,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
 
     modal.querySelector(".bd-start").onclick = async () => {
       const urls = modal.querySelector(".bd-urls").value.split("\n").map((s) => s.trim()).filter(Boolean);
-      if (!urls.length) { showToast("请输入链接"); return; }
+      if (!urls.length) { showToast(uiText("请输入链接", "Enter links first")); return; }
       const targetKey = targetSelect?.value || "auto";
       try { localStorage.setItem("anima_civitai_download_target", targetKey); } catch {}
       const logEl = modal.querySelector(".bd-log");
@@ -463,12 +483,12 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       for (const url of urls) {
         const parsed = parseCivitaiUrl(url);
         if (!parsed) {
-          logEl.textContent += `✗ 无法解析: ${url.slice(0, 50)}\n`;
+          logEl.textContent += uiText(`✗ 无法解析: ${url.slice(0, 50)}\n`, `Could not parse:  ${url.slice(0, 50)}\n`);
           continue;
         }
         items.push({ ...parsed, target: targetKey, token: tokenVal, url, label: url.slice(0, 240) });
       }
-      if (!items.length) { showToast("没有可提交的有效 C 站链接"); return; }
+      if (!items.length) { showToast(uiText("没有可提交的有效 C 站链接", "No valid Civitai links to submit")); return; }
       startBtn.disabled = true;
       try {
         const response = await fetch("/anima/lora/download/queue", {
@@ -479,10 +499,10 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         const result = await response.json();
         if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
         for (const job of result.jobs || []) renderJob(job);
-        logEl.textContent += `已加入后台下载：${(result.jobs || []).length} 个任务；关闭窗口不影响下载\n`;
+        logEl.textContent += uiText(`已加入后台下载：${(result.jobs || []).length} 个任务；关闭窗口不影响下载\n`, `Queued background downloads: ${(result.jobs || []).length} tasks. Closing the window does not stop downloads.\n`);
         startPolling();
       } catch (error) {
-        logEl.textContent += `✗ 提交后台任务失败：${error.message || error}\n`;
+        logEl.textContent += uiText(`✗ 提交后台任务失败：${error.message || error}\n`, `Background submission failed: ${error.message || error}\n`);
       } finally {
         startBtn.disabled = false;
       }
@@ -498,8 +518,8 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
     modal.style.cssText = "background:#14141c;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:16px;width:94vw;max-width:520px;max-height:80vh;overflow-y:auto;color:#EDEDEF;box-shadow:0 0 0 1px rgba(255,255,255,0.05),0 20px 60px rgba(0,0,0,0.6);";
     const commitText = v.localCommit && v.remoteCommit ? `<div style="font-size:10px;color:#8A8F98;margin-bottom:8px;font-family:monospace;">${v.localCommit.slice(0, 8)} → ${v.remoteCommit.slice(0, 8)}</div>` : "";
     const autoAvailable = v.canAutoUpdate !== false && Boolean(v.remoteCommit);
-    modal.innerHTML = `<h3 style="margin:0 0 6px;font-size:13px;">🔄 发现更新 ${v.latest || "?"}（当前 ${v.version || "?"}）</h3>
-      <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">${autoAvailable ? "可安全下载并覆盖发布文件；不会删除 data、模型或用户配置。" : "自动更新不可用，可打开 GitHub 手动更新。"}</div>
+    modal.innerHTML = uiText(`<h3 style="margin:0 0 6px;font-size:13px;">🔄 发现更新 ${v.latest || "?"}（当前 ${v.version || "?"}）</h3>
+      <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">${autoAvailable ? uiText("可安全下载并覆盖发布文件；不会删除 data、模型或用户配置。", "Updates replace release files while preserving data, models and user settings.") : uiText("自动更新不可用，可打开 GitHub 手动更新。", "Automatic updates are unavailable. Open GitHub to update manually.")}</div>
       ${commitText}
       <div class="ug-status" style="display:none;margin-bottom:10px;padding:7px 8px;border:1px solid rgba(155,178,182,.35);border-radius:6px;color:#c2d7d9;background:rgba(155,178,182,.08);font-size:10px;line-height:1.5;"></div>
       <div style="color:#C8C9CB;background:#0a0a0c;border:1px solid rgba(255,255,255,0.06);border-radius:6px;padding:8px;font-size:10px;margin-bottom:10px;line-height:1.6;">
@@ -508,8 +528,19 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       <div style="display:flex;gap:8px;justify-content:flex-end;">
         <button class="ug-close" style="padding:5px 12px;background:rgba(255,255,255,0.08);color:#8A8F98;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;font-size:11px;">关闭</button>
         <button class="ug-goto" style="padding:5px 14px;background:rgba(255,255,255,0.08);color:#EDEDEF;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;font-size:11px;">手动更新</button>
-        ${autoAvailable ? '<button class="ug-apply" style="padding:5px 14px;background:linear-gradient(135deg,#d0c9bb,#f0ece4);color:#17191b;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:650;">一键更新</button>' : ""}
-      </div>`;
+        ${autoAvailable ? uiText('<button class="ug-apply" style="padding:5px 14px;background:linear-gradient(135deg,#d0c9bb,#f0ece4);color:#17191b;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:650;">一键更新</button>', "<button class=\"ug-apply\" style=\"padding:5px 14px;background:linear-gradient(135deg,#d0c9bb,#f0ece4);color:#17191b;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:650;\">Update now</button>") : ""}
+      </div>`, `<h3 style="margin:0 0 6px;font-size:13px;">Update available ${v.latest || "?"}(current ${v.version || "?"}）</h3>
+      <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">${autoAvailable ? uiText("可安全下载并覆盖发布文件；不会删除 data、模型或用户配置。", "Updates replace release files while preserving data, models and user settings.") : uiText("自动更新不可用，可打开 GitHub 手动更新。", "Automatic updates are unavailable. Open GitHub to update manually.")}</div>
+      ${commitText}
+      <div class="ug-status" style="display:none;margin-bottom:10px;padding:7px 8px;border:1px solid rgba(155,178,182,.35);border-radius:6px;color:#c2d7d9;background:rgba(155,178,182,.08);font-size:10px;line-height:1.5;"></div>
+      <div style="color:#C8C9CB;background:#0a0a0c;border:1px solid rgba(255,255,255,0.06);border-radius:6px;padding:8px;font-size:10px;margin-bottom:10px;line-height:1.6;">
+        After updating, restart ComfyUI using the launcher, then press <b>Ctrl + Shift + R</b> to refresh the frontend.
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button class="ug-close" style="padding:5px 12px;background:rgba(255,255,255,0.08);color:#8A8F98;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;font-size:11px;">Close</button>
+        <button class="ug-goto" style="padding:5px 14px;background:rgba(255,255,255,0.08);color:#EDEDEF;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;font-size:11px;">Update manually</button>
+        ${autoAvailable ? uiText('<button class="ug-apply" style="padding:5px 14px;background:linear-gradient(135deg,#d0c9bb,#f0ece4);color:#17191b;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:650;">一键更新</button>', "<button class=\"ug-apply\" style=\"padding:5px 14px;background:linear-gradient(135deg,#d0c9bb,#f0ece4);color:#17191b;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:650;\">Update now</button>") : ""}
+      </div>`);
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
     const close = () => overlay.remove();
@@ -520,8 +551,8 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
     const apply = modal.querySelector(".ug-apply");
     apply?.addEventListener("click", async () => {
       apply.disabled = true;
-      apply.textContent = "更新中…";
-      if (status) { status.style.display = "block"; status.textContent = "正在下载并校验更新包，请不要关闭 ComfyUI…"; }
+      apply.textContent = uiText("更新中…", "Updating…");
+      if (status) { status.style.display = "block"; status.textContent = uiText("正在下载并校验更新包，请不要关闭 ComfyUI…", "Downloading and verifying the update. Keep ComfyUI running…"); }
       try {
         const response = await fetch("/anima/update/apply", {
           method: "POST",
@@ -531,18 +562,18 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         const result = await response.json();
         if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
         if (result.alreadyLatest) {
-          if (status) status.textContent = "当前已经是最新版本。";
-          apply.textContent = "已是最新";
+          if (status) status.textContent = uiText("当前已经是最新版本。", "Already up to date.");
+          apply.textContent = uiText("已是最新", "Up to date");
           return;
         }
-        if (status) status.textContent = `更新完成：覆盖 ${result.updatedFiles || 0} 个发布文件。${result.restartHint || "请重启 ComfyUI"}`;
-        apply.textContent = "更新完成";
-        showToast("✅ 插件已更新，请通过绘世 GUI 重启 ComfyUI");
+        if (status) status.textContent = uiText(`更新完成：覆盖 ${result.updatedFiles || 0} 个发布文件。${result.restartHint || uiText("请重启 ComfyUI", "Restart ComfyUI")}`, `Update complete：Cover ${result.updatedFiles || 0} release files。${result.restartHint || uiText("请重启 ComfyUI", "Restart ComfyUI")}`);
+        apply.textContent = uiText("更新完成", "Update complete");
+        showToast(uiText("✅ 插件已更新，请通过绘世 GUI 重启 ComfyUI", "Plugin updated. Restart ComfyUI using the 绘世 launcher."));
         onApplied?.(result);
       } catch (error) {
-        if (status) status.textContent = `更新失败：${error.message || error}`;
+        if (status) status.textContent = uiText(`更新失败：${error.message || error}`, `UpdateFailed：${error.message || error}`);
         apply.disabled = false;
-        apply.textContent = "重试更新";
+        apply.textContent = uiText("重试更新", "Retry update");
       }
     });
   }
@@ -648,7 +679,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           this.listEl?.querySelectorAll(".trigger-edit").forEach(button => {
             const custom = triggerOverrides.entry(button.dataset.loraName)?.hasOverride;
             button.classList.toggle("is-custom", !!custom);
-            button.title = custom ? "编辑自定义触发词" : "编辑触发词";
+            button.title = custom ? uiText("编辑自定义触发词", "Edit custom trigger words") : uiText("编辑触发词", "Edit trigger words");
           });
         }
         this._manualRefresh?.();
@@ -745,7 +776,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         loraMeta: mirror.loraMeta && typeof mirror.loraMeta === "object" ? mirror.loraMeta : {},
         loraGroups: Array.isArray(mirror.loraGroups) ? mirror.loraGroups : [],
       };
-      showToast("已用本地备份恢复（后端读取失败）");
+      showToast(uiText("已用本地备份恢复（后端读取失败）", "Restored the local backup (backend read failed)"));
       return true;
     }
 
@@ -770,7 +801,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
     //     删除/重命名组等可能让数组变短的合法操作必须传它，否则后端护栏会拦掉"删到空"
     //   返回 { ok, skipped, saved, error }
     async _postMeta(meta, { replace = [] } = {}) {
-      if (!meta || typeof meta !== "object") return { ok: false, error: "meta 无效" };
+      if (!meta || typeof meta !== "object") return { ok: false, error: uiText("meta 无效", "Invalid metadata") };
       const replaceKeys = Array.isArray(replace) ? replace : [];
       // 只提交契约内的三个键，其余键（含后端未来的新键）交由后端合并保留
       const body = {};
@@ -779,7 +810,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       }
       if (!Object.keys(body).length) return { ok: false, error: "empty-payload" };
       if (metaIsEmptyShell(body) && !replaceKeys.length) {
-        showToast("本地数据为空，已阻止本次写入（避免清空后端 LoRA 组）");
+        showToast(uiText("本地数据为空，已阻止本次写入（避免清空后端 LoRA 组）", "Local data is empty. Write blocked to preserve backend LoRA groups."));
         return { ok: false, error: "empty-shell" };
       }
       if (replaceKeys.length) body.__replace = replaceKeys;
@@ -791,7 +822,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           body: JSON.stringify(body),
         });
         if (!response.ok) {
-          showToast(`保存失败（HTTP ${response.status}），本次未写入后端，请重试`);
+          showToast(uiText(`保存失败（HTTP ${response.status}），本次未写入后端，请重试`, `Save failed (HTTP ${response.status}); no backend write was made. Try again.`));
           return { ok: false, error: `HTTP ${response.status}` };
         }
         const data = await response.json().catch(() => null);
@@ -804,7 +835,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         saveMetaMirror(nextMirror);
         return { ok: true, skipped: (data && data.skipped) || [], saved: (data && data.saved) || [] };
       } catch (error) {
-        showToast("保存失败，本次未写入后端，请重试");
+        showToast(uiText("保存失败，本次未写入后端，请重试", "Save failed. No backend write was made; try again."));
         return { ok: false, error: error && error.message ? error.message : String(error) };
       }
     }
@@ -822,7 +853,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         const remote = await this._ensureMeta({ retry: true });
         if (this._disposed || this._disabledChoices.get(key) !== choice) return false;
         if (!remote) {
-          showToast("读取后端数据失败，本次未保存，请重试");
+          showToast(uiText("读取后端数据失败，本次未保存，请重试", "Backend read failed. Changes were not saved; try again."));
           return false;
         }
       }
@@ -1097,19 +1128,19 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       // ── 工具栏 ──
       const toolbar = document.createElement("div");
       toolbar.className = "toolbar";
-      const verifyBtn = this._btn("验证标签", "btn-verify", "检查输入框中的 <lora:...> 标签能否在本地找到对应文件", "search");
-      const extractBtn = this._btn("提取触发词", "btn-verify", "批量查询当前列表所有 LoRA 的触发词（自动刷新列表）", "download");
-      const copyAllTwBtn = this._btn("全部触发词", "btn-verify", "一键复制已启用 LoRA 的所有触发词（英文逗号连接）", "clipboard");
-      const browseBtn = this._btn("本地 LoRA", "btn-browse", "打开本地 LoRA 浏览窗：预览 C 站图、点击添加 / 分类", "folder");
-      const clearBtn = this._btn("", "btn-clear", "清空当前 LoRA 列表", "x");
+      const verifyBtn = this._btn(uiText("验证标签", "Validate tags"), "btn-verify", uiText("检查输入框中的 <lora:...> 标签能否在本地找到对应文件", "Check that each <lora:...> tag matches a local file"), "search");
+      const extractBtn = this._btn(uiText("提取触发词", "Extract triggers"), "btn-verify", uiText("批量查询当前列表所有 LoRA 的触发词（自动刷新列表）", "Look up trigger words for every LoRA in the list and refresh"), "download");
+      const copyAllTwBtn = this._btn(uiText("全部触发词", "All triggers"), "btn-verify", uiText("一键复制已启用 LoRA 的所有触发词（英文逗号连接）", "Copy all enabled LoRAs’ trigger words, comma-separated"), "clipboard");
+      const browseBtn = this._btn(uiText("本地 LoRA", "Local LoRAs"), "btn-browse", uiText("打开本地 LoRA 浏览窗：预览 C 站图、点击添加 / 分类", "Browse local LoRAs with Civitai previews; click to add or categorize"), "folder");
+      const clearBtn = this._btn("", "btn-clear", uiText("清空当前 LoRA 列表", "Clear the current LoRA list"), "x");
       clearBtn.style.padding = "4px 8px"; // 纯图标按钮，缩写宽度
-      const panelBtn = this._btn("面板", "btn-verify", "打开本地管理面板（TK Toolkit）", "globe");
-      const groupsBtn = this._btn("组", "btn-browse", "LoRA 组：保存当前列表 / 切换 / 重命名 / 删除（悬浮组名预览组内 LoRA）", "folder");
-      const updateBtn = this._btn("更新", "btn-browse", "检查插件版本更新", "refresh");
+      const panelBtn = this._btn(uiText("面板", "Toolkit"), "btn-verify", uiText("打开本地管理面板（TK Toolkit）", "Open the local management panel (TK Toolkit)"), "globe");
+      const groupsBtn = this._btn(uiText("组", "Groups"), "btn-browse", uiText("LoRA 组：保存当前列表 / 切换 / 重命名 / 删除（悬浮组名预览组内 LoRA）", "LoRA groups: save, switch, rename or delete. Hover over a group to preview its LoRAs."), "folder");
+      const updateBtn = this._btn(uiText("更新", "Update"), "btn-browse", uiText("检查插件版本更新", "Check for plugin updates"), "refresh");
       // ── trigger_words 总开关（一键关闭本节点全部触发词输出）──
       const twToggle = document.createElement("label");
       twToggle.className = "tw-toggle";
-      twToggle.title = "总开关：关闭后本节点 trigger_words 输出为空字符串（LoRA 加载、列表、提取功能都不受影响）";
+      twToggle.title = uiText("总开关：关闭后本节点 trigger_words 输出为空字符串（LoRA 加载、列表、提取功能都不受影响）", "Master switch: disable to output an empty trigger_words string. LoRA loading, lists and extraction still work.");
       const twCheck = document.createElement("input");
       twCheck.type = "checkbox";
       twCheck.className = "tw-toggle-check";
@@ -1129,19 +1160,19 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       const markUpdateApplied = (result) => {
         updateInfo = { ...(updateInfo || {}), updateAvailable: false, behind: false, version: result.version || updateInfo?.latest };
         updateBtn.disabled = true;
-        updateBtn.innerHTML = svgIcon("check", 12) + '<span>需重启</span>';
-        updateBtn.title = "插件文件已更新，请通过绘世启动器重启 ComfyUI";
+        updateBtn.innerHTML = svgIcon("check", 12) + uiText('<span>需重启</span>', "<span>Restart required</span>");
+        updateBtn.title = uiText("插件文件已更新，请通过绘世启动器重启 ComfyUI", "Plugin updated. Restart ComfyUI using the 绘世 launcher.");
       };
       const setUpdateButton = (info) => {
         updateInfo = info || null;
         updateBtn.disabled = false;
         if (updateAvailable(info)) {
-          updateBtn.innerHTML = svgIcon("refresh", 12) + '<span>一键更新</span>';
-          updateBtn.title = `当前 ${info.version || "?"}，最新 ${info.latest || "?"}，点击执行安全更新`;
+          updateBtn.innerHTML = svgIcon("refresh", 12) + uiText('<span>一键更新</span>', "<span>Update now</span>");
+          updateBtn.title = uiText(`当前 ${info.version || "?"}，最新 ${info.latest || "?"}，点击执行安全更新`, `Current ${info.version || "?"}; latest ${info.latest || "?"}; click to update safely`);
           updateBtn.onclick = () => showUpdateDialog(updateInfo, markUpdateApplied);
         } else {
-          updateBtn.innerHTML = svgIcon("refresh", 12) + '<span>更新</span>';
-          updateBtn.title = "立即检查插件更新";
+          updateBtn.innerHTML = svgIcon("refresh", 12) + uiText('<span>更新</span>', "<span>Update</span>");
+          updateBtn.title = uiText("立即检查插件更新", "Check for plugin updates now");
           updateBtn.onclick = () => checkUpdate(true, true);
         }
       };
@@ -1156,11 +1187,11 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
             setUpdateButton(info);
             if (notify) {
               if (updateAvailable(info)) showUpdateDialog(info, markUpdateApplied);
-              else if (info?.latest) showToast(`当前已是最新版本 ${info.latest}`);
-              else showToast("⚠️ 无法检查更新（GitHub 网络不可达）");
+              else if (info?.latest) showToast(uiText(`当前已是最新版本 ${info.latest}`, `CurrentUp to dateVersion ${info.latest}`));
+              else showToast(uiText("⚠️ 无法检查更新（GitHub 网络不可达）", "Could not check updates (GitHub unreachable)"));
             }
           })
-          .catch((error) => { if (notify) showToast(`⚠️ 无法检查更新：${error.message || error}`); })
+          .catch((error) => { if (notify) showToast(uiText(`⚠️ 无法检查更新：${error.message || error}`, `Could not check updates: ${error.message || error}`)); })
           .finally(() => { updateCheckBusy = false; if (!updateInfo || !updateAvailable(updateInfo)) updateBtn.disabled = false; });
       };
       setUpdateButton(null);
@@ -1182,8 +1213,8 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       listResizeEl.setAttribute("aria-valuemin", "180");
       listResizeEl.setAttribute("aria-valuemax", "1600");
       listResizeEl.tabIndex = 0;
-      listResizeEl.title = "拖动调整 LoRA 卡片区域高度；也可用键盘上下调整";
-      listResizeEl.innerHTML = "<span>⋮⋮</span><small>拖动调整 LoRA 卡片区域高度</small>";
+      listResizeEl.title = uiText("拖动调整 LoRA 卡片区域高度；也可用键盘上下调整", "Drag to resize the LoRA card area, or use arrow keys");
+      listResizeEl.innerHTML = uiText("<span>⋮⋮</span><small>拖动调整 LoRA 卡片区域高度</small>", "<span>⋮⋮</span><small>Drag to resize the LoRA card area</small>");
       let resizingList = false;
       let resizeStartY = 0;
       let resizeStartHeight = 0;
@@ -1239,10 +1270,10 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       verifyBtn.onclick = () => this._verify(statusEl, listEl, triggerEl);
       extractBtn.onclick = () => this._extractAllTriggerWords(listEl);
       copyAllTwBtn.onclick = () => this._copyAllTriggerWords();
-      browseBtn.onclick = () => { showToast("正在加载 LoRA 列表..."); this._browseModal(statusEl); };
+      browseBtn.onclick = () => { showToast(uiText("正在加载 LoRA 列表...", "Loading LoRA list…")); this._browseModal(statusEl); };
       clearBtn.onclick = () => {
         // 二次确认防误触（纯图标按钮更易误点）
-        if (!window.confirm("确定清空当前 LoRA 列表？")) return;
+        if (!window.confirm(uiText("确定清空当前 LoRA 列表？", "Clear the current LoRA list?"))) return;
         this.loras = []; this._commit(); this._render(listEl);
       };
       panelBtn.onclick = () => window.open(PANEL_BASE, "_blank");
@@ -1359,9 +1390,9 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           words = this._effectiveWords(name);
         }
         if (!this._isLatestTriggerCopy(sequence)) return;
-        if (words?.length) { copyText(words.join(", ") + ","); showToast("已复制触发词"); }
-        else showToast(triggerOverrides.entry(name)?.hasOverride ? "已自定义为空触发词" : "该 LoRA 无触发词");
-      } catch (error) { if (this._isLatestTriggerCopy(sequence)) showToast("读取触发词失败：" + error.message); }
+        if (words?.length) { copyText(words.join(", ") + ","); showToast(uiText("已复制触发词", "Trigger words copied")); }
+        else showToast(triggerOverrides.entry(name)?.hasOverride ? uiText("已自定义为空触发词", "Custom trigger words are empty") : uiText("该 LoRA 无触发词", "This LoRA has no trigger words"));
+      } catch (error) { if (this._isLatestTriggerCopy(sequence)) showToast(uiText("读取触发词失败：", "Could not load trigger words: ") + error.message); }
     }
 
     _editTriggerWords(anchor, name) {
@@ -1384,14 +1415,14 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         try { this.twWidget.callback?.(value); } catch (e) { /* 回调异常不影响开关本身 */ }
       } else {
         // 后端还是旧版（没有 output_trigger_words 输入）：开关只能改前端显示
-        showToast("⚠️ 后端未提供「输出触发词」开关，请重启 ComfyUI 后再试");
+        showToast(uiText("⚠️ 后端未提供「输出触发词」开关，请重启 ComfyUI 后再试", "Backend trigger output switch unavailable. Restart ComfyUI and try again."));
       }
       this.node?.graph?.change();
       this._updateTwStatus();
       if (this._twCheckEl) this._twCheckEl.checked = value;
       showToast(value
-        ? "✅ 已开启触发词输出（trigger_words 将输出已激活 LoRA 的触发词）"
-        : "🚫 已关闭触发词输出（trigger_words 输出空字符串）");
+        ? uiText("✅ 已开启触发词输出（trigger_words 将输出已激活 LoRA 的触发词）", "Trigger output enabled for active LoRAs")
+        : uiText("🚫 已关闭触发词输出（trigger_words 输出空字符串）", "Trigger output disabled (empty string)"));
       if (value) this._autoFetchTriggerWords();
     }
 
@@ -1425,7 +1456,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       const el = this._twStatusEl;
       if (!el) return;
       const { active, known, enabled } = this._twCoverage();
-      el.textContent = enabled ? `输出触发词 ${known}/${active}` : "输出触发词（已关闭）";
+      el.textContent = enabled ? uiText(`输出触发词 ${known}/${active}`, `Output trigger words ${known}/${active}`) : uiText("输出触发词（已关闭）", "Output trigger words (off)");
       if (this._twCheckEl) this._twCheckEl.checked = enabled;
       el.classList.toggle("is-off", !enabled);
       el.classList.toggle("is-partial", enabled && known < active);
@@ -1471,16 +1502,16 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
     // ── 一键提取所有 LoRA 的触发词 ──
     async _extractAllTriggerWords(listEl) {
       if (!this.loras.length) {
-        showToast("⚠️ 当前没有 LoRA，请先输入标签或点击「📂 本地 LoRA」添加");
+        showToast(uiText("⚠️ 当前没有 LoRA，请先输入标签或点击「📂 本地 LoRA」添加", "No LoRAs yet. Enter tags or add them using Local LoRAs."));
         return;
       }
       // 只提取尚未查询过的（triggerWordMap 无记录 或 标记为查询失败）
       const pending = this.loras.filter((l) => this.triggerWordMap[l.name] === undefined || this.triggerWordMap[l.name] === null);
       if (!pending.length) {
-        showToast("所有 LoRA 的触发词已获取");
+        showToast(uiText("所有 LoRA 的触发词已获取", "All LoRA trigger words loaded"));
         return;
       }
-      showToast(`⏳ 正在提取 ${pending.length} 个 LoRA 的触发词...`);
+      showToast(uiText(`⏳ 正在提取 ${pending.length} 个 LoRA 的触发词...`, `⏳ Extracting trigger words for ${pending.length} LoRAs trigger words...`));
       let done = 0, found = 0, failed = 0;
       for (const l of pending) {
         if (this._disposed) return;
@@ -1509,21 +1540,21 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         }
         done++;
         if (done % 3 === 0 || done === pending.length) {
-          const failMsg = failed ? `，${failed} 个失败` : "";
-          showToast(`⏳ 提取中 ${done}/${pending.length}（已找到 ${found} 个有触发词${failMsg}）`);
+          const failMsg = failed ? uiText(`，${failed} 个失败`, `，${failed} failed`) : "";
+          showToast(uiText(`⏳ 提取中 ${done}/${pending.length}（已找到 ${found} 个有触发词${failMsg}）`, `⏳ Extracting ${done}/${pending.length} (Found ${found} with trigger words${failMsg}）`));
         }
       }
       this._render(listEl);
       this._pushTriggerWords();
       this._updateTwStatus();
       if (found > 0 && failed === 0) {
-        showToast(`✅ 提取完成，${found}/${pending.length} 个 LoRA 有触发词`);
+        showToast(uiText(`✅ 提取完成，${found}/${pending.length} 个 LoRA 有触发词`, `Extraction complete: ${found}/${pending.length} LoRAs have trigger words`));
       } else if (found > 0 && failed > 0) {
-        showToast(`✅ ${found} 个有触发词，${failed} 个查询失败（可重新提取）`);
+        showToast(uiText(`✅ ${found} 个有触发词，${failed} 个查询失败（可重新提取）`, `✅ ${found} with trigger words，${failed} lookups failed (extract again to retry)`));
       } else if (failed > 0) {
-        showToast(`❌ ${failed} 个查询失败，请确认 ComfyUI 已重启且能访问 Civitai`);
+        showToast(uiText(`❌ ${failed} 个查询失败，请确认 ComfyUI 已重启且能访问 Civitai`, `❌ ${failed} lookups failed. Check that ComfyUI was restarted and Civitai is reachable.`));
       } else {
-        showToast("ℹ️ 这些 LoRA 均无触发词（C 站未提供）");
+        showToast(uiText("ℹ️ 这些 LoRA 均无触发词（C 站未提供）", "These LoRAs have no trigger words on Civitai"));
       }
     }
     // ── 获取单个 LoRA 的触发词（共享工具，含失败标记） ──
@@ -1566,7 +1597,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           // 失败标记为 null，允许重试；不误判为"无触发词"
           this.triggerWordMap[name] = null;
           console.error("[Anima] 获取触发词失败:", name, e);
-          showToast("❌ 获取失败，请确认 ComfyUI 已重启: " + e.message);
+          showToast(uiText("❌ 获取失败，请确认 ComfyUI 已重启: ", "Lookup failed. Check that ComfyUI was restarted: ") + e.message);
           onDone && onDone(null); // Release callers waiting to copy/edit after a failed lookup.
         });
     }
@@ -1575,7 +1606,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
     async _copyAllTriggerWords() {
       const sequence = this._beginTriggerCopy();
       const enabled = this.loras.filter(l => !l.disabled && (l.weight !== 0 || (l.clipWeight ?? l.weight) !== 0));
-      if (!enabled.length) { showToast("当前没有启用的 LoRA"); return; }
+      if (!enabled.length) { showToast(uiText("当前没有启用的 LoRA", "No enabled LoRAs")); return; }
       try {
         await this._loadTriggerOverrides(enabled.map(l => l.name), true);
         if (!this._isLatestTriggerCopy(sequence)) return;
@@ -1593,9 +1624,9 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         if (!this._isLatestTriggerCopy(sequence)) return;
         const seen = new Set();
         const unique = parts.filter(word => { const key = word.trim().toLowerCase(); if (!key || seen.has(key)) return false; seen.add(key); return true; });
-        if (!unique.length) { showToast("这些 LoRA 都没有触发词"); return; }
-        copyText(unique.join(", ") + ","); showToast("已复制全部触发词");
-      } catch (error) { if (this._isLatestTriggerCopy(sequence)) showToast("读取触发词失败：" + error.message); }
+        if (!unique.length) { showToast(uiText("这些 LoRA 都没有触发词", "These LoRAs have no trigger words")); return; }
+        copyText(unique.join(", ") + ","); showToast(uiText("已复制全部触发词", "All trigger words copied"));
+      } catch (error) { if (this._isLatestTriggerCopy(sequence)) showToast(uiText("读取触发词失败：", "Could not load trigger words: ") + error.message); }
     }
 
     // 加载工作流/同步后自动提取所有 LoRA 的触发词，逐个更新行内提示，不重渲染整个列表
@@ -1615,7 +1646,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       this._updateTwStatus();
       listEl.innerHTML = "";
       if (!this.loras.length) {
-        listEl.innerHTML = '<div class="empty-msg">暂无 LoRA，点击「本地 LoRA」添加</div>';
+        listEl.innerHTML = uiText('<div class="empty-msg">暂无 LoRA，点击「本地 LoRA」添加</div>', "<div class=\"empty-msg\">No LoRAs yet. Click Local LoRAs to add.</div>");
         return;
       }
       this.loras.forEach((l, i) => {
@@ -1634,7 +1665,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         // ── 启用/禁用开关（关闭则失效但保留在列表） ──
         const toggle = document.createElement("div");
         toggle.className = "lora-toggle" + (l.disabled ? "" : " on");
-        toggle.title = l.disabled ? "已禁用（不参与生成），点击启用" : "点击禁用（暂时不参与生成）";
+        toggle.title = l.disabled ? uiText("已禁用（不参与生成），点击启用", "Disabled for generation; click to enable") : uiText("点击禁用（暂时不参与生成）", "Click to disable for generation");
         toggle.onclick = (e) => {
           e.stopPropagation();
           l.disabled = !l.disabled;
@@ -1692,8 +1723,8 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         const edit = document.createElement("button");
         edit.type = "button"; edit.className = "trigger-edit";
         edit.dataset.loraName = l.name; edit.innerHTML = svgIcon("edit", 11);
-        edit.setAttribute("aria-label", "编辑 " + l.name + " 的触发词");
-        edit.title = triggerOverrides.entry(l.name)?.hasOverride ? "编辑自定义触发词" : "编辑触发词";
+        edit.setAttribute("aria-label", uiText("编辑 ", "Edit ") + l.name + uiText(" 的触发词", " trigger words"));
+        edit.title = triggerOverrides.entry(l.name)?.hasOverride ? uiText("编辑自定义触发词", "Edit custom trigger words") : uiText("编辑触发词", "Edit trigger words");
         edit.classList.toggle("is-custom", !!triggerOverrides.entry(l.name)?.hasOverride);
         edit.onclick = e => { e.stopPropagation(); this._editTriggerWords(edit, l.name); };
 
@@ -1710,21 +1741,21 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         const decBtn = document.createElement("button");
         decBtn.className = "weight-step";
         decBtn.type = "button";
-        decBtn.title = "降低权重（按住左右拖动可连续调）";
-        decBtn.setAttribute("aria-label", "降低权重");
+        decBtn.title = uiText("降低权重（按住左右拖动可连续调）", "Decrease weight (hold and drag horizontally for continuous adjustment)");
+        decBtn.setAttribute("aria-label", uiText("降低权重", "Decrease weight"));
         decBtn.textContent = "<";
 
         const valSpan = document.createElement("input");
         valSpan.className = "weight-val";
         valSpan.type = "text"; valSpan.inputMode = "decimal";
         valSpan.value = l.weight.toFixed(2);
-        valSpan.title = `权重 ${LORA_WEIGHT_MIN} ~ ${LORA_WEIGHT_MAX}（可直接输入，回车生效）`;
+        valSpan.title = uiText(`权重 ${LORA_WEIGHT_MIN} ~ ${LORA_WEIGHT_MAX}（可直接输入，回车生效）`, ` weight ${LORA_WEIGHT_MIN} ~ ${LORA_WEIGHT_MAX} (Type a value and press Enter to apply）`);
 
         const incBtn = document.createElement("button");
         incBtn.className = "weight-step";
         incBtn.type = "button";
-        incBtn.title = "提高权重（按住左右拖动可连续调）";
-        incBtn.setAttribute("aria-label", "提高权重");
+        incBtn.title = uiText("提高权重（按住左右拖动可连续调）", "Increase weight (hold and drag horizontally for continuous adjustment)");
+        incBtn.setAttribute("aria-label", uiText("提高权重", "Increase weight"));
         incBtn.textContent = ">";
 
         weightGroup.append(decBtn, valSpan, incBtn);
@@ -1798,7 +1829,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         const del = document.createElement("button");
         del.className = "del-btn";
         del.innerHTML = svgIcon("x", 12);
-        del.title = "删除该 LoRA";
+        del.title = uiText("删除该 LoRA", "Remove this LoRA");
         del.onclick = () => { this.loras.splice(i, 1); this._commit(); this._render(listEl); };
 
         // ── 分类 / 常用次数小标签 ──
@@ -1821,7 +1852,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
     // ── 验证桥接 ──
     async _verify(statusEl, listEl, triggerEl) {
       if (this._disposed) return;
-      statusEl.textContent = "⏳ 验证中...";
+      statusEl.textContent = uiText("⏳ 验证中...", "Validating…");
       statusEl.style.color = "#aaa";
       try {
         const text = this.loraWidget.value || "";
@@ -1829,14 +1860,14 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         const data = await resp.json();
         if (this._disposed) return;
         if (!data.bridge_found) {
-          statusEl.innerHTML = "⚠️ 输入中没有有效的 &lt;lora:...&gt; 标签";
+          statusEl.innerHTML = uiText("⚠️ 输入中没有有效的 &lt;lora:...&gt; 标签", "No valid &lt;lora:...&gt; tags in the input");
           statusEl.style.color = "#f44"; return;
         }
         const total = data.loras.length;
         const found = data.loras.filter((l) => l.status === "found").length;
         const missing = data.loras.filter((l) => l.status === "not_found");
-        const src = data.source === "memory" ? "HTTP" : data.source === "inline" ? "内联" : data.source === "file" ? "文件" : "?";
-        statusEl.innerHTML = `🔍 ${total} 个 LoRA，${found} 个已找到 / ${missing.length} 个缺失 (${src})`;
+        const src = data.source === "memory" ? "HTTP" : data.source === "inline" ? uiText("内联", "Inline") : data.source === "file" ? uiText("文件", "File") : "?";
+        statusEl.innerHTML = uiText(`🔍 ${total} 个 LoRA，${found} 个已找到 / ${missing.length} 个缺失 (${src})`, `🔍 ${total} LoRAs;${found} found / ${missing.length} missing (${src})`);
         if (missing.length) {
           statusEl.innerHTML += ` <button class="verify-missing-btn" style="padding:2px 8px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:5px;cursor:pointer;font-size:9px;margin-left:4px;box-shadow:0 0 0 1px rgba(94,106,210,0.3);">🔎 查找缺失 LoRA</button>`;
           statusEl.querySelector(".verify-missing-btn").onclick = () => this._showMissingSearch(missing);
@@ -1851,7 +1882,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         });
       } catch (e) {
         if (this._disposed) return;
-        statusEl.textContent = "❌ 验证失败: " + e.message;
+        statusEl.textContent = uiText("❌ 验证失败: ", "Validation failed: ") + e.message;
         statusEl.style.color = "#f44";
       }
     }
@@ -1868,7 +1899,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       const modal = document.createElement("div");
       modal.className = "modal";
       modal.style.cssText = "background:linear-gradient(180deg,#0f0f12,#0a0a0c);border-radius:14px;padding:16px;width:94vw;max-width:460px;max-height:80vh;display:flex;flex-direction:column;border:1px solid rgba(255,255,255,0.10);box-shadow:0 0 0 1px rgba(255,255,255,0.04),0 20px 60px rgba(0,0,0,0.6);";
-      modal.innerHTML = `<h3 style="margin:0 0 6px;font-size:12px;color:#EDEDEF;font-weight:600;">🔎 缺失 LoRA — 前往 C 站查找</h3>
+      modal.innerHTML = uiText(`<h3 style="margin:0 0 6px;font-size:12px;color:#EDEDEF;font-weight:600;">🔎 缺失 LoRA — 前往 C 站查找</h3>
         <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">先复制 lora 名称，再前往 C 站搜索下载</div>
         <div style="flex:1;overflow-y:auto;">${missingList.map((m) => `
           <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;padding:7px 8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:8px;">
@@ -1876,7 +1907,15 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
             <button class="ms-copy" data-name="${esc(m.name)}" style="padding:3px 8px;background:rgba(255,255,255,0.08);color:#EDEDEF;border:1px solid rgba(255,255,255,0.1);border-radius:5px;cursor:pointer;font-size:10px;flex-shrink:0;">📋 复制</button>
             <button class="ms-cs" data-name="${esc(m.name)}" style="padding:3px 8px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:5px;cursor:pointer;font-size:10px;flex-shrink:0;">🔗 前往 C 站搜索</button>
           </div>`).join("")}</div>
-        <button class="close-btn" style="margin-top:10px;padding:5px 14px;align-self:flex-end;background:rgba(255,255,255,0.06);color:#8A8F98;border:1px solid rgba(255,255,255,0.06);border-radius:6px;cursor:pointer;font-size:10px;">关闭</button>`;
+        <button class="close-btn" style="margin-top:10px;padding:5px 14px;align-self:flex-end;background:rgba(255,255,255,0.06);color:#8A8F98;border:1px solid rgba(255,255,255,0.06);border-radius:6px;cursor:pointer;font-size:10px;">关闭</button>`, `<h3 style="margin:0 0 6px;font-size:12px;color:#EDEDEF;font-weight:600;">🔎 Missing LoRAs · Search Civitai</h3>
+        <div style="font-size:10px;color:#8A8F98;margin-bottom:8px;">Copy the LoRA name, then search Civitai to download</div>
+        <div style="flex:1;overflow-y:auto;">${missingList.map((m) => `
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;padding:7px 8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:8px;">
+            <span style="flex:1;font-size:11px;color:#EDEDEF;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(m.name)}">${esc(m.name)}</span>
+            <button class="ms-copy" data-name="${esc(m.name)}" style="padding:3px 8px;background:rgba(255,255,255,0.08);color:#EDEDEF;border:1px solid rgba(255,255,255,0.1);border-radius:5px;cursor:pointer;font-size:10px;flex-shrink:0;">📋 Copy</button>
+            <button class="ms-cs" data-name="${esc(m.name)}" style="padding:3px 8px;background:linear-gradient(135deg,#5E6AD2,#6872D9);color:#EDEDEF;border:none;border-radius:5px;cursor:pointer;font-size:10px;flex-shrink:0;">🔗 前往 C 站Search</button>
+          </div>`).join("")}</div>
+        <button class="close-btn" style="margin-top:10px;padding:5px 14px;align-self:flex-end;background:rgba(255,255,255,0.06);color:#8A8F98;border:1px solid rgba(255,255,255,0.06);border-radius:6px;cursor:pointer;font-size:10px;">Close</button>`);
       overlay.appendChild(modal);
       document.body.appendChild(overlay);
       const onKey = e => { if (e.key === "Escape") close(); };
@@ -1888,7 +1927,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       document.addEventListener("keydown", onKey);
       modal.addEventListener("click", (e) => {
         const copyBtn = e.target.closest(".ms-copy");
-        if (copyBtn) { copyText(copyBtn.dataset.name); showToast("已复制: " + copyBtn.dataset.name); return; }
+        if (copyBtn) { copyText(copyBtn.dataset.name); showToast(uiText("已复制: ", "Copied: ") + copyBtn.dataset.name); return; }
         const cs = e.target.closest(".ms-cs");
         if (cs) window.open("https://civitai.com/search/models?query=" + encodeURIComponent(cs.dataset.name) + "&type=LORA", "_blank");
       });
@@ -1932,7 +1971,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         if (added > 0) {
           this._commit();
           if (listEl) this._render(listEl);
-          if (!silent) showToast(`📥 已从面板同步 ${added} 个 LoRA`);
+          if (!silent) showToast(uiText(`📥 已从面板同步 ${added} 个 LoRA`, `📥 Synced from the panel: ${added} LoRAs`));
         }
         return added;
       } catch (e) {
@@ -1987,7 +2026,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         el.style.resize = "vertical";
         el.style.overflowY = "auto";
         el.style.whiteSpace = "pre-wrap";
-        el.title = "可拖动右下角调整输入框高度";
+        el.title = uiText("可拖动右下角调整输入框高度", "Drag the bottom-right corner to resize the input");
         let applyingHeight = false;
         const applyHeight = (height, persist = true) => {
           const value = Math.max(minHeight, Math.min(maxHeight, Math.round(Number(height) || defaultHeight)));
@@ -2022,7 +2061,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           if (this._disposed || generation !== this._groupsGeneration) return;
           // 读取失败（null）→ 直接中止本次操作并提示；绝不拿 { loraGroups: [] } 当起点去 POST，
           // 否则一次保存/删除就会把后端已有的组、分类、偏好整体覆盖清空
-          if (!metaData) { showToast("读取后端数据失败，本次未保存，请重试"); return; }
+          if (!metaData) { showToast(uiText("读取后端数据失败，本次未保存，请重试", "Backend read failed. Changes were not saved; try again.")); return; }
           const groups = Array.isArray(metaData.loraGroups) ? metaData.loraGroups : [];
           this._metaLoaded = true; // 此刻拿到的是后端完整快照
           const overlay = document.createElement("div");
@@ -2039,7 +2078,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           modal.className = "anima-group-modal";
           const title = document.createElement("h3");
           title.style.cssText = "margin:0 0 12px;font-size:13px;display:flex;align-items:center;gap:6px;";
-          title.innerHTML = svgIcon("folder", 13) + ` LoRA 组（${groups.length}）`;
+          title.innerHTML = svgIcon("folder", 13) + uiText(` LoRA 组（${groups.length}）`, ` LoRA groups (${groups.length}）`);
           modal.appendChild(title);
 
           // ── 保存当前列表为新组（合并「保存组」按钮功能） ──
@@ -2049,27 +2088,27 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
             saveWrap.className = "anima-group-save";
             const nameInput = document.createElement("input");
             nameInput.type = "text";
-            nameInput.placeholder = `保存当前 ${active.length} 个 LoRA 为新组...`;
+            nameInput.placeholder = uiText(`保存当前 ${active.length} 个 LoRA 为新组...`, `Save current ${active.length} LoRAs as a new group…`);
             nameInput.className = "anima-group-name-input";
             const saveBtn = document.createElement("button");
             saveBtn.className = "anima-group-save-btn";
-            saveBtn.title = "保存当前列表为新组";
-            saveBtn.innerHTML = svgIcon("save", 11) + "保存";
+            saveBtn.title = uiText("保存当前列表为新组", "Save current list as a new group");
+            saveBtn.innerHTML = svgIcon("save", 11) + uiText("保存", "Save");
             const doSave = async () => {
               const name = nameInput.value.trim();
-              if (!name) { showToast("请输入组名"); return; }
+              if (!name) { showToast(uiText("请输入组名", "Enter a group name")); return; }
               const meta = await this._fetchMeta();
               if (generation !== this._groupsGeneration) return;
               // 读取失败 → 中止并提示，绝不用空对象当基线（那会把后端 LoRA 组整体清掉）
-              if (!meta) { showToast("读取后端数据失败，本次未保存，请重试"); return; }
+              if (!meta) { showToast(uiText("读取后端数据失败，本次未保存，请重试", "Backend read failed. Changes were not saved; try again.")); return; }
               const gs = Array.isArray(meta.loraGroups) ? meta.loraGroups : [];
-              if (gs.some((g) => g.name === name)) { showToast(`已存在同名组「${name}」`); return; }
+              if (gs.some((g) => g.name === name)) { showToast(uiText(`已存在同名组「${name}」`, `A group already has this name: “${name}”`)); return; }
               gs.push({ name, loras: active.map((l) => ({ name: l.name, weight: l.weight, clipWeight: l.clipWeight })) });
               // 只提交 loraGroups 单键（依赖后端键级合并），不再整体覆盖后端 meta
               const res = await this._postMeta({ loraGroups: gs });
               if (generation !== this._groupsGeneration) return;
               if (!res.ok) return; // 失败提示已在 _postMeta 内给出，保留弹窗让用户重试
-              showToast(`已保存组「${name}」（${active.length} 个 LoRA）`);
+              showToast(uiText(`已保存组「${name}」（${active.length} 个 LoRA）`, `Saved group “${name}” (${active.length} LoRAs）`));
               close();
               this._groupsModal(listEl);
             };
@@ -2082,7 +2121,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           if (!groups.length) {
             const empty = document.createElement("p");
             empty.className = "anima-group-empty";
-            empty.textContent = "暂无组，在上方输入组名保存当前列表";
+            empty.textContent = uiText("暂无组，在上方输入组名保存当前列表", "No groups yet. Enter a name above to save the current list.");
             modal.appendChild(empty);
           }
           const groupGrid = document.createElement("div");
@@ -2107,9 +2146,9 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
             nameSpan.textContent = g.name;
             const countSpan = document.createElement("span");
             countSpan.className = "group-count";
-            countSpan.textContent = `（${(g.loras || []).length}）`;
+            countSpan.textContent = uiText(`（${(g.loras || []).length}）`, ` (${(g.loras || []).length}）`);
             label.append(nameSpan, countSpan);
-            label.title = `悬浮查看组内 LoRA：${g.name}`;
+            label.title = uiText(`悬浮查看组内 LoRA：${g.name}`, `Hover to preview group LoRAs: ${g.name}`);
             let hoverTimer = null;
             label.onmouseenter = () => {
               clearTimeout(hoverTimer);
@@ -2125,7 +2164,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
             // ── 重命名（行内编辑） ──
             const editBtn = document.createElement("button");
             editBtn.className = "group-edit-btn";
-            editBtn.title = "重命名组";
+            editBtn.title = uiText("重命名组", "Rename group");
             editBtn.innerHTML = svgIcon("edit", 11);
             editBtn.onclick = () => {
               dotClosePopover();
@@ -2146,18 +2185,18 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
                 if (!next || next === prev) { reload(); return; }
                 const meta = await this._fetchMeta();
                 if (generation !== this._groupsGeneration) return;
-                if (!meta) { showToast("读取后端数据失败，本次未保存，请重试"); reload(); return; }
+                if (!meta) { showToast(uiText("读取后端数据失败，本次未保存，请重试", "Backend read failed. Changes were not saved; try again.")); reload(); return; }
                 const gs = Array.isArray(meta.loraGroups) ? meta.loraGroups : [];
-                if (gs.some((x) => x.name === next)) { showToast(`已存在同名组「${next}」`); reload(); return; }
+                if (gs.some((x) => x.name === next)) { showToast(uiText(`已存在同名组「${next}」`, `A group already has this name: “${next}”`)); reload(); return; }
                 const target = gs.find((x) => x.name === prev);
-                if (!target) { showToast(`组「${prev}」已不存在，请重新打开`); reload(); return; }
+                if (!target) { showToast(uiText(`组「${prev}」已不存在，请重新打开`, `Group “${prev}” no longer exists. Reopen the window.`)); reload(); return; }
                 target.name = next;
                 // 改名属于"数组可能变短"的一类操作：显式声明 loraGroups 允许被覆盖，
                 // 否则后端"空值不覆盖非空"的护栏会把合法改动当成清空拦掉
                 const res = await this._postMeta({ loraGroups: gs }, { replace: ["loraGroups"] });
                 if (generation !== this._groupsGeneration) return;
                 if (!res.ok) { reload(); return; } // 失败提示已在 _postMeta 内给出
-                showToast(`组已重命名：${prev} → ${next}`);
+                showToast(uiText(`组已重命名：${prev} → ${next}`, `Group renamed: ${prev} → ${next}`));
                 reload();
               };
               input.onkeydown = (e) => {
@@ -2170,23 +2209,23 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
 
             const loadBtn = document.createElement("button");
             loadBtn.className = "anima-group-load-btn";
-            loadBtn.textContent = "切换";
+            loadBtn.textContent = uiText("切换", "Switch");
             loadBtn.onclick = () => {
               dotClosePopover();
               this.loras = (g.loras || []).map((l) => ({ name: l.name, weight: l.weight, clipWeight: l.clipWeight ?? l.weight, disabled: this._prefDisabled(l.name) }));
               this._commit();
               if (listEl) this._render(listEl);
               close();
-              showToast(`已切换组「${g.name}」（${this.loras.length} 个 LoRA）`);
+              showToast(uiText(`已切换组「${g.name}」（${this.loras.length} 个 LoRA）`, `Switched to group “${g.name}” (${this.loras.length} LoRAs）`));
             };
             row.appendChild(loadBtn);
 
             const delBtn = document.createElement("button");
             delBtn.className = "anima-group-delete-btn";
-            delBtn.textContent = "删除";
+            delBtn.textContent = uiText("删除", "Delete");
             delBtn.onclick = async () => {
               dotClosePopover();
-              if (!window.confirm(`删除组「${g.name}」？`)) return;
+              if (!window.confirm(uiText(`删除组「${g.name}」？`, `Delete group “${g.name}”？`))) return;
               const next = (Array.isArray(metaData.loraGroups) ? metaData.loraGroups : []).filter((x) => x.name !== g.name);
               metaData.loraGroups = next;
               // 删除会让数组变短（甚至删到空）：必须带 __replace 显式授权清空该键，
@@ -2217,7 +2256,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       overlay.className = "modal-overlay bm-overlay bm-overlay-enter";
       const modal = document.createElement("div");
       modal.className = "modal bm-modal-enter bm-modal";
-      modal.innerHTML = `
+      modal.innerHTML = uiText(`
         <div class="bm-header">
           <div class="bm-heading"><span class="bm-kicker">LOCAL LIBRARY</span><h3>${svgIcon("folder", 15)} <span>本地 LoRA</span></h3><span class="bm-total"></span></div>
           <div class="bm-header-actions">
@@ -2243,7 +2282,33 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           <div class="bm-list"></div>
         </div>
         <div class="bm-batchbar"></div>
-      `;
+      `, `
+        <div class="bm-header">
+          <div class="bm-heading"><span class="bm-kicker">LOCAL LIBRARY</span><h3>${svgIcon("folder", 15)} <span>Local LoRAs</span></h3><span class="bm-total"></span></div>
+          <div class="bm-header-actions">
+            <button class="bm-mode" type="button"><span class="bm-mode-icon">${svgIcon("list", 12)}</span><span>List</span></button>
+            <button class="bm-url" type="button" title="Download LoRAs from Civitai links">${svgIcon("download", 12)}<span>Download URL</span></button>
+            <button class="bm-newcat" type="button">${svgIcon("plus", 12)}<span>Categories</span></button>
+            <button class="bm-batch-toggle" type="button">${svgIcon("checkSquare", 12)}<span>Batch</span></button>
+            <button class="bm-close" type="button">${svgIcon("x", 12)}<span>Close</span></button>
+          </div>
+        </div>
+        <div class="bm-search-row">
+          <label class="bm-search-box">${svgIcon("search", 13)}<input class="bm-search" type="text" placeholder="Search names, paths, aliases, creators, tags or trigger words…" aria-label="Search LoRA names, paths, aliases, creators, tags or trigger words"></label>
+          <select class="bm-base-model" aria-label="Filter by base model" title="Filter using local manager matching metadata"></select>
+          <select class="bm-sort" aria-label="Sort order">
+            <option value="name">Name</option>
+            <option value="size">Size</option>
+            <option value="date" selected>Date (newest first)</option>
+            <option value="usage">Usage count</option>
+          </select>
+        </div>
+        <div class="bm-body">
+          <div class="bm-sidebar"></div>
+          <div class="bm-list"></div>
+        </div>
+        <div class="bm-batchbar"></div>
+      `);
       overlay.appendChild(modal);
       document.body.appendChild(overlay);
 
@@ -2299,7 +2364,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
             console.warn("[Anima] 本地 meta 为空壳，已跳过写入（保护后端数据）");
             return;
           }
-          throw new Error(`分类同步失败（${res.error}）`);
+          throw new Error(uiText(`分类同步失败（${res.error}）`, `Category synchronization failed (${res.error}）`));
         }).catch((error) => console.warn("[Anima] 分类同步失败:", error));
         return metaSaveQueue;
       };
@@ -2326,26 +2391,26 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         };
         if (!baseModelIndex.ready) {
           baseModelFilter = "";
-          appendOption("", "底模数据未加载");
+          appendOption("", uiText("底模数据未加载", "Base model data not loaded"));
           baseModelFilterEl.disabled = true;
-          baseModelFilterEl.title = "本地管理页尚未缓存 LoRA 匹配元数据";
+          baseModelFilterEl.title = uiText("本地管理页尚未缓存 LoRA 匹配元数据", "The local manager has not cached LoRA matching metadata");
           return;
         }
-        appendOption("", "底模：全部");
-        appendOption(BASE_MODEL_UNKNOWN, "未知");
+        appendOption("", uiText("底模：全部", "Base model: All"));
+        appendOption(BASE_MODEL_UNKNOWN, uiText("未知", "Unknown"));
         baseModelIndex.models.forEach(model => appendOption(model, model));
         if (baseModelFilter && baseModelFilter !== BASE_MODEL_UNKNOWN && !baseModelIndex.models.includes(baseModelFilter)) {
           baseModelFilter = "";
         }
         baseModelFilterEl.disabled = false;
-        baseModelFilterEl.title = "使用本地 LoRA 管理器的匹配元数据筛选";
+        baseModelFilterEl.title = uiText("使用本地 LoRA 管理器的匹配元数据筛选", "Filter using matching metadata from the local LoRA manager");
         baseModelFilterEl.value = baseModelFilter;
       };
       const fetchLocalLoras = async () => {
         const response = await fetch("/anima/loras");
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
-        if (!Array.isArray(data?.loras)) throw new Error("本地 LoRA 响应格式无效");
+        if (!Array.isArray(data?.loras)) throw new Error(uiText("本地 LoRA 响应格式无效", "Invalid local LoRA response"));
         return data.loras.map(lora => ({ ...lora }));
       };
       const refreshInventory = () => {
@@ -2356,12 +2421,12 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           allLoras = loras;
           loraLoadError = "";
           renderBaseModelOptions();
-          totalEl.textContent = `共 ${allLoras.length} 个`;
+          totalEl.textContent = uiText(`共 ${allLoras.length} 个`, `Total ${allLoras.length} items`);
           renderSidebar();
           renderCurrent();
         }).catch(error => {
           loraLoadError = error?.message || String(error);
-          if (allLoras.length) showToast("本地 LoRA 刷新失败，仍显示现有列表：" + loraLoadError);
+          if (allLoras.length) showToast(uiText("本地 LoRA 刷新失败，仍显示现有列表：", "Refresh failed; keeping the current LoRA list: ") + loraLoadError);
         }).finally(() => {
           inventoryReloading = false;
           if (!closed && !allLoras.length && loraLoadError) renderCurrent();
@@ -2385,7 +2450,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       const openCivitai = (name, getMid) => {
         const mid = getMid();
         if (mid) { window.open("https://civitai.com/models/" + mid, "_blank"); return; }
-        showToast("⏳ 正在获取 C 站链接…");
+        showToast(uiText("⏳ 正在获取 C 站链接…", "Loading Civitai link…"));
         const w = window.open("", "_blank");
         getInfoQueued(name).then((info) => {
           if (closed) { if (w && !w.closed) w.close(); return; }
@@ -2398,9 +2463,9 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
             // 区分"查询失败(可能未开代理)"与"确实无匹配"：失败时提示用户开代理后重试
             const src = (info && info.source) || "";
             if (src.startsWith("error") || src.startsWith("http_")) {
-              showToast("⚠️ 获取 C 站链接失败(可能未开代理)，已改为搜索，开代理后可重试");
+              showToast(uiText("⚠️ 获取 C 站链接失败(可能未开代理)，已改为搜索，开代理后可重试", "Civitai link lookup failed (check your proxy). Opened search instead; retry after connecting."));
             } else {
-              showToast("此模型在 C 站未匹配到，已跳转搜索");
+              showToast(uiText("此模型在 C 站未匹配到，已跳转搜索", "No matching Civitai model; opened search"));
             }
             window.open("https://civitai.com/search/models?query=" + encodeURIComponent(name) + "&type=LORA", "_blank");
           }
@@ -2416,7 +2481,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         if (!entries.length) return "";
         return entries.some((entry) => !entry.disabled && (entry.weight !== 0 || (entry.clipWeight ?? entry.weight) !== 0)) ? "enabled" : "disabled";
       };
-      const stateBadge = (state) => state ? `${svgIcon(state === "enabled" ? "check" : "minus", 11)}<span>${state === "enabled" ? "已启用" : "已停用"}</span>` : "";
+      const stateBadge = (state) => state ? `${svgIcon(state === "enabled" ? "check" : "minus", 11)}<span>${state === "enabled" ? uiText("已启用", "Enabled") : uiText("已停用", "Disabled")}</span>` : "";
       const loraKey = lora => normalizeLoraName(lora.relativePath || lora.filename || lora.name);
       const getMatched = () => {
         const q = searchInput.value || "";
@@ -2487,12 +2552,12 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           item.onclick = () => { curFilter = (curFilter === key) ? "all" : key; renderSidebar(); renderCurrent({ reset: true }); };
           sidebarEl.appendChild(item);
         };
-        mk("all", "全部", allLoras.length, "");
+        mk("all", uiText("全部", "All"), allLoras.length, "");
         meta.categories.forEach((cat) => {
           mk(cat, cat, allLoras.filter((l) => loraMeta(l.name).categories.includes(cat)).length, "tag");
         });
         // 未分类 = 未归属任何分类（key __uncategorized__ 与面板「LoRA 管理」侧栏约定一致）
-        mk("__uncategorized__", "未分类", allLoras.filter((l) => !(loraMeta(l.name).categories || []).length).length, "tag");
+        mk("__uncategorized__", uiText("未分类", "Uncategorized"), allLoras.filter((l) => !(loraMeta(l.name).categories || []).length).length, "tag");
       };
 
       // ── 预览图懒加载 ──
@@ -2531,11 +2596,11 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         const metaEl = host.querySelector(".bm-meta");
         const twEl = host.querySelector(".bm-tw");
         const tw = info.trainedWords || [];
-        if (twEl) twEl.textContent = tw.length ? "触发词 · " + tw.slice(0, 2).join(", ") + (tw.length > 2 ? "..." : "") : "";
+        if (twEl) twEl.textContent = tw.length ? uiText("触发词 · ", "Trigger words · ") + tw.slice(0, 2).join(", ") + (tw.length > 2 ? "..." : "") : "";
         if (mnameEl && info.modelName && info.modelName !== host.dataset.name) {
           mnameEl.textContent = info.modelName;
           mnameEl.title = info.modelName;
-          if (lnameEl) { lnameEl.textContent = "本地: " + host.dataset.name; lnameEl.style.display = "block"; }
+          if (lnameEl) { lnameEl.textContent = uiText("本地: ", "Local: ") + host.dataset.name; lnameEl.style.display = "block"; }
         }
         if (metaEl) {
           const parts = [];
@@ -2573,7 +2638,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         const left = (idx % cols) * (ITEM_W + GAP);
         const top = Math.floor(idx / cols) * ROW_H;
         card.style.cssText = `position:absolute;left:${left}px;top:${top}px;width:${ITEM_W}px;height:${ROW_H - GAP}px;border-radius:8px;overflow:hidden;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);cursor:pointer;`;
-        card.innerHTML = `
+        card.innerHTML = uiText(`
           <div class="bm-img" data-lora-name="${esc(l.name)}"><span class="bm-img-fallback">${svgIcon("image", 24)}</span></div>
           <div class="bm-badge" style="display:${added ? "flex" : "none"};">${stateBadge(state)}</div>
           <div class="bm-card-actions">
@@ -2585,12 +2650,24 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
             <div class="bm-meta"></div>
             <div class="bm-cattags"></div>
           </div>
-        `;
+        `, `
+          <div class="bm-img" data-lora-name="${esc(l.name)}"><span class="bm-img-fallback">${svgIcon("image", 24)}</span></div>
+          <div class="bm-badge" style="display:${added ? "flex" : "none"};">${stateBadge(state)}</div>
+          <div class="bm-card-actions">
+            <button class="bm-catbtn ${m.categories.length ? "is-active" : ""}" title="Assign categories" aria-label="Assign categories">${svgIcon("tag", 12)}</button>
+            <button class="bm-csite" title="Open Civitai" aria-label="Open Civitai">${svgIcon("link", 12)}</button>
+          </div>
+          <div class="bm-card-info">
+            <div class="bm-mname">${esc(l.name)}</div>
+            <div class="bm-meta"></div>
+            <div class="bm-cattags"></div>
+          </div>
+        `);
         const catTagsEl = card.querySelector(".bm-cattags");
         m.categories.forEach((cat) => {
           const t = document.createElement("span");
           t.textContent = cat;
-          t.title = "点击移除分类";
+          t.title = uiText("点击移除分类", "Click to remove category");
           t.className = "bm-cat-tag";
           t.onclick = (ev) => {
             ev.stopPropagation();
@@ -2631,12 +2708,12 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           if (existing) {
             this.loras = this.loras.filter((e2) => e2.name.toLowerCase() !== l.name.toLowerCase());
             this._commit(); this._render(this.listEl);
-            showToast("已移除: " + l.name);
+            showToast(uiText("已移除: ", "Removed: ") + l.name);
           } else {
             this.loras.push({ name: l.name, weight: 1.0, disabled: this._prefDisabled(l.name) });
             bumpCount(l.name);
             this._commit(); this._render(this.listEl);
-            showToast("已添加: " + l.name);
+            showToast(uiText("已添加: ", "Added: ") + l.name);
           }
           renderCurrent({ exclude: [l.name] });
         };
@@ -2659,7 +2736,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         row.dataset.name = l.name;
         row.dataset.ref = loraKey(l);
         row.style.cssText = "cursor:pointer;";
-        row.innerHTML = `
+        row.innerHTML = uiText(`
           <div class="bm-li-thumb" data-lora-name="${esc(l.name)}"><span class="bm-img-fallback">${svgIcon("image", 18)}</span></div>
           <div class="bm-li-copy">
             <div class="bm-mname">${esc(l.name)}</div>
@@ -2671,7 +2748,19 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
             <button class="bm-csite" title="打开 C 站页面" aria-label="打开 C 站页面">${svgIcon("link", 12)}</button>
             <span class="bm-li-badge" style="display:${added ? "inline-flex" : "none"};">${stateBadge(state)}</span>
           </div>
-        `;
+        `, `
+          <div class="bm-li-thumb" data-lora-name="${esc(l.name)}"><span class="bm-img-fallback">${svgIcon("image", 18)}</span></div>
+          <div class="bm-li-copy">
+            <div class="bm-mname">${esc(l.name)}</div>
+            <div class="bm-lname"></div>
+            <div class="bm-meta"></div>
+          </div>
+          <div class="bm-li-actions">
+            <button class="bm-catbtn ${m.categories.length ? "is-active" : ""}" title="Assign categories" aria-label="Assign categories">${svgIcon("tag", 12)}</button>
+            <button class="bm-csite" title="Open Civitai" aria-label="Open Civitai">${svgIcon("link", 12)}</button>
+            <span class="bm-li-badge" style="display:${added ? "inline-flex" : "none"};">${stateBadge(state)}</span>
+          </div>
+        `);
         row.querySelector(".bm-catbtn").onclick = (ev) => {
           ev.stopPropagation();
           this._showCatPicker(row, l.name, meta, saveMeta, () => { renderSidebar(); renderCurrent(); });
@@ -2703,12 +2792,12 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           if (existing) {
             this.loras = this.loras.filter((e2) => e2.name.toLowerCase() !== l.name.toLowerCase());
             this._commit(); this._render(this.listEl);
-            showToast("已移除: " + l.name);
+            showToast(uiText("已移除: ", "Removed: ") + l.name);
           } else {
             this.loras.push({ name: l.name, weight: 1.0, disabled: this._prefDisabled(l.name) });
             bumpCount(l.name);
             this._commit(); this._render(this.listEl);
-            showToast("已添加: " + l.name);
+            showToast(uiText("已添加: ", "Added: ") + l.name);
           }
           renderCurrent({ exclude: [l.name] });
         };
@@ -2791,7 +2880,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           tags.innerHTML = "";
           for (const category of categories) {
             const tag = document.createElement("span");
-            tag.className = "bm-cat-tag"; tag.textContent = category; tag.title = "点击移除分类";
+            tag.className = "bm-cat-tag"; tag.textContent = category; tag.title = uiText("点击移除分类", "Click to remove category");
             tag.onclick = event => {
               event.stopPropagation();
               ensureMeta(host.dataset.name).categories = ensureMeta(host.dataset.name).categories.filter(c => c !== category);
@@ -2803,15 +2892,15 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       };
       const renderEmptyState = (target) => {
         if (loraLoadError && !allLoras.length) {
-          target.innerHTML = `<div class="bm-empty"><strong>本地 LoRA 加载失败</strong><span>${esc(loraLoadError)}</span><button type="button" data-bm-retry="1" ${inventoryReloading ? "disabled" : ""}>${inventoryReloading ? "正在重试…" : "重试加载"}</button></div>`;
+          target.innerHTML = uiText(`<div class="bm-empty"><strong>本地 LoRA 加载失败</strong><span>${esc(loraLoadError)}</span><button type="button" data-bm-retry="1" ${inventoryReloading ? "disabled" : ""}>${inventoryReloading ? uiText("正在重试…", "Retrying…") : uiText("重试加载", "Retry loading")}</button></div>`, `<div class="bm-empty"><strong>Could not load local LoRAs</strong><span>${esc(loraLoadError)}</span><button type="button" data-bm-retry="1" ${inventoryReloading ? "disabled" : ""}>${inventoryReloading ? uiText("正在重试…", "Retrying…") : uiText("重试加载", "Retry loading")}</button></div>`);
           target.querySelector("[data-bm-retry]")?.addEventListener("click", refreshInventory);
           return;
         }
         if (!allLoras.length) {
-          target.innerHTML = `<div class="bm-empty">${svgIcon("folder", 22)}<strong>未发现本地 LoRA</strong><span>当前 LoRA 目录没有可浏览的文件</span></div>`;
+          target.innerHTML = uiText(`<div class="bm-empty">${svgIcon("folder", 22)}<strong>未发现本地 LoRA</strong><span>当前 LoRA 目录没有可浏览的文件</span></div>`, `<div class="bm-empty">${svgIcon("folder", 22)}<strong>No local LoRAs found</strong><span>No browsable files in the current LoRA directory</span></div>`);
           return;
         }
-        target.innerHTML = `<div class="bm-empty">${svgIcon("search", 22)}<strong>没有匹配的 LoRA</strong><span>可清除搜索、底模或分类筛选后重试</span><button type="button" data-bm-clear-filter="1">清除筛选</button></div>`;
+        target.innerHTML = uiText(`<div class="bm-empty">${svgIcon("search", 22)}<strong>没有匹配的 LoRA</strong><span>可清除搜索、底模或分类筛选后重试</span><button type="button" data-bm-clear-filter="1">清除筛选</button></div>`, `<div class="bm-empty">${svgIcon("search", 22)}<strong>No matching LoRAs</strong><span>Clear the search, base model or category filters and try again</span><button type="button" data-bm-clear-filter="1">Clear filters</button></div>`);
         target.querySelector("[data-bm-clear-filter]")?.addEventListener("click", () => {
           searchInput.value = "";
           baseModelFilter = "";
@@ -2992,14 +3081,14 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           batchBar.style.display = "block";
           if (!batchBar.querySelector(".bm-batch-add")) batchBar.innerHTML = `<button class="bm-batch-add" type="button">${svgIcon("plus", 13)}<span></span></button>`;
           const addBtn = batchBar.querySelector(".bm-batch-add");
-          addBtn.querySelector("span").textContent = `添加选中（${selected.size}）`;
+          addBtn.querySelector("span").textContent = uiText(`添加选中（${selected.size}）`, `Add selected (${selected.size}）`);
           addBtn.onclick = () => {
             const toAdd = Array.from(selected).filter((n) => !this.loras.some((e) => e.name.toLowerCase() === n.toLowerCase()));
-            if (!toAdd.length) { showToast("没有新的 LoRA 可添加"); return; }
+            if (!toAdd.length) { showToast(uiText("没有新的 LoRA 可添加", "No new LoRAs to add")); return; }
             toAdd.forEach((n) => { this.loras.push({ name: n, weight: 1.0, disabled: this._prefDisabled(n) }); bumpCount(n, false); });
             saveMeta();
             this._commit(); this._render(this.listEl);
-            showToast(`✅ 已添加 ${toAdd.length} 个 LoRA`);
+            showToast(uiText(`✅ 已添加 ${toAdd.length} 个 LoRA`, `Added ${toAdd.length} LoRAs`));
             selected.clear(); updateBatchBar(); renderCurrent({ exclude: toAdd });
           };
         } else {
@@ -3075,7 +3164,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         document.body.style.webkitUserSelect = "";
         if (dragBox.rect) { dragBox.rect.remove(); dragBox.rect = null; }
         if (dragBox.boxed && selected.size > 0) {
-          showToast(`已选中 ${selected.size} 个，右键可批量添加分类`);
+          showToast(uiText(`已选中 ${selected.size} 个，右键可批量添加分类`, `Selected ${selected.size} selected; right-click to assign categories`));
         }
       };
       const onBMClick = (e) => {
@@ -3139,24 +3228,24 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       searchInput.onkeydown = (e) => { if (e.key === "Escape") closeModal(); };
       modeBtn.onclick = () => {
         mode = mode === "grid" ? "list" : "grid";
-        modeBtn.innerHTML = `${svgIcon(mode === "grid" ? "list" : "grid", 12)}<span>${mode === "grid" ? "列表" : "网格"}</span>`;
+        modeBtn.innerHTML = `${svgIcon(mode === "grid" ? "list" : "grid", 12)}<span>${mode === "grid" ? uiText("列表", "List") : uiText("网格", "Grid")}</span>`;
         renderCurrent();
       };
       batchToggle.onclick = () => {
         batchMode = !batchMode;
         selected.clear();
-        batchToggle.innerHTML = `${svgIcon(batchMode ? "x" : "checkSquare", 12)}<span>${batchMode ? "退出批量" : "批量"}</span>`;
+        batchToggle.innerHTML = `${svgIcon(batchMode ? "x" : "checkSquare", 12)}<span>${batchMode ? uiText("退出批量", "Exit batch mode") : uiText("批量", "Batch")}</span>`;
         batchToggle.classList.toggle("is-active", batchMode);
         updateBatchBar(); renderCurrent();
       };
       newCatBtn.onclick = () => {
-        const name = window.prompt("新建分类名称：");
+        const name = window.prompt(uiText("新建分类名称：", "New category name:"));
         if (!name || !name.trim()) return;
         const n = name.trim();
-        if (meta.categories.includes(n)) { showToast("分类已存在"); return; }
+        if (meta.categories.includes(n)) { showToast(uiText("分类已存在", "Category already exists")); return; }
         meta.categories.push(n);
         saveMeta(); renderSidebar();
-        showToast(`分类已创建: ${n}`);
+        showToast(uiText(`分类已创建: ${n}`, `Category created:  ${n}`));
       };
       // 搜索防抖：每次按键全量重建列表/网格代价高，150ms 合并连续输入
       let _searchTimer = null;
@@ -3224,20 +3313,20 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
               loraMeta: mirror.loraMeta && typeof mirror.loraMeta === "object" ? mirror.loraMeta : {},
               loraGroups: Array.isArray(mirror.loraGroups) ? mirror.loraGroups : [],
             };
-            showToast("已用本地备份恢复（后端读取失败）");
+            showToast(uiText("已用本地备份恢复（后端读取失败）", "Restored the local backup (backend read failed)"));
           }
         }
         renderBaseModelOptions();
-        totalEl.textContent = `共 ${allLoras.length} 个`;
+        totalEl.textContent = uiText(`共 ${allLoras.length} 个`, `Total ${allLoras.length} items`);
         renderSidebar();
         renderCurrent();
       }).catch((err) => {
-        if (statusEl) { statusEl.innerHTML = "❌ 加载失败: " + err.message; statusEl.style.color = "#f44"; }
+        if (statusEl) { statusEl.innerHTML = uiText("❌ 加载失败: ", "Load failed: ") + err.message; statusEl.style.color = "#f44"; }
       });
       } catch (e) {
         console.error("[Anima] 浏览模态框打开失败:", e);
-        showToast("❌ 浏览窗口打开失败: " + e.message);
-        if (statusEl) { statusEl.innerHTML = "❌ 打开失败: " + e.message; statusEl.style.color = "#f44"; }
+        showToast(uiText("❌ 浏览窗口打开失败: ", "Could not open browser: ") + e.message);
+        if (statusEl) { statusEl.innerHTML = uiText("❌ 打开失败: ", "Could not open: ") + e.message; statusEl.style.color = "#f44"; }
       }
     }
 
@@ -3251,13 +3340,13 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       let m = meta.loraMeta[name];
       if (!m) m = meta.loraMeta[name] = { categories: [], favorite: false, pinned: false };
       const renderBody = () => {
-        let html = '<div class="bm-cat-title">分配分类</div>';
-        if (!meta.categories.length) html += '<div class="bm-cat-empty">暂无分类，点「分类」创建</div>';
+        let html = uiText('<div class="bm-cat-title">分配分类</div>', "<div class=\"bm-cat-title\">Assign categories</div>");
+        if (!meta.categories.length) html += uiText('<div class="bm-cat-empty">暂无分类，点「分类」创建</div>', "<div class=\"bm-cat-empty\">No categories. Click Categories to create one.</div>");
         meta.categories.forEach((cat) => {
           const on = m.categories.includes(cat);
           html += `<button class="bm-cat-option${on ? " is-active" : ""}" data-cat="${escAttr(cat)}" aria-pressed="${on}">${svgIcon(on ? "checkSquare" : "square", 12)}<span>${esc(cat)}</span></button>`;
         });
-        html += `<button class="bm-cat-done" data-cat-done>${svgIcon("check", 12)}<span>完成</span></button>`;
+        html += uiText(`<button class="bm-cat-done" data-cat-done>${svgIcon("check", 12)}<span>完成</span></button>`, `<button class="bm-cat-done" data-cat-done>${svgIcon("check", 12)}<span>Done</span></button>`);
         picker.innerHTML = html;
         picker.querySelectorAll("[data-cat]").forEach((btn) => {
           btn.onclick = (ev) => {
@@ -3310,13 +3399,13 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         onDone && onDone();
       };
       const renderBody = () => {
-        let html = `<div class="bm-cat-title">${sel ? `批量添加分类 (${targets.length} 个)` : "分配分类"}</div>`;
-        if (!meta.categories.length) html += '<div class="bm-cat-empty">暂无分类，先点顶部「分类」创建</div>';
+        let html = `<div class="bm-cat-title">${sel ? uiText(`批量添加分类 (${targets.length} 个)`, `Assign categories to selection (${targets.length} items)`) : uiText("分配分类", "Assign categories")}</div>`;
+        if (!meta.categories.length) html += uiText('<div class="bm-cat-empty">暂无分类，先点顶部「分类」创建</div>', "<div class=\"bm-cat-empty\">No categories. Create one using Categories above.</div>");
         meta.categories.forEach((cat) => {
           const allOn = targets.every((n) => (meta.loraMeta[n] || {}).categories?.includes(cat));
           html += `<button class="bm-cat-option${allOn ? " is-active" : ""}" data-cat="${escAttr(cat)}" aria-pressed="${allOn}">${svgIcon(allOn ? "checkSquare" : "square", 12)}<span>${esc(cat)}</span></button>`;
         });
-        html += `<button class="bm-cat-done" data-cat-done>${svgIcon("check", 12)}<span>完成</span></button>`;
+        html += uiText(`<button class="bm-cat-done" data-cat-done>${svgIcon("check", 12)}<span>完成</span></button>`, `<button class="bm-cat-done" data-cat-done>${svgIcon("check", 12)}<span>Done</span></button>`);
         picker.innerHTML = html;
         picker.querySelectorAll("[data-cat]").forEach((btn) => {
           btn.onclick = (ev) => {
@@ -3353,18 +3442,18 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       const loras = group.loras || [];
       let items = "";
       if (!loras.length) {
-        items = '<span class="tw-empty">空组</span>';
+        items = uiText('<span class="tw-empty">空组</span>', "<span class=\"tw-empty\">Empty group</span>");
       } else {
         items = loras.map((l) => {
           const tw = this._effectiveWords(l.name, l.trigger_words?.length ? l.trigger_words : this.triggerWordMap[l.name]);
           const weight = (l.weight ?? 1);
           const wordHtml = (tw !== undefined && tw !== null && tw.length)
             ? `<div style="display:flex;flex-wrap:wrap;gap:2px;margin:3px 0 6px;">${tw.map((x) => `<span class="tw-word" data-copy="${esc(x)}">${esc(x)}</span>`).join("")}</div>`
-            : `<div style="font-size:9px;color:rgba(255,255,255,0.3);margin:2px 0 6px;">触发词未获取</div>`;
+            : uiText(`<div style="font-size:9px;color:rgba(255,255,255,0.3);margin:2px 0 6px;">触发词未获取</div>`, "<div style=\"font-size:9px;color:rgba(255,255,255,0.3);margin:2px 0 6px;\">Trigger words not loaded</div>");
           return `<div style="border-bottom:1px solid rgba(255,255,255,0.05);padding:3px 0;"><div class="tw-title" style="font-size:10px;color:#EDEDEF;font-weight:600;">${esc(l.name)} <span style="opacity:.5;font-weight:400;">×${weight}</span></div>${wordHtml}</div>`;
         }).join("");
       }
-      popover.innerHTML = `<div class="tw-title" style="font-size:11px;color:#EDEDEF;font-weight:600;margin-bottom:5px;">${esc(group.name)}（${loras.length}）</div>${items}`;
+      popover.innerHTML = uiText(`<div class="tw-title" style="font-size:11px;color:#EDEDEF;font-weight:600;margin-bottom:5px;">${esc(group.name)}（${loras.length}）</div>${items}`, `<div class="tw-title" style="font-size:11px;color:#EDEDEF;font-weight:600;margin-bottom:5px;">${esc(group.name)} (${loras.length}）</div>${items}`);
       document.body.appendChild(popover);
 
       // 定位（与单 LoRA 弹窗一致）
@@ -3382,7 +3471,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
         if (wordEl) {
           e.stopPropagation();
           copyText(wordEl.dataset.copy || wordEl.textContent);
-          showToast(`已复制: ${wordEl.textContent}`);
+          showToast(uiText(`已复制: ${wordEl.textContent}`, `Copied: ${wordEl.textContent}`));
         }
       });
 
@@ -3414,7 +3503,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
       // ── 预览图（C 站图片走后端代理，400px 小图；非白名单 URL 由 this._imgProxy 降级空串，onerror 兜底占位）──
       let previewHtml = "";
       if (info && info.previewUrl) {
-        previewHtml = `<div class="tw-preview"><img src="${escAttr(this._imgProxy(info.previewUrl))}" alt="" onerror="this.parentElement.innerHTML='<span class=tw-preview-fallback>无预览图</span>'"></div>`;
+        previewHtml = uiText(`<div class="tw-preview"><img src="${escAttr(this._imgProxy(info.previewUrl))}" alt="" onerror="this.parentElement.innerHTML='<span class=tw-preview-fallback>无预览图</span>'"></div>`, `<div class="tw-preview"><img src="${escAttr(this._imgProxy(info.previewUrl))}" alt="" onerror="this.parentElement.innerHTML='<span class=tw-preview-fallback>No preview</span>'"></div>`);
       } else if (info && info.modelName) {
         previewHtml = `<div class="tw-preview tw-preview-fallback">${esc(info.modelName)}</div>`;
       }
@@ -3427,18 +3516,18 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
 
       let wordHtml;
       if (words === undefined) {
-        wordHtml = '<span class="tw-empty">暂未获取到触发词，请先运行「提取」</span>';
+        wordHtml = uiText('<span class="tw-empty">暂未获取到触发词，请先运行「提取」</span>', "<span class=\"tw-empty\">No trigger words yet. Run Extract first.</span>");
       } else if (words === null) {
-        wordHtml = '<span class="tw-empty">查询失败，可重新提取或悬停重试</span>';
+        wordHtml = uiText('<span class="tw-empty">查询失败，可重新提取或悬停重试</span>', "<span class=\"tw-empty\">Lookup failed. Extract again or hover to retry.</span>");
       } else if (words.length) {
         // 悬浮预览内不再放"复制全部"（节点工具栏「全部触发词」按钮已有此功能；悬浮层会随鼠标离开消失，点了也白点）
         wordHtml = words.map((w) => `<span class="tw-word" data-copy="${esc(w)}">${esc(w)}</span>`).join("");
       } else {
-        wordHtml = '<span class="tw-empty">该 LoRA 无触发词</span>';
+        wordHtml = uiText('<span class="tw-empty">该 LoRA 无触发词</span>', "<span class=\"tw-empty\">This LoRA has no trigger words</span>");
       }
 
       const safeName = esc(loraName);
-      popover.innerHTML = `${previewHtml}<div class="tw-title" style="font-size:11px;color:#EDEDEF;font-weight:600;">${safeName}</div>${metaHtml}<div class="tw-title">${triggerOverrides.entry(loraName)?.hasOverride ? "自定义触发词" : "触发词"}</div><div style="display:flex;flex-wrap:wrap;gap:2px;">${wordHtml}</div>`;
+      popover.innerHTML = `${previewHtml}<div class="tw-title" style="font-size:11px;color:#EDEDEF;font-weight:600;">${safeName}</div>${metaHtml}<div class="tw-title">${triggerOverrides.entry(loraName)?.hasOverride ? uiText("自定义触发词", "Custom trigger words") : uiText("触发词", "Trigger words")}</div><div style="display:flex;flex-wrap:wrap;gap:2px;">${wordHtml}</div>`;
       document.body.appendChild(popover);
 
       // 定位
@@ -3457,7 +3546,7 @@ window.addEventListener("pagehide", () => loraImageNodes.clear(), { once: true }
           e.stopPropagation();
           const text = wordEl.dataset.copy || wordEl.textContent;
           copyText(text);
-          showToast(`已复制: ${text}`);
+          showToast(uiText(`已复制: ${text}`, `Copied: ${text}`));
         }
       });
 

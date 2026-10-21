@@ -1,3 +1,4 @@
+import { uiText, builtinCategoryLabel } from "./anima_node_i18n.js";
 // TK Prompt Saver：执行节点时自动把已开启的提示词写入共享 Prompt 库。
 (function () {
   const NODE_NAME = "AnimaTKPromptSaver";
@@ -66,7 +67,7 @@
         if (!db.objectStoreNames.contains(CATEGORY_STORE)) db.createObjectStore(CATEGORY_STORE, { keyPath: "id" });
       };
       request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error || new Error("无法打开 Prompt 库"));
+      request.onerror = () => reject(request.error || new Error(uiText("无法打开 Prompt 库", "Cannot open the Prompt library")));
     });
   }
 
@@ -75,7 +76,7 @@
       const transaction = db.transaction(name, "readonly");
       const request = transaction.objectStore(name).getAll();
       request.onsuccess = () => resolve(request.result || []);
-      request.onerror = () => reject(request.error || new Error(`无法读取 ${name}`));
+      request.onerror = () => reject(request.error || new Error(uiText("无法读取 {name}", "Cannot read {name}", { name })));
     });
   }
 
@@ -145,7 +146,7 @@
         if (name === PROMPT_STORE || name === CATEGORY_STORE) schedulePromptLibrarySync();
         resolve();
       };
-      transaction.onerror = () => reject(transaction.error || new Error(`无法写入 ${name}`));
+      transaction.onerror = () => reject(transaction.error || new Error(uiText("无法写入 {name}", "Cannot write {name}", { name })));
     });
   }
 
@@ -159,7 +160,7 @@
         if (name === PROMPT_STORE || name === CATEGORY_STORE) schedulePromptLibrarySync();
         resolve();
       };
-      transaction.onerror = () => reject(transaction.error || new Error(`无法写入 ${name}`));
+      transaction.onerror = () => reject(transaction.error || new Error(uiText("无法写入 {name}", "Cannot write {name}", { name })));
     });
   }
 
@@ -310,7 +311,7 @@
         control.type = inputType;
         control.name = `tk-prompt-saver-${this.node.id}`;
         control.checked = Boolean(this.settings.enabled[index]);
-        control.title = this.settings.mode === "single" ? "选择唯一保存接口" : "切换保存接口";
+        control.title = this.settings.mode === "single" ? uiText("选择唯一保存接口", "Choose the single input to save") : uiText("切换保存接口", "Toggle this input for saving");
         const number = document.createElement("span");
         number.className = "tk-ps-index";
         number.textContent = String(index + 1);
@@ -318,8 +319,8 @@
         name.className = "tk-ps-name";
         name.type = "text";
         name.value = this.settings.names[index];
-        name.placeholder = `提示词 ${index + 1}`;
-        name.title = "保存到 Prompt 库时使用的显示名称";
+        name.placeholder = uiText("提示词 {index}", "Prompt {index}", { index: index + 1 });
+        name.title = uiText("保存到 Prompt 库时使用的显示名称", "Display name used when saving to the Prompt library");
 
         control.addEventListener("change", () => {
           if (this.settings.mode === "single") {
@@ -359,7 +360,7 @@
       }
       if (!this.category) return;
       const current = this.categoryWidget?.value || "uncategorized";
-      this.category.innerHTML = categories.map((item) => `<option value="${String(item.id).replace(/"/g, "&quot;")}">${String(item.name || "未分类")}</option>`).join("");
+      this.category.innerHTML = categories.map((item) => `<option value="${String(item.id).replace(/"/g, "&quot;")}">${String(builtinCategoryLabel(item) || uiText('未分类', 'Uncategorized')).replace(/[&<>]/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[char]))}</option>`).join("");
       this.category.value = categories.some((item) => item.id === current) ? current : "uncategorized";
       this.commitCategory(this.category.value);
     }
@@ -370,7 +371,7 @@
 
     async persistExecution(records) {
       if (!Array.isArray(records) || !records.length) {
-        this.setStatus("本次没有可保存的提示词");
+        this.setStatus(uiText("本次没有可保存的提示词", "No prompts to save in this run"));
         return;
       }
       try {
@@ -409,9 +410,9 @@
         }
         window.dispatchEvent(new CustomEvent("anima-prompt-cards-updated"));
         try { localStorage.setItem("anima_prompt_library_updated", String(Date.now())); } catch (_) {}
-        this.setStatus(`已自动保存 ${saved} 条`);
+        this.setStatus(uiText("已自动保存 {count} 条", "Saved {count} prompts automatically", { count: saved }));
       } catch (error) {
-        this.setStatus(`自动保存失败：${error.message || error}`);
+        this.setStatus(uiText("自动保存失败：{message}", "Automatic save failed: {message}", { message: error.message || error }));
         console.error("[TK Prompt Saver] 自动保存失败:", error);
       }
     }
@@ -449,10 +450,10 @@
       header.className = "tk-ps-header";
       const title = document.createElement("span");
       title.className = "tk-ps-title";
-      title.textContent = "模式";
+      title.textContent = uiText("模式", "Mode");
       this.mode = document.createElement("select");
       this.mode.className = "tk-ps-mode";
-      this.mode.innerHTML = '<option value="single">单选</option><option value="multi">多选</option>';
+      this.mode.innerHTML = `<option value="single">${uiText("单选", "Single")}</option><option value="multi">${uiText("多选", "Multiple")}</option>`;
       this.mode.value = this.settings.mode;
       this.mode.addEventListener("change", () => this.selectMode(this.mode.value));
       this.count = document.createElement("span");
@@ -461,7 +462,7 @@
 
       const note = document.createElement("div");
       note.className = "tk-ps-note";
-      note.textContent = "执行时自动保存已开启输入；image_1…image_6 为对应预览图";
+      note.textContent = uiText("执行时自动保存已开启输入；image_1…image_6 为对应预览图", "Save enabled inputs when this node runs; image_1…image_6 supply their previews.");
       this.grid = document.createElement("div");
       this.grid.className = "tk-ps-grid";
 
@@ -469,14 +470,14 @@
       library.className = "tk-ps-library";
       const libraryLabel = document.createElement("span");
       libraryLabel.className = "tk-ps-library-label";
-      libraryLabel.textContent = "分类";
+      libraryLabel.textContent = uiText("分类", "Category");
       this.category = document.createElement("select");
       this.category.className = "tk-ps-category";
       this.category.addEventListener("change", () => this.commitCategory(this.category.value));
       library.append(libraryLabel, this.category);
       this.status = document.createElement("div");
       this.status.className = "tk-ps-status";
-      this.status.textContent = "等待执行";
+      this.status.textContent = uiText("等待执行", "Waiting to run");
 
       panel.append(header, note, this.grid, library, this.status);
       this.renderRows();

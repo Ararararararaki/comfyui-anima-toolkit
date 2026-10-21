@@ -1,3 +1,4 @@
+import { uiText } from "./anima_node_i18n.js";
 // Anima Trigger Words 节点前端 Widget
 // 独立节点：卡片列表展示每个 LoRA 的触发词，可手动编辑、X 删除。
 // 联动：从 bridge（面板「发送到 ComfyUI」）与 lora_syntax 输入解析 LoRA，
@@ -130,7 +131,7 @@
       const el = this.listEl;
       el.innerHTML = "";
       if (!this.loras.length) {
-        el.innerHTML = '<div class="atw-empty">暂无 LoRA，输入 <lora:name:weight> 或从面板「发送到 ComfyUI」同步</div>';
+        el.innerHTML = `<div class="atw-empty">${uiText("暂无 LoRA，输入 &lt;lora:name:weight&gt; 或从面板「发送到 ComfyUI」同步", "No LoRAs yet. Enter &lt;lora:name:weight&gt; or use Send to ComfyUI in the panel")}</div>`;
         return;
       }
       this.loras.forEach((l) => {
@@ -147,7 +148,7 @@
         delBtn.className = "atw-card-del";
         delBtn.type = "button";
         delBtn.innerHTML = svgIcon("x", 12);
-        delBtn.title = "删除该 LoRA 的触发词卡片";
+        delBtn.title = uiText("删除该 LoRA 的触发词卡片", "Remove this LoRA trigger-word card");
         delBtn.onclick = () => {
           this.loras = this.loras.filter((x) => x.name !== l.name);
           this._render();
@@ -158,7 +159,7 @@
         const input = document.createElement("input");
         input.className = "atw-card-input";
         input.type = "text";
-        input.placeholder = "触发词（逗号分隔），可手动编辑";
+        input.placeholder = uiText("触发词（逗号分隔），可手动编辑", "Trigger words (comma-separated); editable");
         input.value = this._twFor(l.name).join(", ");
         input.onchange = () => {
           const tw = input.value.split(",").map((s) => s.trim()).filter(Boolean);
@@ -234,7 +235,7 @@
         this._lastBridgeTs = ts;
         this._render();
         if (added || this.loras.length !== before) this._commit();
-        if (!silent && added) showToast("已从面板同步 " + added + " 个 LoRA");
+        if (!silent && added) showToast(uiText("已从面板同步 ", "Synced from the panel: ") + added + uiText(" 个 LoRA", " LoRAs"));
         return added;
       } catch {
         return 0;
@@ -244,8 +245,8 @@
     // ── 提取：逐个查询 /anima/lora/info 获取 trainedWords ──
     async _extractAll() {
       const pending = this.loras.filter((l) => this._twFor(l.name).length === 0);
-      if (!pending.length) { showToast("所有 LoRA 的触发词已获取"); return; }
-      showToast("正在提取 " + pending.length + " 个 LoRA 的触发词…");
+      if (!pending.length) { showToast(uiText("所有 LoRA 的触发词已获取", "Trigger words already loaded for all LoRAs")); return; }
+      showToast(uiText("正在提取 ", "Extracting trigger words for ") + pending.length + uiText(" 个 LoRA 的触发词…", " LoRAs…"));
       let found = 0, failed = 0;
       for (const l of pending) {
         try {
@@ -264,7 +265,7 @@
       }
       this._render();
       this._commit();
-      showToast(failed ? `提取完成：${found} 个有触发词，${failed} 个失败` : `提取完成：${found} 个有触发词`);
+      showToast(failed ? uiText("提取完成：{found} 个有触发词，{failed} 个失败", "Extraction complete: {found} with trigger words; {failed} failed", { found, failed }) : uiText("提取完成：{found} 个有触发词", "Extraction complete: {found} with trigger words", { found }));
     }
 
     // ── 读取工作流：遍历图找 LoRA Loader 节点，提取已选 LoRA 名（去重）──
@@ -313,12 +314,12 @@
 
     async _readWorkflow() {
       const found = this._readWorkflowLoras();
-      if (found === null) { this._setStatus("无法访问 ComfyUI 工作流图"); return; }
-      if (!found.length) { this._setStatus("工作流中未找到 TK 批量 LoRA Loader / LoraLoader 节点"); showToast("未在工作流中找到 LoRA Loader 节点"); return; }
+      if (found === null) { this._setStatus(uiText("无法访问 ComfyUI 工作流图", "Cannot access the ComfyUI workflow graph")); return; }
+      if (!found.length) { this._setStatus(uiText("工作流中未找到 TK 批量 LoRA Loader / LoraLoader 节点", "No TK Batch LoRA Loader / LoraLoader nodes in the workflow")); showToast(uiText("未在工作流中找到 LoRA Loader 节点", "No LoRA Loader nodes found in the workflow")); return; }
       let added = 0, extracted = 0, failed = 0;
       for (let i = 0; i < found.length; i++) {
         const l = found[i];
-        this._setStatus("读取工作流 " + (i + 1) + "/" + found.length + "：" + l.name + "…");
+        this._setStatus(uiText("读取工作流 ", "Reading workflow ") + (i + 1) + "/" + found.length + "：" + l.name + "…");
         if (!this.loras.some((e) => e.name.toLowerCase() === l.name.toLowerCase())) {
           this.loras.push({ name: l.name, weight: 1.0 });
           added++;
@@ -336,7 +337,7 @@
       }
       this._commit();
       this._render();
-      const msg = "读取到 " + found.length + " 个 LoRA（新增 " + added + "），已提取 " + extracted + " 个" + (failed ? "，失败 " + failed + " 个" : "");
+      const msg = uiText("读取到 {count} 个 LoRA（新增 {added}），已提取 {extracted} 个{failures}", "Read {count} LoRAs ({added} new); extracted {extracted}{failures}", { count: found.length, added, extracted, failures: failed ? uiText("，失败 {count} 个", "; {count} failed", { count: failed }) : "" });
       this._setStatus(msg);
       showToast(msg);
     }
@@ -379,17 +380,17 @@
 
       const toolbar = document.createElement("div");
       toolbar.className = "atw-toolbar";
-      const extractBtn = this._btn("提取触发词", "atw-extract", "从 Civitai 批量查询各 LoRA 的触发词", "download");
-      const copyBtn = this._btn("复制全部", "atw-copy", "复制所有触发词（逗号连接）", "clipboard");
+      const extractBtn = this._btn(uiText("提取触发词", "Extract trigger words"), "atw-extract", uiText("从 Civitai 批量查询各 LoRA 的触发词", "Look up trigger words for all LoRAs on Civitai"), "download");
+      const copyBtn = this._btn(uiText("复制全部", "Copy all"), "atw-copy", uiText("复制所有触发词（逗号连接）", "Copy all trigger words, comma-separated"), "clipboard");
       extractBtn.onclick = () => this._extractAll();
       copyBtn.onclick = () => {
         const parts = this.loras.map((l) => this._twFor(l.name).join(", ")).filter(Boolean);
-        if (!parts.length) { showToast("暂无触发词可复制"); return; }
+        if (!parts.length) { showToast(uiText("暂无触发词可复制", "No trigger words to copy")); return; }
         const text = parts.join(", ") + ",";
         if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(() => {});
-        showToast("已复制全部触发词");
+        showToast(uiText("已复制全部触发词", "All trigger words copied"));
       };
-      const wfBtn = this._btn("读取工作流", "atw-workflow", "从工作流中的 LoRA Loader 节点读取已选 LoRA 并批量提取触发词", "filesearch");
+      const wfBtn = this._btn(uiText("读取工作流", "Read workflow"), "atw-workflow", uiText("从工作流中的 LoRA Loader 节点读取已选 LoRA 并批量提取触发词", "Read selected LoRAs from workflow Loader nodes and extract their trigger words"), "filesearch");
       wfBtn.onclick = () => this._readWorkflow();
 
       const statusEl = document.createElement("div");

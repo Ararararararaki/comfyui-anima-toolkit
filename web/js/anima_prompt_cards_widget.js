@@ -1,3 +1,4 @@
+import { uiText, builtinCategoryLabel } from "./anima_node_i18n.js";
 import {
   PromptDocument, splitPromptPieces, splitTags, serializePromptPieces, formatWeightedPromptText,
   cardToText as formatCardText, appendCardToPrompt as appendFormattedCard, appendPromptBlock, escapeAnimaBrackets,
@@ -42,7 +43,7 @@ import {
     if (typeof fetch === "function") return fetch(path, opts);
     const api = window.comfyAPI?.api?.api || window.api;
     if (api?.fetchApi) return api.fetchApi(path, opts);
-    return Promise.reject(new Error("fetch 不可用"));
+    return Promise.reject(new Error(uiText("fetch 不可用", "Fetch is unavailable")));
   }
   async function fetchJson(path, opts) {
     // 默认 12s 超时；opts.timeout 可覆盖（LLM 分类等长任务传更长）
@@ -387,7 +388,7 @@ import {
   async function loadCardLib() {
     const r = await fetchJson("/anima/cards");
     if (!r || !Array.isArray(r.cards) || !Array.isArray(r.categories)) {
-      throw new Error("卡片库读取失败（后端返回异常）");
+      throw new Error(uiText("卡片库读取失败（后端返回异常）", "Cannot load the card library (invalid server response)"));
     }
     if (!r.cards.length && !r.categories.length) {
       // 后端空库且本地旧 IndexedDB 有卡 → 迁移（一次性）并写回
@@ -406,11 +407,11 @@ import {
 
   async function saveCardLib(cache) {
     if (cache) _cardLibCache = cache;
-    if (!_cardLibCache) throw new Error("卡片库尚未加载");
+    if (!_cardLibCache) throw new Error(uiText("卡片库尚未加载", "Card library not loaded"));
     const body = _cardLibCache;
     const run = async () => {
       const r = await postJson("/anima/cards", body);
-      if (!r || !r.ok) throw new Error((r && r.error) || "卡片库保存失败");
+      if (!r || !r.ok) throw new Error((r && r.error) || uiText("卡片库保存失败", "Cannot save the card library"));
     };
     _cardLibSaveChain = _cardLibSaveChain.then(run, run);
     await _cardLibSaveChain;
@@ -545,11 +546,11 @@ import {
 
   // 翻译（双向自动检测）
   const TRANSLATE_SOURCES = [
-    ["auto", "自动回退"],
-    ["local", "本地词典（标签反查）"],
-    ["local_llm", "本地LLM（Qwen/Gemma）"],
+    ["auto", uiText("自动回退", "Automatic fallback")],
+    ["local", uiText("本地词典（标签反查）", "Local dictionary (tag lookup)")],
+    ["local_llm", uiText("本地LLM（Qwen/Gemma）", "Local LLM (Qwen/Gemma)")],
     ["deeplx", "DeepLX"],
-    ["baidu", "百度翻译"],
+    ["baidu", uiText("百度翻译", "Baidu Translate")],
     ["mymemory", "MyMemory"],
     ["google", "Google"],
     ["dashscope", "DashScope"],
@@ -748,7 +749,7 @@ import {
   async function translateChineseToEnglish(text, source = "auto", signal) {
     const result = await translateDetailed(text, source, signal);
     const translated = result.translatedText || "";
-    if (!translated || containsCJK(translated)) throw new Error("翻译服务未返回英文");
+    if (!translated || containsCJK(translated)) throw new Error(uiText("翻译服务未返回英文", "The translation service returned no English text"));
     return { ...result, translatedText: translated };
   }
 
@@ -809,50 +810,50 @@ import {
   }
 
   const PROVIDER_LABELS = Object.fromEntries(TRANSLATE_SOURCES.map(([id, label]) => [id, label]));
-  const CALIBRATION_LABELS = { dictionary: "本地词典", translated_exact: "英文精确校准", semantic: "BGE-M3 语义检索", user_glossary: "用户词典" };
+  const CALIBRATION_LABELS = { dictionary: uiText("本地词典", "Local dictionary"), translated_exact: uiText("英文精确校准", "Exact English tag match"), semantic: uiText("BGE-M3 语义检索", "BGE-M3 semantic search"), user_glossary: uiText("用户词典", "User glossary") };
   const PROVIDER_ERROR_LABELS = {
-    cooldown: "冷却中",
-    upstream_rate_limit: "上游限流",
-    quota_exhausted: "额度耗尽",
-    account_arrears: "账户欠费",
-    authentication_error: "鉴权失败",
-    model_permission_error: "模型无权限",
-    service_unavailable: "服务未启动",
-    network_error: "网络错误",
-    not_configured: "未配置",
-    not_found: "未命中",
+    cooldown: uiText("冷却中", "Cooling down"),
+    upstream_rate_limit: uiText("上游限流", "Upstream rate limit"),
+    quota_exhausted: uiText("额度耗尽", "Quota exhausted"),
+    account_arrears: uiText("账户欠费", "Insufficient account balance"),
+    authentication_error: uiText("鉴权失败", "Authentication failed"),
+    model_permission_error: uiText("模型无权限", "Model access denied"),
+    service_unavailable: uiText("服务未启动", "Service not running"),
+    network_error: uiText("网络错误", "Network error"),
+    not_configured: uiText("未配置", "Not configured"),
+    not_found: uiText("未命中", "No match"),
   };
 
   function providerLabel(provider) {
-    return PROVIDER_LABELS[provider] || (provider === "user_glossary" ? "用户词典" : provider || "未使用");
+    return PROVIDER_LABELS[provider] || (provider === "user_glossary" ? uiText("用户词典", "User glossary") : provider || uiText("未使用", "Not used"));
   }
 
   function candidateSourceLabel(candidate) {
-    if (candidate?.matchType === "user_glossary") return "用户词典";
-    if (candidate?.verified) return `D站 ${Number(candidate.postCount || 0).toLocaleString()} 帖`;
-    return "本地词典";
+    if (candidate?.matchType === "user_glossary") return uiText("用户词典", "User glossary");
+    if (candidate?.verified) return uiText(`D站 ${Number(candidate.postCount || 0).toLocaleString()} 帖`, `Danbooru ${Number(candidate.postCount || 0).toLocaleString()} posts`);
+    return uiText("本地词典", "Local dictionary");
   }
 
   function qualityLabel(quality) {
-    if (!quality) return "未检查";
-    if (quality.status === "ok") return "正常";
-    if (quality.status === "warning") return `警告${quality.warnings?.length ? `：${quality.warnings.join(", ")}` : ""}`;
-    return `异常${quality.issues?.length ? `：${quality.issues.join(", ")}` : ""}`;
+    if (!quality) return uiText("未检查", "Not checked");
+    if (quality.status === "ok") return uiText("正常", "OK");
+    if (quality.status === "warning") return uiText(`警告${quality.warnings?.length ? `：${quality.warnings.join(", ")}` : ""}`, `Warnings${quality.warnings?.length ? `：${quality.warnings.join(", ")}` : ""}`);
+    return uiText(`异常${quality.issues?.length ? `：${quality.issues.join(", ")}` : ""}`, `Errors${quality.issues?.length ? `：${quality.issues.join(", ")}` : ""}`);
   }
 
   function providerStateLabel(state, provider) {
-    if (!state) return "未知";
+    if (!state) return uiText("未知", "Unknown");
     if (state.cooldown_seconds > 0) {
-      const reason = PROVIDER_ERROR_LABELS[state.error_code] || "冷却中";
+      const reason = PROVIDER_ERROR_LABELS[state.error_code] || uiText("冷却中", "Cooling down");
       const seconds = Number(state.cooldown_seconds) || 0;
-      const wait = seconds >= 60 ? `${Math.ceil(seconds / 60)} 分钟后重试` : `${seconds}s 后重试`;
+      const wait = seconds >= 60 ? uiText(`${Math.ceil(seconds / 60)} 分钟后重试`, `${Math.ceil(seconds / 60)} minutes before retry`) : uiText(`${seconds}s 后重试`, `${seconds}s before retry`);
       return `${reason}，${wait}`;
     }
-    if (provider === "local_llm" && !state.configured) return "未加载（点启用）";
-    if (state.health === "healthy") return "正常";
-    if (!state.configured) return "未配置";
-    if (state.health === "unknown") return "待使用";
-    return PROVIDER_ERROR_LABELS[state.error_code] || "待使用";
+    if (provider === "local_llm" && !state.configured) return uiText("未加载（点启用）", "Not loaded (click Enable)");
+    if (state.health === "healthy") return uiText("正常", "OK");
+    if (!state.configured) return uiText("未配置", "Not configured");
+    if (state.health === "unknown") return uiText("待使用", "Idle");
+    return PROVIDER_ERROR_LABELS[state.error_code] || uiText("待使用", "Idle");
   }
 
   function normalizePromptCardWeight(value) {
@@ -1136,7 +1137,7 @@ import {
       const toggle = document.createElement("button");
       toggle.type = "button";
       toggle.className = "tk-cards-section-toggle";
-      toggle.setAttribute("aria-label", `折叠或展开${label}`);
+      toggle.setAttribute("aria-label", uiText(`折叠或展开${label}`, `Collapse / expand${label}`));
       const body = document.createElement("div");
       body.className = "tk-cards-sec-body";
       this.sectionBodies[key] = body;
@@ -1145,7 +1146,7 @@ import {
         sec.classList.toggle("is-collapsed", collapsed);
         body.hidden = collapsed;
         toggle.textContent = collapsed ? "▸" : "▾";
-        toggle.title = collapsed ? `展开${label}` : `折叠${label}`;
+        toggle.title = collapsed ? uiText(`展开${label}`, `Expand${label}`) : uiText(`折叠${label}`, `Collapse${label}`);
         toggle.setAttribute("aria-expanded", String(!collapsed));
         this._scheduleNodeResize();
       };
@@ -1368,17 +1369,17 @@ import {
       const isLib = mode === "lib";
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay tk-cards-edit-overlay";
-      const categoryOptions = this.cats.map((cat) => `<option value="${escAttr(cat.id)}" ${cat.id === entry.categoryId ? "selected" : ""}>${esc(CAT_NAME(cat))}</option>`).join("");
+      const categoryOptions = this.cats.map((cat) => `<option value="${escAttr(cat.id)}" ${cat.id === entry.categoryId ? "selected" : ""}>${esc(builtinCategoryLabel(cat))}</option>`).join("");
       const currentImage = isLib ? String(entry.primaryImage || (Array.isArray(entry.images) && entry.images[0]) || "").trim() : "";
       overlay.innerHTML = isLib
-        ? `<div class="tk-cards-overlay-box tk-cards-edit-modal" role="dialog" aria-modal="true" aria-label="编辑 Prompt 库条目">
+        ? uiText(`<div class="tk-cards-overlay-box tk-cards-edit-modal" role="dialog" aria-modal="true" aria-label="编辑 Prompt 库条目">
           <div class="tk-cards-overlay-head"><b>编辑 Prompt 库条目</b><button type="button" class="tk-cards-btn" data-a="close" aria-label="关闭">✕</button></div>
           <div class="tk-cards-edit-form">
             <label class="tk-cards-field"><span>标题</span><input value="${escAttr(entry.displayText || "")}" data-f="title" placeholder="可选"></label>
             <div class="tk-cards-edit-image-field">
               <span class="tk-cards-edit-image-label">预览图</span>
               <div class="tk-cards-edit-image-drop" data-a="image-drop" tabindex="0" role="button" aria-label="点击选择或拖拽替换预览图">
-                <img data-a="image-preview" alt="当前预览图" hidden>
+                <img data-a="image-preview" alt="${uiText('当前预览图', 'Current preview image')}" hidden>
                 <span class="tk-cards-edit-image-placeholder" data-a="image-placeholder">暂无预览图<small>点击选择或拖拽图片到此处替换</small></span>
               </div>
               <div class="tk-cards-edit-image-meta"><span data-a="image-name">未设置预览图</span><button type="button" class="tk-cards-btn" data-a="image-clear" disabled>移除预览图</button></div>
@@ -1389,8 +1390,26 @@ import {
             <label class="tk-cards-field"><span>分类</span><select data-f="cat">${categoryOptions}</select></label>
           </div>
           <div class="tk-cards-edit-btns"><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">保存</button></div>
-        </div>`
-        : `<div class="tk-cards-overlay-box tk-cards-edit-modal" role="dialog" aria-modal="true" aria-label="编辑卡片">
+        </div>`, `<div class="tk-cards-overlay-box tk-cards-edit-modal" role="dialog" aria-modal="true" aria-label="Edit Prompt library entry">
+          <div class="tk-cards-overlay-head"><b>Edit Prompt library entry</b><button type="button" class="tk-cards-btn" data-a="close" aria-label="Close">✕</button></div>
+          <div class="tk-cards-edit-form">
+            <label class="tk-cards-field"><span>Title</span><input value="${escAttr(entry.displayText || "")}" data-f="title" placeholder="Optional"></label>
+            <div class="tk-cards-edit-image-field">
+              <span class="tk-cards-edit-image-label">Preview</span>
+              <div class="tk-cards-edit-image-drop" data-a="image-drop" tabindex="0" role="button" aria-label="Choose or drop a replacement preview">
+                <img data-a="image-preview" alt="${uiText('当前预览图', 'Current preview image')}" hidden>
+                <span class="tk-cards-edit-image-placeholder" data-a="image-placeholder">No preview<small>Choose or drop an image to replace it</small></span>
+              </div>
+              <div class="tk-cards-edit-image-meta"><span data-a="image-name">No preview image</span><button type="button" class="tk-cards-btn" data-a="image-clear" disabled>Remove preview</button></div>
+              <input type="file" accept="image/*" data-a="image-input" hidden>
+            </div>
+            <label class="tk-cards-field tk-cards-field-wide"><span>Prompt</span><textarea data-f="prompt" rows="12" placeholder="Prompt text">${esc(entry.prompt || "")}</textarea></label>
+            <label class="tk-cards-field tk-cards-field-wide"><span>Annotation</span><textarea data-f="notes" rows="4" placeholder="Optional">${esc(entry.notes || "")}</textarea></label>
+            <label class="tk-cards-field"><span>Category</span><select data-f="cat">${categoryOptions}</select></label>
+          </div>
+          <div class="tk-cards-edit-btns"><button type="button" class="tk-cards-btn" data-a="cancel">Cancel</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">Save</button></div>
+        </div>`)
+        : uiText(`<div class="tk-cards-overlay-box tk-cards-edit-modal" role="dialog" aria-modal="true" aria-label="编辑卡片">
           <div class="tk-cards-overlay-head"><b>编辑卡片</b><button type="button" class="tk-cards-btn" data-a="close" aria-label="关闭">✕</button></div>
           <div class="tk-cards-edit-form">
             <label class="tk-cards-field tk-cards-field-wide"><span>英文 tag / 提示词</span><textarea data-f="prompt" rows="6" placeholder="英文 tag">${esc(entry.prompt || "")}</textarea></label>
@@ -1401,7 +1420,18 @@ import {
             </div>
           </div>
           <div class="tk-cards-edit-btns"><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">保存</button></div>
-        </div>`;
+        </div>`, `<div class="tk-cards-overlay-box tk-cards-edit-modal" role="dialog" aria-modal="true" aria-label="Edit card">
+          <div class="tk-cards-overlay-head"><b>Edit card</b><button type="button" class="tk-cards-btn" data-a="close" aria-label="Close">✕</button></div>
+          <div class="tk-cards-edit-form">
+            <label class="tk-cards-field tk-cards-field-wide"><span>English tag / prompt</span><textarea data-f="prompt" rows="6" placeholder="English tag">${esc(entry.prompt || "")}</textarea></label>
+            <label class="tk-cards-field tk-cards-field-wide"><span>Chinese annotation</span><textarea data-f="notes" rows="3" placeholder="Optional">${esc(entry.notes || "")}</textarea></label>
+            <div class="tk-cards-edit-two-col">
+              <label class="tk-cards-field"><span>Weight</span><input value="${escAttr(entry.weight || "")}" data-f="weight" placeholder="e.g. 1.2"></label>
+              <label class="tk-cards-field"><span>LoRA file</span><input value="${escAttr(entry.lora || "")}" data-f="lora" placeholder="Optional"></label>
+            </div>
+          </div>
+          <div class="tk-cards-edit-btns"><button type="button" class="tk-cards-btn" data-a="cancel">Cancel</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">Save</button></div>
+        </div>`);
       this._mountOverlay(overlay);
       this.editOverlay = overlay;
       const read = (field) => overlay.querySelector(`[data-f="${field}"]`)?.value.trim() || "";
@@ -1420,22 +1450,22 @@ import {
         imagePreview.hidden = !editedImage;
         imagePreview.src = editedImage;
         imageDrop.classList.toggle("has-image", Boolean(editedImage));
-        if (imageName) imageName.textContent = editedImage ? (name || "当前预览图") : "未设置预览图";
+        if (imageName) imageName.textContent = editedImage ? (name || uiText("当前预览图", "Current preview image")) : uiText("未设置预览图", "No preview image");
         if (imageClear) imageClear.disabled = !editedImage;
       };
-      setImage(currentImage, currentImage ? "当前预览图" : "未设置预览图", false);
+      setImage(currentImage, currentImage ? uiText("当前预览图", "Current preview image") : uiText("未设置预览图", "No preview image"), false);
       const readImageFile = (file) => {
         if (!file) return;
         if (!String(file.type || "").startsWith("image/")) {
-          this._flash("预览图必须是图片文件");
+          this._flash(uiText("预览图必须是图片文件", "The preview must be an image file"));
           return;
         }
         const reader = new FileReader();
         reader.onload = () => {
           if (typeof reader.result === "string") setImage(reader.result, file.name, true);
-          else this._flash("预览图读取结果无效");
+          else this._flash(uiText("预览图读取结果无效", "Invalid preview image data"));
         };
-        reader.onerror = () => this._flash("读取预览图失败");
+        reader.onerror = () => this._flash(uiText("读取预览图失败", "Cannot read the preview image"));
         reader.readAsDataURL(file);
       };
       imageInput?.addEventListener("change", () => {
@@ -1458,7 +1488,7 @@ import {
       imageClear?.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        setImage("", "未设置预览图", true);
+        setImage("", uiText("未设置预览图", "No preview image"), true);
       });
       const saveButton = overlay.querySelector('[data-a="save"]');
       const save = async () => {
@@ -1467,7 +1497,7 @@ import {
           ? { displayText: read("title"), prompt: read("prompt"), notes: read("notes"), categoryId: read("cat") }
           : { prompt: read("prompt"), notes: read("notes"), weight: read("weight"), lora: read("lora") };
         if (!values.prompt) {
-          this._flash("提示词不能为空");
+          this._flash(uiText("提示词不能为空", "Prompt cannot be empty"));
           overlay.querySelector('[data-f="prompt"]')?.focus();
           return;
         }
@@ -1480,18 +1510,18 @@ import {
             await storePut(db, PROMPT_STORE, next);
             Object.assign(entry, next);
             this._renderLibList();
-            this._flash("已保存到 prompt 库");
+            this._flash(uiText("已保存到 prompt 库", "Saved to the Prompt library"));
           } else {
             const next = { ...entry, ...values, prompt: values.prompt, updatedAt: Date.now() };
             await this.putCard(next);
             Object.assign(entry, next);
             this._renderCards();
-            this._flash("卡片已保存");
+            this._flash(uiText("卡片已保存", "Card saved"));
           }
           close();
         } catch (error) {
           saveButton.disabled = false;
-          this._flash("保存失败：" + (error.message || error), 5000);
+          this._flash(uiText("保存失败：", "Save failed: ") + (error.message || error), 5000);
         }
       };
       overlay.querySelectorAll('[data-a="close"], [data-a="cancel"]').forEach((button) => button.addEventListener("click", close));
@@ -1557,7 +1587,7 @@ import {
       if (!piece) return;
       const snapshot = this.promptDocument.apply({ type: "toggle", index });
       this._commitPromptPieces();
-      this._flash(snapshot.pieces[index].hidden ? `已隐藏：${piece.text}` : `已恢复：${piece.text}`);
+      this._flash(snapshot.pieces[index].hidden ? uiText(`已隐藏：${piece.text}`, `Hidden: ${piece.text}`) : uiText(`已恢复：${piece.text}`, `Restored: ${piece.text}`));
     }
 
     _removePromptPiece(index) {
@@ -1594,7 +1624,7 @@ import {
         }
       } catch (e) {
         console.error("[TK Prompt Cards] prompt 库加载失败:", e);
-        this._flash("prompt 库加载失败：" + (e.message || e));
+        this._flash(uiText("prompt 库加载失败：", "Cannot load the Prompt library: ") + (e.message || e));
       }
       this._renderLibCatSel();
       this._renderLibList();
@@ -1604,10 +1634,10 @@ import {
     _renderLibCatSel() {
       if (!this.libCatSel) return;
       const cur = this.curLibCat;
-      this.libCatSel.innerHTML = `<option value="">全部分类</option>` +
+      this.libCatSel.innerHTML = uiText(`<option value="">全部分类</option>`, "<option value=\"\">All categories</option>") +
         this.cats.map((c) => {
           const n = this.prompts.filter((p) => p.categoryId === c.id).length;
-          return `<option value="${escAttr(c.id)}" ${c.id === cur ? "selected" : ""}>${esc(CAT_NAME(c))} (${n})</option>`;
+          return `<option value="${escAttr(c.id)}" ${c.id === cur ? "selected" : ""}>${esc(builtinCategoryLabel(c))} (${n})</option>`;
         }).join("");
       if (cur && !this.cats.some((c) => c.id === cur)) {
         this.curLibCat = "";
@@ -1627,7 +1657,7 @@ import {
         this.cardCats = ccats;
       } catch (e) {
         console.error("[TK Prompt Cards] 卡片库加载失败:", e);
-        this._flash("卡片库加载失败：" + (e.message || e));
+        this._flash(uiText("卡片库加载失败：", "Cannot load the card library: ") + (e.message || e));
       }
       this._renderCatTabs();
       this._renderCards();
@@ -1661,8 +1691,8 @@ import {
     // 清理误入 prompt 库的卡片（历史版本把 kind=card 全写进了 anima-lora）
     async cleanMisfiledCards() {
       const victims = this.prompts.filter((p) => p.kind === "card");
-      if (!victims.length) { this._flash("没有需要清理的卡片"); return; }
-      if (!confirm(`确认删除 ${victims.length} 条误入 prompt 库的卡片（带【卡】标记）？\n完整生图词条不受影响。`)) return;
+      if (!victims.length) { this._flash(uiText("没有需要清理的卡片", "No cards to clean up")); return; }
+      if (!confirm(uiText(`确认删除 ${victims.length} 条误入 prompt 库的卡片（带【卡】标记）？\n完整生图词条不受影响。`, `Delete ${victims.length} cards filed in the prompt library by mistake?\nFull prompts will be kept.`))) return;
       const db = await openDB();
       let n = 0;
       for (const v of victims) {
@@ -1670,7 +1700,7 @@ import {
         n++;
       }
       await this.reloadLib();
-      this._flash(`已清理 ${n} 条误入卡片，prompt 库剩余 ${this.prompts.length} 条`);
+      this._flash(uiText(`已清理 ${n} 条误入卡片，prompt 库剩余 ${this.prompts.length} 条`, `Removed ${n} misplaced cards; remaining Prompt entries: ${this.prompts.length} entries`));
     }
 
     // ── ① 工具箱 prompt 库浏览（网格 3 列 + 缩略图 + 分类过滤 + 删除）──
@@ -1695,7 +1725,7 @@ import {
       }
       this.libListEl.innerHTML = "";
       if (!list.length) {
-        this.libListEl.innerHTML = `<div class="tk-cards-empty">库为空 — 面板提取、批文件导入后这里会出现条目</div>`;
+        this.libListEl.innerHTML = uiText(`<div class="tk-cards-empty">库为空 — 面板提取、批文件导入后这里会出现条目</div>`, "<div class=\"tk-cards-empty\">Library empty. Entries appear after extracting in the Toolkit or importing batch files.</div>");
         return;
       }
       for (const p of list) {
@@ -1703,7 +1733,7 @@ import {
         el.className = "tk-cards-lib-item" + (p.kind === "card" ? " is-card" : "");
         el.tabIndex = 0;
         el.addEventListener("focus", () => { this.focusedLibId = p.id; });
-        el.title = "单击追加到当前提示词末尾（两次换行，不自动入队）；双击打开编辑窗口；hover 删除该词条";
+        el.title = uiText("单击追加到当前提示词末尾（两次换行，不自动入队）；双击打开编辑窗口；hover 删除该词条", "Click to append to the prompt (two line breaks; no queue action); double-click to edit; hover to delete");
         const imgSrc = p.primaryImage || (p.images && p.images[0]) || "";
         if (imgSrc) {
           const thumb = document.createElement("div");
@@ -1718,7 +1748,7 @@ import {
         head.className = "tk-cards-lib-head";
         const title = document.createElement("span");
         title.className = "tk-cards-lib-title";
-        title.textContent = (p.displayText || p.prompt || "").slice(0, 40) + (p.kind === "card" ? "  [卡]" : "");
+        title.textContent = (p.displayText || p.prompt || "").slice(0, 40) + (p.kind === "card" ? uiText("  [卡]", "  [Card]") : "");
         const fav = document.createElement("span");
         fav.className = "tk-cards-lib-fav";
         fav.textContent = p.isFavorite ? "★" : "";
@@ -1740,7 +1770,7 @@ import {
             const en = document.createElement("b");
             en.textContent = formatWeightedPromptText(part.text, part.weight);
             const zh = document.createElement("small");
-            zh.textContent = translationMap.get(promptTranslationKey(part.text)) || "待翻译";
+            zh.textContent = translationMap.get(promptTranslationKey(part.text)) || uiText("待翻译", "Not translated");
             item.append(en, zh);
             bilingual.appendChild(item);
           }
@@ -1750,20 +1780,20 @@ import {
         const del = document.createElement("button");
         del.type = "button";
         del.className = "tk-cards-del";
-        del.textContent = "删除";
-        del.title = "从 prompt 库删除该词条（需二次确认）";
+        del.textContent = uiText("删除", "Delete");
+        del.title = uiText("从 prompt 库删除该词条（需二次确认）", "Delete this entry from the Prompt library (confirmation required)");
         let delArmed = false;
         const disarmDel = () => {
           delArmed = false;
           del.classList.remove("arm");
-          del.textContent = "删除";
+          del.textContent = uiText("删除", "Delete");
         };
         del.addEventListener("click", async (ev) => {
           ev.stopPropagation();
           if (!delArmed) {
             delArmed = true;
             del.classList.add("arm");
-            del.textContent = "✓删?";
+            del.textContent = uiText("✓删?", "✓ Delete?");
             this._clearTimeout(del._armT);
             del._armT = this._setTimeout(disarmDel, 2500);
             return;
@@ -1773,7 +1803,7 @@ import {
           await storeDel(db, PROMPT_STORE, p.id);
           this.prompts = this.prompts.filter((x) => x.id !== p.id);
           this._renderLibList();
-          this._flash("已从 prompt 库删除该词条");
+          this._flash(uiText("已从 prompt 库删除该词条", "Entry deleted from the Prompt library"));
         });
         el.appendChild(del);
         let clickTimer = null;
@@ -1784,7 +1814,7 @@ import {
             this._rememberPromptTranslations(p.tagTranslations);
             const current = this.curText();
             const next = this._appendPromptBlock(p.prompt || "");
-            this._flash(next === current ? "该提示词已在末尾（已去重）" : `已追加：${(p.displayText || p.prompt || "").slice(0, 30)}`);
+            this._flash(next === current ? uiText("该提示词已在末尾（已去重）", "This prompt is already at the end (duplicate skipped)") : uiText(`已追加：${(p.displayText || p.prompt || "").slice(0, 30)}`, `Appended: ${(p.displayText || p.prompt || "").slice(0, 30)}`));
           }, 240);
         });
         // 双击打开编辑窗口：不触发第一次 click 的“载入提示词”动作。
@@ -1819,7 +1849,7 @@ import {
     _renderFileSel() {
       if (!this.fileSel) return;
       const cur = this.fileSel.value || "";
-      this.fileSel.innerHTML = `<option value="">（选择批文件…）</option>` +
+      this.fileSel.innerHTML = uiText(`<option value="">（选择批文件…）</option>`, "<option value=\"\">（SelectBatch files…）</option>") +
         (this.batchFiles || []).map((f) => `<option value="${escAttr(f)}" ${f === cur ? "selected" : ""}>${esc(f)}</option>`).join("");
     }
 
@@ -1841,7 +1871,7 @@ import {
       const groups = this.batchGroups.get(this.fileSel?.value || "") || [];
       this.groupListEl.innerHTML = "";
       if (!groups.length) {
-        this.groupListEl.innerHTML = `<div class="tk-cards-empty">选择批文件后可导入组到工具箱库</div>`;
+        this.groupListEl.innerHTML = uiText(`<div class="tk-cards-empty">选择批文件后可导入组到工具箱库</div>`, "<div class=\"tk-cards-empty\">Choose a batch file to import its groups into the Toolkit library</div>");
         return;
       }
       for (const g of groups) {
@@ -1849,13 +1879,13 @@ import {
         row.className = "tk-cards-group";
         const info = document.createElement("span");
         info.className = "tk-cards-group-info";
-        info.textContent = `${g.name} · ${g.count}条`;
+        info.textContent = uiText(`${g.name} · ${g.count}条`, `${g.name} · ${g.count}entries`);
         info.title = (g.prompts[0] || "").slice(0, 200);
         const imp = document.createElement("button");
         imp.type = "button";
         imp.className = "tk-cards-btn";
-        imp.textContent = "导入库";
-        imp.title = "把该组所有提示词导入工具箱 prompt 库（整段条目）";
+        imp.textContent = uiText("导入库", "Import library");
+        imp.title = uiText("把该组所有提示词导入工具箱 prompt 库（整段条目）", "Import all prompts in this group as whole Prompt library entries");
         imp.addEventListener("click", () => this.importGroupToLib(this.fileSel.value, g));
         row.appendChild(info);
         row.appendChild(imp);
@@ -1886,7 +1916,7 @@ import {
         n++;
       }
       await this.reloadLib();
-      this._flash(`已导入 ${n} 条 → 工具箱 prompt 库（未分类）`);
+      this._flash(uiText(`已导入 ${n} 条 → 工具箱 prompt 库（未分类）`, `Imported ${n} entries → Toolkit Prompt library (Uncategorized)`));
     }
 
     // ── 卡片 CRUD（后端 cards.json 单一数据源；不污染 prompt 库）──
@@ -1916,14 +1946,14 @@ import {
     //   同词存在于其他分类 → 给已有卡追加该分类（合并，不新建重复卡）。
     async addCard(catId, card, { multi = false } = {}) {
       const en = String(card.en || card.prompt || "").trim();
-      if (!en) { this._flash("内容为空"); return { skipped: true }; }
+      if (!en) { this._flash(uiText("内容为空", "Content is empty")); return { skipped: true }; }
       const enKey = en.toLowerCase();
       const dup = this.cards.find((c) => String(c.prompt || "").trim().toLowerCase() === enKey);
       const cat = catId || this.curCat || (this.cardCats[0] && this.cardCats[0].id) || "uncategorized";
       const catName = CAT_NAME(this.cardCats.find((c) => c.id === cat));
       if (dup) {
         if (cardInCat(dup, cat)) {
-          this._flash(`已跳过：「${en.slice(0, 24)}」已存在于「${catName}」`, 3000);
+          this._flash(uiText(`已跳过：「${en.slice(0, 24)}」已存在于「${catName}」`, `Skipped: “${en.slice(0, 24)}” already exists in “${catName}」`), 3000);
           return { skipped: true, dupCat: cat };
         }
         // 同词其他分类 → 合并追加分类（不新建重复卡；注释取已有优先，缺失时补翻译）
@@ -1936,13 +1966,13 @@ import {
         this.curCat = cat;
         this._renderCatTabs();
         this._renderCards();
-        this._flash(`「${en.slice(0, 24)}」已添加分类「${catName}」`);
+        this._flash(uiText(`「${en.slice(0, 24)}」已添加分类「${catName}」`, `「${en.slice(0, 24)}” added to category “${catName}」`));
         if (!String(dup.notes || "").trim()) {
           translateAuto(en, "auto", this._lifetime.signal).then((nz) => {
             if (!nz || nz === en) return;
             dup.notes = nz;
             dup.updatedAt = Date.now();
-            this.putCard(dup).then(() => { this._renderCards(); this._flash(`已翻译注释：${nz.slice(0, 30)}`); });
+            this.putCard(dup).then(() => { this._renderCards(); this._flash(uiText(`已翻译注释：${nz.slice(0, 30)}`, `Annotation translated: ${nz.slice(0, 30)}`)); });
           }).catch(() => {});
         }
         return { skipped: false, merged: true };
@@ -1965,7 +1995,7 @@ import {
       this.curCat = cat;
       this._renderCatTabs();
       this._renderCards();
-      this._flash(`已存入卡片库「${CAT_NAME(this.cardCats.find((c) => c.id === cat))}」`);
+      this._flash(uiText(`已存入卡片库「${CAT_NAME(this.cardCats.find((c) => c.id === cat))}」`, `Saved to card library “${CAT_NAME(this.cardCats.find((c) => c.id === cat))}」`));
       // 异步翻译补中文注释（失败不阻塞，卡片保留「待翻译」）
       if (!zh0) {
         translateAuto(en, "auto", this._lifetime.signal).then((nz) => {
@@ -1974,7 +2004,7 @@ import {
           entry.updatedAt = Date.now();
           this.putCard(entry).then(() => {
             this._renderCards();
-            this._flash(`已翻译注释：${nz.slice(0, 30)}`);
+            this._flash(uiText(`已翻译注释：${nz.slice(0, 30)}`, `Annotation translated: ${nz.slice(0, 30)}`));
           });
         }).catch(() => { /* 翻译失败保留待翻译 */ });
       }
@@ -1987,7 +2017,7 @@ import {
       await this.delCard(id);
       this._renderCatTabs();
       this._renderCards();
-      this._flash("卡片已删除", 3000);
+      this._flash(uiText("卡片已删除", "Card deleted"), 3000);
     }
 
     async toggleFavorite(id) {
@@ -2066,7 +2096,7 @@ import {
       }
       const catName = (c) => {
         const id = (catIdsOf(c)[0]) || "";
-        return String(c.category || (id ? CAT_NAME(this.cardCats.find((x) => x.id === id)) : "通用"));
+        return String(c.category || (id ? CAT_NAME(this.cardCats.find((x) => x.id === id)) : uiText("通用", "General")));
       };
       const countText = (c) => {
         const count = Number(c.count) || 0;
@@ -2355,8 +2385,8 @@ import {
       saveUiState(this.uiState);
       this.syncEscapeBracketsBtn?.();
       this._flash(next
-        ? "插入提示词将转义括号：(tag) → \\(tag\\)"
-        : "插入提示词不再转义括号（ComfyUI 会把裸括号当权重语法）");
+        ? uiText("插入提示词将转义括号：(tag) → \\(tag\\)", "Inserted prompts will escape parentheses: (tag) → \\(tag\\)")
+        : uiText("插入提示词不再转义括号（ComfyUI 会把裸括号当权重语法）", "Inserted prompts keep raw parentheses (ComfyUI interprets them as weights)"));
     }
 
     // 用选中卡片替换光标所在词（并在词后补英文逗号，免去手打逗号的麻烦）
@@ -2396,7 +2426,7 @@ import {
     /**
      * 联想候选项的键盘交互。约定（2026-09-15 按用户要求重排）：
      *   Tab        —— **接受当前高亮项**；没有高亮时用第一项。这就是「一键选第一个」。
-     *   ↑ / ↓      —— 上下选择（从"未选择"进入时分别落在第一项 / 最后一项，越界回绕）
+     *   ↑ / ↓      —— 上下选择（从uiText("未选择", "Nothing selected")进入时分别落在第一项 / 最后一项，越界回绕）
      *   Enter      —— **只在按过 ↑/↓ 之后**才确认所选；否则放行（正常换行）
      *   Shift+Enter—— 永远换行
      *   Esc        —— 关掉列表，不动文本
@@ -2539,7 +2569,7 @@ import {
       const parts = this._ensurePromptPiecesInSync();
       this.chipsEl.innerHTML = "";
       if (!parts.length) {
-        this.chipsEl.innerHTML = `<div class="tk-cards-empty">输入提示词后按逗号/换行分组（保留原分组；点击片段=存为卡片；片段右上角图标可翻译、隐藏或移除）</div>`;
+        this.chipsEl.innerHTML = uiText(`<div class="tk-cards-empty">输入提示词后按逗号/换行分组（保留原分组；点击片段=存为卡片；片段右上角图标可翻译、隐藏或移除）</div>`, "<div class=\"tk-cards-empty\">Enter a prompt to group it by commas and line breaks. Click a fragment to save a card; its icons translate, hide or remove it.</div>");
         return;
       }
       for (let index = 0; index < parts.length; index++) {
@@ -2547,7 +2577,7 @@ import {
         const chip = document.createElement("span");
         chip.className = "tk-cards-chip" + (p.hidden ? " is-hidden" : "");
         chip.dataset.pieceIndex = String(index);
-        chip.title = p.hidden ? "此片段已隐藏，不会输出；点右上角按钮恢复" : "点击存为卡片；右上角可隐藏或移除该片段";
+        chip.title = p.hidden ? uiText("此片段已隐藏，不会输出；点右上角按钮恢复", "This fragment is hidden from output; use the upper-right button to restore it") : uiText("点击存为卡片；右上角可隐藏或移除该片段", "Click to save as a card; use the upper-right controls to hide or remove this fragment");
         const zh = this._translationForPiece(p.text);
         const chipBody = document.createElement("span");
         chipBody.className = "tk-cards-chip-body";
@@ -2559,25 +2589,25 @@ import {
 
         const weightGroup = document.createElement("span");
         weightGroup.className = "tk-cards-chip-weight";
-        weightGroup.title = "降低或提高此片段权重；按住按钮横向拖动可连续调整，每格 0.1";
+        weightGroup.title = uiText("降低或提高此片段权重；按住按钮横向拖动可连续调整，每格 0.1", "Adjust this fragment weight; hold and drag horizontally in steps of 0.1");
         const dec = document.createElement("button");
         dec.type = "button";
         dec.className = "tk-cards-chip-weight-step";
         dec.textContent = "<";
-        dec.title = "降低权重（按住左右拖动可连续调）";
-        dec.setAttribute("aria-label", "降低片段权重");
+        dec.title = uiText("降低权重（按住左右拖动可连续调）", "Decrease weight (hold and drag horizontally)");
+        dec.setAttribute("aria-label", uiText("降低片段权重", "Decrease fragment weight"));
         const weightVal = document.createElement("input");
         weightVal.type = "text";
         weightVal.inputMode = "decimal";
         weightVal.className = "tk-cards-chip-weight-val";
         weightVal.value = promptCardWeightText(p.weight);
-        weightVal.title = `手动输入权重（范围 ${promptWeightRange.min.toFixed(1)} 到 ${promptWeightRange.max.toFixed(1)}）`;
+        weightVal.title = uiText(`手动输入权重（范围 ${promptWeightRange.min.toFixed(1)} 到 ${promptWeightRange.max.toFixed(1)}）`, `Enter a weight (range ${promptWeightRange.min.toFixed(1)} to ${promptWeightRange.max.toFixed(1)}）`);
         const inc = document.createElement("button");
         inc.type = "button";
         inc.className = "tk-cards-chip-weight-step";
         inc.textContent = ">";
-        inc.title = "提高权重（按住左右拖动可连续调）";
-        inc.setAttribute("aria-label", "提高片段权重");
+        inc.title = uiText("提高权重（按住左右拖动可连续调）", "Increase weight (hold and drag horizontally)");
+        inc.setAttribute("aria-label", uiText("提高片段权重", "Increase fragment weight"));
         weightGroup.append(dec, weightVal, inc);
         // 权重控件放左侧：右上角是 hover 才出现的操作覆盖层，权重放右边会被盖住
         chipTop.append(weightGroup, enS);
@@ -2592,13 +2622,13 @@ import {
         if (quickTranslation?.error) {
           const errS = document.createElement("span");
           errS.className = "tk-cards-chip-translation is-error";
-          errS.textContent = `译：${quickTranslation.error}`;
+          errS.textContent = uiText(`译：${quickTranslation.error}`, `Translation: ${quickTranslation.error}`);
           chipBody.appendChild(errS);
         } else if (quickTranslation?.text) {
           const quickS = document.createElement("span");
           quickS.className = "tk-cards-chip-translation";
-          quickS.textContent = `译：${quickTranslation.text}`;
-          quickS.title = `${providerLabel(quickTranslation.provider)} · ${quickTranslation.quality ? qualityLabel(quickTranslation.quality) : "已翻译"}`;
+          quickS.textContent = uiText(`译：${quickTranslation.text}`, `Translation: ${quickTranslation.text}`);
+          quickS.title = `${providerLabel(quickTranslation.provider)} · ${quickTranslation.quality ? qualityLabel(quickTranslation.quality) : uiText("已翻译", "Translated")}`;
           chipBody.appendChild(quickS);
         }
         chip.appendChild(chipBody);
@@ -2633,7 +2663,7 @@ import {
         visibility.className = "tk-cards-chip-toggle tk-cards-icon-btn";
         visibility.dataset.pieceAction = "visibility";
         visibility.innerHTML = icon(p.hidden ? "eye" : "ban", 12);
-        visibility.title = p.hidden ? "恢复此片段并输出" : "隐藏此片段（保留卡片但不输出）";
+        visibility.title = p.hidden ? uiText("恢复此片段并输出", "Restore this fragment to output") : uiText("隐藏此片段（保留卡片但不输出）", "Hide this fragment (keep card; exclude from output)");
         visibility.setAttribute("aria-label", visibility.title);
         visibility.setAttribute("aria-pressed", String(!p.hidden));
         visibility.addEventListener("click", (ev) => {
@@ -2644,8 +2674,8 @@ import {
         translate.type = "button";
         translate.className = "tk-cards-chip-translate tk-cards-icon-btn";
         translate.innerHTML = icon("languages", 12);
-        translate.title = "快捷翻译此片段（不进入 Danbooru/BGE-M3 校准）";
-        translate.setAttribute("aria-label", "快捷翻译此片段");
+        translate.title = uiText("快捷翻译此片段（不进入 Danbooru/BGE-M3 校准）", "Quick-translate this fragment without Danbooru/BGE-M3 matching");
+        translate.setAttribute("aria-label", uiText("快捷翻译此片段", "Quick-translate fragment"));
         translate.addEventListener("click", (ev) => {
           ev.stopPropagation();
           this.translatePieceQuick(index, translate, chip);
@@ -2654,8 +2684,8 @@ import {
         x.type = "button";
         x.className = "tk-cards-chip-x tk-cards-icon-btn";
         x.innerHTML = icon("x", 12);
-        x.title = "从当前提示词移除该片段";
-        x.setAttribute("aria-label", "从当前提示词移除该片段");
+        x.title = uiText("从当前提示词移除该片段", "Remove this fragment from the current prompt");
+        x.setAttribute("aria-label", uiText("从当前提示词移除该片段", "Remove this fragment from the current prompt"));
         x.addEventListener("click", (ev) => {
           ev.stopPropagation();
           this._removePromptPiece(index);
@@ -2710,17 +2740,17 @@ import {
           return `<span class="${cls}" title="${escAttr(`${providerLabel(name)}${detail}`)}"><b>${esc(providerLabel(name))}</b>：${esc(providerStateLabel(state, name))}</span>`;
         }).join("");
         const actual = this.actualTranslationProvider
-          ? `实际：${providerLabel(this.actualTranslationProvider)}`
-          : "尚未执行翻译";
-        if (this.translateStatusSummary) this.translateStatusSummary.textContent = `${actual} · 翻译状态（点击展开）`;
+          ? uiText(`实际：${providerLabel(this.actualTranslationProvider)}`, `Actual: ${providerLabel(this.actualTranslationProvider)}`)
+          : uiText("尚未执行翻译", "No translation yet");
+        if (this.translateStatusSummary) this.translateStatusSummary.textContent = uiText(`${actual} · 翻译状态（点击展开）`, `${actual} · Translation status (click to expand)`);
         const deeplx = result.deeplx || {};
         // 未安装时不再整条隐藏：用户至少要能看到这个功能存在、并知道去哪填路径。
         const deeplxTitle = deeplx.installed
-          ? `重启本机 DeepLX 进程（${deeplx.exe || ""}）`
-          : "未检测到 DeepLX 可执行文件；可在「翻译设置 → 服务配置 → DeepLX」里填写路径与端口";
+          ? uiText(`重启本机 DeepLX 进程（${deeplx.exe || ""}）`, `Restart local DeepLX process (${deeplx.exe || ""}）`)
+          : uiText("未检测到 DeepLX 可执行文件；可在「翻译设置 → 服务配置 → DeepLX」里填写路径与端口", "DeepLX executable not detected. Set its path and port in Translation settings → Services → DeepLX");
         // 图标按钮（低频运维动作，title/aria-label 保留完整语义）：让动作条在默认 400px
         // 节点宽度下把 5 个控件全部排进一行，并为「Gemma 加载中…」这类更宽的瞬态文案留出余量。
-        const deeplxAction = `<button type="button" class="tk-cards-btn tk-cards-icon-btn" data-a="restart-deeplx" title="${escAttr(deeplxTitle)}" aria-label="重启 DeepLX" ${deeplx.installed ? "" : "disabled"}>${icon("refresh", 14)}</button>`;
+        const deeplxAction = uiText(`<button type="button" class="tk-cards-btn tk-cards-icon-btn" data-a="restart-deeplx" title="${escAttr(deeplxTitle)}" aria-label="重启 DeepLX" ${deeplx.installed ? "" : "disabled"}>${icon("refresh", 14)}</button>`, `<button type="button" class="tk-cards-btn tk-cards-icon-btn" data-a="restart-deeplx" title="${escAttr(deeplxTitle)}" aria-label="Restart DeepLX" ${deeplx.installed ? "" : "disabled"}>${icon("refresh", 14)}</button>`);
         const llm = result.local_llm || {};
         const llmBusy = llm.status === "downloading" || llm.status === "loading";
         const llmReady = llm.status === "ready" && llm.model;
@@ -2728,11 +2758,11 @@ import {
         const llmModelId = translateSettings.llm_model || "gemma-4b";
         const llmModelRaw = String(llm.models?.[llmModelId]?.label || llmModelId).replace(/\s*[（(].*$/, "").trim();
         const llmShortName = llmModelId === "gemma-4b" ? "Gemma" : (llmModelRaw || llmModelId);
-        const llmActionLabel = llmReady ? `释放 ${llmShortName}` : (llmBusy ? `${llmShortName} 加载中…` : `启用 ${llmShortName}`);
+        const llmActionLabel = llmReady ? uiText(`释放 ${llmShortName}`, `Unload ${llmShortName}`) : (llmBusy ? uiText(`${llmShortName} 加载中…`, `${llmShortName} Loading…`) : uiText(`启用 ${llmShortName}`, `Enable ${llmShortName}`));
         const llmActionTitle = llmReady
-          ? `释放本地 LLM（${llmModelId}）显存；之后选择本地LLM翻译时仍会按需加载`
-          : `主动加载 ${llmModelId}；仅选择本地LLM翻译时才会自动按需加载。模型可在「翻译设置」里更换`;
-        const localLlmAction = `<button type="button" class="tk-cards-btn ${llmReady ? "" : "tk-cards-btn-main"}" data-a="toggle-local-llm" title="${escAttr(llmActionTitle)}" ${llmBusy ? "disabled" : ""}>${llmActionLabel}</button><button type="button" class="tk-cards-btn tk-cards-adaptive" data-a="manage-local-llm" title="管理本地翻译模型：查看与下载模型、启用或卸载" aria-label="管理模型"><span class="tk-cards-adaptive-text">管理模型</span><span class="tk-cards-adaptive-icon">${icon("list", 14)}</span></button>`;
+          ? uiText(`释放本地 LLM（${llmModelId}）显存；之后选择本地LLM翻译时仍会按需加载`, `Unload local LLM (${llmModelId}) VRAM. Local translation loads it again on demand.`)
+          : uiText(`主动加载 ${llmModelId}；仅选择本地LLM翻译时才会自动按需加载。模型可在「翻译设置」里更换`, `Load ${llmModelId}; automatic loading happens only when local LLM translation is selected. Change the model in Translation settings.`);
+        const localLlmAction = uiText(`<button type="button" class="tk-cards-btn ${llmReady ? "" : "tk-cards-btn-main"}" data-a="toggle-local-llm" title="${escAttr(llmActionTitle)}" ${llmBusy ? "disabled" : ""}>${llmActionLabel}</button><button type="button" class="tk-cards-btn tk-cards-adaptive" data-a="manage-local-llm" title="管理本地翻译模型：查看与下载模型、启用或卸载" aria-label="管理模型"><span class="tk-cards-adaptive-text">管理模型</span><span class="tk-cards-adaptive-icon">${icon("list", 14)}</span></button>`, `<button type="button" class="tk-cards-btn ${llmReady ? "" : "tk-cards-btn-main"}" data-a="toggle-local-llm" title="${escAttr(llmActionTitle)}" ${llmBusy ? "disabled" : ""}>${llmActionLabel}</button><button type="button" class="tk-cards-btn tk-cards-adaptive" data-a="manage-local-llm" title="Manage local translation models: inspect, download, enable or unload" aria-label="Manage models"><span class="tk-cards-adaptive-text">Manage models</span><span class="tk-cards-adaptive-icon">${icon("list", 14)}</span></button>`);
         const baidu = result.baidu || {};
         // 按钮文案固定为「百度设置」（原「百度设置（未配置）」宽 115px，是动作条在 400px 下溢出的主因）。
         // 未配置状态必须不依赖 CSS 级联深浅地可见：宿主存在更高优先级的规则覆盖 .tk-cards-btn 的
@@ -2742,16 +2772,16 @@ import {
         // 双套内容：宽节点显示文字，窄节点（容器查询命中）换成图标，避免 320px 下被裁掉。
         const baiduUnconfigured = !baidu.configured;
         const baiduTitle = baidu.configured
-          ? "百度翻译已配置；点击修改 APPID、API Key 与模型选项"
-          : "百度翻译未配置；点击填写 APPID 与 API Key";
+          ? uiText("百度翻译已配置；点击修改 APPID、API Key 与模型选项", "Baidu Translate configured; click to edit APPID, API Key and model options")
+          : uiText("百度翻译未配置；点击填写 APPID 与 API Key", "Baidu Translate not configured; click to enter APPID and API Key");
         const baiduWarnStyle = baiduUnconfigured
           ? ` style="position:relative;border-style:dashed;border-color:#c6a76a"`
           : "";
         const baiduWarnDot = baiduUnconfigured
           ? `<span style="position:absolute;top:2px;right:2px;width:5px;height:5px;border-radius:50%;background:#c6a76a" aria-hidden="true"></span>`
           : "";
-        const baiduAction = `<button type="button" class="tk-cards-btn tk-cards-adaptive${baiduUnconfigured ? " is-warn" : ""}"${baiduWarnStyle} data-a="manage-baidu" title="${escAttr(baiduTitle)}" aria-label="百度设置"><span class="tk-cards-adaptive-text">百度设置</span><span class="tk-cards-adaptive-icon">${icon("languages", 14)}</span>${baiduWarnDot}</button>`;
-        const settingsAction = `<button type="button" class="tk-cards-icon-btn" data-a="translate-settings" title="翻译设置：统一配置翻译源、各服务参数、词典与缓存" aria-label="翻译设置">${icon("settings", 14)}</button>`;
+        const baiduAction = uiText(`<button type="button" class="tk-cards-btn tk-cards-adaptive${baiduUnconfigured ? " is-warn" : ""}"${baiduWarnStyle} data-a="manage-baidu" title="${escAttr(baiduTitle)}" aria-label="百度设置"><span class="tk-cards-adaptive-text">百度设置</span><span class="tk-cards-adaptive-icon">${icon("languages", 14)}</span>${baiduWarnDot}</button>`, `<button type="button" class="tk-cards-btn tk-cards-adaptive${baiduUnconfigured ? " is-warn" : ""}"${baiduWarnStyle} data-a="manage-baidu" title="${escAttr(baiduTitle)}" aria-label="Baidu settings"><span class="tk-cards-adaptive-text">Baidu settings</span><span class="tk-cards-adaptive-icon">${icon("languages", 14)}</span>${baiduWarnDot}</button>`);
+        const settingsAction = uiText(`<button type="button" class="tk-cards-icon-btn" data-a="translate-settings" title="翻译设置：统一配置翻译源、各服务参数、词典与缓存" aria-label="翻译设置">${icon("settings", 14)}</button>`, `<button type="button" class="tk-cards-icon-btn" data-a="translate-settings" title="Translation settings: providers, service parameters, glossary and cache" aria-label="Translation settings">${icon("settings", 14)}</button>`);
         this.translateStatusEl.innerHTML = `<span class="tk-cards-translate-actual">${esc(actual)}</span><span class="tk-cards-translate-provider-list">${items}</span><span class="tk-cards-translate-status-actions tk-cards-actions">${deeplxAction}${baiduAction}${localLlmAction}${settingsAction}</span>`;
         this.translateStatusEl.querySelector('[data-a="translate-settings"]')?.addEventListener("click", () => this._openTranslateSettings());
         this.translateStatusEl.querySelector('[data-a="toggle-local-llm"]')?.addEventListener("click", () => this._toggleLocalLlm());
@@ -2762,16 +2792,16 @@ import {
           button.disabled = true;
           try {
             const restart = await this._postJson("/anima/translate/deeplx/restart", {}, 12000);
-            this._flash(restart.started ? "DeepLX 已启动" : "DeepLX 重启失败", 5000);
+            this._flash(restart.started ? uiText("DeepLX 已启动", "DeepLX started") : uiText("DeepLX 重启失败", "DeepLX restart failed"), 5000);
           } catch (error) {
-            this._flash("DeepLX 重启失败：" + (error.message || error), 5000);
+            this._flash(uiText("DeepLX 重启失败：", "DeepLX restart failed: ") + (error.message || error), 5000);
           } finally {
             await this._refreshTranslationStatus();
           }
         });
       } catch (error) {
-        this.translateStatusEl.textContent = "翻译源状态暂不可用";
-        if (this.translateStatusSummary) this.translateStatusSummary.textContent = "翻译状态 · 暂不可用（点击展开）";
+        this.translateStatusEl.textContent = uiText("翻译源状态暂不可用", "Translation source status temporarily unavailable");
+        if (this.translateStatusSummary) this.translateStatusSummary.textContent = uiText("翻译状态 · 暂不可用（点击展开）", "Translation status · Unavailable (click to expand)");
       }
     }
 
@@ -2780,7 +2810,7 @@ import {
       const running = Array.isArray(queue?.queue_running) ? queue.queue_running.length : 0;
       const pending = Array.isArray(queue?.queue_pending) ? queue.queue_pending.length : 0;
       if (running || pending) {
-        throw new Error(`当前有 ${running} 个运行中、${pending} 个排队任务；为避免显存冲突，请等待生图队列清空后再启用本地 LLM`);
+        throw new Error(uiText(`当前有 ${running} 个运行中、${pending} 个排队任务；为避免显存冲突，请等待生图队列清空后再启用本地 LLM`, `There are ${running} running and${pending} queued tasks. Wait for image generation to finish before enabling the local LLM.`));
       }
     }
 
@@ -2790,10 +2820,10 @@ import {
       while (Date.now() < deadline) {
         state = await this._fetchJson("/anima/translate/local_llm/status", { timeout: 8000 });
         if (state.status === "ready" && state.model) return state;
-        if (state.status === "error") throw new Error(state.error || "本地 LLM 加载失败");
+        if (state.status === "error") throw new Error(state.error || uiText("本地 LLM 加载失败", "Local LLM failed to load"));
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
-      throw new Error(`本地 LLM 加载超时（当前状态：${state?.status || "未知"}）`);
+      throw new Error(uiText(`本地 LLM 加载超时（当前状态：${state?.status || uiText("未知", "Unknown")}）`, `Local LLM load timed out (status: ${state?.status || uiText("未知", "Unknown")}）`));
     }
 
     async _withLocalLlmSession(source, work) {
@@ -2807,7 +2837,7 @@ import {
           if (!wasReady) {
             if (before.status !== "loading" && before.status !== "downloading") {
               const loaded = await this._postJson("/anima/translate/local_llm/load", { model: localLlmModelId(), download: false }, 12000);
-              if (loaded?.ok === false) throw new Error(loaded.error || "本地模型未能启动");
+              if (loaded?.ok === false) throw new Error(loaded.error || uiText("本地模型未能启动", "Local model failed to start"));
             }
             await this._waitLocalLlmReady();
           }
@@ -2832,7 +2862,7 @@ import {
                 // Session cleanup survives removal of its view; manually loaded models still stay loaded.
                 await postJson("/anima/translate/local_llm/unload", {}, 12000);
               } catch (error) {
-                this._flash("本地 LLM 自动释放失败：" + (error.message || error), 5000);
+                this._flash(uiText("本地 LLM 自动释放失败：", "Local LLM automatic unload failed: ") + (error.message || error), 5000);
               }
               this._refreshTranslationStatus();
             }
@@ -2850,18 +2880,18 @@ import {
         const state = await this._fetchJson("/anima/translate/local_llm/status", { timeout: 8000 });
         if (state.status === "ready") {
           await this._postJson("/anima/translate/local_llm/unload", {}, 12000);
-          this._flash("本地翻译模型已释放，显存已归还给生图", 5000);
+          this._flash(uiText("本地翻译模型已释放，显存已归还给生图", "Local translation model unloaded; VRAM is available for image generation"), 5000);
         } else {
           await this._assertGenerationIdle();
           const modelId = localLlmModelId();
           const loaded = await this._postJson("/anima/translate/local_llm/load", { model: modelId }, 12000);
-          if (loaded?.ok === false) throw new Error(loaded.error || "本地模型启动失败");
-          this._flash(`本地模型 ${modelId} 加载中…`, 3000);
+          if (loaded?.ok === false) throw new Error(loaded.error || uiText("本地模型启动失败", "Local model failed to start"));
+          this._flash(uiText(`本地模型 ${modelId} 加载中…`, `LocalModel ${modelId} Loading…`), 3000);
           await this._waitLocalLlmReady();
-          this._flash(`本地模型 ${modelId} 已启用；会占用显存，生图前可点击「释放」收回`, 6000);
+          this._flash(uiText(`本地模型 ${modelId} 已启用；会占用显存，生图前可点击「释放」收回`, `Local model ${modelId} enabled and using VRAM. Click Unload before generating images to release it.`), 6000);
         }
       } catch (error) {
-        this._flash("本地模型操作失败：" + (error.message || error), 6000);
+        this._flash(uiText("本地模型操作失败：", "Local model operation failed: ") + (error.message || error), 6000);
       } finally {
         this._localLlmActionBusy = false;
         await this._refreshTranslationStatus();
@@ -2871,16 +2901,25 @@ import {
     async _manageBaidu() {
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay";
-      overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-baidu-box" role="dialog" aria-modal="true">
+      overlay.innerHTML = uiText(`<div class="tk-cards-overlay-box tk-cards-baidu-box" role="dialog" aria-modal="true">
         <div class="tk-cards-overlay-head"><b>百度翻译设置</b><button type="button" class="tk-cards-btn" data-a="close">关闭</button></div>
         <div class="tk-cards-category-note">使用百度官方大模型文本翻译 API。需要填写开发者信息中的 APPID；API Key 只保存在本机后端配置，不会回传或写入前端代码。</div>
-        <label class="tk-cards-field"><span>百度 APPID</span><input data-a="appid" autocomplete="off" placeholder="${"需要填写 APPID"}"></label>
-        <label class="tk-cards-field"><span>API Key</span><input data-a="api-key" type="password" autocomplete="new-password" placeholder="${"已保存时留空保持不变"}"></label>
+        <label class="tk-cards-field"><span>百度 APPID</span><input data-a="appid" autocomplete="off" placeholder="${uiText("需要填写 APPID", "APPID required")}"></label>
+        <label class="tk-cards-field"><span>API Key</span><input data-a="api-key" type="password" autocomplete="new-password" placeholder="${uiText("已保存时留空保持不变", "Leave blank to keep the saved value")}"></label>
         <label class="tk-cards-field"><span>翻译模型</span><select data-a="model"><option value="llm">大模型翻译（llm）</option><option value="nmt">机器翻译（nmt）</option></select></label>
         <label class="tk-cards-check"><input data-a="intervene" type="checkbox"><span>启用百度术语库干预（需要账号已开通）</span></label>
         <div class="tk-cards-baidu-status" data-a="status">正在读取百度配置…</div>
         <div class="tk-cards-edit-btns"><button type="button" class="tk-cards-btn" data-a="test">测试连接</button><button type="button" class="tk-cards-btn" data-a="clear">清除配置</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">保存配置</button></div>
-      </div>`;
+      </div>`, `<div class="tk-cards-overlay-box tk-cards-baidu-box" role="dialog" aria-modal="true">
+        <div class="tk-cards-overlay-head"><b>Baidu Translate settings</b><button type="button" class="tk-cards-btn" data-a="close">Close</button></div>
+        <div class="tk-cards-category-note">Uses Baidu’s official LLM translation API. Enter your developer APPID; the API Key stays in local backend settings and is never returned to the frontend.</div>
+        <label class="tk-cards-field"><span>Baidu APPID</span><input data-a="appid" autocomplete="off" placeholder="${uiText("需要填写 APPID", "APPID required")}"></label>
+        <label class="tk-cards-field"><span>API Key</span><input data-a="api-key" type="password" autocomplete="new-password" placeholder="${uiText("已保存时留空保持不变", "Leave blank to keep the saved value")}"></label>
+        <label class="tk-cards-field"><span>Translation model</span><select data-a="model"><option value="llm">LLM translation</option><option value="nmt">Machine translation (NMT)</option></select></label>
+        <label class="tk-cards-check"><input data-a="intervene" type="checkbox"><span>Use Baidu terminology library (requires account access)</span></label>
+        <div class="tk-cards-baidu-status" data-a="status">Loading Baidu settings…</div>
+        <div class="tk-cards-edit-btns"><button type="button" class="tk-cards-btn" data-a="test">Test connection</button><button type="button" class="tk-cards-btn" data-a="clear">Clear settings</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">Save settings</button></div>
+      </div>`);
       this._mountOverlay(overlay);
       const close = this._ownOverlay(overlay);
       overlay.querySelector('[data-a="close"]')?.addEventListener("click", close);
@@ -2897,26 +2936,26 @@ import {
       const show = (text, tone = "") => { if (status) { status.textContent = text; status.dataset.tone = tone; } };
       try {
         const config = await this._fetchJson("/anima/translate/baidu/config", { timeout: 8000 });
-        if (config.has_appid) appid.placeholder = "已保存，留空保持不变";
-        if (config.has_api_key) apiKey.placeholder = "已保存，留空保持不变";
+        if (config.has_appid) appid.placeholder = uiText("已保存，留空保持不变", "Saved; leave blank to keep");
+        if (config.has_api_key) apiKey.placeholder = uiText("已保存，留空保持不变", "Saved; leave blank to keep");
         model.value = config.model_type || "llm";
         intervene.checked = config.need_intervene === true;
-        show(config.configured ? `已配置 · ${config.model_type === "nmt" ? "机器翻译" : "大模型翻译"}` : "未配置：请填写 APPID 和 API Key");
+        show(config.configured ? uiText(`已配置 · ${config.model_type === "nmt" ? uiText("机器翻译", "Machine translation") : uiText("大模型翻译", "LLM translation")}`, `Configured · ${config.model_type === "nmt" ? uiText("机器翻译", "Machine translation") : uiText("大模型翻译", "LLM translation")}`) : uiText("未配置：请填写 APPID 和 API Key", "Not configured: enter APPID and API Key"));
       } catch (error) {
-        show(`读取配置失败：${error.message || error}`, "error");
+        show(uiText(`读取配置失败：${error.message || error}`, `ReadSettingsFailed：${error.message || error}`), "error");
       }
       test.addEventListener("click", async () => {
         test.disabled = true;
-        show("测试中…");
+        show(uiText("测试中…", "Testing…"));
         try {
           const result = await this._postJson("/anima/translate/baidu/test", {
             appid: appid.value.trim(), api_key: apiKey.value.trim(), model_type: model.value,
             need_intervene: intervene.checked, q: "你好，世界",
           }, 40000);
-          if (!result.ok) throw new Error(result.error || "百度翻译测试失败");
-          show(`连接成功：${result.translatedText || "已返回译文"}`, "success");
+          if (!result.ok) throw new Error(result.error || uiText("百度翻译测试失败", "Baidu translation test failed"));
+          show(uiText(`连接成功：${result.translatedText || uiText("已返回译文", "Translation received")}`, `Connection successful: ${result.translatedText || uiText("已返回译文", "Translation received")}`), "success");
         } catch (error) {
-          show(`连接失败：${error.message || error}`, "error");
+          show(uiText(`连接失败：${error.message || error}`, `Connection failed: ${error.message || error}`), "error");
         } finally {
           test.disabled = false;
         }
@@ -2927,12 +2966,12 @@ import {
           await this._postJson("/anima/translate/baidu/config", { clear_appid: true, clear_api_key: true }, 12000);
           appid.value = "";
           apiKey.value = "";
-          appid.placeholder = "需要填写 APPID";
-          apiKey.placeholder = "已保存时留空保持不变";
-          show("百度配置已清除", "success");
+          appid.placeholder = uiText("需要填写 APPID", "APPID required");
+          apiKey.placeholder = uiText("已保存时留空保持不变", "Leave blank to keep the saved value");
+          show(uiText("百度配置已清除", "Baidu settings cleared"), "success");
           await this._refreshTranslationStatus();
         } catch (error) {
-          show(`清除失败：${error.message || error}`, "error");
+          show(uiText(`清除失败：${error.message || error}`, `Clear failed: ${error.message || error}`), "error");
         } finally {
           clear.disabled = false;
         }
@@ -2944,15 +2983,15 @@ import {
             appid: appid.value.trim(), api_key: apiKey.value.trim(), model_type: model.value,
             need_intervene: intervene.checked,
           }, 12000);
-          if (!config.ok) throw new Error(config.error || "保存失败");
+          if (!config.ok) throw new Error(config.error || uiText("保存失败", "Save failed"));
           apiKey.value = "";
           appid.value = "";
-          appid.placeholder = config.has_appid ? "已保存，留空保持不变" : "需要填写 APPID";
-          apiKey.placeholder = config.has_api_key ? "已保存，留空保持不变" : "需要填写 API Key";
-          show(config.configured ? "百度配置已保存并启用" : "已保存，但还缺少 APPID 或 API Key", config.configured ? "success" : "");
+          appid.placeholder = config.has_appid ? uiText("已保存，留空保持不变", "Saved; leave blank to keep") : uiText("需要填写 APPID", "APPID required");
+          apiKey.placeholder = config.has_api_key ? uiText("已保存，留空保持不变", "Saved; leave blank to keep") : uiText("需要填写 API Key", "API Key required");
+          show(config.configured ? uiText("百度配置已保存并启用", "Baidu settings saved and enabled") : uiText("已保存，但还缺少 APPID 或 API Key", "Saved, but APPID or API Key is still missing"), config.configured ? "success" : "");
           await this._refreshTranslationStatus();
         } catch (error) {
-          show(`保存失败：${error.message || error}`, "error");
+          show(uiText(`保存失败：${error.message || error}`, `Save failed: ${error.message || error}`), "error");
         } finally {
           save.disabled = false;
         }
@@ -2965,12 +3004,12 @@ import {
     async _manageLocalLlm() {
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay";
-      overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-llm-box">
+      overlay.innerHTML = uiText(`<div class="tk-cards-overlay-box tk-cards-llm-box">
         <div class="tk-cards-overlay-head"><b>本地翻译模型（手动启用）</b><button type="button" class="tk-cards-btn" data-a="close">关闭</button></div>
         <div class="tk-cards-category-note">本地模型负责自然语言翻译（不生成 Danbooru 标签）。普通启动不加载；选择本地LLM翻译时会按需加载，翻译完成后自动释放。</div>
         <div class="tk-cards-llm-rows" data-a="rows"></div>
         <div class="tk-cards-llm-error" data-a="error" style="color:var(--tk-warn);font-size:10px;min-height:14px;"></div>
-      </div>`;
+      </div>`, "<div class=\"tk-cards-overlay-box tk-cards-llm-box\">\n        <div class=\"tk-cards-overlay-head\"><b>Local translation model (manual loading)</b><button type=\"button\" class=\"tk-cards-btn\" data-a=\"close\">Close</button></div>\n        <div class=\"tk-cards-category-note\">The local model translates prose without generating Danbooru tags. It loads only when local LLM translation is selected and unloads after translating.</div>\n        <div class=\"tk-cards-llm-rows\" data-a=\"rows\"></div>\n        <div class=\"tk-cards-llm-error\" data-a=\"error\" style=\"color:var(--tk-warn);font-size:10px;min-height:14px;\"></div>\n      </div>");
       this._mountOverlay(overlay);
       const box = overlay;
       let pollTimer = null;
@@ -2985,7 +3024,7 @@ import {
         try {
           st = await this._fetchJson("/anima/translate/local_llm/status");
         } catch (e) {
-          box.querySelector('[data-a="rows"]').innerHTML = `<div class="tk-cards-empty">后端尚未加载本地 LLM 路由（需要重启 ComfyUI 后才可用）</div>`;
+          box.querySelector('[data-a="rows"]').innerHTML = uiText(`<div class="tk-cards-empty">后端尚未加载本地 LLM 路由（需要重启 ComfyUI 后才可用）</div>`, "<div class=\"tk-cards-empty\">Local LLM routes are not loaded. Restart ComfyUI to enable them.</div>");
           return;
         }
         if (!this._overlays.has(overlay)) return;
@@ -2995,30 +3034,35 @@ import {
         const rows = Object.entries(models).map(([id, m]) => {
           const me = cur === "ready" && st.model === id;
           const busy = (cur === "downloading" || cur === "loading") && st.model === id;
-          const suffix = me ? ` <b style="color:var(--tk-info)">已加载</b>` : (busy ? ` <span style="color:var(--tk-info)">${cur}${prog}…</span>` : "");
+          const suffix = me ? uiText(` <b style="color:var(--tk-info)">已加载</b>`, " <b style=\"color:var(--tk-info)\">Loaded</b>") : (busy ? ` <span style="color:var(--tk-info)">${cur}${prog}…</span>` : "");
           const available = m.available !== false;
           const btn = me
-            ? `<button type="button" class="tk-cards-btn" data-a="unload" data-m="${escAttr(id)}">卸载</button>`
-            : (busy ? "" : `<button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="load" data-m="${escAttr(id)}">${available ? "启用（本地文件）" : "下载并启用"}</button>`);
-          return `<div class="tk-cards-llm-row">
+            ? uiText(`<button type="button" class="tk-cards-btn" data-a="unload" data-m="${escAttr(id)}">卸载</button>`, `<button type="button" class="tk-cards-btn" data-a="unload" data-m="${escAttr(id)}">Unload</button>`)
+            : (busy ? "" : `<button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="load" data-m="${escAttr(id)}">${available ? uiText("启用（本地文件）", "Enable local file") : uiText("下载并启用", "Download and enable")}</button>`);
+          return uiText(`<div class="tk-cards-llm-row">
             <b>${esc(m.label)}</b>
             <span class="tk-cards-muted">${esc(m.size)} · ${esc(id)}</span>
             <span class="tk-cards-muted" title="许可说明">${esc(m.license)}</span>
             <span>${suffix}</span>${btn}
-          </div>`;
+          </div>`, `<div class="tk-cards-llm-row">
+            <b>${esc(m.label)}</b>
+            <span class="tk-cards-muted">${esc(m.size)} · ${esc(id)}</span>
+            <span class="tk-cards-muted" title="License information">${esc(m.license)}</span>
+            <span>${suffix}</span>${btn}
+          </div>`);
         }).join("");
-        box.querySelector('[data-a="rows"]').innerHTML = rows || `<div class="tk-cards-empty">无可用模型</div>`;
-        box.querySelector('[data-a="error"]').textContent = st.error ? `错误：${st.error}` : "";
+        box.querySelector('[data-a="rows"]').innerHTML = rows || uiText(`<div class="tk-cards-empty">无可用模型</div>`, "<div class=\"tk-cards-empty\">No available models</div>");
+        box.querySelector('[data-a="error"]').textContent = st.error ? uiText(`错误：${st.error}`, `Error: ${st.error}`) : "";
         box.querySelectorAll('[data-a="load"]').forEach((b) => b.addEventListener("click", async () => {
           try {
             await this._assertGenerationIdle();
             const loaded = await this._postJson("/anima/translate/local_llm/load", { model: b.getAttribute("data-m"), download: true });
             if (!this._overlays.has(overlay)) return;
-            if (loaded?.ok === false) throw new Error(loaded.error || "本地 LLM 启动失败");
+            if (loaded?.ok === false) throw new Error(loaded.error || uiText("本地 LLM 启动失败", "Local LLM failed to start"));
             pollTimer = this._setInterval(render, 2000);
             await render();
           } catch (e) {
-            box.querySelector('[data-a="error"]').textContent = "启用失败：" + (e.message || e);
+            box.querySelector('[data-a="error"]').textContent = uiText("启用失败：", "Load failed: ") + (e.message || e);
           }
         }));
         box.querySelectorAll('[data-a="unload"]').forEach((b) => b.addEventListener("click", async () => {
@@ -3027,7 +3071,7 @@ import {
             this._refreshTranslationStatus();
             await render();
           } catch (e) {
-            box.querySelector('[data-a="error"]').textContent = "卸载失败：" + (e.message || e);
+            box.querySelector('[data-a="error"]').textContent = uiText("卸载失败：", "Unload failed: ") + (e.message || e);
           }
         }));
         if (cur === "ready") this._refreshTranslationStatus();
@@ -3054,7 +3098,7 @@ import {
       const status = snapshot.state || {};
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay";
-      overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-config-box" role="dialog" aria-modal="true" aria-label="翻译设置">
+      overlay.innerHTML = uiText(`<div class="tk-cards-overlay-box tk-cards-config-box" role="dialog" aria-modal="true" aria-label="翻译设置">
         <div class="tk-cards-overlay-head"><b>翻译设置</b><button type="button" class="tk-cards-icon-btn" data-a="close" title="关闭" aria-label="关闭">${icon("x", 14)}</button></div>
         <div class="tk-cards-settings-status" data-a="status"></div>
         <div class="tk-cards-config-body">
@@ -3150,7 +3194,103 @@ import {
           <button type="button" class="tk-cards-btn" data-a="reset">恢复默认</button>
           <button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">保存设置</button>
         </div>
-      </div>`;
+      </div>`, `<div class="tk-cards-overlay-box tk-cards-config-box" role="dialog" aria-modal="true" aria-label="Translation settings">
+        <div class="tk-cards-overlay-head"><b>Translation settings</b><button type="button" class="tk-cards-icon-btn" data-a="close" title="Close" aria-label="Close">${icon("x", 14)}</button></div>
+        <div class="tk-cards-settings-status" data-a="status"></div>
+        <div class="tk-cards-config-body">
+          <section class="tk-cards-config-group">
+            <div class="tk-cards-config-group-head"><b>Translation providers and fallback</b></div>
+            <label class="tk-cards-field"><span>Default translation provider</span><select class="tk-cards-select" data-f="default_source">${TRANSLATE_SOURCES.map(([id, label]) => `<option value="${escAttr(id)}">${esc(label)}</option>`).join("")}</select></label>
+            <div class="tk-cards-config-row">
+              <label class="tk-cards-field"><span>Fall back to other providers on failure</span><select class="tk-cards-select" data-f="allow_fallback"><option value="1">Automatic fallback</option><option value="0">Selected provider only</option></select></label>
+              <label class="tk-cards-field"><span>Translation timeout (milliseconds)</span><input type="number" min="3000" max="120000" step="1000" data-f="timeout_ms"></label>
+            </div>
+            <div class="tk-cards-config-hint">Only enabled providers are included in automatic fallback. Disable unused providers to avoid unnecessary timeouts.</div>
+            <div class="tk-cards-check-grid" data-a="sources"></div>
+          </section>
+          <section class="tk-cards-config-group">
+            <div class="tk-cards-config-group-head"><b>Service settings</b></div>
+            <div class="tk-cards-config-sub">
+              <div class="tk-cards-config-sub-head">DeepLX<span class="tk-cards-muted" data-a="deeplx-state"></span></div>
+              <label class="tk-cards-field"><span>Executable path (blank uses DEEPLX_EXE or the default)</span><input data-f="deeplx_exe" autocomplete="off" placeholder="e.g. D:/Tools/DeepLX/deeplx_windows_amd64.exe"></label>
+              <div class="tk-cards-config-row">
+                <label class="tk-cards-field"><span>Log path (blank uses default)</span><input data-f="deeplx_log" autocomplete="off" placeholder="e.g. D:/Tools/DeepLX/deeplx.log"></label>
+                <label class="tk-cards-field"><span>Port</span><input type="number" min="1" max="65535" step="1" data-f="deeplx_port"></label>
+              </div>
+              <div class="tk-cards-actions"><button type="button" class="tk-cards-btn" data-a="deeplx-restart">Detect and start</button></div>
+            </div>
+            <div class="tk-cards-config-sub">
+              <div class="tk-cards-config-sub-head">Baidu Translate<span class="tk-cards-muted" data-a="baidu-state"></span></div>
+              <div class="tk-cards-config-row">
+                <label class="tk-cards-field"><span>APPID</span><input data-b="appid" autocomplete="off" placeholder="Baidu developer APPID"></label>
+                <label class="tk-cards-field"><span>API Key</span><input type="password" autocomplete="new-password" data-b="api-key" placeholder="Leave blank to keep"></label>
+              </div>
+              <div class="tk-cards-config-row">
+                <label class="tk-cards-field"><span>Translation model</span><select class="tk-cards-select" data-b="model"><option value="llm">LLM translation</option><option value="nmt">Machine translation (NMT)</option></select></label>
+                <label class="tk-cards-check"><input type="checkbox" data-b="intervene"><span>Use terminology library (requires account access)</span></label>
+              </div>
+              <div class="tk-cards-config-hint">APPID and API Key are stored only in the local backend, never in the frontend or workflow. These fields share the full dialog’s settings.</div>
+              <div class="tk-cards-actions">
+                <button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="baidu-save">Save Baidu settings</button>
+                <button type="button" class="tk-cards-btn" data-a="baidu-test">Test connection</button>
+                <button type="button" class="tk-cards-btn" data-a="open-baidu">Open full dialog</button>
+              </div>
+            </div>
+            <div class="tk-cards-config-sub">
+              <div class="tk-cards-config-sub-head">Local translation model<span class="tk-cards-muted" data-a="llm-state"></span></div>
+              <label class="tk-cards-field"><span>Default model to load</span><select class="tk-cards-select" data-f="llm_model"></select></label>
+              <div class="tk-cards-config-hint" data-a="llm-dir">Model directory: loading…</div>
+              <div class="tk-cards-actions"><button type="button" class="tk-cards-btn" data-a="open-llm">Manage models</button></div>
+            </div>
+            <div class="tk-cards-config-sub">
+              <div class="tk-cards-config-sub-head">DashScope (Alibaba Cloud)</div>
+              <label class="tk-cards-field"><span>Base URL</span><input data-f="dashscope_base" autocomplete="off" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"></label>
+              <div class="tk-cards-config-row">
+                <label class="tk-cards-field"><span>Model</span><input data-f="dashscope_model" autocomplete="off" placeholder="qwen-turbo"></label>
+                <label class="tk-cards-field"><span>API Key</span><input type="password" autocomplete="new-password" data-f="dashscope_key" placeholder="Leave blank to keep"></label>
+              </div>
+              <label class="tk-cards-check"><input type="checkbox" data-f="dashscope_key_clear"><span>Clear saved DashScope API Key</span></label>
+            </div>
+            <div class="tk-cards-config-sub">
+              <div class="tk-cards-config-sub-head">Categorization LLM<span class="tk-cards-muted" data-a="llm-classify-state"></span></div>
+              <label class="tk-cards-field"><span>Connection mode</span><select class="tk-cards-select" data-f="classify_mode"><option value="auto">Automatic: prefer Ollama</option><option value="ollama">Ollama</option><option value="api">OpenAI-compatible API</option></select></label>
+              <div class="tk-cards-config-row">
+                <label class="tk-cards-field"><span>Base URL</span><input data-f="classify_base" autocomplete="off" placeholder="e.g. http://127.0.0.1:8080/v1"></label>
+                <label class="tk-cards-field"><span>Model name</span><input data-f="classify_model" autocomplete="off" placeholder="e.g. qwen-turbo"></label>
+              </div>
+              <div class="tk-cards-config-row">
+                <label class="tk-cards-field"><span>API Key</span><input type="password" autocomplete="new-password" data-f="classify_key" placeholder="Leave blank to keep"></label>
+                <label class="tk-cards-field"><span>Ollama URL</span><input data-f="ollama_base" autocomplete="off" placeholder="http://127.0.0.1:11434"></label>
+              </div>
+              <label class="tk-cards-check"><input type="checkbox" data-f="classify_key_clear"><span>Clear saved categorization LLM API Key</span></label>
+            </div>
+          </section>
+          <section class="tk-cards-config-group">
+            <div class="tk-cards-config-group-head"><b>Quality and matching</b></div>
+            <label class="tk-cards-check" data-a="calibrate-row"><input type="checkbox" data-f="auto_calibrate"><span>Look up canonical Danbooru tags during Translate and match</span></label>
+            <label class="tk-cards-check"><input type="checkbox" data-f="semantic_enabled"><span>Prefer BGE-M3 semantic lookup for Chinese prose (initialize before first use)</span></label>
+            <div class="tk-cards-config-row">
+              <label class="tk-cards-field"><span>Minimum weight</span><input type="number" min="-10" max="-0.1" step="0.1" data-f="weight_min"></label>
+              <label class="tk-cards-field"><span>Maximum weight</span><input type="number" min="0.1" max="10" step="0.1" data-f="weight_max"></label>
+            </div>
+            <label class="tk-cards-field"><span>Proxy (blank detects local ports 7890 / 7897 / 10809)</span><input data-f="proxy" autocomplete="off" placeholder="http://127.0.0.1:7890"></label>
+          </section>
+          <section class="tk-cards-config-group">
+            <div class="tk-cards-config-group-head"><b>Dictionary and cache</b></div>
+            <div class="tk-cards-config-hint" data-a="glossary-hint">Glossary: loading…</div>
+            <div class="tk-cards-actions">
+              <button type="button" class="tk-cards-btn" data-a="glossary-view">View glossary</button>
+              <button type="button" class="tk-cards-btn" data-a="cache-clear">Clear translation cache</button>
+            </div>
+            <div class="tk-cards-glossary-list" data-a="glossary" hidden></div>
+          </section>
+        </div>
+        <div class="tk-cards-settings-status tk-cards-config-result" data-a="action-status" hidden></div>
+        <div class="tk-cards-actions tk-cards-config-actions">
+          <button type="button" class="tk-cards-btn" data-a="reset">Restore defaults</button>
+          <button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">Save settings</button>
+        </div>
+      </div>`);
       // ⚠️ overlay 最后才插入文档（见本方法末尾）：旧写法是「先 appendChild、再隔着若干
       // await 后端请求才绑动作」，面板可见后约 2 秒内点任何按钮都无效（能命中按钮但没有
       // 监听器）。绑完再入文档，保证「可见即可用」。
@@ -3196,7 +3336,7 @@ import {
       const sourceGrid = overlay.querySelector('[data-a="sources"]');
       sourceGrid.innerHTML = TRANSLATE_SOURCES.filter(([id]) => id !== "auto").map(([id, label]) => {
         const st = providers[id] || {};
-        const stateText = st.cooldown_seconds > 0 ? "冷却中" : (st.configured === false ? "未配置" : (st.health === "healthy" ? "可用" : "待使用"));
+        const stateText = st.cooldown_seconds > 0 ? uiText("冷却中", "Cooling down") : (st.configured === false ? uiText("未配置", "Not configured") : (st.health === "healthy" ? uiText("可用", "Available") : uiText("待使用", "Idle")));
         const on = remote.enabled_sources.includes(id);
         return `<label class="tk-cards-check tk-cards-check-row"><input type="checkbox" data-s="${escAttr(id)}" ${on ? "checked" : ""}><span>${esc(label)}<small class="tk-cards-muted">${esc(stateText)}</small></span></label>`;
       }).join("");
@@ -3207,24 +3347,24 @@ import {
       const modelIds = Object.keys(llmModels).length ? Object.keys(llmModels) : [remote.llm_model];
       llmSelect.innerHTML = modelIds.map((id) => `<option value="${escAttr(id)}">${esc(llmModels[id]?.label || id)}</option>`).join("");
       llmSelect.value = modelIds.includes(remote.llm_model) ? remote.llm_model : modelIds[0];
-      overlay.querySelector('[data-a="llm-dir"]').textContent = `模型目录：${status.local_llm?.models_dir || "（后端未返回，重启 ComfyUI 后可见）"}`;
+      overlay.querySelector('[data-a="llm-dir"]').textContent = uiText(`模型目录：${status.local_llm?.models_dir || uiText("（后端未返回，重启 ComfyUI 后可见）", "(not reported by the server; available after restarting ComfyUI)")}`, `Model directory: ${status.local_llm?.models_dir || uiText("（后端未返回，重启 ComfyUI 后可见）", "(not reported by the server; available after restarting ComfyUI)")}`);
       overlay.querySelector('[data-a="deeplx-state"]').textContent = status.deeplx
-        ? `　当前：${status.deeplx.installed ? "已安装" : "未检测到"}${status.deeplx.listening ? " · 运行中" : ""}${status.deeplx.port ? ` · 端口 ${status.deeplx.port}` : ""}`
+        ? uiText(`　当前：${status.deeplx.installed ? uiText("已安装", "Installed") : uiText("未检测到", "Not detected")}${status.deeplx.listening ? uiText(" · 运行中", " · Running") : ""}${status.deeplx.port ? ` · 端口 ${status.deeplx.port}` : ""}`, `　Current：${status.deeplx.installed ? uiText("已安装", "Installed") : uiText("未检测到", "Not detected")}${status.deeplx.listening ? uiText(" · 运行中", " · Running") : ""}${status.deeplx.port ? ` · 端口 ${status.deeplx.port}` : ""}`)
         : "";
       overlay.querySelector('[data-a="baidu-state"]').textContent = status.baidu
-        ? `　当前：${status.baidu.configured ? "已配置" : "未配置"}`
+        ? uiText(`　当前：${status.baidu.configured ? uiText("已配置", "Configured") : uiText("未配置", "Not configured")}`, `　Current：${status.baidu.configured ? uiText("已配置", "Configured") : uiText("未配置", "Not configured")}`)
         : "";
       // 百度四项在面板内直接读写（与「打开完整弹窗」共用 data/translation_providers.json，存储不迁移）
       const b = (name) => overlay.querySelector(`[data-b="${name}"]`);
       const loadBaiduConfig = async () => {
         try {
           const conf = await this._fetchJson("/anima/translate/baidu/config", { timeout: 8000 });
-          b("appid").placeholder = conf.has_appid ? "已保存，留空保持不变" : "百度开发者 APPID";
-          b("api-key").placeholder = conf.has_api_key ? "已保存，留空保持不变" : "百度开发者 API Key";
+          b("appid").placeholder = conf.has_appid ? uiText("已保存，留空保持不变", "Saved; leave blank to keep") : uiText("百度开发者 APPID", "Baidu developer APPID");
+          b("api-key").placeholder = conf.has_api_key ? uiText("已保存，留空保持不变", "Saved; leave blank to keep") : uiText("百度开发者 API Key", "Baidu developer API Key");
           b("model").value = conf.model_type === "nmt" ? "nmt" : "llm";
           b("intervene").checked = conf.need_intervene === true;
         } catch (error) {
-          setResult(`百度配置读取失败：${error.message || error}`, "is-error");
+          setResult(uiText(`百度配置读取失败：${error.message || error}`, `Could not load Baidu settings: ${error.message || error}`), "is-error");
         }
       };
       const baiduPayload = () => ({
@@ -3236,18 +3376,18 @@ import {
       overlay.querySelector('[data-a="baidu-save"]').addEventListener("click", async (event) => {
         const button = event.currentTarget;
         button.disabled = true;
-        setResult("正在保存百度配置…");
+        setResult(uiText("正在保存百度配置…", "Saving Baidu settings…"));
         try {
           const conf = await this._postJson("/anima/translate/baidu/config", baiduPayload(), 15000);
-          if (conf.ok === false) throw new Error(conf.error || "保存失败");
+          if (conf.ok === false) throw new Error(conf.error || uiText("保存失败", "Save failed"));
           b("appid").value = "";
           b("api-key").value = "";
-          b("appid").placeholder = conf.has_appid ? "已保存，留空保持不变" : "百度开发者 APPID";
-          b("api-key").placeholder = conf.has_api_key ? "已保存，留空保持不变" : "百度开发者 API Key";
-          setResult(conf.configured ? "百度配置已保存并启用" : "已保存，但还缺少 APPID 或 API Key", conf.configured ? "is-success" : "");
+          b("appid").placeholder = conf.has_appid ? uiText("已保存，留空保持不变", "Saved; leave blank to keep") : uiText("百度开发者 APPID", "Baidu developer APPID");
+          b("api-key").placeholder = conf.has_api_key ? uiText("已保存，留空保持不变", "Saved; leave blank to keep") : uiText("百度开发者 API Key", "Baidu developer API Key");
+          setResult(conf.configured ? uiText("百度配置已保存并启用", "Baidu settings saved and enabled") : uiText("已保存，但还缺少 APPID 或 API Key", "Saved, but APPID or API Key is still missing"), conf.configured ? "is-success" : "");
           await this._refreshTranslationStatus();
         } catch (error) {
-          setResult(`百度配置保存失败：${error.message || error}`, "is-error");
+          setResult(uiText(`百度配置保存失败：${error.message || error}`, `Could not save Baidu settings: ${error.message || error}`), "is-error");
         } finally {
           button.disabled = false;
         }
@@ -3255,20 +3395,20 @@ import {
       overlay.querySelector('[data-a="baidu-test"]').addEventListener("click", async (event) => {
         const button = event.currentTarget;
         button.disabled = true;
-        setResult("正在测试百度翻译…");
+        setResult(uiText("正在测试百度翻译…", "Testing Baidu translation…"));
         try {
           const r = await this._postJson("/anima/translate/baidu/test", { ...baiduPayload(), q: "你好，世界" }, 40000);
-          if (!r.ok) throw new Error(r.error || "百度翻译测试失败");
-          setResult(`百度连接成功：${r.translatedText || "已返回译文"}`, "is-success");
+          if (!r.ok) throw new Error(r.error || uiText("百度翻译测试失败", "Baidu translation test failed"));
+          setResult(uiText(`百度连接成功：${r.translatedText || uiText("已返回译文", "Translation received")}`, `Baidu connection successful: ${r.translatedText || uiText("已返回译文", "Translation received")}`), "is-success");
         } catch (error) {
-          setResult(`百度连接失败：${error.message || error}`, "is-error");
+          setResult(uiText(`百度连接失败：${error.message || error}`, `Baidu connection failed: ${error.message || error}`), "is-error");
         } finally {
           button.disabled = false;
         }
       });
       loadBaiduConfig();
       overlay.querySelector('[data-a="llm-state"]').textContent = status.local_llm
-        ? `　当前：${status.local_llm.status === "ready" ? `已加载 ${status.local_llm.model || ""}` : (status.local_llm.status || "未加载")}`
+        ? uiText(`　当前：${status.local_llm.status === "ready" ? uiText(`已加载 ${status.local_llm.model || ""}`, `Loaded ${status.local_llm.model || ""}`) : (status.local_llm.status || uiText("未加载", "Not loaded"))}`, `　Current：${status.local_llm.status === "ready" ? uiText(`已加载 ${status.local_llm.model || ""}`, `Loaded ${status.local_llm.model || ""}`) : (status.local_llm.status || uiText("未加载", "Not loaded"))}`)
         : "";
 
       // 分类 LLM（复用既有 /anima/llm/config 路由与存储）
@@ -3276,15 +3416,15 @@ import {
       try {
         llmConf = await this._fetchJson("/anima/llm/config", { timeout: 8000 });
       } catch (error) {
-        setStatus(`分类 LLM 配置读取失败：${error.message || error}`, "is-error");
+        setStatus(uiText(`分类 LLM 配置读取失败：${error.message || error}`, `Categories LLM SettingsCould not load：${error.message || error}`), "is-error");
       }
       f("classify_mode").value = ["auto", "ollama", "api"].includes(llmConf.mode) ? llmConf.mode : "auto";
       f("classify_base").value = llmConf.base_url || "";
       f("classify_model").value = llmConf.model || "";
-      f("classify_key").placeholder = llmConf.hasApiKey ? "已保存，留空保持不变" : "可留空";
+      f("classify_key").placeholder = llmConf.hasApiKey ? uiText("已保存，留空保持不变", "Saved; leave blank to keep") : uiText("可留空", "Optional");
       overlay.querySelector('[data-a="llm-classify-state"]').textContent = llmConf.ollama?.available
-        ? `　当前：Ollama 可用（${llmConf.ollama.model || "已连接"}）`
-        : "　当前：Ollama 未检测到";
+        ? uiText(`　当前：Ollama 可用（${llmConf.ollama.model || uiText("已连接", "Connected")}）`, `　Current：Ollama Available（${llmConf.ollama.model || uiText("已连接", "Connected")}）`)
+        : uiText("　当前：Ollama 未检测到", " Current: Ollama not detected");
 
       // 用户词典（后端既有 GET 只按词查单条，这里走新增的 list 路由）
       const glossaryEl = overlay.querySelector('[data-a="glossary"]');
@@ -3294,12 +3434,15 @@ import {
           const r = await this._fetchJson("/anima/translate/glossary/list", { timeout: 8000 });
           const entries = Array.isArray(r.entries) ? r.entries : [];
           glossaryHint.textContent = entries.length
-            ? `用户词典：${entries.length} 条（保存过的中文→英文对照优先于机翻）`
-            : "用户词典：暂无条目（在翻译结果里点「存词典」即可添加）";
-          glossaryEl.innerHTML = entries.map((entry) => `<div class="tk-cards-glossary-row" data-k="${escAttr(entry.id)}">
+            ? uiText(`用户词典：${entries.length} 条（保存过的中文→英文对照优先于机翻）`, `Glossary: ${entries.length} entries (saved Chinese → English pairs take priority over machine translation)`)
+            : uiText("用户词典：暂无条目（在翻译结果里点「存词典」即可添加）", "User glossary: no entries (use Save to glossary in translation results)");
+          glossaryEl.innerHTML = entries.map((entry) => uiText(`<div class="tk-cards-glossary-row" data-k="${escAttr(entry.id)}">
             <span class="tk-cards-glossary-text"><b>${esc(entry.source_text)}</b><small>${esc(entry.translated_text)}</small></span>
             <button type="button" class="tk-cards-icon-btn" data-a="glossary-del" data-k="${escAttr(entry.id)}" title="删除该词典条目" aria-label="删除该词典条目">${icon("trash", 12)}</button>
-          </div>`).join("");
+          </div>`, `<div class="tk-cards-glossary-row" data-k="${escAttr(entry.id)}">
+            <span class="tk-cards-glossary-text"><b>${esc(entry.source_text)}</b><small>${esc(entry.translated_text)}</small></span>
+            <button type="button" class="tk-cards-icon-btn" data-a="glossary-del" data-k="${escAttr(entry.id)}" title="Delete this glossary entry" aria-label="Delete this glossary entry">${icon("trash", 12)}</button>
+          </div>`)).join("");
           glossaryEl.querySelectorAll('[data-a="glossary-del"]').forEach((button) => {
             button.addEventListener("click", async () => {
               button.disabled = true;
@@ -3307,13 +3450,13 @@ import {
                 await this._fetchJson(`/anima/translate/glossary?id=${encodeURIComponent(button.getAttribute("data-k"))}`, { method: "DELETE", timeout: 8000 });
                 await renderGlossary();
               } catch (error) {
-                setStatus(`删除词典条目失败：${error.message || error}`, "is-error");
+                setStatus(uiText(`删除词典条目失败：${error.message || error}`, `Could not delete glossary entry: ${error.message || error}`), "is-error");
                 button.disabled = false;
               }
             });
           });
         } catch (error) {
-          glossaryHint.textContent = `用户词典不可用：${error.message || error}`;
+          glossaryHint.textContent = uiText(`用户词典不可用：${error.message || error}`, `Glossary unavailable: ${error.message || error}`);
         }
       };
       renderGlossary();
@@ -3350,14 +3493,14 @@ import {
       overlay.querySelector('[data-a="deeplx-restart"]').addEventListener("click", async (event) => {
         const button = event.currentTarget;
         button.disabled = true;
-        setResult("正在检测并启动 DeepLX…");
+        setResult(uiText("正在检测并启动 DeepLX…", "Detecting and starting DeepLX…"));
         try {
           await this._postJson("/anima/translate/settings", readForm(), 15000);
           const restart = await this._postJson("/anima/translate/deeplx/restart", {}, 15000);
-          setResult(restart.started ? "DeepLX 已启动" : "DeepLX 未能启动：请检查可执行文件路径与端口", restart.started ? "is-success" : "is-error");
+          setResult(restart.started ? uiText("DeepLX 已启动", "DeepLX started") : uiText("DeepLX 未能启动：请检查可执行文件路径与端口", "DeepLX failed to start; check the executable path and port"), restart.started ? "is-success" : "is-error");
           await this._refreshTranslationStatus();
         } catch (error) {
-          setResult(`DeepLX 操作失败：${error.message || error}`, "is-error");
+          setResult(uiText(`DeepLX 操作失败：${error.message || error}`, `DeepLX Operation failed: ${error.message || error}`), "is-error");
         } finally {
           button.disabled = false;
         }
@@ -3371,9 +3514,9 @@ import {
         button.disabled = true;
         try {
           const r = await this._postJson("/anima/translate/cache/clear", {}, 15000);
-          setResult(`翻译缓存已清空（移除 ${Number(r.removed) || 0} 条）`, "is-success");
+          setResult(uiText(`翻译缓存已清空（移除 ${Number(r.removed) || 0} 条）`, `Translation cache cleared (removed ${Number(r.removed) || 0} entries)`), "is-success");
         } catch (error) {
-          setResult(`清空翻译缓存失败：${error.message || error}`, "is-error");
+          setResult(uiText(`清空翻译缓存失败：${error.message || error}`, `Could not clear translation cache: ${error.message || error}`), "is-error");
         } finally {
           button.disabled = false;
         }
@@ -3395,17 +3538,17 @@ import {
         f("auto_calibrate").checked = d.auto_calibrate;
         f("semantic_enabled").checked = d.semantic_enabled;
         sourceGrid.querySelectorAll("input[data-s]").forEach((el) => { el.checked = d.enabled_sources.includes(el.getAttribute("data-s")); });
-        setResult("已填入默认值，点「保存设置」后才生效");
+        setResult(uiText("已填入默认值，点「保存设置」后才生效", "Defaults filled in. Click Save settings to apply"));
       });
       overlay.querySelector('[data-a="save"]').addEventListener("click", async (event) => {
         const button = event.currentTarget;
         const payload = readForm();
-        if (!payload.enabled_sources.length) { setResult("至少要启用一个翻译源", "is-error"); return; }
+        if (!payload.enabled_sources.length) { setResult(uiText("至少要启用一个翻译源", "Enable at least one translation source"), "is-error"); return; }
         button.disabled = true;
-        setResult("保存中…");
+        setResult(uiText("保存中…", "Saving…"));
         try {
           const saved = await this._postJson("/anima/translate/settings", payload, 20000);
-          if (saved?.ok === false) throw new Error(saved.error || "保存失败");
+          if (saved?.ok === false) throw new Error(saved.error || uiText("保存失败", "Save failed"));
           const next = applyTranslateSettings(saved.settings || payload);
           saveTranslateSettingsLocal(next);
           // 默认源变更时同步覆盖旧的一次性 localStorage 选择，避免设置看起来不生效
@@ -3418,15 +3561,15 @@ import {
           if (payload.api_keys.classify_api_key) classifyPayload.api_key = payload.api_keys.classify_api_key;
           if (payload.api_keys.classify_api_key_clear) { classifyPayload.api_key = ""; classifyPayload.api_key_clear = true; }
           await this._postJson("/anima/llm/config", classifyPayload, 15000);
-          setResult("设置已保存", "is-success");
-          this._flash("翻译设置已保存");
+          setResult(uiText("设置已保存", "Settings saved"), "is-success");
+          this._flash(uiText("翻译设置已保存", "Translation settings saved"));
           await this._refreshTranslationStatus();
         } catch (error) {
           // 后端不可用也不能丢配置：规范化后写入本机缓存，本浏览器内继续生效
           const cached = applyTranslateSettings(payload);
           saveTranslateSettingsLocal(cached);
           if (this.translateSourceEl) this.translateSourceEl.value = cached.default_source;
-          setResult(`设置未写入后端（${error.message || error}）；已保存到本机缓存，本浏览器内继续生效`, "is-error");
+          setResult(uiText(`设置未写入后端（${error.message || error}）；已保存到本机缓存，本浏览器内继续生效`, `Settings not saved to backend (${error.message || error}); cached locally and remains active in this browser.`), "is-error");
         } finally {
           button.disabled = false;
         }
@@ -3435,8 +3578,8 @@ import {
       // 环境提示（后端可用性）只在面板打开时写一次，占用独立的 status 位；
       // 保存/测试结果写 action-status 位 —— 两者物理分开，失败反馈不会被这条覆盖。
       setStatus(snapshot.offline
-        ? `后端设置接口不可用（${snapshot.error || "未连接"}）：当前显示本机缓存值，保存只写入浏览器`
-        : "改动点「保存设置」后生效；敏感字段留空表示保持不变。", snapshot.offline ? "is-error" : "");
+        ? uiText(`后端设置接口不可用（${snapshot.error || uiText("未连接", "Not connected")}）：当前显示本机缓存值，保存只写入浏览器`, `Backend settings unavailable (${snapshot.error || uiText("未连接", "Not connected")}): showing locally cached settings; saving writes only to this browser.`)
+        : uiText("改动点「保存设置」后生效；敏感字段留空表示保持不变。", "Click Save settings to apply changes. Leave sensitive fields blank to keep saved values."), snapshot.offline ? "is-error" : "");
       // 所有监听器与表单初值都已就绪 → 此时才把面板插入文档（可见即可用）
       this._mountOverlay(overlay);
       overlay.tabIndex = -1;
@@ -3452,38 +3595,38 @@ import {
       }
       this.resolveEl.style.display = "";
       this.resolveEl.innerHTML = `
-        <div class="tk-cards-resolve-head"><b>${this.resolveItems.some((item) => item.mode === "translate") ? "中文翻译结果" : "中文翻译与 Danbooru 校准"}</b><span>${this.resolveItems.some((item) => item.mode === "translate") ? "可修改译文后加入或保存词典" : "点击候选后加入当前提示词"}</span></div>
+        <div class="tk-cards-resolve-head"><b>${this.resolveItems.some((item) => item.mode === "translate") ? uiText("中文翻译结果", "Chinese translation results") : uiText("中文翻译与 Danbooru 校准", "Chinese translation and Danbooru matching")}</b><span>${this.resolveItems.some((item) => item.mode === "translate") ? uiText("可修改译文后加入或保存词典", "Edit the translation, then insert it or save it to the glossary") : uiText("点击候选后加入当前提示词", "Click a candidate to insert it into the current prompt")}</span></div>
         <div class="tk-cards-resolve-list">${this.resolveItems.map((item, i) => {
           const candidates = Array.isArray(item.candidates) ? item.candidates : [];
           const labels = candidates.map((c) => danbooruTagToPrompt(c.prompt || c.tag)).filter(Boolean);
-          const candidateText = labels.length ? labels.join(", ") : "未找到已验证的规范标签";
-          const translationText = item.translationStatus || "未获取英文译文";
+          const candidateText = labels.length ? labels.join(", ") : uiText("未找到已验证的规范标签", "No verified canonical tags found");
+          const translationText = item.translationStatus || uiText("未获取英文译文", "No English translation received");
           const translationEditor = item.translation
-            ? `<span>英文译文：</span><input class="tk-cards-resolve-translation" data-a="edit-translation" data-i="${i}" value="${escAttr(item.translation)}" title="可手动修正译文；保存到词典后下次优先使用">`
-            : `<span>译文：${esc(translationText)}</span>`;
-          const providerText = item.provider ? `翻译源：${providerLabel(item.provider)}` : "翻译源：未成功";
+            ? uiText(`<span>英文译文：</span><input class="tk-cards-resolve-translation" data-a="edit-translation" data-i="${i}" value="${escAttr(item.translation)}" title="可手动修正译文；保存到词典后下次优先使用">`, `<span>English translation: </span><input class="tk-cards-resolve-translation" data-a="edit-translation" data-i="${i}" value="${escAttr(item.translation)}" title="Edit the translation; saved glossary entries take priority next time">`)
+            : uiText(`<span>译文：${esc(translationText)}</span>`, `<span>Translation: ${esc(translationText)}</span>`);
+          const providerText = item.provider ? uiText(`翻译源：${providerLabel(item.provider)}`, `Translation source:${providerLabel(item.provider)}`) : uiText("翻译源：未成功", "Translation source: unsuccessful");
           const qaText = `QA：${qualityLabel(item.quality)}`;
-          const calibrationLabels = [...new Set(candidates.map((c) => CALIBRATION_LABELS[c.matchType] || c.matchType || "D站验证").filter(Boolean))];
-          const calibrationText = item.mode === "calibrate" ? `校准来源：${calibrationLabels.length ? calibrationLabels.join("、") : "未校准"}` : "";
+          const calibrationLabels = [...new Set(candidates.map((c) => CALIBRATION_LABELS[c.matchType] || c.matchType || uiText("D站验证", "Verified by Danbooru")).filter(Boolean))];
+          const calibrationText = item.mode === "calibrate" ? uiText(`校准来源：${calibrationLabels.length ? calibrationLabels.join("、") : uiText("未校准", "Not matched")}`, `Matching source: ${calibrationLabels.length ? calibrationLabels.join("、") : uiText("未校准", "Not matched")}`) : "";
           const buttons = candidates.map((candidate, ci) => {
             const label = danbooruTagToPrompt(candidate.prompt || candidate.tag);
             const verified = candidateSourceLabel(candidate);
-            return `<span class="tk-cards-resolve-candidate-wrap"><button type="button" class="tk-cards-resolve-candidate ${candidate.verified ? "is-verified" : ""}" data-a="use-candidate" data-i="${i}" data-ci="${ci}" title="${escAttr(`${verified} · ${candidate.tag || ""}`)}">${esc(label)}<small>${esc(verified)}</small></button><button type="button" class="tk-cards-resolve-save" data-a="save-glossary" data-i="${i}" data-ci="${ci}" title="把当前中文短语和这个英文标签保存到用户词典">存词典</button></span>`;
+            return uiText(`<span class="tk-cards-resolve-candidate-wrap"><button type="button" class="tk-cards-resolve-candidate ${candidate.verified ? "is-verified" : ""}" data-a="use-candidate" data-i="${i}" data-ci="${ci}" title="${escAttr(`${verified} · ${candidate.tag || ""}`)}">${esc(label)}<small>${esc(verified)}</small></button><button type="button" class="tk-cards-resolve-save" data-a="save-glossary" data-i="${i}" data-ci="${ci}" title="把当前中文短语和这个英文标签保存到用户词典">存词典</button></span>`, `<span class="tk-cards-resolve-candidate-wrap"><button type="button" class="tk-cards-resolve-candidate ${candidate.verified ? "is-verified" : ""}" data-a="use-candidate" data-i="${i}" data-ci="${ci}" title="${escAttr(`${verified} · ${candidate.tag || ""}`)}">${esc(label)}<small>${esc(verified)}</small></button><button type="button" class="tk-cards-resolve-save" data-a="save-glossary" data-i="${i}" data-ci="${ci}" title="Save this Chinese phrase and English tag to your glossary">Save to glossary</button></span>`);
           }).join("");
           const fallback = item.translation
-            ? `<button type="button" class="tk-cards-btn tk-cards-resolve-fallback" data-a="use-translation" data-i="${i}">${item.mode === "translate" ? "加入译文" : "加入译文（未校准）"}</button><button type="button" class="tk-cards-btn tk-cards-resolve-save" data-a="save-translation" data-i="${i}">保存译文</button>`
+            ? uiText(`<button type="button" class="tk-cards-btn tk-cards-resolve-fallback" data-a="use-translation" data-i="${i}">${item.mode === "translate" ? uiText("加入译文", "Insert translation") : uiText("加入译文（未校准）", "Insert translation (unmatched)")}</button><button type="button" class="tk-cards-btn tk-cards-resolve-save" data-a="save-translation" data-i="${i}">保存译文</button>`, `<button type="button" class="tk-cards-btn tk-cards-resolve-fallback" data-a="use-translation" data-i="${i}">${item.mode === "translate" ? uiText("加入译文", "Insert translation") : uiText("加入译文（未校准）", "Insert translation (unmatched)")}</button><button type="button" class="tk-cards-btn tk-cards-resolve-save" data-a="save-translation" data-i="${i}">Save translation</button>`)
             : "";
           const semantic = item.semantic || {};
           const semanticHint = semantic.needInit
-            ? `<div class="tk-cards-resolve-semantic-hint">自然语言需要本地语义引擎（BGE-M3）；首次启用可能需要初始化/下载模型。<button type="button" class="tk-cards-btn" data-a="init-semantic">启用语义引擎</button></div>`
-            : (semantic.error ? `<div class="tk-cards-resolve-semantic-hint">语义解析不可用：${esc(semantic.error)}</div>` : "");
+            ? uiText(`<div class="tk-cards-resolve-semantic-hint">自然语言需要本地语义引擎（BGE-M3）；首次启用可能需要初始化/下载模型。<button type="button" class="tk-cards-btn" data-a="init-semantic">启用语义引擎</button></div>`, "<div class=\"tk-cards-resolve-semantic-hint\">Prose requires the local BGE-M3 semantic engine. First use may require model initialization or download.<button type=\"button\" class=\"tk-cards-btn\" data-a=\"init-semantic\">Enable semantic engine</button></div>")
+            : (semantic.error ? uiText(`<div class="tk-cards-resolve-semantic-hint">语义解析不可用：${esc(semantic.error)}</div>`, `<div class="tk-cards-resolve-semantic-hint">Semantic parsing unavailable: ${esc(semantic.error)}</div>`) : "");
           const canUseAuto = item.errorPayload?.canUseAuto === true;
           const autoButton = canUseAuto
-            ? `<button type="button" class="tk-cards-btn tk-cards-resolve-fallback" data-a="use-auto" data-i="${i}">改用自动</button>`
+            ? uiText(`<button type="button" class="tk-cards-btn tk-cards-resolve-fallback" data-a="use-auto" data-i="${i}">改用自动</button>`, `<button type="button" class="tk-cards-btn tk-cards-resolve-fallback" data-a="use-auto" data-i="${i}">Use automatic mode</button>`)
             : "";
           return `<div class="tk-cards-resolve-row" data-i="${i}">
             <div class="tk-cards-resolve-source"><b>${esc(item.text || "")}</b><span class="tk-cards-resolve-translation-line">${translationEditor}</span><span class="tk-cards-resolve-provider">${esc(providerText)} · ${esc(qaText)}${calibrationText ? ` · ${esc(calibrationText)}` : ""}</span></div>
-            ${item.mode === "calibrate" ? `<div class="tk-cards-resolve-tags"><span>规范候选：</span><strong>${esc(candidateText)}</strong></div>` : ""}
+            ${item.mode === "calibrate" ? uiText(`<div class="tk-cards-resolve-tags"><span>规范候选：</span><strong>${esc(candidateText)}</strong></div>`, `<div class="tk-cards-resolve-tags"><span>Canonical candidates: </span><strong>${esc(candidateText)}</strong></div>`) : ""}
             <div class="tk-cards-resolve-actions">${buttons || `<span class="tk-cards-resolve-empty">暂无规范候选</span>`}${fallback}${autoButton}</div>
             ${semanticHint}
           </div>`;
@@ -3591,16 +3734,22 @@ import {
       }
       const stats = this.translateDigestStats || { total: 0, missing: 0 };
       const note = stats.missing
-        ? `整体译文（${stats.total} 段，其中 ${stats.missing} 段暂无译文，已保留中文）`
-        : `整体译文（${stats.total} 段，已全部译出）`;
+        ? uiText(`整体译文（${stats.total} 段，其中 ${stats.missing} 段暂无译文，已保留中文）`, `Full translation (${stats.total} fragments, including ${stats.missing} fragments have no translation; Chinese preserved)`)
+        : uiText(`整体译文（${stats.total} 段，已全部译出）`, `Full translation (${stats.total} fragments, all translated)`);
       el.style.display = "";
-      el.innerHTML = `<div class="tk-cards-digest-head"><b>${esc(note)}</b><span>可直接复制，或覆盖当前提示词</span></div>
+      el.innerHTML = uiText(`<div class="tk-cards-digest-head"><b>${esc(note)}</b><span>可直接复制，或覆盖当前提示词</span></div>
         <textarea class="tk-cards-digest-text" rows="3" readonly title="整体译文；用「复制」或「覆盖当前提示词」取用"></textarea>
         <div class="tk-cards-digest-actions">
           <button type="button" class="tk-cards-btn" data-a="digest-copy">复制整体译文</button>
           <button type="button" class="tk-cards-btn" data-a="digest-overwrite">覆盖当前提示词</button>
           <button type="button" class="tk-cards-btn" data-a="digest-clear">清空</button>
-        </div>`;
+        </div>`, `<div class="tk-cards-digest-head"><b>${esc(note)}</b><span>Copy directly or replace the current prompt</span></div>
+        <textarea class="tk-cards-digest-text" rows="3" readonly title="Full translation; use Copy or Replace current prompt"></textarea>
+        <div class="tk-cards-digest-actions">
+          <button type="button" class="tk-cards-btn" data-a="digest-copy">Copy full translation</button>
+          <button type="button" class="tk-cards-btn" data-a="digest-overwrite">Replace current prompt</button>
+          <button type="button" class="tk-cards-btn" data-a="digest-clear">Clear</button>
+        </div>`);
       const area = el.querySelector(".tk-cards-digest-text");
       if (area) area.value = text; // 用 value 赋值，避免换行/引号被当作 HTML
       el.querySelector('[data-a="digest-copy"]')?.addEventListener("click", () => this._copyTranslateDigest());
@@ -3618,10 +3767,10 @@ import {
       if (!text) return;
       try {
         await navigator.clipboard.writeText(text);
-        this._flash("已复制整体译文");
+        this._flash(uiText("已复制整体译文", "Full translation copied"));
       } catch {
         // 非安全上下文或拒绝授权时剪贴板不可用：明确告知，不静默失败
-        this._flash("复制失败：剪贴板不可用，请手动选中复制", 4000);
+        this._flash(uiText("复制失败：剪贴板不可用，请手动选中复制", "Copy failed: clipboard unavailable; select the text and copy manually"), 4000);
       }
     }
 
@@ -3629,7 +3778,7 @@ import {
       const text = String(this.translateDigest || "").trim();
       if (!text) return;
       this._setPromptText(text);
-      this._flash("已用整体译文覆盖当前提示词");
+      this._flash(uiText("已用整体译文覆盖当前提示词", "Current prompt replaced with the full translation"));
     }
 
     _replaceResolvedPiece(index, replacement) {
@@ -3648,20 +3797,20 @@ import {
       const text = danbooruTagToPrompt(candidate?.prompt || candidate?.tag);
       const used = Number.isInteger(index) ? this._replaceResolvedPiece(index, text) : this._appendResolvedText(text);
       if (used) {
-        this._flash(candidate?.verified ? `已加入 Danbooru 规范词：${text}` : `已加入本地规范候选：${text}`);
+        this._flash(candidate?.verified ? uiText(`已加入 Danbooru 规范词：${text}`, `Inserted canonical Danbooru tag: ${text}`) : uiText(`已加入本地规范候选：${text}`, `Inserted local canonical candidate: ${text}`));
       }
     }
 
     _useResolvedTranslation(index, translation) {
       const text = String(translation || "").trim();
       const used = Number.isInteger(index) ? this._replaceResolvedPiece(index, text) : this._appendResolvedText(text);
-      if (used) this._flash("已加入译文（未经过 Danbooru 校准）");
+      if (used) this._flash(uiText("已加入译文（未经过 Danbooru 校准）", "Translation appended (without Danbooru matching)"));
     }
 
     async _saveGlossary(item, candidate) {
       const sourceText = String(item?.text || "").trim();
       const translatedText = String(candidate?.prompt || candidate?.tag || "").trim();
-      if (!sourceText || !translatedText) { this._flash("没有可保存的词典内容"); return; }
+      if (!sourceText || !translatedText) { this._flash(uiText("没有可保存的词典内容", "No glossary content to save")); return; }
       try {
         await this._postJson("/anima/translate/glossary", {
           source_text: sourceText,
@@ -3670,9 +3819,9 @@ import {
           source_language: "zh",
           target_language: "en",
         });
-        this._flash(`已保存到用户词典：${sourceText} → ${translatedText}`);
+        this._flash(uiText(`已保存到用户词典：${sourceText} → ${translatedText}`, `Saved to glossary: ${sourceText} → ${translatedText}`));
       } catch (error) {
-        this._flash("保存用户词典失败：" + (error.message || error), 5000);
+        this._flash(uiText("保存用户词典失败：", "Cannot save the user glossary: ") + (error.message || error), 5000);
       }
     }
 
@@ -3699,9 +3848,9 @@ import {
       if (button) button.disabled = true;
       try {
         const result = await this._postJson("/danbooru_anima/vec_init", {}, 12000);
-        this._flash(result.started ? "已开始初始化本地语义引擎，完成后再次点击翻译并校准" : "语义引擎正在初始化，请稍候", 6000);
+        this._flash(result.started ? uiText("已开始初始化本地语义引擎，完成后再次点击翻译并校准", "Local semantic engine initialization started. Click Translate and match again when ready") : uiText("语义引擎正在初始化，请稍候", "Semantic engine initializing; please wait"), 6000);
       } catch (e) {
-        this._flash("语义引擎启动失败：" + (e.message || e), 5000);
+        this._flash(uiText("语义引擎启动失败：", "Semantic engine failed to start: ") + (e.message || e), 5000);
       } finally {
         if (button) button.disabled = false;
       }
@@ -3710,7 +3859,7 @@ import {
     async _translateAndSemantic(text, withSemantic = false) {
       const value = String(text || "").trim();
       const source = this.translateSourceEl?.value || "auto";
-      const sourceName = TRANSLATE_SOURCES.find(([id]) => id === source)?.[1] || "翻译源";
+      const sourceName = TRANSLATE_SOURCES.find(([id]) => id === source)?.[1] || uiText("翻译源", "Translation source");
       let translation = value;
       let translationStatus = "";
       let provider = langOf(value) === "zh" ? "" : "input";
@@ -3721,7 +3870,7 @@ import {
       if (langOf(value) === "zh") {
         if (source === "local") {
           translation = "";
-          translationStatus = "本地词典仅用于标签反查";
+          translationStatus = uiText("本地词典仅用于标签反查", "The local dictionary only supports tag lookup");
         } else {
           try {
             const result = await translateChineseToEnglish(value, source, this._lifetime.signal);
@@ -3732,7 +3881,7 @@ import {
             glossaryTag = result.tagText || "";
           } catch (error) {
             translation = "";
-            translationStatus = error.payload?.error || `${sourceName}未返回英文`;
+            translationStatus = error.payload?.error || uiText(`${sourceName}未返回英文`, `${sourceName}returned no English translation`);
             errorPayload = error.payload || null;
           }
         }
@@ -3746,7 +3895,7 @@ import {
       const parts = this._promptPieces();
       const piece = parts[index];
       if (!piece) return;
-      this._flash(`正在翻译第 ${index + 1} 条…`);
+      this._flash(uiText(`正在翻译第 ${index + 1} 条…`, `Translating entry ${index + 1} entries…`));
       try {
         const source = this.translateSourceEl?.value || "auto";
         const translated = await this._withLocalLlmSession(source, () => this._translateAndSemantic(piece.text, true));
@@ -3770,9 +3919,9 @@ import {
         this.actualTranslationProvider = translated.provider;
         this._renderResolvePanel();
         this._refreshTranslationStatus();
-        this._flash("单条翻译完成，请选择规范候选", 5000);
+        this._flash(uiText("单条翻译完成，请选择规范候选", "Translation complete; choose a canonical candidate"), 5000);
       } catch (e) {
-        this._flash("单条翻译失败：" + (e.message || e), 5000);
+        this._flash(uiText("单条翻译失败：", "Translation failed: ") + (e.message || e), 5000);
       }
     }
 
@@ -3791,7 +3940,7 @@ import {
         const source = this.translateSourceEl?.value || "auto";
         const result = await this._withLocalLlmSession(source, () => translateDetailed(piece.text, source, this._lifetime.signal));
         const translated = String(result.translatedText || "").trim();
-        if (!translated) throw new Error(result.error || "翻译源未返回译文");
+        if (!translated) throw new Error(result.error || uiText("翻译源未返回译文", "The source returned no translation"));
         this.piecesTranslation.set(piece.text, {
           text: translated,
           provider: result.provider || result.source || source,
@@ -3802,7 +3951,7 @@ import {
         this._refreshTranslationStatus();
         this._flash(`${piece.text} → ${translated}`, 5000);
       } catch (error) {
-        this._flash(`快捷翻译失败：${error.message || error}`, 5000);
+        this._flash(uiText(`快捷翻译失败：${error.message || error}`, `Quick translation failed: ${error.message || error}`), 5000);
       } finally {
         if (button?.isConnected) {
           button.disabled = false;
@@ -3815,14 +3964,14 @@ import {
     // 一键翻译当前提示词未翻译片段：已有卡片中文注释或快捷译文的片段均跳过。
     async translateAllPieces() {
       const parts = this._promptPieces();
-      if (!parts.length) { this._flash("当前提示词为空", 3000); return; }
+      if (!parts.length) { this._flash(uiText("当前提示词为空", "Current prompt is empty"), 3000); return; }
       const source = this.translateSourceEl?.value || "auto";
       const todo = parts.filter((p) => {
         const quick = this.piecesTranslation.get(p.text);
         return !quick?.text && !this._translationForPiece(p.text);
       });
-      if (!todo.length) { this._flash("所有片段均已翻译", 3000); return; }
-      this._flash(`正在翻译未翻译片段（${todo.length} 条）…`);
+      if (!todo.length) { this._flash(uiText("所有片段均已翻译", "All fragments are translated"), 3000); return; }
+      this._flash(uiText(`正在翻译未翻译片段（${todo.length} 条）…`, `Translating remaining fragments (${todo.length} entries)…`));
       let okCount = 0;
       let failCount = 0;
       let lastProvider = "";
@@ -3834,7 +3983,7 @@ import {
               try {
                 const result = await translateDetailed(p.text, source, this._lifetime.signal);
                 const translated = String(result.translatedText || "").trim();
-                if (!translated) throw new Error(result.error || "翻译源未返回译文");
+                if (!translated) throw new Error(result.error || uiText("翻译源未返回译文", "The source returned no translation"));
                 this.piecesTranslation.set(p.text, {
                   text: translated,
                   provider: result.provider || result.source || source,
@@ -3843,7 +3992,7 @@ import {
                 if (result.provider || result.source) lastProvider = result.provider || result.source;
                 okCount += 1;
               } catch (error) {
-                this.piecesTranslation.set(p.text, { text: "", provider: source, quality: null, error: error.message || "翻译失败" });
+                this.piecesTranslation.set(p.text, { text: "", provider: source, quality: null, error: error.message || uiText("翻译失败", "Translation failed") });
                 failCount += 1;
               }
             }
@@ -3851,13 +4000,13 @@ import {
           await Promise.all(workers);
         });
       } catch (error) {
-        this._flash("本地 LLM 翻译失败：" + (error.message || error), 6000);
+        this._flash(uiText("本地 LLM 翻译失败：", "Local LLM translation failed: ") + (error.message || error), 6000);
         return;
       }
       if (lastProvider) this.actualTranslationProvider = lastProvider;
       this._renderChips();
       this._refreshTranslationStatus();
-      this._flash(failCount ? `翻译完成：成功 ${okCount}，失败 ${failCount}` : `全部翻译完成（${okCount} 条）`, 4000);
+      this._flash(failCount ? uiText(`翻译完成：成功 ${okCount}，失败 ${failCount}`, `Translation complete: succeeded ${okCount}; failed ${failCount}`) : uiText(`全部翻译完成（${okCount} 条）`, `All translations complete (${okCount} entries)`), 4000);
     }
 
     async _collectTranslations(parts, withSemantic) {
@@ -3873,7 +4022,7 @@ import {
               try {
                 translated[index] = await this._translateAndSemantic(p.text, withSemantic);
               } catch (e) {
-                translated[index] = { translation: "", translationStatus: "翻译处理失败", provider: "", quality: null, attempts: {}, errorPayload: null, glossaryTag: "", semantic: null };
+                translated[index] = { translation: "", translationStatus: uiText("翻译处理失败", "Translation failed"), provider: "", quality: null, attempts: {}, errorPayload: null, glossaryTag: "", semantic: null };
               }
             }
           });
@@ -3881,17 +4030,17 @@ import {
           return translated;
         });
       } catch (error) {
-        this._flash("本地 LLM 翻译失败：" + (error.message || error), 6000);
-        return parts.map(() => ({ translation: "", translationStatus: error.message || "本地 LLM 翻译失败", provider: "", quality: null, attempts: {}, errorPayload: null, glossaryTag: "", semantic: null }));
+        this._flash(uiText("本地 LLM 翻译失败：", "Local LLM translation failed: ") + (error.message || error), 6000);
+        return parts.map(() => ({ translation: "", translationStatus: error.message || uiText("本地 LLM 翻译失败", "Local LLM translation failed"), provider: "", quality: null, attempts: {}, errorPayload: null, glossaryTag: "", semantic: null }));
       }
     }
 
     // ②区「仅翻译」：只展示英文译文和 QA，不调用 Danbooru/BGE-M3 校准。
     async translateOnly() {
       const parts = splitTags(this.translateInputEl?.value || "");
-      if (!parts.length) { this._flash("中文翻译输入为空"); return; }
+      if (!parts.length) { this._flash(uiText("中文翻译输入为空", "Chinese translation input is empty")); return; }
       this.lastTranslationMode = "translate";
-      this._flash(`翻译中：${parts.length} 段…`);
+      this._flash(uiText(`翻译中：${parts.length} 段…`, `Translating: ${parts.length} fragments…`));
       const translated = await this._collectTranslations(parts, false);
       this.resolveItems = parts.map((p, i) => ({
         id: String(i), text: p.text, sourceIndex: null, mode: "translate",
@@ -3908,15 +4057,15 @@ import {
       this._renderResolvePanel();
       this._refreshTranslationStatus();
       const ok = this.resolveItems.filter((item) => item.translation).length;
-      this._flash(`仅翻译完成：${ok}/${parts.length} 段`, 5000);
+      this._flash(uiText(`仅翻译完成：${ok}/${parts.length} 段`, `Translation complete: ${ok}/${parts.length} fragments`), 5000);
     }
 
     // ②区「翻译并校准」：中文片段 → 英文 → 可选语义检索 → Danbooru 规范候选。
     async translatePiecesOnly() {
       const parts = splitTags(this.translateInputEl?.value || "");
-      if (!parts.length) { this._flash("中文翻译输入为空"); return; }
+      if (!parts.length) { this._flash(uiText("中文翻译输入为空", "Chinese translation input is empty")); return; }
       this.lastTranslationMode = "calibrate";
-      this._flash(`翻译并校准中：${parts.length} 段…`);
+      this._flash(uiText(`翻译并校准中：${parts.length} 段…`, `Translating and matching: ${parts.length} fragments…`));
       const translated = await this._collectTranslations(parts, true);
       try {
         const result = await this._postJson("/anima/danbooru/resolve", {
@@ -3940,21 +4089,21 @@ import {
         this._renderResolvePanel();
         this._refreshTranslationStatus();
         const verified = this.resolveItems.reduce((n, item) => n + (item.candidates || []).filter((c) => c.verified).length, 0);
-        this._flash(`校准完成：${verified} 个候选已由 D站 验证，请选择加入当前提示词`, 5000);
+        this._flash(uiText(`校准完成：${verified} 个候选已由 D站 验证，请选择加入当前提示词`, `Matching complete: ${verified} candidates verified by Danbooru. Select one to insert into the current prompt.`), 5000);
       } catch (e) {
-        this._flash("校准失败：" + (e.message || e), 5000);
+        this._flash(uiText("校准失败：", "Tag matching failed: ") + (e.message || e), 5000);
       }
     }
 
     // ②区「AI 入卡」：当前所有片段 → LLM 自动判定分类 → 确认清单（可改判）→ 确认后入库
     async cardsAddAll() {
       const parts = this._promptPieces();
-      if (!parts.length) { this._flash("当前提示词为空"); return; }
-      if (!this.cardCats.length) { this._flash("没有可用分类"); return; }
+      if (!parts.length) { this._flash(uiText("当前提示词为空", "Current prompt is empty")); return; }
+      if (!this.cardCats.length) { this._flash(uiText("没有可用分类", "No categories available")); return; }
       const catNames = this.cardCats.map((c) => c.name);
       const name2id = {};
       for (const c of this.cardCats) name2id[c.name] = c.id;
-      const fallbackId = name2id["通用"] || (this.cardCats[0] && this.cardCats[0].id) || "";
+      const fallbackId = name2id[uiText("通用", "General")] || (this.cardCats[0] && this.cardCats[0].id) || "";
 
       // 1) LLM 判定分类（长超时：LLM 推理可能 10-60s；小批 30 提质量）
       let suggestions = {};
@@ -3969,23 +4118,23 @@ import {
             suggestions[r.id] = r.categoryName;
           }
         } else {
-          throw new Error(res.error || "classify 失败");
+          throw new Error(res.error || uiText("classify 失败", "Classification failed"));
         }
       } catch (e) {
         // LLM 不可用：询问是否按当前分类直接入卡
-        const ok = confirm("LLM 分类不可用（" + (e.message || e) + "）。\n是否仍按当前分类直接入卡？（可先点「LLM」配置 Ollama/API 反代）");
+        const ok = confirm(uiText("LLM 分类不可用（", "LLM classification unavailable (") + (e.message || e) + uiText("）。\n是否仍按当前分类直接入卡？（可先点「LLM」配置 Ollama/API 反代）", ").\nAdd cards to the current category anyway? You can configure Ollama or an API proxy under LLM first."));
         if (!ok) return;
         let n = 0, skipN = 0;
         for (const p of parts) {
           const r = await this.addCard(this.curCat, { en: p.text, zh: this._translationForPiece(p.text), weight: p.weight });
           if (r && r.skipped) skipN++; else n++;
         }
-        this._flash(`已按当前分类入卡：${n} 段${skipN ? `，${skipN} 段已存在已跳过` : ""}`);
+        this._flash(uiText(`已按当前分类入卡：${n} 段${skipN ? uiText(`，${skipN} 段已存在已跳过`, `，${skipN} existing fragments skipped`) : ""}`, `Saved cards in the current category: ${n} fragments${skipN ? uiText(`，${skipN} 段已存在已跳过`, `，${skipN} existing fragments skipped`) : ""}`));
         return;
       }
 
       // 2) 确认清单 overlay（可改判分类、可移除词）
-      this._flash("LLM 已判定，等待你确认分类…");
+      this._flash(uiText("LLM 已判定，等待你确认分类…", "LLM suggestions ready; confirm the categories…"));
       const removedSet = new Set();
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay";
@@ -3994,24 +4143,33 @@ import {
         const sug = suggestions[String(i)] || "";
         const catId = name2id[sug] || fallbackId;
         const opts = this.cardCats.map((c) =>
-          `<option value="${escAttr(c.id)}" ${c.id === catId ? "selected" : ""}>${esc(CAT_NAME(c))}</option>`).join("");
-        return `<div class="tk-cards-ai-row" data-i="${i}">
+          `<option value="${escAttr(c.id)}" ${c.id === catId ? "selected" : ""}>${esc(builtinCategoryLabel(c))}</option>`).join("");
+        return uiText(`<div class="tk-cards-ai-row" data-i="${i}">
           <div class="tk-cards-ai-text">${esc(formatWeightedPromptText(p.text, p.weight))}${zh ? `<span class="tk-cards-ai-zh">${esc(zh)}</span>` : ""}</div>
           <select class="tk-cards-ai-cat">${opts}</select>
-          <button type="button" class="tk-cards-ai-rm" data-rm="${i}" title="移除该词（不入库）">✕</button></div>`;
+          <button type="button" class="tk-cards-ai-rm" data-rm="${i}" title="移除该词（不入库）">✕</button></div>`, `<div class="tk-cards-ai-row" data-i="${i}">
+          <div class="tk-cards-ai-text">${esc(formatWeightedPromptText(p.text, p.weight))}${zh ? `<span class="tk-cards-ai-zh">${esc(zh)}</span>` : ""}</div>
+          <select class="tk-cards-ai-cat">${opts}</select>
+          <button type="button" class="tk-cards-ai-rm" data-rm="${i}" title="Remove this phrase without saving">✕</button></div>`);
       }).join("");
-      overlay.innerHTML = `<div class="tk-cards-overlay-box">
+      overlay.innerHTML = uiText(`<div class="tk-cards-overlay-box">
         <div class="tk-cards-overlay-head"><b>AI 分类确认 · ${parts.length} 段（可改判分类 / ✕ 移除词）</b><button type="button" class="tk-cards-btn" data-a="close">✕</button></div>
         <div class="tk-cards-ai-list">${rowsHtml}</div>
         <div class="tk-cards-ai-actions">
           <button type="button" class="tk-cards-btn" data-a="cancel">取消</button>
           <button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="confirm">✓ 确认入卡 ${parts.length} 张</button>
-        </div></div>`;
+        </div></div>`, `<div class="tk-cards-overlay-box">
+        <div class="tk-cards-overlay-head"><b>Review AI categories · ${parts.length} fragments (change categories / ✕ remove phrases)</b><button type="button" class="tk-cards-btn" data-a="close">✕</button></div>
+        <div class="tk-cards-ai-list">${rowsHtml}</div>
+        <div class="tk-cards-ai-actions">
+          <button type="button" class="tk-cards-btn" data-a="cancel">Cancel</button>
+          <button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="confirm">Confirm cards ${parts.length} images</button>
+        </div></div>`);
       this._mountOverlay(overlay);
       const close = this._ownOverlay(overlay);
       const updateConfirm = () => {
         const btn = overlay.querySelector('[data-a="confirm"]');
-        if (btn) btn.textContent = `✓ 确认入卡 ${parts.length - removedSet.size} 张`;
+        if (btn) btn.textContent = uiText(`✓ 确认入卡 ${parts.length - removedSet.size} 张`, `Confirm cards ${parts.length - removedSet.size} images`);
       };
       overlay.querySelectorAll(".tk-cards-ai-rm").forEach((rmBtn) => {
         rmBtn.addEventListener("click", () => {
@@ -4043,7 +4201,7 @@ import {
           if (r && r.skipped) skipN++; else n++;
         }
         close();
-        this._flash(`已确认入卡：${n} 段${skipN ? `（${skipN} 段库中已存在已跳过）` : ""}${rmN ? `；已移除 ${rmN} 段` : ""}`);
+        this._flash(uiText(`已确认入卡：${n} 段${skipN ? uiText(`（${skipN} 段库中已存在已跳过）`, `（${skipN} fragments already in the library skipped)`) : ""}${rmN ? uiText(`；已移除 ${rmN} 段`, `; removed ${rmN} fragments`) : ""}`, `Cards confirmed: ${n} fragments${skipN ? uiText(`（${skipN} 段库中已存在已跳过）`, `（${skipN} fragments already in the library skipped)`) : ""}${rmN ? uiText(`；已移除 ${rmN} 段`, `; removed ${rmN} fragments`) : ""}`));
       });
     }
 
@@ -4073,7 +4231,7 @@ import {
     // 整段存入工具箱 prompt 库，不拆成③区 tag 卡片；优先使用①区当前选中的分类。
     async saveCurrentAsPrompt() {
       const text = this.curText().trim();
-      if (!text) { this._flash("当前提示词为空"); return; }
+      if (!text) { this._flash(uiText("当前提示词为空", "Current prompt is empty")); return; }
       // 节点刚创建时分类读取可能尚未完成，点击保存时补读一次，避免弹窗只有“未分类”。
       if (!Array.isArray(this.cats) || !this.cats.length) await this.reloadLib();
       const categories = (Array.isArray(this.cats) && this.cats.length ? this.cats : DEFAULT_CATS)
@@ -4091,22 +4249,28 @@ import {
           await this._writeCurrentPromptToLibrary(text, selectedCategory.id);
           await this.reloadLib();
           this._switchLibPane("lib");
-          this._flash(`整段提示词已存入工具箱 prompt 库 · ${CAT_NAME(selectedCategory)}`);
+          this._flash(uiText(`整段提示词已存入工具箱 prompt 库 · ${CAT_NAME(selectedCategory)}`, `Full prompt saved to the Toolkit Prompt library · ${CAT_NAME(selectedCategory)}`));
         } catch (error) {
-          this._flash("保存到 prompt 库失败：" + (error.message || error), 5000);
+          this._flash(uiText("保存到 prompt 库失败：", "Cannot save to the Prompt library: ") + (error.message || error), 5000);
         }
         return;
       }
 
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay";
-      overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-save-prompt-modal" role="dialog" aria-modal="true" aria-label="保存到 Prompt 库">
+      overlay.innerHTML = uiText(`<div class="tk-cards-overlay-box tk-cards-save-prompt-modal" role="dialog" aria-modal="true" aria-label="保存到 Prompt 库">
         <div class="tk-cards-overlay-head"><b>存入 Prompt 库</b><button type="button" class="tk-cards-btn" data-a="close" aria-label="关闭">✕</button></div>
         <div class="tk-cards-category-note">整段提示词会作为一个条目保存，不会拆成③区卡片。请选择目标分类。</div>
         <label class="tk-cards-field"><span>保存分类</span><select data-f="cat">${categories.map((category) => `<option value="${escAttr(category.id)}" ${category.id === preferredId ? "selected" : ""}>${esc(category.icon ? `${category.icon} ${CAT_NAME(category)}` : CAT_NAME(category))}</option>`).join("")}</select></label>
         <div class="tk-cards-save-prompt-preview"><span>提示词预览</span><div>${esc(text.slice(0, 280))}${text.length > 280 ? "…" : ""}</div></div>
         <div class="tk-cards-edit-btns"><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">保存</button></div>
-      </div>`;
+      </div>`, `<div class="tk-cards-overlay-box tk-cards-save-prompt-modal" role="dialog" aria-modal="true" aria-label="Save to Prompt library">
+        <div class="tk-cards-overlay-head"><b>Save to prompt library</b><button type="button" class="tk-cards-btn" data-a="close" aria-label="Close">✕</button></div>
+        <div class="tk-cards-category-note">The full prompt is saved as one entry, without splitting it into cards. Choose a destination category.</div>
+        <label class="tk-cards-field"><span>Save categories</span><select data-f="cat">${categories.map((category) => `<option value="${escAttr(category.id)}" ${category.id === preferredId ? "selected" : ""}>${esc(category.icon ? `${category.icon} ${CAT_NAME(category)}` : CAT_NAME(category))}</option>`).join("")}</select></label>
+        <div class="tk-cards-save-prompt-preview"><span>Prompt preview</span><div>${esc(text.slice(0, 280))}${text.length > 280 ? "…" : ""}</div></div>
+        <div class="tk-cards-edit-btns"><button type="button" class="tk-cards-btn" data-a="cancel">Cancel</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">Save</button></div>
+      </div>`);
       this._mountOverlay(overlay);
       const close = this._ownOverlay(overlay);
       overlay.querySelectorAll('[data-a="close"], [data-a="cancel"]').forEach((button) => button.addEventListener("click", close));
@@ -4123,10 +4287,10 @@ import {
           await this.reloadLib();
           this._switchLibPane("lib");
           const category = categories.find((item) => item.id === selectedCategoryId);
-          this._flash(`整段提示词已存入工具箱 prompt 库${category ? ` · ${CAT_NAME(category)}` : ""}`);
+          this._flash(uiText(`整段提示词已存入工具箱 prompt 库${category ? ` · ${CAT_NAME(category)}` : ""}`, `Full prompt saved to the Toolkit Prompt library${category ? ` · ${CAT_NAME(category)}` : ""}`));
         } catch (error) {
           saveButton.disabled = false;
-          this._flash("保存到 prompt 库失败：" + (error.message || error), 5000);
+          this._flash(uiText("保存到 prompt 库失败：", "Cannot save to the Prompt library: ") + (error.message || error), 5000);
         }
       });
       this._setTimeout(() => overlay.querySelector('[data-f="cat"]')?.focus(), 50);
@@ -4140,7 +4304,7 @@ import {
       const d = loadDraft();
       if (d) {
         this._setPromptText(d);
-        this._flash("已恢复草稿");
+        this._flash(uiText("已恢复草稿", "Draft restored"));
       }
     }
 
@@ -4152,14 +4316,14 @@ import {
     showCategoryManager() {
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay";
-      overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-category-manager">
+      overlay.innerHTML = uiText(`<div class="tk-cards-overlay-box tk-cards-category-manager">
         <div class="tk-cards-overlay-head"><b>管理卡片分类</b><button type="button" class="tk-cards-btn" data-a="close">关闭</button></div>
         <div class="tk-cards-category-note">分类说明会作为人工提示和智能分类上下文；保存名称不会改变卡片内容。</div>
         <div class="tk-cards-category-list"></div>
         <div class="tk-cards-category-new">
           <b>新建分类</b><input data-f="new-name" placeholder="分类名称"><input data-f="new-hint" placeholder="分类说明（可选）"><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="new">新增</button>
         </div>
-      </div>`;
+      </div>`, "<div class=\"tk-cards-overlay-box tk-cards-category-manager\">\n        <div class=\"tk-cards-overlay-head\"><b>Manage card categories</b><button type=\"button\" class=\"tk-cards-btn\" data-a=\"close\">Close</button></div>\n        <div class=\"tk-cards-category-note\">Category descriptions guide manual and AI categorization. Renaming a category preserves card content.</div>\n        <div class=\"tk-cards-category-list\"></div>\n        <div class=\"tk-cards-category-new\">\n          <b>New category</b><input data-f=\"new-name\" placeholder=\"Category name\"><input data-f=\"new-hint\" placeholder=\"Category description (optional)\"><button type=\"button\" class=\"tk-cards-btn tk-cards-btn-main\" data-a=\"new\">Add</button>\n        </div>\n      </div>");
       this._mountOverlay(overlay);
       const list = overlay.querySelector(".tk-cards-category-list");
       const close = this._ownOverlay(overlay);
@@ -4168,12 +4332,16 @@ import {
       const render = () => {
         list.innerHTML = this.cardCats.map((cat) => {
           const count = this._categoryCount(cat.id);
-          return `<div class="tk-cards-category-row" data-id="${escAttr(cat.id)}">
+          return uiText(`<div class="tk-cards-category-row" data-id="${escAttr(cat.id)}">
             <div class="tk-cards-category-row-main"><input data-f="name" value="${escAttr(CAT_NAME(cat))}"><span>${count} 张卡</span></div>
-            <input data-f="hint" value="${escAttr(cat.hint || CAT_HINTS[cat.name] || "")}" placeholder="分类说明（可选）">
+            <input data-f="hint" value="${escAttr(cat.hint || CAT_HINTS[cat.name] || "")}" placeholder="${uiText('分类说明（可选）', 'Category description (optional)')}">
             <div class="tk-cards-category-row-actions"><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">保存</button><button type="button" class="tk-cards-btn tk-cards-btn-danger" data-a="delete">删除</button></div>
-          </div>`;
-        }).join("") || `<div class="tk-cards-empty">暂无分类</div>`;
+          </div>`, `<div class="tk-cards-category-row" data-id="${escAttr(cat.id)}">
+            <div class="tk-cards-category-row-main"><input data-f="name" value="${escAttr(CAT_NAME(cat))}"><span>${count} cards</span></div>
+            <input data-f="hint" value="${escAttr(cat.hint || CAT_HINTS[cat.name] || "")}" placeholder="${uiText('分类说明（可选）', 'Category description (optional)')}">
+            <div class="tk-cards-category-row-actions"><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">Save</button><button type="button" class="tk-cards-btn tk-cards-btn-danger" data-a="delete">Delete</button></div>
+          </div>`);
+        }).join("") || uiText(`<div class="tk-cards-empty">暂无分类</div>`, "<div class=\"tk-cards-empty\">No categories</div>");
         list.querySelectorAll(".tk-cards-category-row").forEach((row) => {
           const id = row.getAttribute("data-id");
           row.querySelector('[data-a="save"]').addEventListener("click", async () => {
@@ -4181,9 +4349,9 @@ import {
             if (!cat) return;
             const name = row.querySelector('[data-f="name"]').value.trim();
             const hint = row.querySelector('[data-f="hint"]').value.trim();
-            if (!name) { this._flash("分类名称不能为空"); return; }
+            if (!name) { this._flash(uiText("分类名称不能为空", "Category name cannot be empty")); return; }
             const duplicate = this.cardCats.find((x) => x.id !== id && CAT_NAME(x).toLowerCase() === name.toLowerCase());
-            if (duplicate) { this._flash(`分类「${name}」已存在`); return; }
+            if (duplicate) { this._flash(uiText(`分类「${name}」已存在`, `Category “${name}” already exists`)); return; }
             if (!_cardLibCache) await loadCardLib();
             cat.name = name;
             cat.hint = hint;
@@ -4193,7 +4361,7 @@ import {
             this._renderCatTabs();
             this._renderCards();
             render();
-            this._flash(`已保存分类「${name}」`);
+            this._flash(uiText(`已保存分类「${name}」`, `SavedCategories「${name}」`));
           });
           row.querySelector('[data-a="delete"]').addEventListener("click", () => this.delCardCat(id));
         });
@@ -4203,8 +4371,8 @@ import {
         const nameEl = overlay.querySelector('[data-f="new-name"]');
         const hintEl = overlay.querySelector('[data-f="new-hint"]');
         const name = nameEl.value.trim();
-        if (!name) { nameEl.focus(); this._flash("分类名称不能为空"); return; }
-        if (this.cardCats.some((x) => CAT_NAME(x).toLowerCase() === name.toLowerCase())) { this._flash(`分类「${name}」已存在`); return; }
+        if (!name) { nameEl.focus(); this._flash(uiText("分类名称不能为空", "Category name cannot be empty")); return; }
+        if (this.cardCats.some((x) => CAT_NAME(x).toLowerCase() === name.toLowerCase())) { this._flash(uiText(`分类「${name}」已存在`, `Category “${name}” already exists`)); return; }
         const cat = { id: "cat_" + Date.now(), name, hint: hintEl.value.trim(), icon: "", sortOrder: this.cardCats.length };
         if (!_cardLibCache) await loadCardLib();
         _cardLibCache.categories.push(cat);
@@ -4216,7 +4384,7 @@ import {
         nameEl.value = "";
         hintEl.value = "";
         render();
-        this._flash(`已新建分类「${name}」`);
+        this._flash(uiText(`已新建分类「${name}」`, `Created category “${name}」`));
       });
       render();
     }
@@ -4228,12 +4396,17 @@ import {
       const count = this._categoryCount(catId);
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay";
-      overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-category-delete">
-        <div class="tk-cards-overlay-head"><b>删除分类「${esc(CAT_NAME(cat))}」</b><button type="button" class="tk-cards-btn" data-a="close">关闭</button></div>
+      overlay.innerHTML = uiText(`<div class="tk-cards-overlay-box tk-cards-category-delete">
+        <div class="tk-cards-overlay-head"><b>删除分类「${esc(builtinCategoryLabel(cat))}」</b><button type="button" class="tk-cards-btn" data-a="close">关闭</button></div>
         <p>该分类包含 ${count} 张卡片。选择删除后这些卡片的归并目标。</p>
-        <label class="tk-cards-field"><span>归并到</span><select data-f="fallback">${candidates.map((x) => `<option value="${escAttr(x.id)}" ${x.id === "card_all" ? "selected" : ""}>${esc(CAT_NAME(x))}</option>`).join("")}<option value="">不归并（变为未分类）</option></select></label>
+        <label class="tk-cards-field"><span>归并到</span><select data-f="fallback">${candidates.map((x) => `<option value="${escAttr(x.id)}" ${x.id === "card_all" ? "selected" : ""}>${esc(builtinCategoryLabel(x))}</option>`).join("")}<option value="">不归并（变为未分类）</option></select></label>
         <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-danger" data-a="delete">确认删除</button></div>
-      </div>`;
+      </div>`, `<div class="tk-cards-overlay-box tk-cards-category-delete">
+        <div class="tk-cards-overlay-head"><b>Delete category “${esc(builtinCategoryLabel(cat))}」</b><button type="button" class="tk-cards-btn" data-a="close">Close</button></div>
+        <p>This category contains ${count} cards. Choose where to move them after deleting this category.</p>
+        <label class="tk-cards-field"><span>Move to</span><select data-f="fallback">${candidates.map((x) => `<option value="${escAttr(x.id)}" ${x.id === "card_all" ? "selected" : ""}>${esc(builtinCategoryLabel(x))}</option>`).join("")}<option value="">Do not merge (move to Uncategorized)</option></select></label>
+        <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="cancel">Cancel</button><button type="button" class="tk-cards-btn tk-cards-btn-danger" data-a="delete">Confirm deletion</button></div>
+      </div>`);
       this._mountOverlay(overlay);
       const close = this._ownOverlay(overlay);
       overlay.querySelector('[data-a="close"]').addEventListener("click", close);
@@ -4279,7 +4452,7 @@ import {
       this._renderCatTabs();
       this._renderCards();
       if (typeof this._categoryManagerRender === "function") this._categoryManagerRender();
-      this._flash(`已删除分类「${cat.name}」${fallback ? `，${moved} 张卡片移入「${fallback.name}」` : ""}`);
+      this._flash(uiText(`已删除分类「${cat.name}」${fallback ? `，${moved} 张卡片移入「${fallback.name}」` : ""}`, `Deleted category “${cat.name}」${fallback ? `，${moved} 张卡片移入「${fallback.name}」` : ""}`));
     }
 
     _renderCatTabs() {
@@ -4291,12 +4464,12 @@ import {
         tab.type = "button";
         tab.className = "tk-cards-cat" + (this.curCat === id ? " on" : "");
         tab.textContent = label + (draggable ? " ≡" : "");
-        tab.title = draggable ? "点击切换 · 拖拽调整分类顺序 · hover ✕ 删除分类" : "";
+        tab.title = draggable ? uiText("点击切换 · 拖拽调整分类顺序 · hover ✕ 删除分类", "Click to switch · Drag to reorder categories · Hover ✕ to delete") : "";
         if (draggable) {
           const del = document.createElement("span");
           del.className = "tk-cards-cat-del";
-           del.textContent = "删除";
-          del.title = "删除分类（卡片移入「通用」）";
+           del.textContent = uiText("删除", "Delete");
+          del.title = uiText("删除分类（卡片移入「通用」）", "Delete category (move cards to General)");
           del.addEventListener("click", (ev) => {
             ev.stopPropagation();
             this.delCardCat(id);
@@ -4326,7 +4499,7 @@ import {
               const card = this.cards.find((x) => x.id === cardId);
               if (!card) return;
               if (cardInCat(card, id)) {
-                this._flash(`「${(card.prompt || "").slice(0, 20)}」已属于「${CAT_NAME(this.cardCats.find((c) => c.id === id))}」`);
+                this._flash(uiText(`「${(card.prompt || "").slice(0, 20)}」已属于「${CAT_NAME(this.cardCats.find((c) => c.id === id))}」`, `「${(card.prompt || "").slice(0, 20)}” already belongs to “${CAT_NAME(this.cardCats.find((c) => c.id === id))}」`));
                 return;
               }
               card.categories = catIdsOf(card).concat([id]);
@@ -4334,7 +4507,7 @@ import {
               await this.putCard(card);
               this._renderCatTabs();
               this._renderCards();
-              this._flash(`「${(card.prompt || "").slice(0, 20)}」已加入「${CAT_NAME(this.cardCats.find((c) => c.id === id))}」（当前视图不变）`);
+              this._flash(uiText(`「${(card.prompt || "").slice(0, 20)}」已加入「${CAT_NAME(this.cardCats.find((c) => c.id === id))}」（当前视图不变）`, `「${(card.prompt || "").slice(0, 20)}” added to “${CAT_NAME(this.cardCats.find((c) => c.id === id))}” (current view preserved)`));
               return;
             }
             // 分类拖拽 → 排序
@@ -4354,22 +4527,22 @@ import {
             this.cardCats = arr;
             this._renderCatTabs();
             this._renderCards();
-            this._flash("分类顺序已调整");
+            this._flash(uiText("分类顺序已调整", "Category order updated"));
           });
         }
         tab.addEventListener("click", () => { this.curCat = id; this.cardRenderWindow = CARD_RENDER_WINDOW_INITIAL; this._renderCatTabs(); this._renderCards(); });
         this.catTabsEl.appendChild(tab);
       };
-      mk("全部", "", false);
+      mk(uiText("全部", "All"), "", false);
       for (const c of this.cardCats) {
         const n = this.cards.filter((p) => cardInCat(p, c.id)).length;
-        mk(`${CAT_NAME(c)} (${n})`, c.id, true);
+        mk(`${builtinCategoryLabel(c)} (${n})`, c.id, true);
       }
       const addTab = document.createElement("button");
       addTab.type = "button";
       addTab.className = "tk-cards-cat tk-cards-cat-add";
-       addTab.textContent = "管理分类";
-       addTab.title = "新建、重命名、删除和维护分类说明";
+       addTab.textContent = uiText("管理分类", "Manage categories");
+       addTab.title = uiText("新建、重命名、删除和维护分类说明", "Create, rename, delete and describe categories");
        addTab.addEventListener("click", () => this.showCategoryManager());
        this.catTabsEl.appendChild(addTab);
     }
@@ -4448,8 +4621,8 @@ import {
       this.cardGridEl.innerHTML = "";
       if (!list.length) {
         this.cardGridEl.innerHTML = this.cardSearch
-          ? `<div class="tk-cards-empty">没有匹配的双语卡片 — 可搜索英文或中文译文</div>`
-          : `<div class="tk-cards-empty">暂无卡片 — ②区点片段「存卡」或「一键入卡」，或「浏览 LoRA」批量收藏</div>`;
+          ? uiText(`<div class="tk-cards-empty">没有匹配的双语卡片 — 可搜索英文或中文译文</div>`, "<div class=\"tk-cards-empty\">No matching bilingual cards. Search English text or Chinese annotations.</div>")
+          : uiText(`<div class="tk-cards-empty">暂无卡片 — ②区点片段「存卡」或「一键入卡」，或「浏览 LoRA」批量收藏</div>`, "<div class=\"tk-cards-empty\">No cards yet. Save fragments from section 2, or browse LoRAs and save their trigger cards.</div>");
         return;
       }
       for (const c of visibleCards) {
@@ -4458,17 +4631,17 @@ import {
         el.setAttribute("data-id", c.id);
         el.tabIndex = 0;
         el.addEventListener("focus", () => { this.focusedCardId = c.id; });
-        el.title = "单击追加 · 双击编辑 · 拖 ≡ 排序 · ↑ 置顶 · ✕ 删除";
+        el.title = uiText("单击追加 · 双击编辑 · 拖 ≡ 排序 · ↑ 置顶 · ✕ 删除", "Click to append · Double-click to edit · Drag ≡ to reorder · ↑ Pin · ✕ Delete");
         const en = document.createElement("div");
         en.className = "tk-cards-card-en";
         en.textContent = String(c.prompt || "").length > 60 ? String(c.prompt).slice(0, 58) + "…" : (c.prompt || "");
         en.title = (c.prompt || "") + (c.lora ? `\nLoRA: ${c.lora}` : "");
         const zh = document.createElement("div");
         zh.className = "tk-cards-card-zh";
-        zh.textContent = c.notes || "（待翻译）";
+        zh.textContent = c.notes || uiText("（待翻译）", "(not translated)");
         const meta = document.createElement("div");
         meta.className = "tk-cards-card-meta";
-        meta.innerHTML = `<span class="tk-cards-star" title="星标">${c.isFavorite ? "★" : "☆"}</span>` +
+        meta.innerHTML = uiText(`<span class="tk-cards-star" title="星标">${c.isFavorite ? "★" : "☆"}</span>`, `<span class="tk-cards-star" title="Favorite">${c.isFavorite ? "★" : "☆"}</span>`) +
           (c.weight ? `<span class="tk-cards-w">${esc(c.weight)}</span>` : "") +
           (c.lora ? `<span class="tk-cards-lora">L:${esc(String(c.lora).split("/").pop().replace(/\.safetensors$/, ""))}</span>` : "") +
           (c.multi ? `<span class="tk-cards-multi">组合</span>` : "");
@@ -4476,7 +4649,7 @@ import {
         const grip = document.createElement("span");
         grip.className = "tk-cards-grip";
          grip.textContent = "↕";
-        grip.title = "拖拽调整卡片顺序";
+        grip.title = uiText("拖拽调整卡片顺序", "Drag to reorder cards");
         grip.draggable = true;
         grip.addEventListener("dragstart", (ev) => {
           this._dragCardId = c.id;
@@ -4488,22 +4661,22 @@ import {
         const pin = document.createElement("button");
         pin.type = "button";
         pin.className = "tk-cards-pin";
-         pin.textContent = "置顶";
-        pin.title = "置顶（移到当前分类最前）";
+         pin.textContent = uiText("置顶", "Pin");
+        pin.title = uiText("置顶（移到当前分类最前）", "Pin to the beginning of this category");
         pin.addEventListener("click", async (ev) => {
           ev.stopPropagation();
           const ids = this._catOrderIds(c.categoryId).filter((x) => x !== c.id);
           ids.unshift(c.id);
           await this._applyCardOrder(c.categoryId, ids);
           this._renderCards();
-          this._flash("已置顶");
+          this._flash(uiText("已置顶", "Pinned"));
         });
         // 快速分类
         const catBtn = document.createElement("button");
         catBtn.type = "button";
         catBtn.className = "tk-cards-cat-btn";
-         catBtn.textContent = "分类";
-        catBtn.title = "快速分类（大弹窗选择；也可把卡片 ≡ 拖到分类页签上转移）";
+         catBtn.textContent = uiText("分类", "Category");
+        catBtn.title = uiText("快速分类（大弹窗选择；也可把卡片 ≡ 拖到分类页签上转移）", "Quick category selection; or drag the card handle onto a category tab");
         catBtn.addEventListener("click", (ev) => {
           ev.stopPropagation();
           this.quickCategorize(c.id);
@@ -4512,8 +4685,8 @@ import {
         const del = document.createElement("button");
         del.type = "button";
         del.className = "tk-cards-del";
-         del.textContent = "删除";
-        del.title = "删除卡片（需二次点击确认）";
+         del.textContent = uiText("删除", "Delete");
+        del.title = uiText("删除卡片（需二次点击确认）", "Delete card (click again to confirm)");
         el.appendChild(en);
         el.appendChild(zh);
         el.appendChild(meta);
@@ -4525,14 +4698,14 @@ import {
         const disarmDel = () => {
           delArmed = false;
           del.classList.remove("arm");
-           del.textContent = "删除";
+           del.textContent = uiText("删除", "Delete");
         };
         del.addEventListener("click", (ev) => {
           ev.stopPropagation();
           if (!delArmed) {
             delArmed = true;
             del.classList.add("arm");
-            del.textContent = "✓删?";
+            del.textContent = uiText("✓删?", "✓ Delete?");
             this._clearTimeout(del._armT);
             del._armT = this._setTimeout(disarmDel, 2500);
             return;
@@ -4570,7 +4743,7 @@ import {
           await this._applyCardOrder(targetCat, ids);
           this._renderCatTabs();
           this._renderCards();
-          this._flash("卡片顺序已调整");
+          this._flash(uiText("卡片顺序已调整", "Card order updated"));
         });
         let clickTimer = null;
         el.addEventListener("click", (ev) => {
@@ -4583,7 +4756,7 @@ import {
             this._clearTimeout(clickTimer);
             if (this.selectedCardIds.has(c.id)) this.selectedCardIds.delete(c.id); else this.selectedCardIds.add(c.id);
             this._renderCards();
-            this._flash(`${this.selectedCardIds.size} 张卡片已选中（Ctrl/Cmd 点击切换）`);
+            this._flash(uiText(`${this.selectedCardIds.size} 张卡片已选中（Ctrl/Cmd 点击切换）`, `${this.selectedCardIds.size} cards selected (Ctrl / Cmd-click to toggle)`));
             return;
           }
           this._clearTimeout(clickTimer);
@@ -4591,7 +4764,7 @@ import {
             const cur = this.curText();
             const next = appendCardToPrompt(cur, c);
             this._setPromptText(next, { preserveHidden: true });
-            if (next === cur) this._flash("该卡片已在提示词中（已去重）");
+            if (next === cur) this._flash(uiText("该卡片已在提示词中（已去重）", "This card is already in the prompt (duplicate skipped)"));
           }, 240);
         });
         el.addEventListener("dblclick", (ev) => {
@@ -4610,8 +4783,8 @@ import {
         const retranslate = document.createElement("button");
         retranslate.type = "button";
         retranslate.className = "tk-cards-retranslate";
-        retranslate.textContent = "重译";
-        retranslate.title = "重新翻译这张卡片的中文注释（覆盖原注释）";
+        retranslate.textContent = uiText("重译", "Retranslate");
+        retranslate.title = uiText("重新翻译这张卡片的中文注释（覆盖原注释）", "Retranslate this card's Chinese notes (replace existing notes)");
         retranslate.addEventListener("click", (ev) => { ev.stopPropagation(); this.retranslateCard(c.id); });
         meta.appendChild(retranslate);
         this.cardGridEl.appendChild(el);
@@ -4619,8 +4792,8 @@ import {
       if (truncated) {
         const more = document.createElement("div");
         more.className = "tk-cards-empty tk-cards-more";
-        more.textContent = `已显示 ${visibleCards.length} / ${list.length} 张 — 向下滚动或点击继续加载`;
-        more.title = "点击或继续向下滚动，加载后续卡片";
+        more.textContent = uiText(`已显示 ${visibleCards.length} / ${list.length} 张 — 向下滚动或点击继续加载`, `Showing ${visibleCards.length} / ${list.length} shown; scroll down or click to load more`);
+        more.title = uiText("点击或继续向下滚动，加载后续卡片", "Click or scroll down to load more cards");
         more.addEventListener("click", () => this._growCardWindow());
         this.cardGridEl.appendChild(more);
       }
@@ -4654,14 +4827,21 @@ import {
       const curCats = catIdsOf(c);
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay";
-      overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-catpick-box">
+      overlay.innerHTML = uiText(`<div class="tk-cards-overlay-box tk-cards-catpick-box">
         <div class="tk-cards-overlay-head"><b>设置卡片分类（可多选）· ${esc(String(c.prompt || "").slice(0, 40))}</b><button type="button" class="tk-cards-btn" data-a="close">✕</button></div>
         <input class="tk-cards-search" placeholder="搜索分类…" data-a="search">
         <div class="tk-cards-catpick-list"></div>
         <div class="tk-cards-ai-actions">
           <button type="button" class="tk-cards-btn" data-a="cancel">取消</button>
           <button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="ok">✓ 保存分类</button>
-        </div></div>`;
+        </div></div>`, `<div class="tk-cards-overlay-box tk-cards-catpick-box">
+        <div class="tk-cards-overlay-head"><b>Card categories (multiple selection)· ${esc(String(c.prompt || "").slice(0, 40))}</b><button type="button" class="tk-cards-btn" data-a="close">✕</button></div>
+        <input class="tk-cards-search" placeholder="Search categories…" data-a="search">
+        <div class="tk-cards-catpick-list"></div>
+        <div class="tk-cards-ai-actions">
+          <button type="button" class="tk-cards-btn" data-a="cancel">Cancel</button>
+          <button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="ok">✓ SaveCategories</button>
+        </div></div>`);
       this._mountOverlay(overlay);
       const listEl = overlay.querySelector(".tk-cards-catpick-list");
       const searchEl = overlay.querySelector('[data-a="search"]');
@@ -4686,13 +4866,13 @@ import {
             lab.classList.toggle("on", cb.checked);
           });
           const span = document.createElement("span");
-          span.textContent = CAT_NAME(cat);
+          span.textContent = builtinCategoryLabel(cat);
           lab.appendChild(cb);
           lab.appendChild(span);
           listEl.appendChild(lab);
         }
         if (!listEl.children.length) {
-          listEl.innerHTML = `<div class="tk-cards-empty">无匹配分类</div>`;
+          listEl.innerHTML = uiText(`<div class="tk-cards-empty">无匹配分类</div>`, "<div class=\"tk-cards-empty\">No matching categories</div>");
         }
       };
       overlay.querySelector('[data-a="ok"]').addEventListener("click", async () => {
@@ -4705,7 +4885,7 @@ import {
         close();
         this._renderCatTabs();
         this._renderCards();
-        this._flash(`已更新分类（${finalCats.length} 个）`);
+        this._flash(uiText(`已更新分类（${finalCats.length} 个）`, `Updated categories (${finalCats.length} items)`));
       });
       searchEl.addEventListener("input", render);
       render();
@@ -4722,21 +4902,21 @@ import {
     async importClipboard() {
       try {
         const text = await navigator.clipboard.readText();
-        if (!text.trim()) { this._flash("剪切板为空"); return; }
+        if (!text.trim()) { this._flash(uiText("剪切板为空", "Clipboard is empty")); return; }
         this._setPromptText(text.trim());
-        this._flash("已从剪切板导入并拆分");
+        this._flash(uiText("已从剪切板导入并拆分", "Imported and split from clipboard"));
       } catch (e) {
-        this._flash("无法读取剪切板：" + (e.message || e));
+        this._flash(uiText("无法读取剪切板：", "Cannot read the clipboard: ") + (e.message || e));
       }
     }
 
     async importPngFile(file) {
       if (!file) return;
       if (!/\.png$/i.test(file.name || "") && file.type !== "image/png") {
-        this._flash("只支持 PNG 图片");
+        this._flash(uiText("只支持 PNG 图片", "Only PNG images are supported"));
         return;
       }
-      this._flash(`正在解析：${file.name || "PNG"}…`, 30000);
+      this._flash(uiText(`正在解析：${file.name || "PNG"}…`, `Parsing: ${file.name || "PNG"}…`), 30000);
       const form = new FormData();
       form.append("file", file, file.name || "prompt.png");
       const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
@@ -4747,11 +4927,11 @@ import {
         const result = await response.json();
         if (this.disposed) return;
         if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
-        if (!result.positive) { this._flash("该 PNG 没有可用的提示词元数据"); return; }
+        if (!result.positive) { this._flash(uiText("该 PNG 没有可用的提示词元数据", "No usable prompt metadata in this PNG")); return; }
         this._setPromptText(result.positive);
-        this._flash(`已解析 ${result.filename || file.name || "PNG"}（${result.positive.length} 字符）`);
+        this._flash(uiText(`已解析 ${result.filename || file.name || "PNG"}（${result.positive.length} 字符）`, `Parsed ${result.filename || file.name || "PNG"}（${result.positive.length} characters)`));
       } catch (e) {
-        this._flash("图片解析失败：" + (e.name === "AbortError" ? "请求超时" : (e.message || e)), 5000);
+        this._flash(uiText("图片解析失败：", "Cannot parse image: ") + (e.name === "AbortError" ? uiText("请求超时", "Request timed out") : (e.message || e)), 5000);
       } finally {
         if (timer) this._clearTimeout(timer);
         if (ctrl) this._requests.delete(ctrl);
@@ -4769,10 +4949,10 @@ import {
     async showLoraDialog() {
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay";
-      overlay.innerHTML = `<div class="tk-cards-overlay-box">
+      overlay.innerHTML = uiText(`<div class="tk-cards-overlay-box">
         <div class="tk-cards-overlay-head"><b>浏览 LoRA · 一键收藏触发词卡片</b><button type="button" class="tk-cards-btn" data-a="close">✕</button></div>
         <input class="tk-cards-search" placeholder="搜索 LoRA 名称…">
-        <div class="tk-cards-lora-list"></div></div>`;
+        <div class="tk-cards-lora-list"></div></div>`, "<div class=\"tk-cards-overlay-box\">\n        <div class=\"tk-cards-overlay-head\"><b>Browse LoRAs · Save trigger cards</b><button type=\"button\" class=\"tk-cards-btn\" data-a=\"close\">✕</button></div>\n        <input class=\"tk-cards-search\" placeholder=\"Search LoRA names…\">\n        <div class=\"tk-cards-lora-list\"></div></div>");
       this._mountOverlay(overlay);
       const listEl = overlay.querySelector(".tk-cards-lora-list");
       const searchEl = overlay.querySelector(".tk-cards-search");
@@ -4785,18 +4965,21 @@ import {
         const j = await this._fetchJson("/anima/loras");
         loras = (j.loras || []).slice().sort((a, b) => (b.lastModified || 0) - (a.lastModified || 0));
       } catch (e) {
-        listEl.innerHTML = `<div class="tk-cards-empty">LoRA 列表加载失败：${esc(e.message || e)}</div>`;
+        listEl.innerHTML = uiText(`<div class="tk-cards-empty">LoRA 列表加载失败：${esc(e.message || e)}</div>`, `<div class="tk-cards-empty">LoRA ListLoad failed：${esc(e.message || e)}</div>`);
         return;
       }
       const W = [];
       async function render() {
         const q = (searchEl.value || "").toLowerCase();
         const rows = loras.filter((l) => !q || (l.name || "").toLowerCase().includes(q) || (l.filename || "").toLowerCase().includes(q)).slice(0, 60);
-        listEl.innerHTML = rows.map((l) => `<div class="tk-cards-lora-row" data-name="${escAttr(l.name)}">
+        listEl.innerHTML = rows.map((l) => uiText(`<div class="tk-cards-lora-row" data-name="${escAttr(l.name)}">
           <span class="tk-cards-lora-name" title="${escAttr(l.filename)}">${esc(l.name)}</span>
           <button type="button" class="tk-cards-btn" data-a="save">⊙ 存触发词卡</button>
-          <button type="button" class="tk-cards-btn" data-a="add">＋ 追加触发词</button></div>`).join("") ||
-          `<div class="tk-cards-empty">无匹配 LoRA</div>`;
+          <button type="button" class="tk-cards-btn" data-a="add">＋ 追加触发词</button></div>`, `<div class="tk-cards-lora-row" data-name="${escAttr(l.name)}">
+          <span class="tk-cards-lora-name" title="${escAttr(l.filename)}">${esc(l.name)}</span>
+          <button type="button" class="tk-cards-btn" data-a="save">Save trigger card</button>
+          <button type="button" class="tk-cards-btn" data-a="add">Append trigger words</button></div>`)).join("") ||
+          uiText(`<div class="tk-cards-empty">无匹配 LoRA</div>`, "<div class=\"tk-cards-empty\">No matching LoRAs</div>");
         listEl.querySelectorAll(".tk-cards-lora-row").forEach((row) => {
           const name = row.getAttribute("data-name");
           row.querySelector('[data-a="save"]').addEventListener("click", async () => {
@@ -4805,14 +4988,14 @@ import {
             try {
               const r = await this._fetchJson("/anima/cards/lora-triggers?name=" + encodeURIComponent(name));
               const words = r.triggerWords || [];
-              if (!words.length) { alert(`「${name}」没有找到触发词（bridge/Civitai 均无）`); return; }
+              if (!words.length) { alert(uiText(`「${name}」没有找到触发词（bridge/Civitai 均无）`, `「${name}” has no trigger words in the bridge or Civitai`)); return; }
               for (const w of words) {
                 const cat = this.cardCats.find((c) => /lora/i.test(c.name))?.id || "card_lora";
                 await this.addCard(cat, { en: w, zh: "", weight: "", lora: name + ".safetensors" });
               }
-              this._flash(`已收藏 ${words.length} 张触发词卡片`);
+              this._flash(uiText(`已收藏 ${words.length} 张触发词卡片`, `Saved ${words.length} trigger cards`));
             } catch (e) {
-              this._flash("触发词获取失败：" + (e.message || e));
+              this._flash(uiText("触发词获取失败：", "Cannot load trigger words: ") + (e.message || e));
             } finally {
               const i = W.indexOf(name); if (i >= 0) W.splice(i, 1);
             }
@@ -4821,7 +5004,7 @@ import {
             try {
               const r = await this._fetchJson("/anima/cards/lora-triggers?name=" + encodeURIComponent(name));
               const words = r.triggerWords || [];
-              if (!words.length) { alert(`「${name}」没有找到触发词`); return; }
+              if (!words.length) { alert(uiText(`「${name}」没有找到触发词`, `「${name}” has no trigger words`)); return; }
               let text = this.curText();
               for (const w of words) {
                 const can = appendCardToPrompt(text, { prompt: w });
@@ -4830,9 +5013,9 @@ import {
               this._setPromptText(text, { preserveHidden: true });
               const lw = (this.w.lora_syntax?.value || "").trim();
               this._setW(this.w.lora_syntax, lw ? lw + " <lora:" + name + ":1.0>" : "<lora:" + name + ":1.0>");
-              this._flash(`已追加触发词 + <lora:${name}:1.0> → lora_syntax`);
+              this._flash(uiText(`已追加触发词 + <lora:${name}:1.0> → lora_syntax`, `Appended trigger words + <lora:${name}:1.0> → lora_syntax`));
             } catch (e) {
-              this._flash("触发词获取失败：" + (e.message || e));
+              this._flash(uiText("触发词获取失败：", "Cannot load trigger words: ") + (e.message || e));
             }
           });
         });
@@ -4843,21 +5026,30 @@ import {
     // ── AI 自动分类（LLM）──
     _chooseClassifyScope() {
       return new Promise((resolve) => {
-        const currentName = this.curCat ? CAT_NAME(this.cardCats.find((c) => c.id === this.curCat)) : "当前分类";
+        const currentName = this.curCat ? CAT_NAME(this.cardCats.find((c) => c.id === this.curCat)) : uiText("当前分类", "Current category");
         const currentCount = this.curCat ? this._categoryCount(this.curCat) : 0;
         const selectedCount = this.selectedCardIds.size;
         const overlay = document.createElement("div");
         overlay.className = "tk-cards-overlay";
-        overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-classify-scope">
+        overlay.innerHTML = uiText(`<div class="tk-cards-overlay-box tk-cards-classify-scope">
           <div class="tk-cards-overlay-head"><b>智能分类范围</b><button type="button" class="tk-cards-btn" data-a="close">关闭</button></div>
           <div class="tk-cards-category-note">默认只生成建议，不会立即写入卡片库；下一步可逐卡改判后再应用。</div>
           <label class="tk-cards-field"><span>处理范围</span><select data-f="scope">
-            ${this.curCat ? `<option value="current">当前分类：${esc(currentName)}（${currentCount} 张）</option>` : ""}
-            ${selectedCount ? `<option value="selected">已选卡片（${selectedCount} 张）</option>` : ""}
+            ${this.curCat ? uiText(`<option value="current">当前分类：${esc(currentName)}（${currentCount} 张）</option>`, `<option value="current">Current category: ${esc(currentName)}（${currentCount} cards)</option>`) : ""}
+            ${selectedCount ? uiText(`<option value="selected">已选卡片（${selectedCount} 张）</option>`, `<option value="selected">Selected cards (${selectedCount} cards)</option>`) : ""}
             <option value="uncategorized">仅未分类</option><option value="all">全部卡片（${this.cards.length} 张）</option>
           </select></label>
           <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="start">生成分类建议</button></div>
-        </div>`;
+        </div>`, `<div class="tk-cards-overlay-box tk-cards-classify-scope">
+          <div class="tk-cards-overlay-head"><b>Smart categorization scope</b><button type="button" class="tk-cards-btn" data-a="close">Close</button></div>
+          <div class="tk-cards-category-note">Generates suggestions without changing the card library. Review each card’s category before applying.</div>
+          <label class="tk-cards-field"><span>Scope</span><select data-f="scope">
+            ${this.curCat ? uiText(`<option value="current">当前分类：${esc(currentName)}（${currentCount} 张）</option>`, `<option value="current">Current category: ${esc(currentName)}（${currentCount} cards)</option>`) : ""}
+            ${selectedCount ? uiText(`<option value="selected">已选卡片（${selectedCount} 张）</option>`, `<option value="selected">Selected cards (${selectedCount} cards)</option>`) : ""}
+            <option value="uncategorized">Uncategorized only</option><option value="all">All cards (${this.cards.length} cards)</option>
+          </select></label>
+          <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="cancel">Cancel</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="start">Suggest categories</button></div>
+        </div>`);
         this._mountOverlay(overlay);
         const close = this._ownOverlay(overlay, (value = null) => resolve(value));
         overlay.querySelector('[data-a="close"]').addEventListener("click", () => close());
@@ -4871,31 +5063,36 @@ import {
     async _showClassifyPreview(suggestions, scope) {
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay";
-      const options = (selected) => this.cardCats.map((cat) => `<option value="${escAttr(cat.id)}" ${cat.id === selected ? "selected" : ""}>${esc(CAT_NAME(cat))}</option>`).join("");
-      const fallbackId = this.cardCats.find((c) => c.name === "通用")?.id || this.cardCats[0]?.id || "";
+      const options = (selected) => this.cardCats.map((cat) => `<option value="${escAttr(cat.id)}" ${cat.id === selected ? "selected" : ""}>${esc(builtinCategoryLabel(cat))}</option>`).join("");
+      const fallbackId = this.cardCats.find((c) => c.name === uiText("通用", "General"))?.id || this.cardCats[0]?.id || "";
       const rows = suggestions.map((s, i) => {
         const current = catIdsOf(s.card);
         const suggestedId = s.categoryId || current[0] || fallbackId;
-        const currentName = current.map((id) => CAT_NAME(this.cardCats.find((c) => c.id === id))).join("、") || "未分类";
-        const confidence = Number.isFinite(s.confidence) ? `${Math.round(s.confidence * 100)}%` : "未提供";
-        const reason = s.reason || "模型未提供理由";
-        return `<div class="tk-cards-ai-row" data-i="${i}"><div class="tk-cards-ai-text"><b>${esc(s.card.prompt || "")}</b><span class="tk-cards-ai-zh">原分类：${esc(currentName)} · 建议：${esc(s.categoryName || "未匹配")} · 置信度：${confidence}</span><span class="tk-cards-ai-reason">${esc(reason)}</span></div><select class="tk-cards-ai-cat" data-f="cat">${options(suggestedId)}</select><button type="button" class="tk-cards-ai-rm" data-a="remove" title="移除，不应用">移除</button></div>`;
+        const currentName = current.map((id) => CAT_NAME(this.cardCats.find((c) => c.id === id))).join("、") || uiText("未分类", "Uncategorized");
+        const confidence = Number.isFinite(s.confidence) ? `${Math.round(s.confidence * 100)}%` : uiText("未提供", "Not provided");
+        const reason = s.reason || uiText("模型未提供理由", "No explanation provided by the model");
+        return uiText(`<div class="tk-cards-ai-row" data-i="${i}"><div class="tk-cards-ai-text"><b>${esc(s.card.prompt || "")}</b><span class="tk-cards-ai-zh">原分类：${esc(currentName)} · 建议：${esc(s.categoryName || uiText("未匹配", "Unmatched"))} · 置信度：${confidence}</span><span class="tk-cards-ai-reason">${esc(reason)}</span></div><select class="tk-cards-ai-cat" data-f="cat">${options(suggestedId)}</select><button type="button" class="tk-cards-ai-rm" data-a="remove" title="移除，不应用">移除</button></div>`, `<div class="tk-cards-ai-row" data-i="${i}"><div class="tk-cards-ai-text"><b>${esc(s.card.prompt || "")}</b><span class="tk-cards-ai-zh">Original category: ${esc(currentName)} · Suggested: ${esc(s.categoryName || uiText("未匹配", "Unmatched"))} · Confidence: ${confidence}</span><span class="tk-cards-ai-reason">${esc(reason)}</span></div><select class="tk-cards-ai-cat" data-f="cat">${options(suggestedId)}</select><button type="button" class="tk-cards-ai-rm" data-a="remove" title="Remove without applying">Remove</button></div>`);
       }).join("");
-      overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-classify-preview">
+      overlay.innerHTML = uiText(`<div class="tk-cards-overlay-box tk-cards-classify-preview">
         <div class="tk-cards-overlay-head"><b>分类建议 · ${suggestions.length} 张</b><button type="button" class="tk-cards-btn" data-a="close">关闭</button></div>
         <div class="tk-cards-classify-toolbar"><span data-a="count">待应用 ${suggestions.length} 张</span><label><input type="checkbox" data-a="high-only"> 仅应用置信度 ≥ 70%</label></div>
-        <div class="tk-cards-ai-list">${rows || `<div class="tk-cards-empty">没有可预览的分类建议</div>`}</div>
+        <div class="tk-cards-ai-list">${rows || uiText(`<div class="tk-cards-empty">没有可预览的分类建议</div>`, "<div class=\"tk-cards-empty\">No category suggestions to preview</div>")}</div>
         <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="cancel">取消，不写入</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="apply">确认应用</button></div>
-      </div>`;
+      </div>`, `<div class="tk-cards-overlay-box tk-cards-classify-preview">
+        <div class="tk-cards-overlay-head"><b>Category suggestions · ${suggestions.length} images</b><button type="button" class="tk-cards-btn" data-a="close">Close</button></div>
+        <div class="tk-cards-classify-toolbar"><span data-a="count">Pending ${suggestions.length} images</span><label><input type="checkbox" data-a="high-only"> Apply only confidence ≥70%</label></div>
+        <div class="tk-cards-ai-list">${rows || uiText(`<div class="tk-cards-empty">没有可预览的分类建议</div>`, "<div class=\"tk-cards-empty\">No category suggestions to preview</div>")}</div>
+        <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="cancel">Cancel without saving</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="apply">Apply changes</button></div>
+      </div>`);
       this._mountOverlay(overlay);
       const removed = new Set();
       const close = this._ownOverlay(overlay, () => {
-        if (this.statusEl?.textContent?.startsWith("生成分类建议中")) this._flash("分类建议未应用");
+        if (this.statusEl?.textContent?.startsWith(uiText("生成分类建议中", "Generating category suggestions"))) this._flash(uiText("分类建议未应用", "Category suggestions not applied"));
       });
       const updateCount = () => {
         const highOnly = overlay.querySelector('[data-a="high-only"]').checked;
         const n = suggestions.reduce((sum, s, i) => sum + (!removed.has(i) && (!highOnly || (Number.isFinite(s.confidence) && s.confidence >= 0.7)) ? 1 : 0), 0);
-        overlay.querySelector('[data-a="count"]').textContent = `待应用 ${n} 张`;
+        overlay.querySelector('[data-a="count"]').textContent = uiText(`待应用 ${n} 张`, `Pending ${n} images`);
       };
       overlay.querySelector('[data-a="close"]').addEventListener("click", close);
       overlay.querySelector('[data-a="cancel"]').addEventListener("click", close);
@@ -4903,8 +5100,8 @@ import {
       overlay.addEventListener("keydown", (ev) => { if (ev.key === "Escape") close(); });
       overlay.querySelectorAll('[data-a="remove"]').forEach((button) => button.addEventListener("click", () => {
         const i = Number(button.closest(".tk-cards-ai-row").getAttribute("data-i"));
-        if (removed.has(i)) { removed.delete(i); button.textContent = "移除"; button.closest(".tk-cards-ai-row").classList.remove("removed"); }
-        else { removed.add(i); button.textContent = "恢复"; button.closest(".tk-cards-ai-row").classList.add("removed"); }
+        if (removed.has(i)) { removed.delete(i); button.textContent = uiText("移除", "Remove"); button.closest(".tk-cards-ai-row").classList.remove("removed"); }
+        else { removed.add(i); button.textContent = uiText("恢复", "Restore"); button.closest(".tk-cards-ai-row").classList.add("removed"); }
         updateCount();
       }));
       overlay.querySelector('[data-a="high-only"]').addEventListener("change", updateCount);
@@ -4932,26 +5129,26 @@ import {
         this.selectedCardIds.clear();
         this._renderCatTabs();
         this._renderCards();
-        this._flash(`智能分类已应用：${applied} 张，跳过 ${skipped} 张${invalid ? `，无效 ${invalid} 张` : ""}`);
+        this._flash(uiText(`智能分类已应用：${applied} 张，跳过 ${skipped} 张${invalid ? `，无效 ${invalid} 张` : ""}`, `Category suggestions applied: ${applied} cards; skipped ${skipped} images${invalid ? `，无效 ${invalid} 张` : ""}`));
       });
       updateCount();
     }
 
     async aiClassify() {
       const available = this.cards.filter((c) => String(c.prompt || "").trim());
-      if (!available.length) { this._flash("卡片库为空"); return; }
-      if (!this.cardCats.length) { this._flash("没有可用分类"); return; }
+      if (!available.length) { this._flash(uiText("卡片库为空", "Card library is empty")); return; }
+      if (!this.cardCats.length) { this._flash(uiText("没有可用分类", "No categories available")); return; }
       const scope = await this._chooseClassifyScope();
       if (!scope) return;
       let todo = available;
       if (scope === "current") todo = available.filter((c) => cardInCat(c, this.curCat));
       if (scope === "selected") todo = available.filter((c) => this.selectedCardIds.has(c.id));
       if (scope === "uncategorized") todo = available.filter((c) => !catIdsOf(c).length);
-      if (!todo.length) { this._flash("该范围没有可分类的卡片"); return; }
+      if (!todo.length) { this._flash(uiText("该范围没有可分类的卡片", "No cards to categorize in this range")); return; }
       const catNames = this.cardCats.map((c) => c.name);
       const name2id = {};
       for (const c of this.cardCats) name2id[c.name] = c.id;
-      this._flash(`生成分类建议中：${todo.length} 张（每批 30）…`, 90000);
+      this._flash(uiText(`生成分类建议中：${todo.length} 张（每批 30）…`, `Suggesting categories: ${todo.length} cards (30 per batch)…`), 90000);
       const suggestions = [];
       for (let i = 0; i < todo.length; i += 30) {
         const batch = todo.slice(i, i + 30);
@@ -4959,14 +5156,14 @@ import {
         try {
           res = await this._postJson("/anima/cards/classify", { cards: batch.map((c) => ({ id: c.id, text: c.prompt })), cats: catNames, cats_info: catsInfoOf(this.cardCats) }, 90000);
         } catch (e) {
-          this._flash("智能分类失败：" + (e.message || e) + "；未写入任何卡片", 6000);
+          this._flash(uiText("智能分类失败：", "AI classification failed: ") + (e.message || e) + uiText("；未写入任何卡片", "; no cards were written"), 6000);
           return;
         }
-        if (!res.ok) { this._flash("智能分类失败：" + (res.error || "") + "；未写入任何卡片", 6000); return; }
+        if (!res.ok) { this._flash(uiText("智能分类失败：", "AI classification failed: ") + (res.error || "") + uiText("；未写入任何卡片", "; no cards were written"), 6000); return; }
         const byId = new Map((res.result || []).map((r) => [String(r.id), r]));
         for (const card of batch) {
           const r = byId.get(String(card.id)) || {};
-          suggestions.push({ card, categoryName: r.categoryName || "未匹配", categoryId: name2id[r.categoryName] || "", reason: r.reason || "", confidence: Number.isFinite(r.confidence) ? r.confidence : null });
+          suggestions.push({ card, categoryName: r.categoryName || uiText("未匹配", "No match"), categoryId: name2id[r.categoryName] || "", reason: r.reason || "", confidence: Number.isFinite(r.confidence) ? r.confidence : null });
         }
       }
       await this._showClassifyPreview(suggestions, scope);
@@ -4978,7 +5175,7 @@ import {
       try { conf = await this._fetchJson("/anima/llm/config"); } catch (e) { conf = { mode: "auto", error: e.message || String(e) }; }
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay";
-      overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-settings-box">
+      overlay.innerHTML = uiText(`<div class="tk-cards-overlay-box tk-cards-settings-box">
         <div class="tk-cards-overlay-head"><b>LLM 设置</b><button type="button" class="tk-cards-btn" data-a="close">关闭</button></div>
         <div class="tk-cards-settings-status" data-a="status"></div>
         <div class="tk-cards-settings-form">
@@ -4986,12 +5183,25 @@ import {
           <div class="tk-cards-settings-api" data-a="api-fields">
             <label class="tk-cards-field"><span>Base URL</span><input data-f="base" placeholder="例如 http://127.0.0.1:8080/v1"></label>
             <label class="tk-cards-field"><span>模型名</span><input data-f="model" placeholder="例如 qwen-turbo"></label>
-            <label class="tk-cards-field"><span>API Key</span><input data-f="key" type="password" placeholder="${conf.hasApiKey ? "已保存，留空保持不变" : "可留空"}"></label>
+            <label class="tk-cards-field"><span>API Key</span><input data-f="key" type="password" placeholder="${conf.hasApiKey ? uiText("已保存，留空保持不变", "Saved; leave blank to keep") : uiText("可留空", "Optional")}"></label>
           </div>
         </div>
         <div class="tk-cards-settings-note">API Key 只显示是否已保存，不会回显完整内容。点击“测试连接”不会写入配置文件。</div>
         <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="clear-key">清除 Key</button><button type="button" class="tk-cards-btn" data-a="test">测试连接</button><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">保存设置</button></div>
-      </div>`;
+      </div>`, `<div class="tk-cards-overlay-box tk-cards-settings-box">
+        <div class="tk-cards-overlay-head"><b>LLM settings</b><button type="button" class="tk-cards-btn" data-a="close">Close</button></div>
+        <div class="tk-cards-settings-status" data-a="status"></div>
+        <div class="tk-cards-settings-form">
+          <label class="tk-cards-field"><span>Connection mode</span><select data-f="mode"><option value="auto">Automatic: prefer Ollama</option><option value="ollama">Ollama</option><option value="api">OpenAI-compatible API</option></select></label>
+          <div class="tk-cards-settings-api" data-a="api-fields">
+            <label class="tk-cards-field"><span>Base URL</span><input data-f="base" placeholder="e.g. http://127.0.0.1:8080/v1"></label>
+            <label class="tk-cards-field"><span>Model name</span><input data-f="model" placeholder="e.g. qwen-turbo"></label>
+            <label class="tk-cards-field"><span>API Key</span><input data-f="key" type="password" placeholder="${conf.hasApiKey ? uiText("已保存，留空保持不变", "Saved; leave blank to keep") : uiText("可留空", "Optional")}"></label>
+          </div>
+        </div>
+        <div class="tk-cards-settings-note">Only the saved status of the API Key is shown. Test connection does not save settings.</div>
+        <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="clear-key">Clear key</button><button type="button" class="tk-cards-btn" data-a="test">Test connection</button><button type="button" class="tk-cards-btn" data-a="cancel">Cancel</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="save">Save settings</button></div>
+      </div>`);
       this._mountOverlay(overlay);
       const modeEl = overlay.querySelector('[data-f="mode"]');
       const baseEl = overlay.querySelector('[data-f="base"]');
@@ -5007,8 +5217,8 @@ import {
       const updateMode = () => { apiFields.hidden = modeEl.value === "ollama"; };
       const read = () => ({ mode: modeEl.value, base_url: baseEl.value.trim(), model: modelEl.value.trim(), api_key: keyEl.value.trim() });
       const initialStatus = conf.error
-        ? `配置读取失败：${conf.error}`
-        : `当前模式：${conf.mode || "auto"} · Ollama：${conf.ollama?.available ? `可用（${conf.ollama.model || "已连接"}）` : "未检测到"} · API Key：${conf.hasApiKey ? "已保存" : "未设置"}`;
+        ? uiText(`配置读取失败：${conf.error}`, `SettingsCould not load：${conf.error}`)
+        : uiText(`当前模式：${conf.mode || "auto"} · Ollama：${conf.ollama?.available ? uiText(`可用（${conf.ollama.model || uiText("已连接", "Connected")}）`, `Available（${conf.ollama.model || uiText("已连接", "Connected")}）`) : uiText("未检测到", "Not detected")} · API Key：${conf.hasApiKey ? uiText("已保存", "Saved") : uiText("未设置", "Not set")}`, `CurrentMode：${conf.mode || "auto"} · Ollama：${conf.ollama?.available ? uiText(`可用（${conf.ollama.model || uiText("已连接", "Connected")}）`, `Available（${conf.ollama.model || uiText("已连接", "Connected")}）`) : uiText("未检测到", "Not detected")} · API Key：${conf.hasApiKey ? uiText("已保存", "Saved") : uiText("未设置", "Not set")}`);
       setStatus(initialStatus, conf.error ? "is-error" : "");
       updateMode();
       modeEl.addEventListener("change", updateMode);
@@ -5021,53 +5231,53 @@ import {
           await this._postJson("/anima/llm/config", { api_key: "", api_key_clear: true });
           conf.hasApiKey = false;
           keyEl.value = "";
-          keyEl.placeholder = "可留空";
-          setStatus("API Key 已清除", "is-success");
-        } catch (e) { setStatus("清除失败：" + (e.message || e), "is-error"); }
+          keyEl.placeholder = uiText("可留空", "Optional");
+          setStatus(uiText("API Key 已清除", "API Key cleared"), "is-success");
+        } catch (e) { setStatus(uiText("清除失败：", "Clear failed: ") + (e.message || e), "is-error"); }
       });
       overlay.querySelector('[data-a="test"]').addEventListener("click", async () => {
         const payload = read();
         if (payload.mode === "api" && (!payload.base_url || !payload.model) && !conf.hasApiKey) {
-          setStatus("API 模式需要 Base URL 和模型名", "is-error");
+          setStatus(uiText("API 模式需要 Base URL 和模型名", "API mode requires a Base URL and model name"), "is-error");
           return;
         }
-        setStatus("连接测试中…");
+        setStatus(uiText("连接测试中…", "Testing connection…"));
         try {
           const r = await this._postJson("/anima/llm/test", payload, 25000);
-          if (!r.ok) throw new Error(r.error || "测试失败");
-          setStatus(`连接成功 · ${r.mode || payload.mode} · ${r.model || "自动模型"} · ${r.latencyMs || 0}ms`, "is-success");
+          if (!r.ok) throw new Error(r.error || uiText("测试失败", "Test failed"));
+          setStatus(uiText(`连接成功 · ${r.mode || payload.mode} · ${r.model || uiText("自动模型", "Automatic model")} · ${r.latencyMs || 0}ms`, `Connection successful · ${r.mode || payload.mode} · ${r.model || uiText("自动模型", "Automatic model")} · ${r.latencyMs || 0}ms`), "is-success");
         } catch (e) { setStatus(e.message || String(e), "is-error"); }
       });
       overlay.querySelector('[data-a="save"]').addEventListener("click", async () => {
         const payload = read();
         if (payload.mode === "api" && (!payload.base_url || !payload.model)) {
-          setStatus("API 模式需要 Base URL 和模型名", "is-error");
+          setStatus(uiText("API 模式需要 Base URL 和模型名", "API mode requires a Base URL and model name"), "is-error");
           return;
         }
         if (!payload.api_key) delete payload.api_key;
-        setStatus("保存中…");
+        setStatus(uiText("保存中…", "Saving…"));
         try {
           await this._postJson("/anima/llm/config", payload);
-          this._flash("LLM 设置已保存");
+          this._flash(uiText("LLM 设置已保存", "LLM settings saved"));
           close();
-        } catch (e) { setStatus("保存失败：" + (e.message || e), "is-error"); }
+        } catch (e) { setStatus(uiText("保存失败：", "Save failed: ") + (e.message || e), "is-error"); }
       });
     }
 
     async retranslateCard(id) {
       const card = this.cards.find((p) => p.id === id);
-      if (!card || !String(card.prompt || "").trim()) { this._flash("这张卡片没有可翻译的英文 tag"); return; }
-      this._flash(`正在重译：${String(card.prompt).slice(0, 28)}…`, 30000);
+      if (!card || !String(card.prompt || "").trim()) { this._flash(uiText("这张卡片没有可翻译的英文 tag", "This card has no English tags to translate")); return; }
+      this._flash(uiText(`正在重译：${String(card.prompt).slice(0, 28)}…`, `Retranslating: ${String(card.prompt).slice(0, 28)}…`), 30000);
       try {
         const { zh, from } = await translateEnToZhPreferred(card.prompt, this._lifetime.signal);
-        if (!zh) { this._flash("词典没有该标签，机翻也没返回结果"); return; }
+        if (!zh) { this._flash(uiText("词典没有该标签，机翻也没返回结果", "No dictionary match or machine translation returned")); return; }
         card.notes = zh;
         card.updatedAt = Date.now();
         await this.putCard(card);
         this._renderCards();
-        this._flash(from === "dictionary" ? "重译完成（来自 D 站词典）" : "重译完成（机翻）");
+        this._flash(from === "dictionary" ? uiText("重译完成（来自 D 站词典）", "Retranslated using the Danbooru dictionary") : uiText("重译完成（机翻）", "Retranslated using machine translation"));
       } catch (e) {
-        this._flash("单卡重译失败：" + (e.message || e), 5000);
+        this._flash(uiText("单卡重译失败：", "Card retranslation failed: ") + (e.message || e), 5000);
       }
     }
 
@@ -5078,8 +5288,8 @@ import {
     async fillZhFromDictionary(scope = "missing") {
       const all = this.cards.filter((p) => String(p.prompt || "").trim());
       const todo = scope === "all" ? all : all.filter((p) => !String(p.notes || "").trim());
-      if (!todo.length) { this._flash("没有需要补中文的卡片"); return; }
-      this._flash(`正在从词典补全中文：${todo.length} 张…`, 60000);
+      if (!todo.length) { this._flash(uiText("没有需要补中文的卡片", "No cards need Chinese notes")); return; }
+      this._flash(uiText(`正在从词典补全中文：${todo.length} 张…`, `Looking up Chinese annotations: ${todo.length} cards…`), 60000);
       const dict = await lookupZhDictionary(todo.map((p) => p.prompt), this._lifetime.signal);
       let okN = 0;
       for (const card of todo) {
@@ -5092,23 +5302,29 @@ import {
       }
       this._renderCards();
       this._flash(okN
-        ? `词典补全完成：${okN} / ${todo.length} 张命中${okN < todo.length ? "（其余词典没收录，可改用机翻那档）" : ""}`
-        : `词典里没有这 ${todo.length} 张的中文（可改用机翻那档）`);
+        ? uiText(`词典补全完成：${okN} / ${todo.length} 张命中${okN < todo.length ? uiText("（其余词典没收录，可改用机翻那档）", "(remaining cards are not in the dictionary; try machine translation)") : ""}`, `Dictionary lookup complete: ${okN} / ${todo.length} matches${okN < todo.length ? uiText("（其余词典没收录，可改用机翻那档）", "(remaining cards are not in the dictionary; try machine translation)") : ""}`)
+        : uiText(`词典里没有这 ${todo.length} 张的中文（可改用机翻那档）`, `Dictionary lookup:  ${todo.length} cards have no Chinese dictionary entries (try machine translation)`));
     }
 
     showBatchTranslateDialog() {
       const all = this.cards.filter((p) => String(p.prompt || "").trim());
       const missing = all.filter((p) => !String(p.notes || "").trim());
-      if (!all.length) { this._flash("没有可翻译的卡片"); return; }
+      if (!all.length) { this._flash(uiText("没有可翻译的卡片", "No cards to translate")); return; }
       const overlay = document.createElement("div");
       overlay.className = "tk-cards-overlay";
-      overlay.innerHTML = `<div class="tk-cards-overlay-box tk-cards-batch-translate-box">
+      overlay.innerHTML = uiText(`<div class="tk-cards-overlay-box tk-cards-batch-translate-box">
         <div class="tk-cards-overlay-head"><b>批量重译卡片</b><button type="button" class="tk-cards-btn" data-a="close">关闭</button></div>
         <div class="tk-cards-settings-note">中文优先取 <b>D 站词典</b>（画廊用的那份，秒回、不联网）；词典没收录的才按所选翻译源机翻——这里的选择与②区「翻译源」一致，可在「翻译设置」里配置回退顺序。</div>
         <label class="tk-cards-field"><span>处理范围</span><select data-f="scope"><option value="all">全部卡片（${all.length} 张，覆盖已有注释）</option><option value="missing">仅未翻译（${missing.length} 张）</option><option value="dictionary">只用 D 站词典（${missing.length} 张，秒完成、不机翻）</option></select></label>
         <label class="tk-cards-field"><span>翻译源</span><select class="tk-cards-select" data-f="source">${TRANSLATE_SOURCES.map(([id, label]) => `<option value="${escAttr(id)}">${esc(label)}</option>`).join("")}</select></label>
         <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="cancel">取消</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="start">开始重译</button></div>
-      </div>`;
+      </div>`, `<div class="tk-cards-overlay-box tk-cards-batch-translate-box">
+        <div class="tk-cards-overlay-head"><b>Retranslate cards</b><button type="button" class="tk-cards-btn" data-a="close">Close</button></div>
+        <div class="tk-cards-settings-note">Chinese annotations first use <b>Danbooru dictionary</b>(the gallery’s offline dictionary). Unlisted entries use the selected translation provider. This selection shares the provider in section 2; configure fallback in Translation settings.</div>
+        <label class="tk-cards-field"><span>Scope</span><select data-f="scope"><option value="all">All cards (${all.length} cards; overwrite existing annotations)</option><option value="missing">Untranslated only (${missing.length} cards)</option><option value="dictionary">Danbooru dictionary only (${missing.length} cards; dictionary only, no machine translation)</option></select></label>
+        <label class="tk-cards-field"><span>Translation source</span><select class="tk-cards-select" data-f="source">${TRANSLATE_SOURCES.map(([id, label]) => `<option value="${escAttr(id)}">${esc(label)}</option>`).join("")}</select></label>
+        <div class="tk-cards-ai-actions"><button type="button" class="tk-cards-btn" data-a="cancel">Cancel</button><button type="button" class="tk-cards-btn tk-cards-btn-main" data-a="start">Retranslate</button></div>
+      </div>`);
       this._mountOverlay(overlay);
       const close = this._ownOverlay(overlay);
       const sourceSel = overlay.querySelector('[data-f="source"]');
@@ -5137,13 +5353,13 @@ import {
       }
       const all = this.cards.filter((p) => String(p.prompt || "").trim());
       const todo = scope === "missing" ? all.filter((p) => !String(p.notes || "").trim()) : all;
-      if (!todo.length) { this._flash("该范围没有可翻译的卡片"); return; }
+      if (!todo.length) { this._flash(uiText("该范围没有可翻译的卡片", "No cards to translate in this range")); return; }
       const total = todo.length;
       const effectiveSource = source || this.translateSourceEl?.value || loadTranslateSource();
       let cursor = 0, okN = 0, failN = 0;
 
       // 第一步：整批查 D 站词典（一次请求最多 160 条）—— 命中的直接用，不再送机翻
-      this._flash(`批量重译中：${total} 张，先查词典…`, 120000);
+      this._flash(uiText(`批量重译中：${total} 张，先查词典…`, `Retranslating: ${total} cards; checking dictionary first…`), 120000);
       const dict = await lookupZhDictionary(todo.map((p) => p.prompt), this._lifetime.signal);
       const remaining = [];
       for (const card of todo) {
@@ -5174,18 +5390,18 @@ import {
             card.updatedAt = Date.now();
             await this.putCard(card);
             okN++;
-            this._flash(`批量重译中：词典 ${dictHit} + 机翻 ${okN - dictHit} / ${total}`, 120000);
+            this._flash(uiText(`批量重译中：词典 ${dictHit} + 机翻 ${okN - dictHit} / ${total}`, `Retranslating: dictionary ${dictHit} + machine translated ${okN - dictHit} / ${total}`), 120000);
           } catch (e) { failN++; }
         }
       });
       await Promise.all(workers);
       this._renderCards();
-      this._flash(`批量重译完成：词典命中 ${dictHit}，机翻成功 ${okN - dictHit}`
-        + `${failN ? `，未获得 ${failN}` : ""}（共 ${total} 张）`);
+      this._flash(uiText(`批量重译完成：词典命中 ${dictHit}，机翻成功 ${okN - dictHit}`, `Retranslation complete: dictionary matches ${dictHit}; machine translations succeeded ${okN - dictHit}`)
+        + uiText(`${failN ? `，未获得 ${failN}` : ""}（共 ${total} 张）`, `${failN ? `，未获得 ${failN}` : ""}(total ${total} cards)`));
     }
 
     async exportCards() {
-      const name = prompt("导出文件名（写入 input/prompts/）：", "prompt_cards_" + new Date().toISOString().slice(0, 10));
+      const name = prompt(uiText("导出文件名（写入 input/prompts/）：", "Export filename (saved to input/prompts/):"), "prompt_cards_" + new Date().toISOString().slice(0, 10));
       const n = (name || "").trim();
       if (!n) return;
       const groups = [];
@@ -5197,13 +5413,13 @@ import {
           cards: cards.map((p) => ({ en: p.prompt, zh: p.notes, weight: p.weight || "" })),
         });
       }
-      if (!groups.length) { this._flash("卡片库为空"); return; }
+      if (!groups.length) { this._flash(uiText("卡片库为空", "Card library is empty")); return; }
       try {
         const r = await this._postJson("/anima/cards/export", { name: n, groups });
-        if (r.ok) this._flash(`已导出：${r.path}`);
-        else this._flash(r.error || "导出失败");
+        if (r.ok) this._flash(uiText(`已导出：${r.path}`, `Exported: ${r.path}`));
+        else this._flash(r.error || uiText("导出失败", "Export failed"));
       } catch (e) {
-        this._flash("导出失败：" + (e.message || e));
+        this._flash(uiText("导出失败：", "Export failed: ") + (e.message || e));
       }
     }
 
@@ -5221,7 +5437,7 @@ import {
       a.click();
       a.remove();
       this._setTimeout(() => { URL.revokeObjectURL(url); this._objectUrls.delete(url); }, 5000);
-      this._flash(`已导出 ${_cardLibCache.cards.length} 张卡片（JSON 备份）`);
+      this._flash(uiText(`已导出 ${_cardLibCache.cards.length} 张卡片（JSON 备份）`, `Exported ${_cardLibCache.cards.length} cards (JSON backup)`));
     }
 
     // 导入卡片库（JSON 备份恢复 = 替换当前库；兼容旧 {分类名: [卡]} 结构）
@@ -5239,9 +5455,9 @@ import {
           if (!cards && data.cards && typeof data.cards === "object") {
             cards = Object.values(data.cards).flat();
           }
-          if (!Array.isArray(cards)) { this._flash("备份文件格式不对（缺少 cards 数组）"); return; }
+          if (!Array.isArray(cards)) { this._flash(uiText("备份文件格式不对（缺少 cards 数组）", "Invalid backup format (missing cards array)")); return; }
           const catCount = Array.isArray(data.categories) ? data.categories.length : 0;
-          if (!confirm(`导入将替换当前卡片库（${cards.length} 张卡片${catCount ? `，${catCount} 个分类` : ""}）。确认？`)) return;
+          if (!confirm(uiText(`导入将替换当前卡片库（${cards.length} 张卡片${catCount ? uiText(`，${catCount} 个分类`, `，${catCount} categories`) : ""}）。确认？`, `Import replaces the current card library (${cards.length} cards${catCount ? uiText(`，${catCount} 个分类`, `，${catCount} categories`) : ""}). Continue?`))) return;
           const body = {
             version: 2, updated: Date.now(),
             categories: Array.isArray(data.categories) && data.categories.length
@@ -5251,11 +5467,11 @@ import {
               .filter((c) => c.en),
           };
           const r = await this._postJson("/anima/cards", body);
-          if (!r || !r.ok) throw new Error((r && r.error) || "导入失败");
+          if (!r || !r.ok) throw new Error((r && r.error) || uiText("导入失败", "Import failed"));
           await this.reloadCards();
-          this._flash(`已导入 ${r.count || body.cards.length} 张卡片（替换式恢复）`);
+          this._flash(uiText(`已导入 ${r.count || body.cards.length} 张卡片（替换式恢复）`, `Imported ${r.count || body.cards.length} cards (replacement restore)`));
         } catch (e) {
-          this._flash("导入失败：" + (e.message || e));
+          this._flash(uiText("导入失败：", "Import failed: ") + (e.message || e));
         }
       };
       input.click();
@@ -5352,36 +5568,36 @@ import {
       libSec.className = "tk-cards-sec";
       const libHead = document.createElement("div");
       libHead.className = "tk-cards-sec-head";
-      libHead.innerHTML = `<b>① 工具箱 prompt 库</b>`;
-      const libBody = this._attachSectionBody(libSec, libHead, "lib", "工具箱 prompt 库");
+      libHead.innerHTML = uiText(`<b>① 工具箱 prompt 库</b>`, "<b>① Toolbox Prompt library</b>");
+      const libBody = this._attachSectionBody(libSec, libHead, "lib", uiText("工具箱 prompt 库", "Toolbox Prompt library"));
       const libBtns = document.createElement("div");
       libBtns.className = "tk-cards-sec-btns";
       const libTab = document.createElement("button");
       libTab.type = "button";
       libTab.className = "tk-cards-btn";
-      libTab.textContent = "批文件";
+      libTab.textContent = uiText("批文件", "Batch files");
       libTab.addEventListener("click", () => this._switchLibPane("batch"));
       const libTabAll = document.createElement("button");
       libTabAll.type = "button";
       libTabAll.className = "tk-cards-btn tk-cards-btn-main";
-      libTabAll.textContent = "库浏览";
+      libTabAll.textContent = uiText("库浏览", "Browse library");
       libTabAll.addEventListener("click", () => this._switchLibPane("lib"));
       // 刷新（面板新入库/改动后即时同步，无需刷页面）
       const libRefresh = document.createElement("button");
       libRefresh.type = "button";
       libRefresh.className = "tk-cards-btn";
-      libRefresh.textContent = "重新读取";
-      libRefresh.title = "重新读取 prompt 库与卡片库（面板新增/改动后点此同步）";
+      libRefresh.textContent = uiText("重新读取", "Reload");
+      libRefresh.title = uiText("重新读取 prompt 库与卡片库（面板新增/改动后点此同步）", "Reload Prompt and card libraries (sync after changes in the toolbox)");
       libRefresh.addEventListener("click", () => {
         this.reloadAll(true);
-        this._flash("已刷新（prompt 库 + 卡片库）");
+        this._flash(uiText("已刷新（prompt 库 + 卡片库）", "Prompt and card libraries refreshed"));
       });
       // 清理误入卡（历史版本把卡片写进了 prompt 库；只在存在 kind=card 条目时显示）
       this.cleanBtn = document.createElement("button");
       this.cleanBtn.type = "button";
       this.cleanBtn.className = "tk-cards-btn tk-cards-btn-danger";
-      this.cleanBtn.textContent = "清理【卡】";
-      this.cleanBtn.title = "删除误入 prompt 库的卡片条目（kind=card，带【卡】标记）；完整词条不受影响";
+      this.cleanBtn.textContent = uiText("清理【卡】", "Clean up [Card]");
+      this.cleanBtn.title = uiText("删除误入 prompt 库的卡片条目（kind=card，带【卡】标记）；完整词条不受影响", "Remove misplaced card entries from the Prompt library (kind=card, marked [Card]); whole prompts are preserved");
       this.cleanBtn.style.display = "none";
       this.cleanBtn.addEventListener("click", () => this.cleanMisfiledCards());
       libBtns.appendChild(libTabAll);
@@ -5398,7 +5614,7 @@ import {
       });
       this.libSearchEl = document.createElement("input");
       this.libSearchEl.className = "tk-cards-search";
-      this.libSearchEl.placeholder = "搜索库（prompt/标题/注释/tag）…";
+      this.libSearchEl.placeholder = uiText("搜索库（prompt/标题/注释/tag）…", "Search library (prompt/title/notes/tags)…");
       this.libSearchEl.addEventListener("input", () => { this.search = this.libSearchEl.value; this._renderLibList(); });
       this.libListEl = document.createElement("div");
       this.libListEl.className = "tk-cards-lib-list";
@@ -5409,8 +5625,8 @@ import {
       this.libResizeEl.setAttribute("aria-valuemin", String(LIB_HEIGHT_MIN));
       this.libResizeEl.setAttribute("aria-valuemax", String(LIB_HEIGHT_MAX));
       this.libResizeEl.tabIndex = 0;
-      this.libResizeEl.title = "拖动调整工具箱 prompt 库高度；高度会自动保存";
-      this.libResizeEl.innerHTML = "<span>⋮⋮</span><small>拖动调整高度</small>";
+      this.libResizeEl.title = uiText("拖动调整工具箱 prompt 库高度；高度会自动保存", "Drag to resize the Toolbox Prompt library; height is saved automatically");
+      this.libResizeEl.innerHTML = uiText("<span>⋮⋮</span><small>拖动调整高度</small>", "<span>⋮⋮</span><small>Drag to resize</small>");
       this._bindLibResize(this.libResizeEl);
       this.fileSel = document.createElement("select");
       this.fileSel.className = "tk-cards-select";
@@ -5433,29 +5649,29 @@ import {
       curSec.className = "tk-cards-sec";
       const curHead = document.createElement("div");
       curHead.className = "tk-cards-sec-head";
-      curHead.innerHTML = `<b>② 当前提示词</b>`;
-      const curBody = this._attachSectionBody(curSec, curHead, "current", "当前提示词");
+      curHead.innerHTML = uiText(`<b>② 当前提示词</b>`, "<b>② Current prompt</b>");
+      const curBody = this._attachSectionBody(curSec, curHead, "current", uiText("当前提示词", "Current prompt"));
       const curBtns = document.createElement("div");
       curBtns.className = "tk-cards-sec-btns";
       const clipboardBtn = document.createElement("button");
-      clipboardBtn.type = "button"; clipboardBtn.className = "tk-cards-btn"; clipboardBtn.textContent = "导入";
-      clipboardBtn.title = "从剪切板导入并拆分";
+      clipboardBtn.type = "button"; clipboardBtn.className = "tk-cards-btn"; clipboardBtn.textContent = uiText("导入", "Import");
+      clipboardBtn.title = uiText("从剪切板导入并拆分", "Import and split from clipboard");
       clipboardBtn.addEventListener("click", () => this.importClipboard());
       const draftBtn = document.createElement("button");
-      draftBtn.type = "button"; draftBtn.className = "tk-cards-btn"; draftBtn.textContent = "恢复草稿";
-      draftBtn.title = "恢复草稿（切组/切库前自动暂存）";
+      draftBtn.type = "button"; draftBtn.className = "tk-cards-btn"; draftBtn.textContent = uiText("恢复草稿", "Restore draft");
+      draftBtn.title = uiText("恢复草稿（切组/切库前自动暂存）", "Restore draft (saved automatically before switching groups or libraries)");
       draftBtn.addEventListener("click", () => this.restoreDraft());
       const clearBtn = document.createElement("button");
-      clearBtn.type = "button"; clearBtn.className = "tk-cards-btn"; clearBtn.textContent = "清空";
-      clearBtn.title = "清空当前提示词";
+      clearBtn.type = "button"; clearBtn.className = "tk-cards-btn"; clearBtn.textContent = uiText("清空", "Clear");
+      clearBtn.title = uiText("清空当前提示词", "Clear current prompt");
       clearBtn.addEventListener("click", () => { this._setPromptText(""); this._hideResolve(); });
       const savePromptBtn = document.createElement("button");
-      savePromptBtn.type = "button"; savePromptBtn.className = "tk-cards-btn"; savePromptBtn.textContent = "存入 prompt 库";
-      savePromptBtn.title = "把当前整段提示词存入工具箱 prompt 库；①区选中具体分类时直接存入该分类，不拆成③区小卡片";
+      savePromptBtn.type = "button"; savePromptBtn.className = "tk-cards-btn"; savePromptBtn.textContent = uiText("存入 prompt 库", "Save to Prompt library");
+      savePromptBtn.title = uiText("把当前整段提示词存入工具箱 prompt 库；①区选中具体分类时直接存入该分类，不拆成③区小卡片", "Save the whole prompt to the Toolbox library using the category selected in section 1; do not split it into section 3 cards");
       savePromptBtn.addEventListener("click", () => this.saveCurrentAsPrompt());
       const cardsAddBtn = document.createElement("button");
-      cardsAddBtn.type = "button"; cardsAddBtn.className = "tk-cards-btn tk-cards-btn-main"; cardsAddBtn.textContent = "智能入卡";
-      cardsAddBtn.title = "当前所有片段交 LLM 自动判定分类 → 确认清单（可改判）→ 分类入库";
+      cardsAddBtn.type = "button"; cardsAddBtn.className = "tk-cards-btn tk-cards-btn-main"; cardsAddBtn.textContent = uiText("智能入卡", "AI card import");
+      cardsAddBtn.title = uiText("当前所有片段交 LLM 自动判定分类 → 确认清单（可改判）→ 分类入库", "LLM categorizes all current fragments → review and adjust suggestions → save to categories");
       cardsAddBtn.addEventListener("click", () => this.cardsAddAll());
       curBtns.appendChild(clipboardBtn); curBtns.appendChild(draftBtn); curBtns.appendChild(clearBtn); curBtns.appendChild(savePromptBtn); curBtns.appendChild(cardsAddBtn);
 
@@ -5467,10 +5683,10 @@ import {
       escapeBtn.dataset.a = "escape-brackets";
       const syncEscapeBtn = () => {
         const on = this.uiState.escapeBrackets !== false;
-        escapeBtn.textContent = on ? "括号转义 开" : "括号转义 关";
+        escapeBtn.textContent = on ? uiText("括号转义 开", "Escape parentheses: on") : uiText("括号转义 关", "Escape parentheses: off");
         escapeBtn.title = on
-          ? "插入提示词时把 ( ) 转义成 \\( \\)（Anima/ComfyUI 字面括号写法）。点击关闭"
-          : "当前输出裸括号，ComfyUI 会当作权重语法。点击开启转义";
+          ? uiText("插入提示词时把 ( ) 转义成 \\( \\)（Anima/ComfyUI 字面括号写法）。点击关闭", "Escape ( ) as \\( \\) when inserting prompts (literal brackets in Anima / ComfyUI). Click to disable.")
+          : uiText("当前输出裸括号，ComfyUI 会当作权重语法。点击开启转义", "Raw parentheses are interpreted as weights by ComfyUI. Click to enable escaping");
         escapeBtn.classList.toggle("is-on", on);
       };
       this.syncEscapeBracketsBtn = syncEscapeBtn;
@@ -5480,7 +5696,7 @@ import {
       curHead.appendChild(curBtns);
       this.curTextEl = document.createElement("textarea");
       this.curTextEl.className = "tk-cards-textarea";
-      this.curTextEl.placeholder = "当前提示词（点库条目/卡片/粘贴/拖入 PNG 填充；输入时卡片库联想补全）";
+      this.curTextEl.placeholder = uiText("当前提示词（点库条目/卡片/粘贴/拖入 PNG 填充；输入时卡片库联想补全）", "Current prompt (use library entries, cards, paste or drop PNG; card suggestions appear as you type)");
       const initialText = this._initializePromptText();
       this.curTextEl.value = initialText;
       this.curTextEl.addEventListener("input", () => this.onCurInput());
@@ -5489,7 +5705,7 @@ import {
       curEditor.className = "tk-cards-current-editor";
       this.pngDropEl = document.createElement("div");
       this.pngDropEl.className = "tk-cards-png-drop";
-      this.pngDropEl.innerHTML = `<span>PNG</span><button type="button" class="tk-cards-btn" data-a="choose-png">选择 PNG</button>`;
+      this.pngDropEl.innerHTML = uiText(`<span>PNG</span><button type="button" class="tk-cards-btn" data-a="choose-png">选择 PNG</button>`, "<span>PNG</span><button type=\"button\" class=\"tk-cards-btn\" data-a=\"choose-png\">Select PNG</button>");
       this.pngDropEl.querySelector('[data-a="choose-png"]').addEventListener("click", () => this.showPngDialog());
       this.pngDropEl.addEventListener("dragover", (ev) => { ev.preventDefault(); this.pngDropEl.classList.add("is-dragging"); });
       this.pngDropEl.addEventListener("dragleave", () => this.pngDropEl.classList.remove("is-dragging"));
@@ -5521,8 +5737,8 @@ import {
       this.curTextResizeEl.setAttribute("aria-valuemin", String(CUR_TEXT_HEIGHT_MIN));
       this.curTextResizeEl.setAttribute("aria-valuemax", String(CUR_TEXT_HEIGHT_MAX));
       this.curTextResizeEl.tabIndex = 0;
-      this.curTextResizeEl.title = "拖动调整当前提示词框高度；高度会自动保存";
-      this.curTextResizeEl.innerHTML = "<span>⋮⋮</span><small>拖动调整当前提示词框高度</small>";
+      this.curTextResizeEl.title = uiText("拖动调整当前提示词框高度；高度会自动保存", "Drag to resize the current prompt editor; height is saved automatically");
+      this.curTextResizeEl.innerHTML = uiText("<span>⋮⋮</span><small>拖动调整当前提示词框高度</small>", "<span>⋮⋮</span><small>Drag to resize the current prompt area</small>");
       this._bindCurrentTextResize(this.curTextResizeEl);
       this._applyCurrentTextHeight(this.uiState.curTextHeight, false);
       const translateBox = document.createElement("details");
@@ -5530,7 +5746,7 @@ import {
       translateBox.open = this.uiState.collapsed.translate !== true;
       const translateHead = document.createElement("summary");
       translateHead.className = "tk-cards-translate-head";
-      translateHead.innerHTML = `<b>中文翻译输入</b><span>选择候选后加入下方当前提示词，不会覆盖已有内容</span><button type="button" class="tk-cards-icon-btn" data-a="translate-settings" title="翻译设置：统一配置翻译源、各服务参数、词典与缓存" aria-label="翻译设置">${icon("settings", 14)}</button>`;
+      translateHead.innerHTML = uiText(`<b>中文翻译输入</b><span>选择候选后加入下方当前提示词，不会覆盖已有内容</span><button type="button" class="tk-cards-icon-btn" data-a="translate-settings" title="翻译设置：统一配置翻译源、各服务参数、词典与缓存" aria-label="翻译设置">${icon("settings", 14)}</button>`, `<b>Chinese translation input</b><span>Choose a candidate to append to the current prompt below; existing content is preserved</span><button type="button" class="tk-cards-icon-btn" data-a="translate-settings" title="Translation settings: providers, service parameters, glossary and cache" aria-label="Translation settings">${icon("settings", 14)}</button>`);
       const settingsEntry = translateHead.querySelector('[data-a="translate-settings"]');
       settingsEntry.addEventListener("pointerdown", (event) => event.stopPropagation());
       settingsEntry.addEventListener("click", (event) => {
@@ -5548,18 +5764,18 @@ import {
       this.translateInputEl = document.createElement("textarea");
       this.translateInputEl.className = "tk-cards-translate-input";
       this.translateInputEl.rows = 2;
-      this.translateInputEl.placeholder = "输入中文短语，例如：白发，长发，蓝眼睛";
+      this.translateInputEl.placeholder = uiText("输入中文短语，例如：白发，长发，蓝眼睛", "Enter Chinese phrases, e.g. 白发，长发，蓝眼睛");
       this.translateInputEl.addEventListener("input", () => { this._hideResolve(); this._updateTranslateSuggest(); });
       this.translateInputEl.addEventListener("keydown", (event) => this._translateSuggestKeyDown(event));
       const translateSourceRow = document.createElement("div");
       translateSourceRow.className = "tk-cards-translate-source";
       const translateSourceLabel = document.createElement("span");
-      translateSourceLabel.textContent = "翻译源";
+      translateSourceLabel.textContent = uiText("翻译源", "Translation source");
       this.translateSourceEl = document.createElement("select");
       this.translateSourceEl.className = "tk-cards-select";
       this.translateSourceEl.innerHTML = TRANSLATE_SOURCES.map(([id, label]) => `<option value="${escAttr(id)}">${esc(label)}</option>`).join("");
       this.translateSourceEl.value = loadTranslateSource();
-      this.translateSourceEl.title = "手动选择中文翻译源；自动回退会按可用服务依次尝试";
+      this.translateSourceEl.title = uiText("手动选择中文翻译源；自动回退会按可用服务依次尝试", "Choose a Chinese translation source; automatic fallback tries available services in order");
       this.translateSourceEl.addEventListener("change", () => { saveTranslateSource(this.translateSourceEl.value); this._refreshTranslationStatus(); });
       translateSourceRow.appendChild(translateSourceLabel);
       translateSourceRow.appendChild(this.translateSourceEl);
@@ -5568,7 +5784,7 @@ import {
       const translateStatusDetails = document.createElement("details");
       translateStatusDetails.className = "tk-cards-translate-status-details";
       const translateStatusSummary = document.createElement("summary");
-      translateStatusSummary.textContent = "翻译状态（点击展开）";
+      translateStatusSummary.textContent = uiText("翻译状态（点击展开）", "Translation status (click to expand)");
       translateStatusDetails.appendChild(translateStatusSummary);
       translateStatusDetails.appendChild(this.translateStatusEl);
       this.translateStatusDetails = translateStatusDetails;
@@ -5576,14 +5792,14 @@ import {
       const translateBtn = document.createElement("button");
       translateBtn.type = "button";
       translateBtn.className = "tk-cards-btn tk-cards-btn-main";
-      translateBtn.textContent = "翻译并校准";
-      translateBtn.title = "把独立中文输入翻译成英文，并查找 Danbooru 规范标签候选";
+      translateBtn.textContent = uiText("翻译并校准", "Translate and match");
+      translateBtn.title = uiText("把独立中文输入翻译成英文，并查找 Danbooru 规范标签候选", "Translate Chinese input to English and find canonical Danbooru tag candidates");
       translateBtn.addEventListener("click", () => this.translatePiecesOnly());
       const translateOnlyBtn = document.createElement("button");
       translateOnlyBtn.type = "button";
       translateOnlyBtn.className = "tk-cards-btn";
-      translateOnlyBtn.textContent = "仅翻译";
-      translateOnlyBtn.title = "只翻译为英文并进行基础 QA，不调用 BGE-M3 或 Danbooru 校准";
+      translateOnlyBtn.textContent = uiText("仅翻译", "Translate only");
+      translateOnlyBtn.title = uiText("只翻译为英文并进行基础 QA，不调用 BGE-M3 或 Danbooru 校准", "Translate to English with basic quality checks, without BGE-M3 or Danbooru matching");
       translateOnlyBtn.addEventListener("click", () => this.translateOnly());
       const translateActions = document.createElement("div");
       translateActions.className = "tk-cards-translate-actions";
@@ -5616,8 +5832,8 @@ import {
       const translateAllBtn = document.createElement("button");
       translateAllBtn.type = "button";
       translateAllBtn.className = "tk-cards-btn";
-      translateAllBtn.textContent = "翻译未翻译片段";
-      translateAllBtn.title = "只翻译当前提示词中没有中文注释或快捷译文的片段，避免污染已翻译卡片";
+      translateAllBtn.textContent = uiText("翻译未翻译片段", "Translate missing fragments");
+      translateAllBtn.title = uiText("只翻译当前提示词中没有中文注释或快捷译文的片段，避免污染已翻译卡片", "Translate only fragments without Chinese notes or quick translations; preserve existing translations");
       translateAllBtn.addEventListener("click", () => this.translateAllPieces());
       chipsTools.appendChild(translateAllBtn);
       this.chipsEl = document.createElement("div");
@@ -5630,8 +5846,8 @@ import {
       this.chipsResizeEl.setAttribute("aria-valuemax", String(CHIPS_HEIGHT_MAX));
       this.chipsResizeEl.setAttribute("aria-valuenow", String(this.uiState.chipsHeight));
       this.chipsResizeEl.tabIndex = 0;
-      this.chipsResizeEl.title = "拖动调整 2 区双语卡片显示高度；高度会自动保存";
-      this.chipsResizeEl.innerHTML = "<span>⋮⋮</span><small>拖动调整双语卡片显示高度</small>";
+      this.chipsResizeEl.title = uiText("拖动调整 2 区双语卡片显示高度；高度会自动保存", "Drag to resize bilingual cards in section 2; height is saved automatically");
+      this.chipsResizeEl.innerHTML = uiText("<span>⋮⋮</span><small>拖动调整双语卡片显示高度</small>", "<span>⋮⋮</span><small>Drag to resize bilingual cards</small>");
       this._bindChipsResize(this.chipsResizeEl);
       this._applyChipsHeight(this.uiState.chipsHeight, false);
       curBody.appendChild(curEditor);
@@ -5649,36 +5865,36 @@ import {
       const cardHead = document.createElement("div");
       cardHead.className = "tk-cards-sec-head";
       cardHead.innerHTML = `<b>③ 卡片视图</b>`;
-      const cardBody = this._attachSectionBody(cardSec, cardHead, "cards", "卡片库");
+      const cardBody = this._attachSectionBody(cardSec, cardHead, "cards", uiText("卡片库", "Card library"));
       const cardBtns = document.createElement("div");
       cardBtns.className = "tk-cards-sec-btns";
       const loraBtn = document.createElement("button");
-      loraBtn.type = "button"; loraBtn.className = "tk-cards-btn tk-cards-btn-main"; loraBtn.textContent = "LoRA 触发词";
-      loraBtn.title = "浏览 LoRA → 一键收藏触发词卡片 / 追加触发词";
+      loraBtn.type = "button"; loraBtn.className = "tk-cards-btn tk-cards-btn-main"; loraBtn.textContent = uiText("LoRA 触发词", "LoRA trigger words");
+      loraBtn.title = uiText("浏览 LoRA → 一键收藏触发词卡片 / 追加触发词", "Browse LoRAs → save trigger-word cards or append trigger words");
       loraBtn.addEventListener("click", () => this.showLoraDialog());
       const tlBtn = document.createElement("button");
-      tlBtn.type = "button"; tlBtn.className = "tk-cards-btn"; tlBtn.textContent = "批量重译";
-      tlBtn.title = "选择范围并批量重新翻译卡片中文注释";
+      tlBtn.type = "button"; tlBtn.className = "tk-cards-btn"; tlBtn.textContent = uiText("批量重译", "Batch retranslation");
+      tlBtn.title = uiText("选择范围并批量重新翻译卡片中文注释", "Choose a range and retranslate card notes in bulk");
       tlBtn.addEventListener("click", () => this.showBatchTranslateDialog());
       const aiBtn = document.createElement("button");
-      aiBtn.type = "button"; aiBtn.className = "tk-cards-btn tk-cards-btn-main"; aiBtn.textContent = "智能分类";
-      aiBtn.title = "用 LLM 自动为卡片分类（Ollama 本地 或 API 反代；分类名不匹配的归「通用」）";
+      aiBtn.type = "button"; aiBtn.className = "tk-cards-btn tk-cards-btn-main"; aiBtn.textContent = uiText("智能分类", "AI classification");
+      aiBtn.title = uiText("用 LLM 自动为卡片分类（Ollama 本地 或 API 反代；分类名不匹配的归「通用」）", "Categorize cards using an LLM (local Ollama or API); unmatched category names use General");
       aiBtn.addEventListener("click", () => this.aiClassify());
       const llmBtn = document.createElement("button");
       llmBtn.type = "button"; llmBtn.className = "tk-cards-btn"; llmBtn.textContent = "LLM";
-      llmBtn.title = "配置自动分类的 LLM（Ollama / OpenAI 兼容反代）";
+      llmBtn.title = uiText("配置自动分类的 LLM（Ollama / OpenAI 兼容反代）", "Configure the classification LLM (Ollama / OpenAI-compatible API)");
       llmBtn.addEventListener("click", () => this.llmSettings());
       const exBtn = document.createElement("button");
-      exBtn.type = "button"; exBtn.className = "tk-cards-btn"; exBtn.textContent = "导出";
-      exBtn.title = "导出卡片为批文件（input/prompts/）";
+      exBtn.type = "button"; exBtn.className = "tk-cards-btn"; exBtn.textContent = uiText("导出", "Export");
+      exBtn.title = uiText("导出卡片为批文件（input/prompts/）", "Export cards as batch files (input/prompts/)");
       exBtn.addEventListener("click", () => this.exportCards());
       const bkuBtn = document.createElement("button");
-      bkuBtn.type = "button"; bkuBtn.className = "tk-cards-btn"; bkuBtn.textContent = "导出库";
-      bkuBtn.title = "导出卡片库 JSON 备份（后端 cards.json 当前内容；换机/换浏览器恢复用）";
+      bkuBtn.type = "button"; bkuBtn.className = "tk-cards-btn"; bkuBtn.textContent = uiText("导出库", "Export library");
+      bkuBtn.title = uiText("导出卡片库 JSON 备份（后端 cards.json 当前内容；换机/换浏览器恢复用）", "Export a JSON card library backup (current server cards.json, for restoration on another computer or browser)");
       bkuBtn.addEventListener("click", () => this.exportCardLib());
       const bkiBtn = document.createElement("button");
-      bkiBtn.type = "button"; bkiBtn.className = "tk-cards-btn"; bkiBtn.textContent = "导入库";
-      bkiBtn.title = "从 JSON 备份恢复卡片库（替换式导入）";
+      bkiBtn.type = "button"; bkiBtn.className = "tk-cards-btn"; bkiBtn.textContent = uiText("导入库", "Import library");
+      bkiBtn.title = uiText("从 JSON 备份恢复卡片库（替换式导入）", "Restore the card library from a JSON backup (replaces the current library)");
       bkiBtn.addEventListener("click", () => this.importCardLib());
       cardBtns.appendChild(loraBtn); cardBtns.appendChild(tlBtn); cardBtns.appendChild(aiBtn); cardBtns.appendChild(llmBtn); cardBtns.appendChild(exBtn);
       cardBtns.appendChild(bkuBtn); cardBtns.appendChild(bkiBtn);
@@ -5697,14 +5913,14 @@ import {
       this.cardGridResizeEl.setAttribute("aria-valuemax", String(CARD_GRID_HEIGHT_MAX));
       this.cardGridResizeEl.setAttribute("aria-valuenow", String(this.uiState.cardGridHeight));
       this.cardGridResizeEl.tabIndex = 0;
-      this.cardGridResizeEl.title = "拖动调整双语卡片显示区域高度；高度会自动保存";
-      this.cardGridResizeEl.innerHTML = "<span>⋮⋮</span><small>拖动调整卡片区域高度</small>";
+      this.cardGridResizeEl.title = uiText("拖动调整双语卡片显示区域高度；高度会自动保存", "Drag to resize the bilingual card area; height is saved automatically");
+      this.cardGridResizeEl.innerHTML = uiText("<span>⋮⋮</span><small>拖动调整卡片区域高度</small>", "<span>⋮⋮</span><small>Drag to resize the card area</small>");
       this._bindCardGridResize(this.cardGridResizeEl);
       this.cardSearchEl = document.createElement("input");
       this.cardSearchEl.type = "search";
       this.cardSearchEl.className = "tk-cards-card-search";
-      this.cardSearchEl.placeholder = "搜索卡片英文或中文译文，支持模糊匹配…";
-      this.cardSearchEl.setAttribute("aria-label", "搜索双语卡片");
+      this.cardSearchEl.placeholder = uiText("搜索卡片英文或中文译文，支持模糊匹配…", "Search English cards or Chinese translations (fuzzy matching)…");
+      this.cardSearchEl.setAttribute("aria-label", uiText("搜索双语卡片", "Search bilingual cards"));
       this.cardSearchEl.addEventListener("input", () => {
         this.cardSearch = this.cardSearchEl.value.trim();
         this._updateCardSearch();
@@ -5728,7 +5944,7 @@ import {
           if (state.error && state.error !== lastError) this._flash(state.error, 8000);
           lastError = state.error || "";
         });
-      }).catch((error) => this._flash("Prompt 库模块加载失败：" + error.message, 8000));
+      }).catch((error) => this._flash(uiText("Prompt 库模块加载失败：", "Prompt library module failed to load: ") + error.message, 8000));
       this.reloadAll();
       this._loadBatchFiles();
       this._switchLibPane(this.uiState.pane || "lib");

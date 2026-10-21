@@ -1,3 +1,4 @@
+import { uiText } from "./anima_node_i18n.js";
 import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
 // TK 可动素体相机：程序化低模 + 关节 FK + 轻量相机预览。
@@ -5,11 +6,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 (function () {
   const NODE_NAME = "TK 3D Body Camera";
   const JOINTS = [
-    ["root", "根部"], ["waist", "腰部"], ["chest", "胸腔"], ["neck", "颈部"], ["head", "头部"],
-    ["left_shoulder", "左肩"], ["left_elbow", "左肘"],
-    ["right_shoulder", "右肩"], ["right_elbow", "右肘"],
-    ["left_hip", "左髋"], ["left_knee", "左膝"],
-    ["right_hip", "右髋"], ["right_knee", "右膝"],
+    ["root", uiText("根部", "Root")], ["waist", uiText("腰部", "Waist")], ["chest", uiText("胸腔", "Chest")], ["neck", uiText("颈部", "Neck")], ["head", uiText("头部", "Head")],
+    ["left_shoulder", uiText("左肩", "Left shoulder")], ["left_elbow", uiText("左肘", "Left elbow")],
+    ["right_shoulder", uiText("右肩", "Right shoulder")], ["right_elbow", uiText("右肘", "Right elbow")],
+    ["left_hip", uiText("左髋", "Left hip")], ["left_knee", uiText("左膝", "Left knee")],
+    ["right_hip", uiText("右髋", "Right hip")], ["right_knee", uiText("右膝", "Right knee")],
   ];
   const JOINT_NAMES = new Set(JOINTS.map(([name]) => name));
   const JOINT_LIMITS = { root: 45, waist: 65, chest: 70, neck: 80, head: 90 };
@@ -21,6 +22,11 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     "远景": [0, 0, -1, 0], "中景": [0, 0, -0.4, 0], "近景": [0, 0, 0, 0], "全身": [0, 0, 0.4, 0], "特写": [0, 0, 1, 0],
     "荷兰角": [0, 0, 0, 0.6],
   };
+  const cameraPresetLabel = name => ({
+    '正面':'Front', '背面':'Back', '左侧':'Left', '右侧':'Right',
+    '正上方俯视':'Overhead', '俯视':'High angle', '仰视':'Low angle', '正下方仰视':'From below',
+    '远景':'Wide shot', '中景':'Medium shot', '近景':'Medium close-up', '全身':'Full body', '特写':'Close-up', '荷兰角':'Dutch angle',
+  })[name] || name;
   const THREE_SOURCES = [
     // 优先读本插件自带的 Three.js（web/js/three.module.js，无第三方依赖）
     "/extensions/ComfyUI-Anima-Batch-LoRA/js/three.module.js",
@@ -36,10 +42,10 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   // 这四个字段对应相机提示词的四个方位轴：左右、上下、距离和倾斜角。
   // 轴权重只控制强度，具体输出哪个 tag 仍由相机当前位置决定。
   const PROMPT_WEIGHT_FIELDS = [
-    { id: "azimuth.weight", group: "方位权重", label: "左右方位", path: ["azimuth"], default: 10, min: 0, max: 10 },
-    { id: "elevation.weight", group: "方位权重", label: "上下方位", path: ["elevation"], default: 11, min: 0, max: 20 },
-    { id: "distance.weight", group: "方位权重", label: "距离方位", path: ["distance"], default: 1, min: 0, max: 10 },
-    { id: "tilt.weight", group: "方位权重", label: "倾斜角", path: ["tilt"], default: 1, min: 0, max: 10 },
+    { id: "azimuth.weight", group: uiText("方位权重", "Direction weights"), label: uiText("左右方位", "Horizontal direction"), path: ["azimuth"], default: 10, min: 0, max: 10 },
+    { id: "elevation.weight", group: uiText("方位权重", "Direction weights"), label: uiText("上下方位", "Vertical direction"), path: ["elevation"], default: 11, min: 0, max: 20 },
+    { id: "distance.weight", group: uiText("方位权重", "Direction weights"), label: uiText("距离方位", "Distance"), path: ["distance"], default: 1, min: 0, max: 10 },
+    { id: "tilt.weight", group: uiText("方位权重", "Direction weights"), label: uiText("倾斜角", "Roll"), path: ["tilt"], default: 1, min: 0, max: 10 },
   ];
   const PROMPT_WEIGHT_BY_ID = Object.fromEntries(PROMPT_WEIGHT_FIELDS.map((field) => [field.id, field]));
 
@@ -87,7 +93,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
   const promptDistanceKey = (value) => value > 0.6 ? "ecu" : value > 0.2 ? "full" : value >= -0.2 ? "cu" : value >= -0.6 ? "medium" : "wide";
   const DISTANCE_RANGES = { ecu: [0.6, 1], full: [0.2, 0.6], cu: [-0.2, 0.2], medium: [-0.6, -0.2], wide: [-1, -0.6] };
   const DISTANCE_FAR_STRONGER = new Set(["medium", "full", "wide"]);
-  const DISTANCE_LABELS = { wide: "远景", medium: "中景", cu: "近景", full: "全身", ecu: "特写" };
+  const DISTANCE_LABELS = { wide: uiText("远景", "Wide shot"), medium: uiText("中景", "Medium shot"), cu: uiText("近景", "Close shot"), full: uiText("全身", "Full body"), ecu: uiText("特写", "Extreme close-up") };
 
   function promptDistanceDetails(config, value) {
     const z = finite(value);
@@ -214,7 +220,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     for (const source of THREE_SOURCES) {
       try { return await import(new URL(source, window.location.href).href); } catch (error) { lastError = error; }
     }
-    throw lastError || new Error("当前 ComfyUI 未提供项目内 Three.js");
+    throw lastError || new Error(uiText("当前 ComfyUI 未提供项目内 Three.js", "The bundled Three.js engine is unavailable"));
   }
 
   function readSlots() {
@@ -254,7 +260,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
     build() {
       const root = document.createElement("section");
       root.className = "tk-3d-body-camera-ui";
-      root.innerHTML = `
+      root.innerHTML = uiText(`
         <header class="tk-3d-body-camera-head"><strong>可动素体相机</strong><span data-status>正在加载本地 3D 引擎…</span></header>
         <div class="tk-3d-body-camera-viewport" data-viewport><canvas class="tk-3d-body-camera-canvas" data-canvas aria-label="拖拽模型旋转相机，点击关节后拖拽可摆姿势"></canvas><div class="tk-3d-body-camera-overlay"><span data-orientation>正面 · 平视</span><span data-selection>相机模式 · 滚轮调整距离</span></div></div>
         <div class="tk-3d-body-camera-toolbar"><span>视角</span><button type="button" data-quick="front">正面</button><button type="button" data-quick="side">侧面</button><button type="button" data-quick="back">背面</button><button type="button" data-quick="up">俯视</button><button type="button" data-quick="down">仰视</button><select data-camera-preset aria-label="机位预设"><option value="自定义">自定义</option>${Object.keys(CAMERA_PRESETS).map((name) => `<option value="${esc(name)}">${esc(name === "荷兰角" ? "倾斜角" : name)}</option>`).join("")}</select></div>
@@ -262,7 +268,15 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         <div class="tk-3d-body-camera-section tk-3d-body-camera-prompt-section"><div class="tk-3d-body-camera-section-title"><strong>提示词参数</strong><span data-prompt-active>方位权重</span></div><div class="tk-3d-body-camera-prompt-weight-groups" data-prompt-weights></div><div class="tk-3d-body-camera-prompt-preview"><span>当前输出</span><code data-prompt-preview>正在计算…</code></div></div>
         <div class="tk-3d-body-camera-section tk-3d-body-camera-pose-section"><div class="tk-3d-body-camera-section-title"><strong>摆姿势</strong><span>点击关节后在模型上拖拽，或编辑 XYZ</span></div><div class="tk-3d-body-camera-pose-actions"><button type="button" data-pose="a">A-Pose</button><button type="button" data-pose="t">T-Pose</button><button type="button" data-pose="reset">重置</button><select data-joint aria-label="选择关节"></select></div><div class="tk-3d-body-camera-axis-grid"><label>X<input data-axis="x" type="range" min="-180" max="180" step="1"><output data-axis-output="x">0°</output></label><label>Y<input data-axis="y" type="range" min="-180" max="180" step="1"><output data-axis-output="y">0°</output></label><label>Z<input data-axis="z" type="range" min="-180" max="180" step="1"><output data-axis-output="z">0°</output></label></div></div>
         <div class="tk-3d-body-camera-save-row"><input data-pose-name value="姿势1" aria-label="姿势名称"><button type="button" data-pose-action="save">保存</button><select data-pose-slot aria-label="已保存姿势"><option value="">选择已保存姿势</option></select><button type="button" data-pose-action="restore">恢复</button><button type="button" data-pose-action="delete">删除</button></div>
-        <div class="tk-3d-body-camera-hint" data-hint>模型是无纹理低面数空壳；相机本体不显示，只显示少量视线与地面辅助线。</div>`;
+        <div class="tk-3d-body-camera-hint" data-hint>模型是无纹理低面数空壳；相机本体不显示，只显示少量视线与地面辅助线。</div>`, `
+        <header class="tk-3d-body-camera-head"><strong>3D Body Camera</strong><span data-status>Loading local 3D engine…</span></header>
+        <div class="tk-3d-body-camera-viewport" data-viewport><canvas class="tk-3d-body-camera-canvas" data-canvas aria-label="Drag the body to orbit; select and drag a joint to pose"></canvas><div class="tk-3d-body-camera-overlay"><span data-orientation>Front · Eye level</span><span data-selection>Camera mode · Scroll to zoom</span></div></div>
+        <div class="tk-3d-body-camera-toolbar"><span>View</span><button type="button" data-quick="front">Front</button><button type="button" data-quick="side">Side</button><button type="button" data-quick="back">Back</button><button type="button" data-quick="up">High angle</button><button type="button" data-quick="down">Low angle</button><select data-camera-preset aria-label="Camera preset"><option value="自定义">Custom</option>${Object.keys(CAMERA_PRESETS).map((name) => `<option value="${esc(name)}">${esc(cameraPresetLabel(name))}</option>`).join("")}</select></div>
+        <div class="tk-3d-body-camera-section tk-3d-body-camera-camera-section"><div class="tk-3d-body-camera-section-title"><strong>Camera</strong><span data-camera-readout>Live</span></div><div class="tk-3d-body-camera-readouts" aria-live="polite"><span>Yaw <output data-camera-live="yaw">0°</output></span><span>Pitch <output data-camera-live="pitch">0°</output></span><span>Roll <output data-camera-live="roll">0°</output></span><span>Distance <output data-camera-live="distance">5.00</output></span><span>FOV <output data-camera-live="fov">50°</output></span></div><label class="tk-3d-body-camera-range"><span>Distance</span><input data-camera="pz" type="range" min="-1" max="1" step="0.01"><output data-camera-output="pz"></output></label><div class="tk-3d-body-camera-distance-categories" aria-label="Five shot distances"><span data-distance-category="wide">Wide</span><span data-distance-category="medium">Medium</span><span data-distance-category="cu">Close</span><span data-distance-category="full">Full body</span><span data-distance-category="ecu">Extreme close-up</span></div><label class="tk-3d-body-camera-range"><span>Roll</span><input data-camera="roll" type="range" min="-1" max="1" step="0.01"><output data-camera-output="roll"></output></label><label class="tk-3d-body-camera-range"><span>FOV</span><input data-camera="fov" type="range" min="20" max="100" step="1"><output data-camera-output="fov"></output></label><div class="tk-3d-body-camera-normalized">Position X <output data-camera-live="x">0.00</output> · Y <output data-camera-live="y">0.00</output> · Z <output data-camera-live="z">0.00</output></div></div>
+        <div class="tk-3d-body-camera-section tk-3d-body-camera-prompt-section"><div class="tk-3d-body-camera-section-title"><strong>Prompt controls</strong><span data-prompt-active>方位weight</span></div><div class="tk-3d-body-camera-prompt-weight-groups" data-prompt-weights></div><div class="tk-3d-body-camera-prompt-preview"><span>Current output</span><code data-prompt-preview>Calculating…</code></div></div>
+        <div class="tk-3d-body-camera-section tk-3d-body-camera-pose-section"><div class="tk-3d-body-camera-section-title"><strong>Pose</strong><span>Select and drag a joint, or edit XYZ</span></div><div class="tk-3d-body-camera-pose-actions"><button type="button" data-pose="a">A-Pose</button><button type="button" data-pose="t">T-Pose</button><button type="button" data-pose="reset">Reset</button><select data-joint aria-label="Select joint"></select></div><div class="tk-3d-body-camera-axis-grid"><label>X<input data-axis="x" type="range" min="-180" max="180" step="1"><output data-axis-output="x">0°</output></label><label>Y<input data-axis="y" type="range" min="-180" max="180" step="1"><output data-axis-output="y">0°</output></label><label>Z<input data-axis="z" type="range" min="-180" max="180" step="1"><output data-axis-output="z">0°</output></label></div></div>
+        <div class="tk-3d-body-camera-save-row"><input data-pose-name value="姿势1" aria-label="Pose name"><button type="button" data-pose-action="save">Save</button><select data-pose-slot aria-label="Saved poses"><option value="">Select a saved pose</option></select><button type="button" data-pose-action="restore">Restore</button><button type="button" data-pose-action="delete">Delete</button></div>
+        <div class="tk-3d-body-camera-hint" data-hint>An untextured low-poly body with minimal view and ground guides; the camera itself is hidden.</div>`);
       this.root = root;
       this.viewport = root.querySelector("[data-viewport]");
       this.canvas = root.querySelector("[data-canvas]");
@@ -311,8 +325,8 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         const grid = group.querySelector(".tk-3d-body-camera-prompt-grid");
         const row = document.createElement("label");
         row.className = "tk-3d-body-camera-prompt-weight";
-        row.title = `${field.label}：可拖动滑块，也可直接输入；步进 0.1`;
-        row.innerHTML = `<span>${esc(field.label)}</span><input data-prompt-weight="${field.id}" type="range" min="${field.min}" max="${field.max}" step="0.1"><input class="tk-3d-body-camera-prompt-weight-number" data-prompt-weight-number="${field.id}" type="number" min="${field.min}" max="${field.max}" step="0.1" inputmode="decimal" aria-label="${esc(field.label)}权重"><em>权重</em>`;
+        row.title = uiText(`${field.label}：可拖动滑块，也可直接输入；步进 0.1`, `${field.label}: drag or type a value; step 0.1`);
+        row.innerHTML = uiText(`<span>${esc(field.label)}</span><input data-prompt-weight="${field.id}" type="range" min="${field.min}" max="${field.max}" step="0.1"><input class="tk-3d-body-camera-prompt-weight-number" data-prompt-weight-number="${field.id}" type="number" min="${field.min}" max="${field.max}" step="0.1" inputmode="decimal" aria-label="${esc(field.label)}权重"><em>权重</em>`, `<span>${esc(field.label)}</span><input data-prompt-weight="${field.id}" type="range" min="${field.min}" max="${field.max}" step="0.1"><input class="tk-3d-body-camera-prompt-weight-number" data-prompt-weight-number="${field.id}" type="number" min="${field.min}" max="${field.max}" step="0.1" inputmode="decimal" aria-label="${esc(field.label)}weight"><em>weight</em>`);
         const range = row.querySelector("[data-prompt-weight]");
         const number = row.querySelector("[data-prompt-weight-number]");
         const commit = (value) => {
@@ -342,7 +356,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         if (range) range.value = value;
         if (number) number.value = promptFmtWeight(value);
       });
-      const azName = Math.abs(this.state.px) > 0.72 ? "背面" : Math.abs(this.state.px) > 0.22 ? (this.state.px > 0 ? "左侧" : "右侧") : "正面";
+      const azName = Math.abs(this.state.px) > 0.72 ? uiText("背面", "Back") : Math.abs(this.state.px) > 0.22 ? (this.state.px > 0 ? uiText("左侧", "Left") : uiText("右侧", "Right")) : uiText("正面", "Front");
       const distanceDetails = promptDistanceDetails(config, this.state.pz);
       const azimuthField = PROMPT_WEIGHT_BY_ID["azimuth.weight"];
       const elevationField = PROMPT_WEIGHT_BY_ID["elevation.weight"];
@@ -351,12 +365,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const active = [
         `${azName} · ${azimuthField.label} ${promptFmtWeight(readNestedWeight(config, azimuthField))}`,
         `${elevationField.label} ${promptFmtWeight(readNestedWeight(config, elevationField))}`,
-        `${distanceField.label} 基准 ${promptFmtWeight(readNestedWeight(config, distanceField))} · 当前 ${promptFmtWeight(distanceDetails.weight)}（${distanceDetails.label}）`,
+        uiText(`${distanceField.label} 基准 ${promptFmtWeight(readNestedWeight(config, distanceField))} · 当前 ${promptFmtWeight(distanceDetails.weight)}（${distanceDetails.label}）`, `${distanceField.label} base ${promptFmtWeight(readNestedWeight(config, distanceField))} · Current ${promptFmtWeight(distanceDetails.weight)}（${distanceDetails.label}）`),
       ];
       if (Math.abs(this.state.roll) >= 0.15) active.push(`${tiltField.label} ${promptFmtWeight(readNestedWeight(config, tiltField))}`);
-      this.root.querySelector("[data-prompt-active]").textContent = `当前：${active.join(" · ")}`;
+      this.root.querySelector("[data-prompt-active]").textContent = uiText(`当前：${active.join(" · ")}`, `Active: ${active.join(" · ")}`);
       const preview = buildPromptPreview(this.state.px, this.state.py, this.state.pz, this.state.roll, config);
-      this.root.querySelector("[data-prompt-preview]").textContent = preview || "（当前机位没有启用的相机词）";
+      this.root.querySelector("[data-prompt-preview]").textContent = preview || uiText("（当前机位没有启用的相机词）", "(No camera tags enabled for this view)");
     }
 
     _buildJointSelect() {
@@ -402,7 +416,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
         this.state.posePreset = button.dataset.pose === "t" ? "T-Pose" : "A-Pose";
         this._syncPose();
         this._applyPose();
-        this._hint(button.dataset.pose === "reset" ? "已重置为 A-Pose" : `已切换为 ${this.state.posePreset}`);
+        this._hint(button.dataset.pose === "reset" ? uiText("已重置为 A-Pose", "Reset to A-Pose") : uiText(`已切换为 ${this.state.posePreset}`, `Switched to ${this.state.posePreset}`));
       }));
       this.root.querySelector("[data-pose-action=save]").addEventListener("click", () => this._savePose());
       this.root.querySelector("[data-pose-action=restore]").addEventListener("click", () => this._restorePose());
@@ -557,13 +571,13 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       this.root.querySelector('[data-camera-live="x"]').textContent = this.state.px.toFixed(2);
       this.root.querySelector('[data-camera-live="y"]').textContent = this.state.py.toFixed(2);
       this.root.querySelector('[data-camera-live="z"]').textContent = this.state.pz.toFixed(2);
-      this.root.querySelector('[data-camera-output="pz"]').textContent = `${distance} · ${distanceDetails.label} · 权重 ${promptFmtWeight(distanceDetails.weight)}`;
+      this.root.querySelector('[data-camera-output="pz"]').textContent = uiText(`${distance} · ${distanceDetails.label} · 权重 ${promptFmtWeight(distanceDetails.weight)}`, `${distance} · ${distanceDetails.label} · weight ${promptFmtWeight(distanceDetails.weight)}`);
       this.root.querySelectorAll("[data-distance-category]").forEach((item) => item.classList.toggle("is-active", item.dataset.distanceCategory === distanceDetails.key));
       this.root.querySelector('[data-camera-output="roll"]').textContent = `${Math.round(this.state.roll * 90)}°`;
       this.root.querySelector('[data-camera-output="fov"]').textContent = `${Math.round(this.state.fov)}°`;
       this.root.querySelector("[data-camera-preset]").value = this.state.preset || "自定义";
-      const horizontal = Math.abs(this.state.px) > 0.72 ? "背面" : Math.abs(this.state.px) > 0.22 ? (this.state.px < 0 ? "左侧" : "右侧") : "正面";
-      const vertical = this.state.py > 0.28 ? "俯视" : this.state.py < -0.28 ? "仰视" : "平视";
+      const horizontal = Math.abs(this.state.px) > 0.72 ? uiText("背面", "Back") : Math.abs(this.state.px) > 0.22 ? (this.state.px < 0 ? uiText("左侧", "Left") : uiText("右侧", "Right")) : uiText("正面", "Front");
+      const vertical = this.state.py > 0.28 ? uiText("俯视", "High angle") : this.state.py < -0.28 ? uiText("仰视", "Low angle") : uiText("平视", "Eye level");
       this.orientation.textContent = `${horizontal} · ${vertical}`;
       this._syncPromptControls(promptConfig);
       this._updateJointControls();
@@ -577,12 +591,12 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 
     _setSelection() {
       const label = JOINTS.find(([name]) => name === this.selectedJoint)?.[1] || this.selectedJoint;
-      this.selection.textContent = `${label} · 拖拽调整 X/Y`; this.jointMap.forEach((joint, name) => joint.userData.selected = name === this.selectedJoint); this.requestRender();
+      this.selection.textContent = uiText(`${label} · 拖拽调整 X/Y`, `${label} · Drag to adjust X/Y`); this.jointMap.forEach((joint, name) => joint.userData.selected = name === this.selectedJoint); this.requestRender();
     }
 
     _renderSlots() {
       const select = this.root.querySelector("[data-pose-slot]");
-      select.innerHTML = '<option value="">选择已保存姿势</option>' + Object.keys(this.slots).sort().map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join("");
+      select.innerHTML = uiText('<option value="">选择已保存姿势</option>', "<option value=\"\">Select a saved pose</option>") + Object.keys(this.slots).sort().map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join("");
     }
 
     _savePose() {
@@ -590,7 +604,7 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       const name = (input.value || "").trim() || "姿势1";
       this.slots[name] = clonePose(this.state.pose);
       try { window.localStorage.setItem(POSE_SLOT_KEY, JSON.stringify(this.slots)); } catch {}
-      this._renderSlots(); this.root.querySelector("[data-pose-slot]").value = name; this._hint(`已保存姿势「${name}」`);
+      this._renderSlots(); this.root.querySelector("[data-pose-slot]").value = name; this._hint(uiText(`已保存姿势「${name}」`, `Saved pose “${name}”`));
     }
 
     _restorePose() {
@@ -604,14 +618,14 @@ import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
       if (!name || !this.slots[name]) return;
       delete this.slots[name];
       try { window.localStorage.setItem(POSE_SLOT_KEY, JSON.stringify(this.slots)); } catch {}
-      this._renderSlots(); this._hint(`已删除姿势「${name}」`);
+      this._renderSlots(); this._hint(uiText(`已删除姿势「${name}」`, `Deleted pose “${name}”`));
     }
 
-    _hint(text) { const hint = this.root.querySelector("[data-hint]"); hint.textContent = text; clearTimeout(this.hintTimer); this.hintTimer = setTimeout(() => { if (!this.disposed) hint.textContent = "模型是无纹理低面数空壳；相机本体不显示，只显示少量视线与地面辅助线。"; }, 2600); }
+    _hint(text) { const hint = this.root.querySelector("[data-hint]"); hint.textContent = text; clearTimeout(this.hintTimer); this.hintTimer = setTimeout(() => { if (!this.disposed) hint.textContent = uiText("模型是无纹理低面数空壳；相机本体不显示，只显示少量视线与地面辅助线。", "An untextured low-poly body with minimal view and ground guides; the camera itself is hidden."); }, 2600); }
 
     async _loadThree() {
-      try { this.THREE = await loadThree(); if (this.disposed) return; this._setupScene(); this._setStatus("就绪 · 程序化低模 FK 素体"); }
-      catch (error) { this._setStatus("3D 引擎不可用"); this.root.classList.add("is-error"); this._hint(`无法加载项目内 Three.js：${error?.message || error}`); }
+      try { this.THREE = await loadThree(); if (this.disposed) return; this._setupScene(); this._setStatus(uiText("就绪 · 程序化低模 FK 素体", "Ready · Procedural low-poly FK body")); }
+      catch (error) { this._setStatus(uiText("3D 引擎不可用", "3D engine unavailable")); this.root.classList.add("is-error"); this._hint(uiText(`无法加载项目内 Three.js：${error?.message || error}`, `Could not load bundled Three.js: ${error?.message || error}`)); }
     }
 
     _setStatus(text) { this.status.textContent = text; }

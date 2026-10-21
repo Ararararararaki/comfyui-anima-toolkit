@@ -1,3 +1,4 @@
+import { uiText } from "./anima_node_i18n.js";
 import { app } from "/scripts/app.js";
 import { galleryWorkspace, mountGalleryWorkspace } from "./anima_gallery_workspace.js";
 import { layoutGalleryGrid, positionGallerySuggestions } from "./anima_gallery_layout.js";
@@ -115,11 +116,11 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
   // 也不至于让用户等；再配合下面的延迟隐藏，光标才腾得出来移进浮层点标签。
   const PROMPT_TOOLTIP_SHOW_DELAY = 350;
   const PROMPT_CATEGORY_LABELS = Object.freeze({
-    artist: "画师",
-    copyright: "版权/作品",
-    character: "角色",
-    general: "通用",
-    meta: "元数据",
+    artist: uiText("画师", "Artist"),
+    copyright: uiText("版权/作品", "Series / copyright"),
+    character: uiText("角色", "Character"),
+    general: uiText("通用", "General"),
+    meta: uiText("元数据", "Metadata"),
   });
   // 保持旧工作流默认结果：角色 → 版权/作品 → 通用。
   const DEFAULT_PROMPT_OUTPUT = Object.freeze({
@@ -128,13 +129,13 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
     escapeBrackets: false,
   });
   const DEFAULT_PROMPT_LIBRARY_CATEGORIES = Object.freeze([
-    { id: "uncategorized", name: "未分类", icon: "", sortOrder: 0 },
-    { id: "cat_faces", name: "人物", icon: "", sortOrder: 1 },
-    { id: "cat_style", name: "画师风格", icon: "", sortOrder: 2 },
-    { id: "cat_env", name: "背景环境", icon: "", sortOrder: 3 },
-    { id: "cat_light", name: "光影氛围", icon: "", sortOrder: 4 },
-    { id: "cat_detail", name: "细节增强", icon: "", sortOrder: 5 },
-    { id: "cat_fav", name: "常用", icon: "", sortOrder: 6 },
+    { id: "uncategorized", name: uiText("未分类", "Uncategorized"), icon: "", sortOrder: 0 },
+    { id: "cat_faces", name: uiText("人物", "Characters"), icon: "", sortOrder: 1 },
+    { id: "cat_style", name: uiText("画师风格", "Artist styles"), icon: "", sortOrder: 2 },
+    { id: "cat_env", name: uiText("背景环境", "Backgrounds"), icon: "", sortOrder: 3 },
+    { id: "cat_light", name: uiText("光影氛围", "Lighting"), icon: "", sortOrder: 4 },
+    { id: "cat_detail", name: uiText("细节增强", "Details"), icon: "", sortOrder: 5 },
+    { id: "cat_fav", name: uiText("常用", "Frequent"), icon: "", sortOrder: 6 },
   ]);
 
   // ── 多源画廊（D站 / C站 / P站）──────────────────────────────────────────────
@@ -187,30 +188,30 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
    * **capabilities 是隐藏/禁用/提示文案的唯一依据**，不按源名硬编码判断。
    */
   const GALLERY_SOURCE_FALLBACK = Object.freeze({
-    [DANBOORU_SOURCE_ID]: { id: DANBOORU_SOURCE_ID, label: "D站", capabilities: { tags: true, prompt: false, nsfw: false, login: false, query: true, page_numbers: true } },
-    civitai: { id: "civitai", label: "C站", capabilities: { tags: false, prompt: true, nsfw: true, login: false, query: false, page_numbers: false } },
-    pixiv: { id: "pixiv", label: "P站", capabilities: { tags: true, prompt: false, nsfw: false, login: true, query: true, page_numbers: true } },
+    [DANBOORU_SOURCE_ID]: { id: DANBOORU_SOURCE_ID, label: uiText("D站", "Danbooru"), capabilities: { tags: true, prompt: false, nsfw: false, login: false, query: true, page_numbers: true } },
+    civitai: { id: "civitai", label: uiText("C站", "Civitai"), capabilities: { tags: false, prompt: true, nsfw: true, login: false, query: false, page_numbers: false } },
+    pixiv: { id: "pixiv", label: uiText("P站", "Pixiv"), capabilities: { tags: true, prompt: false, nsfw: false, login: true, query: true, page_numbers: true } },
   });
   const GALLERY_SOURCE_PLACEHOLDERS = Object.freeze({
-    [DANBOORU_SOURCE_ID]: "标签（多个用空格分隔，回车直接搜）如：1girl long hair…",
-    civitai: "关键词（C站仅支持按排序 / 分级浏览，关键词只在已取回的当页内过滤）",
-    pixiv: "关键词（日文 / 英文均可；P站无匿名搜索，先在设置里完成授权）",
+    [DANBOORU_SOURCE_ID]: uiText("标签（多个用空格分隔，回车直接搜）如：1girl long hair…", "Tags separated by spaces; Enter to search, e.g. 1girl long hair…"),
+    civitai: uiText("关键词（C站仅支持按排序 / 分级浏览，关键词只在已取回的当页内过滤）", "Keywords (Civitai supports sort / rating browsing; keywords filter loaded items only)"),
+    pixiv: uiText("关键词（日文 / 英文均可；P站无匿名搜索，先在设置里完成授权）", "Keywords (Japanese / English; authorize Pixiv in settings first)"),
   });
   /** capabilities.query=false 的源要显式说明"搜了为什么没变"，不能静默（协调者 2026-09-15 要求）。 */
-  const GALLERY_LOCAL_QUERY_HINT = "上游接口不支持关键词检索：这里的关键词只在已取回的当页内过滤，排序 / 分级才是真正的浏览条件。";
+  const GALLERY_LOCAL_QUERY_HINT = uiText("上游接口不支持关键词检索：这里的关键词只在已取回的当页内过滤，排序 / 分级才是真正的浏览条件。", "This source does not support keyword search. Keywords filter the loaded page only; sort and rating control source browsing.");
   /** 工具栏里的短版（完整说明挂 title，别让一行提示把工具条撑成两行） */
-  const GALLERY_LOCAL_QUERY_HINT_SHORT = "关键词只在当页内过滤";
+  const GALLERY_LOCAL_QUERY_HINT_SHORT = uiText("关键词只在当页内过滤", "Keywords filter this page only");
   /** 同上，搜索框占位文案 —— 按能力分支，**不按源名硬编码** */
-  const GALLERY_LOCAL_QUERY_PLACEHOLDER = "关键词（上游不支持检索：只在已取回的当页内过滤）";
+  const GALLERY_LOCAL_QUERY_PLACEHOLDER = uiText("关键词（上游不支持检索：只在已取回的当页内过滤）", "Keywords (local filter on the loaded page only)");
   // C站 开了「无限加载」之后，上面那套「只在当页内过滤」的说法就过时了：搜索范围是后台已加载的整池。
-  const CIVITAI_POOL_QUERY_PLACEHOLDER = "关键词（在后台已加载的内容里筛选，改词无需重新加载）";
-  const CIVITAI_POOL_QUERY_HINT = "已开启 C站 无限加载：关键词在后台**已加载的全部内容**里筛选（跨页生效），"
-    + "改词或重新搜索都不会再去请求上游；想搜得更宽就点分页条上的「加载更多」。";
-  const CIVITAI_POOL_QUERY_HINT_SHORT = "关键词在已加载内容里筛（跨页）";
+  const CIVITAI_POOL_QUERY_PLACEHOLDER = uiText("关键词（在后台已加载的内容里筛选，改词无需重新加载）", "Keywords (filter loaded items; no reload needed)");
+  const CIVITAI_POOL_QUERY_HINT = uiText("已开启 C站 无限加载：关键词在后台**已加载的全部内容**里筛选（跨页生效），", "Civitai continuous loading: keywords filter all loaded items across pages. ")
+    + uiText("改词或重新搜索都不会再去请求上游；想搜得更宽就点分页条上的「加载更多」。", "Changing keywords does not reload the source. Use Load more to widen the search.");
+  const CIVITAI_POOL_QUERY_HINT_SHORT = uiText("关键词在已加载内容里筛（跨页）", "Keywords filter loaded items across pages");
   /** C站 search 的参数值域（契约：查询参数由各源自定义，前端按源给控件） */
   const CIVITAI_NSFW_OPTIONS = Object.freeze([
-    ["", "不限"],
-    ["None", "None（安全）"],
+    ["", uiText("不限", "Any")],
+    ["None", uiText("None（安全）", "None (safe)")],
     ["Soft", "Soft"],
     ["Mature", "Mature"],
     ["X", "X"],
@@ -220,17 +221,17 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
    * ZodError；后端也会先本地校验再回中文 400）—— 前端下拉不能给出非法值。
    */
   const CIVITAI_SORT_OPTIONS = Object.freeze([
-    ["Newest", "最新"],
-    ["Oldest", "最早"],
-    ["Most Reactions", "点赞最多"],
-    ["Most Comments", "评论最多"],
-    ["Most Collected", "收藏最多"],
-    ["Random", "随机"],
+    ["Newest", uiText("最新", "Newest")],
+    ["Oldest", uiText("最早", "Oldest")],
+    ["Most Reactions", uiText("点赞最多", "Most reactions")],
+    ["Most Comments", uiText("评论最多", "Most comments")],
+    ["Most Collected", uiText("收藏最多", "Most collected")],
+    ["Random", uiText("随机", "Random")],
   ]);
   const PIXIV_TARGET_OPTIONS = Object.freeze([
-    ["partial_match_for_tags", "标签部分匹配"],
-    ["exact_match_for_tags", "标签精确匹配"],
-    ["title_and_caption", "标题与说明"],
+    ["partial_match_for_tags", uiText("标签部分匹配", "Partial tag match")],
+    ["exact_match_for_tags", uiText("标签精确匹配", "Exact tag match")],
+    ["title_and_caption", uiText("标题与说明", "Title and caption")],
   ]);
   /**
    * P站 排序（与网页端搜索页的排序下拉同集）。
@@ -240,11 +241,11 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
    * ⚠️ 值必须与后端 `PIXIV_SEARCH_SORTS` 同值 —— 上游只认这五个，别的会 400。
    */
   const PIXIV_SORT_OPTIONS = Object.freeze([
-    ["date_desc", "最新"],
-    ["date_asc", "最早"],
-    ["popular_desc", "按热门度"],
-    ["popular_male_desc", "受男性欢迎"],
-    ["popular_female_desc", "受女性欢迎"],
+    ["date_desc", uiText("最新", "Newest")],
+    ["date_asc", uiText("最早", "Oldest")],
+    ["popular_desc", uiText("按热门度", "Popularity")],
+    ["popular_male_desc", uiText("受男性欢迎", "Popular with men")],
+    ["popular_female_desc", uiText("受女性欢迎", "Popular with women")],
   ]);
   /** 排行榜的作品形式 / 排行榜范围选项 —— 由 anima_gallery_source_page.js 的标签表派生（单一真源）。 */
   const PIXIV_RANKING_CONTENT_OPTIONS = Object.freeze(
@@ -438,7 +439,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         if (!db.objectStoreNames.contains("artists")) db.createObjectStore("artists", { keyPath: "tag" });
       };
       request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error || new Error("无法打开 Prompt 库"));
+      request.onerror = () => reject(request.error || new Error(uiText("无法打开 Prompt 库", "Cannot open prompt library")));
     });
   }
 
@@ -543,11 +544,11 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
    * 并让 DG_MAX_PT 真正生效（cols 下限保护，见 gridMetrics）。
    */
   const DG_THUMB_TIERS = Object.freeze([
-    { width: 116, label: "小" },
-    { width: 150, label: "中" },
-    { width: 190, label: "大" },
-    { width: 240, label: "特大" },
-    { width: 330, label: "巨大" },
+    { width: 116, label: uiText("小", "Small") },
+    { width: 150, label: uiText("中", "Medium") },
+    { width: 190, label: uiText("大", "Large") },
+    { width: 240, label: uiText("特大", "Extra large") },
+    { width: 330, label: uiText("巨大", "Huge") },
   ]);
   /** 档位归一化：先按 [DG_MIN_PT, DG_MAX_PT] 夹，再吸附到最近档位（下拉框必须能如实呈现） */
   function clampThumbWidth(value) {
@@ -571,9 +572,9 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
    * 默认 original = 本设置引入前的行为（零回归）。
    */
   const DG_IMAGE_SIZE_TIERS = Object.freeze([
-    { id: "original", label: "原图", note: "最清晰 · 最慢" },
-    { id: "master", label: "1200px", note: "长边≤1200 · 快得多" },
-    { id: "thumb", label: "540px", note: "最快 · 适合试跑" },
+    { id: "original", label: uiText("原图", "Original"), note: uiText("最清晰 · 最慢", "Highest quality · slowest") },
+    { id: "master", label: "1200px", note: uiText("长边≤1200 · 快得多", "Long edge ≤1200 · much faster") },
+    { id: "thumb", label: "540px", note: uiText("最快 · 适合试跑", "Fastest · for testing") },
   ]);
 
   /** 档位归一化：非法值一律回 original（= 本设置引入前的行为） */
@@ -658,9 +659,9 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
   // 而 `miku_day score:>100 order:random` = 31 结果 —— 时间窗会把随机池掐死。
   // 后端本来就有兜底：慢排序在全库超时时自动降级附加 age:<1week 重试并回报 warning。
   const RANDOM_QUALITY_TIERS = Object.freeze([
-    { id: "hot", label: "热门随机", hint: "评分 ≥100 · 随机", minScore: "100", minFavs: "" },
-    { id: "good", label: "优质随机", hint: "评分 ≥50 · 随机", minScore: "50", minFavs: "" },
-    { id: "popular", label: "高收藏随机", hint: "收藏 ≥30 · 随机", minScore: "", minFavs: "30" },
+    { id: "hot", label: uiText("热门随机", "Random popular"), hint: uiText("评分 ≥100 · 随机", "Score ≥100 · random"), minScore: "100", minFavs: "" },
+    { id: "good", label: uiText("优质随机", "Random quality"), hint: uiText("评分 ≥50 · 随机", "Score ≥50 · random"), minScore: "50", minFavs: "" },
+    { id: "popular", label: uiText("高收藏随机", "Random favorites"), hint: uiText("收藏 ≥30 · 随机", "Favorites ≥30 · random"), minScore: "", minFavs: "30" },
   ]);
   const RANDOM_HISTORY_MAX = 240;
 
@@ -1037,7 +1038,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       if (current.length === ids.length && current.every((id, i) => id === ids[i])) return;
       select.replaceChildren();
       for (const id of ids) {
-        select.append(new Option(this.sourceEntry(id)?.label || id, id));
+        select.append(new Option(this.sourceLabel(id), id));
       }
       select.value = ids.includes(previous) ? previous : this.activeSourceId();
     }
@@ -1049,7 +1050,10 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
     }
 
     sourceLabel(sourceId = null) {
-      return String(this.sourceEntry(sourceId)?.label || sourceId || "");
+      const id = sourceId || this.activeSourceId();
+      const label = String(this.sourceEntry(id)?.label || id || "");
+      const builtin = {danbooru:['D站','Danbooru'],pixiv:['P站','Pixiv'],civitai:['C站','Civitai']}[id];
+      return builtin && label === builtin[0] ? uiText(...builtin) : label;
     }
 
     /** The adapter declares D站's native page/account protocol; other sources use their registry capabilities. */
@@ -1132,8 +1136,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
     /** 分页条 / 状态栏里的「第几批」：页码模式的源显示页码，游标模式的源显示批号 */
     galleryBatchLabelLegacy() {
       return this.pageMode()
-        ? `第 ${Math.max(1, Number(this.page) || 1)} 页`
-        : `第 ${this.cursorStack.length} 批`;
+        ? uiText(`第 ${Math.max(1, Number(this.page) || 1)} 页`, `Page ${Math.max(1, Number(this.page) || 1)}`)
+        : uiText(`第 ${this.cursorStack.length} 批`, `Batch ${this.cursorStack.length}`);
     }
 
     /**
@@ -1310,7 +1314,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         const backendEmpty = !remoteCategories.filter((c) => String(c?.id) !== "uncategorized").length
           && !Object.keys(remotePosts).length;
         if (keepLocalFallback && backendEmpty && (localCategories.length > 1 || Object.keys(localPosts).length)) {
-          this.setStatus("共享分类库还是空的，已先沿用本工作流里的分类；正在迁移到共享库…", "");
+          this.setStatus(uiText("共享分类库还是空的，已先沿用本工作流里的分类；正在迁移到共享库…", "Shared category library is empty. Using workflow categories while migrating…"), "");
           return false;
         }
         this.settings.categories = remoteCategories;
@@ -1319,7 +1323,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         return true;
       } catch (error) {
         // 后端不可用 → 退回工作流里保存的那份（只读缓存），**不阻塞**画廊其它功能
-        this.setStatus(`分类库读取失败，暂用本工作流缓存：${error?.message || error}`, "error");
+        this.setStatus(uiText(`分类库读取失败，暂用本工作流缓存：${error?.message || error}`, `Could not read category library; using workflow cache: ${error?.message || error}`), "error");
         return false;
       }
     }
@@ -1429,9 +1433,9 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         });
         if (data.migrated || data.created) {
           this.setStatus(
-            `已把浏览器里的旧分类并入共享库：新增分类 ${data.created} 个、归类 ${data.migrated} 条`
-            + (collected.length ? `（其中含其它画廊节点的 ${collected.length} 份）` : "")
-            + (data.skipped ? `；${data.skipped} 条与共享库一致，未改动` : ""), "success");
+            uiText(`已把浏览器里的旧分类并入共享库：新增分类 ${data.created} 个、归类 ${data.migrated} 条`, `Legacy categories merged into the shared library: ${data.created} categories created, ${data.migrated} images categorized`)
+            + (collected.length ? uiText(`（其中含其它画廊节点的 ${collected.length} 份）`, ` (including ${collected.length} other gallery nodes)`) : "")
+            + (data.skipped ? uiText(`；${data.skipped} 条与共享库一致，未改动`, `; ${data.skipped} unchanged entries skipped`) : ""), "success");
         }
         // 迁移成功后打一次性标记：这些旧数据已经进共享库，别再每次加载重跑
         try {
@@ -1441,7 +1445,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       } catch (error) {
         // 迁移失败不能吞掉旧数据：settings 里那份仍在，下次加载会再试
         this._categoryMigrated = false;
-        this.setStatus(`旧分类迁移失败（本地数据仍在工作流里，下次加载会重试）：${error?.message || error}`, "error");
+        this.setStatus(uiText(`旧分类迁移失败（本地数据仍在工作流里，下次加载会重试）：${error?.message || error}`, `Legacy category migration failed (workflow data is retained; will retry next time): ${error?.message || error}`), "error");
       }
     }
 
@@ -1526,12 +1530,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           else delete this.settings.postCategories[key];
           ok += 1;
         } catch (error) {
-          this.setStatus(`归类失败（${key}）：${error?.message || error}`, "error");
+          this.setStatus(uiText(`归类失败（${key}）：${error?.message || error}`, `Could not categorize (${key}): ${error?.message || error}`), "error");
         }
       }
       this.saveSettings();
       if (noSnapshot) {
-        this.setStatus(`已归类 ${ok} 张，其中 ${noSnapshot} 张没取到图片快照（分类里会缺这几张）`, "error");
+        this.setStatus(uiText(`已归类 ${ok} 张，其中 ${noSnapshot} 张没取到图片快照（分类里会缺这几张）`, `Categorized ${ok} images; ${noSnapshot} snapshots unavailable (these images will be missing from the category)`), "error");
       }
       return ok;
     }
@@ -1587,7 +1591,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           return category;
         }
       } catch (error) {
-        this.setStatus(`新建分类失败：${error?.message || error}`, "error");
+        this.setStatus(uiText(`新建分类失败：${error?.message || error}`, `Could not create category: ${error?.message || error}`), "error");
       }
       return null;
     }
@@ -1610,13 +1614,13 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           }),
         });
       } catch (error) {
-        this.setStatus(`重命名分类失败：${error?.message || error}`, "error");
+        this.setStatus(uiText(`重命名分类失败：${error?.message || error}`, `Could not rename category: ${error?.message || error}`), "error");
         return false;
       }
       await this.loadCategoryLibrary();
       this.saveSettings();
       this.filterControls?.refresh();
-      this.setStatus(`已重命名分类：${category.name} → ${clean}`, "success");
+      this.setStatus(uiText(`已重命名分类：${category.name} → ${clean}`, `Category renamed: ${category.name} → ${clean}`), "success");
       return true;
     }
 
@@ -1632,7 +1636,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           }),
         });
       } catch (error) {
-        this.setStatus(`删除分类失败：${error?.message || error}`, "error");
+        this.setStatus(uiText(`删除分类失败：${error?.message || error}`, `Could not delete category: ${error?.message || error}`), "error");
         return false;
       }
       if (this.settings.activeCategory === category.id) {
@@ -1643,7 +1647,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       this.saveSettings();
       this.filterControls?.refresh();
       this.renderPosts();
-      this.setStatus(`已删除分类：${category.name}（其中的图片已变回未分类）`, "success");
+      this.setStatus(uiText(`已删除分类：${category.name}（其中的图片已变回未分类）`, `Category deleted: ${category.name} (its images are now uncategorized)`), "success");
       return true;
     }
 
@@ -1681,7 +1685,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       this.controller = new AbortController();
       const requestController = this.controller;
       const currentRequest = ++this.requestId;
-      this.setStatus(`正在搜索：${query || "（最新）"} · ${this.sourceLabel(sourceId)}`);
+      this.setStatus(uiText(`正在搜索：${query || "（最新）"} · ${this.sourceLabel(sourceId)}`, `Searching: ${query || "(newest)"} · ${this.sourceLabel(sourceId)}`));
       if (this.grid) this.grid.setAttribute("aria-busy", "true");
       try {
         if (poolEnabled) {
@@ -1732,7 +1736,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         this.syncReturnButton();
         this.renderPosts();
         this.renderPagination();
-        this.setStatus(`${this.sourceLabel(sourceId)} 搜索失败：${error?.message || "未知错误"}`, "error");
+        this.setStatus(uiText(`${this.sourceLabel(sourceId)} 搜索失败：${error?.message || "未知错误"}`, `${this.sourceLabel(sourceId)} search failed: ${error?.message || "Unknown error"}`), "error");
       } finally {
         if (!this.disposed && currentRequest === this.requestId && this.grid) this.grid.removeAttribute("aria-busy");
       }
@@ -1812,10 +1816,10 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       void this.refreshFavorites();
       this.filterControls?.refresh();
       this.renderPagination();
-      this.setStatus(`已切换到${this.sourceLabel(id)}${this.sourceCapabilities(id).login ? "（需要授权，见设置→图源密钥）" : ""}`);
+      this.setStatus(uiText(`已切换到${this.sourceLabel(id)}${this.sourceCapabilities(id).login ? "（需要授权，见设置→图源密钥）" : ""}`, `Switched to ${this.sourceLabel(id)}${this.sourceCapabilities(id).login ? " (authorization required: Settings → Source credentials)" : ""}`));
       // P站 后端模块没装时不发这个必然失败的请求（状态来自 /anima/gallery/secrets 的 pixiv.available）
       if (id === "pixiv" && this.gallerySecretState?.pixiv?.available === false) {
-        this.setStatus("P站 后端模块未安装（anima_gallery_pixiv.py）—— 该图源不可用，请用 C站 或 D站", "error");
+        this.setStatus(uiText("P站 后端模块未安装（anima_gallery_pixiv.py）—— 该图源不可用，请用 C站 或 D站", "Pixiv module (anima_gallery_pixiv.py) is missing. Use Civitai or Danbooru."), "error");
         return;
       }
       if ((this.queryInput?.value ?? this.queryWidget?.value) === restored && !this._queryComposing) {
@@ -1876,7 +1880,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const host = document.createElement("div");
       host.className = "adg-source-filters";
       host.setAttribute("role", "group");
-      host.setAttribute("aria-label", "图源筛选");
+      host.setAttribute("aria-label", uiText("图源筛选", "Source filters"));
       host.hidden = true;
       const makeSelect = (label, options) => {
         const wrap = document.createElement("label");
@@ -1890,28 +1894,28 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         host.append(wrap);
         return select;
       };
-      const civitaiNsfw = makeSelect("分级", CIVITAI_NSFW_OPTIONS);
-      const civitaiSort = makeSelect("排序", CIVITAI_SORT_OPTIONS);
-      const pixivTarget = makeSelect("匹配", PIXIV_TARGET_OPTIONS);
-      const pixivSort = makeSelect("排序", PIXIV_SORT_OPTIONS);
+      const civitaiNsfw = makeSelect(uiText("分级", "Rating"), CIVITAI_NSFW_OPTIONS);
+      const civitaiSort = makeSelect(uiText("排序", "Sort"), CIVITAI_SORT_OPTIONS);
+      const pixivTarget = makeSelect(uiText("匹配", "Match"), PIXIV_TARGET_OPTIONS);
+      const pixivSort = makeSelect(uiText("排序", "Sort"), PIXIV_SORT_OPTIONS);
       // 「近期热门」：网页端里它是「按热门度排序」的下级动作项，这里做成排序旁的一键开关。
       // 只在有关键词、且不在排行榜模式时才有意义（排行榜本身就是热度榜）。
       const pixivRecent = document.createElement("button");
       pixivRecent.type = "button";
       pixivRecent.className = "adg-source-toggle";
-      pixivRecent.textContent = "近期热门";
+      pixivRecent.textContent = uiText("近期热门", "Recent popular");
       pixivRecent.setAttribute("aria-pressed", "false");
-      pixivRecent.title = "近一个月内的热门作品（同网页端 order=popular_d + 近一月区间）；"
-        + "开启时会自动把排序切到「按热门度」";
+      pixivRecent.title = uiText("近一个月内的热门作品（同网页端 order=popular_d + 近一月区间）；", "Popular works from the last month (website order=popular_d + monthly range). ")
+        + uiText("开启时会自动把排序切到「按热门度」", "Enabling this switches sorting to Popularity.");
       const pixivRecentField = document.createElement("div");
       pixivRecentField.className = "adg-source-field adg-source-action";
       pixivRecentField.append(pixivRecent);
       host.append(pixivRecentField);
       // 排行榜（P站 网页端原生榜）：入口是下拉菜单，样式复用 D站「筛选 → 快速筛选」那一套
       const pixivRanking = new PortalDropdown({
-        label: "排行榜",
-        title: "P站 原生排行榜：作品形式（综合 / 插画 / 动图 / 漫画）"
-          + " × 排行榜范围（今日 / 本周 / 本月 / 新人 / 原创 / AI生成 / 受男性欢迎 / 受女性欢迎）",
+        label: uiText("排行榜", "Rankings"),
+        title: uiText("P站 原生排行榜：作品形式（综合 / 插画 / 动图 / 漫画）", "Pixiv rankings: content type (all / illustration / animation / manga)")
+          + uiText(" × 排行榜范围（今日 / 本周 / 本月 / 新人 / 原创 / AI生成 / 受男性欢迎 / 受女性欢迎）", " × scope (daily / weekly / monthly / rookies / original / AI / men / women)"),
         menuClass: "adg-ranking-menu",
         content: () => this.buildPixivRankingMenu(),
       });
@@ -1989,28 +1993,28 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         pixivRecent.setAttribute("aria-pressed", on ? "true" : "false");
       }
       if (pixivRanking) {
-        pixivRanking.setSummary("排行榜", rankingOn ? 1 : 0);
+        pixivRanking.setSummary(uiText("排行榜", "Rankings"), rankingOn ? 1 : 0);
         pixivRanking.element.title = rankingOn
-          ? `当前：${GallerySourcePage.pixivRankingLabel(f)}（点此更换或退出）`
-          : "P站 原生排行榜：作品形式 × 排行榜范围";
+          ? uiText(`当前：${GallerySourcePage.pixivRankingLabel(f)}（点此更换或退出）`, `Current: ${GallerySourcePage.pixivRankingLabel(f)} (click to change or exit)`)
+          : uiText("P站 原生排行榜：作品形式 × 排行榜范围", "Pixiv rankings: content type × ranking scope");
       }
       if (hint) {
         const poolQuery = this.poolMode();
         // 排行榜模式下 P站 也占一行提示 —— 让用户知道搜索框里的词此刻不生效
         hint.hidden = caps.query && !rankingOn;
         hint.textContent = rankingOn
-          ? `排行榜模式：不使用关键词（${GallerySourcePage.pixivRankingLabel(f)}）`
+          ? uiText(`排行榜模式：不使用关键词（${GallerySourcePage.pixivRankingLabel(f)}）`, `Rankings ignore keywords (${GallerySourcePage.pixivRankingLabel(f)})`)
           : (caps.query ? "" : (poolQuery ? CIVITAI_POOL_QUERY_HINT_SHORT : GALLERY_LOCAL_QUERY_HINT_SHORT));
         hint.title = rankingOn
-          ? "排行榜按上游榜单取数：搜索框关键词与匹配方式都不参与；在「排行榜」菜单里点「退出排行榜」回到关键词搜索。"
+          ? uiText("排行榜按上游榜单取数：搜索框关键词与匹配方式都不参与；在「排行榜」菜单里点「退出排行榜」回到关键词搜索。", "Rankings come from the source and ignore keywords and match mode. Use Exit rankings to return to keyword search.")
           : (caps.query ? "" : (poolQuery ? CIVITAI_POOL_QUERY_HINT : GALLERY_LOCAL_QUERY_HINT));
         hint.dataset.queryMode = caps.query ? "server" : "local";
       }
       if (this.sourceFilterHost) {
         this.sourceFilterHost.hidden = ![...this.sourceFilterHost.children].some((element) => !element.hidden);
         this.sourceFilterHost.title = id === "civitai"
-          ? "C站筛选：分级（None/Soft/Mature/X，匿名也可读）与排序（上游只认 Newest/Oldest/Most */Random）"
-          : "P站筛选：匹配方式、排序、近期热门；「排行榜」进入上游原生榜单（不需要关键词）";
+          ? uiText("C站筛选：分级（None/Soft/Mature/X，匿名也可读）与排序（上游只认 Newest/Oldest/Most */Random）", "Civitai filters: rating (None/Soft/Mature/X, available anonymously) and sorting (Newest/Oldest/Most */Random)")
+          : uiText("P站筛选：匹配方式、排序、近期热门；「排行榜」进入上游原生榜单（不需要关键词）", "Pixiv filters: match mode, sort and recent popular. Rankings open the native lists (no keywords needed).");
       }
     }
 
@@ -2035,15 +2039,15 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       root.className = "adg-menu-section adg-ranking-menu-content";
       const title = document.createElement("div");
       title.className = "adg-menu-title";
-      title.textContent = "P站 排行榜（网页端原生榜）";
+      title.textContent = uiText("P站 排行榜（网页端原生榜）", "Pixiv rankings (native website lists)");
       const contentTitle = document.createElement("div");
       contentTitle.className = "adg-menu-subtitle";
-      contentTitle.textContent = "作品形式";
+      contentTitle.textContent = uiText("作品形式", "Content type");
       const contentRow = document.createElement("div");
       contentRow.className = "adg-ranking-grid adg-ranking-grid-4";
       const modeTitle = document.createElement("div");
       modeTitle.className = "adg-menu-subtitle";
-      modeTitle.textContent = "排行榜范围";
+      modeTitle.textContent = uiText("排行榜范围", "Ranking scope");
       const modeRow = document.createElement("div");
       modeRow.className = "adg-ranking-grid";
       const preview = document.createElement("div");
@@ -2063,13 +2067,13 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           button.classList.toggle("is-selected", on);
           button.setAttribute("aria-pressed", on ? "true" : "false");
         }
-        preview.textContent = `当前：${GallerySourcePage.pixivRankingLabel(draft)}`;
+        preview.textContent = uiText(`当前：${GallerySourcePage.pixivRankingLabel(draft)}`, `Current: ${GallerySourcePage.pixivRankingLabel(draft)}`);
         const forms = GallerySourcePage.PIXIV_RANKING_CONTENTS
           .filter((item) => GallerySourcePage.pixivRankingSupports(item, draft.rankMode));
         const modeLabel = GallerySourcePage.PIXIV_RANKING_MODE_LABELS[draft.rankMode];
         note.textContent = forms.length === 1
-          ? `「${modeLabel}」上游只提供综合榜（不区分作品形式）`
-          : (forms.includes("ugoira") ? "" : `「${modeLabel}」没有动图榜（上游只有日 / 周两档）`);
+          ? uiText(`「${modeLabel}」上游只提供综合榜（不区分作品形式）`, `The source only provides an overall ranking for ${modeLabel} (all content types)`)
+          : (forms.includes("ugoira") ? "" : uiText(`「${modeLabel}」没有动图榜（上游只有日 / 周两档）`, `No animation ranking for ${modeLabel} (only daily / weekly are available)`));
         note.hidden = !note.textContent;
       };
       for (const [value, label] of PIXIV_RANKING_CONTENT_OPTIONS) {
@@ -2107,8 +2111,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       actions.className = "adg-menu-actions";
       const leave = document.createElement("button");
       leave.type = "button";
-      leave.textContent = "退出排行榜";
-      leave.title = "回到普通关键词搜索（排行榜不参与关键词）";
+      leave.textContent = uiText("退出排行榜", "Exit rankings");
+      leave.title = uiText("回到普通关键词搜索（排行榜不参与关键词）", "Return to keyword search (rankings ignore keywords)");
       leave.onclick = () => {
         const target = this.gallerySourceFilters("pixiv");
         target.ranking = false;
@@ -2120,7 +2124,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const apply = document.createElement("button");
       apply.type = "button";
       apply.className = "primary";
-      apply.textContent = "应用筛选";
+      apply.textContent = uiText("应用筛选", "Apply filters");
       apply.onclick = () => {
         const target = this.gallerySourceFilters("pixiv");
         target.ranking = true;
@@ -2442,7 +2446,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       // 会把已经看熟的满屏图整体重建（闪黑），视口位置也跟着漂。
       this.renderPosts({ preserveScroll: true, appendOnly: true });
       this.renderPagination();
-      this.setStatus(`${this.sourceLabel()}：已补到 ${this.posts.length} 张（填满本屏）`);
+      this.setStatus(uiText(`${this.sourceLabel()}：已补到 ${this.posts.length} 张（填满本屏）`, `${this.sourceLabel()}: loaded ${this.posts.length} images to fill this view`));
     }
 
     /**
@@ -2505,7 +2509,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         this.pixivPageGroups = keepPixivGroups;
         this.renderPosts({ preserveScroll: true, appendOnly: true });
         this.renderPagination();
-        this.setStatus(`补图失败：${error?.message || "未知错误"}`, "error");
+        this.setStatus(uiText(`补图失败：${error?.message || "未知错误"}`, `Could not load more images: ${error?.message || "Unknown error"}`), "error");
         return false;
       } finally {
         this.fillMoreBusy = false;
@@ -2845,7 +2849,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       this.saveSettings();
       this.filterControls?.refresh();
       this.randomTierButtons?.();
-      this.setStatus(`随机发现：${tier.label}（${tier.hint}）…`);
+      this.setStatus(uiText(`随机发现：${tier.label}（${tier.hint}）…`, `Random discovery: ${tier.label} (${tier.hint})…`));
       // force：随机排序若命中后端 30s 缓存会给出完全相同的一批，失去「随机」的意义
       await this.search({ resetPage: true, force: true });
       // 搜索控制器负责提交/错误提示。这里不在 await 后回滚或重试，
@@ -2960,20 +2964,20 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       if (!button) return;
       const meta = this.favoriteMeta;
       if (!meta?.logged_in) {
-        button.textContent = "☆ 我的收藏";
-        button.title = "未登录 D站：在节点设置里填用户名与 API key 后可用";
+        button.textContent = uiText("☆ 我的收藏", "☆ My favorites");
+        button.title = uiText("未登录 D站：在节点设置里填用户名与 API key 后可用", "Sign in to Danbooru with your username and API key in node settings");
         button.classList.remove("is-favorited");
         return;
       }
       const used = Number(meta.favorite_count) || 0;
       const cap = Number(meta.favorite_limit) || 0;
-      const remaining = cap > 0 ? `（还可收藏 ${Math.max(0, cap - used)} 张）` : "";
+      const remaining = cap > 0 ? uiText(`（还可收藏 ${Math.max(0, cap - used)} 张）`, ` (${Math.max(0, cap - used)} favorites remaining)`) : "";
       // 按钮是**开关**：高亮 = 当前正在看收藏（2026-09-28 改为独立模式，不再写搜索框）
       const active = this.settings.favoritesOnly === true;
-      button.textContent = `${active ? "★" : "☆"} 我的收藏${this.favoriteTotal ? ` ${this.favoriteTotal}` : ""}`;
+      button.textContent = uiText(`${active ? "★" : "☆"} 我的收藏${this.favoriteTotal ? ` ${this.favoriteTotal}` : ""}`, `${active ? "★" : "☆"} My favorites${this.favoriteTotal ? ` ${this.favoriteTotal}` : ""}`);
       button.title = active
-        ? `正在看「我的收藏」（点一下退出）；搜索框里的筛选词会一起生效`
-        : `只看 D站 账号「${meta.username}」的收藏${remaining}（不影响搜索框里的筛选词）`;
+        ? uiText(`正在看「我的收藏」（点一下退出）；搜索框里的筛选词会一起生效`, `Showing My favorites (click to exit); search filters also apply`)
+        : uiText(`只看 D站 账号「${meta.username}」的收藏${remaining}（不影响搜索框里的筛选词）`, `Show favorites of Danbooru account ${meta.username}${remaining} (search filters still apply)`);
       button.classList.toggle("is-favorited", active);
     }
 
@@ -2990,7 +2994,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
     openMyFavorites() {
       const meta = this.favoriteMeta;
       if (!this.settings.favoritesOnly && !meta?.logged_in) {
-        this.setStatus("未登录 D站 账号：先在节点设置里填用户名与 API key 才能看收藏", "error");
+        this.setStatus(uiText("未登录 D站 账号：先在节点设置里填用户名与 API key 才能看收藏", "Enter your Danbooru username and API key in node settings to view favorites"), "error");
         return;
       }
       if (!String(meta?.query_tag || "")) return;
@@ -2998,8 +3002,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       this.saveSettings();
       this.syncFavoriteStatus();
       this.setStatus(this.settings.favoritesOnly
-        ? `★ 已进入「我的收藏」（D站 共 ${this.favoriteTotal} 张；搜索框里的筛选词会一起生效）`
-        : "已退出「我的收藏」，回到普通搜索");
+        ? uiText(`★ 已进入「我的收藏」（D站 共 ${this.favoriteTotal} 张；搜索框里的筛选词会一起生效）`, `★ Showing My favorites (${this.favoriteTotal} on Danbooru; search filters also apply)`)
+        : uiText("已退出「我的收藏」，回到普通搜索", "Exited My favorites; normal search restored"));
       void this.search({ resetPage: true });
     }
 
@@ -3007,7 +3011,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
     async toggleFavorite(post, button = null) {
       const meta = this.favoriteMeta;
       if (!meta?.logged_in) {
-        this.setStatus("未登录 D站 账号：先在节点设置里填用户名与 API key 后再收藏", "error");
+        this.setStatus(uiText("未登录 D站 账号：先在节点设置里填用户名与 API key 后再收藏", "Enter your Danbooru username and API key in node settings to save favorites"), "error");
         return;
       }
       const postId = String(post?.id ?? "");
@@ -3030,7 +3034,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           data = {};
         }
         if (!response.ok || !data?.ok) {
-          this.setStatus(String(data?.error || `收藏失败（HTTP ${response.status}）`), "error");
+          this.setStatus(String(data?.error || uiText(`收藏失败（HTTP ${response.status}）`, `Favorite failed (HTTP ${response.status})`)), "error");
           if (button) this.paintFavoriteButton(button, postId);
           return;
         }
@@ -3042,9 +3046,9 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         }
         if (button) this.paintFavoriteButton(button, postId);
         this.syncFavoriteStatus();
-        this.setStatus(data.favorite ? `已收藏到 D站 账号（#${postId}）` : `已从 D站 收藏移除（#${postId}）`, "success");
+        this.setStatus(data.favorite ? uiText(`已收藏到 D站 账号（#${postId}）`, `Added to Danbooru favorites (#${postId})`) : uiText(`已从 D站 收藏移除（#${postId}）`, `Removed from Danbooru favorites (#${postId})`), "success");
       } catch (error) {
-        this.setStatus(`收藏失败：${error?.message || "网络错误"}`, "error");
+        this.setStatus(uiText(`收藏失败：${error?.message || "网络错误"}`, `Favorite failed: ${error?.message || "Network error"}`), "error");
         if (button) this.paintFavoriteButton(button, postId);
       } finally {
         this.favoriteBusy.delete(postId);
@@ -3057,7 +3061,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       if (!button) return;
       const favorited = this.favoriteIds.has(String(postId));
       button.textContent = favorited ? "★" : "☆";
-      button.title = favorited ? "已收藏在你的 D站 账号里 —— 点一下取消收藏" : "收藏到 D站 账号";
+      button.title = favorited ? uiText("已收藏在你的 D站 账号里 —— 点一下取消收藏", "Saved to your Danbooru favorites — click to remove") : uiText("收藏到 D站 账号", "Favorite on Danbooru");
       button.classList.toggle("is-favorited", favorited);
     }
 
@@ -3174,7 +3178,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
     renderPresetOptions() {
       if (!this.presetSelect) return;
       const keepValue = this.presetSelect.value;
-      this.presetSelect.replaceChildren(new Option("搜索预设", ""));
+      this.presetSelect.replaceChildren(new Option(uiText("搜索预设", "Search presets"), ""));
       this.settings.presets.forEach((preset, index) => {
         const label = preset.note ? `${preset.name} · ${preset.note}` : preset.name;
         this.presetSelect.append(new Option(label, String(index)));
@@ -3302,14 +3306,14 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const head = document.createElement("div");
       head.className = "adg-search-history-head";
       const title = document.createElement("span");
-      title.textContent = items.length ? `最近搜索 · ${items.length}` : "最近搜索";
+      title.textContent = items.length ? uiText(`最近搜索 · ${items.length}`, `Recent searches · ${items.length}`) : uiText("最近搜索", "Recent searches");
       head.append(title);
       if (items.length) {
         const clear = document.createElement("button");
         clear.type = "button";
         clear.className = "adg-search-history-clear";
-        clear.textContent = "清空";
-        clear.title = `清空「${this.sourceLabel?.(this.activeSourceId()) || "当前栏目"}」的搜索历史`;
+        clear.textContent = uiText("清空", "Clear");
+        clear.title = uiText(`清空「${this.sourceLabel?.(this.activeSourceId()) || "当前栏目"}」的搜索历史`, `Clear search history for ${this.sourceLabel?.(this.activeSourceId()) || "this source"}`);
         clear.addEventListener("pointerdown", (event) => event.stopPropagation());
         clear.addEventListener("mousedown", (event) => event.stopPropagation());
         clear.addEventListener("click", (event) => {
@@ -3325,7 +3329,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       if (!items.length) {
         const empty = document.createElement("div");
         empty.className = "adg-search-history-empty";
-        empty.textContent = "还没有搜索记录 —— 搜一次就会出现在这里";
+        empty.textContent = uiText("还没有搜索记录 —— 搜一次就会出现在这里", "No search history yet. Your searches will appear here.");
         suggestions.append(empty);
       } else {
         suggestions.append(...items.map((text) => this.buildSearchHistoryRow(text)));
@@ -3347,7 +3351,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
     buildSearchHistoryRow(text) {
       const row = document.createElement("div");
       row.className = "adg-search-history-item";
-      row.title = `搜索「${text}」`;
+      row.title = uiText(`搜索「${text}」`, `Search for ${text}`);
       // 与联想候选项同样的防抢：ComfyUI 画布 / 节点激活面罩会吃掉这几帧的点击
       row.addEventListener("pointerdown", (event) => event.stopPropagation());
       // ⚠️ mousedown 必须 `preventDefault`（不能只 stopPropagation）：否则默认行为会让搜索框失焦 →
@@ -3364,7 +3368,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       remove.type = "button";
       remove.className = "adg-search-history-remove";
       remove.textContent = "✕";
-      remove.title = "从历史里删掉这一条";
+      remove.title = uiText("从历史里删掉这一条", "Remove this search from history");
       remove.addEventListener("pointerdown", (event) => event.stopPropagation());
       // 同上：不 preventDefault 的话，按住删除键也会先被 blur 收起浮层、点击落空
       remove.addEventListener("mousedown", (event) => { event.preventDefault(); event.stopPropagation(); });
@@ -3431,7 +3435,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           const name = String(key).trim().slice(0, TAG_USAGE_ITEM_MAX);
           const count = Math.floor(Number(value));
           // `__proto__` 单独挡掉：手改过的 localStorage 用它能在赋值时改原型链
-          if (!name || name === "__proto__" || !Number.isFinite(count) || count <= 0) continue;
+          if (!name || name === uiText("__proto__", {}) || !Number.isFinite(count) || count <= 0) continue;
           out[name] = count;
         }
         return out;
@@ -3686,7 +3690,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
 
         const label = document.createElement("span");
         label.className = "adg-suggestions-label";
-        label.textContent = "角色 · AnimaDex";
+        label.textContent = uiText("角色 · AnimaDex", "Characters · AnimaDex");
         suggestions.append(label);
 
         for (const item of results) {
@@ -3701,7 +3705,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           button.type = "button";
           button.className = "adg-char-suggestion";
           button.dataset.trigger = value;
-          button.title = `插入 ${value}`;
+          button.title = uiText(`插入 ${value}`, `Insert ${value}`);
           // 与标签候选同样的防抢：ComfyUI 画布 / 节点激活面罩会吃掉这几帧的点击
           button.onpointerdown = (event) => event.stopPropagation();
           button.onmousedown = (event) => event.stopPropagation();
@@ -3772,7 +3776,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       if (!value) return;
       this.animadexRolePrompt = value;
       this.updateSelection();
-      this.setStatus(`AnimaDex 角色词已写入 Prompt 输出：${value}`, "success");
+      this.setStatus(uiText(`AnimaDex 角色词已写入 Prompt 输出：${value}`, `AnimaDex character tags added to prompt output: ${value}`), "success");
     }
 
     /** 清除 AnimaDex 角色词（回到「只输出图片自带 prompt」的状态）。 */
@@ -3780,7 +3784,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       if (!this.animadexRolePrompt) return;
       this.animadexRolePrompt = "";
       this.updateSelection();
-      this.setStatus("已清除 AnimaDex 角色词", "success");
+      this.setStatus(uiText("已清除 AnimaDex 角色词", "AnimaDex character tags cleared"), "success");
     }
 
     currentQuery() {
@@ -3824,7 +3828,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const current = () => !this.disposed && !controller.signal.aborted && requestId === this.requestId;
       const submitted = String(this.queryWidget?.value ?? this.settings.lastQuery ?? "");
       const page = resetPage ? 1 : Math.max(1, Number(this.page) || 1);
-      this.setStatus(`正在搜索：${submitted}`);
+      this.setStatus(uiText(`正在搜索：${submitted}`, `Searching: ${submitted}`));
       this.grid?.setAttribute("aria-busy", "true");
       try {
         const result = await fetchGalleryPage(this, {
@@ -3861,7 +3865,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       } catch (error) {
         if (!current() || error?.name === "AbortError") return;
         if (append) throw error;
-        this.setStatus(`搜索失败，已保留原图片和位置：${error?.message || "未知错误"}`, "error");
+        this.setStatus(uiText(`搜索失败，已保留原图片和位置：${error?.message || "未知错误"}`, `Search failed; previous images and position retained: ${error?.message || "Unknown error"}`), "error");
       } finally {
         if (current()) {
           this.grid?.removeAttribute("aria-busy");
@@ -3885,7 +3889,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         this.posts = this._searchSnapshot || this.posts;
         this.renderPosts();
         this.renderPagination();
-        this.setStatus(this.posts.length ? "已切换为全部分类（恢复之前的搜索结果）" : "");
+        this.setStatus(this.posts.length ? uiText("已切换为全部分类（恢复之前的搜索结果）", "Showing all categories (previous search restored)") : "");
         return;
       }
       // 进入分类浏览前保存普通搜索视图快照（切回时恢复）
@@ -3896,11 +3900,11 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         this.posts = [];
         this.renderPosts();
         this.renderPagination();
-        this.setStatus(`分类「${catName}」还没有图片：在搜索页点图片卡片的「分类」即可归类`, "");
+        this.setStatus(uiText(`分类「${catName}」还没有图片：在搜索页点图片卡片的「分类」即可归类`, `No images in category ${catName}. Use Categories on an image card to add images.`), "");
         return;
       }
       const targetId = catId;
-      this.setStatus(`正在加载分类「${catName}」${known} 张…`);
+      this.setStatus(uiText(`正在加载分类「${catName}」${known} 张…`, `Loading category ${catName}: ${known} images…`));
       if (this.grid) this.grid.setAttribute("aria-busy", "true");
       let posts = [];
       try {
@@ -3915,7 +3919,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           this.posts = [];
           this.renderPosts();
           this.renderPagination();
-          this.setStatus(`加载分类「${catName}」失败：${error?.message || "未知错误"}`, "error");
+          this.setStatus(uiText(`加载分类「${catName}」失败：${error?.message || "未知错误"}`, `Could not load category ${catName}: ${error?.message || "Unknown error"}`), "error");
         }
         return;
       } finally {
@@ -3926,8 +3930,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       this.renderPagination();
       const missing = Math.max(0, known - posts.length);
       this.setStatus(
-        `分类「${catName}」：${posts.length} 张已归类图片（读本地快照，三个图源通用）`
-        + (missing ? `，${missing} 张还没有快照（旧数据迁移而来，下次归类时会补上）` : ""));
+        uiText(`分类「${catName}」：${posts.length} 张已归类图片（读本地快照，三个图源通用）`, `Category ${catName}: ${posts.length} images (local snapshots across sources)`)
+        + (missing ? uiText(`，${missing} 张还没有快照（旧数据迁移而来，下次归类时会补上）`, `; ${missing} legacy images have no snapshot yet (updated when categorized again)`) : ""));
     }
 
     async fetchSuggestions(q, empty = false, state = null) {
@@ -3972,10 +3976,10 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         // P站 的候选来自 pixiv 官方联想，标明来源比笼统的"智能提示"有用 ——
         // 用户据此明白为什么敲中文能搜出日文标签。
         label.textContent = pixiv
-          ? (chineseQuery ? "P站 中文标签" : "P站 标签联想")
+          ? (chineseQuery ? uiText("P站 中文标签", "Pixiv Chinese tags") : uiText("P站 标签联想", "Pixiv tag suggestions"))
           : (details.length
-            ? (chineseQuery ? "中文匹配" : "智能提示")
-            : (empty ? "你是不是想搜" : "智能提示"));
+            ? (chineseQuery ? uiText("中文匹配", "Chinese match") : uiText("智能提示", "Suggestions"))
+            : (empty ? uiText("你是不是想搜", "Did you mean") : uiText("智能提示", "Suggestions")));
         this.suggestions.append(label);
 
         for (const choice of ordered) {
@@ -4004,11 +4008,11 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
             arrow.textContent = translation.textContent ? " → " : "";
             count.textContent = Number(item.postCount) > 0 ? formatCount(item.postCount) : "";
             // P站 这个数字是**标签热度 access_count**（量级 10^8），不是作品数 —— 别让它在界面上冒充 D站 的帖数。
-            if (pixiv && count.textContent) count.title = "Pixiv 标签热度（官网 access_count，非作品数）";
+            if (pixiv && count.textContent) count.title = uiText("Pixiv 标签热度（官网 access_count，非作品数）", "Pixiv tag popularity (official access_count, not a post count)");
             // 本地索引的帖数是**快照值**，与 D 站实时值有偏差（实测 hatsune miku 低约 21%）。
             // 用一个小上标如实标注来源，别让快照数字冒充实时值；远程路径不带该字段，行为不变。
             if (item.count_is_snapshot && count.textContent) {
-              count.title = `本地快照帖数（非 D 站实时值）`;
+              count.title = uiText(`本地快照帖数（非 D 站实时值）`, `Local snapshot post count (not a live Danbooru count)`);
               count.classList.add("is-snapshot");
             }
             const main = document.createElement("span");
@@ -4033,7 +4037,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         if (rewrites.length) {
           const extension = document.createElement("span");
           extension.className = "adg-suggestions-extension";
-          extension.textContent = `扩展：${rewrites.join(" / ")}`;
+          extension.textContent = uiText(`扩展：${rewrites.join(" / ")}`, `Expanded: ${rewrites.join(" / ")}`);
           this.suggestions.append(extension);
         }
         this.positionSuggestions();
@@ -4148,12 +4152,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       this.selectionWidget.value = value;
       this.selectionWidget.callback?.(value);
       this.node.graph?.change?.();
-      this.setStatus(selected.length ? `已选择 ${selected.length} 张图片` : "已清除选择");
+      this.setStatus(selected.length ? uiText(`已选择 ${selected.length} 张图片`, `Selected ${selected.length} images`) : uiText("已清除选择", "Selection cleared"));
       this.updateGalleryBatchControls(selected.length);
       // 批量归类按钮联动（选中 ≥2 张可用）
       if (this.batchCatBtn) {
         this.batchCatBtn.disabled = selected.length < 2;
-        this.batchCatBtn.textContent = selected.length >= 2 ? `归类选中 ${selected.length} 张` : "归类选中";
+        this.batchCatBtn.textContent = selected.length >= 2 ? uiText(`归类选中 ${selected.length} 张`, `Categorize ${selected.length} selected`) : uiText("归类选中", "Categorize selected");
       }
     }
 
@@ -4169,11 +4173,11 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const count = selectedCount == null ? this.selectedGallerySelections().length : selectedCount;
       const state = this.galleryBatchState?.state || "";
       const active = state === "running" || state === "paused";
-      this.galleryBatchBtn.textContent = count >= 2 ? `批量入队 ${count}` : "批量入队";
+      this.galleryBatchBtn.textContent = count >= 2 ? uiText(`批量入队 ${count}`, `Queue batch ${count}`) : uiText("批量入队", "Queue batch");
       this.galleryBatchBtn.disabled = this.galleryBatchBusy || count < 2 || active;
       this.galleryBatchBtn.title = active
-        ? "当前已有画廊批次运行中，请先完成、暂停或取消"
-        : "将选中的画廊卡片按点击顺序拆成独立任务，逐张执行";
+        ? uiText("当前已有画廊批次运行中，请先完成、暂停或取消", "A gallery batch is running. Finish, pause or cancel it first.")
+        : uiText("将选中的画廊卡片按点击顺序拆成独立任务，逐张执行", "Run selected images as separate jobs in selection order");
       this.selectionControls?.update({
         selectedCount: count,
         loadedCount: this.grid?.querySelectorAll(".adg-card").length || 0,
@@ -4188,7 +4192,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       try {
         data = JSON.parse(body);
       } catch {
-        throw new Error("批量入队接口返回了无效响应");
+        throw new Error(uiText("批量入队接口返回了无效响应", "Batch queue returned an invalid response"));
       }
       if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
       return data;
@@ -4223,32 +4227,32 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       if (this.galleryBatchBusy) return;
       const selections = this.selectedGallerySelections();
       if (selections.length < 2) {
-        this.setStatus("请先使用 Ctrl/⌘ + 点击选择至少两张画廊图片", "error");
+        this.setStatus(uiText("请先使用 Ctrl/⌘ + 点击选择至少两张画廊图片", "Ctrl/⌘-click to select at least two gallery images first"), "error");
         return;
       }
       const state = this.galleryBatchState?.state || "";
       if (state === "running" || state === "paused") {
-        this.setStatus("当前已有画廊批次正在运行，请先完成或取消", "error");
+        this.setStatus(uiText("当前已有画廊批次正在运行，请先完成或取消", "A gallery batch is running. Finish or cancel it first."), "error");
         return;
       }
       this.galleryBatchBusy = true;
       this.updateGalleryBatchControls(selections.length);
-      this.setGalleryBatchPanelMessage("正在读取当前工作流…");
+      this.setGalleryBatchPanelMessage(uiText("正在读取当前工作流…", "Reading the current workflow…"));
       try {
         const template = await this.currentWorkflowTemplate();
-        if (!template) throw new Error("无法获取当前工作流模板，请先保存或打开一个工作流");
+        if (!template) throw new Error(uiText("无法获取当前工作流模板，请先保存或打开一个工作流", "Cannot read the workflow template. Save or open a workflow first."));
         const nodeId = String(this.node.id || "");
         const galleryNode = template[nodeId];
         if (!galleryNode || typeof galleryNode !== "object") {
-          throw new Error("当前工作流模板中没有启用的 TK 多重画廊节点");
+          throw new Error(uiText("当前工作流模板中没有启用的 TK 多重画廊节点", "No enabled TK Multi Gallery node in this workflow template"));
         }
         if (!galleryNode.inputs || typeof galleryNode.inputs !== "object") galleryNode.inputs = {};
         // 某些 ComfyUI 版本的 graphToPrompt 会省略 hidden 输入；补回当前字段，
         // 让服务端能够安全校验并替换每个批次任务的 selection_data。
         if (!("selection_data" in galleryNode.inputs)) galleryNode.inputs.selection_data = this.selectionWidget?.value || "{}";
-        if (!("selection_data" in galleryNode.inputs)) throw new Error("当前画廊节点缺少 selection_data 输入");
+        if (!("selection_data" in galleryNode.inputs)) throw new Error(uiText("当前画廊节点缺少 selection_data 输入", "The gallery node has no selection_data input"));
         const jobs = selections.map((selection, index) => ({
-          group: `D站图片 #${selection.post_id || index + 1}`,
+          group: uiText(`D站图片 #${selection.post_id || index + 1}`, `DanbooruImage #${selection.post_id || index + 1}`),
           patches: [{
             nodeId,
             input: "selection_data",
@@ -4268,17 +4272,17 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           }),
         });
         const data = await this.readGalleryBatchResponse(response);
-        if (!data?.ok || !data.batchId) throw new Error(data?.error || "批次创建失败");
+        if (!data?.ok || !data.batchId) throw new Error(data?.error || uiText("批次创建失败", "Failed to create batch"));
         this.galleryBatchId = String(data.batchId);
         this.galleryBatchState = data.summary || { id: this.galleryBatchId, state: "running", total: jobs.length, counts: {} };
         this.galleryBatchJobs = [];
         this.galleryBatchPollFailures = 0;
         this.renderGalleryBatchPanel();
-        this.setStatus(`已创建画廊批次：${jobs.length} 张图片将依次执行`, "success");
+        this.setStatus(uiText(`已创建画廊批次：${jobs.length} 张图片将依次执行`, `Gallery batch created: ${jobs.length} images will run in order`), "success");
         this.scheduleGalleryBatchPoll(0);
       } catch (error) {
-        this.setGalleryBatchPanelMessage(`批量入队失败：${error?.message || "未知错误"}`, true);
-        this.setStatus(`批量入队失败：${error?.message || "未知错误"}`, "error");
+        this.setGalleryBatchPanelMessage(uiText(`批量入队失败：${error?.message || "未知错误"}`, `Batch queue failed: ${error?.message || "Unknown error"}`), true);
+        this.setStatus(uiText(`批量入队失败：${error?.message || "未知错误"}`, `Batch queue failed: ${error?.message || "Unknown error"}`), "error");
       } finally {
         this.galleryBatchBusy = false;
         this.updateGalleryBatchControls(selections.length);
@@ -4335,9 +4339,9 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           if (this.galleryBatchState) {
             this.renderGalleryBatchPanel();
           } else {
-            this.setGalleryBatchPanelMessage(`正在连接批次状态接口…${error?.message || ""}`.trim());
+            this.setGalleryBatchPanelMessage(uiText(`正在连接批次状态接口…${error?.message || ""}`, `Connecting to batch status…${error?.message || ""}`).trim());
           }
-          this.setStatus(`批次状态暂时断开，${retrySeconds} 秒后自动重连；后端任务仍会继续`, "warning");
+          this.setStatus(uiText(`批次状态暂时断开，${retrySeconds} 秒后自动重连；后端任务仍会继续`, `Batch status disconnected; reconnecting in ${retrySeconds}s. Server jobs continue.`), "warning");
           this.scheduleGalleryBatchPoll(retrySeconds * 1000);
         }
       } finally {
@@ -4357,7 +4361,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         await this.readGalleryBatchResponse(response);
         await this.pollGalleryBatch();
       } catch (error) {
-        this.setGalleryBatchPanelMessage(`批次操作失败：${error?.message || "未知错误"}`, true);
+        this.setGalleryBatchPanelMessage(uiText(`批次操作失败：${error?.message || "未知错误"}`, `Batch action failed: ${error?.message || "Unknown error"}`), true);
       }
     }
 
@@ -4379,7 +4383,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const statusLine = document.createElement("div");
       statusLine.className = "adg-batch-statusline";
       const reconnecting = this.galleryBatchPollFailures > 0;
-      statusLine.textContent = `批次 ${this.galleryBatchId.slice(-8)} · 完成 ${done}/${total} · 执行 ${running} · 等待 ${waiting}${failed ? ` · 失败 ${failed}` : ""}${reconnecting ? ` · 状态重连中（第 ${this.galleryBatchPollFailures} 次）` : ""}`;
+      statusLine.textContent = uiText(`批次 ${this.galleryBatchId.slice(-8)} · 完成 ${done}/${total} · 执行 ${running} · 等待 ${waiting}${failed ? uiText(` · 失败 ${failed}`, ` · Failed ${failed}`) : ""}${reconnecting ? ` · 状态重连中（第 ${this.galleryBatchPollFailures} 次）` : ""}`, `Batch ${this.galleryBatchId.slice(-8)} · Completed ${done}/${total} · Running ${running} · Waiting ${waiting}${failed ? uiText(` · 失败 ${failed}`, ` · Failed ${failed}`) : ""}${reconnecting ? ` · 状态重连中（第 ${this.galleryBatchPollFailures} 次）` : ""}`);
       statusLine.classList.toggle("is-reconnecting", reconnecting);
       this.galleryBatchPanel.append(statusLine);
       const controls = document.createElement("div");
@@ -4393,11 +4397,11 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         button.onclick = () => this.galleryBatchAction(action);
         controls.append(button);
       };
-      if (stateName === "running") addControl("暂停", "pause", "暂停提交后续任务，当前任务自然完成");
-      if (stateName === "paused") addControl("继续", "resume", "继续执行未完成任务");
-      if (stateName !== "finished" && stateName !== "cancelled") addControl("取消", "cancel", "取消未执行任务");
+      if (stateName === "running") addControl(uiText("暂停", "Pause"), "pause", uiText("暂停提交后续任务，当前任务自然完成", "Pause new jobs; the current job will finish"));
+      if (stateName === "paused") addControl(uiText("继续", "Resume"), "resume", uiText("继续执行未完成任务", "Resume unfinished jobs"));
+      if (stateName !== "finished" && stateName !== "cancelled") addControl(uiText("取消", "Cancel"), "cancel", uiText("取消未执行任务", "Cancel jobs that have not started"));
       if (controls.childElementCount) this.galleryBatchPanel.append(controls);
-      const labels = { pending: "等待", queued: "已入队", running: "执行中", done: "完成", failed: "失败", skipped: "跳过", retry: "重试中", interrupted: "中断" };
+      const labels = { pending: uiText("等待", "Waiting"), queued: uiText("已入队", "Queued"), running: uiText("执行中", "Running"), done: uiText("完成", "Completed"), failed: uiText("失败", "Failed"), skipped: uiText("跳过", "Skipped"), retry: uiText("重试中", "Retrying"), interrupted: uiText("中断", "Interrupted") };
       const jobs = [...this.galleryBatchJobs].sort((a, b) => Number(a.idx || 0) - Number(b.idx || 0));
       if (jobs.length) {
         const list = document.createElement("div");
@@ -4406,13 +4410,13 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           const row = document.createElement("div");
           row.className = `adg-batch-job adg-batch-job-${job.status || "pending"}`;
           const text = document.createElement("span");
-          text.textContent = `#${Number(job.idx || 0) + 1} ${job.group || "D站图片"} · ${labels[job.status] || job.status || "等待"}${job.error ? ` · ${String(job.error).slice(0, 100)}` : ""}`;
+          text.textContent = `#${Number(job.idx || 0) + 1} ${job.group || "D站图片"} · ${labels[job.status] || job.status || uiText("等待", "Waiting")}${job.error ? ` · ${String(job.error).slice(0, 100)}` : ""}`;
           row.append(text);
           if (["failed", "interrupted", "skipped"].includes(job.status)) {
             const retry = document.createElement("button");
             retry.type = "button";
-            retry.textContent = "重试";
-            retry.title = "重新执行该图片任务";
+            retry.textContent = uiText("重试", "Retry");
+            retry.title = uiText("重新执行该图片任务", "Run this image job again");
             retry.onclick = () => this.galleryBatchAction("retry", Number(job.idx));
             row.append(retry);
           }
@@ -4443,17 +4447,17 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
     updatePromptOutputButton() {
       if (!this.promptOutputBtn) return;
       const enabled = this.settings.promptOutputEnabled !== false;
-      this.promptOutputBtn.textContent = enabled ? "Prompt 输出 开" : "Prompt 输出 关";
+      this.promptOutputBtn.textContent = enabled ? uiText("Prompt 输出 开", "Prompt output on") : uiText("Prompt 输出 关", "Prompt output off");
       this.promptOutputBtn.setAttribute("aria-pressed", String(enabled));
       this.promptOutputBtn.title = enabled
-        ? "关闭后即使下游连线，节点也不会输出正向 Prompt"
-        : "已关闭 Prompt 输出，点击恢复节点正向 Prompt 输出";
+        ? uiText("关闭后即使下游连线，节点也不会输出正向 Prompt", "When off, the node outputs no positive prompt, even when connected")
+        : uiText("已关闭 Prompt 输出，点击恢复节点正向 Prompt 输出", "Prompt output is off. Click to enable it.");
       this.promptOutputBtn.classList.toggle("is-disabled", !enabled);
       // 2026-09-26：把开关状态同步到「设置 ▾」触发按钮的摘要上 ——
       // 菜单收纳的代价是「状态看不见了」，这里补回来：关掉 Prompt 输出时触发按钮直接显示
       // 「设置 · Prompt 关」，不必展开菜单才发现（低占位不等于低信息）。
       if (this.settingsDropdown?.setSummary) {
-        this.settingsDropdown.setSummary(enabled ? "设置" : "设置 · Prompt 关", enabled ? 0 : 1);
+        this.settingsDropdown.setSummary(enabled ? uiText("设置", "Settings") : uiText("设置 · Prompt 关", "Settings · Prompt off"), enabled ? 0 : 1);
       }
     }
 
@@ -4578,7 +4582,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
 
     async buildPresetNote(query) {
       const parts = presetTagParts(query);
-      if (!parts.length) return String(query || "").trim() ? "筛选条件" : "";
+      if (!parts.length) return String(query || "").trim() ? uiText("筛选条件", "Filters") : "";
       const translations = await this.ensureTagTranslations(parts.map(({ tag }) => tag));
       // 去冗余：不同标签译成同一个中文时（如 `1girl` 与 `solo`/同义译名）只保留第一条，
       // 否则备注会变成「口交、口交、口交…」这种重复串。
@@ -4588,7 +4592,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         const translated = String(translations[tag] || "").trim();
         const fallback = tag.replace(/_/g, " ");
         const label = translated || fallback;
-        const text = sign === "-" ? `排除${label}` : sign === "~" ? `近似${label}` : label;
+        const text = sign === "-" ? uiText(`排除${label}`, `Exclude ${label}`) : sign === "~" ? uiText(`近似${label}`, `Approximate ${label}`) : label;
         const key = text.toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
@@ -4648,9 +4652,9 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const header = document.createElement("div");
       header.className = `${prefix}-header`;
       const englishHeader = document.createElement("span");
-      englishHeader.textContent = "英文 Prompt";
+      englishHeader.textContent = uiText("英文 Prompt", "English prompt");
       const chineseHeader = document.createElement("span");
-      chineseHeader.textContent = "中文翻译";
+      chineseHeader.textContent = uiText("中文翻译", "Chinese translation");
       header.append(englishHeader, chineseHeader);
       const list = document.createElement("div");
       list.className = `${prefix}-list`;
@@ -4691,26 +4695,26 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       selectAll.type = "checkbox";
       selectAll.className = `${prefix}-select-all-input`;
       const selectAllText = document.createElement("span");
-      selectAllText.textContent = "全选";
+      selectAllText.textContent = uiText("全选", "Select all");
       selectAllLabel.append(selectAll, selectAllText);
       const clearSelection = document.createElement("button");
       clearSelection.type = "button";
-      clearSelection.textContent = "清除选择";
+      clearSelection.textContent = uiText("清除选择", "Clear selection");
       const selectionCount = document.createElement("span");
       selectionCount.className = `${prefix}-selection-count`;
-      selectionCount.textContent = "未选择";
+      selectionCount.textContent = uiText("未选择", "None selected");
       const copySelected = document.createElement("button");
       copySelected.type = "button";
-      copySelected.textContent = "复制选中";
-      copySelected.title = "复制选中的 Prompt";
-      copySelected.setAttribute("aria-label", "复制选中的 Prompt");
+      copySelected.textContent = uiText("复制选中", "Copy selected");
+      copySelected.title = uiText("复制选中的 Prompt", "Copy selected prompts");
+      copySelected.setAttribute("aria-label", uiText("复制选中的 Prompt", "Copy selected prompts"));
       copySelected.disabled = true;
       selectionTools.append(selectAllLabel, clearSelection, selectionCount, copySelected);
       updateSelectionTools = () => {
         const activeRows = rows.filter(({ excluded: isExcluded }) => !isExcluded);
         const selectedCount = activeRows.filter(({ select }) => select.checked).length;
         const clearedCount = rows.length - activeRows.length;
-        selectionCount.textContent = `${selectedCount ? `已选 ${selectedCount} 个` : "未选择"}${clearedCount ? ` · 已清除 ${clearedCount} 个（不输出）` : ""}`;
+        selectionCount.textContent = `${selectedCount ? uiText(`已选 ${selectedCount} 个`, `${selectedCount} selected`) : uiText("未选择", "None selected")}${clearedCount ? uiText(` · 已清除 ${clearedCount} 个（不输出）`, ` · ${clearedCount} cleared (excluded)`) : ""}`;
         copySelected.disabled = selectedCount === 0;
         selectAll.checked = activeRows.length > 0 && selectedCount === activeRows.length;
         selectAll.indeterminate = selectedCount > 0 && selectedCount < activeRows.length;
@@ -4730,7 +4734,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       copySelected.addEventListener("click", async () => {
         const value = editor.readSelected().prompt;
         if (!value) {
-          this.setStatus("请先选择要复制的 Prompt", "error");
+          this.setStatus(uiText("请先选择要复制的 Prompt", "Select prompts to copy first"), "error");
           return;
         }
         try {
@@ -4743,7 +4747,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           document.execCommand("copy");
           fallback.remove();
         }
-        this.setStatus(`已复制 ${editor.readSelected().parts.length} 个 Prompt`);
+        this.setStatus(uiText(`已复制 ${editor.readSelected().parts.length} 个 Prompt`, `Copied ${editor.readSelected().parts.length} prompts`));
       });
       for (const part of unique) {
         const row = document.createElement("div");
@@ -4751,37 +4755,37 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         const select = document.createElement("input");
         select.type = "checkbox";
         select.className = `${prefix}-select`;
-        select.setAttribute("aria-label", `选择 Prompt：${part}`);
+        select.setAttribute("aria-label", uiText(`选择 Prompt：${part}`, `Select prompt: ${part}`));
         const en = document.createElement("input");
         en.type = "text";
         en.className = `${prefix}-en`;
         en.value = part;
-        en.setAttribute("aria-label", `英文 Prompt：${part}`);
+        en.setAttribute("aria-label", uiText(`英文 Prompt：${part}`, `English prompt: ${part}`));
         const zh = document.createElement("input");
         zh.type = "text";
         zh.className = `${prefix}-zh`;
         zh.value = translationMap.get(promptCardKey(part)) || "";
-        zh.placeholder = "待翻译，可手动修改";
-        zh.setAttribute("aria-label", `中文翻译：${part}`);
+        zh.placeholder = uiText("待翻译，可手动修改", "Awaiting translation; editable");
+        zh.setAttribute("aria-label", uiText(`中文翻译：${part}`, `Chinese translation: ${part}`));
         const fields = document.createElement("div");
         fields.className = `${prefix}-fields`;
         fields.append(en, zh);
         const clearState = document.createElement("span");
         clearState.className = `${prefix}-clear-state`;
-        clearState.textContent = "已清除 · 不输出";
+        clearState.textContent = uiText("已清除 · 不输出", "Cleared · excluded from output");
         fields.append(clearState);
         const clearButton = document.createElement("button");
         clearButton.type = "button";
         clearButton.className = `${prefix}-clear`;
-        clearButton.setAttribute("aria-label", `清除提示词：${part}`);
+        clearButton.setAttribute("aria-label", uiText(`清除提示词：${part}`, `Clear prompt: ${part}`));
         const rowState = { card: row, select, en, zh, clearButton, clearState, excluded: excludedKeys.has(promptCardKey(part)) };
         const syncClearState = (notify = false) => {
           const isExcluded = rowState.excluded;
           row.classList.toggle("is-cleared", isExcluded);
           clearState.hidden = !isExcluded;
-          clearButton.textContent = isExcluded ? "恢复" : "清除";
-          clearButton.title = isExcluded ? "恢复该提示词并允许输出" : "清除该提示词；应用后不会输出";
-          clearButton.setAttribute("aria-label", isExcluded ? `恢复提示词：${en.value}` : `清除提示词：${en.value}`);
+          clearButton.textContent = isExcluded ? uiText("恢复", "Restore") : uiText("清除", "Clear");
+          clearButton.title = isExcluded ? uiText("恢复该提示词并允许输出", "Restore this prompt and include it in output") : uiText("清除该提示词；应用后不会输出", "Clear this prompt; excluded from output after applying");
+          clearButton.setAttribute("aria-label", isExcluded ? uiText(`恢复提示词：${en.value}`, `Restore prompt: ${en.value}`) : uiText(`清除提示词：${en.value}`, `Clear prompt: ${en.value}`));
           select.disabled = isExcluded;
           en.disabled = isExcluded;
           zh.disabled = isExcluded;
@@ -4808,7 +4812,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       if (!unique.length) {
         const empty = document.createElement("div");
         empty.className = `${prefix}-empty`;
-        empty.textContent = "没有可编辑的 Prompt 片段";
+        empty.textContent = uiText("没有可编辑的 Prompt 片段", "No editable prompt fragments");
         container.append(empty);
       }
       return editor;
@@ -4991,10 +4995,10 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const loaded = pool.posts.length;
       const query = String(this.gallerySourceQuery() || "").trim();
       if (!query) {
-        return `C站 已加载 ${loaded} 条${pool.exhausted ? "（上游已到底）" : ""} · 第 ${(this.poolPageIndex || 0) + 1} 批`;
+        return uiText(`C站 已加载 ${loaded} 条${pool.exhausted ? "（上游已到底）" : ""} · 第 ${(this.poolPageIndex || 0) + 1} 批`, `Civitai: ${loaded} loaded${pool.exhausted ? " (end of source)" : ""} · Batch ${(this.poolPageIndex || 0) + 1}`);
       }
-      return `C站 关键词本地筛选：本次已累计加载 ${loaded} 条，按『${query}』筛出 ${this.poolFilteredCount()} 条`
-        + (pool.exhausted ? "" : "（可点「加载更多」继续往后加载）");
+      return uiText(`C站 关键词本地筛选：本次已累计加载 ${loaded} 条，按『${query}』筛出 ${this.poolFilteredCount()} 条`, `Civitai local search: ${loaded} loaded, ${this.poolFilteredCount()} match ${query}`)
+        + (pool.exhausted ? "" : uiText("（可点「加载更多」继续往后加载）", "(Click Load more to continue)"));
     }
 
     /**
@@ -5040,7 +5044,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const current = () => !this.disposed && !controller.signal.aborted
         && requestId === this.requestId && this.sourcePool === pool;
       try {
-        this.setStatus(`正在后台加载 ${amount} 条…`);
+        this.setStatus(uiText(`正在后台加载 ${amount} 条…`, `Loading ${amount} items in the background…`));
         const { data } = await this.gallerySourceRequest(sourceId, parameters, controller.signal);
         if (!current()) return false;
         const items = Array.isArray(data?.items) ? data.items : [];
@@ -5051,7 +5055,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         this.accumulatePool(incoming, { nextCursor });
         return true;
       } catch (error) {
-        if (current() && error?.name !== "AbortError") this.setStatus(`后台加载失败：${error?.message || "未知错误"}`, "error");
+        if (current() && error?.name !== "AbortError") this.setStatus(uiText(`后台加载失败：${error?.message || "未知错误"}`, `Background loading failed: ${error?.message || "Unknown error"}`), "error");
         return false;
       } finally {
         if (this.controller === controller) this.controller = null;
@@ -5067,7 +5071,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       if (!this.poolMode()) return;
       this.sourcePool = null;
       this.poolPageIndex = 0;
-      this.setStatus(`正在重建池（档位 ${this.settings.civitaiPool.target} 条）…`);
+      this.setStatus(uiText(`正在重建池（档位 ${this.settings.civitaiPool.target} 条）…`, `Rebuilding pool (${this.settings.civitaiPool.target} items)…`));
       // 池已置空 ⇒ searchGallerySource 入口的「池内短路」不会命中，这里会真的去请求
       await this.searchGallerySource({ resetPage: true });
     }
@@ -5143,7 +5147,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
     markMatchButton(button) {
       if (!button) return;
       button.disabled = true;
-      button.textContent = "已匹配";
+      button.textContent = uiText("已匹配", "Matched");
       button.classList.add("is-matched");
     }
 
@@ -5152,7 +5156,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const illustId = this.pixivIllustId(post);
       if (!illustId || this.pixivMatches.has(illustId) || this.pixivMatchBusy.has(illustId)) return;
       this.pixivMatchBusy.add(illustId);
-      if (button) { button.disabled = true; button.textContent = "匹配中…"; }
+      if (button) { button.disabled = true; button.textContent = uiText("匹配中…", "Matching…"); }
       try {
         const found = await this.fetchPixivMatches([illustId]);
         if (found) {
@@ -5160,18 +5164,18 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           this.refreshCardPrompt(button?.closest?.(".adg-card"), post);
           // 提示里报的是**当前页**对应的那贴（不是代表条目）——用户点的就是这一页
           const mine = this.pixivMatchOf(post) || found;
-          this.setStatus(`已匹配到 D站 #${mine.post_id}（P站 第 ${this.pixivPageOf(post) + 1} 页 · ${mine.tag_count} 个 Danbooru 标签）—— 输出将使用它`, "success");
+          this.setStatus(uiText(`已匹配到 D站 #${mine.post_id}（P站 第 ${this.pixivPageOf(post) + 1} 页 · ${mine.tag_count} 个 Danbooru 标签）—— 输出将使用它`, `Matched Danbooru #${mine.post_id} (Pixiv page ${this.pixivPageOf(post) + 1} · ${mine.tag_count} tags); used for output`), "success");
           return;
         }
         if (button) {
           button.disabled = false;
-          button.textContent = "匹配D站";
-          button.title = "Danbooru 未收录这个 pixiv 作品（或尚未收录）；收录后可再点一次";
+          button.textContent = uiText("匹配D站", "Match Danbooru");
+          button.title = uiText("Danbooru 未收录这个 pixiv 作品（或尚未收录）；收录后可再点一次", "This Pixiv work is not on Danbooru yet. Try again after it is added.");
         }
-        this.setStatus("D站 未收录这个 pixiv 作品，暂时拿不到 Danbooru 标签", "error");
+        this.setStatus(uiText("D站 未收录这个 pixiv 作品，暂时拿不到 Danbooru 标签", "This Pixiv work is not on Danbooru; no Danbooru tags are available yet."), "error");
       } catch (error) {
-        if (button) { button.disabled = false; button.textContent = "匹配D站"; }
-        this.setStatus(`匹配失败：${error?.message || "未知错误"}`, "error");
+        if (button) { button.disabled = false; button.textContent = uiText("匹配D站", "Match Danbooru"); }
+        this.setStatus(uiText(`匹配失败：${error?.message || "未知错误"}`, `Match failed: ${error?.message || "Unknown error"}`), "error");
       } finally {
         this.pixivMatchBusy.delete(illustId);
       }
@@ -5202,14 +5206,14 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           const post = (this.posts || []).find((item) => String(item.id) === String(card.dataset.postId));
           if (post) this.refreshCardPrompt(card, post);
           this.markMatchButton([...card.querySelectorAll(".adg-card-actions button")]
-            .find((button) => button.textContent === "匹配D站" || button.textContent === "匹配中…"));
+            .find((button) => button.textContent === uiText("匹配D站", "Match Danbooru") || button.textContent === uiText("匹配中…", "Matching…")));
           updated += 1;
         }
         if (updated) {
-          this.setStatus(`P站：已自动匹配 ${updated} 个作品的 Danbooru 标签（输出将使用它们）`, "success");
+          this.setStatus(uiText(`P站：已自动匹配 ${updated} 个作品的 Danbooru 标签（输出将使用它们）`, `Pixiv: matched Danbooru tags for ${updated} works (used for output)`), "success");
         }
       } catch (error) {
-        this.setStatus(`P站 自动匹配失败：${error?.message || "未知错误"}`, "error");
+        this.setStatus(uiText(`P站 自动匹配失败：${error?.message || "未知错误"}`, `Pixiv automatic match failed: ${error?.message || "Unknown error"}`), "error");
       }
     }
 
@@ -5229,7 +5233,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       this.syncReturnButton();
       this.renderPosts();
       this.renderPagination();
-      this.setStatus(`P站 作品 #${illustId}：全部 ${pages.length} 页（点搜索框旁「← 返回」回到搜索结果）`);
+      this.setStatus(uiText(`P站 作品 #${illustId}：全部 ${pages.length} 页（点搜索框旁「← 返回」回到搜索结果）`, `Pixiv #${illustId}: all ${pages.length} pages (use ← Back beside search to return)`));
     }
 
     /** 离开 P站 作品详情：只收状态 + 重渲染（搜索结果本身从未被动过，不必重搜） */
@@ -5249,7 +5253,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       this.renderPosts();
       if (anchor) this.restoreScrollAnchor(anchor);
       this.renderPagination();
-      this.setStatus(`${this.sourceLabel(this.activeSourceId())}：${this.posts.length} 张 · ${this.galleryBatchLabel()}`);
+      this.setStatus(uiText(`${this.sourceLabel(this.activeSourceId())}：${this.posts.length} 张 · ${this.galleryBatchLabel()}`, `${this.sourceLabel(this.activeSourceId())}: ${this.posts.length} images · ${this.galleryBatchLabel()}`));
     }
 
     // ──────────────────────── 搜索框旁的「← 返回」 ────────────────────────
@@ -5262,11 +5266,11 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
      */
     returnTarget() {
       if (this.pixivDetail) {
-        return { label: "搜索结果", title: "回到 P站 搜索结果（不重新请求）", apply: () => this.closePixivPages() };
+        return { label: uiText("搜索结果", "Search results"), title: uiText("回到 P站 搜索结果（不重新请求）", "Return to Pixiv search results (without reloading)"), apply: () => this.closePixivPages() };
       }
       if (this.diffContext) {
         const original = String(this.diffContext.returnQuery || "").trim();
-        return { label: original, title: `退出差分组，回到搜索：${original || "（无关键词）"}`, apply: () => this.exitDiffGroup() };
+        return { label: original, title: uiText(`退出差分组，回到搜索：${original || "（无关键词）"}`, `Exit variants and return to search: ${original || "(no keywords)"}`), apply: () => this.exitDiffGroup() };
       }
       return null;
     }
@@ -5279,8 +5283,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       button.hidden = !target;
       if (!target) return;
       const label = String(target.label || "").trim();
-      button.textContent = label ? `← 返回 ${label}` : "← 返回";
-      button.title = target.title || "返回上一层视图";
+      button.textContent = label ? uiText(`← 返回 ${label}`, `← Back ${label}`) : uiText("← 返回", "← Back");
+      button.title = target.title || uiText("返回上一层视图", "Return to the previous view");
     }
 
     /** 点「← 返回」：回到上一层视图（差分组 / 作品详情各自处理） */
@@ -5393,7 +5397,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         this._layoutPosts = [];
         const empty = document.createElement("div");
         empty.className = "adg-empty";
-        empty.textContent = "没有可显示的图片";
+        empty.textContent = uiText("没有可显示的图片", "No images to display");
         this.grid.append(empty);
         this.updateGalleryBatchControls();
         return;
@@ -5512,7 +5516,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         selectButton.type = "button";
         selectButton.className = "adg-card-select";
         selectButton.setAttribute("aria-pressed", "false");
-        selectButton.title = `选择 #${post.id || ""}`;
+        selectButton.title = uiText(`选择 #${post.id || ""}`, `Select #${post.id || ""}`);
         const preview = document.createElement("img");
         // 请求时机已经由本节点的 IntersectionObserver 控制；再叠加浏览器原生
         // loading=lazy 会让已设置 src 的后半页图片永久停在 pending，形成空卡片。
@@ -5560,7 +5564,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         if (isVid) {
           const badge = document.createElement("span");
           badge.className = "adg-video-badge";
-          badge.textContent = "视频";
+          badge.textContent = uiText("视频", "Video");
           selectButton.prepend(badge);
         }
         selectButton.addEventListener("click", (event) => {
@@ -5595,7 +5599,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           actions.append(button);
           return button;
         };
-        addAction("预览", "预览图片", () => this.openImagePreview(post));
+        addAction(uiText("预览", "Preview"), uiText("预览图片", "Preview image"), () => this.openImagePreview(post));
         // ★ 收藏（2026-09-27，Issue #3）：**真写 D站 账号**（POST /favorites），不再是本地描边。
         //   只有 D站 图源才给这个按钮 —— 别的源的 post id 不是 D站 的 post id，收藏没有意义。
         //   已收藏态来自 this.favoriteIds（启动与换源时由 refreshFavorites() 填充）。
@@ -5603,7 +5607,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           const favorited = this.favoriteIds.has(String(post.id));
           const favButton = addAction(
             favorited ? "★" : "☆",
-            favorited ? "已收藏在你的 D站 账号里 —— 点一下取消收藏" : "收藏到 D站 账号",
+            favorited ? uiText("已收藏在你的 D站 账号里 —— 点一下取消收藏", "Saved to your Danbooru favorites — click to remove") : uiText("收藏到 D站 账号", "Favorite on Danbooru"),
             () => void this.toggleFavorite(post, favButton),
           );
           favButton.classList.toggle("is-favorited", favorited);
@@ -5615,7 +5619,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         if (!isGallerySource) {
           const diffRootId = this.diffRootId(post);
           if (diffRootId) {
-            addAction("差分", `查看该作品的差分组：搜索 parent:${diffRootId}（父帖与全部子帖）`, () => this.openDiffGroup(post));
+            addAction(uiText("差分", "Variants"), uiText(`查看该作品的差分组：搜索 parent:${diffRootId}（父帖与全部子帖）`, `View variants: search parent:${diffRootId} (parent and all children)`), () => this.openDiffGroup(post));
           }
         }
         // P站 多页作品：卡片只代表第一页，点「全部页」展开全作品（等价点进 Pixiv 的 /artworks/<id>）。
@@ -5623,17 +5627,17 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         // 已经在作品详情里时不再给这个按钮 —— 那只会重新打开同一个作品，属于"点了没反应"的控件。
         const pageCount = Number(post?.meta?.page_count) || 0;
         if (pageCount > 1 && !this.pixivDetail) {
-          addAction("全部页", `查看该作品全部 ${pageCount} 页（相当于 P站 作品详情页）`, () => this.openPixivPages(post));
+          addAction(uiText("全部页", "All pages"), uiText(`查看该作品全部 ${pageCount} 页（相当于 P站 作品详情页）`, `View all ${pageCount} pages (Pixiv work details)`), () => this.openPixivPages(post));
         }
         // P站 卡片：把该作品匹配到 D站 帖子（命中后用它更全的 Danbooru 标签作为 Prompt）。
         // 成功后按钮变灰 + 绿字「已匹配」—— 既是状态显示，也避免用户误触重复发起请求。
         if (postSourceId === "pixiv") {
           const matchedPost = this.pixivMatchOf(post);
           const matchButton = addAction(
-            matchedPost ? "已匹配" : "匹配D站",
+            matchedPost ? uiText("已匹配", "Matched") : uiText("匹配D站", "Match Danbooru"),
             matchedPost
-              ? `已匹配到 D站 #${matchedPost.post_id}（本页 · ${matchedPost.tag_count} 个标签）：输出使用该帖的 Danbooru 标签`
-              : "在 Danbooru 按 pixiv 作品 id 反查同款作品；命中后用它更全的规范标签作为 Prompt",
+              ? uiText(`已匹配到 D站 #${matchedPost.post_id}（本页 · ${matchedPost.tag_count} 个标签）：输出使用该帖的 Danbooru 标签`, `Matched Danbooru #${matchedPost.post_id} (this page · ${matchedPost.tag_count} tags); used for output`)
+              : uiText("在 Danbooru 按 pixiv 作品 id 反查同款作品；命中后用它更全的规范标签作为 Prompt", "Find this Pixiv work on Danbooru by its ID; use the matched standardized tags for the prompt"),
             () => this.matchPixivPost(post, matchButton),
           );
           if (matchedPost) {
@@ -5644,21 +5648,21 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         // capabilities.prompt=false 的图源（P站）没有提示词可看/可入库 → 不收这两个按钮，
         // 否则点下去只会得到空内容（项目 UI 规范：不要留点了没反应的控件）。
         const promptActionsApplicable = postCaps.prompt || !isGallerySource;
-        const promptAction = addAction("Prompt", "查看、编辑和复制 Prompt", () => this.openPromptEditor(card, post));
+        const promptAction = addAction("Prompt", uiText("查看、编辑和复制 Prompt", "View, edit and copy prompt"), () => this.openPromptEditor(card, post));
         // tooltip 压到一行：原 30+ 字挂在 9px 的小按钮上，既读不完也把按钮撑得难看；
         // 具体两项操作在弹窗里自解释（那里有 intro 与折叠区）。文案锚点「入库」二字不动。
-        const libraryAction = addAction("入库", "入库 / 归类这张图", () => this.saveToPromptLibrary(post, { includeLocalCategory: true }));
+        const libraryAction = addAction(uiText("入库", "Save"), uiText("入库 / 归类这张图", "Save or categorize this image"), () => this.saveToPromptLibrary(post, { includeLocalCategory: true }));
         if (!promptActionsApplicable) {
           promptAction.hidden = true;
           libraryAction.hidden = true;
         }
         // 「下载原图」对 P站 是主用途（下载后喂 WD14 反推）→ 走 full_url（original 优先，见 downloadPost）
-        addAction("下载", "下载原图（原图优先 full_url）", () => this.downloadPost(post));
+        addAction(uiText("下载", "Download"), uiText("下载原图（原图优先 full_url）", "Download original (prefers full_url)"), () => this.downloadPost(post));
         // ★ 卡片上的「分类」按钮（用户 2026-09-20 要求"真正的在对应图片有按钮进行分类"）。
         //   原先归类入口藏在「入库」弹窗里（要先点入库 → 再勾"写入本地分类" → 再选分类），
         //   而且该按钮在 prompt=false 的图源（P站）会被隐藏 ⇒ P站 根本没法归类。
         //   分类是**本地**属性，与图源有没有 prompt 无关，所以这个按钮永远显示。
-        addAction("分类", "把这张图归入本地分类（跨画廊节点共享）", () => this.openCategoryPicker([this.postKeyOf(post)]));
+        addAction(uiText("分类", "Categories"), uiText("把这张图归入本地分类（跨画廊节点共享）", "Add this image to a local category shared by gallery nodes"), () => this.openCategoryPicker([this.postKeyOf(post)]));
         // ★ 收藏按钮已于 2026-09-21 移除：它只有装饰作用（描边变黄），没有任何读取入口
         //   （无"只看收藏"筛选、无排序、入库时的 isFavorite 是硬编码常量），且与上面的
         //   「分类」功能重合。用户裁决：去除。
@@ -5670,7 +5674,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
             const badge = document.createElement("span");
             badge.className = "adg-cat-badge";
             badge.textContent = catName;
-            badge.title = `本地分类：${catName}（点卡片「分类」可修改）`;
+            badge.title = uiText(`本地分类：${catName}（点卡片「分类」可修改）`, `Local category: ${catName} (use Categories on the card to change)`);
             badge.style.cssText = "position:absolute;top:6px;left:6px;z-index:3;background:rgba(109,85,240,.85);color:#fff;font-size:10px;line-height:1.4;padding:1px 6px;border-radius:4px;pointer-events:none;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
             card.append(badge);
           }
@@ -5686,15 +5690,15 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           //    于是一个「1 父 + 3 子」的差分组看着整个反掉（2026-09-21 真机实报）。
           const hasChildren = post.has_active_children === true || post.has_active_children === "t";
           if (hasChildren) {
-            marks.push(["adg-diff-has-children", "父帖", "差分组父帖：存在子级差分作品（对应 D站 网页的绿框）"]);
+            marks.push(["adg-diff-has-children", uiText("父帖", "Parent"), uiText("差分组父帖：存在子级差分作品（对应 D站 网页的绿框）", "Variant parent: has child variants (green border on Danbooru)")]);
           }
           if (Number.isFinite(parentPostId) && parentPostId > 0) {
-            marks.push(["adg-diff-has-parent", "子帖", `差分组子帖：父帖 #${parentPostId}（对应 D站 网页的橙框）`]);
+            marks.push(["adg-diff-has-parent", uiText("子帖", "Child"), uiText(`差分组子帖：父帖 #${parentPostId}（对应 D站 网页的橙框）`, `Variant child: parent #${parentPostId} (orange border on Danbooru)`)]);
           }
           if (marks.length) {
             const badge = document.createElement("span");
             badge.className = "adg-diff-marks";
-            badge.title = `${marks.map(([, , hint]) => hint).join("；")}——点卡片「差分」看整组`;
+            badge.title = uiText(`${marks.map(([, , hint]) => hint).join("；")}——点卡片「差分」看整组`, `${marks.map(([, , hint]) => hint).join("; ")} — use Variants on the card to view the group`);
             for (const [className, text] of marks) {
               const dot = document.createElement("span");
               dot.className = className;
@@ -5710,10 +5714,10 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           const pageNo = Number(post?.meta?.page) || 0;
           const badge = document.createElement("span");
           badge.className = "adg-pages-badge";
-          badge.textContent = this.pixivDetail ? `${pageNo + 1}/${pageCount}` : `${pageCount}页`;
+          badge.textContent = this.pixivDetail ? `${pageNo + 1}/${pageCount}` : uiText(`${pageCount}页`, `${pageCount} pages`);
           badge.title = this.pixivDetail
-            ? `P站 多页作品：第 ${pageNo + 1} 页 / 共 ${pageCount} 页`
-            : `P站 多页作品：共 ${pageCount} 页（当前显示第 1 页，点卡片「全部页」展开）`;
+            ? uiText(`P站 多页作品：第 ${pageNo + 1} 页 / 共 ${pageCount} 页`, `Pixiv multipage work: page ${pageNo + 1} / ${pageCount}`)
+            : uiText(`P站 多页作品：共 ${pageCount} 页（当前显示第 1 页，点卡片「全部页」展开）`, `Pixiv multipage work: ${pageCount} pages (showing page 1; use All pages to expand)`);
           card.append(badge);
         }
         card.append(selectButton, actions);
@@ -5753,7 +5757,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       this.applyMasonryLayout();
       // 图片全部失败时给一格可见说明，别只在状态栏写一行小字
       if (rendered.length && this.failedImageCount >= rendered.length) {
-        this.appendGridNotice(`本页 ${this.failedImageCount} 张预览全部加载失败 —— 检查 Clash 代理，或点工具条「刷新」绕过缓存重试`);
+        this.appendGridNotice(uiText(`本页 ${this.failedImageCount} 张预览全部加载失败 —— 检查 Clash 代理，或点工具条「刷新」绕过缓存重试`, `All ${this.failedImageCount} previews failed to load. Check Clash or use Refresh to retry without cache.`));
       }
       // 追加路径：把滚动位置还回去。**优先按锚点**还原（数据回收 / 列数重排后依然钉在同一张卡上），
       // 锚点不可用（那张卡被删了）才退回数值恢复 —— 否则"滚到底触发加载"时会被弹回顶部。
@@ -5785,13 +5789,13 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const count = document.createElement("span");
       count.className = "adg-scroll-count";
       count.textContent = this.fillMoreExhausted
-        ? `已加载 ${this.posts.length} 张 · 已到底`
-        : `已加载 ${this.posts.length} 张 · 继续滚动加载`;
+        ? uiText(`已加载 ${this.posts.length} 张 · 已到底`, `${this.posts.length} images loaded · End reached`)
+        : uiText(`已加载 ${this.posts.length} 张 · 继续滚动加载`, `${this.posts.length} images loaded · Scroll for more`);
       bar.append(count);
       const top = document.createElement("button");
       top.type = "button";
       top.className = "adg-scroll-top";
-      top.textContent = "回到顶部";
+      top.textContent = uiText("回到顶部", "Back to top");
       top.onclick = () => { if (this.grid) this.grid.scrollTop = 0; };
       bar.append(top);
     }
@@ -5810,8 +5814,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       if (this.settings.activeCategory) {
         const badge = document.createElement("span");
         badge.className = "adg-cat-mode-badge";
-        badge.textContent = "本地分类浏览";
-        badge.title = "当前为该分类全部已归类图片；搜索或翻页即返回普通搜索";
+        badge.textContent = uiText("本地分类浏览", "Local category");
+        badge.title = uiText("当前为该分类全部已归类图片；搜索或翻页即返回普通搜索", "Showing all images in this category. Search or change page to return to normal browsing.");
         this.pagination.append(badge);
         return;
       }
@@ -5820,8 +5824,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       if (this.pixivDetail) {
         const badge = document.createElement("span");
         badge.className = "adg-cat-mode-badge";
-        badge.textContent = `P站 作品 #${this.pixivDetail.illustId} · 全部 ${this.pixivDetail.pages.length} 页`;
-        badge.title = "正在看单个作品的全部页；点搜索框旁的「← 返回」回到搜索结果";
+        badge.textContent = uiText(`P站 作品 #${this.pixivDetail.illustId} · 全部 ${this.pixivDetail.pages.length} 页`, `Pixiv #${this.pixivDetail.illustId} · All ${this.pixivDetail.pages.length} pages`);
+        badge.title = uiText("正在看单个作品的全部页；点搜索框旁的「← 返回」回到搜索结果", "Showing every page of one work. Use ← Back beside the search box to return to results.");
         this.pagination.append(badge);
         return;
       }
@@ -5835,21 +5839,21 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         const previous = document.createElement("button");
         previous.type = "button";
         previous.className = "adg-cursor-step";
-        previous.textContent = "‹ 上一批";
+        previous.textContent = uiText("‹ 上一批", "‹ Previous batch");
         previous.disabled = index <= 0;
-        previous.title = previous.disabled ? "已经是第一批" : "回到池里的上一批（不重新请求）";
+        previous.title = previous.disabled ? uiText("已经是第一批", "Already at the first batch") : uiText("回到池里的上一批（不重新请求）", "Previous loaded batch (without reloading)");
         previous.onclick = () => { void this.stepPoolPage(-1); };
         const label = document.createElement("span");
         label.className = "adg-cursor-batch";
-        label.textContent = `第 ${index + 1}/${pages} 批 · 本批 ${this.posts.length} 张 · 已加载 ${this.sourcePool.posts.length} 条`
-          + (this.sourcePool.exhausted ? " · 上游已到底" : "");
-        label.title = "「已加载」= 后台池里累积的条数；搜索与翻页都在这个池里进行";
+        label.textContent = uiText(`第 ${index + 1}/${pages} 批 · 本批 ${this.posts.length} 张 · 已加载 ${this.sourcePool.posts.length} 条`, `Batch ${index + 1}/${pages} · ${this.posts.length} images here · ${this.sourcePool.posts.length} loaded`)
+          + (this.sourcePool.exhausted ? uiText(" · 上游已到底", " · End of source") : "");
+        label.title = uiText("「已加载」= 后台池里累积的条数；搜索与翻页都在这个池里进行", "Loaded is the total in the background pool. Searching and paging use this pool.");
         const next = document.createElement("button");
         next.type = "button";
         next.className = "adg-cursor-step";
-        next.textContent = "下一批 ›";
+        next.textContent = uiText("下一批 ›", "Next batch ›");
         next.disabled = index >= pages - 1 && this.sourcePool.exhausted;
-        next.title = next.disabled ? "没有更多了" : "优先切池里已加载的内容，不够时自动补";
+        next.title = next.disabled ? uiText("没有更多了", "No more results") : uiText("优先切池里已加载的内容，不够时自动补", "Use loaded images first; fetch more when needed");
         next.onclick = () => { void this.stepPoolPage(1); };
         this.pagination.append(previous, label, next);
         // 搜索态：已经把池内符合条件的内容看到底了，但上游还有 → 给一个明确的「加载更多」
@@ -5860,8 +5864,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           // ⚠️ 必须带 adg-cursor-step：`.adg-pagination button` 是固定 24px 宽，
           //    不带这个类的中文按钮会被压成竖排（一个字一行，白占三行高度）
           more.className = "adg-cursor-step";
-          more.textContent = "加载更多";
-          more.title = `再往后加载 ${this.settings.civitaiPool.target} 条，然后在本池内重新筛选`;
+          more.textContent = uiText("加载更多", "Load more");
+          more.title = uiText(`再往后加载 ${this.settings.civitaiPool.target} 条，然后在本池内重新筛选`, `Load ${this.settings.civitaiPool.target} more items, then filter the pool again`);
           more.onclick = async () => {
             more.disabled = true;
             const pool = this.sourcePool;
@@ -5884,8 +5888,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         rebuild.type = "button";
         // 同上：中文按钮必须带 adg-cursor-step，否则被 24px 固定宽压成竖排文字
         rebuild.className = "adg-cursor-step";
-        rebuild.textContent = "重建池";
-        rebuild.title = `丢掉当前已加载的 ${this.sourcePool.posts.length} 条，按档位 ${this.settings.civitaiPool.target} 条重新从上游拉取`;
+        rebuild.textContent = uiText("重建池", "Rebuild pool");
+        rebuild.title = uiText(`丢掉当前已加载的 ${this.sourcePool.posts.length} 条，按档位 ${this.settings.civitaiPool.target} 条重新从上游拉取`, `Discard ${this.sourcePool.posts.length} loaded items and fetch ${this.settings.civitaiPool.target} from the source`);
         rebuild.onclick = () => {
           rebuild.disabled = true;
           void this.rebuildPool();
@@ -5904,22 +5908,22 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         const previous = document.createElement("button");
         previous.type = "button";
         previous.className = "adg-cursor-step"; // 页码按钮是固定 24px 宽，"下一批 ›" 会被挤成竖排
-        previous.textContent = "‹ 上一批";
+        previous.textContent = uiText("‹ 上一批", "‹ Previous batch");
         previous.disabled = batch <= 1;
-        previous.title = previous.disabled ? "已经是第一批" : "回到上一批（cursor 栈回退）";
+        previous.title = previous.disabled ? uiText("已经是第一批", "Already at the first batch") : uiText("回到上一批（cursor 栈回退）", "Return to the previous batch (cursor history)");
         previous.onclick = () => { void this.stepGalleryCursor(-1); };
         const label = document.createElement("span");
         label.className = "adg-cursor-batch";
         // 进度三件套：批次 / 本批张数 / 累计已浏览张数；没有 next_cursor = 已到底（用户不用猜还有没有）
-        label.textContent = `第 ${batch} 批 · 本批 ${this.posts.length} 张 · 已浏览 ${this.galleryBrowsedCount()} 张`
-          + (this.nextCursor ? "" : " · 已到底");
-        label.title = "游标分页：只能顺序前进，没有跳页；点右侧批次块可直接回退到看过的批次";
+        label.textContent = uiText(`第 ${batch} 批 · 本批 ${this.posts.length} 张 · 已浏览 ${this.galleryBrowsedCount()} 张`, `Batch ${batch} · ${this.posts.length} images here · ${this.galleryBrowsedCount()} viewed`)
+          + (this.nextCursor ? "" : uiText(" · 已到底", " · End reached"));
+        label.title = uiText("游标分页：只能顺序前进，没有跳页；点右侧批次块可直接回退到看过的批次", "Cursor paging advances in order. Click a batch on the right to revisit it.");
         const next = document.createElement("button");
         next.type = "button";
         next.className = "adg-cursor-step";
-        next.textContent = "下一批 ›";
+        next.textContent = uiText("下一批 ›", "Next batch ›");
         next.disabled = !this.nextCursor;
-        next.title = this.nextCursor ? "按后端返回的 next_cursor 取下一批" : "没有更多了";
+        next.title = this.nextCursor ? uiText("按后端返回的 next_cursor 取下一批", "Load the next batch using the server cursor") : uiText("没有更多了", "No more results");
         next.onclick = () => { void this.stepGalleryCursor(1); };
         this.pagination.append(previous, label, next);
         // ── 批次 chip：一键回退到任意看过的批次 ──
@@ -5931,19 +5935,19 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           const more = document.createElement("span");
           more.className = "adg-cursor-more";
           more.textContent = "…";
-          more.title = `更早的 ${chipStart} 批已折叠，可用「‹ 上一批」逐批回退`;
+          more.title = uiText(`更早的 ${chipStart} 批已折叠，可用「‹ 上一批」逐批回退`, `${chipStart} earlier batches collapsed. Use ‹ Previous batch to revisit them.`);
           this.pagination.append(more);
         }
         for (let i = chipStart; i < batch; i++) {
           const chip = document.createElement("button");
           chip.type = "button";
           chip.className = "adg-cursor-chip";
-          chip.textContent = `第${i + 1}批`;
+          chip.textContent = uiText(`第${i + 1}批`, `Batch ${i + 1}`);
           chip.classList.toggle("active", i === batch - 1);
           chip.disabled = i === batch - 1;
           chip.title = i === batch - 1
-            ? "当前批次"
-            : `回到第 ${i + 1} 批（用栈里已有的 cursor 重查一次，不重放中间的批次）`;
+            ? uiText("当前批次", "Current batch")
+            : uiText(`回到第 ${i + 1} 批（用栈里已有的 cursor 重查一次，不重放中间的批次）`, `Return to batch ${i + 1} (using its saved cursor)`);
           chip.onclick = () => { void this.jumpGalleryBatch(i); };
           this.pagination.append(chip);
         }
@@ -5957,7 +5961,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       }
       const input = document.createElement("input");
       input.type = "number"; input.min = "1"; input.value = String(this.page);
-      input.title = this.isDanbooruSource() ? "输入页码跳转" : `输入页码跳转（该源每页固定 ${GALLERY_PAGE_SIZE} 张）`;
+      input.title = this.isDanbooruSource() ? uiText("输入页码跳转", "Enter a page number") : uiText(`输入页码跳转（该源每页固定 ${GALLERY_PAGE_SIZE} 张）`, `Enter page number (${GALLERY_PAGE_SIZE} images per page on this source)`);
       input.onkeydown = (event) => { if (event.key === "Enter") { this.page = Math.max(1, Number(input.value) || 1); this.search(); } };
       this.pagination.append(input);
       for (const [label, delta] of [["‹", -1], ["›", 1]]) {
@@ -5987,8 +5991,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       // 文案收敛（2026-09-21）：原首句 40 字，把"怎么操作"写成了正文，而下面那两个
       // checkbox 与折叠区本身已自解释。压到一行，信息量不减。
       intro.textContent = includeLocalCategory
-        ? "两项操作可任选其一，也可同时执行。"
-        : "选择 Prompt 库分类与要写入的 D 站标签类别；不改动全局 Prompt 设置。";
+        ? uiText("两项操作可任选其一，也可同时执行。", "Choose either action or both.")
+        : uiText("选择 Prompt 库分类与要写入的 D 站标签类别；不改动全局 Prompt 设置。", "Choose a prompt-library category and Danbooru tag types for this save. Global prompt settings stay unchanged.");
       content.append(intro);
 
       let saveLibraryInput = null;
@@ -5998,7 +6002,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       if (includeLocalCategory) {
         const actionTitle = document.createElement("div");
         actionTitle.className = "adg-prompt-settings-title";
-        actionTitle.textContent = "本次执行操作";
+        actionTitle.textContent = uiText("本次执行操作", "Actions for this save");
         const actionRow = document.createElement("div");
         actionRow.className = "adg-save-action-row";
         const localCategoryId = String(this.settings.postCategories[this.postKeyOf(post)] || "");
@@ -6015,8 +6019,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           return input;
         };
         // 兼容原“入库”按钮：默认仍然入 Prompt 库；若图片已有本地分类则同时保持该分类。
-        saveLibraryInput = makeAction("存入 Prompt 库", true);
-        assignLocalCategoryInput = makeAction("写入本地分类", Boolean(localCategoryId));
+        saveLibraryInput = makeAction(uiText("存入 Prompt 库", "Save to prompt library"), true);
+        assignLocalCategoryInput = makeAction(uiText("写入本地分类", "Add to local category"), Boolean(localCategoryId));
         content.append(actionTitle, actionRow);
 
         // ── 旧路径折叠（2026-09-21）──
@@ -6027,20 +6031,20 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         const legacyGroup = document.createElement("details");
         legacyGroup.className = "adg-save-legacy-group";
         const legacySummary = document.createElement("summary");
-        legacySummary.textContent = "本地分类 / 快捷新建（也可用卡片上的「分类」按钮）";
+        legacySummary.textContent = uiText("本地分类 / 快捷新建（也可用卡片上的「分类」按钮）", "Local category / quick create (also available on the image card)");
         legacyGroup.append(legacySummary);
 
         const localTitle = document.createElement("div");
         localTitle.className = "adg-prompt-settings-title";
         // 「勾选…后生效」这个条件说明交给上面那个 checkbox 自己表达（它就在同一屏内），
         // 标题里不再嵌套另一个控件的文案。
-        localTitle.textContent = "本地分类";
+        localTitle.textContent = uiText("本地分类", "Local category");
         localCategorySelect = document.createElement("select");
         localCategorySelect.className = "adg-save-category-select";
-        localCategorySelect.setAttribute("aria-label", "本地分类");
+        localCategorySelect.setAttribute("aria-label", uiText("本地分类", "Local category"));
         const renderLocalCategoryOptions = () => {
           const selected = localCategorySelect.value || localCategoryId;
-          localCategorySelect.replaceChildren(new Option("无分类（移除归类）", ""));
+          localCategorySelect.replaceChildren(new Option(uiText("无分类（移除归类）", "Uncategorized (remove category)"), ""));
           for (const category of (this.settings.categories || [])) {
             const option = new Option(String(category.name || category.id), String(category.id));
             localCategorySelect.append(option);
@@ -6052,11 +6056,11 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         localNewRow.className = "adg-save-local-newrow";
         localCategoryNameInput = document.createElement("input");
         localCategoryNameInput.className = "adg-save-title-input";
-        localCategoryNameInput.placeholder = "新建本地分类（可选）";
+        localCategoryNameInput.placeholder = uiText("新建本地分类（可选）", "New local category (optional)");
         const localNewButton = document.createElement("button");
         localNewButton.type = "button";
         localNewButton.className = "primary";
-        localNewButton.textContent = "新建并选择";
+        localNewButton.textContent = uiText("新建并选择", "Create and select");
         localNewButton.onclick = () => {
           const name = localCategoryNameInput.value.trim();
           if (!name) { localCategoryNameInput.focus(); return; }
@@ -6078,7 +6082,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         if (tagChoices.length) {
           const tagTitle = document.createElement("div");
           tagTitle.className = "adg-prompt-settings-tip";
-          tagTitle.textContent = "快速新建：";
+          tagTitle.textContent = uiText("快速新建：", "Quick create:");
           const tagWrap = document.createElement("div");
           tagWrap.className = "adg-category-tags";
           for (const tag of tagChoices) {
@@ -6104,10 +6108,10 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
 
       const libraryTitle = document.createElement("div");
       libraryTitle.className = "adg-prompt-settings-title";
-      libraryTitle.textContent = "Prompt 库分类";
+      libraryTitle.textContent = uiText("Prompt 库分类", "Prompt library category");
       const librarySelect = document.createElement("select");
       librarySelect.className = "adg-save-category-select";
-      librarySelect.setAttribute("aria-label", "Prompt 库分类");
+      librarySelect.setAttribute("aria-label", uiText("Prompt 库分类", "Prompt library category"));
       for (const category of categories) {
         const option = document.createElement("option");
         option.value = String(category.id);
@@ -6120,7 +6124,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
 
       const promptTitle = document.createElement("div");
       promptTitle.className = "adg-prompt-settings-title";
-      promptTitle.textContent = "本次 Prompt 包含";
+      promptTitle.textContent = uiText("本次 Prompt 包含", "Include in this prompt");
       const promptList = document.createElement("div");
       promptList.className = "adg-prompt-category-list";
       const categoryInputs = new Map();
@@ -6143,22 +6147,22 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
 
       const excludeTitle = document.createElement("div");
       excludeTitle.className = "adg-prompt-settings-title";
-      excludeTitle.textContent = "排除提示词（可选）";
+      excludeTitle.textContent = uiText("排除提示词（可选）", "Exclude tags (optional)");
       const excludeInput = document.createElement("input");
       excludeInput.type = "text";
       excludeInput.className = "adg-save-exclude-input";
       excludeInput.value = this.settings.promptExcludePattern || "";
-      excludeInput.placeholder = "例如：censor|text|logo|username|hair|eyes";
-      excludeInput.title = "大小写不敏感正则，匹配到的 D 站标签不会进入本次 Prompt 或双语卡片";
+      excludeInput.placeholder = uiText("例如：censor|text|logo|username|hair|eyes", "Example: censor|text|logo|username|hair|eyes");
+      excludeInput.title = uiText("大小写不敏感正则，匹配到的 D 站标签不会进入本次 Prompt 或双语卡片", "Case-insensitive regex; matching Danbooru tags are excluded from this prompt and bilingual cards");
       const excludeHelp = document.createElement("div");
       excludeHelp.className = "adg-prompt-settings-tip";
-      excludeHelp.textContent = "按标签原文模糊匹配，例如 hair 会排除 long_hair、hair ornament 等；只影响本次入库。";
+      excludeHelp.textContent = uiText("按标签原文模糊匹配，例如 hair 会排除 long_hair、hair ornament 等；只影响本次入库。", "Matches original tag text: hair excludes long_hair, hair ornament, etc. Applies only to this save.");
       content.append(excludeTitle, excludeInput, excludeHelp);
 
-      const defaultSaveTitle = `D站 #${post.id || ""}`;
+      const defaultSaveTitle = uiText(`D站 #${post.id || ""}`, `Danbooru #${post.id || ""}`);
       const titleTitle = document.createElement("div");
       titleTitle.className = "adg-prompt-settings-title";
-      titleTitle.textContent = "Prompt 标题";
+      titleTitle.textContent = uiText("Prompt 标题", "Prompt title");
       const titleInput = document.createElement("input");
       titleInput.type = "text";
       titleInput.className = "adg-save-title-input";
@@ -6169,7 +6173,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
 
       const promptContentTitle = document.createElement("div");
       promptContentTitle.className = "adg-prompt-settings-title";
-      promptContentTitle.textContent = "入库 Prompt 内容（可编辑）";
+      promptContentTitle.textContent = uiText("入库 Prompt 内容（可编辑）", "Prompt to save (editable)");
       const promptInput = document.createElement("textarea");
       promptInput.className = "adg-save-prompt-input";
       promptInput.rows = 4;
@@ -6185,7 +6189,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
 
       const previewTitle = document.createElement("div");
       previewTitle.className = "adg-prompt-settings-title";
-      previewTitle.textContent = "双语卡片预览";
+      previewTitle.textContent = uiText("双语卡片预览", "Bilingual card preview");
       const previewStatus = document.createElement("div");
       previewStatus.className = "adg-save-preview-status";
       const previewGrid = document.createElement("div");
@@ -6205,10 +6209,10 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         if (!parts.length) {
           previewGrid.replaceChildren();
           previewEditor = null;
-          previewStatus.textContent = "当前没有可预览的 Prompt 片段";
+          previewStatus.textContent = uiText("当前没有可预览的 Prompt 片段", "No prompt fragments to preview");
           return;
         }
-        previewStatus.textContent = `共 ${parts.length} 张双语卡片`;
+        previewStatus.textContent = uiText(`共 ${parts.length} 张双语卡片`, `${parts.length} bilingual cards`);
         captureManualTranslations();
         previewEditor = this.renderBilingualPromptEditor(previewGrid, parts, {
           ...translations,
@@ -6228,7 +6232,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         const generated = this.buildPromptForPost(post, selectedSettings(), excludeInput.value);
         if (!promptDirty) promptInput.value = generated.prompt;
         const parts = splitPromptParts(promptInput.value);
-        previewStatus.textContent = "正在加载双语预览…";
+        previewStatus.textContent = uiText("正在加载双语预览…", "Loading bilingual preview…");
         const translations = await this.ensurePromptTranslations(parts);
         if (requestId !== previewRequest) return;
         renderPreview(parts, translations);
@@ -6255,34 +6259,34 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       return new Promise((resolve) => {
         refreshPreview();
         this.openDialog({
-          title: includeLocalCategory ? `分类/入库 D 站 #${post.id || ""}` : `保存 D 站 #${post.id || ""} 到 Prompt 库`,
+          title: includeLocalCategory ? uiText(`分类/入库 D 站 #${post.id || ""}`, `Categorize / save Danbooru #${post.id || ""}`) : uiText(`保存 D 站 #${post.id || ""} 到 Prompt 库`, `Save Danbooru #${post.id || ""} to prompt library`),
           content,
           onCancel: () => resolve(null),
           onApply: () => {
             const saveToLibrary = saveLibraryInput ? saveLibraryInput.checked : true;
             const assignLocalCategory = assignLocalCategoryInput ? assignLocalCategoryInput.checked : false;
             if (!saveToLibrary && !assignLocalCategory) {
-              this.setStatus("至少选择“存入 Prompt 库”或“写入本地分类”其中一项", "error");
-              showError("至少勾选一项：存入 Prompt 库 / 写入本地分类");
+              this.setStatus(uiText("至少选择“存入 Prompt 库”或“写入本地分类”其中一项", "Choose Save to prompt library or Add to local category, or both"), "error");
+              showError(uiText("至少勾选一项：存入 Prompt 库 / 写入本地分类", "Choose at least one action: prompt library / local category"));
               return false;
             }
             const localCategoryId = localCategorySelect?.value || "";
-            const localCategoryName = localCategorySelect?.selectedOptions?.[0]?.textContent || "无分类";
+            const localCategoryName = localCategorySelect?.selectedOptions?.[0]?.textContent || uiText("无分类", "Uncategorized");
             if (!saveToLibrary) {
               resolve({ saveToLibrary: false, assignLocalCategory, localCategoryId, localCategoryName });
               return;
             }
             const selectedCategories = PROMPT_CATEGORY_ORDER.filter((category) => categoryInputs.get(category)?.checked);
             if (!selectedCategories.length) {
-              this.setStatus("至少选择一个 Prompt 类别", "error");
-              showError("至少保留一个 Prompt 类别");
+              this.setStatus(uiText("至少选择一个 Prompt 类别", "Select at least one prompt category"), "error");
+              showError(uiText("至少保留一个 Prompt 类别", "Keep at least one prompt category"));
               return false;
             }
             const excludePattern = excludeInput.value.trim();
             if (excludePattern) {
               try { new RegExp(excludePattern, "i"); } catch (error) {
-                this.setStatus(`排除正则无效：${error.message || error}`, "error");
-                showError(`排除正则无效：${error.message || error}`);
+                this.setStatus(uiText(`排除正则无效：${error.message || error}`, `Invalid exclusion expression: ${error.message || error}`), "error");
+                showError(uiText(`排除正则无效：${error.message || error}`, `Invalid exclusion expression: ${error.message || error}`));
                 excludeInput.focus();
                 return false;
               }
@@ -6297,8 +6301,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
             const previewResult = previewEditor?.read();
             const promptText = (promptDirty ? promptInput.value : generated.prompt).trim();
             if (!promptText && !previewResult?.allParts?.length) {
-              this.setStatus("排除规则过滤后没有可保存的 Prompt", "error");
-              showError("排除规则过滤后没有可保存的 Prompt（检查上面的排除正则）");
+              this.setStatus(uiText("排除规则过滤后没有可保存的 Prompt", "No prompt remains after exclusions"), "error");
+              showError(uiText("排除规则过滤后没有可保存的 Prompt（检查上面的排除正则）", "No prompt remains after exclusions (check the expression above)"));
               promptInput.focus();
               return false;
             }
@@ -6326,11 +6330,11 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
 
     async savePromptCards(promptResult, translations, postId) {
       const response = await fetch("/anima/cards");
-      if (!response.ok) throw new Error(`卡片库读取 HTTP ${response.status}`);
+      if (!response.ok) throw new Error(uiText(`卡片库读取 HTTP ${response.status}`, `Card libraryRead HTTP ${response.status}`));
       const library = await response.json();
       const categories = Array.isArray(library.categories) && library.categories.length
         ? library.categories
-        : [{ id: "card_all", name: "通用", icon: "", sortOrder: 0 }];
+        : [{ id: "card_all", name: uiText("通用", "General"), icon: "", sortOrder: 0 }];
       const categoryId = categories.find((category) => category.id === "card_all")?.id || categories[0].id;
       const cards = Array.isArray(library.cards) ? library.cards : [];
       const byPrompt = new Map();
@@ -6385,7 +6389,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           body: JSON.stringify(library),
         });
         const saved = await saveResponse.json();
-        if (!saveResponse.ok || !saved?.ok) throw new Error(saved?.error || `卡片库保存 HTTP ${saveResponse.status}`);
+        if (!saveResponse.ok || !saved?.ok) throw new Error(saved?.error || uiText(`卡片库保存 HTTP ${saveResponse.status}`, `Card librarySave HTTP ${saveResponse.status}`));
         window.dispatchEvent(new CustomEvent("anima-prompt-cards-updated", { detail: { source: "danbooru" } }));
       }
       return { created, updated, translated: translatedCount, total: (promptResult.tags || []).length };
@@ -6403,22 +6407,22 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         this.filterControls?.refresh();
       }
       if (!saveToLibrary) {
-        this.setStatus(`已更新 #${post.id || ""} 本地分类：${saveOptions.localCategoryName || "无分类"}`, "success");
+        this.setStatus(uiText(`已更新 #${post.id || ""} 本地分类：${saveOptions.localCategoryName || "无分类"}`, `Updated local category for #${post.id || ""}: ${saveOptions.localCategoryName || "Uncategorized"}`), "success");
         return;
       }
       if (!imageUrl) {
-        this.setStatus(`保存 #${post.id || ""} 失败：帖子没有可用图片地址`, "error");
+        this.setStatus(uiText(`保存 #${post.id || ""} 失败：帖子没有可用图片地址`, `Could not save #${post.id || ""}: no image URL available`), "error");
         return;
       }
-      this.setStatus(`正在保存 #${post.id || ""} 到 Prompt 库…`);
+      this.setStatus(uiText(`正在保存 #${post.id || ""} 到 Prompt 库…`, `Saving #${post.id || ""} to prompt library…`));
       try {
         const imageResponse = await fetch(this.imageProxyUrl(imageUrl, "", this.postSourceId(post)));
-        if (!imageResponse.ok) throw new Error(`预览图 HTTP ${imageResponse.status}`);
+        if (!imageResponse.ok) throw new Error(uiText(`预览图 HTTP ${imageResponse.status}`, `Preview HTTP ${imageResponse.status}`));
         const imageBlob = await imageResponse.blob();
         const imageDataUrl = await new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => resolve(reader.result);
-          reader.onerror = () => reject(new Error("预览图转换失败"));
+          reader.onerror = () => reject(new Error(uiText("预览图转换失败", "Preview conversion failed")));
           reader.readAsDataURL(imageBlob);
         });
         const generatedPromptResult = this.buildPromptForPost(post, saveOptions.promptOutput, saveOptions.excludePattern);
@@ -6435,7 +6439,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         const entry = {
           id: `p_${now}_${Math.random().toString(36).slice(2, 8)}`,
           prompt,
-          displayText: saveOptions.title || `D站 #${post.id || ""}`,
+          displayText: saveOptions.title || uiText(`D站 #${post.id || ""}`, `Danbooru #${post.id || ""}`),
           images: [imageDataUrl],
           primaryImage: imageDataUrl,
           tags,
@@ -6443,7 +6447,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           tagTranslations: translations,
           loras: [],
           categoryId: saveOptions.categoryId || "uncategorized",
-          notes: `来源：Danbooru #${post.id || ""}`,
+          notes: uiText(`来源：Danbooru #${post.id || ""}`, `Source: Danbooru #${post.id || ""}`),
           isFavorite: false,
           createdAt: now,
           updatedAt: now,
@@ -6455,7 +6459,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           for (const category of saveOptions.categoryOptions || []) categories.put(category);
           transaction.objectStore("prompts").add(entry);
           transaction.oncomplete = resolve;
-          transaction.onerror = () => reject(transaction.error || new Error("写入 Prompt 库失败"));
+          transaction.onerror = () => reject(transaction.error || new Error(uiText("写入 Prompt 库失败", "Failed to save to prompt library")));
         });
         database.close();
         let cardResult = null;
@@ -6467,14 +6471,14 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         }
         if (cardResult) {
           const missing = Math.max(0, cardResult.total - cardResult.translated);
-          const categoryText = saveOptions.assignLocalCategory ? `，本地分类：${saveOptions.localCategoryName || "无分类"}` : "";
-          this.setStatus(`已保存 #${post.id || ""}：Prompt 库 + 卡片库 ${cardResult.created} 张${cardResult.updated ? `，补全 ${cardResult.updated} 张` : ""}${missing ? `，${missing} 张待翻译` : ""}${categoryText}`);
+          const categoryText = saveOptions.assignLocalCategory ? uiText(`，本地分类：${saveOptions.localCategoryName || uiText("无分类", "Uncategorized")}`, `，Local category：${saveOptions.localCategoryName || uiText("无分类", "Uncategorized")}`) : "";
+          this.setStatus(uiText(`已保存 #${post.id || ""}：Prompt 库 + 卡片库 ${cardResult.created} 张${cardResult.updated ? `，补全 ${cardResult.updated} 张` : ""}${missing ? uiText(`，${missing} 张待翻译`, `，${missing} awaiting translation`) : ""}${categoryText}`, `Saved #${post.id || ""}: Prompt library + card library ${cardResult.created} images${cardResult.updated ? `，补全 ${cardResult.updated} 张` : ""}${missing ? uiText(`，${missing} 张待翻译`, `，${missing} awaiting translation`) : ""}${categoryText}`));
         } else {
-          const categoryText = saveOptions.assignLocalCategory ? `；本地分类已更新为${saveOptions.localCategoryName || "无分类"}` : "";
-          this.setStatus(`已保存 #${post.id || ""} 到 Prompt 库，但卡片库同步失败：${cardError?.message || "未知错误"}${categoryText}`, "error");
+          const categoryText = saveOptions.assignLocalCategory ? uiText(`；本地分类已更新为${saveOptions.localCategoryName || uiText("无分类", "Uncategorized")}`, `; local category updated to${saveOptions.localCategoryName || uiText("无分类", "Uncategorized")}`) : "";
+          this.setStatus(uiText(`已保存 #${post.id || ""} 到 Prompt 库，但卡片库同步失败：${cardError?.message || uiText("未知错误", "Unknown error")}${categoryText}`, `Saved #${post.id || ""} to Prompt library, but card synchronization failed: ${cardError?.message || uiText("未知错误", "Unknown error")}${categoryText}`), "error");
         }
       } catch (error) {
-        this.setStatus(`保存 Prompt 库失败：${error?.message || "未知错误"}`, "error");
+        this.setStatus(uiText(`保存 Prompt 库失败：${error?.message || "未知错误"}`, `Failed to save prompt library: ${error?.message || "Unknown error"}`), "error");
       }
     }
 
@@ -6557,7 +6561,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       if (hoverImageUrl) {
         const thumbnail = card.querySelector(".adg-card-select img");
         this.hoverPreview = new GalleryHoverPreview({
-          title: `${this.sourceLabel(card.dataset.source || DANBOORU_SOURCE_ID)} #${card.dataset.postId}${card.dataset.video === "1" ? " · 视频封面" : ""}`,
+          title: `${this.sourceLabel(card.dataset.source || DANBOORU_SOURCE_ID)} #${card.dataset.postId}${card.dataset.video === "1" ? uiText(" · 视频封面", " · Video cover") : ""}`,
           imageUrl: hoverImageUrl,
           thumbnailUrl: thumbnail?.currentSrc || thumbnail?.src || "",
           aspectRatio: thumbnail?.naturalHeight ? thumbnail.naturalWidth / thumbnail.naturalHeight : 1,
@@ -6581,7 +6585,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const content = this.hoverPreview?.details || tooltip;
       // 图片预览在所有源都可移入；只有 D站 / P站 的真实标签可以点击检索。
       if (interactive) tooltip.classList.add("is-danbooru");
-      if (tags.length) content.textContent = "正在加载双语 Prompt…";
+      if (tags.length) content.textContent = uiText("正在加载双语 Prompt…", "Loading bilingual prompt…");
       document.body.append(tooltip);
       this.tooltip = tooltip;
       this.tooltipCard = card;   // 供 mouseenter 判断「浮层已经是这张卡的」，避免来回移动时重建闪烁
@@ -6626,7 +6630,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
             //    点击时读它；绝不从 textContent 反推（Danbooru 检索用的就是标签原文）。
             line.dataset.tag = tag;
             line.classList.add("is-searchable");
-            line.title = `点击搜索「${tag.replace(/_/g, " ")}」`;
+            line.title = uiText(`点击搜索「${tag.replace(/_/g, " ")}」`, `Click to search ${tag.replace(/_/g, " ")}`);
           }
           return line;
         }));
@@ -6662,15 +6666,15 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         }
         const note = document.createElement("div");
         note.className = "adg-prompt-tooltip-note";
-        note.textContent = `已匹配 D站 #${matched.post_id}（${matched.tag_count} 个标签）：`
-          + "分隔线以下是该帖的 Danbooru 规范标签，也正是实际输出的 Prompt（上半区仍是 pixiv 自己的标签）。";
+        note.textContent = uiText(`已匹配 D站 #${matched.post_id}（${matched.tag_count} 个标签）：`, `Matched Danbooru #${matched.post_id} (${matched.tag_count} tags):`)
+          + uiText("分隔线以下是该帖的 Danbooru 规范标签，也正是实际输出的 Prompt（上半区仍是 pixiv 自己的标签）。", "Below the divider are standardized Danbooru tags used for prompt output. Above are Pixiv tags.");
         content.prepend(note);
         // 横线分割：直接复用 .adg-prompt-tooltip-extra 的 border-top，不新增样式
         const danbooru = document.createElement("section");
         danbooru.className = "adg-prompt-tooltip-extra";
         const heading = document.createElement("div");
         heading.className = "adg-prompt-tooltip-category";
-        heading.textContent = `D站 #${matched.post_id} 的标签（${matched.tag_count} 个）`;
+        heading.textContent = uiText(`D站 #${matched.post_id} 的标签（${matched.tag_count} 个）`, `Tags from Danbooru #${matched.post_id} (${matched.tag_count})`);
         danbooru.append(heading);
         for (const category of PROMPT_CATEGORY_ORDER) {
           const values = String(matched[`tag_string_${category}`] || "").split(" ").filter(Boolean);
@@ -6715,15 +6719,15 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         const text = String(value ?? "").trim();
         if (text) rows.push([label, text]);
       };
-      if (negative) push("负面", negative);
+      if (negative) push(uiText("负面", "Negative"), negative);
       if (sourceId === "civitai") {
-        push("采样", [meta.sampler, meta.steps ? `${meta.steps} 步` : "", meta.cfgScale ? `CFG ${meta.cfgScale}` : ""].filter(Boolean).join(" · "));
-        push("种子", meta.seed);
+        push(uiText("采样", "Sampling"), [meta.sampler, meta.steps ? uiText(`${meta.steps} 步`, `${meta.steps} steps`) : "", meta.cfgScale ? `CFG ${meta.cfgScale}` : ""].filter(Boolean).join(" · "));
+        push(uiText("种子", "Seed"), meta.seed);
         // PLAN §6：meta.Model 不存在（那是模型版本端点的字段）→ 只用条目级 baseModel
-        push("底模", meta.baseModel || meta.model);
+        push(uiText("底模", "Base model"), meta.baseModel || meta.model);
       } else if (sourceId === "pixiv") {
-        push("作者", meta.user_name || meta.author || meta.user);
-        push("收藏", meta.bookmarks ?? meta.fav_count);
+        push(uiText("作者", "Artist"), meta.user_name || meta.author || meta.user);
+        push(uiText("收藏", "Favorites"), meta.bookmarks ?? meta.fav_count);
       }
       const hasPrompt = this.sourceCapabilities(sourceId).prompt;
       const extras = [];
@@ -6732,7 +6736,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         section.className = "adg-prompt-tooltip-section";
         const heading = document.createElement("div");
         heading.className = "adg-prompt-tooltip-category";
-        heading.textContent = sourceId === "civitai" ? "C站生成参数" : "P站信息";
+        heading.textContent = sourceId === "civitai" ? uiText("C站生成参数", "Civitai generation parameters") : uiText("P站信息", "Pixiv details");
         section.append(heading, ...rows.map(([label, value]) => {
           const line = document.createElement("div");
           line.className = "adg-prompt-tooltip-line";
@@ -6749,8 +6753,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         const note = document.createElement("div");
         note.className = "adg-prompt-tooltip-note";
         note.textContent = sourceId === "pixiv"
-          ? "P站标签是 pixiv 自己的词表（与 Danbooru 不通用，不进 Prompt 输出）；小字为 pixiv 官方翻译，点标签可直接搜索"
-          : "C站无标签体系，这里显示的是原作者写的提示词与采样参数";
+          ? uiText("P站标签是 pixiv 自己的词表（与 Danbooru 不通用，不进 Prompt 输出）；小字为 pixiv 官方翻译，点标签可直接搜索", "Pixiv tags are separate from Danbooru and are not output as prompts. Smaller text is Pixiv's translation. Click a tag to search.")
+          : uiText("C站无标签体系，这里显示的是原作者写的提示词与采样参数", "Civitai has no tag system. These are the creator's prompt and sampling settings.");
         extras.push(note);
       }
       if (!extras.length) return null;
@@ -6908,7 +6912,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         : (post.file_url || danbooruOriginal(post.large_file_url) || post.full_url
            || danbooruOriginal(post.sample_url) || post.large_file_url || post.preview_file_url);
       if (!imageUrl) return;
-      this.setStatus(`正在下载 #${post.id || ""}…`);
+      this.setStatus(uiText(`正在下载 #${post.id || ""}…`, `Downloading #${post.id || ""}…`));
       try {
         // 一律走后端代理（P站 的 Referer 由后端按 images_headers() 附加）
         const response = await fetch(this.imageProxyUrl(imageUrl, "", sourceId));
@@ -6925,9 +6929,9 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         link.click();
         link.remove();
         setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-        this.setStatus(`已开始下载 #${post.id || ""}${isGallerySource ? `（${this.sourceLabel(sourceId)} 原图）` : ""}`);
+        this.setStatus(uiText(`已开始下载 #${post.id || ""}${isGallerySource ? uiText(`（${this.sourceLabel(sourceId)} 原图）`, `（${this.sourceLabel(sourceId)} Original）`) : ""}`, `Started download #${post.id || ""}${isGallerySource ? uiText(`（${this.sourceLabel(sourceId)} 原图）`, `（${this.sourceLabel(sourceId)} Original）`) : ""}`));
       } catch (error) {
-        this.setStatus(`下载失败：${error?.message || "未知错误"}`, "error");
+        this.setStatus(uiText(`下载失败：${error?.message || "未知错误"}`, `Download failed: ${error?.message || "Unknown error"}`), "error");
       }
     }
 
@@ -6958,7 +6962,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       if (isVid) {
         const hint = document.createElement("div");
         hint.className = "adg-image-preview-hint";
-        hint.textContent = "视频帖：此处显示封面（原文件为 MP4，点卡片「下载」可获取原视频）";
+        hint.textContent = uiText("视频帖：此处显示封面（原文件为 MP4，点卡片「下载」可获取原视频）", "Video post: showing its cover. Use Download on the card for the original MP4.");
         hint.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#fbbf24;font-size:12px;padding:6px 12px;border-radius:8px;z-index:5;";
         overlay.append(hint);
       }
@@ -6988,7 +6992,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       content.className = "adg-prompt-editor";
       const intro = document.createElement("div");
       intro.className = "adg-dialog-intro";
-      intro.textContent = "每行对应一个提示词；修改英文会更新 Prompt，修改中文会更新翻译。点击卡片右侧「清除」可保留记录但不输出，应用后生效。";
+      intro.textContent = uiText("每行对应一个提示词；修改英文会更新 Prompt，修改中文会更新翻译。点击卡片右侧「清除」可保留记录但不输出，应用后生效。", "Each row is a prompt fragment. Edit English to change the prompt, or Chinese to change its translation. Clear keeps the record but excludes it from output after applying.");
       const groupSummary = document.createElement("div");
       groupSummary.className = "adg-prompt-groups";
       let promptGroups = {};
@@ -7002,12 +7006,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       }
       const copy = document.createElement("button");
       copy.type = "button";
-      copy.textContent = "复制 Prompt";
+      copy.textContent = uiText("复制 Prompt", "Copy prompt");
       copy.onclick = async () => {
         const current = editor.read().prompt;
         try {
           await navigator.clipboard.writeText(current);
-          this.setStatus("Prompt 已复制");
+          this.setStatus(uiText("Prompt 已复制", "Prompt copied"));
         } catch {
           const fallback = document.createElement("textarea");
           fallback.value = current;
@@ -7015,7 +7019,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           fallback.select();
           document.execCommand("copy");
           fallback.remove();
-          this.setStatus("Prompt 已复制");
+          this.setStatus(uiText("Prompt 已复制", "Prompt copied"));
         }
       };
       const bilingualEditor = document.createElement("div");
@@ -7031,7 +7035,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         onApply: () => {
           const result = editor.read();
           if (!result.prompt && !result.allParts.length) {
-            this.setStatus("Prompt 不能为空", "error");
+            this.setStatus(uiText("Prompt 不能为空", "Prompt cannot be empty"), "error");
             return false;
           }
           const edit = {
@@ -7054,7 +7058,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
             PROMPT_CATEGORY_ORDER.map((category) => [category, (groups[category] || []).filter((tag) => !excludedKeys.has(promptCardKey(tag)))])
           ));
           this.updateSelection();
-          this.setStatus(edit.excluded.length ? `Prompt 已更新，已清除 ${edit.excluded.length} 个词条（不输出）` : "Prompt 已更新");
+          this.setStatus(edit.excluded.length ? uiText(`Prompt 已更新，已清除 ${edit.excluded.length} 个词条（不输出）`, `Prompt updated; ${edit.excluded.length} tags cleared (excluded)`) : uiText("Prompt 已更新", "Prompt updated"));
         },
       });
     }
@@ -7069,12 +7073,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       content.className = "adg-prompt-settings";
       const intro = document.createElement("div");
       intro.className = "adg-prompt-settings-tip";
-      intro.textContent = "控制卡片 Prompt、节点 prompts 输出，以及 metadata_json 里的分组。默认保持旧输出顺序。";
+      intro.textContent = uiText("控制卡片 Prompt、节点 prompts 输出，以及 metadata_json 里的分组。默认保持旧输出顺序。", "Controls card prompts, node prompt output and metadata_json groups. The default keeps the original output order.");
       content.append(intro);
 
       const categoryTitle = document.createElement("div");
       categoryTitle.className = "adg-prompt-settings-title";
-      categoryTitle.textContent = "输出类别（按 Danbooru 类别去重）";
+      categoryTitle.textContent = uiText("输出类别（按 Danbooru 类别去重）", "Output tag types (deduplicated by Danbooru category)");
       const categoryList = document.createElement("div");
       categoryList.className = "adg-prompt-category-list";
       const categoryInputs = new Map();
@@ -7095,7 +7099,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
 
       const formatTitle = document.createElement("div");
       formatTitle.className = "adg-prompt-settings-title";
-      formatTitle.textContent = "格式";
+      formatTitle.textContent = uiText("格式", "Format");
       const formatList = document.createElement("div");
       formatList.className = "adg-prompt-format-list";
       const makeFormatChoice = (name, labelText, checked) => {
@@ -7110,12 +7114,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         formatList.append(label);
         return input;
       };
-      const replaceUnderscores = makeFormatChoice("replaceUnderscores", "下划线转空格（long_hair → long hair）", current.replaceUnderscores);
-      const escapeBrackets = makeFormatChoice("escapeBrackets", "转义括号（(tag) → \\(tag\\)）", current.escapeBrackets);
+      const replaceUnderscores = makeFormatChoice("replaceUnderscores", uiText("下划线转空格（long_hair → long hair）", "Replace underscores with spaces (long_hair → long hair)"), current.replaceUnderscores);
+      const escapeBrackets = makeFormatChoice("escapeBrackets", uiText("转义括号（(tag) → \\(tag\\)）", "Escape brackets ((tag) → \\(tag\\))"), current.escapeBrackets);
       content.append(formatTitle, formatList);
 
       this.openDialog({
-        title: "Prompt 输出设置",
+        title: uiText("Prompt 输出设置", "Prompt output settings"),
         content,
         onApply: () => {
           const categories = PROMPT_CATEGORY_ORDER.filter((category) => categoryInputs.get(category)?.checked);
@@ -7133,7 +7137,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
             card.querySelector(".adg-card-select")?.setAttribute("aria-pressed", "true");
           }
           this.updateSelection();
-          this.setStatus(`Prompt 输出已更新：${this.settings.promptOutput.categories.map((category) => PROMPT_CATEGORY_LABELS[category]).join("、")}`, "success");
+          this.setStatus(uiText(`Prompt 输出已更新：${this.settings.promptOutput.categories.map((category) => PROMPT_CATEGORY_LABELS[category]).join("、")}`, `Prompt output updated: ${this.settings.promptOutput.categories.map((category) => PROMPT_CATEGORY_LABELS[category]).join(", ")}`), "success");
         },
       });
     }
@@ -7148,7 +7152,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
 
       const head = document.createElement("div");
       head.className = "adg-menu-title";
-      head.textContent = ids.length ? `将 ${ids.length} 张图归入：` : "新建分类：";
+      head.textContent = ids.length ? uiText(`将 ${ids.length} 张图归入：`, `Categorize ${ids.length} images:`) : uiText("新建分类：", "New category:");
       content.append(head);
 
       const assign = async (catId, catName) => {
@@ -7161,10 +7165,10 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         // ⚠️ 失败时**不能**再报"已归类"：pushPostCategory 已经在状态栏写了具体错误，
         //    这里覆盖成成功文案会让用户以为归好了，实际库里没有（本轮的静默失败就是这么藏的）。
         if (ids.length && ok < ids.length) {
-          this.setStatus(`归类未完成：${ids.length - ok}/${ids.length} 张没写进分类库（见上一条错误）`, "error");
+          this.setStatus(uiText(`归类未完成：${ids.length - ok}/${ids.length} 张没写进分类库（见上一条错误）`, `Categorization incomplete: ${ids.length - ok}/${ids.length} images not saved (see previous error)`), "error");
           return;
         }
-        this.setStatus(ids.length ? `已归类 ${ids.length} 张 → ${catName}` : `已创建分类：${catName}`, "success");
+        this.setStatus(ids.length ? uiText(`已归类 ${ids.length} 张 → ${catName}`, `Categorized ${ids.length} images → ${catName}`) : uiText(`已创建分类：${catName}`, `Category created: ${catName}`), "success");
       };
 
       if (ids.length) {
@@ -7175,8 +7179,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         const none = document.createElement("button");
         none.type = "button";
         none.className = "adg-category-item";
-        none.textContent = "✕ 无分类（移除归类）";
-        none.onclick = () => assign("", "无分类");
+        none.textContent = uiText("✕ 无分类（移除归类）", "✕ Uncategorized (remove category)");
+        none.onclick = () => assign("", uiText("无分类", "Uncategorized"));
         content.append(none);
 
         // 已有分类（带计数与当前勾选；✕ 删除——其中的图片变回未分类）
@@ -7198,7 +7202,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
             name.textContent = cat.name;
             const meta = document.createElement("span");
             meta.className = "adg-category-item-meta";
-            meta.textContent = `${counts[cat.id] || 0} 张${cat.id === currentCatId ? " · 当前" : ""}`;
+            meta.textContent = uiText(`${counts[cat.id] || 0} 张${cat.id === currentCatId ? " · 当前" : ""}`, `${counts[cat.id] || 0} images${cat.id === currentCatId ? " · 当前" : ""}`);
             pick.append(name, meta);
             pick.onclick = () => assign(cat.id, cat.name);
             const ops = document.createElement("span");
@@ -7206,7 +7210,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
             const remove = document.createElement("button");
             remove.type = "button";
             remove.className = "adg-category-op adg-category-op-remove";
-            remove.title = "删除分类（其中的图片变回未分类）";
+            remove.title = uiText("删除分类（其中的图片变回未分类）", "Delete category (its images become uncategorized)");
             remove.textContent = "✕";
             remove.onclick = async (event) => {
               event.stopPropagation();
@@ -7219,7 +7223,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
                   body: JSON.stringify({ action: "delete", id: cat.id, source: this.settings.source }),
                 });
               } catch (error) {
-                this.setStatus(`删除分类失败：${error?.message || error}`, "error");
+                this.setStatus(uiText(`删除分类失败：${error?.message || error}`, `Could not delete category: ${error?.message || error}`), "error");
                 return;
               }
               if (this.settings.activeCategory === cat.id) this.settings.activeCategory = "";
@@ -7227,7 +7231,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
               this.saveSettings();
               this.filterControls?.refresh();
               renderExisting();
-              this.setStatus(`已删除分类：${cat.name}（其中的图片已变回未分类）`);
+              this.setStatus(uiText(`已删除分类：${cat.name}（其中的图片已变回未分类）`, `Category deleted: ${cat.name} (its images are now uncategorized)`));
             };
             ops.append(remove);
             row.append(pick, ops);
@@ -7252,7 +7256,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           if (tags.length) {
             const tagTitle = document.createElement("div");
             tagTitle.className = "adg-menu-title";
-            tagTitle.textContent = "从标签一键建分类（点标签即归类）：";
+            tagTitle.textContent = uiText("从标签一键建分类（点标签即归类）：", "Create a category from a tag (click to categorize):");
             content.append(tagTitle);
             const tagWrap = document.createElement("div");
             tagWrap.className = "adg-category-tags";
@@ -7277,12 +7281,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       // 新建分类（内联输入兜底）
       const newTitle = document.createElement("div");
       newTitle.className = "adg-menu-title";
-      newTitle.textContent = ids.length ? "新建分类：" : "输入分类名称（回车确认）：";
+      newTitle.textContent = ids.length ? uiText("新建分类：", "New category:") : uiText("输入分类名称（回车确认）：", "Category name (Enter to confirm):");
       const newRow = document.createElement("div");
       newRow.className = "adg-category-newrow";
       const newInput = document.createElement("input");
       newInput.type = "text";
-      newInput.placeholder = "输入分类名称，回车确认";
+      newInput.placeholder = uiText("输入分类名称，回车确认", "Enter a category name; press Enter to confirm");
       const create = () => {
         const name = newInput.value.trim();
         if (!name) return;
@@ -7294,12 +7298,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const newBtn = document.createElement("button");
       newBtn.type = "button";
       newBtn.className = "primary";
-      newBtn.textContent = ids.length ? "创建并归类" : "创建";
+      newBtn.textContent = ids.length ? uiText("创建并归类", "Create and categorize") : uiText("创建", "Create");
       newBtn.onclick = create;
       newRow.append(newInput, newBtn);
       content.append(newTitle, newRow);
 
-      this.openDialog({ title: ids.length ? "设置分类" : "新建分类", content, onApply: () => {}, showApply: false });
+      this.openDialog({ title: ids.length ? uiText("设置分类", "Set category") : uiText("新建分类", "New category"), content, onApply: () => {}, showApply: false });
       setTimeout(() => newInput.focus(), 50);
     }
 
@@ -7309,29 +7313,29 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       content.className = "adg-preset-manager";
       const head = document.createElement("div");
       head.className = "adg-dialog-intro";
-      head.textContent = "保存当前标签、分级和筛选条件；点击预设名称即可应用。";
+      head.textContent = uiText("保存当前标签、分级和筛选条件；点击预设名称即可应用。", "Save the current tags, rating and filters. Click a preset name to apply it.");
       content.append(head);
 
       const saveRow = document.createElement("div");
       saveRow.className = "adg-preset-save-row";
       const nameInput = document.createElement("input");
       nameInput.className = "adg-preset-name-input";
-      nameInput.placeholder = "新预设名称";
-      nameInput.setAttribute("aria-label", "新预设名称");
+      nameInput.placeholder = uiText("新预设名称", "New preset name");
+      nameInput.setAttribute("aria-label", uiText("新预设名称", "New preset name"));
       const saveButton = document.createElement("button");
       saveButton.type = "button";
       saveButton.className = "primary";
-      saveButton.textContent = "保存当前";
+      saveButton.textContent = uiText("保存当前", "Save current");
       // 中文备注：**可留空**（留空 = 自动翻译）；填了就以手填为准，且不会被自动翻译覆盖。
       const noteInput = document.createElement("input");
       noteInput.className = "adg-preset-note-input";
-      noteInput.placeholder = "中文备注（留空 = 自动翻译）";
-      noteInput.setAttribute("aria-label", "预设中文备注（可留空）");
+      noteInput.placeholder = uiText("中文备注（留空 = 自动翻译）", "Chinese note (blank = translate automatically)");
+      noteInput.setAttribute("aria-label", uiText("预设中文备注（可留空）", "Preset Chinese note (optional)"));
       saveButton.onclick = async () => {
         const name = nameInput.value.trim();
         if (!name) {
           nameInput.focus();
-          this.setStatus("请输入预设名称", "error");
+          this.setStatus(uiText("请输入预设名称", "Enter a preset name"), "error");
           return;
         }
         // ⚠️ 搜索词必须**以搜索框里的实时输入为准**（2026-09-17 修）：
@@ -7345,7 +7349,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         const manualNote = noteInput.value.trim().slice(0, 240);
         const oldText = saveButton.textContent;
         saveButton.disabled = true;
-        saveButton.textContent = manualNote ? "保存中…" : "生成中文备注…";
+        saveButton.textContent = manualNote ? uiText("保存中…", "Saving…") : uiText("生成中文备注…", "Generating Chinese note…");
         try {
           const preset = {
             name,
@@ -7364,9 +7368,9 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           noteInput.value = "";
           renderRows();
           // 提示里带上实际保存的搜索词：改词没点搜索时，用户能立刻看出存进去的是哪一条
-          this.setStatus(`${existing >= 0 ? "已更新" : "已保存"}搜索预设：${name}${query ? ` · ${query}` : ""}`, "success");
+          this.setStatus(uiText(`${existing >= 0 ? "已更新" : uiText("已保存", "Saved")}搜索预设：${name}${query ? ` · ${query}` : ""}`, `${existing >= 0 ? "已更新" : uiText("已保存", "Saved")}Search presets：${name}${query ? ` · ${query}` : ""}`), "success");
         } catch (error) {
-          this.setStatus(`保存搜索预设失败：${error?.message || "未知错误"}`, "error");
+          this.setStatus(uiText(`保存搜索预设失败：${error?.message || "未知错误"}`, `Could not save search preset: ${error?.message || "Unknown error"}`), "error");
         } finally {
           saveButton.disabled = false;
           saveButton.textContent = oldText;
@@ -7387,7 +7391,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         if (!this.settings.presets.length) {
           const empty = document.createElement("div");
           empty.className = "adg-preset-empty";
-          empty.textContent = "暂无预设";
+          empty.textContent = uiText("暂无预设", "No presets yet");
           list.append(empty);
           return;
         }
@@ -7397,15 +7401,15 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           const pick = document.createElement("button");
           pick.type = "button";
           pick.className = "adg-preset-pick";
-          pick.title = `应用预设：${preset.name}`;
+          pick.title = uiText(`应用预设：${preset.name}`, `Apply preset: ${preset.name}`);
           const name = document.createElement("span");
           name.className = "adg-preset-row-name";
           name.textContent = preset.name;
           const meta = document.createElement("span");
           meta.className = "adg-preset-row-meta";
           const metaText = preset.note
-            ? `${preset.note} · ${preset.query || "（无查询词）"}`
-            : (preset.query || "（无查询词）");
+            ? `${preset.note} · ${preset.query || uiText("（无查询词）", "(No search terms)")}`
+            : (preset.query || uiText("（无查询词）", "(No search terms)"));
           meta.textContent = metaText;
           meta.title = metaText;
           if (preset.noteManual) pick.dataset.manual = "1";
@@ -7419,33 +7423,33 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           const remove = document.createElement("button");
           remove.type = "button";
           remove.className = "adg-preset-remove";
-          remove.title = "删除该搜索预设";
-          remove.setAttribute("aria-label", `删除预设：${preset.name}`);
-          remove.textContent = "删除";
+          remove.title = uiText("删除该搜索预设", "Delete this search preset");
+          remove.setAttribute("aria-label", uiText(`删除预设：${preset.name}`, `Delete preset: ${preset.name}`));
+          remove.textContent = uiText("删除", "Delete");
           remove.onclick = (event) => {
             event.stopPropagation();
             this.settings.presets.splice(index, 1);
             this.saveSettings();
             this.renderPresetOptions();
             renderRows();
-            this.setStatus(`已删除搜索预设：${preset.name}`);
+            this.setStatus(uiText(`已删除搜索预设：${preset.name}`, `Search preset deleted: ${preset.name}`));
           };
           // 自定义中文备注：行内编辑。手填（含"清空"）后不再被自动翻译覆盖。
           const noteBtn = document.createElement("button");
           noteBtn.type = "button";
           noteBtn.className = "adg-preset-note-edit";
-          noteBtn.textContent = preset.noteManual ? "改备注" : "备注";
+          noteBtn.textContent = preset.noteManual ? uiText("改备注", "Edit note") : uiText("备注", "Note");
           noteBtn.title = preset.noteManual
-            ? "编辑自定义中文备注（清空 = 保持为空，不再自动翻译）"
-            : "自定义中文备注（填过之后就不再自动翻译）";
+            ? uiText("编辑自定义中文备注（清空 = 保持为空，不再自动翻译）", "Edit the Chinese note (clearing it keeps it blank; no automatic translation)")
+            : uiText("自定义中文备注（填过之后就不再自动翻译）", "Custom Chinese note (disables automatic translation)");
           noteBtn.setAttribute("aria-label", `${noteBtn.textContent}：${preset.name}`);
           noteBtn.onclick = (event) => {
             event.stopPropagation();
             const input = document.createElement("input");
             input.className = "adg-preset-note-input-inline";
             input.value = preset.note || "";
-            input.placeholder = "中文备注（留空 = 不再自动翻译）";
-            input.setAttribute("aria-label", `编辑预设备注：${preset.name}`);
+            input.placeholder = uiText("中文备注（留空 = 不再自动翻译）", "Chinese note (blank = no automatic translation)");
+            input.setAttribute("aria-label", uiText(`编辑预设备注：${preset.name}`, `Edit preset note: ${preset.name}`));
             // 备注框显示在 pick 按钮内部：必须挡掉冒泡，否则点输入框会顺手"应用预设"
             input.onpointerdown = (e) => e.stopPropagation();
             input.onclick = (e) => e.stopPropagation();
@@ -7463,7 +7467,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
                 preset.noteManual = true;
                 this.saveSettings();
                 this.renderPresetOptions();
-                this.setStatus(value ? `已保存备注：${value}` : `已设为无备注（不再自动翻译）：${preset.name}`);
+                this.setStatus(value ? uiText(`已保存备注：${value}`, `Note saved: ${value}`) : uiText(`已设为无备注（不再自动翻译）：${preset.name}`, `Note cleared (automatic translation disabled): ${preset.name}`));
               }
               renderRows();
             };
@@ -7480,12 +7484,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       };
       renderRows();
       content.append(list);
-      this.openDialog({ title: "搜索预设管理", content, onApply: () => {}, showApply: false });
+      this.openDialog({ title: uiText("搜索预设管理", "Search preset manager"), content, onApply: () => {}, showApply: false });
       void this.hydratePresetNotes(renderRows);
       setTimeout(() => nameInput.focus(), 50);
     }
 
-    openDialog({ title, content, onApply, onCancel, showApply = true, applyLabel = "应用" }) {
+    openDialog({ title, content, onApply, onCancel, showApply = true, applyLabel = uiText("应用", "Apply") }) {
       this.removeDialog();
       const overlay = document.createElement("div");
       overlay.id = this.dialogId;
@@ -7503,7 +7507,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       actions.className = "adg-dialog-actions";
       const cancel = document.createElement("button");
       cancel.type = "button";
-      cancel.textContent = "取消";
+      cancel.textContent = uiText("取消", "Cancel");
       const close = () => {
         onCancel?.();
         this.removeDialog();
@@ -7597,7 +7601,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           state.pixiv.logged_in = Boolean(data.pixiv.logged_in);
         }
       } catch (error) {
-        state.civitai.error = error?.message || "请求失败";
+        state.civitai.error = error?.message || uiText("请求失败", "Request failed");
       }
       try {
         const response = await fetch("/anima/gallery/pixiv/auth/status");
@@ -7609,7 +7613,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           state.pixiv.error = String(data?.error || `HTTP ${response.status}`);
         }
       } catch (error) {
-        state.pixiv.error = error?.message || "请求失败";
+        state.pixiv.error = error?.message || uiText("请求失败", "Request failed");
       }
       this.gallerySecretState = state;
       return state;
@@ -7617,10 +7621,10 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
 
     /** P站 三种状态的文案：没装 / 装了没登录 / 已授权（不能混成两种） */
     pixivStatusText(info = {}) {
-      if (info.error) return `读取失败：${info.error}`;
-      if (info.available === false) return "后端未安装 P站 模块（anima_gallery_pixiv.py）—— 该图源不可用";
-      if (info.logged_in) return "已登录：授权已保存在本机，下次无需重复操作";
-      return "未授权：P站 没有匿名搜索，必须先授权一次";
+      if (info.error) return uiText(`读取失败：${info.error}`, `Read failed: ${info.error}`);
+      if (info.available === false) return uiText("后端未安装 P站 模块（anima_gallery_pixiv.py）—— 该图源不可用", "Pixiv module (anima_gallery_pixiv.py) is missing; this source is unavailable");
+      if (info.logged_in) return uiText("已登录：授权已保存在本机，下次无需重复操作", "Signed in: authorization saved locally for future use");
+      return uiText("未授权：P站 没有匿名搜索，必须先授权一次", "Not authorized: Pixiv requires sign-in to search");
     }
 
     /**
@@ -7630,7 +7634,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
      */
     async renderCivitaiDiag(target) {
       if (!target) return;
-      target.textContent = "正在读取诊断信息…";
+      target.textContent = uiText("正在读取诊断信息…", "Reading diagnostics…");
       try {
         const response = await fetch("/anima/gallery/civitai/diag");
         const data = await response.json().catch(() => null);
@@ -7651,12 +7655,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           const text = String(value);
           // 兜底：形如 api_key 的字段若没带掩码省略号（=> 可能是真明文），一律不显示原值
           const looksLikeRawKey = /(^|[._])key$/.test(name) && text.length > 12 && !text.includes("…");
-          lines.push(`${prefix || "值"}：${looksLikeRawKey ? "（已隐藏：只允许显示掩码）" : text}`);
+          lines.push(`${prefix || uiText("值", "Value")}：${looksLikeRawKey ? uiText("（已隐藏：只允许显示掩码）", "(Hidden: masked values only)") : text}`);
         };
         walk(data);
-        target.textContent = lines.length ? lines.join("\n") : "诊断返回空";
+        target.textContent = lines.length ? lines.join("\n") : uiText("诊断返回空", "No diagnostics returned");
       } catch (error) {
-        target.textContent = `诊断失败：${error?.message || "未知错误"}`;
+        target.textContent = uiText(`诊断失败：${error?.message || "未知错误"}`, `Diagnostics failed: ${error?.message || "Unknown error"}`);
       }
     }
 
@@ -7686,45 +7690,45 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       section.className = "adg-settings-section adg-source-secrets";
       const title = document.createElement("div");
       title.className = "adg-settings-title";
-      title.textContent = "图源密钥";
+      title.textContent = uiText("图源密钥", "Source credentials");
       const help = document.createElement("div");
       help.className = "adg-settings-help";
       // PLAN §6 实测修正：key 对 /api/v1/images **没有可见影响**（无 key / 真 key / 假 key 回包逐字节相同，
       // 连 nsfw=X 都匿名可读）→ key 的价值是**账号校验**（GET /api/v1/me），不是 NSFW 开关。
-      help.textContent = "C站 key 仅用于账号校验（/api/v1/me）；图片端点匿名即可读，含 Mature / X —— key 不会改变 /images 回包。两个源的凭证都只存本机 data/（不进 git），界面只显示掩码。";
+      help.textContent = uiText("C站 key 仅用于账号校验（/api/v1/me）；图片端点匿名即可读，含 Mature / X —— key 不会改变 /images 回包。两个源的凭证都只存本机 data/（不进 git），界面只显示掩码。", "The Civitai key verifies your account (/api/v1/me). Images, including Mature / X, are available anonymously; a key does not change /images results. Credentials stay in local data/ and are displayed masked.");
       section.append(title, help);
 
       // ── C站 ──
-      const civitai = this.makeSecretStatusRow("C站 API Key");
+      const civitai = this.makeSecretStatusRow(uiText("C站 API Key", "Civitai API key"));
       const civitaiMask = document.createElement("code");
       civitaiMask.className = "adg-secret-mask";
-      civitaiMask.title = "只显示掩码，明文不会回显";
+      civitaiMask.title = uiText("只显示掩码，明文不会回显", "Masked; the full key is never displayed");
       const civitaiRow = document.createElement("div");
       civitaiRow.className = "adg-settings-inline-row";
       const civitaiInput = document.createElement("input");
       civitaiInput.type = "password";
       civitaiInput.className = "adg-settings-input";
       civitaiInput.autocomplete = "off";
-      civitaiInput.placeholder = "粘贴新的 API Key（保存后只显示掩码）";
+      civitaiInput.placeholder = uiText("粘贴新的 API Key（保存后只显示掩码）", "Paste a new API key (masked after saving)");
       const civitaiSave = document.createElement("button");
       civitaiSave.type = "button";
       civitaiSave.className = "primary adg-settings-inline-button";
-      civitaiSave.textContent = "保存";
+      civitaiSave.textContent = uiText("保存", "Save");
       const civitaiTest = document.createElement("button");
       civitaiTest.type = "button";
       civitaiTest.className = "adg-settings-inline-button";
-      civitaiTest.textContent = "测试";
+      civitaiTest.textContent = uiText("测试", "Test");
       const civitaiClear = document.createElement("button");
       civitaiClear.type = "button";
       civitaiClear.className = "adg-settings-inline-button";
-      civitaiClear.textContent = "清除";
+      civitaiClear.textContent = uiText("清除", "Clear");
       civitaiRow.append(civitaiInput, civitaiSave, civitaiTest, civitaiClear);
       civitai.row.append(civitaiMask);
       const civitaiDiagBtn = document.createElement("button");
       civitaiDiagBtn.type = "button";
       civitaiDiagBtn.className = "adg-settings-inline-button";
-      civitaiDiagBtn.textContent = "诊断";
-      civitaiDiagBtn.title = "读取 /anima/gallery/civitai/diag（注册状态 / 代理 / key 掩码），不显示任何明文";
+      civitaiDiagBtn.textContent = uiText("诊断", "Diagnostics");
+      civitaiDiagBtn.title = uiText("读取 /anima/gallery/civitai/diag（注册状态 / 代理 / key 掩码），不显示任何明文", "Read source diagnostics (registration / proxy / masked key); never display the full key");
       const civitaiDiag = document.createElement("pre");
       civitaiDiag.className = "adg-diag-output";
       civitaiDiag.hidden = true;
@@ -7740,8 +7744,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         civitai.dot.classList.toggle("is-on", Boolean(info.configured));
         civitai.dot.classList.toggle("is-off", !info.configured);
         civitai.text.textContent = info.error
-          ? `读取失败：${info.error}`
-          : (info.configured ? `已配置（${info.masked || "掩码不可用"}）` : "未配置");
+          ? uiText(`读取失败：${info.error}`, `Read failed: ${info.error}`)
+          : (info.configured ? uiText(`已配置（${info.masked || "掩码不可用"}）`, `Configured (${info.masked || "mask unavailable"})`) : uiText("未配置", "Not configured"));
         civitaiMask.textContent = info.configured ? String(info.masked || "••••") : "—";
         civitaiClear.disabled = !info.configured;
       };
@@ -7764,9 +7768,9 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           civitaiInput.value = ""; // 明文立刻丢弃：只保留后端回的掩码
           const state = await this.refreshGallerySecretState();
           syncCivitai(state);
-          this.setStatus("C站 API Key 已保存（明文不回显，界面只显示掩码）", "success");
+          this.setStatus(uiText("C站 API Key 已保存（明文不回显，界面只显示掩码）", "Civitai API key saved (displayed masked)"), "success");
         } catch (error) {
-          this.setStatus(`保存 C站 Key 失败：${error?.message || "未知错误"}`, "error");
+          this.setStatus(uiText(`保存 C站 Key 失败：${error?.message || "未知错误"}`, `Failed to save Civitai key: ${error?.message || "Unknown error"}`), "error");
         }
         civitaiSave.disabled = false;
       };
@@ -7776,15 +7780,15 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           await postCivitaiSecret("");
           const state = await this.refreshGallerySecretState();
           syncCivitai(state);
-          this.setStatus("已清除 C站 API Key");
+          this.setStatus(uiText("已清除 C站 API Key", "Civitai API key cleared"));
         } catch (error) {
-          this.setStatus(`清除失败：${error?.message || "未知错误"}`, "error");
+          this.setStatus(uiText(`清除失败：${error?.message || "未知错误"}`, `Clear failed: ${error?.message || "Unknown error"}`), "error");
         }
         civitaiClear.disabled = false;
       };
       civitaiTest.onclick = async () => {
         civitaiTest.disabled = true;
-        civitaiTest.textContent = "测试中…";
+        civitaiTest.textContent = uiText("测试中…", "Testing…");
         try {
           const response = await fetch("/anima/gallery/secrets/test", {
             method: "POST",
@@ -7795,51 +7799,51 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           const ok = response.ok && data?.ok !== false;
           civitai.dot.classList.toggle("is-on", ok);
           civitai.dot.classList.toggle("is-off", !ok);
-          civitai.text.textContent = String(data?.message || (ok ? "连接正常" : `HTTP ${response.status}`));
-          this.setStatus(`C站 Key 测试：${data?.message || (ok ? "连接正常" : "失败")}`, ok ? "success" : "error");
+          civitai.text.textContent = String(data?.message || (ok ? uiText("连接正常", "Connection successful") : `HTTP ${response.status}`));
+          this.setStatus(uiText(`C站 Key 测试：${data?.message || (ok ? uiText("连接正常", "Connection successful") : uiText("失败", "Failed"))}`, `Civitai Key Test：${data?.message || (ok ? uiText("连接正常", "Connection successful") : uiText("失败", "Failed"))}`), ok ? "success" : "error");
         } catch (error) {
-          civitai.text.textContent = `测试失败：${error?.message || "未知错误"}`;
-          this.setStatus(`C站 Key 测试失败：${error?.message || "未知错误"}`, "error");
+          civitai.text.textContent = uiText(`测试失败：${error?.message || "未知错误"}`, `Test failed: ${error?.message || "Unknown error"}`);
+          this.setStatus(uiText(`C站 Key 测试失败：${error?.message || "未知错误"}`, `Civitai key test failed: ${error?.message || "Unknown error"}`), "error");
         }
         civitaiTest.disabled = false;
-        civitaiTest.textContent = "测试";
+        civitaiTest.textContent = uiText("测试", "Test");
       };
 
       // P站：本机自动登录优先，手动授权用于远程或未安装浏览器的环境。
-      const pixiv = this.makeSecretStatusRow("P站 登录");
+      const pixiv = this.makeSecretStatusRow(uiText("P站 登录", "Pixiv sign-in"));
       const pixivRow = document.createElement("div");
       pixivRow.className = "adg-settings-inline-row";
       const pixivAuto = document.createElement("button");
       pixivAuto.type = "button";
       pixivAuto.className = "primary adg-settings-inline-button";
-      pixivAuto.textContent = "一键登录 P站";
+      pixivAuto.textContent = uiText("一键登录 P站", "Sign in to Pixiv");
       pixivAuto.disabled = true;
       const pixivCancel = document.createElement("button");
       pixivCancel.type = "button";
       pixivCancel.className = "adg-settings-inline-button";
-      pixivCancel.textContent = "取消登录";
+      pixivCancel.textContent = uiText("取消登录", "Cancel sign-in");
       pixivCancel.hidden = true;
       const pixivLink = document.createElement("div");
       pixivLink.className = "adg-settings-help";
       pixivLink.setAttribute("role", "status");
       pixivLink.setAttribute("aria-live", "polite");
-      pixivLink.textContent = "1. 点一键登录  2. 在弹出的窗口登录 P站  3. 返回这里自动完成，无需按 F12。";
+      pixivLink.textContent = uiText("1. 点一键登录  2. 在弹出的窗口登录 P站  3. 返回这里自动完成，无需按 F12。", "1. Start sign-in. 2. Sign in to Pixiv in the new window. 3. Return here; authorization completes automatically.");
       const pixivManual = document.createElement("details");
       pixivManual.className = "adg-pixiv-manual";
       const summary = document.createElement("summary");
-      summary.textContent = "手动授权 / 远程访问";
+      summary.textContent = uiText("手动授权 / 远程访问", "Manual authorization / remote access");
       const manualGuide = document.createElement("div");
       manualGuide.className = "adg-settings-help";
-      manualGuide.textContent = "先点打开授权页。登录前按 F12 → Network（网络）→ 勾选 Preserve log（保留日志）。完成登录后，搜索筛选 code=，点最后的 callback / login 请求，在 Headers（标头）复制 Request URL（请求网址），整条粘贴到下面即可。授权链接每次不同，请使用本次打开的页面；10 分钟内完成。";
+      manualGuide.textContent = uiText("先点打开授权页。登录前按 F12 → Network（网络）→ 勾选 Preserve log（保留日志）。完成登录后，搜索筛选 code=，点最后的 callback / login 请求，在 Headers（标头）复制 Request URL（请求网址），整条粘贴到下面即可。授权链接每次不同，请使用本次打开的页面；10 分钟内完成。", "Open the authorization page. Before signing in, press F12 → Network and enable Preserve log. After sign-in, filter for code=, open the last callback / login request and copy its Request URL from Headers. Paste the full URL below. Use the newly opened page and finish within 10 minutes.");
       const manualRow = document.createElement("div");
       manualRow.className = "adg-settings-inline-row";
       const pixivAuth = document.createElement("button");
       pixivAuth.type = "button";
       pixivAuth.className = "adg-settings-inline-button";
-      pixivAuth.textContent = "打开授权页";
+      pixivAuth.textContent = uiText("打开授权页", "Open authorization page");
       const pixivOpen = document.createElement("a");
       pixivOpen.className = "adg-settings-help";
-      pixivOpen.textContent = "授权页未弹出？点击这里打开";
+      pixivOpen.textContent = uiText("授权页未弹出？点击这里打开", "Page did not open? Click here");
       pixivOpen.target = "_blank";
       pixivOpen.rel = "noopener noreferrer";
       pixivOpen.hidden = true;
@@ -7847,12 +7851,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       pixivCode.className = "adg-settings-input";
       pixivCode.autocomplete = "off";
       pixivCode.spellcheck = false;
-      pixivCode.setAttribute("aria-label", "P站授权回调地址或 code");
-      pixivCode.placeholder = "粘贴完整请求网址（也支持 code）";
+      pixivCode.setAttribute("aria-label", uiText("P站授权回调地址或 code", "Pixiv callback URL or code"));
+      pixivCode.placeholder = uiText("粘贴完整请求网址（也支持 code）", "Paste the full request URL (or code)");
       const pixivSubmit = document.createElement("button");
       pixivSubmit.type = "button";
       pixivSubmit.className = "adg-settings-inline-button";
-      pixivSubmit.textContent = "完成授权";
+      pixivSubmit.textContent = uiText("完成授权", "Complete authorization");
       manualRow.append(pixivAuth, pixivCode, pixivSubmit);
       pixivManual.append(summary, manualGuide, manualRow, pixivOpen);
       pixivRow.append(pixivAuto, pixivCancel);
@@ -7875,11 +7879,11 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         pixivCode.disabled = !available;
         if (opening || sessionId || manualBusy) pixivAuth.disabled = pixivSubmit.disabled = pixivCode.disabled = true;
         pixivAuto.disabled = !available || !autoAvailable || opening || manualBusy || Boolean(sessionId);
-        pixivAuto.textContent = info.logged_in ? "重新登录 P站" : "一键登录 P站";
-        pixivAuth.title = available ? "先打开本次授权页面，登录后按上方步骤粘贴回调地址" : "后端没有 anima_gallery_pixiv.py，P站 图源不可用";
+        pixivAuto.textContent = info.logged_in ? uiText("重新登录 P站", "Sign in to Pixiv again") : uiText("一键登录 P站", "Sign in to Pixiv");
+        pixivAuth.title = available ? uiText("先打开本次授权页面，登录后按上方步骤粘贴回调地址", "Open a new authorization page, sign in, then paste its callback URL as described above") : uiText("后端没有 anima_gallery_pixiv.py，P站 图源不可用", "anima_gallery_pixiv.py is missing; Pixiv is unavailable");
         if (this.sourceSelect) {
           const option = [...this.sourceSelect.options].find((o) => o.value === "pixiv");
-          if (option) option.title = available ? "" : "后端未安装 P站 模块";
+          if (option) option.title = available ? "" : uiText("后端未安装 P站 模块", "Pixiv backend module is not installed");
         }
       };
       const sessionRequest = async (id, cancel = false) => {
@@ -7912,7 +7916,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         try {
           const data = await sessionRequest(id);
           if (id !== sessionId) return;
-          pixivLink.textContent = String(data.message || "等待登录…");
+          pixivLink.textContent = String(data.message || uiText("等待登录…", "Waiting for sign-in…"));
           if (["opening", "waiting", "exchanging"].includes(data.state)) {
             pixivCancel.disabled = data.state === "exchanging";
             pollTimer = setTimeout(poll, 1000);
@@ -7921,24 +7925,24 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           finish();
           if (data.state === "success") {
             syncPixiv(await this.refreshGallerySecretState());
-            this.setStatus("P站登录成功，可以开始搜索", "success");
-          } else { this.setStatus(String(data.message || "请重新登录"), "error"); }
+            this.setStatus(uiText("P站登录成功，可以开始搜索", "Signed in to Pixiv. You can search now."), "success");
+          } else { this.setStatus(String(data.message || uiText("请重新登录", "Please sign in again")), "error"); }
         } catch (error) {
           if (id !== sessionId) return;
           if ([400, 403, 404].includes(error?.status) || Date.now() > expiresAt + 60000) {
             finish();
-            pixivLink.textContent = "登录记录已失效，请重新点击登录。";
+            pixivLink.textContent = uiText("登录记录已失效，请重新点击登录。", "Sign-in session expired. Start sign-in again.");
             void sessionRequest(id, true).catch(() => {});
             return;
           }
-          pixivLink.textContent = "连接暂时中断，正在重试：" + (error?.message || "未知错误");
+          pixivLink.textContent = uiText("连接暂时中断，正在重试：", "Connection interrupted; retrying:") + (error?.message || uiText("未知错误", "Unknown error"));
           pollTimer = setTimeout(poll, 2000);
         }
       };
       pixivAuto.onclick = async () => {
         opening = true;
         syncPixiv();
-        pixivLink.textContent = "正在打开独立登录窗口…";
+        pixivLink.textContent = uiText("正在打开独立登录窗口…", "Opening a separate sign-in window…");
         try {
           const response = await fetch("/anima/gallery/pixiv/login/start", { method: "POST" });
           const data = await response.json().catch(() => null);
@@ -7947,10 +7951,10 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           expiresAt = Number(data.expires_at || Date.now() / 1000 + 600) * 1000;
           pixivCancel.disabled = false;
           pixivCancel.hidden = false;
-          pixivLink.textContent = "请在弹出的窗口登录 P站，完成后会自动返回结果。此窗口不使用已有浏览器的登录资料。";
+          pixivLink.textContent = uiText("请在弹出的窗口登录 P站，完成后会自动返回结果。此窗口不使用已有浏览器的登录资料。", "Sign in to Pixiv in the new window. The result returns automatically. This window does not use your existing browser session.");
           void poll();
         } catch (error) {
-          pixivLink.textContent = "自动登录暂不可用：" + (error?.message || "未知错误");
+          pixivLink.textContent = uiText("自动登录暂不可用：", "Automatic sign-in unavailable:") + (error?.message || uiText("未知错误", "Unknown error"));
           pixivManual.open = true;
         } finally { opening = false; syncPixiv(); }
       };
@@ -7960,9 +7964,9 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         try {
           const data = await sessionRequest(id, true);
           if (id !== sessionId) return;
-          pixivLink.textContent = String(data.message || "已取消登录");
+          pixivLink.textContent = String(data.message || uiText("已取消登录", "Sign-in cancelled"));
           finish();
-        } catch (error) { pixivLink.textContent = String(error?.message || "取消失败，请稍后重试"); }
+        } catch (error) { pixivLink.textContent = String(error?.message || uiText("取消失败，请稍后重试", "Could not cancel. Try again later.")); }
         finally { pixivCancel.disabled = false; }
       };
       void fetch("/anima/gallery/pixiv/login/capabilities").then(async (response) => {
@@ -7970,11 +7974,11 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         if (!section.isConnected) return;
         autoAvailable = response.ok && Boolean(data?.available);
         if (!autoAvailable) {
-          pixivLink.textContent = data?.message || "当前后端不支持自动登录，请更新插件或使用手动授权。";
+          pixivLink.textContent = data?.message || uiText("当前后端不支持自动登录，请更新插件或使用手动授权。", "This backend does not support automatic sign-in. Update the plugin or authorize manually.");
           pixivManual.open = true;
         }
         syncPixiv();
-      }).catch(() => { pixivLink.textContent = "自动登录检测失败，可重开设置重试，或使用手动授权。"; pixivManual.open = true; });
+      }).catch(() => { pixivLink.textContent = uiText("自动登录检测失败，可重开设置重试，或使用手动授权。", "Automatic sign-in check failed. Reopen settings to retry or authorize manually."); pixivManual.open = true; });
       this.pixivVerifier = "";
       pixivAuth.onclick = async () => {
         // Reserve the popup during the click; opening it after await is often blocked.
@@ -7990,10 +7994,10 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           pixivOpen.href = String(data.url);
           pixivOpen.hidden = false;
           if (popup) popup.location.replace(String(data.url));
-          pixivLink.textContent = "请按手动授权中的步骤登录，并粘贴整条回调网址。本次链接有效期 10 分钟。";
+          pixivLink.textContent = uiText("请按手动授权中的步骤登录，并粘贴整条回调网址。本次链接有效期 10 分钟。", "Follow the manual authorization steps and paste the full callback URL. This link expires in 10 minutes.");
         } catch (error) {
           popup?.close();
-          pixivLink.textContent = "获取授权地址失败：" + (error?.message || "未知错误");
+          pixivLink.textContent = uiText("获取授权地址失败：", "Failed to get authorization URL:") + (error?.message || uiText("未知错误", "Unknown error"));
         } finally { manualBusy = false; syncPixiv(); }
       };
       pixivSubmit.onclick = async () => {
@@ -8002,12 +8006,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         let code = raw;
         try { code = new URL(raw).searchParams.get("code") || raw; } catch {}
         if (!this.pixivVerifier) {
-          pixivLink.textContent = "请先点「打开授权页」，再使用这次登录取得的回调地址。";
+          pixivLink.textContent = uiText("请先点「打开授权页」，再使用这次登录取得的回调地址。", "Open a new authorization page first, then use the callback URL from that sign-in.");
           return;
         }
         manualBusy = true;
         syncPixiv();
-        pixivSubmit.textContent = "授权中…";
+        pixivSubmit.textContent = uiText("授权中…", "Authorizing…");
         try {
           const response = await fetch("/anima/gallery/pixiv/auth/code", {
             method: "POST", headers: { "Content-Type": "application/json" },
@@ -8018,10 +8022,10 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           pixivCode.value = "";
           this.pixivVerifier = "";
           syncPixiv(await this.refreshGallerySecretState());
-          pixivLink.textContent = String(data?.message || "P站授权成功，可以开始搜索。");
+          pixivLink.textContent = String(data?.message || uiText("P站授权成功，可以开始搜索。", "Pixiv authorized. You can search now."));
           this.setStatus(pixivLink.textContent, "success");
-        } catch (error) { pixivLink.textContent = "P站授权失败：" + (error?.message || "未知错误"); }
-        finally { manualBusy = false; pixivSubmit.textContent = "完成授权"; syncPixiv(); }
+        } catch (error) { pixivLink.textContent = uiText("P站授权失败：", "Pixiv authorization failed:") + (error?.message || uiText("未知错误", "Unknown error")); }
+        finally { manualBusy = false; pixivSubmit.textContent = uiText("完成授权", "Complete authorization"); syncPixiv(); }
       };
       pixivCode.addEventListener("keydown", (event) => {
         if (event.key === "Enter" && !event.isComposing && !pixivSubmit.disabled) {
@@ -8045,16 +8049,16 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       viewSection.className = "adg-settings-section";
       const viewTitle = document.createElement("div");
       viewTitle.className = "adg-settings-title";
-      viewTitle.textContent = "显示";
+      viewTitle.textContent = uiText("显示", "Display");
       const viewGrid = document.createElement("div");
       viewGrid.className = "adg-settings-grid";
       const pageLabel = document.createElement("label");
       pageLabel.className = "adg-field";
-      pageLabel.textContent = "每页图片数（至少）";
+      pageLabel.textContent = uiText("每页图片数（至少）", "Images per page (minimum)");
       const select = document.createElement("select");
       // 0 = 自适应：按节点尺寸算出「刚好填满一屏」的张数（列数 × 可视行数），
       // 节点越宽越高，自动显示越多，不再固定 24/48 让大节点半屏空白。
-      select.add(new Option("自适应（按节点大小）", "0", false, !this.settings.limit));
+      select.add(new Option(uiText("自适应（按节点大小）", "Adaptive (node size)"), "0", false, !this.settings.limit));
       // 固定档位语义 = **至少 N 张**：一屏放不下更多时仍会自动补（见 autoFillIfUnderfilled），
       // 所以文案必须写明，否则用户会以为"设了 12 就永远只有 12 张"。
       [12, 24, 48].forEach((limit) => {
@@ -8064,26 +8068,26 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         // （yande.re / konachan.net / safebooru 的 page 与 limit 相互独立，能吃 48 档 —— 2026-09-27）
         if (limit > GALLERY_PAGE_SIZE && this.isPixivSource()) {
           option.disabled = true;
-          option.textContent = `${limit}（P站每页固定 ${GALLERY_PAGE_SIZE}，不可用）`;
+          option.textContent = uiText(`${limit}（P站每页固定 ${GALLERY_PAGE_SIZE}，不可用）`, `${limit} (unavailable: Pixiv uses ${GALLERY_PAGE_SIZE} per page)`);
         }
         select.append(option);
       });
       select.title = this.pageMode()
-        ? `自适应 = 按节点宽高算出刚好填满的张数；固定档位 = 至少 N 张（不足一屏会自动补满）。`
+        ? uiText(`自适应 = 按节点宽高算出刚好填满的张数；固定档位 = 至少 N 张（不足一屏会自动补满）。`, `Adaptive fits the node dimensions. A fixed limit loads at least N images and fills empty space automatically.`)
           + (this.isPixivSource()
-            ? `P站 上游每页固定 ${GALLERY_PAGE_SIZE} 张，所以 ${GALLERY_PAGE_SIZE} 以上的档位不可用。`
-            : `当前图源用页码分页，但 page 与 limit 相互独立，各档位都能生效。`)
-        : "自适应 = 按节点宽高算出刚好填满的图片数量；固定档位 = 至少 N 张（不足一屏会自动补满，"
-          + "实际张数可能多于所选值）；拖动节点改变大小后会自动重算";
+            ? uiText(`P站 上游每页固定 ${GALLERY_PAGE_SIZE} 张，所以 ${GALLERY_PAGE_SIZE} 以上的档位不可用。`, `Pixiv always returns ${GALLERY_PAGE_SIZE} per page; larger limits are unavailable.`)
+            : uiText(`当前图源用页码分页，但 page 与 limit 相互独立，各档位都能生效。`, `This source supports independent page numbers and limits; all limits are available.`))
+        : uiText("自适应 = 按节点宽高算出刚好填满的图片数量；固定档位 = 至少 N 张（不足一屏会自动补满，", "Adaptive fits the node dimensions. A fixed limit loads at least N images (empty space is filled automatically; ")
+          + uiText("实际张数可能多于所选值）；拖动节点改变大小后会自动重算", "the actual count may exceed your selection). Resizing recalculates the count.");
       pageLabel.append(select);
       // 所有搜索源共用浏览模式；C站以已访问游标批次定位。
       const scrollLabel = document.createElement("label");
       scrollLabel.className = "adg-field";
-      scrollLabel.textContent = "滚动方式";
+      scrollLabel.textContent = uiText("滚动方式", "Browsing mode");
       const scrollSelect = document.createElement("select");
-      scrollSelect.add(new Option("连续浏览＋页码定位", "infinite", false, this.settings.galleryScrollMode === "infinite"));
-      scrollSelect.add(new Option("分页（显示页码）", "pager", false, this.settings.galleryScrollMode === "pager"));
-      scrollSelect.title = "连续浏览可滚动加载，也可直接定位页码；分页每次只显示一页。切换保留正在看的图片。";
+      scrollSelect.add(new Option(uiText("连续浏览＋页码定位", "Continuous browsing + page navigation"), "infinite", false, this.settings.galleryScrollMode === "infinite"));
+      scrollSelect.add(new Option(uiText("分页（显示页码）", "Pagination (page numbers)"), "pager", false, this.settings.galleryScrollMode === "pager"));
+      scrollSelect.title = uiText("连续浏览可滚动加载，也可直接定位页码；分页每次只显示一页。切换保留正在看的图片。", "Continuous browsing loads on scroll and supports page navigation. Pagination shows one page at a time. Switching keeps your current image.");
       scrollSelect.onchange = () => {
         this.settings.galleryScrollMode = GALLERY_SCROLL_MODES.includes(scrollSelect.value)
           ? scrollSelect.value
@@ -8096,7 +8100,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       scrollLabel.append(scrollSelect);
       const heightLabel = document.createElement("label");
       heightLabel.className = "adg-field";
-      heightLabel.textContent = "画廊高度（px）";
+      heightLabel.textContent = uiText("画廊高度（px）", "Gallery height (px)");
       const heightInput = document.createElement("input");
       heightInput.type = "number";
       heightInput.min = "360";
@@ -8106,23 +8110,23 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       heightLabel.append(heightInput);
       const thumbLabel = document.createElement("label");
       thumbLabel.className = "adg-field";
-      thumbLabel.textContent = "缩略图大小";
+      thumbLabel.textContent = uiText("缩略图大小", "Thumbnail size");
       const thumbSelect = document.createElement("select");
       for (const tier of DG_THUMB_TIERS) {
         thumbSelect.add(new Option(
-          `${tier.label}（${tier.width}px${tier.width === DG_MIN_PT ? " · 默认" : ""}）`,
+          uiText(`${tier.label}（${tier.width}px${tier.width === DG_MIN_PT ? " · 默认" : ""}）`, `${tier.label} (${tier.width}px${tier.width === DG_MIN_PT ? " · default" : ""})`),
           String(tier.width),
           false,
           tier.width === this.thumbTargetPt(),
         ));
       }
-      thumbSelect.title = "缩略图目标列宽：档位越大、列数越少、单图越大（图片仍是零裁切 contain）。"
-        + `实际卡宽会≥档位、且不超过 ${DG_MAX_PT}px（列数有下限保护，窄节点不会被撑出巨图）。`
-        + "只影响网格排版，不改变节点尺寸。默认「小 116px」= 旧行为。";
+      thumbSelect.title = uiText("缩略图目标列宽：档位越大、列数越少、单图越大（图片仍是零裁切 contain）。", "Target column width: larger sizes mean fewer columns and larger images. Images are always shown uncropped.")
+        + uiText(`实际卡宽会≥档位、且不超过 ${DG_MAX_PT}px（列数有下限保护，窄节点不会被撑出巨图）。`, `Card width is at least the target and at most ${DG_MAX_PT}px, with a minimum column count for narrow nodes.`)
+        + uiText("只影响网格排版，不改变节点尺寸。默认「小 116px」= 旧行为。", "Only affects the grid, not node size. Small (116px) matches the original behavior.");
       thumbLabel.append(thumbSelect);
       const sizeLabel = document.createElement("label");
       sizeLabel.className = "adg-field";
-      sizeLabel.textContent = "取图尺寸（P站）";
+      sizeLabel.textContent = uiText("取图尺寸（P站）", "Image input size (Pixiv)");
       const sizeSelect = document.createElement("select");
       for (const tier of DG_IMAGE_SIZE_TIERS) {
         sizeSelect.add(new Option(
@@ -8132,11 +8136,11 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           tier.id === clampImageSize(this.settings.imageSize),
         ));
       }
-      sizeSelect.title = "只影响**喂给节点执行**的 P站 图。原图最清晰但最慢："
-        + "P站 原图常 2–27MB、CDN 经代理约 312KB/s，单张可达数十秒；"
-        + "1200px / 540px 体积小一个量级，批量取图快数倍。"
-        + "画廊缩略图与卡片菜单的「下载原图」都不受影响 —— 想要原图随时能单独下。"
-        + "改档位会刷新网格，需重新选图。";
+      sizeSelect.title = uiText("只影响**喂给节点执行**的 P站 图。原图最清晰但最慢：", "Only affects Pixiv images sent to node execution. Originals are clearest but slowest: ")
+        + uiText("P站 原图常 2–27MB、CDN 经代理约 312KB/s，单张可达数十秒；", "originals are often 2–27MB; at about 312KB/s through the proxy, each may take tens of seconds. ")
+        + uiText("1200px / 540px 体积小一个量级，批量取图快数倍。", "1200px / 540px versions are much smaller and faster for batches. ")
+        + uiText("画廊缩略图与卡片菜单的「下载原图」都不受影响 —— 想要原图随时能单独下。", "Gallery thumbnails and original downloads are unaffected. You can still download originals separately. ")
+        + uiText("改档位会刷新网格，需重新选图。", "Changing size refreshes the grid and clears the selection.");
       sizeLabel.append(sizeSelect);
       viewGrid.append(pageLabel, scrollLabel, heightLabel, thumbLabel, sizeLabel);
       viewSection.append(viewTitle, viewGrid);
@@ -8147,31 +8151,31 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       poolSection.className = "adg-settings-section adg-civitai-pool";
       const poolTitle = document.createElement("div");
       poolTitle.className = "adg-settings-title";
-      poolTitle.textContent = "C站 无限加载";
+      poolTitle.textContent = uiText("C站 无限加载", "Civitai continuous loading");
       // 开关与功能名同行（.adg-settings-switch），不单开一行 —— 否则两个开关叠起来很占纵向空间
       const poolEnableLabel = document.createElement("label");
       const poolEnable = document.createElement("input");
       poolEnable.type = "checkbox";
       poolEnable.checked = this.settings.civitaiPool.enabled;
-      poolEnableLabel.append(poolEnable, document.createTextNode("开启"));
+      poolEnableLabel.append(poolEnable, document.createTextNode(uiText("开启", "Enabled")));
       const poolHead = document.createElement("div");
       poolHead.className = "adg-settings-switch";
       poolHead.append(poolTitle, poolEnableLabel);
       const poolTargetLabel = document.createElement("label");
       poolTargetLabel.className = "adg-settings-switch";
-      poolTargetLabel.textContent = "后台加载档位";
+      poolTargetLabel.textContent = uiText("后台加载档位", "Background loading limit");
       const poolTargetSelect = document.createElement("select");
       for (const option of CIVITAI_POOL_TARGET_OPTIONS) {
         poolTargetSelect.add(new Option(
-          `${option} 条（${option / 200} 次请求）`, String(option), false, option === this.settings.civitaiPool.target));
+          uiText(`${option} 条（${option / 200} 次请求）`, `${option} items (${option / 200} requests)`), String(option), false, option === this.settings.civitaiPool.target));
       }
-      poolTargetSelect.title = "C站 单次后台预取最多 600 条，按固定批次浏览；历史 800 / 1000 档位沿用 600 条上限。";
+      poolTargetSelect.title = uiText("C站 单次后台预取最多 600 条，按固定批次浏览；历史 800 / 1000 档位沿用 600 条上限。", "Civitai prefetch loads up to 600 items per request group, browsed in fixed batches. Legacy 800 / 1000 limits use the 600 cap.");
       poolTargetLabel.append(poolTargetSelect);
       const poolTip = document.createElement("div");
       poolTip.className = "adg-settings-help";
-      poolTip.textContent = "C站 上游不支持关键词检索：关键词只在已加载的内容里筛。"
-        + "开启后每次最多预取 600 条并在池内筛选，匹配结果按固定批次浏览；"
-        + "可定位已访问的批次，改词自动接着该搜索上次的位置看。";
+      poolTip.textContent = uiText("C站 上游不支持关键词检索：关键词只在已加载的内容里筛。", "Civitai does not support keyword search: keywords filter loaded items only. ")
+        + uiText("开启后每次最多预取 600 条并在池内筛选，匹配结果按固定批次浏览；", "When enabled, prefetch up to 600 items and filter within the pool, with results browsed in fixed batches. ")
+        + uiText("可定位已访问的批次，改词自动接着该搜索上次的位置看。", "Revisit loaded batches; changing keywords restores that search's last position.");
       poolSection.append(poolHead, poolTargetLabel, poolTip);
       content.append(poolSection);
 
@@ -8180,22 +8184,22 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       matchSection.className = "adg-settings-section adg-pixiv-match";
       const matchTitle = document.createElement("div");
       matchTitle.className = "adg-settings-title";
-      matchTitle.textContent = "P站 匹配 D站";
+      matchTitle.textContent = uiText("P站 匹配 D站", "Match Pixiv to Danbooru");
       // 同上：开关与功能名同行
       const matchAutoLabel = document.createElement("label");
       const matchAuto = document.createElement("input");
       matchAuto.type = "checkbox";
       matchAuto.checked = this.settings.pixivMatch.auto;
-      matchAutoLabel.append(matchAuto, document.createTextNode("自动关联"));
+      matchAutoLabel.append(matchAuto, document.createTextNode(uiText("自动关联", "Match automatically")));
       const matchHead = document.createElement("div");
       matchHead.className = "adg-settings-switch";
       matchHead.append(matchTitle, matchAutoLabel);
       const matchTip = document.createElement("div");
       matchTip.className = "adg-settings-help";
-      matchTip.textContent = "P站 标签模型不认识，故默认不输出 Prompt。"
-        + "Danbooru 收录了大量 P站 作品且帖子自带作品 id：开启后按 id 反查，命中就用该帖更全的 Danbooru 标签当 Prompt。"
-        + "代价：每批多 1 次 D站 请求；未收录的仍不输出；反查是作品级的（多页共用一组标签）。"
-        + "卡片上也可单张「匹配D站」。";
+      matchTip.textContent = uiText("P站 标签模型不认识，故默认不输出 Prompt。", "Pixiv tags are not standardized model tags; prompt output is off by default. ")
+        + uiText("Danbooru 收录了大量 P站 作品且帖子自带作品 id：开启后按 id 反查，命中就用该帖更全的 Danbooru 标签当 Prompt。", "Danbooru indexes many Pixiv works by ID. Enable matching to use the matched Danbooru tags as the prompt. ")
+        + uiText("代价：每批多 1 次 D站 请求；未收录的仍不输出；反查是作品级的（多页共用一组标签）。", "Adds one Danbooru request per batch. Unmatched works output no prompt; all pages of a work share its matched tags. ")
+        + uiText("卡片上也可单张「匹配D站」。", "You can also match individual cards with Match Danbooru.");
       matchSection.append(matchHead, matchTip);
       content.append(matchSection);
 
@@ -8204,15 +8208,15 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       excludeSection.className = "adg-settings-section";
       const exclTitle = document.createElement("div");
       exclTitle.className = "adg-settings-title";
-      exclTitle.textContent = "排除标签（搜索不含这些）";
+      exclTitle.textContent = uiText("排除标签（搜索不含这些）", "Excluded search tags");
       const exclTip = document.createElement("div");
       exclTip.className = "adg-settings-help";
-      exclTip.textContent = "不占计数标签名额，可任意添加；标签内部空格会转为下划线，逗号/换行才会分隔多个标签。例：long hair → long_hair";
+      exclTip.textContent = uiText("不占计数标签名额，可任意添加；标签内部空格会转为下划线，逗号/换行才会分隔多个标签。例：long hair → long_hair", "Does not consume counted tag slots. Spaces become underscores; commas and newlines separate tags. Example: long hair → long_hair");
       const exclInput = document.createElement("textarea");
       exclInput.className = "adg-settings-input";
       exclInput.rows = 2;
       exclInput.wrap = "off";
-      exclInput.placeholder = "输入标签，逗号/换行分隔，如：long hair, censor";
+      exclInput.placeholder = uiText("输入标签，逗号/换行分隔，如：long hair, censor", "Tags separated by commas or newlines, e.g. long hair, censor");
       const exclList = document.createElement("div");
       exclList.className = "adg-exclude-list";
       const renderExcl = () => {
@@ -8220,7 +8224,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         if (!this.settings.excludeTags.length) {
           const empty = document.createElement("span");
           empty.className = "adg-exclude-empty";
-          empty.textContent = "（无）";
+          empty.textContent = uiText("（无）", "(None)");
           exclList.append(empty);
           return;
         }
@@ -8229,12 +8233,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           chip.type = "button";
           chip.className = "adg-exclude-chip";
           chip.textContent = `− ${displayExcludeTag(tag)} ✕`;
-          chip.title = "点击移除";
+          chip.title = uiText("点击移除", "Click to remove");
           chip.onclick = () => {
             this.settings.excludeTags = this.settings.excludeTags.filter((t) => t !== tag);
             this.saveSettings();
             renderExcl();
-            this.setStatus(`已移除排除标签：${tag}`);
+            this.setStatus(uiText(`已移除排除标签：${tag}`, `Excluded tag removed: ${tag}`));
             this.search({ resetPage: true });
           };
           exclList.append(chip);
@@ -8248,13 +8252,13 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         this.saveSettings();
         exclInput.value = "";
         renderExcl();
-        this.setStatus(`已添加排除标签：${tags.map(displayExcludeTag).join("、")}（本地过滤）`, "success");
+        this.setStatus(uiText(`已添加排除标签：${tags.map(displayExcludeTag).join("、")}（本地过滤）`, `Excluded tags added: ${tags.map(displayExcludeTag).join(", ")} (local filter)`), "success");
         this.search({ resetPage: true });
       };
       const exclAdd = document.createElement("button");
       exclAdd.type = "button";
       exclAdd.className = "primary adg-settings-inline-button";
-      exclAdd.textContent = "添加";
+      exclAdd.textContent = uiText("添加", "Add");
       exclAdd.onclick = addExcl;
       exclInput.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); addExcl(); } };
       const exclRow = document.createElement("div");
@@ -8268,7 +8272,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       if (!excludeApplicable) {
         exclInput.disabled = true;
         exclAdd.disabled = true;
-        exclTip.textContent = `排除标签按 Danbooru 标签本地过滤，只在 D站 生效；当前图源是${this.sourceLabel()}。`;
+        exclTip.textContent = uiText(`排除标签按 Danbooru 标签本地过滤，只在 D站 生效；当前图源是${this.sourceLabel()}。`, `Excluded tags filter Danbooru locally only; current source: ${this.sourceLabel()}.`);
       }
       content.append(excludeSection);
       // ── 图源密钥（C站 API Key / P站 OAuth）：PLAN §5.5 ──
@@ -8279,14 +8283,14 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       accountSection.className = "adg-settings-section adg-account-section";
       const accTitle = document.createElement("div");
       accTitle.className = "adg-settings-title";
-      accTitle.textContent = "Danbooru 账号";
+      accTitle.textContent = uiText("Danbooru 账号", "Danbooru account");
       this.refreshAccount().then((reg) => {
         content.querySelector(".adg-account-status")?.remove();
         const status = document.createElement("div");
         status.className = "adg-account-status";
         status.textContent = reg
-          ? `✓ 已登录 Danbooru（账号等级上限 ${this.tagLimit()} 个计数标签；Gold 及以上为 6）`
-          : "ℹ 未登录：最多 2 个计数标签。登录后上限按账号等级计算（Member 仍为 2，Gold 为 6，Platinum 及以上不限）。";
+          ? uiText(`✓ 已登录 Danbooru（账号等级上限 ${this.tagLimit()} 个计数标签；Gold 及以上为 6）`, `✓ Signed in to Danbooru (account limit: ${this.tagLimit()} counted tags; Gold and above: 6)`)
+          : uiText("ℹ 未登录：最多 2 个计数标签。登录后上限按账号等级计算（Member 仍为 2，Gold 为 6，Platinum 及以上不限）。", "ℹ Signed out: at most 2 counted tags. Signed-in limits depend on your account (Member: 2, Gold: 6, Platinum and above: unlimited).");
         accountSection.prepend(status);
         // 顺手刷新收藏状态（2026-09-27，Issue #3）：刚登录 / 改过凭证后，
         // 卡片上的 ★/☆ 与工具条的收藏计数都必须跟上。
@@ -8294,28 +8298,28 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       });
       const userLabel = document.createElement("label");
       userLabel.className = "adg-field";
-      userLabel.textContent = "用户名";
+      userLabel.textContent = uiText("用户名", "Username");
       const userInput = document.createElement("input");
-      userInput.placeholder = "danbooru 用户名";
+      userInput.placeholder = uiText("danbooru 用户名", "Danbooru username");
       userLabel.append(userInput);
       const keyLabel = document.createElement("label");
       keyLabel.className = "adg-field";
-      keyLabel.textContent = "API Key（个人设置页 -> API Key 生成）";
+      keyLabel.textContent = uiText("API Key（个人设置页 -> API Key 生成）", "API key (generate in your account settings)");
       const keyInput = document.createElement("input");
       keyInput.type = "password";
-      keyInput.placeholder = "粘贴 API Key";
+      keyInput.placeholder = uiText("粘贴 API Key", "Paste API key");
       keyLabel.append(keyInput);
       const tip = document.createElement("div");
       tip.className = "adg-settings-help";
-      tip.textContent = "凭证仅存本机插件目录，不上传。清空保存 = 退出登录。只影响 D站 图源（C站/P站 的凭证见上一节「图源密钥」）。";
+      tip.textContent = uiText("凭证仅存本机插件目录，不上传。清空保存 = 退出登录。只影响 D站 图源（C站/P站 的凭证见上一节「图源密钥」）。", "Credentials stay in the local plugin directory. Save empty credentials to sign out. Applies only to Danbooru; other sources use Source credentials above.");
       accountSection.append(accTitle, userLabel, keyLabel, tip);
       const accBtn = document.createElement("button");
       accBtn.type = "button";
       accBtn.className = "primary adg-settings-save-button";
-      accBtn.textContent = "保存登录";
+      accBtn.textContent = uiText("保存登录", "Save credentials");
       accBtn.onclick = async () => {
         accBtn.disabled = true;
-        accBtn.textContent = "保存中…";
+        accBtn.textContent = uiText("保存中…", "Saving…");
         try {
           const ud = userInput.value.trim();
           const kd = keyInput.value.trim();
@@ -8325,26 +8329,26 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
             body: JSON.stringify({ username: ud, api_key: kd }),
           });
           const j = await r.json();
-          if (!r.ok) throw new Error(j?.error || "保存登录失败");
+          if (!r.ok) throw new Error(j?.error || uiText("保存登录失败", "Failed to save credentials"));
           this.registered = Boolean(j?.logged_in);
           if (typeof j?.tag_limit === "number") this.tagLimitValue = j.tag_limit;
           // POST 返回的上限是权威值；刷新 accountReady，避免 search() 等待仍指向旧登录状态。
           this.accountReady = Promise.resolve(this.registered);
           const st = content.querySelector(".adg-account-status");
-          if (st) st.textContent = this.registered ? `✓ 已登录 · ${j?.username || ""}` : "ℹ 已退出（匿名 2 标签限制）";
-          this.setStatus(this.registered ? `D站 登录成功，账号当前计数标签上限 ${this.tagLimitValue} 个` : "D站 已退出登录", "success");
+          if (st) st.textContent = this.registered ? uiText(`✓ 已登录 · ${j?.username || ""}`, `✓ Signed in · ${j?.username || ""}`) : uiText("ℹ 已退出（匿名 2 标签限制）", "ℹ Signed out (anonymous two-tag limit)");
+          this.setStatus(this.registered ? uiText(`D站 登录成功，账号当前计数标签上限 ${this.tagLimitValue} 个`, `Signed in to Danbooru; account limit: ${this.tagLimitValue} counted tags`) : uiText("D站 已退出登录", "Signed out of Danbooru"), "success");
           await this.search({ resetPage: true });
         } catch {
-          this.setStatus("保存登录失败，请重试", "error");
+          this.setStatus(uiText("保存登录失败，请重试", "Could not save credentials. Try again."), "error");
         }
         accBtn.disabled = false;
-        accBtn.textContent = "保存登录";
+        accBtn.textContent = uiText("保存登录", "Save credentials");
       };
       accountSection.append(accBtn);
       content.append(accountSection);
 
       this.openDialog({
-        title: "画廊设置",
+        title: uiText("画廊设置", "Gallery settings"),
         content,
         onApply: () => {
           this.settings.limit = Number(select.value);
@@ -8393,8 +8397,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const queryInput = document.createElement("input");
       queryInput.className = "adg-query";
       queryInput.type = "text";
-      queryInput.setAttribute("aria-label", "画廊搜索标签");
-      queryInput.placeholder = "标签（多个用空格分隔，回车直接搜）如：1girl long hair…";
+      queryInput.setAttribute("aria-label", uiText("画廊搜索标签", "Gallery search tags"));
+      queryInput.placeholder = uiText("标签（多个用空格分隔，回车直接搜）如：1girl long hair…", "Tags separated by spaces; Enter to search, e.g. 1girl long hair…");
       queryInput.value = this.settings.lastQuery || "";
       // 让搜索框能被正常点击聚焦：ComfyUI 在捕获阶段会把点击/焦点抢给节点容器，
       // 通过阻止事件继续冒泡 + 下一帧补焦点来激活输入框，但不能 preventDefault，
@@ -8447,14 +8451,14 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         toolbar.append(group);
         return group;
       };
-      const mainGroup = makeToolbarGroup("主要操作", "adg-toolbar-main");
-      const filterGroup = makeToolbarGroup("筛选操作", "adg-toolbar-filters");
-      const categoryGroup = makeToolbarGroup("分类操作", "adg-toolbar-categories");
-      const presetGroup = makeToolbarGroup("搜索预设", "adg-toolbar-presets");
+      const mainGroup = makeToolbarGroup(uiText("主要操作", "Main actions"), "adg-toolbar-main");
+      const filterGroup = makeToolbarGroup(uiText("筛选操作", "Filter actions"), "adg-toolbar-filters");
+      const categoryGroup = makeToolbarGroup(uiText("分类操作", "Category actions"), "adg-toolbar-categories");
+      const presetGroup = makeToolbarGroup(uiText("搜索预设", "Search presets"), "adg-toolbar-presets");
       const advanced = document.createElement("details");
       advanced.className = "adg-toolbar-advanced";
       const advancedLabel = document.createElement("summary");
-      advancedLabel.textContent = "分类与预设";
+      advancedLabel.textContent = uiText("分类与预设", "Categories and presets");
       advanced.append(advancedLabel, categoryGroup, presetGroup);
       toolbar.append(advanced);
       this.filterGroup = filterGroup;
@@ -8471,12 +8475,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         group.append(button);
         return button;
       };
-      addAction("展开画廊", "打开不随画布移动的常驻画廊", () => galleryWorkspace.open(this, app), mainGroup);
+      addAction(uiText("展开画廊", "Expand gallery"), uiText("打开不随画布移动的常驻画廊", "Open a persistent gallery window independent of the canvas"), () => galleryWorkspace.open(this, app), mainGroup);
       const thumbQuick = document.createElement("label");
       thumbQuick.className = "adg-thumb-quick";
-      thumbQuick.textContent = "缩略图";
+      thumbQuick.textContent = uiText("缩略图", "Thumbnails");
       const thumbQuickSelect = document.createElement("select");
-      thumbQuickSelect.setAttribute("aria-label", "缩略图大小");
+      thumbQuickSelect.setAttribute("aria-label", uiText("缩略图大小", "Thumbnail size"));
       for (const tier of DG_THUMB_TIERS) thumbQuickSelect.add(new Option(tier.label, tier.width));
       thumbQuickSelect.value = String(this.thumbTargetPt());
       this.thumbQuickSelect = thumbQuickSelect;
@@ -8486,8 +8490,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       };
       thumbQuick.append(thumbQuickSelect); mainGroup.append(thumbQuick);
       const quickSort = document.createElement("select");
-      quickSort.setAttribute("aria-label", "排序");
-      for (const [value, label] of [["", "最新"], ["score", "评分"], ["favcount", "收藏"], ["rank", "综合"]]) quickSort.add(new Option(label, value));
+      quickSort.setAttribute("aria-label", uiText("排序", "Sort"));
+      for (const [value, label] of [["", uiText("最新", "Newest")], ["score", uiText("评分", "Score")], ["favcount", uiText("收藏", "Favorites")], ["rank", uiText("综合", "Overall")]]) quickSort.add(new Option(label, value));
       quickSort.onchange = () => {
         this.settings.filters.order = quickSort.value; this.saveSettings();
         this.filterControls?.refresh(); this.search({ resetPage: true });
@@ -8496,8 +8500,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       // ★ 我的收藏入口（2026-09-27，Issue #3）：跳转 `ordfav:<账号>`，展示 / 分页 / 无限滚动
       //   全部复用既有搜索链路。放在「筛选操作」组 —— 语义上它就是"只看我收藏的"。
       this.favoriteButton = addAction(
-        "☆ 我的收藏",
-        "查看 D站 账号的收藏（未登录时会提示去登录）",
+        uiText("☆ 我的收藏", "☆ My favorites"),
+        uiText("查看 D站 账号的收藏（未登录时会提示去登录）", "View your Danbooru favorites (sign-in required)"),
         () => this.openMyFavorites(),
         filterGroup,
       );
@@ -8508,13 +8512,13 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       {
         const picker = document.createElement("label");
         picker.className = "adg-source-picker";
-        picker.title = "切换图源：D站 / C站 / P站（切换后筛选控件按该源的能力自动收放）";
+        picker.title = uiText("切换图源：D站 / C站 / P站（切换后筛选控件按该源的能力自动收放）", "Switch image source; available filters follow the selected source");
         const icon = galleryIcon("image", 13, "adg-icon adg-source-icon");
         const select = document.createElement("select");
         select.className = "adg-source-select";
-        select.setAttribute("aria-label", "图源");
+        select.setAttribute("aria-label", uiText("图源", "Source"));
         for (const id of this.orderedSourceIds()) {
-          select.append(new Option(this.sourceEntry(id)?.label || id, id));
+          select.append(new Option(this.sourceLabel(id), id));
         }
         select.value = this.activeSourceId();
         select.onchange = () => { void this.switchGallerySource(select.value); };
@@ -8523,7 +8527,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         this.sourceSelect = select;
         queryRow.prepend(picker);
       }
-      const searchButton = addAction("搜索", "搜索当前图源", () => this.submitSearch(this.queryInput?.value ?? this.queryWidget?.value ?? ""), queryRow);
+      const searchButton = addAction(uiText("搜索", "Search"), uiText("搜索当前图源", "Search the current source"), () => this.submitSearch(this.queryInput?.value ?? this.queryWidget?.value ?? ""), queryRow);
       searchButton.className = "adg-primary-action";
       queryInput.after(searchButton);
       // ── 随机发现：order:random + 质量地板。
@@ -8543,9 +8547,9 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
 
         const tierSelect = document.createElement("select");
         tierSelect.className = "adg-random-tier";
-        tierSelect.setAttribute("aria-label", "随机发现档位");
-        tierSelect.append(new Option("随机关闭", ""));
-        const filterRandomOption = new Option("标签随机", "filter-random");
+        tierSelect.setAttribute("aria-label", uiText("随机发现档位", "Random discovery level"));
+        tierSelect.append(new Option(uiText("随机关闭", "Random off"), ""));
+        const filterRandomOption = new Option(uiText("标签随机", "Random within tags"), "filter-random");
         filterRandomOption.disabled = true;
         filterRandomOption.hidden = true;
         tierSelect.append(filterRandomOption);
@@ -8554,7 +8558,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           opt.title = tier.hint;
           tierSelect.append(opt);
         }
-        tierSelect.title = "在当前标签范围内随机浏览；选「随机关闭」或点关闭恢复普通搜索";
+        tierSelect.title = uiText("在当前标签范围内随机浏览；选「随机关闭」或点关闭恢复普通搜索", "Browse random images within the current tags. Turn random off to restore normal search.");
         tierSelect.onchange = () => {
           const picked = tierSelect.value;
           if (!picked) void this.exitRandom();
@@ -8562,12 +8566,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         };
         randomWrap.append(tierSelect);
 
-        const reshuffleBtn = addAction("换一批", "重新随机当前标签范围；搜索槽不足时打乱本页", () => {
+        const reshuffleBtn = addAction(uiText("换一批", "Reshuffle"), uiText("重新随机当前标签范围；搜索槽不足时打乱本页", "Reshuffle current tags; shuffle this page if the tag limit is reached"), () => {
           if (!this.settings.randomQuality && this.settings.filters.order === "random") void this.search({ resetPage: true, force: true });
           else void this.discoverRandom(this.settings.randomQuality || "good");
         }, randomWrap);
         reshuffleBtn.className = "adg-random-reshuffle";
-        const exitBtn = addAction("关闭随机", "退出随机发现，恢复进入前的普通搜索筛选", () => { void this.exitRandom(); }, randomWrap);
+        const exitBtn = addAction(uiText("关闭随机", "Exit random"), uiText("退出随机发现，恢复进入前的普通搜索筛选", "Exit random discovery and restore previous filters"), () => { void this.exitRandom(); }, randomWrap);
         exitBtn.className = "adg-random-exit";
 
         mainGroup.append(randomWrap);
@@ -8579,7 +8583,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           tierSelect.value = filterRandom ? "filter-random" : (this.settings.randomQuality || "");
           reshuffleBtn.disabled = !on;
           reshuffleBtn.classList.toggle("is-disabled", !on);
-          reshuffleBtn.title = on ? "重新随机当前标签范围；搜索槽不足时打乱本页" : "先选一个随机档位";
+          reshuffleBtn.title = on ? uiText("重新随机当前标签范围；搜索槽不足时打乱本页", "Reshuffle current tags; shuffle this page if the tag limit is reached") : uiText("先选一个随机档位", "Choose a random discovery level first");
           exitBtn.hidden = !on;
           tierSelect.classList.toggle("active", on);
         };
@@ -8616,8 +8620,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         settingsMenuBody.className = "adg-settings-menu-body";
 
         const settingsDropdown = new PortalDropdown({
-          label: "设置",
-          title: "画廊设置 / Prompt 输出 / 批量入队",
+          label: uiText("设置", "Settings"),
+          title: uiText("画廊设置 / Prompt 输出 / 批量入队", "Gallery settings / prompt output / batch queue"),
           menuClass: "adg-settings-menu",
           content: () => settingsMenuBody,
         });
@@ -8628,25 +8632,25 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         const dismissThen = (fn) => () => { settingsDropdown.close(); fn(); };
 
         this.settingsMenuBtn = addAction(
-          "画廊设置",
-          "设置画廊显示、排除标签和 Danbooru 登录",
+          uiText("画廊设置", "Gallery settings"),
+          uiText("设置画廊显示、排除标签和 Danbooru 登录", "Gallery display, excluded tags and Danbooru credentials"),
           dismissThen(() => this.openSettings()),
           settingsMenuBody,
         );
         this.promptSettingsBtn = addAction(
-          "Prompt设置",
-          "控制 Prompt 输出类别与格式",
+          uiText("Prompt设置", "Prompt settings"),
+          uiText("控制 Prompt 输出类别与格式", "Set prompt output categories and format"),
           dismissThen(() => this.openPromptSettings()),
           settingsMenuBody,
         );
         this.promptOutputBtn = addAction("", "", () => {
           const enabled = this.setPromptOutputEnabled(this.settings.promptOutputEnabled === false);
-          this.setStatus(enabled ? "Prompt 输出已开启" : "Prompt 输出已关闭：下游将收到空 Prompt", "success");
+          this.setStatus(enabled ? uiText("Prompt 输出已开启", "Prompt output enabled") : uiText("Prompt 输出已关闭：下游将收到空 Prompt", "Prompt output disabled: downstream nodes receive an empty prompt"), "success");
         }, settingsMenuBody);
         this.updatePromptOutputButton();
         this.galleryBatchBtn = addAction(
-          "批量入队",
-          "将选中的画廊卡片按显示顺序拆成独立任务，逐张执行",
+          uiText("批量入队", "Queue batch"),
+          uiText("将选中的画廊卡片按显示顺序拆成独立任务，逐张执行", "Run selected gallery images as separate jobs in display order"),
           dismissThen(() => this.startGalleryBatch()),
           settingsMenuBody,
         );
@@ -8679,24 +8683,24 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       // **不占** .adg-toolbar-group（E2E 断言分组数恰为 4，新分组会把它弄红）。
       this.sourceFilterHost = this.buildSourceFilterControls();
       mainGroup.after(this.sourceFilterHost);
-      addAction("刷新", "绕过缓存重新搜索", () => this.search({ force: true }), filterGroup);
+      addAction(uiText("刷新", "Refresh"), uiText("绕过缓存重新搜索", "Search again without using cached results"), () => this.search({ force: true }), filterGroup);
       this.filterControls.mountCategory(categoryGroup);
       // 批量归类：选中 ≥2 张后可用（点选分类菜单，替代逐张 prompt）
       const batchCatBtn = document.createElement("button");
       batchCatBtn.type = "button";
       batchCatBtn.className = "adg-batch-cat";
-      batchCatBtn.textContent = "归类选中";
+      batchCatBtn.textContent = uiText("归类选中", "Categorize selected");
       batchCatBtn.disabled = true;
-      batchCatBtn.title = "先点选多张卡片，再批量归入同一分类";
+      batchCatBtn.title = uiText("先点选多张卡片，再批量归入同一分类", "Select multiple cards, then add them to one category");
       batchCatBtn.onclick = () => {
         const ids = this._browseSelected ? this.selectionOrder.filter(key => this._browseSelected.has(key))
           : [...this.grid.querySelectorAll(".adg-card.is-selected")].map(c => c.dataset.postId).filter(Boolean);
         if (ids.length) this.openCategoryPicker(ids);
       };
       this.batchCatBtn = batchCatBtn;
-      addAction("＋类", "新建分类（点选弹层）", () => this.openCategoryPicker([]), categoryGroup);
-      const preset = document.createElement("select"); preset.title = "搜索预设";
-      preset.setAttribute("aria-label", "搜索预设");
+      addAction(uiText("＋类", "+ Category"), uiText("新建分类（点选弹层）", "Create a category in the picker"), () => this.openCategoryPicker([]), categoryGroup);
+      const preset = document.createElement("select"); preset.title = uiText("搜索预设", "Search presets");
+      preset.setAttribute("aria-label", uiText("搜索预设", "Search presets"));
       this.presetSelect = preset;
       this.renderPresetOptions();
       preset.onchange = () => {
@@ -8707,7 +8711,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         preset.value = "";
       };
       presetGroup.append(preset);
-      addAction("预设管理", "保存、应用或删除搜索预设", () => this.openPresetManager(), presetGroup);
+      addAction(uiText("预设管理", "Manage presets"), uiText("保存、应用或删除搜索预设", "Save, apply or delete search presets"), () => this.openPresetManager(), presetGroup);
       const paginationRow = document.createElement("div");
       paginationRow.className = "adg-pagination-row";
       const pagination = document.createElement("div");
@@ -8762,7 +8766,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       this.activeFilterChips = chips;
       const footer = document.createElement("footer"); footer.className = "adg-gallery-footer";
       const selectedView = document.createElement("button"); selectedView.type = "button";
-      selectedView.className = "adg-selected-view"; selectedView.textContent = "已选图片";
+      selectedView.className = "adg-selected-view"; selectedView.textContent = uiText("已选图片", "Selected images");
       selectedView.onclick = () => this.openSelectedImages();
       this.outputSummary = document.createElement("span"); this.outputSummary.className = "adg-output-summary";
       footer.append(this.selectionControls.element, selectedView, this.outputSummary);
@@ -8827,7 +8831,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       window.addEventListener("mouseup", recoverPointer, true);
       const initialQuery = this.settings.lastQuery || "1girl";
       this.setQuery(initialQuery);
-      this.setStatus("正在自动加载图片…");
+      this.setStatus(uiText("正在自动加载图片…", "Loading images automatically…"));
       this.renderPosts();
       this.renderPagination();
       // 图源能力（capabilities）驱动控件可见性；/anima/gallery/sources 是异步补全，
@@ -8861,20 +8865,20 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
     openSelectedImages() {
       const selected = this.selectedGallerySelections();
       const content = document.createElement("div"); content.className = "adg-selected-images";
-      if (!selected.length) content.textContent = "尚未选择图片";
+      if (!selected.length) content.textContent = uiText("尚未选择图片", "No images selected");
       selected.forEach((selection, index) => {
         const key = this.selectionOrder[index];
         const post = this._browseSelectedPosts?.get(key) || this.displayPosts().find(p => this.postKeyOf(p) === key);
         const source = post ? this.postSourceId(post) : this.sourceIdFromPostKey(key);
         const item = document.createElement("button"); item.type = "button";
         const image = document.createElement("img"); image.loading = "lazy";
-        image.src = this.imageProxyUrl(selection.image_url, "", source); image.alt = `第 ${index + 1} 张`;
+        image.src = this.imageProxyUrl(selection.image_url, "", source); image.alt = uiText(`第 ${index + 1} 张`, `Image ${index + 1}`);
         const title = document.createElement("span"); title.textContent = `${index + 1} · #${selection.post_id}`;
         item.append(image, title);
         item.onclick = () => { if (post) { this.removeDialog(); this.openImagePreview(post); } };
         content.append(item);
       });
-      this.openDialog({ title: `已选图片 · ${selected.length} 张 · 按输出顺序`, content, showApply: false });
+      this.openDialog({ title: uiText(`已选图片 · ${selected.length} 张 · 按输出顺序`, `Selected images · ${selected.length} · Output order`), content, showApply: false });
     }
 
     refreshGalleryChrome() {
@@ -8883,20 +8887,20 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       this.quickSort.hidden = !danbooru;
       this.quickSort.value = this.settings.filters?.order || "";
       this.thumbQuickSelect.value = String(this.thumbTargetPt());
-      const labels = { age: "时间", ageDays: "天数", minScore: "评分", minFavs: "收藏", minMpixels: "像素", ratio: "比例", filetype: "格式", order: "排序" };
+      const labels = { age: uiText("时间", "Time"), ageDays: uiText("天数", "Days"), minScore: uiText("评分", "Score"), minFavs: uiText("收藏", "Favorites"), minMpixels: uiText("像素", "Pixels"), ratio: uiText("比例", "Aspect ratio"), filetype: uiText("格式", "Format"), order: uiText("排序", "Sort") };
       this.activeFilterChips.replaceChildren();
       if (danbooru) for (const [key, value] of Object.entries(this.settings.filters || {})) {
         if (!value) continue;
         const chip = document.createElement("button"); chip.type = "button";
-        const values = {wide:"横图",tall:"竖图",square:"方形",ultrawide:"宽幅",score:"评分",favcount:"收藏",rank:"综合",random:"随机",static:"静态图",video:"视频"};
+        const values = {wide:uiText("横图", "Landscape"),tall:uiText("竖图", "Portrait"),square:uiText("方形", "Square"),ultrawide:uiText("宽幅", "Ultrawide"),score:uiText("评分", "Score"),favcount:uiText("收藏", "Favorites"),rank:uiText("综合", "Overall"),random:uiText("随机", "Random"),static:uiText("静态图", "Still image"),video:uiText("视频", "Video")};
         chip.textContent = `${labels[key] || key}：${values[value] || value} ×`;
-        chip.title = "移除此筛选";
+        chip.title = uiText("移除此筛选", "Remove this filter");
         chip.onclick = () => {
           this.settings.filters[key] = ""; this.saveSettings(); this.filterControls?.refresh(); this.search({ resetPage: true });
         };
         this.activeFilterChips.append(chip);
       }
-      this.outputSummary.textContent = this.settings.promptOutputEnabled === false ? "输出：图片 · Prompt 已关闭" : "输出：图片与 Prompt";
+      this.outputSummary.textContent = this.settings.promptOutputEnabled === false ? uiText("输出：图片 · Prompt 已关闭", "Output: images · prompt off") : uiText("输出：图片与 Prompt", "Output: images and prompt");
     }
 
     disposeLegacy() {

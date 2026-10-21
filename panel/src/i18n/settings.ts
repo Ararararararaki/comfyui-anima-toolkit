@@ -59,7 +59,7 @@ export const settingsMessages = {
   "settings.image.decodeFailed": { zh: "图片解析失败", en: "Could not decode the image" },
   "settings.image.readFailed": { zh: "图片读取失败", en: "Could not read the image" },
   "settings.intro": { zh: "所有改动即时作用于当前页面，并自动保存在本地。", en: "Changes apply immediately and are saved locally." },
-  "settings.language.help": { zh: "切换后会保存设置并刷新页面以应用。正在编辑的自定义 CSS 也会保存。", en: "Changing the language saves your settings and reloads the page. Any custom CSS draft is saved too." },
+  "settings.language.help": { zh: "切换后保存设置并刷新工具箱。节点与弹窗也使用此语言；请先保存工作流，再刷新 ComfyUI 页面以完整应用。自定义 CSS 草稿也会保存。", en: "Changing the language saves settings and reloads the toolbox. Nodes and dialogs use the same language. Save your workflow, then refresh ComfyUI to apply it everywhere. Custom CSS drafts are saved too." },
   "settings.language.label": { zh: "界面语言", en: "Interface language" },
   "settings.language.saveFailed": { zh: "语言设置保存失败，请检查浏览器存储空间后重试。", en: "Could not save the language. Check browser storage and try again." },
   "settings.language.title": { zh: "语言 / Language", en: "Language / 语言" },

@@ -2,6 +2,14 @@
 
 每次发布按版本记录变更。
 
+## [2.36.0] - 2026-10-22
+
+### Changed / 界面语言
+- Workflow node interfaces now follow the toolbox Language setting: Prompt Agent, LoRA browser, gallery and workspace, prompt cards/saver/batch, tag filters, trigger words, routing, clothing and camera controls.
+- Added presentation-only English node titles, input/output labels, tooltips and native combo labels. Saved identifiers, option values, prompts, tags and user names remain unchanged.
+- AnimaDex shares the toolbox language owner. Save the workflow and refresh the ComfyUI page after switching; no host restart is required for this frontend update.
+- 画廊补齐分页、恢复浏览和选择状态的英文；操作按钮换行后的空隙不再拦截选图。
+
 ## [2.35.0] - 2026-10-21
 
 ### Prompt Agent

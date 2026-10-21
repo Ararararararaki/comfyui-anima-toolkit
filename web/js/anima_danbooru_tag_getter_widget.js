@@ -1,4 +1,5 @@
-// TK Danbooru Tag Getter：用 ComfyUI 原生风格整理分类开关、场景预设与主题剔除。
+import { uiText } from "./anima_node_i18n.js";
+import { nodeFieldLabel } from './anima_node_labels.js';
 (function () {
   const NODE_NAME = "AnimaTKDanbooruTagGetter";
   // 前 12 项 = 旧行为基线；后 8 项为新增，顺序必须与后端 CATEGORY_NAMES 一致。
@@ -236,8 +237,8 @@
       }
       this.updatePresetHint(PRESET_NONE);
       this.setPresetStatus(
-        `开关已手动改动 → 切到「自定义（不用预设）」，改的「${category}」现在生效；`
-        + `预设「${current}」只在你从下拉里选它时才套用`);
+        uiText(`开关已手动改动 → 切到「自定义（不用预设）」，改的「${category}」现在生效；`, `Toggles changed manually → Custom (no preset); “${category}” is now active;`)
+        + uiText(`预设「${current}」只在你从下拉里选它时才套用`, `Preset “${current}” applies only when selected from the dropdown`));
     }
 
     setFilterValue(name, value) {
@@ -260,7 +261,7 @@
       // 与开关对称：手动改权重同样算"离开预设"。
       // （后端 `_apply_preset` 已改为"显式传参优先"，所以行为上本来就不会被覆盖；
       //   这里是为了让面板名实一致，并给用户一句解释。）
-      if (!this._applyingPreset) this.releasePresetOnManualEdit(`${category}权重`);
+      if (!this._applyingPreset) this.releasePresetOnManualEdit(uiText(`${category}权重`, `${category} weight`));
     }
 
     hideNativeWidget(widget) {
@@ -283,7 +284,7 @@
       header.className = "tk-dtb-header";
       const title = document.createElement("span");
       title.className = "tk-dtb-title";
-      title.textContent = "分类";
+      title.textContent = uiText("分类", "Categories");
       // 批量开关：20 个分类手点一遍太累，常用动作压成一行文字按钮
       const actions = document.createElement("div");
       actions.className = "tk-dtb-actions";
@@ -296,10 +297,10 @@
         return button;
       };
       actions.append(
-        makeAction("全开", `打开全部 ${CATEGORY_NAMES.length} 个分类`, () => this.setAllCategories(true)),
-        makeAction("全关", `关闭全部 ${CATEGORY_NAMES.length} 个分类`, () => this.setAllCategories(false)),
-        makeAction("反选", "已开的关掉、未开的打开", () => this.invertCategories()),
-        makeAction("权重归 1", "把所有分类权重恢复成中性 1.0", () => this.resetWeights())
+        makeAction(uiText("全开", "All on"), uiText(`打开全部 ${CATEGORY_NAMES.length} 个分类`, `Enable all ${CATEGORY_NAMES.length} categories`), () => this.setAllCategories(true)),
+        makeAction(uiText("全关", "All off"), uiText(`关闭全部 ${CATEGORY_NAMES.length} 个分类`, `Disable all ${CATEGORY_NAMES.length} categories`), () => this.setAllCategories(false)),
+        makeAction(uiText("反选", "Invert"), uiText("已开的关掉、未开的打开", "Invert all category toggles"), () => this.invertCategories()),
+        makeAction(uiText("权重归 1", "Reset weights"), uiText("把所有分类权重恢复成中性 1.0", "Reset all category weights to neutral 1.0"), () => this.resetWeights())
       );
       this.count = document.createElement("span");
       this.count.className = "tk-dtb-count";
@@ -315,15 +316,15 @@
           const divider = document.createElement("div");
           divider.className = "tk-dtb-divider";
           const dividerLabel = document.createElement("span");
-          dividerLabel.textContent = "扩展分类（新增 · 默认开启）";
+          dividerLabel.textContent = uiText("扩展分类（新增 · 默认开启）", "Additional categories");
           // 2026-09-16 用户真机反馈：旧工作流里这几类存的是**旧版默认 true**，
           // 后来代码改成「负面词类（审查遮挡词/文字水印词）默认关」也盖不过已保存的值 ⇒
           // 每次加载又是勾选的。顶栏「全关」会把旧 12 类一起关掉，所以这里单独给一对按钮。
           const dividerActions = document.createElement("span");
           dividerActions.className = "tk-dtb-divider-actions";
           dividerActions.append(
-            makeAction("全开", `打开全部 ${CATEGORY_NAMES.length - LEGACY_CATEGORY_COUNT} 个扩展分类`, () => this.setNewCategories(true)),
-            makeAction("全关", `关闭全部 ${CATEGORY_NAMES.length - LEGACY_CATEGORY_COUNT} 个扩展分类（旧 12 类不动）`, () => this.setNewCategories(false))
+            makeAction(uiText("全开", "All on"), uiText(`打开全部 ${CATEGORY_NAMES.length - LEGACY_CATEGORY_COUNT} 个扩展分类`, `Enable all ${CATEGORY_NAMES.length - LEGACY_CATEGORY_COUNT} additional categories`), () => this.setNewCategories(true)),
+            makeAction(uiText("全关", "All off"), uiText(`关闭全部 ${CATEGORY_NAMES.length - LEGACY_CATEGORY_COUNT} 个扩展分类（旧 12 类不动）`, `Disable all ${CATEGORY_NAMES.length - LEGACY_CATEGORY_COUNT} additional categories (original 12 unchanged)`), () => this.setNewCategories(false))
           );
           divider.append(dividerLabel, dividerActions);
           grid.appendChild(divider);
@@ -334,18 +335,18 @@
         toggle.className = "tk-dtb-toggle";
         toggle.type = "checkbox";
         toggle.checked = Boolean(widget.value);
-        toggle.setAttribute("aria-label", category);
+        toggle.setAttribute("aria-label", nodeFieldLabel(category));
         toggle.addEventListener("change", () => this.setWidgetValue(category, toggle.checked));
         const label = document.createElement("span");
         label.className = "tk-dtb-label";
-        label.textContent = category;
+        label.textContent = nodeFieldLabel(category);
         const weightWidget = this.weightWidgetFor(category);
         let weightInput = null;
         if (weightWidget) {
           const normalisedWeight = this.normaliseWeightWidget(category);
           const weightControl = document.createElement("span");
           weightControl.className = "tk-dtb-weight-control";
-          weightControl.title = `${category} Tag 权重（0.0–2.0；1.0 保持原样）`;
+          weightControl.title = uiText(`${category} Tag 权重（0.0–2.0；1.0 保持原样）`, `${category} tag weight (0.0–2.0; 1.0 unchanged)`);
           const prefix = document.createElement("span");
           prefix.className = "tk-dtb-weight-prefix";
           prefix.textContent = "×";
@@ -357,7 +358,7 @@
           weightInput.step = "0.05";
           weightInput.inputMode = "decimal";
           weightInput.value = this.formatWeight(normalisedWeight);
-          weightInput.setAttribute("aria-label", `${category} Tag 权重`);
+          weightInput.setAttribute("aria-label", uiText(`${category} Tag 权重`, `${category} tag weight`));
           weightInput.addEventListener("click", (event) => event.stopPropagation());
           weightInput.addEventListener("mousedown", (event) => event.stopPropagation());
           weightInput.addEventListener("change", () => this.setWeightValue(category, weightInput.value));
@@ -392,7 +393,7 @@
       filters.className = "tk-dtb-filters";
       const filterTitle = document.createElement("div");
       filterTitle.className = "tk-dtb-filter-title";
-      filterTitle.textContent = "排除";
+      filterTitle.textContent = uiText("排除", "Exclude");
       filters.appendChild(filterTitle);
 
       const makeFilter = (name, labelText, placeholder, multiline) => {
@@ -415,8 +416,8 @@
         field.addEventListener("input", () => this.setFilterValue(name, field.value));
         const clear = document.createElement("span");
         clear.className = "tk-dtb-action";
-        clear.textContent = "清空";
-        clear.title = `清空「${labelText}」`;
+        clear.textContent = uiText("清空", "Clear");
+        clear.title = uiText(`清空「${labelText}」`, `Clear “${labelText}”`);
         clear.addEventListener("click", (event) => {
           event.stopPropagation();
           field.value = "";
@@ -427,8 +428,8 @@
         this.hideNativeWidget(widget);
         this.filterControls.set(name, field);
       };
-      makeFilter("regex_blacklist", "正则排除", "censor|watermark", false);
-      makeFilter("tag_blacklist", "精准排除", "每行一个 Tag，也可用逗号分隔", true);
+      makeFilter("regex_blacklist", uiText("正则排除", "Regex exclusions"), "censor|watermark", false);
+      makeFilter("tag_blacklist", uiText("精准排除", "Exact tag exclusions"), uiText("每行一个 Tag，也可用逗号分隔", "One tag per line, or comma-separated"), true);
 
       // 自然语言：**整块 UI 已按用户要求移除**（2026-09-13）。
       // 历史包袱：原先「保留自然语言 / 过滤自然语言」两个开关语义互相打架
@@ -447,7 +448,7 @@
       presetRow.className = "tk-dtb-preset-row";
       const presetLabel = document.createElement("span");
       presetLabel.className = "tk-dtb-preset-label";
-      presetLabel.textContent = "场景预设";
+      presetLabel.textContent = uiText("场景预设", "Scene preset");
       const presetSelect = document.createElement("select");
       presetSelect.className = "tk-dtb-preset";
       const presetWidget = this.widgetFor("preset");
@@ -458,7 +459,7 @@
         values.forEach((item) => {
           const option = document.createElement("option");
           option.value = String(item);
-          option.textContent = String(item);
+          option.textContent = item === PRESET_NONE ? uiText(PRESET_NONE, "Custom (no preset)") : String(item);
           presetSelect.appendChild(option);
         });
         presetSelect.value = String(presetWidget.value || PRESET_NONE);
@@ -474,7 +475,7 @@
       const presetNameInput = document.createElement("input");
       presetNameInput.className = "tk-dtb-preset-name";
       presetNameInput.type = "text";
-      presetNameInput.placeholder = "预设名…";
+      presetNameInput.placeholder = uiText("预设名…", "Preset name…");
       presetNameInput.spellcheck = false;
       presetNameInput.addEventListener("keydown", (event) => {
         if (event.key === "Enter") { event.preventDefault(); this.savePreset(); }
@@ -483,13 +484,13 @@
       this.presetNameInput = presetNameInput;
       const saveButton = document.createElement("span");
       saveButton.className = "tk-dtb-action";
-      saveButton.textContent = "保存";
-      saveButton.title = "把当前 20 个开关 + 权重存成一个命名预设";
+      saveButton.textContent = uiText("保存", "Save");
+      saveButton.title = uiText("把当前 20 个开关 + 权重存成一个命名预设", "Save the 20 current category toggles and weights as a named preset");
       saveButton.addEventListener("click", () => this.savePreset());
       const deleteButton = document.createElement("span");
       deleteButton.className = "tk-dtb-action";
-      deleteButton.textContent = "删除";
-      deleteButton.title = "删除下拉里当前选中的自定义预设";
+      deleteButton.textContent = uiText("删除", "Delete");
+      deleteButton.title = uiText("删除下拉里当前选中的自定义预设", "Delete the selected custom preset");
       deleteButton.addEventListener("click", () => this.deletePreset());
       presetManage.append(presetNameInput, saveButton, deleteButton);
 
@@ -596,11 +597,11 @@
       if (!this.presetHint) return;
       const spec = PRESETS[name];
       if (spec?.only) {
-        this.presetHint.textContent = `只开：${spec.only.join("、")}；其余全部关闭`;
+        this.presetHint.textContent = uiText(`只开：${spec.only.join("、")}；其余全部关闭`, `Only enabled: ${spec.only.join("、")}; all others disabled`);
       } else if (spec?.off && spec.off.length) {
-        this.presetHint.textContent = `已关闭：${spec.off.join("、")}`;
+        this.presetHint.textContent = uiText(`已关闭：${spec.off.join("、")}`, `Disabled: ${spec.off.join("、")}`);
       } else if (!spec && (this.customPresets || {})[name]) {
-        this.presetHint.textContent = "自定义预设：已还原保存时的开关与权重";
+        this.presetHint.textContent = uiText("自定义预设：已还原保存时的开关与权重", "Custom preset: restored saved toggles and weights");
       } else {
         this.presetHint.textContent = "";
       }
@@ -684,7 +685,7 @@
       }
       this.updatePresetHint(PRESET_NONE);
       this.setPresetStatus(
-        `此工作流保存时用的预设「${name}」与实际开关不一致（${mismatched.join("、")}），`
+        uiText(`此工作流保存时用的预设「${name}」与实际开关不一致（${mismatched.join("、")}），`, `The workflow’s saved preset “${name}” differs from the actual toggles (${mismatched.join("、")}），`)
         + `已自动切到「自定义（不用预设）」—— 现在按面板上的开关执行，不会再被预设覆盖`);
     }
 
@@ -720,7 +721,7 @@
       if (exists) return;
       const option = document.createElement("option");
       option.value = name;
-      option.textContent = name;
+      option.textContent = name === PRESET_NONE ? uiText(PRESET_NONE, "Custom (no preset)") : name;
       this.presetSelect.appendChild(option);
     }
 
@@ -737,14 +738,14 @@
     async savePreset() {
       const name = String(this.presetNameInput?.value || "").trim();
       if (!name) {
-        this.setPresetStatus("先填预设名");
+        this.setPresetStatus(uiText("先填预设名", "Enter a preset name first"));
         return;
       }
       try {
         const data = await this.presetRequest({
           action: "save", name, flags: this.currentFlags(), weights: this.currentWeights(),
         });
-        this.setPresetStatus(data.message || (data.ok ? "已保存" : "保存失败"));
+        this.setPresetStatus(data.message || (data.ok ? uiText("已保存", "Saved") : uiText("保存失败", "Save failed")));
         if (data.ok) {
           this.appendPresetOption(name);
           // 立刻进缓存，免得"刚保存就切换"要等下一次 refresh 才生效
@@ -754,19 +755,19 @@
           if (this.presetNameInput) this.presetNameInput.value = "";
         }
       } catch (error) {
-        this.setPresetStatus(`保存失败：${error}`);
+        this.setPresetStatus(uiText(`保存失败：${error}`, `Save failed: ${error}`));
       }
     }
 
     async deletePreset() {
       const name = String(this.presetSelect?.value || "");
       if (!name || name === PRESET_NONE) {
-        this.setPresetStatus("「自定义（不用预设）」不能删");
+        this.setPresetStatus(uiText("「自定义（不用预设）」不能删", "The Custom (no preset) option cannot be deleted"));
         return;
       }
       try {
         const data = await this.presetRequest({ action: "delete", name });
-        this.setPresetStatus(data.message || (data.ok ? "已删除" : "删除失败"));
+        this.setPresetStatus(data.message || (data.ok ? uiText("已删除", "Deleted") : uiText("删除失败", "Delete failed")));
         if (data.ok) {
           delete this.customPresets[name];
           [...(this.presetSelect?.options || [])]
@@ -775,7 +776,7 @@
           if (this.presetSelect) this.presetSelect.value = PRESET_NONE;
         }
       } catch (error) {
-        this.setPresetStatus(`删除失败：${error}`);
+        this.setPresetStatus(uiText(`删除失败：${error}`, `Delete failed: ${error}`));
       }
     }
 
@@ -793,16 +794,16 @@
       head.className = "tk-dtb-report-head";
       const title = document.createElement("span");
       title.className = "tk-dtb-report-title";
-      title.textContent = "过滤诊断";
+      title.textContent = uiText("过滤诊断", "Filter report");
       const hint = document.createElement("span");
       hint.className = "tk-dtb-report-hint";
-      hint.textContent = "跑一次图后显示 · 点类别名可直接开关";
+      hint.textContent = uiText("跑一次图后显示 · 点类别名可直接开关", "Shown after a run · Click a category to toggle it");
       head.append(title, hint);
       const body = document.createElement("div");
       body.className = "tk-dtb-report-body";
       const placeholder = document.createElement("div");
       placeholder.className = "tk-dtb-report-empty";
-      placeholder.textContent = "尚未执行。执行一次工作流后，这里显示保留了哪些词、哪些词因为什么被丢掉。";
+      placeholder.textContent = uiText("尚未执行。执行一次工作流后，这里显示保留了哪些词、哪些词因为什么被丢掉。", "Run the workflow to see which tags were kept or excluded and why.");
       body.append(placeholder);
       wrap.append(head, body);
       this.reportBody = body;
@@ -892,9 +893,9 @@
         row.className = `tk-dtb-report-row ${className || ""}`.trim();
         const name = document.createElement("span");
         name.className = "tk-dtb-report-cat";
-        name.textContent = label;
+        name.textContent = nodeFieldLabel(label);
         if (toggleTarget) {
-          name.title = `点击开/关「${toggleTarget}」这一类`;
+          name.title = uiText(`点击开/关「${toggleTarget}」这一类`, `Toggle category “${toggleTarget}”`);
           name.addEventListener("click", (event) => {
             event.stopPropagation();
             this.toggleCategoryFromReport(toggleTarget);
@@ -910,13 +911,13 @@
       if (report.auto_classify === false) {
         const warn = document.createElement("div");
         warn.className = "tk-dtb-report-warn";
-        warn.textContent = "⚠️ 未启用自动分类：旧 12 类全关时整段原样输出，不会过滤任何词。至少要留一个旧类开着。";
+        warn.textContent = uiText("⚠️ 未启用自动分类：旧 12 类全关时整段原样输出，不会过滤任何词。至少要留一个旧类开着。", "Auto-classification is off: disabling all 12 original categories passes the input unchanged. Keep at least one original category enabled to filter tags.");
         this.reportBody.append(warn);
       }
 
       const keptEntries = Object.entries(report.kept || {}).filter(([, v]) => v?.length);
       if (keptEntries.length) {
-        this.reportBody.append(section(`✅ 保留 ${report.counts?.kept ?? ""}`, "is-kept"));
+        this.reportBody.append(section(uiText(`✅ 保留 ${report.counts?.kept ?? ""}`, `Kept: ${report.counts?.kept ?? ""}`), "is-kept"));
         for (const [category, tags] of keptEntries) {
           const row = makeRow(category, tags, "is-kept", category);
           if (row) this.reportBody.append(row);
@@ -928,27 +929,27 @@
       const otherDropped = (report.dropped_by_blacklist?.length || 0)
         || (report.dropped_by_regex?.length || 0);
       if (droppedEntries.length || otherDropped) {
-        this.reportBody.append(section(`❌ 被排除 ${report.counts?.dropped ?? ""}`, "is-dropped"));
+        this.reportBody.append(section(uiText(`❌ 被排除 ${report.counts?.dropped ?? ""}`, `Excluded: ${report.counts?.dropped ?? ""}`), "is-dropped"));
         for (const [category, tags] of droppedEntries) {
-          const row = makeRow(`${category}（类别关闭）`, tags, "is-dropped", category);
+          const row = makeRow(uiText(`${category}（类别关闭）`, `${category} (category off)`), tags, "is-dropped", category);
           if (row) this.reportBody.append(row);
         }
-        const black = makeRow("tag_blacklist 命中", report.dropped_by_blacklist, "is-dropped");
+        const black = makeRow(uiText("tag_blacklist 命中", "Exact blacklist match"), report.dropped_by_blacklist, "is-dropped");
         if (black) this.reportBody.append(black);
-        const regex = makeRow("regex_blacklist 命中", report.dropped_by_regex, "is-dropped");
+        const regex = makeRow(uiText("regex_blacklist 命中", "Regex blacklist match"), report.dropped_by_regex, "is-dropped");
         if (regex) this.reportBody.append(regex);
       }
 
       if (report.unclassified?.length) {
-        this.reportBody.append(section(`⚠️ 未归类 ${report.counts?.unclassified ?? ""}`, "is-unknown"));
-        const row = makeRow("原样进自然语言", report.unclassified, "is-unknown");
+        this.reportBody.append(section(uiText(`⚠️ 未归类 ${report.counts?.unclassified ?? ""}`, `Unclassified: ${report.counts?.unclassified ?? ""}`), "is-unknown"));
+        const row = makeRow(uiText("原样进自然语言", "Preserved as prose"), report.unclassified, "is-unknown");
         if (row) this.reportBody.append(row);
       }
 
       if (!this.reportBody.childNodes.length) {
         const empty = document.createElement("div");
         empty.className = "tk-dtb-report-empty";
-        empty.textContent = "本次执行没有被过滤或未归类的词。";
+        empty.textContent = uiText("本次执行没有被过滤或未归类的词。", "No filtered or unclassified tags in this run.");
         this.reportBody.append(empty);
       }
     }
@@ -1082,11 +1083,11 @@
           this._tkDanbooruTagGetterUI = ui;
           const unifiedInput = this.inputs?.find((input) => input.name === "natural_language");
           if (unifiedInput) {
-            unifiedInput.label = "统一 Prompt";
-            unifiedInput.tooltip = "普通 Prompt 或 Packer ALL_TAGS；已知 Danbooru Tag 自动分类，未知段落原样保留";
+            unifiedInput.label = uiText("统一 Prompt", "Prompt");
+            unifiedInput.tooltip = uiText("普通 Prompt 或 Packer ALL_TAGS；已知 Danbooru Tag 自动分类，未知段落原样保留", "Prompt or Packer ALL_TAGS; known Danbooru tags are classified and unknown prose is preserved");
           }
           const legacyInput = this.inputs?.find((input) => input.name === "tag_bundle");
-          if (legacyInput) legacyInput.label = "兼容·分类包";
+          if (legacyInput) legacyInput.label = uiText("兼容·分类包", "Legacy category bundle");
           const element = ui.build();
           const domWidget = this.addDOMWidget?.("tk_danbooru_tag_getter", "custom", element, { serialize: false, hideOnZoom: false });
           if (domWidget) {

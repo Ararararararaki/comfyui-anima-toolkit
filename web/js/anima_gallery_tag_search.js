@@ -1,7 +1,8 @@
+import { uiText } from "./anima_node_i18n.js";
 // Website-style tag completion for the three native booru search sources.
 const SOURCES = new Set(['safebooru', 'yandere', 'konachan']);
 const LABELS = { safebooru: 'Safebooru', yandere: 'yande.re', konachan: 'Konachan.net' };
-const TYPES = { general: '通用', artist: '画师', copyright: '作品', character: '角色', circle: '社团', style: '风格', faults: '标记', tag: '标签', syntax: '语法' };
+const TYPES = { general: uiText('通用', "General"), artist: uiText('画师', "Artist"), copyright: uiText('作品', 'Series'), character: uiText('角色', "Character"), circle: uiText('社团', "Circle"), style: uiText('风格', "Style"), faults: uiText('标记', "Flags"), tag: uiText('标签', "Tag"), syntax: uiText('语法', "Syntax") };
 
 export function booruTokenAt(raw, caret) {
   raw = String(raw ?? '');
@@ -26,11 +27,11 @@ export function completeBooruToken(raw, context, tag) {
 
 export function booruSyntaxChoices(source, query) {
   const common = [
-    ['rating:safe', '全年龄'], ['rating:questionable', '存疑分级'], ['rating:explicit', '成人分级'],
-    ['width:>=1920', '宽度至少 1920'], ['height:>=1080', '高度至少 1080'], ['score:>=10', '评分至少 10'],
+    ['rating:safe', uiText('全年龄', "Safe")], ['rating:questionable', uiText('存疑分级', "Questionable")], ['rating:explicit', uiText('成人分级', "Explicit")],
+    ['width:>=1920', uiText('宽度至少 1920', "Width at least 1920")], ['height:>=1080', uiText('高度至少 1080', "Height at least 1080")], ['score:>=10', uiText('评分至少 10', "Score at least 10")],
   ];
-  const sorts = source === 'safebooru' ? [['sort:score:desc', '评分从高到低'], ['sort:id:desc', '最新优先']]
-    : [['order:score', '评分从高到低'], ['order:id', '最新优先']];
+  const sorts = source === 'safebooru' ? [['sort:score:desc', uiText('评分从高到低', "Highest score first")], ['sort:id:desc', uiText('最新优先', "Newest first")]]
+    : [['order:score', uiText('评分从高到低', "Highest score first")], ['order:id', uiText('最新优先', "Newest first")]];
   if (!query.includes(':')) return null;
   return [...common, ...sorts].filter(([tag]) => tag.startsWith(query.toLowerCase()))
     .map(([tag, note]) => ({ tag, note, category: 'syntax', postCount: null }));
@@ -102,7 +103,7 @@ export function installGalleryTagSearch(UI) {
       if (requestId === this.suggestionRequestId && this.booruCompletionCurrent(state)
         && input.ownerDocument.activeElement === input) {
         console.debug('[TK gallery] Tag completion unavailable:', source, error?.name, error?.message);
-        this.renderBooruSuggestions(state, '标签联想暂不可用，可直接回车搜索');
+        this.renderBooruSuggestions(state, uiText('标签联想暂不可用，可直接回车搜索', "Suggestions are unavailable. Press Enter to search."));
       }
     } finally {
       clearTimeout(timer);
@@ -121,7 +122,7 @@ export function installGalleryTagSearch(UI) {
     box.style.display = 'flex';
     box.id ||= 'adg-booru-suggestions-' + this.node.id + '-' + Math.random().toString(36).slice(2);
     box.setAttribute('role','listbox');
-    box.setAttribute('aria-label',LABELS[state.source] + ' 标签联想');
+    box.setAttribute('aria-label',LABELS[state.source] + uiText(' 标签联想', " tag suggestions"));
     const input = this.queryInput;
     input.setAttribute('role','combobox');
     input.setAttribute('aria-autocomplete','list');
@@ -129,7 +130,7 @@ export function installGalleryTagSearch(UI) {
     input.setAttribute('aria-expanded','true');
     const title = doc.createElement('div');
     title.className = 'adg-booru-heading';
-    title.textContent = LABELS[state.source] + ' · 标签联想';
+    title.textContent = LABELS[state.source] + uiText(' · 标签联想', " · Tag suggestions");
     box.append(title);
     for (const [index, item] of state.choices.entries()) {
       const row = doc.createElement('button');
@@ -142,10 +143,10 @@ export function installGalleryTagSearch(UI) {
       const tag = doc.createElement('span'); tag.className = 'adg-booru-tag';
       tag.textContent = state.context.prefix + item.tag + state.context.suffix;
       const kind = doc.createElement('span'); kind.className = 'adg-booru-kind';
-      kind.textContent = item.note || TYPES[item.category] || '标签';
+      kind.textContent = item.note || TYPES[item.category] || uiText('标签', "Tag");
       const count = doc.createElement('span'); count.className = 'adg-booru-count';
       count.textContent = item.postCount == null ? '' : Number(item.postCount).toLocaleString();
-      count.title = LABELS[state.source] + ' 标签数量（官网接口，非 D站 数量）';
+      count.title = LABELS[state.source] + uiText(' 标签数量（官网接口，非 D站 数量）', " post count (official API, not Danbooru)");
       const main = doc.createElement('span'); main.className = 'adg-suggestion-main'; main.append(tag,count);
       const secondary = doc.createElement('span'); secondary.className = 'adg-suggestion-secondary'; secondary.append(kind);
       row.append(main,secondary);
@@ -155,11 +156,11 @@ export function installGalleryTagSearch(UI) {
       box.append(row);
     }
     const hint = doc.createElement('div'); hint.className = 'adg-booru-hint';
-    hint.textContent = warning || (state.choices.length ? '↑↓ 选择 · Tab / Enter 补全 · 再按 Enter 搜索'
-      : '暂无标签联想，可直接回车搜索');
+    hint.textContent = warning || (state.choices.length ? uiText('↑↓ 选择 · Tab / Enter 补全 · 再按 Enter 搜索', "↑↓ select · Tab / Enter complete · Enter again to search")
+      : uiText('暂无标签联想，可直接回车搜索', "No suggestions. Press Enter to search."));
     box.append(hint);
     const syntax = doc.createElement('div'); syntax.className = 'adg-booru-hint';
-    syntax.textContent = '空格组合标签 · -标签 排除 · * 通配 · rating: 分级';
+    syntax.textContent = uiText('空格组合标签 · -标签 排除 · * 通配 · rating: 分级', "Space combines tags · -tag excludes · * wildcard · rating: rating");
     box.append(syntax);
     this.positionSuggestions();
     this.markBooruSuggestion(state.index);

@@ -1,3 +1,4 @@
+import { uiText } from "./anima_node_i18n.js";
 /** Source transport returns the common gallery protocol; source policy stays separate. */
 export class GallerySourceAdapter {
   constructor({ fetchImpl = (...args) => globalThis.fetch(...args), timers = globalThis } = {}) {
@@ -27,7 +28,7 @@ export class GallerySourceAdapter {
       try {
         data = JSON.parse(body);
       } catch {
-        const error = new Error("D站接口返回了无效的 JSON 响应");
+        const error = new Error(uiText("D站接口返回了无效的 JSON 响应", "Danbooru returned an invalid JSON response"));
         error.name = "InvalidJSONResponseError";
         error.httpStatus = response.status;
         error.contentType = response.headers?.get?.("content-type") || "";
@@ -99,7 +100,7 @@ export class GallerySourceAdapter {
       onAbort = () => { reject(abortError()); controller.abort(); };
       signal?.addEventListener("abort", onAbort, { once: true });
       timer = this.timers.setTimeout(() => {
-        const error = new Error(`搜索超时（45 秒）：${source === "danbooru" ? "D站" : "图源"} 或代理网络不稳定，请检查 Clash 节点后重试`);
+        const error = new Error(uiText(`搜索超时（45 秒）：${source === "danbooru" ? "D站" : "图源"} 或代理网络不稳定，请检查 Clash 节点后重试`, `Search timed out (45 seconds): ${source === "danbooru" ? "Danbooru" : "the source"} or the proxy is unavailable. Check Clash and retry.`));
         error.name = "GallerySearchTimeoutError";
         reject(error);
         controller.abort();

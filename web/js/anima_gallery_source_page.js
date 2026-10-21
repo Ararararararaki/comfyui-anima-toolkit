@@ -1,5 +1,4 @@
-/** Non-D source policy returns data; controllers own commits and views. */
-
+import { uiText } from "./anima_node_i18n.js";
 const POOL_CURSOR_PREFIX = "tk-pool:";
 
 /**
@@ -9,10 +8,10 @@ const POOL_CURSOR_PREFIX = "tk-pool:";
  */
 export const PIXIV_RANKING_CONTENTS = ["all", "illust", "ugoira", "manga"];
 export const PIXIV_RANKING_MODES = ["daily", "weekly", "monthly", "rookie", "original", "daily_ai", "male", "female"];
-export const PIXIV_RANKING_CONTENT_LABELS = { all: "综合", illust: "插画", ugoira: "动图", manga: "漫画" };
+export const PIXIV_RANKING_CONTENT_LABELS = { all: uiText("综合", "Overall"), illust: uiText("插画", "Illustrations"), ugoira: uiText("动图", "Animation"), manga: uiText("漫画", "Manga") };
 export const PIXIV_RANKING_MODE_LABELS = {
-  daily: "今日", weekly: "本周", monthly: "本月", rookie: "新人",
-  original: "原创", daily_ai: "AI生成", male: "受男性欢迎", female: "受女性欢迎",
+  daily: uiText("今日", "Today"), weekly: uiText("本周", "This week"), monthly: uiText("本月", "This month"), rookie: uiText("新人", "Newcomers"),
+  original: uiText("原创", "Original"), daily_ai: uiText("AI生成", "AI-generated"), male: uiText("受男性欢迎", "Popular with men"), female: uiText("受女性欢迎", "Popular with women"),
 };
 /** mode × content 实测兼容表：实测带非法组合上游回 404（详见后端常量区注释）。 */
 export const PIXIV_RANKING_CONTENT_MODES = {
@@ -30,7 +29,7 @@ export function pixivRankingSupports(content, mode) {
 export function pixivRankingLabel(filters = {}) {
   const content = PIXIV_RANKING_CONTENT_LABELS[filters.rankContent] || PIXIV_RANKING_CONTENT_LABELS.illust;
   const mode = PIXIV_RANKING_MODE_LABELS[filters.rankMode] || PIXIV_RANKING_MODE_LABELS.daily;
-  return `${content}${mode}排行榜`;
+  return uiText(`${content}${mode}排行榜`, `${content}${mode} ranking`);
 }
 
 function throwIfAborted(signal) {
@@ -151,7 +150,7 @@ function readPoolCursor(cursor) {
     if (typeof value?.poolCursor !== "string" || !Number.isSafeInteger(value.offset) || value.offset < 0) throw new Error();
     return { poolCursor: value.poolCursor, offset: value.offset };
   } catch {
-    throw new Error("C站池浏览位置已失效，请从头看");
+    throw new Error(uiText("C站池浏览位置已失效，请从头看", "The Civitai pool position expired. Start from the beginning."));
   }
 }
 
@@ -176,7 +175,7 @@ export async function fetchGallerySourcePage(adapter, input, { signal } = {}) {
   // 排行榜是无关键词浏览 —— 它和关键词搜索是两条互斥的路，别让「请输入关键词」把它拦住
   const rankingMode = request.source === "pixiv" && request.filters.ranking === true;
   if (request.source === "pixiv" && !request.query && !rankingMode) {
-    return { ...empty, status: "P站：请输入关键词后回车搜索（日文 / 英文均可）" };
+    return { ...empty, status: uiText("P站：请输入关键词后回车搜索（日文 / 英文均可）", "Pixiv: enter keywords and press Enter (Japanese or English)") };
   }
   const poolEnabled = request.source === "civitai" && Number(request.poolTarget) > 0;
   let position = poolEnabled ? readPoolCursor(request.cursor) : null;
@@ -200,7 +199,7 @@ export async function fetchGallerySourcePage(adapter, input, { signal } = {}) {
       result = {
         ...empty, posts, warnings, cursor,
         nextCursor: nextOffset < matches.length ? writePoolCursor(position.poolCursor, nextOffset) : nextCursor,
-        status: `C站：本批 ${posts.length} 张 · 已按池内关键词筛选`,
+        status: uiText(`C站：本批 ${posts.length} 张 · 已按池内关键词筛选`, `Civitai: this batch ${posts.length} images · Filtered using pool keywords`),
       };
       if (posts.length || !nextCursor || scanned === 2) break;
       position = { poolCursor: nextCursor, offset: 0 };
@@ -214,24 +213,24 @@ export async function fetchGallerySourcePage(adapter, input, { signal } = {}) {
     const unavailableCount = incoming.length - available.length;
     const { posts, groups } = foldGalleryPosts(filtered);
     const notices = [...warnings];
-    if (excludedCount) notices.push(`已排除 ${excludedCount} 张（${excludeTags.join("、")}）`);
-    if (unavailableCount) notices.push(`${unavailableCount} 张缺图已跳过`);
-    if (filtered.length > posts.length) notices.push(`已折叠 ${filtered.length - posts.length} 页多页作品（点卡片「全部页」展开）`);
+    if (excludedCount) notices.push(uiText(`已排除 ${excludedCount} 张（${excludeTags.join("、")}）`, `Excluded ${excludedCount} images (${excludeTags.join("、")}）`));
+    if (unavailableCount) notices.push(uiText(`${unavailableCount} 张缺图已跳过`, `${unavailableCount} missing images skipped`));
+    if (filtered.length > posts.length) notices.push(uiText(`已折叠 ${filtered.length - posts.length} 页多页作品（点卡片「全部页」展开）`, `Collapsed ${filtered.length - posts.length} additional pages (click All pages to expand)`));
     const pageMode = request.capabilities.page_numbers === true;
     // 排行榜也是页码分页，但页数由上游榜单长度决定（最长 10 页 / 500 条）——
     // 翻过末页会拿到空集，这里补一句说明，免得看着像"搜索失败"
-    if (rankingMode && !items.length) notices.push("已到末页（上游榜单只到这一页）");
-    else if (rankingMode && !posts.length && excludedCount) notices.push("本页作品已被排除标签隐藏");
-    else if (!pageMode && !nextCursor) notices.push("已到末页");
-    if (request.capabilities.login === true && request.source === "pixiv" && !rankingMode) notices.push("P站标签与 Danbooru 词库不通用");
-    if (request.capabilities.prompt === false && request.source === "pixiv") notices.push("P站无提示词，可下载原图喂 WD14 反推");
+    if (rankingMode && !items.length) notices.push(uiText("已到末页（上游榜单只到这一页）", "Last page (end of the source ranking)"));
+    else if (rankingMode && !posts.length && excludedCount) notices.push(uiText("本页作品已被排除标签隐藏", "Excluded tags hide every work on this page"));
+    else if (!pageMode && !nextCursor) notices.push(uiText("已到末页", "Last page"));
+    if (request.capabilities.login === true && request.source === "pixiv" && !rankingMode) notices.push(uiText("P站标签与 Danbooru 词库不通用", "Pixiv tags differ from Danbooru tags"));
+    if (request.capabilities.prompt === false && request.source === "pixiv") notices.push(uiText("P站无提示词，可下载原图喂 WD14 反推", "Pixiv has no generation prompts. Download the original image and caption it with WD14."));
     const batch = rankingMode
       ? pixivRankingLabel(request.filters)
-      : (pageMode ? `第 ${request.page} 页` : `第 ${Math.max(1, Number(request.batch) || 1)} 批`);
+      : (pageMode ? uiText(`第 ${request.page} 页`, `${request.page} page`) : uiText(`第 ${Math.max(1, Number(request.batch) || 1)} 批`, `${Math.max(1, Number(request.batch) || 1)} batch`));
     result = {
       ...empty, posts, groups, nextCursor, warnings,
       ...(rankingMode ? { exhausted: items.length === 0 } : {}),
-      status: `${request.label}：${posts.length} 张 · ${batch}` + (notices.length ? `（${notices.join("；")}）` : ""),
+      status: uiText(`${request.label}：${posts.length} 张 · ${batch}`, `${request.label}：${posts.length} images · ${batch}`) + (notices.length ? uiText(`（${notices.join("；")}）`, ` (${notices.join("；")}）`) : ""),
     };
   }
   throwIfAborted(signal);

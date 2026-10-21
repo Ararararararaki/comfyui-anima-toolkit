@@ -507,10 +507,13 @@
    tests/test_danbooru_gallery_prompt_tooltip.py 锁着这两条。 */
 .adg-card-actions { position: absolute; top: auto; right: 3px; bottom: 3px; left: auto; z-index: 6; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 2px; max-width: calc(100% - 6px); opacity: 0; pointer-events: none; transform: translateY(3px); transition: opacity 150ms var(--adg-ease, ease-out), transform 150ms var(--adg-ease, ease-out); }
 .adg-card:hover .adg-card-actions,
-.adg-card:focus-within .adg-card-actions { opacity: 1; pointer-events: auto; transform: translateY(0); }
+.adg-card:focus-within .adg-card-actions { opacity: 1; transform: translateY(0); }
+/* Empty gaps in wrapped actions must not block image selection. */
+.adg-card:hover .adg-card-actions button,
+.adg-card:focus-within .adg-card-actions button { pointer-events: auto; }
 .adg-card:hover .adg-caption,
 .adg-card:focus-within .adg-caption { opacity: .2; }
-.adg-card-actions button { flex: 0 0 auto; padding: 0 5px; border: 1px solid rgba(255,255,255,.22); border-radius: 6px; color: #fff; background: rgba(0,0,0,.74); font-size: 9px; line-height: 15px; white-space: nowrap; cursor: pointer; transition: border-color var(--adg-dur, 150ms) var(--adg-ease, ease-out), background var(--adg-dur, 150ms) var(--adg-ease, ease-out); }
+.adg-card-actions button { flex: 0 0 auto; box-sizing: border-box; min-height: 17px; height: 17px; padding: 0 5px; border: 1px solid rgba(255,255,255,.22); border-radius: 6px; color: #fff; background: rgba(0,0,0,.74); font-size: 9px; line-height: 15px; white-space: nowrap; cursor: pointer; transition: border-color var(--adg-dur, 150ms) var(--adg-ease, ease-out), background var(--adg-dur, 150ms) var(--adg-ease, ease-out); }
 /* 注：原 `.adg-card-actions button.is-favorite` 已随收藏按钮移除（2026-09-21）。
    ⚠️ 本区间（actions 规则 → 下方提示浮层规则）有一条切片约束：**不得写入提示浮层的类名**，
    否则下游测试的 CSS 切片会提前截断、断言假红（2026-09-21 实测踩到过一次）。
@@ -1519,7 +1522,7 @@
 .anima-danbooru-gallery .adg-card { border-radius:7px; }
 .anima-danbooru-gallery .adg-card img { object-fit:contain; }
 .anima-danbooru-gallery .adg-card.is-selected::after { content:attr(data-selection-order); min-width:14px; text-align:center; padding:3px 5px; }
-.adg-page-boundary { color:var(--descrip-text); border-bottom:1px solid var(--border-color); font-size:11px; line-height:24px; }
+.adg-page-boundary { pointer-events:none; color:var(--descrip-text); border-bottom:1px solid var(--border-color); font-size:11px; line-height:24px; }
 /* Names and counts are a single group. No flexible column separates them. */
 .adg-suggestions { z-index:100012; }
 .adg-suggestions.is-localized .adg-localized-suggestion,

@@ -1,3 +1,4 @@
+import { uiText } from "./anima_node_i18n.js";
 import { currentGalleryWorkflowId } from './anima_gallery_browse_state.js';
 
 const STORAGE = 'anima.gallery.workspace.v1';
@@ -24,7 +25,7 @@ class GalleryWorkspace {
     const signal = this.abort.signal;
     const shell = this.window = make('section', 'adg-workspace');
     shell.setAttribute('role', 'dialog'); shell.setAttribute('aria-modal', 'false');
-    shell.setAttribute('aria-label', '画廊素材浏览器');
+    shell.setAttribute('aria-label', uiText('画廊素材浏览器', "Gallery asset browser"));
     shell.dataset.captureWheel = 'true';
     // Prevent workflow shortcuts/pan without preventing native text editing/scroll.
     for (const type of ['pointerdown', 'mousedown', 'click', 'dblclick', 'keydown', 'keyup', 'wheel']) {
@@ -33,9 +34,9 @@ class GalleryWorkspace {
     const header = make('header', 'adg-workspace-header');
     this.title = make('strong', 'adg-workspace-title');
     header.append(this.title,
-      button('最小化', () => this.minimize(!shell.classList.contains('is-minimized'))),
-      button('最大化', () => this.maximize()),
-      button('返回节点', () => this.close()));
+      button(uiText('最小化', "Minimize"), () => this.minimize(!shell.classList.contains('is-minimized'))),
+      button(uiText('最大化', "Maximize"), () => this.maximize()),
+      button(uiText('返回节点', "Return to node"), () => this.close()));
     this.body = make('div', 'adg-workspace-body');
     this.stage = make('div', 'adg-workspace-stage');
     this.detail = make('aside', 'adg-workspace-detail'); this.detail.hidden = true;
@@ -109,7 +110,7 @@ class GalleryWorkspace {
   checkBinding() {
     if (!this.ui) return;
     if (!this.valid()) { this.suspend(); return; }
-    const title = `${this.ui.node.title || '画廊'} · #${this.ui.node.id}`;
+    const title = `${this.ui.node.title || uiText('画廊', 'Gallery')} · #${this.ui.node.id}`;
     if (this.title.textContent !== title) this.title.textContent = title;
   }
 
@@ -121,17 +122,17 @@ class GalleryWorkspace {
     this.returnRoot();
     this.ui = null;
     this.clearDetail();
-    this.stage.replaceChildren(make('p', 'adg-workspace-empty', '画廊绑定已暂停：工作流已切换或节点已删除。请从目标画廊节点重新展开。'));
-    this.title.textContent = '画廊 · 未绑定';
+    this.stage.replaceChildren(make('p', 'adg-workspace-empty', uiText('画廊绑定已暂停：工作流已切换或节点已删除。请从目标画廊节点重新展开。', "Gallery binding paused: the workflow changed or the node was deleted. Expand the target gallery node to reconnect.")));
+    this.title.textContent = uiText('画廊 · 未绑定', "Gallery · Unbound");
     clearInterval(this.guardTimer); this.guardTimer = null;
   }
 
   refreshSummary() {
     const ui = this.ui;
     if (!ui) return;
-    this.title.textContent = `${ui.node.title || '画廊'} · #${ui.node.id}`;
+    this.title.textContent = `${ui.node.title || uiText('画廊', 'Gallery')} · #${ui.node.id}`;
     const count = ui.selectedGallerySelections().length;
-    ui.workspaceSummary.textContent = `悬浮窗浏览中 · 已选 ${count} 张`;
+    ui.workspaceSummary.textContent = uiText(`悬浮窗浏览中 · 已选 ${count} 张`, `Browsing in window · ${count} selected`);
   }
 
   relayout() {
@@ -152,7 +153,7 @@ class GalleryWorkspace {
     if (!this.window) return;
     if (value && this.ui && !this.ui.workspacePaused) this.minimizedScroll = this.ui.grid.scrollTop;
     this.window.classList.toggle('is-minimized', value);
-    this.window.querySelector('header button').textContent = value ? '恢复' : '最小化';
+    this.window.querySelector('header button').textContent = value ? uiText('恢复', "Restore") : uiText('最小化', "Minimize");
     if (this.ui) {
       this.ui.workspacePaused = value;
       if (value) { this.ui.hideSuggestions(); this.ui.hidePromptTooltip(); }
@@ -169,7 +170,7 @@ class GalleryWorkspace {
     if (this.maximized) this.applyGeometry({ x: 8, y: 8, width: innerWidth - 16, height: innerHeight - 16 });
     else this.applyGeometry(this.normalGeometry);
     this.window.classList.toggle('is-maximized', this.maximized);
-    this.window.querySelectorAll('header button')[1].textContent = this.maximized ? '还原' : '最大化';
+    this.window.querySelectorAll('header button')[1].textContent = this.maximized ? uiText('还原', "Restore") : uiText('最大化', "Maximize");
     this.relayout();
   }
 
@@ -208,7 +209,7 @@ class GalleryWorkspace {
     if (this.ui !== ui || !this.valid()) return false;
     this.clearDetail();
     const image = make('img', ''); image.alt = title; image.src = url;
-    this.detail.append(button('关闭大图', () => { this.clearDetail(); this.relayout(); }), make('p', '', title), image);
+    this.detail.append(button(uiText('关闭大图', "Close preview"), () => { this.clearDetail(); this.relayout(); }), make('p', '', title), image);
     this.detail.hidden = false; this.relayout(); return true;
   }
   clearDetail() {
@@ -255,8 +256,8 @@ export function mountGalleryWorkspace(ui, app) {
   placeholder.hidden = true;
   ui.workspaceSummary = make('p', '');
   placeholder.append(ui.workspaceSummary,
-    button('显示悬浮窗', () => galleryWorkspace.open(ui, app)),
-    button('返回节点', () => galleryWorkspace.close()));
+    button(uiText('显示悬浮窗', "Show gallery window"), () => galleryWorkspace.open(ui, app)),
+    button(uiText('返回节点', "Return to node"), () => galleryWorkspace.close()));
   mount.append(ui.root, placeholder);
   return mount;
 }

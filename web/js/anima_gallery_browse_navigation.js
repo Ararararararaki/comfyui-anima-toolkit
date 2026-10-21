@@ -1,3 +1,4 @@
+import { uiText } from "./anima_node_i18n.js";
 // Small, responsive navigation shared by continuous and paged gallery browsing.
 const STYLE_ID = "anima-gallery-browse-navigation-style";
 
@@ -44,10 +45,10 @@ export function renderGalleryBrowseNavigation(container, {
   container.classList.add("adg-browse-container");
   page = Math.max(1, Math.floor(Number(page) || 1));
   const known = [...new Set(knownPages.map(Number).filter(p => Number.isInteger(p) && p > 0))].sort((a, b) => a - b);
-  const unit = pageNumbers ? "页" : "批次";
+  const unit = pageNumbers ? uiText("页", "page") : uiText("批次", "batch");
   const nav = doc.createElement("nav");
   nav.className = "adg-browse-nav";
-  nav.setAttribute("aria-label", pageNumbers ? "画廊页码导航" : "画廊批次导航");
+  nav.setAttribute("aria-label", pageNumbers ? uiText("画廊页码导航", "Gallery page navigation") : uiText("画廊批次导航", "Gallery batch navigation"));
   const button = (text, action, title = text, disabled = false) => {
     const element = doc.createElement("button");
     element.type = "button";
@@ -64,23 +65,23 @@ export function renderGalleryBrowseNavigation(container, {
     details.open = false;
     onNavigate?.(target);
   };
-  nav.append(button(pageNumbers ? "上一页" : "上一批", () => navigate(page - 1), "上一" + unit,
+  nav.append(button(pageNumbers ? uiText("上一页", "Previous") : uiText("上一批", "Previous"), () => navigate(page - 1), uiText("上一" + unit, "Previous " + unit),
     page <= 1 || (!pageNumbers && !known.includes(page - 1))));
   const current = doc.createElement("span");
   current.className = "adg-browse-current";
-  current.textContent = pageNumbers ? "第 " + page + " 页" : "批次 " + page;
-  current.title = "当前正在看的" + unit;
-  nav.append(current, button(pageNumbers ? "下一页" : "下一批", () => {
+  current.textContent = uiText(pageNumbers ? "第 " + page + " 页" : "批次 " + page, pageNumbers ? "Page " + page : "Batch " + page);
+  current.title = uiText("当前正在看的" + unit, "Current " + unit);
+  nav.append(current, button(pageNumbers ? uiText("下一页", "Next") : uiText("下一批", "Next"), () => {
     details.open = false;
     onNavigate?.(page + 1);
-  }, "下一" + unit, !canNext || (!pageNumbers && !known.includes(page + 1))));
+  }, uiText("下一" + unit, "Next " + unit), !canNext || (!pageNumbers && !known.includes(page + 1))));
 
   const details = doc.createElement("details");
   details.className = "adg-browse-locate";
   details.open = wasOpen;
   const summary = doc.createElement("summary");
-  summary.textContent = "定位";
-  summary.title = pageNumbers ? "展开页码定位" : "定位到已访问批次";
+  summary.textContent = uiText("定位", "Go to");
+  summary.title = pageNumbers ? uiText("展开页码定位", "Go to a page") : uiText("定位到已访问批次", "Go to a visited batch");
   summary.setAttribute("aria-label", summary.title);
   details.append(summary);
   const knownIndex = known.findIndex(p => p >= page);
@@ -91,7 +92,7 @@ export function renderGalleryBrowseNavigation(container, {
     const box = doc.createElement("div");
     box.className = "adg-browse-locator";
     for (const target of nearby) {
-      const chip = button(String(target), () => navigate(target), "定位到第 " + target + " " + unit);
+      const chip = button(String(target), () => navigate(target), uiText("定位到第 " + target + " " + unit, "Go to " + unit + " " + target));
       if (target === page) chip.setAttribute("aria-current", "page");
       box.append(chip);
     }
@@ -102,9 +103,9 @@ export function renderGalleryBrowseNavigation(container, {
       input.type = "number";
       input.min = "1";
       input.step = "1";
-      input.placeholder = "页码";
-      input.title = "输入页码后按 Enter 定位";
-      input.setAttribute("aria-label", "定位页码");
+      input.placeholder = uiText("页码", "Page");
+      input.title = uiText("输入页码后按 Enter 定位", "Enter a page number and press Enter");
+      input.setAttribute("aria-label", uiText("定位页码", "Go to page"));
       input.addEventListener("keydown", event => {
         event.stopPropagation();
         if (event.key === "Enter") {
@@ -117,21 +118,21 @@ export function renderGalleryBrowseNavigation(container, {
       });
       box.append(input);
     }
-    box.append(button("从头看", () => { details.open = false; onStart?.(); }, pageNumbers ? "从第一页重新浏览" : "从第一批重新浏览"));
+    box.append(button(uiText("从头看", "Start over"), () => { details.open = false; onStart?.(); }, pageNumbers ? uiText("从第一页重新浏览", "Restart from the first page") : uiText("从第一批重新浏览", "Restart from the first batch")));
     return box;
   };
   const wide = locator("wide");
   wide.classList.add("adg-browse-wide");
   const label = doc.createElement("span");
   label.className = "adg-browse-label";
-  label.textContent = "定位";
+  label.textContent = uiText("定位", "Go to");
   wide.prepend(label);
   const compact = locator("compact");
   compact.classList.add("adg-browse-popover");
   details.append(compact);
   nav.append(wide, details);
   if (hasReturn) {
-    const back = button("回到跳转前", () => { details.open = false; onReturn?.(); });
+    const back = button(uiText("回到跳转前", "Return to previous position"), () => { details.open = false; onReturn?.(); });
     back.classList.add("adg-browse-return");
     nav.append(back);
   }

@@ -10,7 +10,7 @@
 // API（4 个导出）：
 //   t(key, params)         取当前语言文案；`{name}` 占位用 params 插值；缺 key 回落 zh 再回落 key 本身
 //   setLocale(locale)      切语言（写 localStorage + 广播订阅者）；非法值回落 zh；返回生效的语言
-//   detectLocale()         localStorage 优先，其次 navigator.language，识别不到回落 zh
+//   detectLocale()         读取工具箱 anima_settings.locale；未设置时回落 zh
 //   onLocaleChange(fn)     订阅语言变化，返回取消订阅函数（浮窗用它做「切换即重渲染文案」）
 //   （另有 getLocale() / LOCALES / DEFAULT_LOCALE 供调用方读状态，不参与渲染逻辑）
 //
@@ -25,7 +25,7 @@
 export const DEFAULT_LOCALE = "zh";
 
 /** 语言选择的持久化 key（只存语言代码字符串）。 */
-const STORAGE_KEY = "anima_animadex_locale_v1";
+const STORAGE_KEY = "anima_settings";
 
 /**
  * 文案表。key 一律 `域_名` 命名，两个语言**必须同 key 同数量**（漏一个会静默回落 zh）。
@@ -140,7 +140,8 @@ function hasLocale(locale) {
 
 function readStored() {
   try {
-    return String(window.localStorage.getItem(STORAGE_KEY) || "");
+    const settings = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}');
+    return settings.locale === 'en' ? 'en' : 'zh';
   } catch {
     return "";   // 隐私模式 / 无 localStorage：当作没存过
   }
@@ -148,44 +149,24 @@ function readStored() {
 
 function writeStored(locale) {
   try {
-    window.localStorage.setItem(STORAGE_KEY, locale);
+    const settings = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}');
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...settings, locale: locale === 'en' ? 'en' : 'zh-CN' }));
+    window.dispatchEvent?.(new CustomEvent('tk-toolkit-locale-change', { detail: { locale: locale === 'en' ? 'en' : 'zh-CN' } }));
   } catch {
     // 写不进去只在本次会话有效，不影响切换本身
   }
 }
 
-/** 把 BCP-47 语言标签归一化到本模块支持的语言；识别不到回落 zh。 */
-function normalizeLocale(tag) {
-  const value = String(tag || "").trim().toLowerCase();
-  if (value.startsWith("en")) return "en";
-  return DEFAULT_LOCALE;
-}
-
-/** 读 navigator.language（拿不到就当空串，交给 normalizeLocale 回落）。 */
-function navigatorLanguage() {
-  try {
-    const nav = typeof navigator === "undefined" ? null : navigator;
-    if (!nav) return "";
-    const list = Array.isArray(nav.languages) ? nav.languages[0] : "";
-    return String(nav.language || list || "");
-  } catch {
-    return "";
-  }
-}
-
-/**
- * 探测语言：**存过的选择优先**（用户显式选过就该记住），其次 `navigator.language`，最后 zh。
- * 只认 en 系列；zh / zh-CN / zh-TW 以及任何其它语言都回落 zh。
- */
+/** Read the shared toolbox language, defaulting to Chinese. */
 export function detectLocale() {
   const stored = readStored().trim().toLowerCase();
   if (stored && hasLocale(stored)) return stored;
-  return normalizeLocale(navigatorLanguage());
+  return DEFAULT_LOCALE;
 }
 
 /** 当前语言（首次调用触发探测）。 */
 export function getLocale() {
-  if (!current) current = detectLocale();
+  current = readStored() || current || DEFAULT_LOCALE;
   return current;
 }
 
@@ -214,8 +195,27 @@ export function setLocale(locale) {
 /** 订阅语言变化，返回取消订阅函数（面板在 destroy 时调用，避免监听器累积）。 */
 export function onLocaleChange(handler) {
   if (typeof handler !== "function") return () => {};
+  bindSharedLocale();
   listeners.add(handler);
   return () => { listeners.delete(handler); };
+}
+
+let sharedWindow;
+function bindSharedLocale() {
+  const view = globalThis.window;
+  if (!view || sharedWindow === view) return;
+  sharedWindow = view;
+  const update = event => {
+    if (event.type === 'storage' && event.key !== STORAGE_KEY && event.key !== null) return;
+    const next = detectLocale();
+    if (next === current) return;
+    current = next;
+    for (const handler of [...listeners]) {
+      try { handler(next); } catch (error) { console.warn('[TK AnimaDex locale]', error); }
+    }
+  };
+  view.addEventListener?.('storage', update);
+  view.addEventListener?.('tk-toolkit-locale-change', update);
 }
 
 /**

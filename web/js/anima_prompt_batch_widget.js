@@ -1,12 +1,4 @@
-// Anima Prompt Batch 节点前端 Widget + 队列展开
-//
-// 功能：
-//   1. 节点内 UI：提示词文件选择（多文件）、分组勾选（条数/预览）、
-//      正向/负向目标文本节点选择、相机控制节点选择
-//   2. 队列展开：包装 app.queuePrompt —— 把一次队列按「组×提示词」顺序展开为 N 个任务，
-//      逐个把提示词注入目标文本节点（复用 ComfyUI 原生 seed/批量/进度/历史逻辑）
-//
-// 适配所有工作流：注入目标用下拉框任意选择（CLIPTextEncode / Flux / 任意 STRING widget）。
+import { uiText } from "./anima_node_i18n.js";
 (function () {
   const NODE_NAME = "TK Prompt Batch";
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -236,9 +228,9 @@
       this.recentEl.style.display = "";
       const chips = list.map((r) => {
         const on = r.path === cur ? " on" : "";
-        return `<span class="anima-batch-recent-chip${on}" data-path="${escAttr(r.path)}" title="${escAttr(r.path)}（修改于 ${fmtMtime(r.mtime)}）">${esc(r.path)}</span>`;
+        return uiText(`<span class="anima-batch-recent-chip${on}" data-path="${escAttr(r.path)}" title="${escAttr(r.path)}（修改于 ${fmtMtime(r.mtime)}）">${esc(r.path)}</span>`, `<span class="anima-batch-recent-chip${on}" data-path="${escAttr(r.path)}" title="${escAttr(r.path)} (modified ${fmtMtime(r.mtime)}）">${esc(r.path)}</span>`);
       }).join("");
-      this.recentEl.innerHTML = `<span class="anima-batch-recent-label">最近</span>${chips}<button class="anima-batch-recent-clear" title="清空最近列表">×</button>`;
+      this.recentEl.innerHTML = uiText(`<span class="anima-batch-recent-label">最近</span>${chips}<button class="anima-batch-recent-clear" title="清空最近列表">×</button>`, `<span class="anima-batch-recent-label">Recent</span>${chips}<button class="anima-batch-recent-clear" title="Clear recent files">×</button>`);
       this.recentEl.querySelectorAll(".anima-batch-recent-chip").forEach((el) => {
         el.addEventListener("click", () => {
           const p = el.getAttribute("data-path") || "";
@@ -297,7 +289,7 @@
       if (!this.listEl) return;
       this.listEl.innerHTML = "";
       if (!this.cachedGroups.length) {
-        this.listEl.innerHTML = '<div class="anima-batch-empty">未解析到分组。请填提示词文件后点「解析」。</div>';
+        this.listEl.innerHTML = uiText('<div class="anima-batch-empty">未解析到分组。请填提示词文件后点「解析」。</div>', "<div class=\"anima-batch-empty\">No groups parsed. Choose a prompt file and click Parse groups.</div>");
         return;
       }
       let total = 0;
@@ -315,7 +307,7 @@
         const info = document.createElement("span");
         info.className = "anima-batch-row-info";
         const cnt = g.count ?? (g.prompts || []).length ?? 0;
-        info.textContent = `${g.name}（${cnt} 条）`;
+        info.textContent = uiText(`${g.name}（${cnt} 条）`, `${g.name} (${cnt} prompts)`);
         info.title = (g.prompts || []).slice(0, 2).join("\n———\n");
         row.appendChild(cb);
         row.appendChild(info);
@@ -347,8 +339,8 @@
         const camBtn = document.createElement("button");
         camBtn.type = "button";
         camBtn.className = "anima-batch-cam-btn" + (camVal ? " has" : "");
-        camBtn.textContent = "机位";
-        camBtn.title = camVal ? "本组独立机位：" + camVal + "（点开修改）" : "设置本组独立机位；不设置则用全局相机节点";
+        camBtn.textContent = uiText("机位", "Camera");
+        camBtn.title = camVal ? uiText("本组独立机位：", "Group camera: ") + camVal + uiText("（点开修改）", " (click to edit)") : uiText("设置本组独立机位；不设置则用全局相机节点", "Set a camera for this group; leave unset to use the global camera node");
         camBtn.addEventListener("click", (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
@@ -361,7 +353,7 @@
         const handle = document.createElement("span");
         handle.className = "anima-batch-drag-handle";
         handle.textContent = "≡";
-        handle.title = "拖拽调整组执行顺序";
+        handle.title = uiText("拖拽调整组执行顺序", "Drag to reorder groups");
         handle.draggable = true;
         handle.addEventListener("dragstart", (ev) => {
           ev.stopPropagation();
@@ -391,7 +383,7 @@
           this._dragIdx = -1;
           this._renderGroups();
           this._persistSelection(); // groups_selection 名字顺序=执行顺序
-          if (this.countEl) this.countEl.textContent = `共 ${arr.length} 组 · 已调整顺序`;
+          if (this.countEl) this.countEl.textContent = uiText(`共 ${arr.length} 组 · 已调整顺序`, `Total: ${arr.length} groups · Reordered`);
         });
 
         // 展开的机位编辑器
@@ -404,7 +396,7 @@
       }
       // 顺序渲染（按拖拽后的数组顺序）
       for (const w of rows) this.listEl.appendChild(w);
-      if (this.countEl) this.countEl.textContent = `共 ${this.cachedGroups.length} 组 · 选中 ${total} 条提示词`;
+      if (this.countEl) this.countEl.textContent = uiText(`共 ${this.cachedGroups.length} 组 · 选中 ${total} 条提示词`, `Total: ${this.cachedGroups.length} groups · Selected ${total} prompts`);
     }
 
     // 组机位编辑器：预设下拉 + 自然语言输入 + 手动数值滑块 + 清除
@@ -428,9 +420,9 @@
       selRow.className = "anima-batch-cam-row";
       const sel = document.createElement("select");
       sel.className = "anima-batch-cam-sel";
-      sel.appendChild(new Option("自然语言 / 数值", "nl"));
-      for (const n of Object.keys(CAM_PRESETS)) sel.appendChild(new Option("预设 · " + n, "preset:" + n));
-      sel.appendChild(new Option("手动数值（4 滑块）", "pos"));
+      sel.appendChild(new Option(uiText("自然语言 / 数值", "Text / numeric"), "nl"));
+      for (const n of Object.keys(CAM_PRESETS)) sel.appendChild(new Option(uiText("预设 · ", "Preset · ") + n, "preset:" + n));
+      sel.appendChild(new Option(uiText("手动数值（4 滑块）", "Manual values (4 sliders)"), "pos"));
       sel.value = mode;
       sel.addEventListener("change", () => {
         const v = sel.value;
@@ -455,7 +447,7 @@
         const nlInput = document.createElement("input");
         nlInput.type = "text";
         nlInput.className = "anima-batch-cam-nl";
-        nlInput.placeholder = "如：俯视 近景 / 从背后 全身 / 荷兰角";
+        nlInput.placeholder = uiText("如：俯视 近景 / 从背后 全身 / 荷兰角", "Example: high-angle close shot / full body from behind / Dutch angle");
         nlInput.value = text;
         nlInput.addEventListener("change", () => {
           const v = nlInput.value.trim();
@@ -492,10 +484,10 @@
           row.append(lb, range, val);
           grid.appendChild(row);
         };
-        mkSlider("方位", () => px, (v) => { px = v; this.cameraValues.set(key, fmtPos(px, py, pz, rl)); });
-        mkSlider("俯仰", () => py, (v) => { py = v; this.cameraValues.set(key, fmtPos(px, py, pz, rl)); });
-        mkSlider("距离", () => pz, (v) => { pz = v; this.cameraValues.set(key, fmtPos(px, py, pz, rl)); });
-        mkSlider("角度", () => rl, (v) => { rl = v; this.cameraValues.set(key, fmtPos(px, py, pz, rl)); });
+        mkSlider(uiText("方位", "Azimuth"), () => px, (v) => { px = v; this.cameraValues.set(key, fmtPos(px, py, pz, rl)); });
+        mkSlider(uiText("俯仰", "Elevation"), () => py, (v) => { py = v; this.cameraValues.set(key, fmtPos(px, py, pz, rl)); });
+        mkSlider(uiText("距离", "Distance"), () => pz, (v) => { pz = v; this.cameraValues.set(key, fmtPos(px, py, pz, rl)); });
+        mkSlider(uiText("角度", "Angle"), () => rl, (v) => { rl = v; this.cameraValues.set(key, fmtPos(px, py, pz, rl)); });
         ed.appendChild(grid);
       }
 
@@ -505,7 +497,7 @@
       const clearBtn = document.createElement("button");
       clearBtn.type = "button";
       clearBtn.className = "anima-batch-cam-clear";
-      clearBtn.textContent = "✕ 清除本组机位（跟随全局相机）";
+      clearBtn.textContent = uiText("✕ 清除本组机位（跟随全局相机）", "Clear group camera (use global camera)");
       clearBtn.addEventListener("click", () => {
         this.cameraValues.delete(key);
         this.openCamKey = null;
@@ -529,11 +521,11 @@
         const matched = items.some((t) => cur === (t.nodeId + (isCamera ? "" : "." + t.widget)));
         sel.innerHTML = `<option value="">${placeholder}</option>` +
           items.map((t) => `<option value="${esc(t.nodeId + (isCamera ? "" : "." + t.widget))}" ${cur === (t.nodeId + (isCamera ? "" : "." + t.widget)) ? "selected" : ""}>${esc(t.title + (isCamera ? "" : " · " + t.widget))}</option>`).join("") +
-          (!matched && cur ? `<option value="${esc(cur)}" selected>（已保存）${esc(cur)}</option>` : "");
+          (!matched && cur ? uiText(`<option value="${esc(cur)}" selected>（已保存）${esc(cur)}</option>`, `<option value="${esc(cur)}" selected> (Saved）${esc(cur)}</option>`) : "");
       };
-      mkOpt(this.posSel, "选择正向提示词目标节点…", targets, false);
-      mkOpt(this.negSel, "负向提示词目标（可选）…", targets, false);
-      mkOpt(this.camSel, "相机控制节点（可选）…", cams, true);
+      mkOpt(this.posSel, uiText("选择正向提示词目标节点…", "Choose positive prompt target…"), targets, false);
+      mkOpt(this.negSel, uiText("负向提示词目标（可选）…", "Negative prompt target (optional)…"), targets, false);
+      mkOpt(this.camSel, uiText("相机控制节点（可选）…", "Camera node (optional)…"), cams, true);
       this._renderTargetStatus();
       this._renderSummary();
     }
@@ -546,17 +538,17 @@
       let cls, html;
       if (!posT) {
         cls = "warn";
-        html = "⚠ 未选择正向目标 — 批生成将被阻止，请在上方选择提示词注入节点";
+        html = uiText("⚠ 未选择正向目标 — 批生成将被阻止，请在上方选择提示词注入节点", "Choose a positive prompt target above before starting a batch");
       } else {
         const [id, key] = posT.split(".");
         const n = app ? findNode(app, id) : null;
         const w = n?.widgets?.find((x) => x.name === key);
         if (n && w) {
           cls = "ok";
-          html = `✓ 正向目标：${esc(n.title || n.type || id)} · ${esc(key)}`;
+          html = uiText(`✓ 正向目标：${esc(n.title || n.type || id)} · ${esc(key)}`, `✓ Positive target：${esc(n.title || n.type || id)} · ${esc(key)}`);
         } else {
           cls = "warn";
-          html = `⚠ 正向目标「${esc(posT)}」未匹配到节点/widget（工作流已改动？请重新选择）`;
+          html = uiText(`⚠ 正向目标「${esc(posT)}」未匹配到节点/widget（工作流已改动？请重新选择）`, `Positive target “${esc(posT)}” does not match a node / widget. Check the workflow and select it again.`);
         }
       }
       this.targetStatusEl.className = "anima-batch-target-status " + cls;
@@ -581,7 +573,7 @@
       const app = window.comfyAPI?.app?.app;
       const fmtTarget = (t) => {
         const s = String(t || "").trim();
-        if (!s) return "未设置";
+        if (!s) return uiText("未设置", "Not set");
         const [id, key] = s.split(".");
         const n = app ? findNode(app, id) : null;
         if (n && n.title) return `${n.title || n.type || id}·${key || ""}`;
@@ -593,11 +585,11 @@
       const cam = fmtTarget(this.w.camera_target?.value);
       const sub = this.w.output_subfolder?.value !== false;
       this.summaryEl.innerHTML =
-        `<span class="s-f">📄 ${files.length} 个文件</span>` +
-        `<span class="s-t">正:${esc(pos)}</span>` +
-        `<span class="s-t">负:${esc(neg)}</span>` +
-        `<span class="s-t">相机:${esc(cam)}</span>` +
-        `<span class="s-o">${sub ? "子目录✓" : "子目录✗"}</span>`;
+        uiText(`<span class="s-f">📄 ${files.length} 个文件</span>`, `<span class="s-f">📄 ${files.length} files</span>`) +
+        uiText(`<span class="s-t">正:${esc(pos)}</span>`, `<span class="s-t">Positive:${esc(pos)}</span>`) +
+        uiText(`<span class="s-t">负:${esc(neg)}</span>`, `<span class="s-t">Negative:${esc(neg)}</span>`) +
+        uiText(`<span class="s-t">相机:${esc(cam)}</span>`, `<span class="s-t">Camera:${esc(cam)}</span>`) +
+        `<span class="s-o">${sub ? uiText("子目录✓", "Subfolders ✓") : uiText("子目录✗", "Subfolders ✗")}</span>`;
     }
 
     build() {
@@ -661,20 +653,20 @@
       fileRow.className = "anima-batch-row";
       const fileLbl = document.createElement("span");
       fileLbl.className = "anima-batch-label";
-      fileLbl.textContent = "提示词文件";
+      fileLbl.textContent = uiText("提示词文件", "Prompt file");
       this.fileCur = document.createElement("span");
       this.fileCur.className = "anima-batch-file-cur";
-      this.fileCur.textContent = this.w.prompt_files?.value || "（未选择）";
-      this.fileCur.title = "当前提示词文件（相对 input/ 或绝对路径）";
+      this.fileCur.textContent = this.w.prompt_files?.value || uiText("（未选择）", "(Not selected)");
+      this.fileCur.title = uiText("当前提示词文件（相对 input/ 或绝对路径）", "Current prompt file (relative to input/ or absolute)");
       const browseBtn = document.createElement("button");
       browseBtn.type = "button";
       browseBtn.className = "anima-batch-btn";
-      browseBtn.textContent = "选择文件…";
+      browseBtn.textContent = uiText("选择文件…", "Choose file…");
       const latestBtn = document.createElement("button");
       latestBtn.type = "button";
       latestBtn.className = "anima-batch-btn";
-      latestBtn.textContent = "🔄 最新";
-      latestBtn.title = "一键选中整个 input 目录树（含附加目录）里最新修改的提示词文件";
+      latestBtn.textContent = uiText("🔄 最新", "Latest");
+      latestBtn.title = uiText("一键选中整个 input 目录树（含附加目录）里最新修改的提示词文件", "Select the most recently modified prompt file across input/ and additional directories");
       fileRow.appendChild(fileLbl);
       fileRow.appendChild(this.fileCur);
       fileRow.appendChild(latestBtn);
@@ -697,7 +689,7 @@
       autoBox.addEventListener("change", () => { this.autoLatest = autoBox.checked; });
       const autoLbl = document.createElement("label");
       autoLbl.htmlFor = autoBox.id;
-      autoLbl.textContent = "自动用最新文件（点生成时自动选中 prompts/ 最新 txt）";
+      autoLbl.textContent = uiText("自动用最新文件（点生成时自动选中 prompts/ 最新 txt）", "Use the latest file automatically when generating");
       autoLbl.className = "anima-batch-hint";
       autoRow.append(autoBox, autoLbl);
       container.appendChild(autoRow);
@@ -709,11 +701,11 @@
       saveBox.type = "checkbox";
       saveBox.id = "anima-save-date-" + this.node.id;
       saveBox.checked = this.w.output_subfolder?.value !== false;
-      saveBox.title = "关闭后使用画布上 SaveImage 节点的原保存路径";
+      saveBox.title = uiText("关闭后使用画布上 SaveImage 节点的原保存路径", "Disable to use the SaveImage node’s original save path");
       saveBox.addEventListener("change", () => { this._setW(this.w.output_subfolder, saveBox.checked); });
       const saveLbl = document.createElement("label");
       saveLbl.htmlFor = saveBox.id;
-      saveLbl.textContent = "保存到日期文件夹（2026-08-15/20260815_1030_组名_anima）";
+      saveLbl.textContent = uiText("保存到日期文件夹（2026-08-15/20260815_1030_组名_anima）", "Save to a date folder (2026-08-15/20260815_1030_group_anima)");
       saveLbl.className = "anima-batch-hint";
       saveRow.append(saveBox, saveLbl);
       container.appendChild(saveRow);
@@ -721,10 +713,10 @@
       latestBtn.addEventListener("click", async () => {
         try {
           const path = await this.fetchLatestPath();
-          if (!path) { alert("input/ 与附加目录下都没有提示词文件"); return; }
+          if (!path) { alert(uiText("input/ 与附加目录下都没有提示词文件", "No prompt files in input/ or additional directories")); return; }
           fileList.style.display = "none";
           await this._selectFile(path, 0);
-        } catch (e) { alert("获取最新文件失败：" + String((e && e.message) || e)); }
+        } catch (e) { alert(uiText("获取最新文件失败：", "Could not find the latest file: ") + String((e && e.message) || e)); }
       });
 
       // 文件浏览器（可导航：上级/子目录/路径直输；相对 input/ 与绝对路径都支持）
@@ -740,7 +732,7 @@
       const searchInput = document.createElement("input");
       searchInput.type = "text";
       searchInput.className = "anima-batch-nav-input";
-      searchInput.placeholder = "🔎 全树搜索文件名（input 子目录 + 附加目录）…";
+      searchInput.placeholder = uiText("🔎 全树搜索文件名（input 子目录 + 附加目录）…", "Search filenames in input/ and additional directories…");
       searchRow.appendChild(searchInput);
       fileList.appendChild(searchRow);
       let searchTimer = null;
@@ -757,7 +749,7 @@
           const box = document.createElement("div");
           box.className = "anima-batch-search-results";
           if (!matches.length) {
-            box.innerHTML = '<div class="anima-batch-empty">没有匹配的文件</div>';
+            box.innerHTML = uiText('<div class="anima-batch-empty">没有匹配的文件</div>', "<div class=\"anima-batch-empty\">No matching files</div>");
           } else {
             for (const f of matches) {
               const row2 = document.createElement("div");
@@ -768,11 +760,11 @@
               const mt = document.createElement("span");
               mt.className = "anima-batch-file-meta";
               const fresh = (Date.now() - f.mtime) < 24 * 3600 * 1000;
-              mt.textContent = (fresh ? "新 " : "") + fmtMtime(f.mtime);
+              mt.textContent = (fresh ? uiText("新 ", "New ") : "") + fmtMtime(f.mtime);
               if (fresh) mt.classList.add("fresh");
               row2.appendChild(ns);
               row2.appendChild(mt);
-              row2.title = "选择：" + f.path + "（修改于 " + fmtMtime(f.mtime) + "）";
+              row2.title = uiText("选择：", "Select: ") + f.path + uiText("（修改于 ", " (modified ") + fmtMtime(f.mtime) + "）";
               row2.addEventListener("click", () => {
                 this._selectFile(f.path, f.mtime);
                 fileList.style.display = "none";
@@ -794,12 +786,12 @@
       const extraToggle = document.createElement("button");
       extraToggle.type = "button";
       extraToggle.className = "anima-batch-btn";
-      extraToggle.textContent = "＋ 附加目录";
-      extraToggle.title = "配置额外提示词目录（绝对路径，每行一个）；「最新」/全树搜索/自动最新都会覆盖";
+      extraToggle.textContent = uiText("＋ 附加目录", "＋ Additional directories");
+      extraToggle.title = uiText("配置额外提示词目录（绝对路径，每行一个）；「最新」/全树搜索/自动最新都会覆盖", "Additional absolute directories, one per line; included in latest-file lookup and recursive searches");
       const extraBox = document.createElement("textarea");
       extraBox.className = "anima-batch-nav-input";
       extraBox.rows = 2;
-      extraBox.placeholder = "每行一个绝对路径，如 D:\\prompts\n留空关闭";
+      extraBox.placeholder = uiText("每行一个绝对路径，如 D:\\prompts\n留空关闭", "One absolute path per line, e.g. D:\\prompts\nLeave blank to disable");
       extraBox.style.display = "none";
       extraBox.value = (this.w.extra_dirs?.value || "");
       extraBox.oninput = () => {
@@ -808,7 +800,7 @@
       extraToggle.addEventListener("click", () => {
         const show = extraBox.style.display === "none";
         extraBox.style.display = show ? "" : "none";
-        extraToggle.textContent = show ? "－ 附加目录" : "＋ 附加目录";
+        extraToggle.textContent = show ? uiText("－ 附加目录", "− Additional directories") : uiText("＋ 附加目录", "＋ Additional directories");
         if (show) {
           extraBox.value = (this.w.extra_dirs?.value || "");
           extraBox.focus();
@@ -824,7 +816,7 @@
         try {
           j = await fetchJson("/anima/prompt/list?dir=" + encodeURIComponent(browseDir));
         } catch (e) {
-          fileList.innerHTML = '<div class="anima-batch-empty">目录加载失败：' + esc(String((e && e.message) || e)) + '</div>';
+          fileList.innerHTML = uiText('<div class="anima-batch-empty">目录加载失败：', "<div class=\"anima-batch-empty\">Directory load failed: ") + esc(String((e && e.message) || e)) + '</div>';
           return;
         }
         // 导航行：上级 + 当前路径
@@ -833,14 +825,14 @@
         const upBtn = document.createElement("button");
         upBtn.type = "button";
         upBtn.className = "anima-batch-btn anima-batch-nav-up";
-        upBtn.textContent = "⬆ 上级";
+        upBtn.textContent = uiText("⬆ 上级", "Parent folder");
         upBtn.disabled = !j.parent && (j.dir === "." || j.dir === "");
-        upBtn.title = "返回上级目录";
+        upBtn.title = uiText("返回上级目录", "Go to parent directory");
         upBtn.addEventListener("click", () => { browseDir = j.parent || ""; renderBrowser(); });
         const pathSpan = document.createElement("span");
         pathSpan.className = "anima-batch-nav-path";
         pathSpan.textContent = j.abs_dir || ".";
-        pathSpan.title = "当前目录绝对路径";
+        pathSpan.title = uiText("当前目录绝对路径", "Current absolute directory");
         nav.append(upBtn, pathSpan);
         fileList.appendChild(nav);
         // 路径直输行
@@ -849,7 +841,7 @@
         const pathInput = document.createElement("input");
         pathInput.type = "text";
         pathInput.className = "anima-batch-nav-input";
-        pathInput.placeholder = "输入目录路径（相对 input/ 或绝对路径）后回车跳转";
+        pathInput.placeholder = uiText("输入目录路径（相对 input/ 或绝对路径）后回车跳转", "Enter a directory relative to input/ or an absolute path, then press Enter");
         pathInput.value = (j.dir && j.dir !== ".") ? j.dir : "";
         pathInput.onkeydown = (e) => { if (e.key === "Enter") { browseDir = pathInput.value.trim(); renderBrowser(); } };
         pathRow.appendChild(pathInput);
@@ -859,7 +851,7 @@
           const row = document.createElement("div");
           row.className = "anima-batch-file";
           row.textContent = "📁 " + d;
-          row.title = "进入目录 " + d;
+          row.title = uiText("进入目录 ", "Open directory ") + d;
           row.addEventListener("click", () => { browseDir = browseDir ? browseDir + "/" + d : d; renderBrowser(); });
           fileList.appendChild(row);
         }
@@ -873,12 +865,12 @@
           const meta = document.createElement("span");
           meta.className = "anima-batch-file-meta";
           const fresh = f.mtime && (Date.now() - f.mtime) < 24 * 3600 * 1000;
-          meta.textContent = (fresh ? "新 " : "") + fmtMtime(f.mtime);
+          meta.textContent = (fresh ? uiText("新 ", "New ") : "") + fmtMtime(f.mtime);
           if (fresh) meta.classList.add("fresh");
           row.appendChild(nameSpan);
           row.appendChild(meta);
           const path = browseDir ? browseDir + "/" + (f.name || f) : (f.name || f);
-          row.title = "选择：" + path + "（修改于 " + fmtMtime(f.mtime) + "）";
+          row.title = uiText("选择：", "Select: ") + path + uiText("（修改于 ", " (modified ") + fmtMtime(f.mtime) + "）";
           row.addEventListener("click", () => {
             this._selectFile(path, f.mtime);
             fileList.style.display = "none";
@@ -888,23 +880,23 @@
         if (!(j.dirs || []).length && !(j.files || []).length) {
           const empty = document.createElement("div");
           empty.className = "anima-batch-empty";
-          empty.textContent = "该目录没有 .txt 提示词文件";
+          empty.textContent = uiText("该目录没有 .txt 提示词文件", "No .txt prompt files in this directory");
           fileList.appendChild(empty);
         }
       };
       browseBtn.addEventListener("click", async () => {
         if (fileList.style.display !== "none") { fileList.style.display = "none"; return; }
         fileList.style.display = "block";
-        fileList.innerHTML = '<div class="anima-batch-empty">加载中…</div>';
+        fileList.innerHTML = uiText('<div class="anima-batch-empty">加载中…</div>', "<div class=\"anima-batch-empty\">Loading…</div>");
         await renderBrowser();
       });
 
       // 目标选择区
       const selWrap = document.createElement("div");
       selWrap.className = "anima-batch-sels";
-      this.posSel = this._mkSelect("正向目标");
-      this.negSel = this._mkSelect("负向目标");
-      this.camSel = this._mkSelect("相机节点");
+      this.posSel = this._mkSelect(uiText("正向目标", "Positive target"));
+      this.negSel = this._mkSelect(uiText("负向目标", "Negative target"));
+      this.camSel = this._mkSelect(uiText("相机节点", "Camera node"));
       selWrap.appendChild(this.posSel);
       selWrap.appendChild(this.negSel);
       selWrap.appendChild(this.camSel);
@@ -930,7 +922,7 @@
       const parseBtn = document.createElement("button");
       parseBtn.type = "button";
       parseBtn.className = "anima-batch-btn anima-batch-parse-btn";
-      parseBtn.textContent = "解析分组";
+      parseBtn.textContent = uiText("解析分组", "Parse groups");
       parseBtn.addEventListener("click", async () => {
         // 先同步 targets 下拉（保证注入目标最新）
         this._fillTargets();
@@ -938,7 +930,7 @@
       });
       const refreshBtn = document.createElement("button");
       refreshBtn.type = "button";
-      refreshBtn.textContent = "刷新目标节点";
+      refreshBtn.textContent = uiText("刷新目标节点", "Refresh target nodes");
       refreshBtn.addEventListener("click", () => this._fillTargets());
       btnRow.appendChild(parseBtn);
       btnRow.appendChild(refreshBtn);
@@ -946,8 +938,8 @@
       const batchBtn = document.createElement("button");
       batchBtn.type = "button";
       batchBtn.className = "anima-batch-btn anima-batch-start-btn";
-      batchBtn.textContent = "▶ 开始批次";
-      batchBtn.title = "按勾选分组顺序批量生成：服务端逐条执行，支持暂停/继续/失败重试，刷新页面或重启 ComfyUI 后仍可恢复";
+      batchBtn.textContent = uiText("▶ 开始批次", "Start batch");
+      batchBtn.title = uiText("按勾选分组顺序批量生成：服务端逐条执行，支持暂停/继续/失败重试，刷新页面或重启 ComfyUI 后仍可恢复", "Generate selected groups in order. Server-side execution supports pause, resume and retry, including recovery after a page refresh or ComfyUI restart.");
       batchBtn.addEventListener("click", () => this.startBatch());
       btnRow.appendChild(batchBtn);
       container.appendChild(btnRow);
@@ -1099,18 +1091,18 @@
       const negT = (this.w.negative_target?.value || "").trim();
       const problems = [];
       const check = (label, t, required) => {
-        if (!t) { if (required) problems.push(`未选择「${label}」`); return; }
+        if (!t) { if (required) problems.push(uiText(`未选择「${label}」`, `None selected「${label}”`)); return; }
         const [id, key] = t.split(".");
         const n = findNode(app, id);
         if (!n) {
-          problems.push(`「${label}」目标节点 ${id} 不存在（工作流已改动？请重新选择）`);
+          problems.push(uiText(`「${label}」目标节点 ${id} 不存在（工作流已改动？请重新选择）`, `「${label}” target node ${id} does not exist. Check the workflow and select it again.`));
         } else if (!n.widgets?.find((x) => x.name === key)) {
-          const avail = (n.widgets || []).map((x) => x.name).join(", ") || "无";
-          problems.push(`「${label}」目标 ${id}.${key} 不存在（该节点可用 widget：${avail}）`);
+          const avail = (n.widgets || []).map((x) => x.name).join(", ") || uiText("无", "None");
+          problems.push(uiText(`「${label}」目标 ${id}.${key} 不存在（该节点可用 widget：${avail}）`, `「${label}” target ${id}.${key} does not exist (available widgets: ${avail}）`));
         }
       };
-      check("正向提示词注入节点", posT, true);
-      check("负向提示词注入节点", negT, false);
+      check(uiText("正向提示词注入节点", "Positive prompt target node"), posT, true);
+      check(uiText("负向提示词注入节点", "Negative prompt target node"), negT, false);
       return problems;
     }
 
@@ -1189,10 +1181,10 @@
       }
       // 注入目标校验（阻止静默提交「无注入的重复提示词」）
       const problems = this._targetProblems();
-      if (problems.length) { this._showBatchError("批生成被阻止：" + problems.join("；")); return; }
+      if (problems.length) { this._showBatchError(uiText("批生成被阻止：", "Batch blocked: ") + problems.join("；")); return; }
 
       const jobs = this.buildJobs(app);
-      if (!jobs.length) { this._showBatchError("没有可执行的提示词（请先「解析分组」并勾选至少一组）"); return; }
+      if (!jobs.length) { this._showBatchError(uiText("没有可执行的提示词（请先「解析分组」并勾选至少一组）", "No prompts to run. Parse groups and select at least one group first.")); return; }
 
       // 相机词预计算：全局相机节点 / 每组独立机位 → 最终词并入任务文本
       const camId = (this.w.camera_target?.value || "").trim();
@@ -1214,19 +1206,19 @@
 
       const template = await this._templateAsync();
       if (!template) {
-        this._showBatchError("无法获取当前工作流模板（请先保存/打开画布工作流再开始批次）");
+        this._showBatchError(uiText("无法获取当前工作流模板（请先保存/打开画布工作流再开始批次）", "Workflow template unavailable. Save or open a workflow before starting a batch."));
         return;
       }
 
       this.batchBusy = true;
-      this._setBatchStatus("提交批次…");
+      this._setBatchStatus(uiText("提交批次…", "Submitting batch…"));
       try {
         const payload = {
           template,
           node_ref: String(this.node.id || ""),
           client_id: this.currentComfyClientId(),
           jobs: jobs.map((j) => ({
-            group: j.groupName || "组",
+            group: j.groupName || uiText("组", "Groups"),
             text: j.text,
             posId: j.posId,
             posKey: j.posKey,
@@ -1238,13 +1230,13 @@
           })),
         };
         const r = await fetchJson("/anima/batch/run", "POST", JSON.stringify(payload));
-        if (!r || !r.ok || !r.batchId) throw new Error((r && r.error) || "批次创建失败");
+        if (!r || !r.ok || !r.batchId) throw new Error((r && r.error) || uiText("批次创建失败", "Could not create batch"));
         this.batchId = r.batchId;
-        this._setBatchStatus(`批次 ${shortId(r.batchId)} 已开始`);
+        this._setBatchStatus(uiText(`批次 ${shortId(r.batchId)} 已开始`, `Batch ${shortId(r.batchId)} started`));
         this._renderRecover();
         this.schedulePoll();
       } catch (e) {
-        this._showBatchError("批次提交失败：" + String((e && e.message) || e));
+        this._showBatchError(uiText("批次提交失败：", "Batch submission failed: ") + String((e && e.message) || e));
       } finally {
         this.batchBusy = false;
       }
@@ -1263,7 +1255,7 @@
       if (!this.batchId) return;
       try {
         const r = await fetchJson("/anima/batch/" + encodeURIComponent(this.batchId) + "/status");
-        if (!r || !r.ok) throw new Error((r && r.error) || "状态获取失败");
+        if (!r || !r.ok) throw new Error((r && r.error) || uiText("状态获取失败", "Could not load status"));
         this.batchState = r.summary || null;
         this.batchJobs = r.jobs || [];
         this._renderBatchPanel();
@@ -1272,11 +1264,11 @@
         const busy = (c.queued || 0) + (c.running || 0) + (c.pending || 0) + (c.retry || 0);
         if (st === "finished" || st === "cancelled") {
           this._stopPolling();
-          this._setBatchStatus(`批次 ${shortId(this.batchId)}：${st === "finished" ? "已完成" : "已停止"}`);
+          this._setBatchStatus(uiText(`批次 ${shortId(this.batchId)}：${st === "finished" ? uiText("已完成", "Completed") : uiText("已停止", "Stopped")}`, `Batch ${shortId(this.batchId)}：${st === "finished" ? uiText("已完成", "Completed") : uiText("已停止", "Stopped")}`));
           this._renderRecover();
         } else if (st === "paused") {
           this._stopPolling();
-          this._setBatchStatus(`批次 ${shortId(this.batchId)}：已暂停（点「继续」恢复推进）`);
+          this._setBatchStatus(uiText(`批次 ${shortId(this.batchId)}：已暂停（点「继续」恢复推进）`, `Batch ${shortId(this.batchId)}: paused (click Resume to continue)`));
         } else if (busy === 0) {
           // 理论不可达（running 必有在途）；兜底停止
           this._stopPolling();
@@ -1285,7 +1277,7 @@
         }
       } catch (e) {
         this._stopPolling();
-        this._setBatchStatus("批次状态获取失败（请刷新页面并在批次面板恢复）：" + String((e && e.message) || e), true);
+        this._setBatchStatus(uiText("批次状态获取失败（请刷新页面并在批次面板恢复）：", "Could not load batch status. Refresh and resume from the batch panel: ") + String((e && e.message) || e), true);
       }
     }
 
@@ -1294,10 +1286,10 @@
       if (action === "cancel_all") {
         try {
           const r = await fetchJson("/anima/batch/cancel_all", "POST", "{}");
-          if (!r || !r.ok) throw new Error((r && r.error) || "操作失败");
-          this._setBatchStatus("已一键取消全部：正在执行的任务已中断，所有排队已清空");
+          if (!r || !r.ok) throw new Error((r && r.error) || uiText("操作失败", "Operation failed"));
+          this._setBatchStatus(uiText("已一键取消全部：正在执行的任务已中断，所有排队已清空", "Cancelled all: interrupted running tasks and cleared the queue"));
         } catch (e) {
-          this._setBatchStatus("操作失败：" + String((e && e.message) || e), true);
+          this._setBatchStatus(uiText("操作失败：", "Operation failed: ") + String((e && e.message) || e), true);
         }
         if (this.batchId) this.schedulePoll();
         if (typeof this._renderRecover === "function") this._renderRecover();
@@ -1307,11 +1299,11 @@
       const path = "/anima/batch/" + encodeURIComponent(this.batchId) + "/" + action;
       try {
         const r = await fetchJson(path, "POST", idx == null ? "{}" : JSON.stringify({ idx }));
-        if (!r || !r.ok) throw new Error((r && r.error) || "操作失败");
+        if (!r || !r.ok) throw new Error((r && r.error) || uiText("操作失败", "Operation failed"));
         if (action === "resume" || action === "retry") this.schedulePoll();
         await this.pollBatch();
       } catch (e) {
-        this._setBatchStatus("操作失败：" + String((e && e.message) || e), true);
+        this._setBatchStatus(uiText("操作失败：", "Operation failed: ") + String((e && e.message) || e), true);
       }
     }
 
@@ -1327,10 +1319,10 @@
         return b;
       };
       const out = [];
-      if (st === "running") out.push(make("⏸ 暂停", "pause", "暂停提交后续任务（正在执行的任务会自然完成）"));
-      if (st === "paused") out.push(make("▶ 继续", "resume", "继续推进未执行任务"));
-      if (st !== "finished" && st !== "cancelled") out.push(make("⏹ 取消", "cancel", "取消批次：移除排队任务，正在执行的让其完成"));
-      if (st !== "finished" && st !== "cancelled") out.push(make("⏹ 全部取消", "cancel_all", "一键终止全部：中断正在执行的任务 + 清空所有排队（含原生队列），无需逐组等待"));
+      if (st === "running") out.push(make(uiText("⏸ 暂停", "Pause"), "pause", uiText("暂停提交后续任务（正在执行的任务会自然完成）", "Pause further submissions; let the current task finish")));
+      if (st === "paused") out.push(make(uiText("▶ 继续", "Resume"), "resume", uiText("继续推进未执行任务", "Resume pending tasks")));
+      if (st !== "finished" && st !== "cancelled") out.push(make(uiText("⏹ 取消", "Cancel batch"), "cancel", uiText("取消批次：移除排队任务，正在执行的让其完成", "Remove queued tasks in this batch; let the running task finish")));
+      if (st !== "finished" && st !== "cancelled") out.push(make(uiText("⏹ 全部取消", "Cancel all"), "cancel_all", uiText("一键终止全部：中断正在执行的任务 + 清空所有排队（含原生队列），无需逐组等待", "Interrupt running tasks and clear all queues, including the native queue")));
       return out;
     }
 
@@ -1343,13 +1335,13 @@
       const jobs = this.batchJobs || [];
       const wrap = document.createElement("div");
       wrap.className = "anima-batch-report anima-batch-batchpanel";
-      const stTxt = { running: "运行中", paused: "已暂停", finished: "完成", cancelled: "已取消" }[s.state] || s.state || "";
+      const stTxt = { running: uiText("运行中", "Running"), paused: uiText("已暂停", "Paused"), finished: uiText("完成", "Done"), cancelled: uiText("已取消", "Cancelled") }[s.state] || s.state || "";
       const head = document.createElement("div");
       head.className = "anima-batch-report-summary";
       head.innerHTML =
-        `<b>批次 ${esc(shortId(this.batchId))}</b>（${esc(stTxt)}）` +
+        uiText(`<b>批次 ${esc(shortId(this.batchId))}</b>（${esc(stTxt)}）`, `<b>Batch ${esc(shortId(this.batchId))}</b>（${esc(stTxt)}）`) +
         ` · ✓ ${counts.done || 0} · ✗ ${counts.failed || 0} · ⏸ ${counts.skipped || 0}` +
-        ` · ⏳ ${(counts.queued || 0) + (counts.running || 0)} · 待 ${counts.pending || 0}`;
+        uiText(` · ⏳ ${(counts.queued || 0) + (counts.running || 0)} · 待 ${counts.pending || 0}`, ` · ⏳ ${(counts.queued || 0) + (counts.running || 0)} · Pending ${counts.pending || 0}`);
       wrap.appendChild(head);
 
       const ctrl = document.createElement("div");
@@ -1360,7 +1352,7 @@
       // 按组聚合
       const byGroup = new Map();
       for (const j of jobs) {
-        const k = j.group || "组";
+        const k = j.group || uiText("组", "Groups");
         if (!byGroup.has(k)) byGroup.set(k, []);
         byGroup.get(k).push(j);
       }
@@ -1387,8 +1379,8 @@
             const rb = document.createElement("button");
             rb.type = "button";
             rb.className = "anima-batch-btn anima-batch-job-btn";
-            rb.textContent = "重试";
-            rb.title = "重新执行这条";
+            rb.textContent = uiText("重试", "Retry");
+            rb.title = uiText("重新执行这条", "Retry this task");
             rb.addEventListener("click", () => this._batchAction("retry", j.idx));
             row.appendChild(rb);
           }
@@ -1396,8 +1388,8 @@
             const sb = document.createElement("button");
             sb.type = "button";
             sb.className = "anima-batch-btn anima-batch-job-btn";
-            sb.textContent = "跳过";
-            sb.title = "跳过这条，继续后面的任务";
+            sb.textContent = uiText("跳过", "Skip");
+            sb.title = uiText("跳过这条，继续后面的任务", "Skip this task and continue");
             sb.addEventListener("click", () => this._batchAction("skip", j.idx));
             row.appendChild(sb);
           }
@@ -1425,21 +1417,21 @@
           const c = b.counts || {};
           const row = document.createElement("div");
           row.className = "anima-batch-recover-row";
-          const stTxt = b.state === "paused" ? "已暂停" : "运行中";
+          const stTxt = b.state === "paused" ? uiText("已暂停", "Paused") : uiText("运行中", "Running");
           row.innerHTML =
-            `<span class="anima-batch-recover-id">批次 ${esc(shortId(b.id))}</span>` +
+            uiText(`<span class="anima-batch-recover-id">批次 ${esc(shortId(b.id))}</span>`, `<span class="anima-batch-recover-id">Batch ${esc(shortId(b.id))}</span>`) +
             `<span class="anima-batch-recover-meta">${esc(stTxt)} · ${(c.done || 0)}/${b.total}</span>`;
           const go = document.createElement("button");
           go.type = "button";
           go.className = "anima-batch-btn anima-batch-job-btn";
-          go.textContent = "恢复";
-          go.title = "继续此批次并重跑中断任务";
+          go.textContent = uiText("恢复", "Resume");
+          go.title = uiText("继续此批次并重跑中断任务", "Resume this batch and retry interrupted tasks");
           go.addEventListener("click", () => this._recoverBatch(b.id));
           const stop = document.createElement("button");
           stop.type = "button";
           stop.className = "anima-batch-btn anima-batch-job-btn";
-          stop.textContent = "取消";
-          stop.title = "取消该批次";
+          stop.textContent = uiText("取消", "Cancel");
+          stop.title = uiText("取消该批次", "Cancel this batch");
           stop.addEventListener("click", async () => {
             try {
               const oldId = this.batchId;
@@ -1472,11 +1464,11 @@
         }
         const rr = await fetchJson("/anima/batch/" + encodeURIComponent(id) + "/resume", "POST", "{}");
         this.batchState = (rr && rr.summary) || null;
-        this._setBatchStatus(`批次 ${shortId(id)} 已恢复`);
+        this._setBatchStatus(uiText(`批次 ${shortId(id)} 已恢复`, `Batch ${shortId(id)} resumed`));
         this._renderRecover();
         this.schedulePoll();
       } catch (e) {
-        this._setBatchStatus("批次恢复失败：" + String((e && e.message) || e), true);
+        this._setBatchStatus(uiText("批次恢复失败：", "Could not resume batch: ") + String((e && e.message) || e), true);
       }
     }
 
@@ -1493,7 +1485,7 @@
           const pending = (q.queue_pending || []).length;
           if (running === 0 && pending === 0) break;
           if (Date.now() > deadline) {
-            this._renderReport({ ok: false, error: "等待超时：队列 5 分钟内未清空", groups: [] });
+            this._renderReport({ ok: false, error: uiText("等待超时：队列 5 分钟内未清空", "Timed out: queue did not empty within five minutes"), groups: [] });
             return;
           }
           await new Promise((r) => setTimeout(r, 1500));
@@ -1508,13 +1500,13 @@
 
     _setReportLoading() {
       if (!this.resultEl) return;
-      this.resultEl.innerHTML = '<div class="anima-batch-report anima-batch-report-loading">⏳ 等待批次完成并汇总结果…</div>';
+      this.resultEl.innerHTML = uiText('<div class="anima-batch-report anima-batch-report-loading">⏳ 等待批次完成并汇总结果…</div>', "<div class=\"anima-batch-report anima-batch-report-loading\">⏳ Waiting for the batch to finish and summarize…</div>");
     }
 
     _renderReport(report) {
       if (!this.resultEl) return;
       if (!report || !report.ok) {
-        this.resultEl.innerHTML = `<div class="anima-batch-report anima-batch-report-error">⚠️ ${esc(report?.error || "汇总失败")}</div>`;
+        this.resultEl.innerHTML = `<div class="anima-batch-report anima-batch-report-error">⚠️ ${esc(report?.error || uiText("汇总失败", "Summary failed"))}</div>`;
         return;
       }
       const groups = report.groups || [];
@@ -1522,17 +1514,17 @@
       const failCount = groups.length - okCount;
       const rows = groups.map((g) => {
         const cls = g.success ? "anima-batch-report-ok" : "anima-batch-report-fail";
-        const reason = g.success ? "成功" : (g.error || "失败");
-        return `<div class="anima-batch-report-row ${cls}"><b>${esc(g.groupName)}</b>（${g.count} 条）— ${esc(reason)}</div>`;
+        const reason = g.success ? uiText("成功", "Succeeded") : (g.error || uiText("失败", "Failed"));
+        return uiText(`<div class="anima-batch-report-row ${cls}"><b>${esc(g.groupName)}</b>（${g.count} 条）— ${esc(reason)}</div>`, `<div class="anima-batch-report-row ${cls}"><b>${esc(g.groupName)}</b> (${g.count} prompts)— ${esc(reason)}</div>`);
       }).join("");
-      this.resultEl.innerHTML = `<div class="anima-batch-report anima-batch-report-summary">✅ 成功 ${okCount} 组 · ❌ 失败 ${failCount} 组<button class="anima-batch-report-toggle" title="收起/展开">${this._reportOpen ? "收起" : "展开"}</button></div><div class="anima-batch-report-detail" style="${this._reportOpen ? "" : "display:none"}">${rows || '<div class="anima-batch-report-empty">未匹配到本次批次输出</div>'}</div>`;
+      this.resultEl.innerHTML = uiText(`<div class="anima-batch-report anima-batch-report-summary">✅ 成功 ${okCount} 组 · ❌ 失败 ${failCount} 组<button class="anima-batch-report-toggle" title="收起/展开">${this._reportOpen ? uiText("收起", "Collapse") : uiText("展开", "Expand")}</button></div><div class="anima-batch-report-detail" style="${this._reportOpen ? "" : "display:none"}">${rows || uiText('<div class="anima-batch-report-empty">未匹配到本次批次输出</div>', "<div class=\"anima-batch-report-empty\">No outputs matched this batch</div>")}</div>`, `<div class="anima-batch-report anima-batch-report-summary">✅ Succeeded: ${okCount} groups · Failed: ${failCount} groups<button class="anima-batch-report-toggle" title="Collapse / expand">${this._reportOpen ? uiText("收起", "Collapse") : uiText("展开", "Expand")}</button></div><div class="anima-batch-report-detail" style="${this._reportOpen ? "" : "display:none"}">${rows || uiText('<div class="anima-batch-report-empty">未匹配到本次批次输出</div>', "<div class=\"anima-batch-report-empty\">No outputs matched this batch</div>")}</div>`);
       const toggle = this.resultEl.querySelector(".anima-batch-report-toggle");
       if (toggle) {
         toggle.addEventListener("click", () => {
           this._reportOpen = !this._reportOpen;
           const detail = this.resultEl.querySelector(".anima-batch-report-detail");
           if (detail) detail.style.display = this._reportOpen ? "" : "none";
-          toggle.textContent = this._reportOpen ? "收起" : "展开";
+          toggle.textContent = this._reportOpen ? uiText("收起", "Collapse") : uiText("展开", "Expand");
         });
       }
     }
@@ -1840,8 +1832,8 @@
           const modes = batchNodes.map((n) => `${n.id}:mode=${n.mode}`).join(", ");
           try {
             console.info(
-              `[TK Batch] 画布上的 TK Prompt Batch 节点未启用（${modes}），本次「队列」不展开批量。` +
-              "如需批量：启用该节点后点「队列」，或直接点节点上的「▶ 开始批次」。"
+              uiText(`[TK Batch] 画布上的 TK Prompt Batch 节点未启用（${modes}），本次「队列」不展开批量。`, `[TK Batch] The TK Prompt Batch node is disabled (${modes}); this queue action will not expand into a batch.`) +
+              uiText("如需批量：启用该节点后点「队列」，或直接点节点上的「▶ 开始批次」。", "Enable this node and queue the workflow, or click Start batch on the node.")
             );
           } catch (e) { /* 控制台不可用忽略 */ }
         }
@@ -1927,7 +1919,7 @@
     const entries = Array.isArray(history) ? history : Object.values(history || {});
     const byGroup = new Map();
     for (const job of jobs || []) {
-      const name = job.groupName || "未命名组";
+      const name = job.groupName || uiText("未命名组", "Unnamed group");
       if (!byGroup.has(name)) {
         byGroup.set(name, { groupName: name, total: 0, ok: 0, fail: 0, errors: [] });
       }
@@ -1982,7 +1974,7 @@
       const unmatched = g.total - g.ok - g.fail;
       const success = g.fail === 0 && unmatched === 0;
       let err = g.errors[0] || "";
-      if (unmatched > 0) err = (err ? err + "；" : "") + `${unmatched} 条未匹配到本次输出`;
+      if (unmatched > 0) err = (err ? err + "；" : "") + uiText(`${unmatched} 条未匹配到本次输出`, `${unmatched} entries did not match this run’s outputs`);
       groups.push({
         groupName: g.groupName, count: g.total, success,
         error: err || null, ok: g.ok, fail: g.fail, unmatched,

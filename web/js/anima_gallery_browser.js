@@ -1,3 +1,4 @@
+import { uiText } from "./anima_node_i18n.js";
 import { GalleryBrowseState, GalleryProgressStore, galleryBrowseKey, currentGalleryWorkflowId } from './anima_gallery_browse_state.js';
 import { fetchGalleryPage } from './anima_gallery_page_fetch.js';
 import { renderGalleryBrowseNavigation } from './anima_gallery_browse_navigation.js';
@@ -86,7 +87,7 @@ export const galleryBrowserView = {
   },
   galleryBatchLabel(ui) {
     const old = ui.galleryController.legacy;
-    return ui.browseState ? `第 ${ui.browseState.visiblePage} ${ui.browseState.pageNumbers ? "页" : "批"}` : old.galleryBatchLabel.call(ui);
+    return ui.browseState ? uiText(`第 ${ui.browseState.visiblePage} ${ui.browseState.pageNumbers ? "页" : "批"}`, `${ui.browseState.pageNumbers ? "Page" : "Batch"} ${ui.browseState.visiblePage}`) : old.galleryBatchLabel.call(ui);
   },
   browseActive(ui) {
 
@@ -159,7 +160,7 @@ export const galleryBrowserView = {
     const submittedInput = ui.queryInput?.value ?? ui.queryWidget?.value;
     ui.hideSuggestions();
     if (!snapshot.query && ((snapshot.source === 'pixiv' && snapshot.filters.ranking !== true) || (snapshot.source === 'danbooru' && !ui.currentQuery()))) {
-      ui.setStatus(snapshot.source === 'pixiv' ? 'P站：请输入关键词后搜索' : '输入 Danbooru 标签后搜索');
+      ui.setStatus(snapshot.source === 'pixiv' ? uiText(uiText("P站：请输入关键词后搜索", "Pixiv: enter keywords to search"), "Pixiv: enter keywords to search") : uiText(uiText("输入 Danbooru 标签后搜索", "Enter Danbooru tags to search"), "Enter Danbooru tags to search"));
       return;
     }
     const key = galleryBrowseKey(snapshot);
@@ -178,17 +179,17 @@ export const galleryBrowserView = {
     const controller = new AbortController();
     owner.requestController = controller;
     ui._browseBusy = ui._browseNavigating = true;
-    ui.setStatus(saved ? '正在恢复上次浏览位置…' : '正在搜索：' + snapshot.query);
+    ui.setStatus(saved ? uiText(uiText("正在恢复上次浏览位置…", "Restoring your last position\u2026"), "Restoring your last position\u2026") : uiText(uiText("正在搜索：", "Searching: "), "Searching: ") + snapshot.query);
     ui.grid?.setAttribute('aria-busy', 'true');
     const valid = () => !ui.disposed && epoch === owner.epoch;
     try {
       const result = await fetchGalleryPage(ui, {...snapshot,page:target,cursor:state.cursorFor(target) ?? '',limit:state.pageLimit,force:!!options.force,allowFuzzy:target===1},controller.signal);
       if (!valid()) return;
       if (!saved?.anchor && !result.posts.length && ui.posts.length && result.exhausted !== false) {
-        ui.setStatus('这一页没有结果，已保留原来的图片和位置；可以重试或从头看', 'warning');
+        ui.setStatus(uiText(uiText("这一页没有结果，已保留原来的图片和位置；可以重试或从头看", "No results on this page. Previous images and position kept; retry or start over."), "No results on this page. Previous images and position kept; retry or start over."), 'warning');
         return;
       }
-      if (!state.putPage(target,{...result,cursor:result.cursor ?? state.cursorFor(target) ?? '',exhausted:result.exhausted ?? !result.posts.length})) throw new Error('该页图片数量超出缓存上限');
+      if (!state.putPage(target,{...result,cursor:result.cursor ?? state.cursorFor(target) ?? '',exhausted:result.exhausted ?? !result.posts.length})) throw new Error(uiText(uiText("该页图片数量超出缓存上限", "The page exceeds the image cache limit"), "The page exceeds the image cache limit"));
       let restorePage = target;
       let updated = false;
       if (saved?.anchor && !result.posts.some(post => ui.postKeyOf(post) === saved.anchor.key)) {
@@ -204,7 +205,7 @@ export const galleryBrowserView = {
         updated = ![...state.pages.values()].some(e => e.posts.some(post => ui.postKeyOf(post) === saved.anchor.key));
       }
       if (!valid()) return;
-      if (!state.getPage(restorePage)?.posts.length && ui.posts.length && result.exhausted !== false) {ui.setStatus("记录页暂时没有结果，已保留原图片和位置；可从头看或重试", "warning");return;}
+      if (!state.getPage(restorePage)?.posts.length && ui.posts.length && result.exhausted !== false) {ui.setStatus(uiText("记录页暂时没有结果，已保留原图片和位置；可从头看或重试", "The saved page has no results. Previous images and position kept; retry or start over."), "warning");return;}
       // Query preparation (quota/fuzzy correction) is committed only after success.
       if (snapshot.source === 'danbooru') ui.settings.filters = result.settings.filters;
       ui.settings.lastQuery = result.query;
@@ -231,12 +232,12 @@ export const galleryBrowserView = {
       ui.saveSettings();
       ui.showBrowseWindow(restorePage);
       if (!saved?.anchor || updated || !ui.restoreScrollAnchor(saved.anchor)) ui.scrollToBrowsePage(restorePage);
-      ui.setStatus(updated ? '搜索结果已更新，已回到记录页顶部' : (saved ? '已接着上次的位置浏览 · ' + ui.galleryBatchLabel() : result.status));
+      ui.setStatus(updated ? uiText(uiText("搜索结果已更新，已回到记录页顶部", "Results updated; returned to the top of the saved page"), "Results updated; returned to the top of the saved page") : (saved ? uiText(uiText("已接着上次的位置浏览 · ", "Resumed browsing \u00b7 "), "Resumed browsing \u00b7 ") + ui.galleryBatchLabel() : result.status));
       // Auto-match operates on committed cards; older search responses never reach it.
       if (random) ui.rememberRandomResults(ui.currentQuery());
       void ui.autoMatchPixiv(result.posts);
     } catch (error) {
-      if (valid() && error.name !== 'AbortError') ui.setStatus('搜索失败，已保留原图片和位置：' + error.message, 'error');
+      if (valid() && error.name !== 'AbortError') ui.setStatus(uiText(uiText("搜索失败，已保留原图片和位置：", "Search failed; previous images and position kept: "), "Search failed; previous images and position kept: ") + error.message, 'error');
       if (valid()) ui.browseState = previous;
     } finally {
       if (valid()) {
@@ -286,7 +287,7 @@ export const galleryBrowserView = {
     const state = ui.browseState;
     page = Number(page);
     if (!ui.browseActive() || !Number.isSafeInteger(page) || page<1) return false;
-    if (!state.pageNumbers && state.cursorFor(page) === undefined) {ui.setStatus('只能定位已访问或已有游标的批次','warning'); return false;}
+    if (!state.pageNumbers && state.cursorFor(page) === undefined) {ui.setStatus(uiText(uiText("只能定位已访问或已有游标的批次", "Only visited batches or batches with a cursor can be opened"), "Only visited batches or batches with a cursor can be opened"),'warning'); return false;}
     const before = ui.browseLocation();
     ui.saveBrowseProgress();
     ui.cancelBrowseRequest();
@@ -299,7 +300,7 @@ export const galleryBrowserView = {
       if (!entry) {
         ui._browseBusy=true;
         const controller=new AbortController(); owner.requestController=controller;
-        ui.setStatus('正在定位第 '+page+(state.pageNumbers?' 页…':' 批…'));
+        ui.setStatus(uiText('正在定位第 '+page+(state.pageNumbers?' 页…':' 批…'), 'Going to '+(state.pageNumbers?'page ':'batch ')+page+'…'));
         ui.grid?.setAttribute('aria-busy','true');
         const result=await fetchGalleryPage(ui,{...ui._browseSnapshot,page,cursor:state.cursorFor(page)||'',limit:state.pageLimit,force:start},controller.signal);
         if (!valid()) return false;
@@ -312,11 +313,11 @@ export const galleryBrowserView = {
               ui.renderPagination();
             }
             ui.setStatus(result.status);
-          } else ui.setStatus('这一页没有结果，已保留原图片和位置；可再次定位重试','warning');
+          } else ui.setStatus(uiText(uiText("这一页没有结果，已保留原图片和位置；可再次定位重试", "No results. Previous images and position kept; retry navigation."), "No results. Previous images and position kept; retry navigation."),'warning');
           return false;
         }
         entry=state.putPage(page,{...result,cursor:result.cursor ?? state.cursorFor(page) ?? ''});
-        if (!entry) throw new Error('该页图片数量超出缓存上限');
+        if (!entry) throw new Error(uiText(uiText("该页图片数量超出缓存上限", "The page exceeds the image cache limit"), "The page exceeds the image cache limit"));
       }
       if (!valid()) return false;
       if (start) state.returnLocation=null;
@@ -328,7 +329,7 @@ export const galleryBrowserView = {
         ui.page=page;
         ui.fillMoreExhausted=false;
         ui.renderPagination();
-        ui.setStatus('第 '+page+' 页作品已被筛选隐藏，可继续下一页');
+        ui.setStatus(uiText('第 '+page+' 页作品已被筛选隐藏，可继续下一页', 'Filters hide all works on page '+page+'; continue to the next page'));
         return true;
       }
       // Cached cards already mounted need only a scroll; detached pages use a bounded window.
@@ -339,11 +340,11 @@ export const galleryBrowserView = {
       state.setVisiblePage(page);
       ui.fillMoreExhausted=false;
       ui.renderPagination();
-      ui.setStatus('已定位 · '+ui.galleryBatchLabel());
+      ui.setStatus(uiText(uiText("已定位 · ", "Opened \u00b7 "), "Opened \u00b7 ")+ui.galleryBatchLabel());
       ui.grid?.focus?.({preventScroll:true});
       return true;
     } catch(error) {
-      if(valid() && error.name!=='AbortError') ui.setStatus('定位失败，已保留原图片和位置：'+error.message,'error');
+      if(valid() && error.name!=='AbortError') ui.setStatus(uiText(uiText("定位失败，已保留原图片和位置：", "Navigation failed; previous images and position kept: "), "Navigation failed; previous images and position kept: ")+error.message,'error');
       return false;
     } finally {
       if(valid()) {ui._browseBusy=ui._browseNavigating=false;ui.grid?.removeAttribute('aria-busy');ui.saveBrowseProgress();ui.scheduleScrollFill();}
@@ -388,18 +389,18 @@ export const galleryBrowserView = {
             if (lastEntry) lastEntry.exhausted = true;
             ui.renderPagination();
           }
-          ui.fillMoreExhausted=true;ui.setStatus(result.exhausted ? result.status : '已到当前结果末尾');return false;
+          ui.fillMoreExhausted=true;ui.setStatus(result.exhausted ? result.status : uiText(uiText("已到当前结果末尾", "End of current results"), "End of current results"));return false;
         }
         entry=state.putPage(page,{...result,cursor:result.cursor ?? state.cursorFor(page) ?? ''});
-        if(!entry) throw new Error('该页图片数量超出缓存上限');
+        if(!entry) throw new Error(uiText(uiText("该页图片数量超出缓存上限", "The page exceeds the image cache limit"), "The page exceeds the image cache limit"));
       }
       if(!valid()) return false;
       ui.showBrowseWindow(state.visiblePage,{preserve:true,append:true});
-      if(!entry.posts.length) ui.setStatus('第 '+page+' 页作品已被筛选隐藏，可继续下一页');
+      if(!entry.posts.length) ui.setStatus(uiText('第 '+page+' 页作品已被筛选隐藏，可继续下一页', 'Filters hide all works on page '+page+'; continue to the next page'));
       if(ui._browseRandom)ui.rememberRandomResults(ui.currentQuery());
       return ui._browsePages.some(e=>e.page===page);
     } catch(error) {
-      if(valid() && error.name!=='AbortError') ui.setStatus('加载失败，图片和位置已保留；继续滚动可重试：'+error.message,'error');
+      if(valid() && error.name!=='AbortError') ui.setStatus(uiText(uiText("加载失败，图片和位置已保留；继续滚动可重试：", "Loading failed; images and position kept. Scroll to retry: "), "Loading failed; images and position kept. Scroll to retry: ")+error.message,'error');
       return false;
     } finally {if(valid()) ui._browseBusy=ui.fillMoreBusy=false;}
 

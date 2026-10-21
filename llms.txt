@@ -15,7 +15,7 @@
 
 ## Current release
 
-Version 2.35.0. Adds a floating gallery workspace and nearby tag counts.
+Version 2.36.0. Workflow-node interfaces and dialogs follow the toolbox language setting; save the workflow and refresh the page after switching. Prompts, tags and saved identifiers stay unchanged. Adds a floating gallery workspace and nearby tag counts.
 Prompt Agent shows raw observations above its final prompt. Image instruction input
 has no 4000-character cap; output length is a configurable, non-truncating soft target.
 Includes TK Prompt Agent (Anima / Krea 2 creation, iterative edits,

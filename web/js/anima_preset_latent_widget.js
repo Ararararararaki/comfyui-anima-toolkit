@@ -1,22 +1,23 @@
+import { uiText } from "./anima_node_i18n.js";
 // Anima 空 Latent 图像：简洁的分辨率缩放与常用比例快捷选择。
 (function () {
   const NODE_NAME = "AnimaPresetEmptyLatent";
   const RESOLUTION_MULTIPLE = 16;
   const STANDARD_LONG_EDGE = 1536;
   const RATIO_DEFINITIONS = [
-    { id: "1:1", label: "1:1", width: 1, height: 1, description: "正方形" },
-    { id: "4:3", label: "4:3", width: 4, height: 3, description: "横向标准" },
-    { id: "3:4", label: "3:4", width: 3, height: 4, description: "竖向标准" },
-    { id: "3:2", label: "3:2", width: 3, height: 2, description: "横向照片" },
-    { id: "2:3", label: "2:3", width: 2, height: 3, description: "竖向照片" },
-    { id: "16:9", label: "16:9", width: 16, height: 9, description: "宽屏" },
-    { id: "9:16", label: "9:16", width: 9, height: 16, description: "竖屏" },
-    { id: "21:9", label: "21:9", width: 21, height: 9, description: "超宽屏" },
-    { id: "9:21", label: "9:21", width: 9, height: 21, description: "超长竖屏" },
-    { id: "5:4", label: "5:4", width: 5, height: 4, description: "接近方形横向" },
-    { id: "4:5", label: "4:5", width: 4, height: 5, description: "接近方形竖向" },
-    { id: "2:1", label: "2:1", width: 2, height: 1, description: "全景横向" },
-    { id: "1:2", label: "1:2", width: 1, height: 2, description: "全景竖向" },
+    { id: "1:1", label: "1:1", width: 1, height: 1, description: uiText("正方形", "Square") },
+    { id: "4:3", label: "4:3", width: 4, height: 3, description: uiText("横向标准", "Standard landscape") },
+    { id: "3:4", label: "3:4", width: 3, height: 4, description: uiText("竖向标准", "Standard portrait") },
+    { id: "3:2", label: "3:2", width: 3, height: 2, description: uiText("横向照片", "Landscape photo") },
+    { id: "2:3", label: "2:3", width: 2, height: 3, description: uiText("竖向照片", "Portrait photo") },
+    { id: "16:9", label: "16:9", width: 16, height: 9, description: uiText("宽屏", "Widescreen") },
+    { id: "9:16", label: "9:16", width: 9, height: 16, description: uiText("竖屏", "Portrait") },
+    { id: "21:9", label: "21:9", width: 21, height: 9, description: uiText("超宽屏", "Ultrawide") },
+    { id: "9:21", label: "9:21", width: 9, height: 21, description: uiText("超长竖屏", "Tall portrait") },
+    { id: "5:4", label: "5:4", width: 5, height: 4, description: uiText("接近方形横向", "Near-square landscape") },
+    { id: "4:5", label: "4:5", width: 4, height: 5, description: uiText("接近方形竖向", "Near-square portrait") },
+    { id: "2:1", label: "2:1", width: 2, height: 1, description: uiText("全景横向", "Landscape panorama") },
+    { id: "1:2", label: "1:2", width: 1, height: 2, description: uiText("全景竖向", "Portrait panorama") },
   ];
   const RATIO_SCALE_OPTIONS = [0.5, 0.75, 1, 1.1, 1.2, 1.3, 1.4, 1.5, 2];
 
@@ -202,7 +203,7 @@
       this.ratioMenu.replaceChildren();
       const caption = document.createElement("div");
       caption.className = "apl-menu-caption";
-      caption.textContent = `标准长边 ${STANDARD_LONG_EDGE}px · 比例倍率`;
+      caption.textContent = uiText(`标准长边 ${STANDARD_LONG_EDGE}px · 比例倍率`, `Standard long edge ${STANDARD_LONG_EDGE}px · Ratio scale`);
       this.ratioMenu.appendChild(caption);
       for (const ratio of RATIO_DEFINITIONS) {
         const row = document.createElement("div");
@@ -238,7 +239,7 @@
           multiplier.className = "apl-multiplier";
           multiplier.textContent = formatScale(edgeScale);
           option.append(resolutionLabel, multiplier);
-          option.title = `${ratio.label} · ${resolution.width}×${resolution.height} · 标准长边 ${formatScale(edgeScale)}`;
+          option.title = uiText(`${ratio.label} · ${resolution.width}×${resolution.height} · 标准长边 ${formatScale(edgeScale)}`, `${ratio.label} · ${resolution.width}×${resolution.height} · Standard long edge ${formatScale(edgeScale)}`);
           option.addEventListener("click", (event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -317,7 +318,7 @@
       controlRow.className = "anima-preset-latent-row apl-control-row";
       const scaleLabel = document.createElement("span");
       scaleLabel.className = "apl-control-label";
-      scaleLabel.textContent = "缩放倍率";
+      scaleLabel.textContent = uiText("缩放倍率", "Scale");
       controlRow.appendChild(scaleLabel);
       const ratioTrigger = document.createElement("button");
       ratioTrigger.type = "button";
@@ -349,14 +350,14 @@
       anchorRow.className = "anima-preset-latent-row apl-anchor-row";
       const anchorLabel = document.createElement("span");
       anchorLabel.className = "apl-control-label";
-      anchorLabel.textContent = "按长边";
+      anchorLabel.textContent = uiText("按长边", "Keep long edge");
       const anchorSelect = document.createElement("select");
       anchorSelect.className = "apl-anchor-select";
-      anchorSelect.title = "保持当前长边不变，只按所选比例换算另一条边";
-      anchorSelect.setAttribute("aria-label", "按当前长边换算比例");
+      anchorSelect.title = uiText("保持当前长边不变，只按所选比例换算另一条边", "Keep the current long edge and calculate the other edge from the selected ratio");
+      anchorSelect.setAttribute("aria-label", uiText("按当前长边换算比例", "Apply ratio to current long edge"));
       const anchorPlaceholder = document.createElement("option");
       anchorPlaceholder.value = "";
-      anchorPlaceholder.textContent = "选比例换算…";
+      anchorPlaceholder.textContent = uiText("选比例换算…", "Choose aspect ratio…");
       anchorSelect.appendChild(anchorPlaceholder);
       for (const ratio of RATIO_DEFINITIONS) {
         const option = document.createElement("option");
@@ -394,7 +395,7 @@
           button.append(factorLabel, resolutionLabel);
           button.dataset.factor = String(factor);
           button.dataset.side = side;
-          button.title = `宽高同时乘以 ${factor}`;
+          button.title = uiText(`宽高同时乘以 ${factor}`, `Multiply width and height by ${factor}`);
           button.addEventListener("click", (event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -440,24 +441,24 @@
       if (!currentMain || !currentScale || !ratioTrigger) return;
       const current = this.currentResolution();
       const ratio = this.currentRatio();
-      currentMain.textContent = `当前 ${current.width}×${current.height}`;
-      currentScale.textContent = `标准长边 ${STANDARD_LONG_EDGE} · ${formatScale(longEdgeScaleOf(current.width, current.height))}`;
+      currentMain.textContent = uiText(`当前 ${current.width}×${current.height}`, `Current ${current.width}×${current.height}`);
+      currentScale.textContent = uiText(`标准长边 ${STANDARD_LONG_EDGE} · ${formatScale(longEdgeScaleOf(current.width, current.height))}`, `Standard long edge ${STANDARD_LONG_EDGE} · ${formatScale(longEdgeScaleOf(current.width, current.height))}`);
       for (const button of scaleOptions) {
         const factor = Number(button.dataset.factor);
         const width = normalizeWidgetResolution(this.widthWidget, current.width * factor);
         const height = normalizeWidgetResolution(this.heightWidget, current.height * factor);
         const resolution = button.querySelector(".apl-scale-resolution");
         if (resolution) resolution.textContent = `${width} × ${height}`;
-        button.title = `宽高同时乘以 ${factor}：${width}×${height}`;
+        button.title = uiText(`宽高同时乘以 ${factor}：${width}×${height}`, `Multiply width and height by ${factor}：${width}×${height}`);
       }
       ratioTrigger.replaceChildren();
       const ratioLabel = document.createElement("span");
-      ratioLabel.textContent = ratio ? `比例 ${ratio.label}` : "比例 自定义";
+      ratioLabel.textContent = ratio ? uiText(`比例 ${ratio.label}`, `Ratio ${ratio.label}`) : uiText("比例 自定义", "Ratio: custom");
       const chevron = document.createElement("span");
       chevron.className = "apl-chevron";
       chevron.textContent = "▾";
       ratioTrigger.append(ratioLabel, chevron);
-      ratioTrigger.setAttribute("aria-label", ratio ? `选择比例，当前 ${ratio.label}` : "选择自定义比例");
+      ratioTrigger.setAttribute("aria-label", ratio ? uiText(`选择比例，当前 ${ratio.label}`, `Choose ratio, current ${ratio.label}`) : uiText("选择自定义比例", "Choose a custom aspect ratio"));
       this.refreshAnchorOptions();
     }
 

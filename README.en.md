@@ -4,11 +4,11 @@
 
 A ComfyUI custom-node pack and local toolbox for LoRAs, prompts, reference images and generated outputs. Built for Anima workflows, with other model families supported by individual tools. It manages inference workflows; it does not train LoRAs.
 
-Current release: **2.35.0**. By 时运Toki. MIT license. QQ community: **758086740**.
+Current release: **2.36.0**. By 时运Toki. MIT license. QQ community: **758086740**.
 
 ## Language coverage
 
-Choose Simplified Chinese or English in the toolbox Settings. Version 2.34.0 covers the toolbox only; translation is not complete across the plugin. Workflow nodes and remaining interfaces are planned for a later release. User prompts, tags and saved data are not translated when changing the interface language.
+Choose Simplified Chinese or English in the toolbox Settings. Version 2.36.0 covers the toolbox, workflow-node interfaces, the gallery workspace and major dialogs. Save your workflow and refresh the ComfyUI page after switching; these frontend changes require no host restart. Prompts, tags, custom names and external service responses stay as written. See [node language coverage](docs/FEATURES.md#2360工作流节点语言切换).
 
 ## Install
 

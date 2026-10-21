@@ -2,7 +2,7 @@
 
 [English quick start](README.en.md) | [Full Chinese manual](https://github.com/Ararararararaki/comfyui-anima-toolkit/blob/main/docs/FEATURES.md)
 
-Choose **Settings → Language / 语言 → English** in the toolbox. The choice is saved and the page reloads. Translation does not yet cover every workflow-node label or dialog. Saved user content is kept as written.
+Choose **Settings → Language / 语言 → English** in the toolbox. The choice is saved and the page reloads. Version 2.36.0 extends the setting to workflow-node labels and major dialogs. Save the workflow, then refresh the ComfyUI page. Saved user content and external service responses are kept as written. [Coverage and compatibility](docs/FEATURES.md#2360工作流节点语言切换).
 
 ## 2.35.0: gallery workspace and source observations
 

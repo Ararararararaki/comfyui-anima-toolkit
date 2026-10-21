@@ -1,3 +1,4 @@
+import { uiText } from "./anima_node_i18n.js";
 // TK String Router：ComfyUI 原生风格的六路字符串放行面板。
 (function () {
   const NODE_NAME = "TK String Router";
@@ -71,7 +72,7 @@
 
   function sourceNodeLabel(source, originId, labelSource = "custom") {
     const originalLabel = String(
-      source?.properties?.["Node name for S&R"] || source?.comfyClass || source?.type || `节点 ${originId}`,
+      source?.properties?.["Node name for S&R"] || source?.comfyClass || source?.type || uiText(`节点 ${originId}`, `Node ${originId}`),
     ).trim();
     if (labelSource === "original") return originalLabel;
 
@@ -182,7 +183,7 @@
         const nodes = Array.isArray(graph.nodes) ? graph.nodes : (graph.nodes instanceof Map ? [...graph.nodes.values()] : Object.values(graph.nodes || {}));
         source = nodes.find((item) => String(item?.id) === String(originId));
       }
-      if (!source) return `节点 ${originId}`;
+      if (!source) return uiText(`节点 ${originId}`, `Node ${originId}`);
       const nodeLabel = sourceNodeLabel(source, originId, this.settings?.labelSource);
       const output = Number.isInteger(Number(originSlot)) ? source.outputs?.[Number(originSlot)] : null;
       const outputLabel = String(output?.name || output?.label || "").trim();
@@ -236,7 +237,7 @@
         row.draggable = true;
         row.dataset.slot = String(slotIndex);
         row.dataset.position = String(position);
-        row.setAttribute("aria-label", `输出 ${position + 1}，输入接口 ${slotIndex + 1}`);
+        row.setAttribute("aria-label", uiText(`输出 ${position + 1}，输入接口 ${slotIndex + 1}`, `Output ${position + 1}, input ${slotIndex + 1}`));
         row.addEventListener("pointerdown", (event) => event.stopPropagation());
         row.addEventListener("mousedown", (event) => event.stopPropagation());
         const control = document.createElement("input");
@@ -244,16 +245,16 @@
         control.type = inputType;
         control.name = `tk-string-router-${this.node.id}`;
         control.checked = Boolean(this.settings.enabled[slotIndex]);
-        control.title = this.settings.mode === "single" ? "选择唯一放行接口" : "切换接口放行状态";
+        control.title = this.settings.mode === "single" ? uiText("选择唯一放行接口", "Select the only active input") : uiText("切换接口放行状态", "Toggle this input");
         const dragHandle = document.createElement("span");
         dragHandle.className = "tk-sr-drag-handle";
         dragHandle.textContent = "⠿";
-        dragHandle.title = "拖拽交换输出顺序";
+        dragHandle.title = uiText("拖拽交换输出顺序", "Drag to reorder outputs");
         dragHandle.setAttribute("aria-hidden", "true");
         const number = document.createElement("span");
         number.className = "tk-sr-index";
         number.textContent = String(position + 1);
-        number.title = `输出顺序 ${position + 1} · 输入 ${slotIndex + 1}`;
+        number.title = uiText(`输出顺序 ${position + 1} · 输入 ${slotIndex + 1}`, `Output order ${position + 1} · Input ${slotIndex + 1}`);
         const nameWrap = document.createElement("div");
         nameWrap.className = "tk-sr-name-wrap";
         const name = document.createElement("input");
@@ -262,12 +263,12 @@
         const alias = String(this.settings.names[slotIndex] || "").trim();
         const sourceLabel = this.getConnectionLabel(slotIndex);
         name.value = alias && alias !== String(slotIndex + 1) ? alias : "";
-        name.placeholder = sourceLabel || `接口 ${slotIndex + 1}`;
-        name.title = "可填写自定义别名；留空时自动显示连接源节点名称";
+        name.placeholder = sourceLabel || uiText(`接口 ${slotIndex + 1}`, `Input ${slotIndex + 1}`);
+        name.title = uiText("可填写自定义别名；留空时自动显示连接源节点名称", "Enter an alias; leave blank to use the connected source node name");
         const source = document.createElement("span");
         source.className = "tk-sr-source" + (sourceLabel ? " is-connected" : "");
-        source.textContent = sourceLabel ? `↳ ${sourceLabel}` : "↳ 未连接（自动读取源节点名称）";
-        source.title = sourceLabel || "连接 STRING 后会自动显示源节点标题和输出名称";
+        source.textContent = sourceLabel ? `↳ ${sourceLabel}` : uiText("↳ 未连接（自动读取源节点名称）", "↳ Not connected (source name is automatic)");
+        source.title = sourceLabel || uiText("连接 STRING 后会自动显示源节点标题和输出名称", "Connect a STRING to show the source node title and output name");
         nameWrap.append(name, source);
 
         control.addEventListener("change", () => {
@@ -339,19 +340,19 @@
       header.className = "tk-sr-header";
       const title = document.createElement("span");
       title.className = "tk-sr-title";
-      title.textContent = "模式";
+      title.textContent = uiText("模式", "Mode");
       this.mode = document.createElement("select");
       this.mode.className = "tk-sr-mode";
-      this.mode.innerHTML = '<option value="single">单选</option><option value="multi">多选</option>';
+      this.mode.innerHTML = uiText('<option value="single">单选</option><option value="multi">多选</option>', "<option value=\"single\">Single</option><option value=\"multi\">Multiple</option>");
       this.mode.value = this.settings.mode;
       this.mode.addEventListener("change", () => this.selectMode(this.mode.value));
       const labelTitle = document.createElement("span");
       labelTitle.className = "tk-sr-title";
-      labelTitle.textContent = "名称";
+      labelTitle.textContent = uiText("名称", "Names");
       this.labelSource = document.createElement("select");
       this.labelSource.className = "tk-sr-mode";
-      this.labelSource.title = "选择连接源的显示名称";
-      this.labelSource.innerHTML = '<option value="custom">界面节点名</option><option value="original">原始节点名</option>';
+      this.labelSource.title = uiText("选择连接源的显示名称", "Choose how source names are displayed");
+      this.labelSource.innerHTML = uiText('<option value="custom">界面节点名</option><option value="original">原始节点名</option>', "<option value=\"custom\">Displayed node name</option><option value=\"original\">Original node name</option>");
       this.labelSource.value = this.settings.labelSource;
       this.labelSource.addEventListener("change", () => {
         this.settings.labelSource = this.labelSource.value === "original" ? "original" : "custom";
@@ -364,7 +365,7 @@
 
       const note = document.createElement("div");
       note.className = "tk-sr-note";
-      note.textContent = "拖拽 ⠿ 交换输出顺序 · 关闭的接口不会进入输出";
+      note.textContent = uiText("拖拽 ⠿ 交换输出顺序 · 关闭的接口不会进入输出", "Drag ⠿ to reorder outputs · Disabled inputs are excluded");
       this.grid = document.createElement("div");
       this.grid.className = "tk-sr-grid";
       container.append(header, note, this.grid);

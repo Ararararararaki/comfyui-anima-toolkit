@@ -27,6 +27,7 @@ export function getLocale(): Locale {
 export function setLocale(value: Locale): void {
   locale = value === 'en' ? 'en' : 'zh-CN'
   if (typeof document !== 'undefined') document.documentElement.lang = locale
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('tk-toolkit-locale-change', { detail: { locale } }))
 }
 
 export function t(key: MessageKey, params: MessageParams = {}): string {

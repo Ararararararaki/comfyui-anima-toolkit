@@ -1,3 +1,4 @@
+import { uiText } from "./anima_node_i18n.js";
 import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 import {
   getClothingCardPreview,
@@ -252,7 +253,7 @@ import {
 
     async refreshLibrary({ force = false } = {}) {
       const seq = ++this.loadSeq;
-      this.setStatus("正在读取服装库…", "loading");
+      this.setStatus(uiText("正在读取服装库…", "Loading clothing library…"), "loading");
       try {
         const { categories, cards: allCards } = await getClothingLibrary({ force });
         if (this.disposed || seq !== this.loadSeq) return;
@@ -272,7 +273,7 @@ import {
           this.updateView();
         }
         this.setStatus(
-          this.cards.length ? `已读取 ${this.cards.length} 张` : `${this.scopeName}中没有可用的服装卡片`,
+          this.cards.length ? uiText(`已读取 ${this.cards.length} 张`, `Loaded ${this.cards.length} cards`) : uiText(`${this.scopeName}中没有可用的服装卡片`, `${this.scopeName} has no available clothing cards`),
           this.cards.length ? "ready" : "error",
         );
       } catch (error) {
@@ -300,7 +301,7 @@ import {
         const count = counts.byCategory.get(category.id) || 0;
         return `<option value="${esc(category.id)}">${esc(category.name)} (${count})</option>`;
       }).join("");
-      this.categorySelect.innerHTML = `<option value="">全部 (${allCards.length})</option><option value="${SCOPE_FAVORITE}">收藏 (${counts.favorite})</option>${categories}`;
+      this.categorySelect.innerHTML = uiText(`<option value="">全部 (${allCards.length})</option><option value="${SCOPE_FAVORITE}">收藏 (${counts.favorite})</option>${categories}`, `<option value="">All (${allCards.length})</option><option value="${SCOPE_FAVORITE}">Favorites (${counts.favorite})</option>${categories}`);
       this.categorySelect.value = [...this.categorySelect.options].some((option) => option.value === current) ? current : "";
       if (this.categorySelect.value !== current) {
         this.scope = this.categorySelect.value;
@@ -325,7 +326,7 @@ import {
       this.applyScopeCards();
       this.renderScopeOptions();
       this.setStatus(
-        this.cards.length ? `已读取 ${this.cards.length} 张` : `${this.scopeName}中没有可用的服装卡片`,
+        this.cards.length ? uiText(`已读取 ${this.cards.length} 张`, `Loaded ${this.cards.length} cards`) : uiText(`${this.scopeName}中没有可用的服装卡片`, `${this.scopeName} has no available clothing cards`),
         this.cards.length ? "ready" : "error",
       );
       if (this.mode === "随机抽取") this.resolveRandomSelection(false);
@@ -380,7 +381,7 @@ import {
         : null;
       this.writePayload(seed);
       this.updateView();
-      if (!this.selected) this.setStatus(`${this.scopeName}中没有可用的服装卡片`, "error");
+      if (!this.selected) this.setStatus(uiText(`${this.scopeName}中没有可用的服装卡片`, `${this.scopeName} has no available clothing cards`), "error");
     }
 
     async drawRandom(changeSeed) {
@@ -444,7 +445,7 @@ import {
     async renameSelected() {
       if (!this.selected?.id) return;
       const current = this.selected.name || "";
-      const next = window.prompt("输入新的服装名称", current);
+      const next = window.prompt(uiText("输入新的服装名称", "Enter a new clothing name"), current);
       if (next == null || !String(next).trim() || String(next).trim() === current) return;
       try {
         const updated = await renameClothingCard(this.selected.id, String(next).trim());
@@ -482,13 +483,13 @@ import {
       // card that actually reached downstream nodes.
       this.selected = selected;
       this.updateView();
-      this.setStatus(`本次抽取：${selected.name}`, "ready");
+      this.setStatus(uiText(`本次抽取：${selected.name}`, `Drawn: ${selected.name}`), "ready");
     }
 
     updateView() {
       if (!this.root) return;
       const selected = this.selected;
-      this.nameEl.textContent = selected?.name || "尚未选择服装";
+      this.nameEl.textContent = selected?.name || uiText("尚未选择服装", "No clothing selected");
       this.nameEl.title = selected?.name || "";
       this.categoryEl.textContent = selected?.categoryName || "";
       this.promptEl.value = selected?.prompt || "";
@@ -501,7 +502,7 @@ import {
         return;
       }
       this.previewPlaceholder.hidden = false;
-      this.previewPlaceholder.textContent = selected.hasImage === false ? "无预览图" : "读取预览图…";
+      this.previewPlaceholder.textContent = selected.hasImage === false ? uiText("无预览图", "No preview") : uiText("读取预览图…", "Loading preview…");
       this.previewImg.hidden = true;
       this.loadPreview(selected.id, selected.imageUrl);
     }
@@ -526,7 +527,7 @@ import {
           this.previewImg.hidden = false;
           this.previewPlaceholder.hidden = true;
         } else {
-          this.previewPlaceholder.textContent = "无预览图";
+          this.previewPlaceholder.textContent = uiText("无预览图", "No preview");
         }
       } catch {
         if (fallbackUrl && this.selected?.id === currentId) {
@@ -534,7 +535,7 @@ import {
           this.previewImg.hidden = false;
           this.previewPlaceholder.hidden = true;
         } else if (this.selected?.id === currentId) {
-          this.previewPlaceholder.textContent = "预览图读取失败";
+          this.previewPlaceholder.textContent = uiText("预览图读取失败", "Preview could not be loaded");
         }
       }
     }
@@ -642,7 +643,7 @@ import {
     }
 
     async renamePickerCard(card) {
-      const next = window.prompt("输入新的服装名称", card.name || "");
+      const next = window.prompt(uiText("输入新的服装名称", "Enter a new clothing name"), card.name || "");
       if (next == null || !String(next).trim() || String(next).trim() === card.name) return;
       try {
         const updated = await renameClothingCard(card.id, String(next).trim());
@@ -665,7 +666,7 @@ import {
       const picker = this.picker;
       if (!picker || this.disposed) return;
       const seq = ++picker.seq;
-      picker.status.textContent = "正在读取…";
+      picker.status.textContent = uiText("正在读取…", "Loading…");
       try {
         const all = this.allCards;
         const tokens = String(picker.keyword || "").toLocaleLowerCase().split(/\s+/).filter(Boolean);
@@ -678,22 +679,22 @@ import {
         });
         const visible = filtered.slice(0, picker.visibleLimit);
         picker.cards = visible;
-        picker.total.textContent = `${filtered.length} 张`;
+        picker.total.textContent = uiText(`${filtered.length} 张`, `${filtered.length} cards`);
         picker.sidebar.innerHTML = this.renderPickerSidebar(all, picker.scope);
         this.releasePickerUrls();
         picker.grid.innerHTML = visible.length
           ? visible.map((card) => this.renderPickerCard(card)).join("")
-          : '<div class="tk-clothing-picker-empty">没有匹配的服装卡片</div>';
+          : uiText('<div class="tk-clothing-picker-empty">没有匹配的服装卡片</div>', "<div class=\"tk-clothing-picker-empty\">No matching clothing cards</div>");
         const hasMore = visible.length < filtered.length;
         picker.more.hidden = !hasMore;
         picker.status.textContent = hasMore
-          ? `已显示 ${visible.length}/${filtered.length} 张`
-          : "点击卡片选择服装";
+          ? uiText(`已显示 ${visible.length}/${filtered.length} 张`, `Showing ${visible.length}/${filtered.length} cards`)
+          : uiText("点击卡片选择服装", "Click a card to select clothing");
         this.lazyLoadPickerImages(seq);
       } catch (error) {
         if (this.picker && picker.seq === seq) {
           picker.grid.innerHTML = `<div class="tk-clothing-picker-empty">${esc(libraryErrorMessage(error))}</div>`;
-          picker.status.textContent = "读取失败";
+          picker.status.textContent = uiText("读取失败", "Could not load");
         }
       }
     }
@@ -702,8 +703,8 @@ import {
       const buttons = [];
       const active = (value) => value === scope ? " active" : "";
       const counts = this.cardCounts(all);
-      buttons.push(`<button type="button" data-scope="" class="tk-clothing-picker-scope${active("")}"><span>全部</span><em>${all.length}</em></button>`);
-      buttons.push(`<button type="button" data-scope="${SCOPE_FAVORITE}" class="tk-clothing-picker-scope${active(SCOPE_FAVORITE)}"><span>收藏</span><em>${counts.favorite}</em></button>`);
+      buttons.push(uiText(`<button type="button" data-scope="" class="tk-clothing-picker-scope${active("")}"><span>全部</span><em>${all.length}</em></button>`, `<button type="button" data-scope="" class="tk-clothing-picker-scope${active("")}"><span>All</span><em>${all.length}</em></button>`));
+      buttons.push(uiText(`<button type="button" data-scope="${SCOPE_FAVORITE}" class="tk-clothing-picker-scope${active(SCOPE_FAVORITE)}"><span>收藏</span><em>${counts.favorite}</em></button>`, `<button type="button" data-scope="${SCOPE_FAVORITE}" class="tk-clothing-picker-scope${active(SCOPE_FAVORITE)}"><span>Favorites</span><em>${counts.favorite}</em></button>`));
       this.categories.forEach((category) => {
         const count = counts.byCategory.get(category.id) || 0;
         buttons.push(`<button type="button" data-scope="${esc(category.id)}" class="tk-clothing-picker-scope${active(category.id)}"><span>${esc(category.name)}</span><em>${count}</em></button>`);
@@ -713,7 +714,7 @@ import {
 
     renderPickerCard(card) {
       const selected = this.selected?.id === card.id;
-      return `<article class="tk-clothing-picker-card${selected ? " selected" : ""}" data-card-action="select" data-id="${esc(card.id)}">
+      return uiText(`<article class="tk-clothing-picker-card${selected ? " selected" : ""}" data-card-action="select" data-id="${esc(card.id)}">
         <div class="tk-clothing-picker-card-image" data-preview-id="${esc(card.id)}"><span>🖼</span></div>
         <div class="tk-clothing-picker-card-info">
           <div class="tk-clothing-picker-card-title" title="${esc(card.name)}">${esc(card.name)}</div>
@@ -721,7 +722,15 @@ import {
           <div class="tk-clothing-picker-card-prompt" title="${esc(card.prompt)}">${esc(card.prompt)}</div>
         </div>
         <button type="button" class="tk-clothing-picker-card-rename" data-card-action="rename" data-id="${esc(card.id)}" title="重命名">✎</button>
-      </article>`;
+      </article>`, `<article class="tk-clothing-picker-card${selected ? " selected" : ""}" data-card-action="select" data-id="${esc(card.id)}">
+        <div class="tk-clothing-picker-card-image" data-preview-id="${esc(card.id)}"><span>🖼</span></div>
+        <div class="tk-clothing-picker-card-info">
+          <div class="tk-clothing-picker-card-title" title="${esc(card.name)}">${esc(card.name)}</div>
+          <div class="tk-clothing-picker-card-meta">${esc(card.categoryName)}${card.favorite ? " · ★" : ""}</div>
+          <div class="tk-clothing-picker-card-prompt" title="${esc(card.prompt)}">${esc(card.prompt)}</div>
+        </div>
+        <button type="button" class="tk-clothing-picker-card-rename" data-card-action="rename" data-id="${esc(card.id)}" title="Rename">✎</button>
+      </article>`);
     }
 
     async lazyLoadPickerImages(seq) {
@@ -778,10 +787,10 @@ import {
           if (preview.revoke) picker.urls.set(id, preview.url);
           container.innerHTML = `<img src="${esc(preview.url)}" alt="" loading="lazy">`;
         } else {
-          container.innerHTML = "<span>无图</span>";
+          container.innerHTML = uiText("<span>无图</span>", "<span>No image</span>");
         }
       } catch {
-        if (container.isConnected) container.innerHTML = "<span>无图</span>";
+        if (container.isConnected) container.innerHTML = uiText("<span>无图</span>", "<span>No image</span>");
       }
     }
 

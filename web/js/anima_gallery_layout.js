@@ -1,3 +1,4 @@
+import { uiText } from "./anima_node_i18n.js";
 /** Screen geometry shared by every completion mode; independent of canvas scale. */
 export function suggestionBounds(rect, viewport, desiredHeight = 360, minWidth = 300) {
   const margin = 8;
@@ -49,7 +50,7 @@ export function layoutGalleryGrid(ui, gap = 7) {
       const y = Math.max(...heights);
       const marker = document.createElement('div');
       marker.className = 'adg-page-boundary'; marker.dataset.page = String(page);
-      marker.textContent = `第 ${page} ${ui.browseState.pageNumbers ? '页' : '批'}`;
+      marker.textContent = uiText(`第 ${page} ${ui.browseState.pageNumbers ? '页' : '批'}`, `${ui.browseState.pageNumbers ? 'Page' : 'Batch'} ${page}`);
       Object.assign(marker.style, { position: 'absolute', top: y + 'px', left: left + 'px', width: usable + 'px', height: '24px' });
       grid.append(marker); heights.fill(y + 28); previousPage = page;
     }
