@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "sha256": "5c3dfe86eb4ac2fb9bcba4b0743caab4720f1da7a068cf32edb80469786e6a87",
+  "sha256": "fef314ff8e6365ab8575b38d6ee486c0aeb0030f6ee1df66fe3999680c824b8a",
   "files": [
     {
       "path": "CHANGELOG.md",
-      "sha256": "b26b38d50a9752f76780579ce477efb46f0e85e62b7a1f7d7aec13a5ef630fe0"
+      "sha256": "ed6a565c184c1ee7fc49cfcb73e55d7b168677aef1951f4378682f6930924e26"
     },
     {
       "path": "integrations/pixiv-drop-bridge/core.js",
@@ -136,7 +136,7 @@
     },
     {
       "path": "panel/src/i18n/index.ts",
-      "sha256": "d63737c29c200151ba5aff9610e77deb39f45cb154612028dee6768ceae68b54"
+      "sha256": "eee415feef68add8cba5a3ac3fbaf70430f53a87e32fc18323799842f978e4c4"
     },
     {
       "path": "panel/src/i18n/localScanNotice.ts",
@@ -148,7 +148,7 @@
     },
     {
       "path": "panel/src/i18n/settings.ts",
-      "sha256": "5384ae5a6d8591bebbc6f6518986b895e3e34b975eb1a0163105392f9a5b2b3e"
+      "sha256": "436793a60a92067985b47b044fa77df29658d99bc1010c543889e7b8f2b493d4"
     },
     {
       "path": "panel/src/i18n/shell.ts",
@@ -564,7 +564,7 @@
     },
     {
       "path": "VERSION",
-      "sha256": "929cb892dec8dd60c27530a08c79a960889531bed05425ade4f89d355ae60418"
+      "sha256": "dc1403849dfa520ddabefc496f18b6fba3167875528dc5003acd74a999c391e0"
     },
     {
       "path": "web/js/shared/image_node_cache.d.ts",
