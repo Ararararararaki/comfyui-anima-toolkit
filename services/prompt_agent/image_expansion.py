@@ -117,8 +117,11 @@ async def expand_image(image, observation, profile, options, config, *, session_
         raise AgentError("保留角色身份必须是布尔值。")
     if mode not in ("faithful", "creative"):
         raise AgentError("看图扩写方式必须是忠实描述或创作扩写。")
-    if not isinstance(instruction, str) or len(instruction) > 4000:
-        raise AgentError("看图扩写指令最多 4000 个字符。")
+    if not isinstance(instruction, str):
+        raise AgentError("看图扩写指令必须是文字。")
+    output_char_limit = options.get("output_char_limit", 4000)
+    if type(output_char_limit) is not int or output_char_limit < 0:
+        raise AgentError("输出提示词长度提醒须为非负整数，0 表示不提醒。")
     behavior = ("Faithfully describe the actual image. Add visible details, not invented scenery or identities. "
                 if mode == "faithful" else
                 "Use the image as the starting composition and follow requested creative changes. "
@@ -153,6 +156,7 @@ async def expand_image(image, observation, profile, options, config, *, session_
                "character_references": options.get("source_identities", character_references(observation)),
                "copyright_references": observation.get("categories", {}).get("copyright", []),
                "user_instruction": instruction,
+               "output_character_target": output_char_limit or None,
                "rendered_text_target_language": requested_lettering_language(instruction) or "source_unless_requested",
                "reference_evidence": options.get("reference_evidence", {}),
                "replacement_characters": options.get("replacement_characters", []),
@@ -189,6 +193,8 @@ async def expand_image(image, observation, profile, options, config, *, session_
          "Describe target text items as Chinese lettering, never Japanese/English dialogue after translation. "
          + behavior + style + " caption is an English description of what you actually see; prompt is the final usable prompt. "
          + skill_rules + (MOSS_DRAFT_RULES if moss else "") +
+         "When output_character_target is set, aim to keep the final generation prompt within that character count. "
+         "This is a soft target: prioritize complete requested content and valid Layout geometry and JSON. Never truncate text or JSON to fit. " +
          "Use the supplied source_dimensions and image_dimensions, never guess pixel dimensions. If layout_canvas is supplied it is authoritative; place absolute boxes on that canvas. " +
          ("Return caption describing the source image and prompt as a Caption object or a pixel Layout draft object. " if moss else
           "Return caption describing the source image and prompt as the usable generation prompt string. ") +
@@ -234,6 +240,8 @@ async def expand_image(image, observation, profile, options, config, *, session_
     # Language heuristics assess quality, not structural usability. Never regenerate
     # the whole scene or discard valid geometry for an untranslated text region.
     quality_warnings = []
+    if output_char_limit and len(prompt) > output_char_limit:
+        quality_warnings.append(f"输出提示词为 {len(prompt)} 个字符，超过设置的 {output_char_limit} 字符提醒值；已保留完整提示词，未截断。")
     if moss and not options.get("tag_filters", {}).get("text", False):
         expect_text = any(tag in {"text", "speech_bubble", "english_text", "japanese_text", "korean_text", "subtitles"}
                           for tag in observation.get("tags", []))

@@ -2,7 +2,13 @@
 
 [English quick start](README.en.md) | [Full Chinese manual](https://github.com/Ararararararaki/comfyui-anima-toolkit/blob/main/docs/FEATURES.md)
 
-The English toolbox interface is implemented locally and has not yet been published. In this local implementation, choose **Settings → Language / 语言 → English**. The choice is saved and the page reloads. Some workflow-node labels/tooltips and historical release notes remain in Chinese. Saved user content is kept as written.
+Choose **Settings → Language / 语言 → English** in the toolbox. The choice is saved and the page reloads. Translation does not yet cover every workflow-node label or dialog. Saved user content is kept as written.
+
+## 2.35.0: gallery workspace and source observations
+
+Click the gallery's expand button for a draggable, resizable, minimizable workspace. Returning to the node keeps search, scroll and selection order. The single window shows its bound node; deleting that node or switching workflows pauses the binding. Images use their source aspect ratios in masonry columns. Counts sit beside tag names, while translated names and series appear below. Viewing a larger image does not select it.
+
+Prompt Agent now shows raw WD14 tags or source descriptions directly above Final Prompt, expanded by default and collapsible. This read-only observation does not replace downstream output. Image instructions no longer have a 4000-character input cap. Output length is a configurable soft target (default 4000; 0 disables it); oversized results remain complete, including JSON. Model context and token limits still apply.
 
 ## Core tools
 

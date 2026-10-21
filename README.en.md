@@ -4,7 +4,7 @@
 
 A ComfyUI custom-node pack and local toolbox for LoRAs, prompts, reference images and generated outputs. Built for Anima workflows, with other model families supported by individual tools. It manages inference workflows; it does not train LoRAs.
 
-Current release: **2.34.0**. By 时运Toki. MIT license. QQ community: **758086740**.
+Current release: **2.35.0**. By 时运Toki. MIT license. QQ community: **758086740**.
 
 ## Language coverage
 

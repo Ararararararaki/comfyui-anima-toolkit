@@ -44,8 +44,8 @@ async def interrogate_vision(image: bytes, options: dict, config: dict, *, sessi
     if not isinstance(options, dict):
         raise AgentError("视觉反推 options 必须是对象。")
     instruction = options.get("instruction") or "Describe this image."
-    if not isinstance(instruction, str) or len(instruction) > 4000:
-        raise AgentError("视觉反推补充指令最多 4000 个字符。")
+    if not isinstance(instruction, str):
+        raise AgentError("视觉反推补充指令必须是文字。")
     profile = ProfileRegistry().get(options.get("profile") or "anima")
     provider = OpenAICompatibleProvider(dict(config))
     provider.require_model_match = bool(options.get("vision_model", "").strip())

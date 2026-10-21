@@ -438,6 +438,8 @@ export const galleryBrowserView = {
 
   },
   handleGridResize(ui) {
+    if (ui.workspacePaused) return;
+    if (ui.workspaceTransition || ui.workspaceAwaitingScroll) { ui.scheduleMasonryLayout(); return; }
     const old = ui.galleryController.legacy;
 
     if(!ui.browseState) return old.handleGridResize.call(ui);
@@ -446,6 +448,7 @@ export const galleryBrowserView = {
 
   },
   scheduleMasonryLayout(ui) {
+    if (ui.workspacePaused) return;
     const old = ui.galleryController.legacy;
 
     if(!ui.browseActive()) return old.scheduleMasonryLayout.call(ui);

@@ -7,7 +7,7 @@
 > (match local files to Civitai models by SHA256, browse, one-click download),
 > **prompt management** (bilingual tag cards, translation, prompt library, **Chinese tag
 > autocomplete**), **multi-source gallery** (Danbooru / Civitai / Pixiv search in one node,
-> with filters, waterfall layout and random discovery), **Danbooru tools** (tag classifier),
+> with filters, aspect-ratio masonry, a floating workspace and random discovery), **Danbooru tools** (tag classifier),
 > and **output management** (gallery over `ComfyUI/output`, PNG metadata parsing).
 >
 > Publisher `toki` · Registry id `anima-toolkit` · License MIT · Primary docs are in Chinese,
@@ -15,7 +15,10 @@
 
 ## Current release
 
-Version 2.33.0. Adds TK Prompt Agent (Anima / Krea 2 creation, iterative edits,
+Version 2.35.0. Adds a floating gallery workspace and nearby tag counts.
+Prompt Agent shows raw observations above its final prompt. Image instruction input
+has no 4000-character cap; output length is a configurable, non-truncating soft target.
+Includes TK Prompt Agent (Anima / Krea 2 creation, iterative edits,
 explicit locks, image interrogation and optional native DSH execution). Outputs
 supports persistent image sources, work/character browsing, manual organization,
 local WD14 model selection, metadata provenance and zoom/paint/mosaic editing.

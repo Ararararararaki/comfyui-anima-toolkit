@@ -419,7 +419,7 @@ export class PromptAgentUI {
     this.dom.settingsSummary = element("span", "tk-pa-note", "模型、Skill、反推与过滤");
     tools.append(this.dom.settingsButton, this.dom.settingsSummary);
     this.dom.modelUsage = element("div", "tk-pa-note");
-    root.append(tabs, tools, this.dom.modelUsage, creative, imagePane, this.dom.status, final);
+    root.append(tabs, tools, this.dom.modelUsage, creative, imagePane, this.dom.status, this.dom.rawInterrogationPanel, final);
     this.restoreEditors();
     this.setTab(this.activeTab);
     this.refreshConnections();
@@ -606,6 +606,7 @@ export class PromptAgentUI {
     run.append(this.dom.interrogateButton);
     const raw = detail("原始反推结果");
     raw.open = true;
+    this.dom.rawInterrogationPanel = raw;
     this.dom.rawInterrogation = element("textarea", "tk-pa-input tk-pa-textarea");
     this.dom.rawInterrogation.readOnly = true;
     this.dom.rawInterrogation.rows = 3;
@@ -627,7 +628,7 @@ export class PromptAgentUI {
     const upload = detail("手动上传参考图片");
     upload.append(drop, this.dom.imageConnectionHint);
     const debug = detail("手动调试与原始结果");
-    debug.append(run, raw, this.dom.filterReport, field("候选 Prompt · 确认后更新 Final Prompt", this.dom.formattedInterrogation), this.dom.interrogationMessage, accept);
+    debug.append(run, this.dom.filterReport, field("候选 Prompt · 确认后更新 Final Prompt", this.dom.formattedInterrogation), this.dom.interrogationMessage, accept);
     this.dom.imageSettings.append(upload, field("反推来源", source), this.dom.sourceHint,
       this.dom.interrogationConfig.wd14_model_field, this.dom.interrogationConfig.threshold_fieldset,
       field("节点运行方式", auto), this.buildTagFilters(), debug);
@@ -676,6 +677,20 @@ export class PromptAgentUI {
     this.dom.expansion.expansion_instruction = instruction;
     instruction.addEventListener("input", () => this.writeExpansionOption("expansion_instruction", instruction.value));
     wrap.append(field("扩写要求 · 可选", instruction));
+    const outputLimit = element("input", "tk-pa-input");
+    outputLimit.type = "number";
+    outputLimit.min = "0";
+    outputLimit.step = "1";
+    this.dom.expansion.output_char_limit = outputLimit;
+    outputLimit.addEventListener("change", () => {
+      const value = Number(outputLimit.value);
+      if (!Number.isSafeInteger(value) || value < 0) {
+        this.status("输出长度提醒须为非负整数，0 表示不提醒。", true); return;
+      }
+      this.writeExpansionOption("output_char_limit", value);
+    });
+    this.dom.imageSettings.append(field("输出提示词长度提醒 · 字符数", outputLimit),
+      element("div", "tk-pa-note", "默认 4000，0 表示不提醒。仅统计输出提示词，超长仍保留完整结果，不截断、不阻止出图；扩写要求不受此值限制。"));
     const identity = element("input");
     identity.type = "checkbox";
     this.dom.expansion.preserve_identity = identity;
@@ -1416,7 +1431,7 @@ export class PromptAgentUI {
       if (controls[name]) controls[name].value = String(options[name] ?? fallback);
     }
     if (controls.wd14_model && options.model) controls.wd14_model.value = options.model;
-    for (const [name, fallback] of [["expansion_mode", "faithful"], ["vision_provider", "current"], ["expansion_instruction", ""], ["vision_model", ""]]) {
+    for (const [name, fallback] of [["expansion_mode", "faithful"], ["vision_provider", "current"], ["expansion_instruction", ""], ["vision_model", ""], ["output_char_limit", 4000]]) {
       if (this.dom.expansion?.[name]) this.dom.expansion[name].value = String(options[name] ?? fallback);
     }
     if (this.dom.expansion?.auto_expand) this.dom.expansion.auto_expand.checked = options.auto_expand === true;

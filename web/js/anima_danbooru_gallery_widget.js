@@ -1,4 +1,6 @@
 import { app } from "/scripts/app.js";
+import { galleryWorkspace, mountGalleryWorkspace } from "./anima_gallery_workspace.js";
+import { layoutGalleryGrid, positionGallerySuggestions } from "./anima_gallery_layout.js";
 import { GalleryFilterControls, FILTER_DEFAULTS, normalizeFilters, normalizeRatings } from "./anima_danbooru_filter_controls.js";
 import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
 // 2026-09-26 低占位改造：复用项目既有的 portal 下拉菜单（同一个组件已服务于「分级/筛选/全部分类」），
@@ -861,6 +863,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       this._scrollRafPending = false;   // 滚动回调的 rAF 节流标记
       this._infiniteScrollBound = false;
       this._gridScrollHandler = null;
+      this._gridScrollIntentHandler = null;
       this._gridEnterHandler = null;   // 鼠标移入网格时聚焦它（"滚轮归画廊"的官方条件之一）
       this.autoFillRounds = 0;       // 本轮结果集内已自动补了几次（上限 DG_AUTO_FILL_MAX_ROUNDS）
       // 补图的目标可视高：**一经确定就在本轮结果集内锁死**。
@@ -2256,130 +2259,9 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
      * 卡片改用绝对定位（不是 grid-row-end:span）——这样才能让「跨列宽盒」与
      * 「真实盒比」同时成立，并彻底消除旧实现同一行里高矮不一留下的成片空白。
      */
+    // Name retained for existing controller ports; layout is now a regular grid.
     applyMasonryLayout() {
-      if (!this.grid) return;
-      const cards = [...this.grid.querySelectorAll(".adg-card")];
-      if (!cards.length) {
-        this.grid.style.minHeight = "";
-        return;
-      }
-      // ⚠️ 宽度**大改**（拖动节点 / 缩放画布）必须丢掉 lastColStep 反推基准：
-      //    反推本来只为抗「滚动条出现/消失造成的那十几像素」，但宽度大改后继续反推会
-      //    **收敛到错误列数** —— 实测 1743px 宽：正确 14 列被反推成 10 列（卡片宽 124.8 → 174.7），
-      //    用户看到的就是"图片在抖动/错位"。CSS 已加 scrollbar-gutter:stable 从源头稳住宽度，
-      //    这里再加一道：宽度相对上次变化超过阈值就直接用真实宽度重算。
-      const gridStyle = getComputedStyle(this.grid);
-      const padX = (parseFloat(gridStyle.paddingLeft) || 0) + (parseFloat(gridStyle.paddingRight) || 0);
-      const rawUsable = Math.max(DG_MIN_PT, (this.grid.clientWidth || 780) - padX);
-      const previousUsable = Number(this._lastLayoutUsable) || 0;
-      if (previousUsable > 0 && (rawUsable > previousUsable * 1.25 || rawUsable < previousUsable * 0.8)) {
-        this.lastColStep = 0;
-      }
-      this._lastLayoutUsable = rawUsable;
-      // 复用上面刚取的 gridStyle：此处到取值之间只写过 JS 字段（lastColStep/_lastLayoutUsable），
-      // 没有任何 DOM 样式写入 ⇒ 样式没有失效，不必再 getComputedStyle 一次。
-      const { usable, cols } = this.gridMetrics(gridStyle);
-      const padTop = parseFloat(gridStyle.paddingTop) || 0;
-      const colStep = (usable - DG_GAP * (cols - 1)) / cols + DG_GAP;
-      const cardWidth = (usable - DG_GAP * (cols - 1)) / cols;
-      this.lastColStep = colStep;
-      // 左内边距每次都要重读：横向滚动条/样式变更都会改它
-      const padLeft = parseFloat(gridStyle.paddingLeft) || 0;
-      const colHeights = new Array(cols).fill(0);
-
-      // 数据侧只读一次：卡片下标必须与 renderPosts 记录的「实际渲染列表」一致
-      const posts = this._layoutPosts || this.posts || [];
-      for (const marker of this.grid.querySelectorAll(".adg-page-boundary")) marker.remove();
-      let previousPage = null;
-      for (let i = 0; i < cards.length; i++) {
-        const card = cards[i];
-        const post = posts[i];
-        const browsePage = this.browseActive?.() ? this._browsePostPages?.get(this.postKeyOf(post)) : null;
-        if (browsePage && browsePage !== previousPage) {
-          const pageTop = Math.max(...colHeights);
-          colHeights.fill(pageTop + 28);
-          const marker = document.createElement("div");
-          marker.className = "adg-page-boundary";
-          marker.dataset.page = String(browsePage);
-          marker.textContent = `第 ${browsePage} ${this.browseState.pageNumbers ? "页" : "批"}`;
-          Object.assign(marker.style, {position:"absolute", top:`${Math.round(padTop + pageTop)}px`, left:`${padLeft}px`, width:`${usable}px`, height:"24px", fontSize:"11px", color:"var(--descrip-text, var(--fg-color))", borderBottom:"1px solid var(--border-color)", display:"flex", alignItems:"center"});
-          this.grid.append(marker);
-          previousPage = browsePage;
-        }
-        if (browsePage) card.dataset.browsePage = String(browsePage);
-        else delete card.dataset.browsePage;
-        const aspect = this.cardAspect(post);
-        let span = dgSpanFor(aspect, cols);
-        // 兜底：span 任何情况下都不得超出列数，否则下面「找起点」循环一次都不执行，
-        // top 会停在 Infinity（卡片被甩出可视区，且不自愈）。
-        if (span > cols) span = 1;
-        const boxW = cardWidth * span + DG_GAP * (span - 1);
-        const boxH = boxW / (1 / aspect);
-        let start = 0;
-        let top = Infinity;
-        for (let c = 0; c + span <= cols; c++) {
-          let maxH = 0;
-          for (let k = c; k < c + span; k++) if (colHeights[k] > maxH) maxH = colHeights[k];
-          if (maxH < top) { top = maxH; start = c; }
-        }
-        // 最后一道闸：绝不把 Infinity 写进 style（那会让卡片彻底消失且无法自愈）
-        if (!Number.isFinite(top)) { top = 0; start = 0; }
-        const drop = top + boxH + DG_GAP;
-        for (let k = start; k < start + span; k++) colHeights[k] = drop;
-        card.style.position = "absolute";
-        card.style.left = `${Math.round(padLeft + start * colStep)}px`;
-        card.style.top = `${Math.round(padTop + top)}px`;
-        card.style.width = `${Math.round(boxW)}px`;
-        card.style.height = `${Math.round(boxH)}px`;
-        // 供 CSS/探针读的盒比（图片渲染由 .adg-card img 的宽高 100% + object-fit 承接）
-        card.dataset.adgSpan = String(span);
-      }
-      let total = 0;
-      let minCol = Infinity;
-      for (const ch of colHeights) {
-        if (ch > total) total = ch;
-        if (ch < minCol) minCol = ch;
-      }
-      total = Math.max(0, total - DG_GAP);
-      this._layoutTotal = total;
-      const continuation = this.grid.querySelector(".adg-browse-continuation");
-      if (continuation && padTop + total >= (parseFloat(continuation.style.top) || 0)) continuation.remove();
-      // 最矮列：用户眼里的「填满」由最短的那一列决定 —— 最长列会掩盖参差（见 gridUnderfilled）
-      this._layoutMinCol = Number.isFinite(minCol) ? Math.max(0, minCol - DG_GAP) : total;
-      // 实测平均卡高（每列张数 ≈ 卡片数 / 列数）→ 下一次算张数别再用 fallback 比例猜
-      const perCol = Math.max(1, Math.ceil(cards.length / Math.max(1, cols)));
-      this._measuredAvgCardH = Math.max(DG_MIN_CARD_H, (total + DG_GAP) / perCol - DG_GAP);
-      // ── 布局自愈（2026-09-16 用户实测："图片在抖动，要我手动改变一次节点大小才恢复正常"）──
-      // 症状的本质是「算错一次就一直错下去」：gridMetrics() 用上一次的 lastColStep 反推列数
-      // （这是为了不受滚动条出现/消失影响），但首次布局时容器尺寸可能还没稳定；一旦基准被算歪，
-      // 后续每次都沿用脏基准，卡片就会错位/被裁 —— 只有 resize 触发列数重算才能恢复。
-      // 这里做一次廉价校验：最右卡片的右边缘若超出内容区，就丢掉脏基准并立刻重排一次。
-      if (!this._layoutSelfHeal && this.lastColStep > DG_GAP) {
-        let rightEdge = 0;
-        for (const card of cards) {
-          const right = (parseFloat(card.style.left) || 0) + (parseFloat(card.style.width) || 0);
-          if (right > rightEdge) rightEdge = right;
-        }
-        if (rightEdge > usable + padLeft + 2) {
-          this.lastColStep = 0;   // 逼 gridMetrics() 用真实宽度重新估算列数
-          this.lastCols = 0;
-          this._layoutSelfHeal = true;
-          try {
-            this.applyMasonryLayout();
-          } finally {
-            this._layoutSelfHeal = false;
-          }
-          return;                 // 本轮作废：重排那次已经写好布局与统计
-        }
-      }
-      // ⚠️ 不把内容总高写进 min-height，也不再自动收缩 ——
-      //    用户要求（2026-09-16）：「节点大小完全限制于我的设定，不要因为图像而改变，
-      //    也不要自主变大变小」。实测把内容高写进 min-height 后（grid 661px→1708px），
-      //    前端布局器会把节点从 900 顶到 1994；CSS 的 flex-basis:auto 是另一半原因。
-      //    现在网格高度完全交给节点空间（CSS: flex:1 1 0% + height:0 + overflow-y:auto），
-      //    内容多了就滚动，绝不反向影响节点尺寸。
-      this.grid.style.minHeight = "0";
-      if (this.lastCols !== cols) this.lastCols = cols;
+      layoutGalleryGrid(this, DG_GAP);
     }
 
     /**
@@ -2467,7 +2349,8 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
      * 与「自动收缩」方向相反但同样要克制：只在自适应张数模式、只在明显填不满、450ms 防抖、末批不再取。
      */
     handleGridResizeLegacy() {
-      if (!this.grid) return;
+      if (!this.grid || this.workspacePaused) return;
+      if (this.workspaceTransition || this.workspaceAwaitingScroll || galleryWorkspace.ui === this) { this.scheduleMasonryLayout(); return; }
       const { cols } = this.gridMetrics();
       const changed = this.lastCols && cols !== this.lastCols;
       // 「高度显著增大」必须在 scheduleMasonryLayout() 之前读：布局是下一帧才跑的，
@@ -2684,6 +2567,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
      * 就是这条死锁。所以不能只靠滚动事件驱动。
      */
     scheduleScrollFill() {
+      if (this.workspacePaused || this.workspaceTransition || this.workspaceAwaitingScroll) return;
       if (!this.scrollMode() || this.disposed || this._scrollFillTimer) return;
       this._scrollFillTimer = setTimeout(() => {
         this._scrollFillTimer = null;
@@ -2693,6 +2577,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
 
     /** 自动（非用户滚动）继续加载：受**轮次上限 + 30s/4 批时间窗**双重约束 */
     async autoFillByScroll() {
+      if (this.workspacePaused || this.workspaceTransition || this.workspaceAwaitingScroll) return;
       if (!this.scrollMode() || this.disposed) return;
       if (this._scrollLoading || this.fillMoreBusy || this.fillMoreExhausted) return;
       if (!this.posts.length) return;
@@ -2742,6 +2627,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         }
       };
       this.grid.addEventListener("pointerenter", this._gridEnterHandler);
+      this._gridScrollIntentHandler = (event) => {
+        if (event.type === "keydown" && !["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End", " "].includes(event.key)) return;
+        if (event.type === "pointerdown" && event.target !== this.grid) return;
+        this.workspaceAwaitingScroll = false;
+      };
+      for (const type of ["wheel", "keydown", "pointerdown"]) this.grid.addEventListener(type, this._gridScrollIntentHandler, { passive: true });
       this._gridScrollHandler = () => {
         this.hidePromptTooltip();
         if (this._scrollRafPending) return;
@@ -2750,7 +2641,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           this._scrollRafPending = false;
           if (this.disposed || !this.grid) return;
           this.updateBrowseVisible?.();
-          if (!this.scrollMode()) return;
+          if (!this.scrollMode() || this.workspacePaused || this.workspaceTransition || this.workspaceAwaitingScroll) return;
           const remaining = this.grid.scrollHeight - this.grid.scrollTop - this.grid.clientHeight;
           if (remaining <= DG_SCROLL_PREFETCH_PX) void this.loadNextPageForScroll();
         };
@@ -2765,8 +2656,10 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       if (this.grid) {
         if (this._gridScrollHandler) this.grid.removeEventListener("scroll", this._gridScrollHandler);
         if (this._gridEnterHandler) this.grid.removeEventListener("pointerenter", this._gridEnterHandler);
+        for (const type of ["wheel", "keydown", "pointerdown"]) if (this._gridScrollIntentHandler) this.grid.removeEventListener(type, this._gridScrollIntentHandler);
       }
       this._gridScrollHandler = null;
+      this._gridScrollIntentHandler = null;
       this._gridEnterHandler = null;
       this._infiniteScrollBound = false;
     }
@@ -2778,6 +2671,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
      * 即便明显没填满也无人过问，空白就一直留着。
      */
     scheduleAutoFillLegacy() {
+      if (this.workspacePaused || this.workspaceAwaitingScroll) return;
       if (this.autoFillTimer || this.disposed) return;
       // 无限滚动模式（2026-09-27）：整条自动补满链让位给 `scheduleScrollFill()` ——
       // 后者用**同一个判据**（内容没超出容器就继续加载）覆盖了"首屏填满"，而且能在
@@ -3244,6 +3138,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
     }
 
     saveSettings({ rememberSource = false } = {}) {
+      this.refreshGalleryChrome();
       const serialized = JSON.stringify(this.settings);
       try { localStorage.setItem(this.settingsKey(), serialized); } catch {}
       if (rememberSource) {
@@ -3492,6 +3387,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
      * build() 的初次搜索 —— 那些都不是"用户的一次检索"（`search()` 有 30 个调用点，其中 ≥14 个是状态驱动）。
      */
     submitSearch(query) {
+      this.workspaceAwaitingScroll = false;
       // 任何「用户主动提交搜索」都意味着离开差分组浏览（回车 / 「搜索」按钮 / 点联想候选 /
       // 点 prompt 标签 / 点历史条目 / 预设）——「← 返回」不该与搜索框状态打架。
       // 差分跳转自己**不走**这里（见 openDiffGroup）：它不是用户的一次检索，不该进搜索历史。
@@ -3635,23 +3531,25 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
     }
 
     positionSuggestions() {
-      const input = this.queryInput;
-      const suggestions = this.suggestions;
-      if (!input || !suggestions || suggestions.style.display === "none") return;
-      const rect = input.getBoundingClientRect();
-      let width = rect.width;
-      let left = rect.left;
-      // 角色联想一行要装「中文名 → English (作品) + 帖数」，而搜索框可能只有 280px 宽 ——
-      // 实测英文名会被 ellipsis 截成 `H...`，可它正是用户要看的东西（它就是 tag）。
-      // 所以只给角色模式加宽度下限，并把左边界钳回视口内（变宽后可能顶出右边缘）；
-      // **标签联想的定位逻辑原样不动**（需求：非 `@` 场景保持原行为）。
-      if (suggestions.classList.contains("is-characters")) {
-        width = Math.max(width, AT_SUGGEST_MIN_WIDTH);
-        left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+      positionGallerySuggestions(this.queryInput, this.suggestions);
+    }
+
+    handleGallerySuggestionKey(event) {
+      if (event.isComposing || event.ctrlKey || event.altKey || event.metaKey || this.suggestions?.style.display === "none") return false;
+      const rows = [...(this.suggestions?.querySelectorAll(".adg-localized-suggestion, .adg-char-suggestion") || [])];
+      if (!rows.length) return false;
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); this.hideSuggestions(); return true; }
+      const current = rows.findIndex(row => row.classList.contains("is-active"));
+      if (["ArrowDown", "ArrowUp"].includes(event.key)) {
+        event.preventDefault(); event.stopPropagation();
+        const index = (current + (event.key === "ArrowDown" ? 1 : -1) + rows.length) % rows.length;
+        rows.forEach((row, i) => { row.classList.toggle("is-active", i === index); row.setAttribute("aria-selected", String(i === index)); });
+        rows[index].scrollIntoView({ block: "nearest" }); return true;
       }
-      suggestions.style.top = `${Math.round(rect.bottom + 3)}px`;
-      suggestions.style.left = `${Math.round(left)}px`;
-      suggestions.style.width = `${Math.round(width)}px`;
+      if (current >= 0 && (event.key === "Enter" || event.key === "Tab" && !event.shiftKey)) {
+        event.preventDefault(); event.stopPropagation(); rows[current].click(); return true;
+      }
+      return false;
     }
 
     scheduleSuggestions(value) {
@@ -3823,10 +3721,15 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           const count = document.createElement("span");
           count.className = "adg-char-count";
           count.textContent = Number(item?.count) > 0 ? formatCount(item.count) : "";
-          button.append(name, arrow, en, seriesEl, count);
+          const main = document.createElement("span");
+          main.className = "adg-suggestion-main"; main.append(name, count);
+          const secondary = document.createElement("span");
+          secondary.className = "adg-suggestion-secondary"; secondary.append(en, seriesEl);
+          button.append(main, secondary);
           button.onclick = () => this.applyCharacterSuggestion(value);
           suggestions.append(button);
         }
+        this.positionSuggestions();
       } catch { /* 角色库未就绪 / 请求被取消：静默，别打扰搜索框输入 */ }
     }
 
@@ -4108,7 +4011,13 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
               count.title = `本地快照帖数（非 D 站实时值）`;
               count.classList.add("is-snapshot");
             }
-            button.append(...(chineseQuery ? [translation, arrow, tag, count] : [tag, arrow, translation, count]));
+            const main = document.createElement("span");
+            main.className = "adg-suggestion-main";
+            main.append(chineseQuery && translation.textContent ? translation : tag, count);
+            const secondary = document.createElement("span");
+            secondary.className = "adg-suggestion-secondary";
+            secondary.append(chineseQuery && translation.textContent ? tag : translation);
+            button.append(main, secondary);
           } else {
             button.textContent = pixiv ? target : target.replaceAll("_", " ");
           }
@@ -4127,6 +4036,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
           extension.textContent = `扩展：${rewrites.join(" / ")}`;
           this.suggestions.append(extension);
         }
+        this.positionSuggestions();
       } catch {} finally {
         if (this.suggestionController === controller) this.suggestionController = null;
       }
@@ -4248,6 +4158,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
     }
 
     updateGalleryBatchControls(selectedCount = null) {
+      const order = this.selectionOrder || [];
+      for (const card of this.grid?.querySelectorAll(".adg-card") || []) {
+        const index = order.indexOf(this.selectionKey(card));
+        card.dataset.selectionOrder = index >= 0 ? String(index + 1) : "✓";
+      }
+      if (galleryWorkspace.ui === this) galleryWorkspace.refreshSummary();
       this.hoverPreview?.setSelected(!!this.tooltipCard?.classList.contains("is-selected"));
       if (!this.galleryBatchBtn) return;
       const count = selectedCount == null ? this.selectedGallerySelections().length : selectedCount;
@@ -7028,6 +6944,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         ? (post.preview_file_url || post.preview_url || post.large_file_url || "")
         : (post.large_file_url || post.full_url || post.file_url || post.preview_file_url || post.preview_url);
       if (!imageUrl) return;
+      if (galleryWorkspace.showDetail(this, this.imageProxyUrl(imageUrl, "", sourceId), `${this.sourceLabel(sourceId)} #${post.id || ""}`)) return;
       this.removeDialog();
       const overlay = document.createElement("div");
       overlay.id = this.dialogId;
@@ -8499,6 +8416,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         if (document.activeElement !== queryInput && !this.suggestions?.contains(document.activeElement)) this.hideSuggestions();
       }, 160));
       queryInput.onkeydown = (event) => {
+        if (this.handleGallerySuggestionKey(event)) return;
         if (event.key === "Enter" && !event.isComposing) {
           event.preventDefault();
           this.submitSearch(queryInput.value);
@@ -8533,6 +8451,12 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       const filterGroup = makeToolbarGroup("筛选操作", "adg-toolbar-filters");
       const categoryGroup = makeToolbarGroup("分类操作", "adg-toolbar-categories");
       const presetGroup = makeToolbarGroup("搜索预设", "adg-toolbar-presets");
+      const advanced = document.createElement("details");
+      advanced.className = "adg-toolbar-advanced";
+      const advancedLabel = document.createElement("summary");
+      advancedLabel.textContent = "分类与预设";
+      advanced.append(advancedLabel, categoryGroup, presetGroup);
+      toolbar.append(advanced);
       this.filterGroup = filterGroup;
       this.categoryGroup = categoryGroup;
       const addAction = (label, title, action, group = toolbar) => {
@@ -8547,6 +8471,28 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         group.append(button);
         return button;
       };
+      addAction("展开画廊", "打开不随画布移动的常驻画廊", () => galleryWorkspace.open(this, app), mainGroup);
+      const thumbQuick = document.createElement("label");
+      thumbQuick.className = "adg-thumb-quick";
+      thumbQuick.textContent = "缩略图";
+      const thumbQuickSelect = document.createElement("select");
+      thumbQuickSelect.setAttribute("aria-label", "缩略图大小");
+      for (const tier of DG_THUMB_TIERS) thumbQuickSelect.add(new Option(tier.label, tier.width));
+      thumbQuickSelect.value = String(this.thumbTargetPt());
+      this.thumbQuickSelect = thumbQuickSelect;
+      thumbQuickSelect.onchange = () => {
+        this.setThumbWidth(Number(thumbQuickSelect.value));
+        this.saveSettings(); this.scheduleMasonryLayout();
+      };
+      thumbQuick.append(thumbQuickSelect); mainGroup.append(thumbQuick);
+      const quickSort = document.createElement("select");
+      quickSort.setAttribute("aria-label", "排序");
+      for (const [value, label] of [["", "最新"], ["score", "评分"], ["favcount", "收藏"], ["rank", "综合"]]) quickSort.add(new Option(label, value));
+      quickSort.onchange = () => {
+        this.settings.filters.order = quickSort.value; this.saveSettings();
+        this.filterControls?.refresh(); this.search({ resetPage: true });
+      };
+      this.quickSort = quickSort; filterGroup.append(quickSort);
       // ★ 我的收藏入口（2026-09-27，Issue #3）：跳转 `ordfav:<账号>`，展示 / 分页 / 无限滚动
       //   全部复用既有搜索链路。放在「筛选操作」组 —— 语义上它就是"只看我收藏的"。
       this.favoriteButton = addAction(
@@ -8575,7 +8521,7 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         picker.append(icon, select);
         this.sourcePicker = picker;
         this.sourceSelect = select;
-        mainGroup.append(picker);
+        queryRow.prepend(picker);
       }
       const searchButton = addAction("搜索", "搜索当前图源", () => this.submitSearch(this.queryInput?.value ?? this.queryWidget?.value ?? ""), queryRow);
       searchButton.className = "adg-primary-action";
@@ -8812,7 +8758,15 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
       };
       window.addEventListener("pointerdown", this.canvasDismissHandler, true);
       window.addEventListener("wheel", this.canvasDismissHandler, { capture: true, passive: true });
-      root.append(queryRow, toolbar, paginationRow, this.selectionControls.element, status, galleryBatchPanel, grid);
+      const chips = document.createElement("div"); chips.className = "adg-active-filters";
+      this.activeFilterChips = chips;
+      const footer = document.createElement("footer"); footer.className = "adg-gallery-footer";
+      const selectedView = document.createElement("button"); selectedView.type = "button";
+      selectedView.className = "adg-selected-view"; selectedView.textContent = "已选图片";
+      selectedView.onclick = () => this.openSelectedImages();
+      this.outputSummary = document.createElement("span"); this.outputSummary.className = "adg-output-summary";
+      footer.append(this.selectionControls.element, selectedView, this.outputSummary);
+      root.append(queryRow, toolbar, chips, paginationRow, status, galleryBatchPanel, grid, footer);
       this.root = root;
       this.status = status;
       this.grid = grid;
@@ -8900,10 +8854,53 @@ import { normalizeTags, stripFilterOwnedTokens, isDanbooruMetaTag, composeDanboo
         // 不以 isConnected 为条件，避免 Chrome 首次绘制较慢时直接漏掉自动搜索。
         if (!this.disposed && this.root) this.search({ resetPage: true });
       }, 120);
-      return root;
+      this.refreshGalleryChrome();
+      return mountGalleryWorkspace(this, app);
+    }
+
+    openSelectedImages() {
+      const selected = this.selectedGallerySelections();
+      const content = document.createElement("div"); content.className = "adg-selected-images";
+      if (!selected.length) content.textContent = "尚未选择图片";
+      selected.forEach((selection, index) => {
+        const key = this.selectionOrder[index];
+        const post = this._browseSelectedPosts?.get(key) || this.displayPosts().find(p => this.postKeyOf(p) === key);
+        const source = post ? this.postSourceId(post) : this.sourceIdFromPostKey(key);
+        const item = document.createElement("button"); item.type = "button";
+        const image = document.createElement("img"); image.loading = "lazy";
+        image.src = this.imageProxyUrl(selection.image_url, "", source); image.alt = `第 ${index + 1} 张`;
+        const title = document.createElement("span"); title.textContent = `${index + 1} · #${selection.post_id}`;
+        item.append(image, title);
+        item.onclick = () => { if (post) { this.removeDialog(); this.openImagePreview(post); } };
+        content.append(item);
+      });
+      this.openDialog({ title: `已选图片 · ${selected.length} 张 · 按输出顺序`, content, showApply: false });
+    }
+
+    refreshGalleryChrome() {
+      if (!this.activeFilterChips) return;
+      const danbooru = this.isDanbooruSource();
+      this.quickSort.hidden = !danbooru;
+      this.quickSort.value = this.settings.filters?.order || "";
+      this.thumbQuickSelect.value = String(this.thumbTargetPt());
+      const labels = { age: "时间", ageDays: "天数", minScore: "评分", minFavs: "收藏", minMpixels: "像素", ratio: "比例", filetype: "格式", order: "排序" };
+      this.activeFilterChips.replaceChildren();
+      if (danbooru) for (const [key, value] of Object.entries(this.settings.filters || {})) {
+        if (!value) continue;
+        const chip = document.createElement("button"); chip.type = "button";
+        const values = {wide:"横图",tall:"竖图",square:"方形",ultrawide:"宽幅",score:"评分",favcount:"收藏",rank:"综合",random:"随机",static:"静态图",video:"视频"};
+        chip.textContent = `${labels[key] || key}：${values[value] || value} ×`;
+        chip.title = "移除此筛选";
+        chip.onclick = () => {
+          this.settings.filters[key] = ""; this.saveSettings(); this.filterControls?.refresh(); this.search({ resetPage: true });
+        };
+        this.activeFilterChips.append(chip);
+      }
+      this.outputSummary.textContent = this.settings.promptOutputEnabled === false ? "输出：图片 · Prompt 已关闭" : "输出：图片与 Prompt";
     }
 
     disposeLegacy() {
+      galleryWorkspace.release(this);
       this.disposed = true;
       _danQueryFocusTargets.delete(this);
       this.controller?.abort();

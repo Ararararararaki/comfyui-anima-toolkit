@@ -90,8 +90,8 @@ async def plan_character_operations(instruction, identities, provider, image=Non
     """Ask for optional, bounded operations; pixels can ground positional sources."""
     from .protocol import object_schema, complete_structured
     import json
-    if not isinstance(instruction, str) or len(instruction) > 4000:
-        raise AgentError("扩写要求必须是最多4000字的文字")
+    if not isinstance(instruction, str):
+        raise AgentError("扩写要求必须是文字")
     if not instruction.strip():
         return []
     schema = CHARACTER_OPERATIONS_SCHEMA

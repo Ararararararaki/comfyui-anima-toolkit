@@ -146,7 +146,9 @@ export function installGalleryTagSearch(UI) {
       const count = doc.createElement('span'); count.className = 'adg-booru-count';
       count.textContent = item.postCount == null ? '' : Number(item.postCount).toLocaleString();
       count.title = LABELS[state.source] + ' 标签数量（官网接口，非 D站 数量）';
-      row.append(tag,kind,count);
+      const main = doc.createElement('span'); main.className = 'adg-suggestion-main'; main.append(tag,count);
+      const secondary = doc.createElement('span'); secondary.className = 'adg-suggestion-secondary'; secondary.append(kind);
+      row.append(main,secondary);
       row.onpointerdown = row.onmousedown = event => { event.preventDefault(); event.stopPropagation(); };
       row.onclick = event => {event.stopPropagation();this.chooseBooruSuggestion(index);};
       row.onpointerenter = () => this.markBooruSuggestion(index);
@@ -215,18 +217,4 @@ export function installGalleryTagSearch(UI) {
   };
   p.positionSuggestions = function () {
     old.positionSuggestions.call(this);
-    if (!this.suggestions?.classList.contains('is-booru')) return;
-    const rect = this.queryInput.getBoundingClientRect();
-    const view = this.queryInput.ownerDocument.defaultView;
-    const width = Math.min(Math.max(rect.width,260),Math.max(0,view.innerWidth-16));
-    this.suggestions.style.left = Math.max(8,Math.min(rect.left,view.innerWidth-width-8)) + 'px';
-    this.suggestions.style.width = width + 'px';
-    const below = Math.max(0, view.innerHeight - rect.bottom - 12);
-    const above = Math.max(0, rect.top - 12);
-    const openAbove = below < 180 && above > below;
-    this.suggestions.style.maxHeight = Math.max(0, Math.min(400, openAbove ? above : below)) + 'px';
-    // Keep the body portal aligned with the screen-space input under canvas zoom.
-    this.suggestions.style.top = Math.max(8, openAbove
-      ? rect.top - this.suggestions.offsetHeight - 3 : rect.bottom + 3) + 'px';
-  };
-}
+  };}
