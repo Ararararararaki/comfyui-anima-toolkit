@@ -29,6 +29,10 @@ class Runtime:
         self.native_source = native_source or NativeConfigSource()
         from .native_execution import NativeExecutor
         self.native = native_executor or NativeExecutor(request_root=directory / "native-requests")
+        from .connections import ConnectionManager
+        self.connections = ConnectionManager(self)
+        if native_source is None and native_executor is None:
+            self.connections.apply_dsh(self.connections.dsh_settings())
         self.references = host_references(lambda: self.preferences().get("reference_mode", "local"))
         self.agent = PromptAgent(self.profiles, self.sessions, self.presets,
                                  lambda: OpenAICompatibleProvider(self.provider_config()), self.references,
@@ -94,15 +98,21 @@ class Runtime:
     async def native_context(self, request=None):
         from .errors import AgentError
         selection = (request or {}).get("model_selection")
-        self.model_config(selection)  # Validate the public selection before native dispatch.
+        if selection is not None and not isinstance(selection, dict):
+            raise AgentError("模型选择必须是对象。")
         source = (selection or {}).get("source", "current")
         source = self.preferences()["provider_source"] if source == "current" else source
         if not isinstance(source, str) or not source.startswith("dsh-"):
             raise AgentError("DSH 原生模式请先选择 DSH 当前模型、WorkBuddy 或 OpenCode 连接。")
+        if not self.connections.dsh_settings()["enabled"]:
+            raise AgentError("DSH 接入已停用，请在连接管理中启用。")
         metadata = await self.native_meta(source)
         if not metadata["available"]:
             raise AgentError(metadata["error"])
-        model = (selection or {}).get("model", "").strip()
+        model = (selection or {}).get("model", "")
+        if not isinstance(model, str) or len(model) > 256 or any(ord(c) < 32 for c in model):
+            raise AgentError("模型 ID 无效。")
+        model = model.strip()
         return metadata, {"id": source, "provider": metadata["provider"],
                           "model": model or metadata["model"], "model_override": bool(model)}
 
@@ -160,11 +170,10 @@ class Runtime:
             config = self.provider_config()
         elif source == "manual":
             config = self.config.load()
-        elif source in ("dsh-active", "dsh-workbuddy", "dsh-opencode"):
-            config = self.native_source.resolve(source, transport_options(self.config.load()))
+        elif source in ("dsh-active", "dsh-workbuddy", "dsh-opencode") or source.startswith("dsh-provider-"):
+            config = self.native_source.resolve(source, transport_options(self.config.load()), **({"model": model} if model else {}))
         elif source in {item["id"] for item in self.provider_presets()}:
-            config = {**ConfigStore(self.directory / "providers" / f"{identifier(source)}.json").load(),
-                      **transport_options(self.config.load())}
+            config = ConfigStore(self.directory / "providers" / f"{identifier(source)}.json").load()
         elif source == "workbuddy" and (self.directory / "providers" / "workbuddy.json").is_file():
             config = {**ConfigStore(self.directory / "providers" / "workbuddy.json").load(),
                       **transport_options(self.config.load())}
@@ -247,6 +256,7 @@ class Runtime:
                 "presets": [{**p, "builtin": p["id"] in builtins} for p in self.presets.all()],
                 "config": config, "manual_config": self.config.public(), "provider_presets": self.provider_presets(), **self.preferences(),
                 "native_providers": self.native_source.public(), "provider_error": provider_error,
+                "dsh_connection": self.connections.dsh_status(),
                 "interrogation": self.interrogation.meta(),
                 "creation_workflow": {"id": WORKFLOW_ID, "version": WORKFLOW_VERSION}}
 

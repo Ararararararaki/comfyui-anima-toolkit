@@ -34,7 +34,7 @@ class TkPromptAgent:
             "interrogation_action": ("STRING", {"default": "none"}),
             "interrogation_options": ("STRING", {"default": "{}"}),
             "generation_strategy": ("STRING", {"default": "direct"}),
-        }, "optional": {"image": ("IMAGE",)}}
+        }, "optional": {"image": ("IMAGE",), "layout": ("MOSS_LAYOUT",)}}
 
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("agent_response", "final_prompt")
@@ -57,7 +57,7 @@ class TkPromptAgent:
                   execution="snapshot", session_id="", preset="default", custom_instructions="",
                   locked_sections="[]", edit_scope="[]", approved_prompt="", agent_response="", approved_profile="",
                   interrogation_source="local-wd14", interrogation_image="", interrogation_action="none",
-                  interrogation_options="{}", image=None, generation_strategy="guided"):
+                  interrogation_options="{}", image=None, generation_strategy="guided", layout=None):
         profile = profile or "anima"
         execution = execution or "snapshot"
         model_profile = ProfileRegistry().get(profile)
@@ -75,6 +75,25 @@ class TkPromptAgent:
         if not isinstance(options, dict):
             raise AgentError("反推参数必须是 JSON 对象")
         skill_id = options.get("expansion_skill", "")
+        if layout is not None:
+            # Connected editor is the authoritative source for this run. Never
+            # use a stale approved snapshot or send the image to a tagger first.
+            from .services.prompt_agent.layout import prepare_layout
+            prepare_layout(layout)
+            try:
+                locks = json.loads(locked_sections or "[]")
+            except ValueError as error:
+                raise AgentError("锁定分区必须是 JSON 数组") from error
+            runtime = get_runtime()
+            sid = session_id or uuid.uuid4().hex
+            state = runtime.sessions.load(sid)
+            result = await await_interruptible(runtime.execution.execute("layout-accept", {
+                "session_id": sid, "revision": state["revision"], "profile": "krea2",
+                "layout": layout, "instruction": options.get("expansion_instruction") or user_instruction,
+                "options": options, "locks": locks}, tensor=image))
+            return {"ui": {"prompt": [result["prompt"]], "message": [result["message"]], "state": [result["state"]],
+                           "layout_result": [True], "interrogation": [result.get("interrogation", {})]},
+                    "result": (result["message"], result["prompt"])}
         if execution == "snapshot" and interrogation_action == "none":
             if not approved_prompt.strip():
                 raise AgentError("Final Prompt 为空。创作请先发送文字指令；图片反推请连接 IMAGE，并在‘节点运行方式’选‘反推并替换/加入’，然后运行节点。")

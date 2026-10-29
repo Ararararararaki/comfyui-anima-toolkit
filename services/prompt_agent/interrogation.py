@@ -128,15 +128,30 @@ class InterrogationService:
         planning.bind_session(sid + ":character-plan")
         identities = character_references(row.result)
         instruction = options.get("expansion_instruction", "")
+        source_lookup = options.get("lookup_source_characters", True)
+        if type(source_lookup) is not bool:
+            raise AgentError("源角色查库必须是布尔值。")
+        source_evidence, source_warnings = {}, []
+        if source_lookup and identities:
+            try:
+                source_evidence = await self.runtime.references.lookup({"tags": [], "characters": identities})
+                for entry in source_evidence.get("characters", []):
+                    if len(entry.get("candidates", [])) > 1:
+                        source_warnings.append("源角色存在多个候选：" + entry["query"] + "；需结合原图特征判断，不自动认定首项。")
+                    if not entry.get("candidates"):
+                        source_warnings.append("源角色资料未确认：" + entry["query"] + "；结合原图保留可见特征，不推定人物位置。")
+            except (AgentError, OSError, RuntimeError, ValueError):
+                source_warnings.append("源角色资料查询暂不可用；继续结合原图和反推标签扩写。")
         # The image pass also detects optional identity edits. Ordinary rewrites
         # now make one model call, with no mandatory standalone planning request.
         expanded = await expand_image(row.image, filtered, profile,
-            {**options, "filter_report": report, "source_identities": identities}, config, session_id=sid, skill=skill,
+            {**options, "filter_report": report, "source_identities": identities,
+             "source_character_evidence": source_evidence}, config, session_id=sid, skill=skill,
             detect_operations=True)
         operations = expanded["character_operations"]
         queries = list(dict.fromkeys(op["target"].strip() for op in operations))
         evidence = await self.runtime.references.lookup({"tags": queries, "characters": queries}) if queries else {}
-        resolved, warnings = {}, []
+        resolved, warnings = {}, list(source_warnings)
         for entry in evidence.get("characters", []):
             candidates = entry.get("candidates", [])
             exact = [c for c in candidates if entry["query"].casefold() in
@@ -153,6 +168,7 @@ class InterrogationService:
         replacements = [op for op in operations if op["action"] == "replace"]
         remaining = [name for name in identities if not any(not op["source"] or op["source"] == name for op in replacements)]
         effective = {**options, "reference_evidence": evidence, "filter_report": report,
+                     "source_character_evidence": source_evidence,
                      "character_operations": operations,
                      "requested_characters": list(dict.fromkeys(targets + (remaining if options.get("preserve_identity", True) else [])))}
         if replacements:
@@ -160,8 +176,9 @@ class InterrogationService:
         if operations:
             expanded = await expand_image(row.image, filtered, profile,
                                           effective, config, session_id=sid, skill=skill)
-        result = {**row.result, **expanded, "filter_report": report, "reference_evidence": evidence, "reference_warnings": warnings, "character_operations": operations, "observation_id": request["observation_id"],
-                  "message": expanded.get("message", "看图扩写完成。") + (" 资料提示：" + "；".join(warnings) if warnings else "")}
+        source_summary = (f" 源角色查库 {len(identities)} 项，{sum(bool(entry.get('candidates')) for entry in source_evidence.get('characters', []))} 项取得候选资料。" if source_lookup and identities else "")
+        result = {**row.result, **expanded, "filter_report": report, "reference_evidence": evidence, "source_character_evidence": source_evidence, "reference_warnings": warnings, "character_operations": operations, "observation_id": request["observation_id"],
+                  "message": expanded.get("message", "看图扩写完成。") + source_summary + (" 资料提示：" + "；".join(warnings) if warnings else "")}
         progress({"stage": "completed"})
         return result
 

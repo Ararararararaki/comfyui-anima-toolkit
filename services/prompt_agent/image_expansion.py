@@ -159,6 +159,7 @@ async def expand_image(image, observation, profile, options, config, *, session_
                "output_character_target": output_char_limit or None,
                "rendered_text_target_language": requested_lettering_language(instruction) or "source_unless_requested",
                "reference_evidence": options.get("reference_evidence", {}),
+               "source_character_evidence": options.get("source_character_evidence", {}),
                "replacement_characters": options.get("replacement_characters", []),
                "requested_characters": options.get("requested_characters", []),
                "character_operations": options.get("character_operations", []),
@@ -181,7 +182,13 @@ async def expand_image(image, observation, profile, options, config, *, session_
         {"role": "system", "content": "Read the attached image, then use the supplied tagger observations as fallible hints. "
          + identity_rules +
          "Correct non-identity tags that contradict the pixels. Pay attention to subjects, pose, interaction, viewpoint, composition, lighting, environment and materials. "
-         + "Use verified character reference evidence for requested identity changes. Apply character_operations to each specified source only; "
+         + "Use source_character_evidence as fallible candidate identity references, not spatial detections. "
+         "WD14 tags are image-level hints: their order does not map to left/right people or boxes. "
+         "Compare each candidate hair, eyes, accessories and other distinctive features against each visible person before binding a name. "
+         "Keep each person, panel, expression, pose, clothing and bbox together; do not pool features across people or panels. "
+         "Reference outfits are not proof of the worn outfit: actual image clothing and user edits take precedence. "
+         "For multiple ambiguous matches retain visible appearance and uncertainty without inventing a name-to-region assignment. "
+         "Use verified character reference evidence for requested identity changes. Apply character_operations to each specified source only; "
          "preserve other subjects and attach each appearance, expression and pose to the correct subject. "
          "Unresolved catalog queries remain natural-language names, not verified tags. Do not restore replaced source identities. "
          "Follow tag_filter_report.settings: when watermarks is true omit watermarks, signatures and usernames; "

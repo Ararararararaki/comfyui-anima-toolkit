@@ -2608,8 +2608,13 @@ class DanbooruGallery:
         # D站 动画帖是 mp4：PIL 打不开 → 用 ffmpeg 抽首帧当图，避免"下载失败/黑图"
         if _looks_like_video(image_url, content_type, image_bytes):
             image_bytes = _extract_video_frame(image_bytes)
-        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        image_array = np.asarray(image).astype(np.float32) / 255.0
+        # A cached first output can still be retained while this one is built.
+        # Normalize in place: an 8000x6000 image otherwise allocates another
+        # 549 MiB float buffer, which can push a loaded model into paging.
+        with Image.open(io.BytesIO(image_bytes)) as source:
+            with source.convert("RGB") as image:
+                image_array = np.asarray(image).astype(np.float32)
+        image_array /= 255.0
         return torch.from_numpy(image_array)[None,]
 
     @staticmethod

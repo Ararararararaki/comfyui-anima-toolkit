@@ -57,7 +57,9 @@ export function setupLightboxView() {
   fit.className = 'lb-fit-view'
   fit.title = tr("workspace.scrollToZoomDragToPanDouble")
   fit.addEventListener('click', e => { e.stopPropagation(); resetLightboxView() })
-  lb.appendChild(fit)
+  const stage = lb.querySelector('.lb-stage') || lb
+  stage.appendChild(fit)
+  if (stage !== lb) stage.addEventListener('click', e => { if (e.target === stage) closeLightbox() })
   const isPicture = (target: EventTarget | null) => target instanceof Element && !!target.closest('#lbImg, #lbEditWrap')
   lb.addEventListener('wheel', e => {
     if (!lb.classList.contains('open') || !isPicture(e.target) || locked) return

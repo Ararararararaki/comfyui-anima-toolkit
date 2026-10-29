@@ -358,4 +358,7 @@ export const shellMessages = {
   "shell.themeLegacyDescription": { zh: "保留原有主题，可随时切回。", en: "Original themes remain available." },
   "shell.themeSaved": { zh: "已应用并保存", en: "Applied and saved" },
   "shell.themeNotSaved": { zh: "已应用；浏览器未允许保存偏好", en: "Applied; the browser could not save this preference" },
+  "shell.exportKeepState": { zh: "生成信息：保留原始信息", en: "Generation data: keep original" },
+  "shell.exportStripState": { zh: "生成信息：移除后导出", en: "Generation data: remove on export" },
+  "shell.browseHint": { zh: "滚轮缩放，放大后拖动查看", en: "Scroll to zoom; drag to pan when zoomed in" },
 } as const

@@ -1,22 +1,22 @@
 # TK Toolkit
 
+> **2.37.0 Agent 连接管理与布局编辑**：在节点前台新建、修改、检测 API 连接，配置自己的 DSH；修复现代节点 UI 空白和输出框高度丢失，降低画廊大图重复解码的内存峰值。新增 MOSS 可视布局编辑与 Agent 选区扩写。[配置教程](services/prompt_agent/README.md) · [本版说明](docs/FEATURES.md#release-2370) · [更新日志](CHANGELOG.md)。升级后重启一次 ComfyUI 并强制刷新；日常改连接与切模型无需重启。
+
 > **2.36.0 节点中英文切换**：节点界面、画廊窗口和主要弹窗跟随工具箱「设置 → 语言」。切换后先保存工作流，再刷新 ComfyUI 页面，无需重启绘世宿主。提示词、标签和自定义名称保持原样。[覆盖范围与使用方法](docs/FEATURES.md#2360工作流节点语言切换)。
 
 > **2.35.0 画廊与反推结果**：新增可拖动、缩放和最小化的画廊窗口，图片按原比例瀑布流展示；搜索贴数紧跟标签。Prompt Agent 原始反推结果常驻最终提示词上方，扩写指令不再限制 4000 字符，输出长度为可设置的软提醒。[使用说明](docs/FEATURES.md#2350画廊悬浮窗与原始反推结果)。
-
-> **2.34.0 语言切换**：在工具箱「设置」中选择简体中文 / English。本轮仅覆盖工具箱，尚未全面覆盖；工作流节点及其余界面留待后续版本。[更新日志](CHANGELOG.md)。
 
 [简体中文](README.md) | [English](README.en.md)
 
 给 ComfyUI 用的 Anima 工作流工具包。批量挂 LoRA、管理本地模型、搜图找参考、整理提示词、翻看历史出图，都收在一个插件里，另外配一个本地管理面板。
 
-作者时运Toki（B 站同名），MIT 协议。QQ 交流群：**758086740**。
+作者时运Toki（B 站同名）。包含 MOSS Layout Studio 的组合发行版采用 GPL-3.0；原有 MIT 代码的授权保留，详见 [许可说明](licenses/README.md)。QQ 交流群：**758086740**。
 
 > 英文简介：TK Toolkit（2026-09 之前叫 Anima Toolkit，插件本身和 Registry id `anima-toolkit` 都没变）是 ComfyUI 的自定义节点包，外加一个内置网页面板。它管五件日常麻烦事：LoRA 的批量加载与本地管理（含 Civitai 元数据与下载）、提示词管理（中英对照卡片、翻译、中文标签补全）、Danbooru 工具（标签搜索、画廊、分类）、出图管理（把 output 目录做成缩略图画廊并解析 PNG 参数），以及批量出图的辅助节点（多组提示词串行、字符串路由、机位预设）。下面正文用中文写。给 AI 读的机器可读摘要放在 [`llms.txt`](llms.txt)。
 
 <p align="center"><img src="screenshots/icon.png" width="140" alt="TK Toolkit"></p>
 
-当前发布版本: **2.36.0**。
+当前发布版本: **2.37.0**。
 
 ## 安装
 
@@ -48,13 +48,13 @@ Registry 页面在 <https://registry.comfy.org/nodes/anima-toolkit>。依赖见 
 
 ## 最近更新
 
-**2.33.0** 增加 Outputs 多目录整理、角色/作品归类、元数据解析与预览编辑，并正式加入 TK Prompt Agent。
+**2.37.0** 补齐 Agent 前台连接管理，并发布 MOSS 布局编辑与近期界面修复。
 
-- Outputs 可手动开始整理，选择已安装 WD14 模型及阈值，按目录、作品、角色查图；未识别与待整理状态分别显示。
-- 预览支持滚轮缩放、拖动、涂鸦、遮盖、可调马赛克和撤销，当前结果无需另存即可拖出；另存或带备份覆盖均有独立操作。
-- 图片列表和预览拖出遵循全局元数据与署名设置。Pixiv 配套接收桥可在管理页下载，首次安装后自动识别本机端口，无需填配置。
-- TK Prompt Agent 支持 Anima / Krea 2 创作、连续修改、反推和看图扩写，确认的 Prompt 可直接接生图编码节点。
-- 更新后首次进入管理页显示日志，同版本不重复提醒；修复缩略图悬浮闪烁、工具栏遮挡和 LoRA 浏览位置跳动。
+- Agent 配置 → 本节点模型 → 管理连接与请求参数：新建 / 编辑 / 复制 / 删除 API 连接，填写自己的 Key；DSH 可设置用户目录、Profile 与 Relay。连接检测只读取模型列表。
+- 修复现代界面进入子图后的节点空白；输出框拖大后保存工作流，刷新可保留高度。
+- 多重画廊保留原尺寸及像素，减少重复解码大图的临时内存；完整工作流连续两轮仍待复验。
+- [MOSS Layout Editor](docs/FEATURES.md#moss-layout) 支持画框直接输入、多选编组、参考图、模板和选区 Agent 扩写；可直接输出提示词而不调用模型。[导入示例](examples/MOSS-Layout-Editor-Agent.json)。
+- 源角色查库常驻，支持可选每日后台补充与缺失角色补查；图片预览工具移至底部，浅色主题中的按钮和导出状态更清晰。
 
 [完整更新记录](CHANGELOG.md) · [功能说明](docs/FEATURES.md) · [Prompt Agent 使用说明](services/prompt_agent/README.md) · [Pixiv 接收桥安装](integrations/pixiv-drop-bridge/README.md)
 ## 使用
@@ -116,6 +116,8 @@ Registry 页面在 <https://registry.comfy.org/nodes/anima-toolkit>。依赖见 
 在节点菜单搜索 `TK Prompt Agent`（`TK/prompt`），设置兼容模型 API，选择 Anima 或 Krea 2，用中文创建、修改提示词；第二路 STRING 输出连接 CLIP Text Encode。支持快速直写、按流程创作、锁定指定内容、撤销、图片反推与看图扩写。普通 API 编辑无需安装 DSH；DSH 实时连接与原生执行为可选方式。
 
 详细配置与操作见 [Prompt Agent 使用说明](services/prompt_agent/README.md)。模型连接、密钥、可选模型均由各用户自行配置，不随插件附送。
+
+新增 [MOSS 布局编辑器与 Agent 联动](docs/FEATURES.md#moss-layout)：绘制区域、填写描述与中文台词，再由现有 Agent 扩写；位置和文字由画布保存。
 
 ## 面板
 
@@ -213,3 +215,5 @@ ComfyUI-Anima-Batch-LoRA/
 
 - ComfyUI（2024 年之后的版本都行）
 - 只有重建面板时才需要 Node 18+
+
+角色资料持续更新：[自动更新与缺失补查说明](docs/FEATURES.md#源角色查库与增量维护)。

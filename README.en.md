@@ -4,7 +4,17 @@
 
 A ComfyUI custom-node pack and local toolbox for LoRAs, prompts, reference images and generated outputs. Built for Anima workflows, with other model families supported by individual tools. It manages inference workflows; it does not train LoRAs.
 
-Current release: **2.36.0**. By 时运Toki. MIT license. QQ community: **758086740**.
+Current release: **2.37.0**. By 时运Toki. The combined distribution including MOSS Layout Studio is GPL-3.0; original MIT grants remain valid. See [licensing](licenses/README.md). QQ community: **758086740**.
+
+## What's new in 2.37.0
+
+- Manage API connections in Prompt Agent: create, edit, duplicate, delete, test and apply them to a node. Configure your own DSH directory, profile and Relay from the same dialog. See the [Agent setup guide](services/prompt_agent/README.md#english-setup).
+- Fix blank custom widgets in the modern node interface. Resized output fields persist when the workflow is saved.
+- Reduce temporary memory during repeated gallery image decoding without changing image dimensions or pixels. Full workflow reruns still need verification.
+- Draw MOSS layout regions, type prompts directly, use reference images and templates, or expand selected regions through your existing Agent. [Import an example](examples/MOSS-Layout-Editor-Agent.json); direct compilation needs no model call.
+- Add optional character-catalog updates and source-character lookup. Move image editing tools below the preview and improve light-theme button states.
+
+Restart ComfyUI once after this upgrade, then hard-refresh the page. Later connection changes and model switches take effect on the next request without restarting. Personal credentials and models are not included. [Changelog](CHANGELOG.md).
 
 ## Language coverage
 
@@ -26,8 +36,6 @@ Restart ComfyUI. If dependencies are missing, install `requirements.txt` with th
 The built `app/` toolbox is included. Normal use requires neither Node.js nor a frontend build.
 
 ## Open the toolbox and choose English
-
-English toolbox support is implemented in the local source and has not yet been published. The current public release may still display the Chinese interface.
 
 Click **TK Toolkit / 本地工具箱** in ComfyUI's toolbar, or the panel button in the batch LoRA loader. Search for `TK` in the node menu to find the workflow nodes.
 

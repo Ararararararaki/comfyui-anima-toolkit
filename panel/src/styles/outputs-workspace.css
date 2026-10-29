@@ -38,11 +38,20 @@
 .outputs-main .outputs-toolbar-btn, .outputs-main .outputs-toolbar-select { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 32px; height: 34px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface, var(--bg2)); color: var(--text2); font: inherit; font-size: 12px; line-height: 1.2; white-space: nowrap; cursor: pointer; box-shadow: none; }
 .outputs-main .outputs-toolbar-select { max-width: 180px; }
 .outputs-main .outputs-toolbar-btn:hover { color: var(--text); border-color: var(--border-hover); background: var(--bg3); }
-.outputs-main .outputs-toolbar-btn.active { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+html body .outputs-main .outputs-toolbar-btn.active { color: var(--bg) !important; background: var(--text) !important; border-color: var(--text); }
 .outputs-main .outputs-toolbar-btn[hidden] { display: none; }
 .outputs-main .outputs-view-switch { padding: 2px; border: 1px solid var(--border); border-radius: 6px; }
 .outputs-main .outputs-view-switch .outputs-toolbar-btn { height: 28px; border: 0; border-radius: 4px; background: transparent; }
 .outputs-main .outputs-view-switch .outputs-toolbar-btn.active { background: var(--accent-soft); }
+html body .outputs-main .outputs-view-switch .outputs-toolbar-btn:not(.active),
+html body .outputs-main .outputs-more-panel .outputs-toolbar-btn:not(.active) { color: var(--text) !important; opacity: 1; }
+.outputs-main .outputs-view-switch .outputs-toolbar-btn { width: auto; }
+.outputs-main .outputs-view-switch .outputs-toolbar-btn:focus-visible,
+.outputs-main .outputs-more-panel .outputs-toolbar-btn:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.outputs-main .outputs-more-panel .outputs-metadata-btn { border: 1px solid var(--border); }
+html body .outputs-main .outputs-more-panel .outputs-toolbar-btn.active { background: var(--text) !important; color: var(--bg) !important; }
+.outputs-main .outputs-more-panel .outputs-menu-label,
+.outputs-main .outputs-more-panel .outputs-menu-help { color: var(--text2); }
 .outputs-more { position: relative; flex: 0 0 auto; }
 .outputs-more > summary { list-style: none; }
 .outputs-main .outputs-more > summary { width: auto; min-width: 64px; }

@@ -1,0 +1,137 @@
+{
+  "last_node_id": 2,
+  "last_link_id": 1,
+  "version": 0.4,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "TkMossLayoutEditor",
+      "pos": [
+        40,
+        100
+      ],
+      "size": [
+        1040,
+        780
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "layout",
+          "type": "MOSS_LAYOUT",
+          "links": [
+            1
+          ]
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TkMossLayoutEditor"
+      },
+      "widgets_values": [
+        "{\"version\": 1, \"width\": 1024, \"height\": 1024, \"summary\": \"A quiet library with a librarian on the left and a reader on the right.\", \"strict_validation\": true, \"items\": [{\"id\": \"librarian\", \"label\": \"character\", \"caption\": \"A cheerful adult librarian holding a book on the left.\", \"bbox\": [40, 180, 430, 960]}, {\"id\": \"reader\", \"label\": \"character\", \"caption\": \"An adult reader sitting on the right with a curious expression.\", \"bbox\": [570, 300, 990, 960]}, {\"id\": \"dialogue\", \"label\": \"text\", \"caption\": \"A Chinese speech bubble above the librarian.\", \"text\": \"这本书，\\n请轻拿轻放。\", \"bbox\": [40, 20, 470, 170]}]}",
+        true
+      ]
+    },
+    {
+      "id": 2,
+      "type": "TkPromptAgent",
+      "pos": [
+        1160,
+        100
+      ],
+      "size": [
+        740,
+        700
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "layout",
+          "type": "MOSS_LAYOUT",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "agent_response",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "final_prompt",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TkPromptAgent"
+      },
+      "widgets_values": [
+        "krea2",
+        "create",
+        "",
+        "",
+        "snapshot",
+        "",
+        "default",
+        "",
+        "[]",
+        "[]",
+        "",
+        "",
+        "",
+        "local-wd14",
+        "",
+        "none",
+        "{\"expansion_skill\": \"dsh:moss-image-prompt-enhancer\", \"expansion_instruction\": \"Expand the region descriptions into precise English. Keep the quiet library scene and each person's own expression.\"}",
+        "direct"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      1,
+      "MOSS_LAYOUT"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.7,
+      "offset": [
+        0,
+        0
+      ]
+    }
+  }
+}

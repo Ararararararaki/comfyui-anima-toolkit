@@ -1,0 +1,335 @@
+{
+  "id": "25bdd257-33c9-45d3-8307-44d56143c46e",
+  "revision": 0,
+  "last_node_id": 2,
+  "last_link_id": 1,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "TkMossLayoutEditor",
+      "pos": [
+        80,
+        100
+      ],
+      "size": [
+        820,
+        540
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "layout_state",
+          "name": "layout_state",
+          "type": "STRING",
+          "widget": {
+            "name": "layout_state"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "llm_expand",
+          "name": "llm_expand",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "llm_expand"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "layout",
+          "name": "layout",
+          "type": "MOSS_LAYOUT",
+          "links": [
+            1
+          ]
+        },
+        {
+          "localized_name": "width",
+          "name": "width",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "localized_name": "height",
+          "name": "height",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "localized_name": "prompt",
+          "name": "prompt",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TkMossLayoutEditor"
+      },
+      "widgets_values": [
+        "{\"version\":1,\"draft\":{\"width\":1057,\"height\":1841,\"bbox_coord_space\":\"abs\",\"bbox_format\":\"xyxy\",\"summary\":{\"canvas\":\"single\",\"caption\":\"Two friends exchanging a library book; a small speech bubble above.\"},\"items\":[{\"label\":\"character\",\"caption\":\"A cheerful librarian stands on the left of the panel, drawn in a cute anime style with soft, rounded features. She wears a blue cardigan over her outfit and holds a book out toward her friend, her expression bright and friendly. Her full figure spans the left side of the composition, facing right toward the other character and the rounded white speech bubble above.\",\"bbox\":[40,250,500,1700]},{\"label\":\"character\",\"caption\":\"A friend on the right, yellow jacket, reaching for the book.\",\"bbox\":[540,320,1010,1750]},{\"label\":\"text\",\"caption\":\"A rounded white speech bubble.\",\"bbox\":[200,40,900,230],\"text\":\"这本书借给你！\"}]},\"studio\":{\"width\":1057,\"height\":1841,\"summary\":{\"caption\":\"Two friends exchanging a library book; a small speech bubble above.\",\"meta\":[],\"canvas\":\"single\",\"palette\":[]},\"elements\":[{\"id\":\"e5_hacwg\",\"label\":\"character\",\"bbox\":[40,250,500,1700],\"caption\":\"A cheerful librarian stands on the left of the panel, drawn in a cute anime style with soft, rounded features. She wears a blue cardigan over her outfit and holds a book out toward her friend, her expression bright and friendly. Her full figure spans the left side of the composition, facing right toward the other character and the rounded white speech bubble above.\",\"text\":\"\",\"tags\":[],\"palette\":[],\"boxColor\":\"#fbbf24\",\"linkId\":null,\"groupId\":null},{\"id\":\"e6_sdayn\",\"label\":\"character\",\"bbox\":[540,320,1010,1750],\"caption\":\"A friend on the right, yellow jacket, reaching for the book.\",\"text\":\"\",\"tags\":[],\"palette\":[],\"boxColor\":\"#a78bfa\",\"linkId\":null,\"groupId\":null},{\"id\":\"e7_4z75j\",\"label\":\"text\",\"bbox\":[200,40,900,230],\"caption\":\"A rounded white speech bubble.\",\"text\":\"这本书借给你！\",\"tags\":[],\"palette\":[],\"boxColor\":\"#22d3ee\",\"linkId\":null,\"groupId\":null}],\"overlay\":{\"lineWidth\":3,\"fillAlpha\":0.18,\"labelSize\":16,\"showIndex\":true,\"showText\":true},\"ui\":{\"sync\":true,\"showLabels\":true,\"backdropOpacity\":0.5,\"newType\":\"object\",\"jsonOpen\":false,\"summaryOpen\":true,\"itemsOpen\":true,\"showPresets\":false,\"jsonSync\":false,\"livePreview\":false}}}",
+        false,
+        ""
+      ]
+    },
+    {
+      "id": 2,
+      "type": "TkPromptAgent",
+      "pos": [
+        1220,
+        100
+      ],
+      "size": [
+        460,
+        860
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "image",
+          "name": "image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "layout",
+          "name": "layout",
+          "shape": 7,
+          "type": "MOSS_LAYOUT",
+          "link": 1
+        },
+        {
+          "localized_name": "profile",
+          "name": "profile",
+          "type": "COMBO",
+          "widget": {
+            "name": "profile"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "mode",
+          "name": "mode",
+          "type": "COMBO",
+          "widget": {
+            "name": "mode"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "current_prompt",
+          "name": "current_prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "current_prompt"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "user_instruction",
+          "name": "user_instruction",
+          "type": "STRING",
+          "widget": {
+            "name": "user_instruction"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "execution",
+          "name": "execution",
+          "type": "COMBO",
+          "widget": {
+            "name": "execution"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "session_id",
+          "name": "session_id",
+          "type": "STRING",
+          "widget": {
+            "name": "session_id"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "preset",
+          "name": "preset",
+          "type": "STRING",
+          "widget": {
+            "name": "preset"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "custom_instructions",
+          "name": "custom_instructions",
+          "type": "STRING",
+          "widget": {
+            "name": "custom_instructions"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "locked_sections",
+          "name": "locked_sections",
+          "type": "STRING",
+          "widget": {
+            "name": "locked_sections"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "edit_scope",
+          "name": "edit_scope",
+          "type": "STRING",
+          "widget": {
+            "name": "edit_scope"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "approved_prompt",
+          "name": "approved_prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "approved_prompt"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "agent_response",
+          "name": "agent_response",
+          "type": "STRING",
+          "widget": {
+            "name": "agent_response"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "approved_profile",
+          "name": "approved_profile",
+          "type": "STRING",
+          "widget": {
+            "name": "approved_profile"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "interrogation_source",
+          "name": "interrogation_source",
+          "type": "STRING",
+          "widget": {
+            "name": "interrogation_source"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "interrogation_image",
+          "name": "interrogation_image",
+          "type": "STRING",
+          "widget": {
+            "name": "interrogation_image"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "interrogation_action",
+          "name": "interrogation_action",
+          "type": "STRING",
+          "widget": {
+            "name": "interrogation_action"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "interrogation_options",
+          "name": "interrogation_options",
+          "type": "STRING",
+          "widget": {
+            "name": "interrogation_options"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "generation_strategy",
+          "name": "generation_strategy",
+          "type": "STRING",
+          "widget": {
+            "name": "generation_strategy"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "agent_response",
+          "name": "agent_response",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "localized_name": "final_prompt",
+          "name": "final_prompt",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TkPromptAgent",
+        "tkPromptAgentTab": "create",
+        "tkPromptAgentInitialized": true,
+        "tkPromptAgentDefaultApplied": true
+      },
+      "widgets_values": [
+        "anima",
+        "modify",
+        "{\"summary\":{\"canvas\":\"single\",\"caption\":\"Two friends exchanging a library book; a small speech bubble above.\"},\"items\":[{\"label\":\"character\",\"caption\":\"A cheerful librarian stands on the left of the panel, drawn in a cute anime style with soft, rounded features. She wears a blue cardigan over her outfit and holds a book out toward her friend, her expression bright and friendly. Her full figure spans the left side of the composition, facing right toward the other character and the rounded white speech bubble above.\",\"bbox\":[-670,-488,780,-28]},{\"label\":\"character\",\"caption\":\"A friend on the right, yellow jacket, reaching for the book.\",\"bbox\":[-600,12,830,482]},{\"label\":\"text\",\"caption\":\"A rounded white speech bubble.\",\"bbox\":[-880,-328,-690,372],\"text\":\"这本书借给你！\"}],\"bbox_coord_space\":\"abs_centralized\",\"bbox_format\":\"yxyx\"}",
+        "",
+        "snapshot",
+        "",
+        "",
+        "",
+        "[]",
+        "[]",
+        "{\"summary\":{\"canvas\":\"single\",\"caption\":\"Two friends exchanging a library book; a small speech bubble above.\"},\"items\":[{\"label\":\"character\",\"caption\":\"A cheerful librarian stands on the left of the panel, drawn in a cute anime style with soft, rounded features. She wears a blue cardigan over her outfit and holds a book out toward her friend, her expression bright and friendly. Her full figure spans the left side of the composition, facing right toward the other character and the rounded white speech bubble above.\",\"bbox\":[-670,-488,780,-28]},{\"label\":\"character\",\"caption\":\"A friend on the right, yellow jacket, reaching for the book.\",\"bbox\":[-600,12,830,482]},{\"label\":\"text\",\"caption\":\"A rounded white speech bubble.\",\"bbox\":[-880,-328,-690,372],\"text\":\"这本书借给你！\"}],\"bbox_coord_space\":\"abs_centralized\",\"bbox_format\":\"yxyx\"}",
+        "布局扩写已完成。",
+        "anima",
+        "local-wd14",
+        "",
+        "none",
+        "{\"expansion_skill\":\"builtin:anima\"}",
+        "direct"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      1,
+      "MOSS_LAYOUT"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.7,
+      "offset": [
+        0,
+        0
+      ]
+    },
+    "tk_moss_layout_example": "Draw regions, enter captions, then expand selected regions. No model call when editor llm_expand is disabled."
+  },
+  "version": 0.4
+}

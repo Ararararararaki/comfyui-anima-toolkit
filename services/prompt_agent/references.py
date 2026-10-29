@@ -151,7 +151,19 @@ def host_references(mode) -> References:
         if index is None:
             raise RuntimeError("Character catalog is not ready")
         rows = index.search(query, limit=3)["results"]
-        return [{**{key: row.get(key) for key in ("slug", "name", "series", "zh", "trigger")},
+        if not rows or not any(row.get("features") or row.get("outfit") for row in rows):
+            from ..character_catalog import current
+            try:
+                fresh = current().lookup(query)
+                if fresh:
+                    refreshed = get_index()
+                    rows = [refreshed._row_payload(refreshed.by_slug[row["slug"]]) for row in fresh
+                            if row["slug"] in refreshed.by_slug][:3]
+            except (OSError, ValueError, TypeError):
+                # Keep unavailable distinct from an authoritative empty catalog.
+                if not rows:
+                    raise RuntimeError("Character catalog supplementation unavailable")
+        return [{**{key: row.get(key) for key in ("slug", "name", "series", "copyright_name", "zh", "trigger", "source", "source_url", "fetched_at")},
                  **{key: row.get(key, [])[:12] for key in ("features", "outfit")}} for row in rows]
 
     def tag_query(value):

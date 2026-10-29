@@ -806,15 +806,25 @@ h1 small { font-size: 12px; color: var(--text2); font-weight: 400; margin-left: 
 
 }
 
-.lightbox.open { display: flex; }
+.lightbox.open { display: flex; flex-direction: column; }
 
 .lightbox { overflow: hidden; }
 .lightbox #lbImg, .lightbox #lbEditWrap { transform-origin: center; touch-action: none; user-select: none; }
 .lightbox .close, .lightbox .lb-nav, .lightbox .lb-counter { z-index: 21; }
 .lb-fit-view { position: absolute; z-index: 21; bottom: 16px; right: 20px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg2); color: var(--text); cursor: pointer; font: inherit; font-size: 12px; }
 .lb-fit-view:disabled { opacity: .5; cursor: default; }
-/* Both rows share normal flow: wrapping and mode-specific controls change height together. */
-.lb-toolbars { position: absolute; z-index: 22; top: 12px; left: 50%; transform: translateX(-50%); width: min(760px, calc(100% - 128px)); max-height: calc(100% - 72px); overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+/* The stage and dock own separate space; neither the image nor zoom can cover tools. */
+.lb-stage { position: relative; order: 0; flex: 1 1 0; min-height: 0; width: 100%; display: flex; align-items: center; justify-content: center; overflow: hidden; container-type: size; }
+.lb-toolbars { order: 1; position: relative; z-index: 22; width: 100%; box-sizing: border-box; max-height: 40%; flex: 0 0 auto; overflow-y: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 12px; padding: 8px 12px; background: var(--bg2); color: var(--text); border-top: 1px solid var(--border); }
+.lb-toolbars .lb-editbar, .lb-toolbars .lb-paintbar { border: 0; padding: 0; background: transparent; }
+.lb-toolbars .lb-editbar { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.lb-toolbars .lb-paintbar { flex: 1 1 420px; gap: 6px; }
+.lb-stage #lbImg, .lb-stage #lbEditWrap, .lb-stage #lbEditCanvas { max-width: calc(100cqw - 80px); max-height: calc(100cqh - 32px); }
+.lb-toolbars button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.lb-toolbars button { min-height: 30px; font-size: 12px; }
+.lb-toolbars button:disabled { opacity: .55; cursor: not-allowed; }
+.lb-toolbars .lb-paintbar button[aria-pressed="true"] { background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 600; }
+@media (max-width: 600px) { .lb-toolbars { padding: 6px; gap: 6px; } .lb-stage #lbImg, .lb-stage #lbEditWrap, .lb-stage #lbEditCanvas { max-width: calc(100cqw - 48px); } }
 .lb-paintbar { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); color: var(--text); font-size: 12px; }
 .lb-paintbar button { color: inherit; background: transparent; border: 1px solid var(--border); padding: 5px 8px; border-radius: 5px; cursor: pointer; white-space: nowrap; }
 .lb-paint-modes { display: flex; flex-wrap: wrap; justify-content: center; gap: 3px; }

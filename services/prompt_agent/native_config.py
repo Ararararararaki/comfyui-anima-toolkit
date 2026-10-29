@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import os
+import hashlib
 import re
 from pathlib import Path
 
@@ -101,6 +102,8 @@ class NativeConfigSource:
         self.workspace = Path(workspace) if workspace is not None else Path.cwd()
 
     def _snapshot(self) -> tuple[dict, dict]:
+        if not getattr(self, "enabled", True):
+            raise ConfigError("DSH 接入已停用，请在连接管理中启用。")
         path = self.home / "profiles" / self.profile / "cordis.patch.yml"
         entries = _yaml(path)
         if not isinstance(entries, list):
@@ -125,7 +128,7 @@ class NativeConfigSource:
             configured = pi_ai["config"].get("providers", {})
             if isinstance(configured, dict):
                 for route, provider in configured.items():
-                    if route == "opencode-go" and isinstance(provider, dict):
+                    if isinstance(route, str) and isinstance(provider, dict):
                         if provider.get("api") == "openai-completions":
                             providers[route] = provider
         return providers, active
@@ -164,11 +167,13 @@ class NativeConfigSource:
                 return value, source
         return "", "unset"
 
-    def _resolve(self, source_id: str, overrides: dict | None = None) -> tuple[dict, dict]:
-        if source_id != "dsh-active" and source_id not in _SOURCE_ROUTES:
-            raise ConfigError("未知的 DSH 模型配置来源。")
+    def _resolve(self, source_id: str, overrides: dict | None = None, *, model=None, for_listing=False) -> tuple[dict, dict]:
         providers, active = self._snapshot()
-        route = active.get("provider") if source_id == "dsh-active" else _SOURCE_ROUTES[source_id]
+        routes = {**_SOURCE_ROUTES, **{self.source_id(route): route for route in providers
+                                     if route not in _SOURCE_ROUTES.values()}}
+        if source_id != "dsh-active" and source_id not in routes:
+            raise ConfigError("未知的 DSH 模型配置来源。")
+        route = active.get("provider") if source_id == "dsh-active" else routes[source_id]
         if not isinstance(route, str) or route not in providers:
             raise ConfigError("DSH 中未找到此来源的静态模型配置。")
         provider = providers[route]
@@ -179,14 +184,22 @@ class NativeConfigSource:
                      if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]]
         if not model_ids:
             raise ConfigError("DSH 来源没有可用的静态模型。")
-        if source_id == "dsh-active" or active.get("provider") == route:
+        needs_selection = False
+        if model:
+            # Explicit overrides may name a model added by the service since
+            # DSH's static catalog was written. Never substitute another ID.
+            pass
+        elif source_id == "dsh-active" or active.get("provider") == route:
             model = active.get("model")
             if not isinstance(model, str) or model not in model_ids:
                 raise ConfigError("DSH 默认模型未出现在此来源的 models 中。")
         elif len(model_ids) == 1:
             model = model_ids[0]
+        elif for_listing:
+            model = model_ids[0]
+            needs_selection = True
         else:
-            raise ConfigError("DSH 此来源有多个模型，请先在 DSH 选定默认模型。")
+            raise ConfigError("DSH 此来源有多个模型，请在节点选择模型，或先在 DSH 选定默认模型。")
         reference = provider.get("apiKeyEnv")
         if not isinstance(reference, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", reference):
             raise ConfigError("DSH 来源需要静态 apiKeyEnv 凭据引用。")
@@ -211,29 +224,39 @@ class NativeConfigSource:
         settings["api_key"] = key
         normalized = validate_config(settings)
         metadata = {"id": source_id,
-                    "name": "DSH 当前模型" if source_id == "dsh-active" else f"DSH {'WorkBuddy' if route == 'workbuddy' else 'OpenCode'}",
-                    "provider": route, "model": normalized["model"], "base_url": normalized["base_url"],
+                    "name": "DSH 当前模型" if source_id == "dsh-active" else "DSH " + {"workbuddy": "WorkBuddy", "opencode-go": "OpenCode"}.get(route, route),
+                    "provider": route, "model": "" if needs_selection else normalized["model"], "base_url": normalized["base_url"],
                     "api_key_set": bool(normalized.get("api_key")), "credential_source": credential_source,
                     "config_source": f"DSH profiles/{self.profile}/cordis.patch.yml", "live": True,
-                    "scope": "connection"}
+                    "scope": "connection", "models": model_ids}
         return normalized, metadata
 
-    def resolve(self, source_id: str, overrides: dict | None = None) -> dict:
-        return self._resolve(source_id, overrides)[0]
+    def resolve(self, source_id: str, overrides: dict | None = None, *, model=None) -> dict:
+        return self._resolve(source_id, overrides, model=model)[0]
 
     def describe(self, source_id: str) -> dict:
         """Resolve a single live native identity without exporting credentials."""
-        return self._resolve(source_id)[1]
+        return self._resolve(source_id, for_listing=True)[1]
 
     def list(self) -> list[dict]:
         """List only sources that can be resolved; no raw settings or keys."""
         result = []
-        for identifier in ("dsh-active", *_SOURCE_ROUTES):
+        try:
+            providers, _ = self._snapshot()
+        except ConfigError:
+            return []
+        sources = ["dsh-active", *_SOURCE_ROUTES,
+                   *(self.source_id(route) for route in providers if route not in _SOURCE_ROUTES.values())]
+        for identifier in sources:
             try:
-                result.append(self._resolve(identifier)[1])
+                result.append(self.describe(identifier))
             except ConfigError:
                 continue
         return result
+
+    @staticmethod
+    def source_id(route):
+        return "dsh-provider-" + hashlib.sha256(route.encode("utf8")).hexdigest()[:16]
 
     def public(self) -> list[dict]:
         return self.list()

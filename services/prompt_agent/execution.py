@@ -84,7 +84,7 @@ class ExecutionCore:
                 self.jobs.pop(job.id, None)
 
     def start(self, kind, request, *, tensor=None):
-        if kind not in {"edit", "retry", "interrogate", "expand-interrogation", "interrogate-accept"}:
+        if kind not in {"edit", "retry", "interrogate", "expand-interrogation", "interrogate-accept", "layout-accept"}:
             raise AgentError("未知 Prompt Agent 任务类型")
         request = deepcopy(request)
         sid = identifier(request.get("session_id", ""))
@@ -99,7 +99,17 @@ class ExecutionCore:
             if selection is None and isinstance(options, dict):
                 selection = {"source": options.get("vision_provider", "current"),
                              "model": options.get("vision_model", "")}
-            config = self.runtime.model_config(selection)
+            local_layout = kind == "layout-accept" and isinstance(request.get("layout"), dict) and request["layout"].get("llm_expand") is False
+            # Native Relay owns its model adapters and credentials. Requiring
+            # a readable Chat Completions config first prevents otherwise valid
+            # DSH installations from using their native Agent.
+            native = kind == "edit" and request.get("generation_strategy") == "native"
+            if native and selection is not None and (not isinstance(selection, dict) or
+                    not isinstance(selection.get("source", "current"), str) or not isinstance(selection.get("model", ""), str)):
+                raise AgentError("模型连接或模型 ID 无效。")
+            config = ({"model": ""} if local_layout else
+                      {**self.runtime.config.load(), "model": (selection or {}).get("model", "") or "DSH"} if native else
+                      self.runtime.model_config(selection))
             job = Job(uuid4().hex, sid, config.get("model", ""))
             self.jobs[job.id] = job
             job.task = asyncio.create_task(self._run(job, kind, request, config, tensor))
@@ -152,6 +162,10 @@ class ExecutionCore:
             if kind in {"edit", "retry"}:
                 job.phase = "editing"
                 result = await self.runtime.agent.edit(request, **({"retry": True} if kind == "retry" else {}))
+            elif kind == "layout-accept":
+                from .layout import accept_layout
+                job.phase = "layout-expansion"
+                result = await accept_layout(self.runtime, request, tensor)
             elif kind == "expand-interrogation":
                 result = await self.runtime.interrogation.expand(request)
             else:

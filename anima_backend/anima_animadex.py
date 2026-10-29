@@ -14,8 +14,9 @@
    实测 100% 有 `trigger`、100% 有预览图）。放**插件根目录且 `anima_` 前缀**是刻意的 ——
    内置更新链的发布白名单只认 `anima_*/services/web/app`，`data/` 被整个排除，
    放 data/ 老用户点更新拿不到。
-2. **后台刷新**：`refresh_async()` 拉 AnimaDex 公开 API 的最新热门页，合并更新本地缓存
-   （不阻塞、失败不影响本地打底）。
+2. **独立增量资料库**：services.character_catalog 负责可选的每日后台更新与缺失角色补查，
+   合并 AnimaDex 真实资料与 Danbooru 角色标签；保存来源和更新时间，失败保留旧库。
+   开关在 Agent 配置中，按角色库使用触发，宿主空闲时启动；不另建操作系统计划任务。
 
 ## 站点实测（2026-09-26）
 
@@ -283,6 +284,13 @@ class AnimaDexIndex:
             except (OSError, ValueError, TypeError) as error:
                 self.errors.append(f"raw: {type(error).__name__}: {error}")
 
+        merged = {row["slug"]: row for row in rows if row["slug"]}
+        for row in _catalog().overlay():
+            prior = merged.get(row["slug"], {})
+            if row.get("source") == "danbooru" and prior:
+                continue  # A bare canonical role must not erase shipped appearance evidence.
+            merged[row["slug"]] = {**prior, **row}
+        rows = list(merged.values())
         rows = [row for row in rows if row["slug"]]
         self.rows = rows
         self.by_slug = {row["slug"]: row for row in rows}
@@ -550,6 +558,9 @@ class AnimaDexIndex:
                   for index, tier in tier_of.items()]
         scored.sort(key=lambda item: (-item[0], item[1]["slug"]))
         return [{
+            "source": row.get("source", "bundled_animadex"),
+            "fetched_at": row.get("fetched_at"),
+            "source_url": row.get("source_url", ANIMADEX_API),
             "slug": row["slug"],
             "name": row["name"],
             "zh": self._zh_by_slug.get(normalize_key(row["slug"]), ""),
@@ -702,21 +713,34 @@ class AnimaDexIndex:
 
 # ---------- 单例 / 预热 / 后台刷新 ----------
 
+def _catalog():
+    try:
+        from .services.character_catalog import current
+    except ImportError:
+        from services.character_catalog import current
+    return current()
+
+
 _INDEX: AnimaDexIndex | None = None
+_INDEX_OVERLAY_VERSION = None
 _LOCK = threading.RLock()
 _WARM_THREAD: threading.Thread | None = None
-_REFRESH_STATE: dict[str, Any] = {"running": False, "last_at": 0.0, "updated": 0, "error": ""}
 
 
 def get_index(build: bool = True) -> AnimaDexIndex | None:
-    global _INDEX
+    global _INDEX, _INDEX_OVERLAY_VERSION
+    catalog = _catalog()
+    if build:
+        catalog.touch()
+    fingerprint = catalog.fingerprint()
     with _LOCK:
-        if _INDEX is not None:
+        if _INDEX is not None and (not build or fingerprint == _INDEX_OVERLAY_VERSION):
             return _INDEX
         if not build:
             return None
         index = AnimaDexIndex().build()
         _INDEX = index
+        _INDEX_OVERLAY_VERSION = fingerprint
         try:
             print(
                 "[AnimaDex] 角色库就绪：%s 角色（来源 %s / 中文名 %s / 服饰分类 %s）/ 构建 %.0f ms"
@@ -757,65 +781,17 @@ def animadex_status() -> dict[str, Any]:
     base = {"ready": index is not None, "warming": bool(_WARM_THREAD and _WARM_THREAD.is_alive())}
     if index is not None:
         base.update(index.stats())
-    base["refresh"] = dict(_REFRESH_STATE)
+    base["refresh"] = _catalog().status()
     return base
 
 
 def refresh_async(pages: int = 3) -> dict[str, Any]:
-    """后台刷新：拉 API 最新热门页，**只更新本地已有角色的帖数与缩略图**（增量、不阻塞）。
+    """Compatibility entry: bounded persistent additions, not popularity-only mutation.
 
-    刻意不重抓全量：全量实测要 1227 秒（1014 页），不适合在用户点一下时跑。
-    目的只是让热度排序与缩略图跟上站上变化，新角色的补齐留给后续版本。
-
-    页数一律过 `_clamp_pages`（2026-09-27 修冷审查缺陷 9）：路由侧已 clamp，这里再兜一道 ——
-    本函数是公开 API（`__all__` 之外但模块级），别把「防呆」只押在调用方身上。
+    The old pages argument is accepted but never expands network work. Catalog
+    maintenance owns a fixed batch, rotating cursor, failure state and persistence.
     """
-    pages = _clamp_pages(pages)
-    with _LOCK:
-        if _REFRESH_STATE["running"]:
-            return {"started": False, "reason": "已有刷新任务在跑"}
-        _REFRESH_STATE.update({"running": True, "error": ""})
-
-    def worker() -> None:
-        updated = 0
-        try:
-            index = get_index()
-            if index is None:
-                raise RuntimeError("索引未就绪")
-            for page in range(1, pages + 1):
-                url = f"{ANIMADEX_API}?" + urllib.parse.urlencode(
-                    {"sort": "count", "page": page, "page_size": 100}
-                )
-                request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
-                                                              "Accept": "application/json"})
-                with urllib.request.urlopen(request, timeout=30) as response:
-                    payload = json.loads(response.read().decode("utf-8", "replace") or "{}")
-                for item in payload.get("results") or []:
-                    if not isinstance(item, dict):
-                        continue
-                    slug = str(item.get("slug") or "").strip()
-                    row = index.by_slug.get(slug)
-                    if row is None:
-                        continue
-                    new_count = int(item.get("count") or 0)
-                    new_thumb = str(item.get("thumb_url") or "")
-                    if new_count and new_count != row["count"]:
-                        row["count"] = new_count
-                        updated += 1
-                    if new_thumb and new_thumb != row["thumb_url"]:
-                        row["thumb_url"] = new_thumb
-            _REFRESH_STATE.update({"updated": updated, "last_at": time.time(), "error": ""})
-            print(f"[AnimaDex] 后台刷新完成：更新 {updated} 条热度/缩略图")
-        except Exception as error:  # noqa: BLE001
-            _REFRESH_STATE.update({"error": f"{type(error).__name__}: {error}"})
-            print(f"[AnimaDex] 后台刷新失败（本地打底不受影响）：{error}")
-        finally:
-            with _LOCK:
-                _REFRESH_STATE["running"] = False
-
-    thread = threading.Thread(target=worker, name="tk-animadex-refresh", daemon=True)
-    thread.start()
-    return {"started": True}
+    return _catalog().request_refresh()
 
 
 # ---------- 路由（与其它模块同写法；独立运行时退化为空装饰器）----------

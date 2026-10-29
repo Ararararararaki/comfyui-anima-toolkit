@@ -1,5 +1,6 @@
 import { uiText } from "./anima_node_i18n.js";
 import { installDOMWidgetSizeSync } from "./anima_dom_widget_size_sync.js";
+import { AgentConnectionEditor } from "./anima_prompt_agent_connections.js";
 
 const NODE_NAME = "TkPromptAgent";
 const SESSION_OWNERS = new Map();
@@ -257,6 +258,7 @@ export class PromptAgentUI {
 
   textarea(name, placeholder, rows = 3, readOnly = false) {
     const area = element("textarea", "tk-pa-input tk-pa-textarea");
+    area.dataset.tkResizeKey = name;
     area.rows = rows;
     area.placeholder = placeholder;
     area.readOnly = readOnly;
@@ -441,7 +443,7 @@ export class PromptAgentUI {
     this.setTab(this.activeTab);
     this.refreshConnections();
     this.updateExecutionHint();
-    this.refreshMeta();
+    this.ready = this.refreshMeta();
     return root;
   }
 
@@ -476,6 +478,7 @@ export class PromptAgentUI {
       this.dom.connectionDialog = dialog;
     }
     this.dom.providerSettings.open = true;
+    this.connectionEditor?.render();
     if (!this.dom.connectionDialog.open) this.dom.connectionDialog.showModal();
   }
 
@@ -526,8 +529,9 @@ export class PromptAgentUI {
     if (!this.dom.auxiliarySkills) return;
     const picked = new Set(this.interrogationOptions().auxiliary_skills || []);
     this.dom.auxiliarySkills.replaceChildren();
+    const primary = (this.meta.skills || []).find(item => item.id === this.selectedSkillId());
     for (const item of this.meta.skills || []) {
-      if (item.source === "builtin" || item.id === this.selectedSkillId() || item.id === "dsh:moss-image-prompt-enhancer") continue;
+      if (item.source === "builtin" || item.id === this.selectedSkillId() || item.id === "dsh:moss-image-prompt-enhancer" || (primary && item.style !== primary.style)) continue;
       const input = element("input"); input.type = "checkbox"; input.checked = picked.has(item.id);
       input.addEventListener("change", () => {
         if (input.checked && picked.size >= 4) { input.checked = false; this.status(uiText("最多选择 4 个辅助 Skill。", "Select up to four additional Skills."), true); return; }
@@ -625,12 +629,14 @@ export class PromptAgentUI {
     raw.open = true;
     this.dom.rawInterrogationPanel = raw;
     this.dom.rawInterrogation = element("textarea", "tk-pa-input tk-pa-textarea");
+    this.dom.rawInterrogation.dataset.tkResizeKey = "rawInterrogation";
     this.dom.rawInterrogation.readOnly = true;
     this.dom.rawInterrogation.rows = 3;
     this.dom.rawInterrogation.placeholder = uiText("显示来源返回的标签或描述", "Original tags or description returned by the source");
     raw.append(this.dom.rawInterrogation);
     const expansion = this.buildImageExpansion();
     this.dom.formattedInterrogation = element("textarea", "tk-pa-input tk-pa-textarea");
+    this.dom.formattedInterrogation.dataset.tkResizeKey = "formattedInterrogation";
     this.dom.formattedInterrogation.readOnly = true;
     this.dom.formattedInterrogation.rows = 3;
     this.dom.formattedInterrogation.placeholder = uiText("反推后按当前模型 Profile 整理", "Format the caption using the current model Profile");
@@ -713,6 +719,13 @@ export class PromptAgentUI {
     this.dom.expansion.preserve_identity = identity;
     identity.addEventListener("change", () => this.writeExpansionOption("preserve_identity", identity.checked));
     wrap.append(field(uiText("保留角色名称与人物特征", "Preserve character names and traits"), identity));
+    const sourceLookup = element("input");
+    sourceLookup.type = "checkbox";
+    this.dom.expansion.lookup_source_characters = sourceLookup;
+    sourceLookup.addEventListener("change", () => this.writeExpansionOption("lookup_source_characters", sourceLookup.checked));
+    wrap.append(field(uiText("源角色查库 · 辅助多人特征对应", "Look up source characters · Match traits to people"), sourceLookup));
+    const sourceNote = element("div", "tk-pa-note", uiText("默认开启：扩写前查询 WD14 识别的角色，结合原图对应人物；查不到仍继续，不按标签顺序分配人物。", "On by default: look up WD14 character hints before expansion and match them against the image. Missing references do not block output; tag order never assigns people."));
+    wrap.append(sourceNote);
     const auto = element("input");
     auto.type = "checkbox";
     this.dom.expansion.auto_expand = auto;
@@ -822,6 +835,30 @@ export class PromptAgentUI {
       if (payload) await this.refreshMeta({ quiet: true });
     });
     wrap.append(field(uiText("核验方式", "Verification mode"), this.dom.referenceMode), element("div", "tk-pa-note", uiText("新创作使用 Danbooru 词库与 AnimaDex 人物库。联网仅复核本地缺失标签，不需要登录；未收录不会自动删除自然语言或自定义词。", "New creations use the Danbooru tag library and AnimaDex character library. Online verification only checks missing local tags and needs no login. Unlisted prose and custom tags are preserved.")), this.dom.saveReferences);
+    const catalog = detail(uiText("角色库自动更新 · 全项目共享", "Character catalog updates · Shared across nodes"));
+    const enabled = element("input"); enabled.type = "checkbox"; enabled.disabled = true;
+    const missing = element("input"); missing.type = "checkbox"; missing.disabled = true;
+    const note = element("div", "tk-pa-note", uiText("先读取更新状态。增量库独立保存，不覆盖随包库和人工别名；在线收录不代表模型训练过该角色。", "Load update status first. Additions are stored separately from shipped data and manual aliases. Catalog coverage does not prove model training coverage."));
+    const render = state => {
+      enabled.checked = state.enabled; missing.checked = state.lookup_missing;
+      enabled.disabled = missing.disabled = Boolean(state.load_error);
+      const last = state.last_success ? new Date(state.last_success * 1000).toLocaleString() : uiText("尚未完整更新", "No complete update yet");
+      note.textContent = uiText(`增量资料 ${state.characters} · 上次完整更新 ${last} · ${state.running ? "更新中" : "空闲"}`, `Supplemental records: ${state.characters} · Last complete update: ${last} · ${state.running ? "Updating" : "Idle"}`);
+      if (state.load_error || Object.keys(state.errors || {}).length) note.textContent += " · " + (state.load_error || JSON.stringify(state.errors));
+    };
+    const load = this.button(uiText("查看更新状态", "View update status"), () => this.operation(async () => render(await this.fetch("/catalog"))));
+    const save = this.button(uiText("保存自动更新设置", "Save update settings"), () => {
+      if (enabled.disabled) return;
+      return this.operation(async () => render(await this.fetch("/catalog", {enabled: enabled.checked, lookup_missing: missing.checked})));
+    });
+    const refresh = this.button(uiText("立即后台补充", "Refresh in background"), () => this.operation(async () => {
+      const state = await this.fetch("/catalog/refresh", {}); render(state);
+      if (state.deferred) this.status(uiText("当前生成任务或内存压力较高，本次未启动更新；空闲后可重试。", "Generation or memory pressure deferred this update. Retry when idle."));
+    }));
+    catalog.append(field(uiText("每天使用角色库时自动检查（仅空闲时启动）", "Check daily when the catalog is used (start only when idle)"), enabled),
+      field(uiText("角色查不到时在线补查并保存", "Look up missing characters online and save verified records"), missing), load, save, refresh, note);
+    this.dom.catalogMaintenance = { enabled, missing, load, save, refresh, note };
+    wrap.append(catalog);
     return wrap;
   }
 
@@ -939,7 +976,9 @@ export class PromptAgentUI {
     const wrap = detail(uiText("连接管理 · 地址、凭据与请求参数", "Connections · URLs, credentials and request parameters"));
     this.dom.providerSettings = wrap;
     this.dom.config = {};
-    wrap.append(element("div", "tk-pa-note", uiText("这里维护本机独立连接的地址与凭据。DSH 连接由 DSH 管理；当前使用的连接和模型只在上方‘本节点模型’选择。请求参数适用于本机 API 调用。", "Manage local connection URLs and credentials here. DSH manages its own connections. Choose the active connection and model under Node model. These request parameters apply to local API calls.")));
+    wrap.append(element("div", "tk-pa-note", uiText("在此新建、编辑、删除和检测自己的 API 连接，或设置 DSH 接入。保存连接不会替其他节点切换模型；点击‘保存并用于此节点’才应用到本节点。", "Create, edit, delete and test API connections, or configure DSH discovery. Saving does not switch other nodes. Use Save and use on this node to select it here.")));
+    this.connectionEditor = new AgentConnectionEditor(this);
+    wrap.append(this.connectionEditor.build());
     this.dom.providerHint = element("div", "tk-pa-note");
     this.dom.providerError = element("div", "tk-pa-status tk-pa-provider-error");
     this.dom.providerError.setAttribute("role", "alert");
@@ -992,7 +1031,7 @@ export class PromptAgentUI {
       tuning.append(field(label, control));
     }
     this.dom.saveConfig = this.button(uiText("保存连接与请求参数", "Save connection and request parameters"), () => this.saveConfig());
-    wrap.append(tuning, this.dom.saveConfig);
+    wrap.append(tuning, this.dom.saveConfig, this.connectionEditor.buildActions(), this.connectionEditor.buildDSH());
     return wrap;
   }
 
@@ -1144,14 +1183,15 @@ export class PromptAgentUI {
       control.disabled = this.busy;
       if (control.type !== "checkbox") control.readOnly = false;
     }
-    if (this.dom.providerHint) this.dom.providerHint.textContent = uiText("本机连接的修改会影响使用此连接的节点。DSH 地址和 Key 请在 DSH 管理。", "Local connection changes affect nodes using that connection. Manage DSH URLs and keys in DSH.");
+    if (this.dom.providerHint) this.dom.providerHint.textContent = uiText("编辑的是连接资料，不是节点的当前选择。修改同一连接会影响引用它的节点；删除后不会自动换用其他账号。", "This edits a saved connection, not the node selection. Changes affect nodes referencing that connection. Deleting it never switches them to another account.");
     const error = this.modelSelection().source === "current" ? String(this.meta.provider_error || "") : "";
     if (this.dom.providerError) {
       this.dom.providerError.textContent = error;
       this.dom.providerError.hidden = !error;
     }
-    if (this.dom.keyStatus) this.dom.keyStatus.textContent = (this.meta.manual_config || this.meta.config)?.api_key_set
-      ? uiText("本机已配置 Key · 不会回传到浏览器或工作流", "Key saved locally · Never returned to the browser or workflow") : uiText("本机尚未配置 Key · 可使用环境变量", "No local key saved · Environment variables are supported");
+    const editedConnection = this.connectionEditor?.rows().find(row => row.id === this.connectionEditor.id);
+    if (this.dom.keyStatus && editedConnection) this.dom.keyStatus.textContent = editedConnection.config.api_key_set
+      ? uiText("此连接已保存 Key · 不会回传到浏览器或工作流", "Key saved for this connection · Never returned to the browser or workflow") : uiText("此连接尚未配置 Key · 可使用环境变量", "No key saved for this connection · Environment variables are supported");
   }
 
   async fetch(path, body, method = body === undefined ? "GET" : "POST", { controller = new AbortController(), track = true } = {}) {
@@ -1379,8 +1419,9 @@ export class PromptAgentUI {
     if (picker) {
       const selected = this.interrogationOptions().vision_provider || "current";
       const nativeChoices = (this.meta.native_providers || []).map(item => option(item.id, [item.name || item.id, item.model].filter(Boolean).join(" · ")));
+      if (!nativeChoices.some(item => item.value === "dsh-active")) nativeChoices.push(option("dsh-active", uiText("DSH 当前模型 · 尚未连接，请打开连接管理", "Current DSH model · Not connected; open connection manager")));
       picker.replaceChildren(option("current", uiText("已保存的默认连接 · ", "Saved default connection · ") + (this.meta.provider_source || "manual") + " · " + (this.meta.config?.model || uiText("未配置", "Not configured"))), option("manual", uiText("本机独立连接", "Local connection")), ...nativeChoices,
-        ...(this.meta.provider_presets || []).map(item => option(item.id, item.name || item.id)));
+        ...(this.meta.provider_presets || []).map(item => option(item.id, "API · " + (item.name || item.id))));
       if (!Array.from(picker.children).some(item => item.value === selected)) picker.append(option(selected, selected + uiText("（当前连接不可用）", " (current connection unavailable)")));
       picker.value = selected;
     }
@@ -1399,6 +1440,7 @@ export class PromptAgentUI {
       else if (config[name] !== undefined && config[name] !== null) control.value = String(config[name]);
     }
     this.renderInterrogationMeta();
+    this.connectionEditor?.render();
     this.updateActionState();
   }
 
@@ -1457,6 +1499,7 @@ export class PromptAgentUI {
     for (const [key, control] of Object.entries(this.dom.filters || {})) control.checked = options.tag_filters?.[key] ?? (key === "watermarks");
     if (this.dom.characterQuery) this.dom.characterQuery.value = options.character_query || "";
     if (this.dom.expansion?.preserve_identity) this.dom.expansion.preserve_identity.checked = options.preserve_identity !== false;
+    if (this.dom.expansion?.lookup_source_characters) this.dom.expansion.lookup_source_characters.checked = options.lookup_source_characters !== false;
   }
 
   writeInterrogationOptions() {
@@ -1878,6 +1921,40 @@ export class PromptAgentUI {
     });
   }
 
+  async expandVisualLayout(draft, indices, instruction, canApply = () => true, image = null, committing = () => {}) {
+    // A just-created Agent must finish applying its model/Skill defaults before
+    // capturing the request, otherwise initialization looks like a user edit.
+    await this.ready;
+    return this.operation(async () => {
+      const preview = await this.runTask("/layout-accept", {
+        session_id: this.session, revision: this.revision, profile: this.value("profile"),
+        layout: { draft, llm_expand: true, ...(indices ? { indices } : {}) }, preview_only: true,
+        instruction: instruction || this.interrogationOptions().expansion_instruction || "",
+        options: this.interrogationOptions(), image, locks: parseSectionIds(this.value("locked_sections")),
+      });
+      if (!canApply()) return { ...preview, prompt: undefined,
+        message: uiText("画布已修改，本轮扩写未覆盖当前编辑。", "Canvas changed; current edits were preserved.") };
+      committing(true);
+      try {
+      const approved = await this.fetch("/accept-interrogation", {
+        session_id: this.session, revision: this.revision, profile: this.value("profile"),
+        prompt: preview.prompt, action: "replace", expansion_skill: "dsh:moss-image-prompt-enhancer",
+        locks: parseSectionIds(this.value("locked_sections")),
+      });
+      return { ...approved, draft: preview.draft, message: uiText("布局扩写已完成。", "Layout expansion complete.") };
+      } finally { committing(false); }
+    });
+  }
+
+  async publishVisualLayout(draft) {
+    await this.ready;
+    return this.operation(() => this.runTask("/layout-accept", {
+      session_id: this.session, revision: this.revision, profile: this.value("profile"),
+      layout: { draft, llm_expand: false }, options: this.interrogationOptions(),
+      locks: parseSectionIds(this.value("locked_sections")),
+    }));
+  }
+
   async uploadImage(file) {
     if (!file || this.busy) return;
     if (file.type && !file.type.startsWith("image/")) { this.status(uiText("请选择图片文件。", "Choose an image file."), true); return; }
@@ -1996,10 +2073,9 @@ export class PromptAgentUI {
     }
   }
 
-  async saveConfig() {
+  connectionConfig() {
     const controls = this.dom.config;
     const body = {};
-    body.connection_scope = "manual";
     const fields = ["base_url", "proxy", "api_key_env", "response_mode"];
     for (const name of fields) body[name] = controls[name].value.trim();
     for (const name of ["temperature", "max_tokens", "timeout"]) {
@@ -2014,8 +2090,35 @@ export class PromptAgentUI {
     if (controls.clear_api_key.checked) body.clear_api_key = true;
     body.stream = Boolean(controls.stream.checked);
     body.disable_thinking = Boolean(controls.disable_thinking.checked);
-    const payload = await this.operation(() => this.fetch("/config", body), uiText("API 配置已保存。", "API settings saved."));
-    if (payload) { controls.api_key.value = ""; controls.clear_api_key.checked = false; await this.refreshMeta({ quiet: true }); }
+    const model = this.connectionEditor?.defaultModel.value.trim();
+    if (model) body.model = model;
+    if (!body.api_key_env) delete body.api_key_env;
+    return body;
+  }
+
+  async saveConfig(useOnNode = false) {
+    const body = this.connectionConfig();
+    if (!body) return;
+    const editor = this.connectionEditor;
+    const id = editor?.id ?? "manual";
+    const name = editor?.name.value.trim() ?? uiText("本机默认 API", "Default local API");
+    let savedId = id;
+    const payload = await this.operation(async () => {
+      if (id === "manual") return this.fetch("/config", { ...body, connection_scope: "manual" });
+      const result = await this.fetch("/connections", { id, name, config: body });
+      savedId = result.id;
+      return result;
+    }, uiText("API 连接已保存。", "API connection saved."));
+    if (payload) {
+      this.dom.config.api_key.value = ""; this.dom.config.clear_api_key.checked = false;
+      if (editor) editor.id = savedId;
+      if (useOnNode) {
+        this.writeExpansionOption("vision_provider", savedId);
+        this.writeExpansionOption("vision_model", "");
+      }
+      await this.refreshMeta({ quiet: true });
+      if (editor) editor.message.textContent = useOnNode ? uiText("已保存并用于此节点，下次请求生效。", "Saved and selected for this node; applies to the next request.") : uiText("连接已保存；其他节点的选择保持不变。", "Connection saved. Other nodes keep their selections.");
+    } else if (editor) editor.message.textContent = this.dom.status?.textContent || uiText("保存失败。", "Save failed.");
   }
 
   async savePreset(update) {
@@ -2057,11 +2160,15 @@ export class PromptAgentUI {
     const response = unwrap(message?.message ?? message?.agent_response);
     const state = unwrap(message?.state);
     const interrogation = unwrap(message?.interrogation);
+    const layoutResult = unwrap(message?.layout_result) === true;
+    if (layoutResult) {
+      this.write("interrogation_options", JSON.stringify({ ...this.interrogationOptions(), expansion_skill: "dsh:moss-image-prompt-enhancer" }));
+    }
     if (interrogation && typeof interrogation === "object") {
       this.interrogationResult = interrogation;
       this.renderInterrogationResult();
     }
-    if (normalizeExecutionValue(this.value("execution")) === "snapshot") {
+    if (normalizeExecutionValue(this.value("execution")) === "snapshot" && !layoutResult) {
       if (typeof prompt === "string") {
         this.write("approved_prompt", prompt);
         this.write("approved_profile", state?.profile || this.value("profile"));

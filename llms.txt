@@ -10,12 +10,13 @@
 > with filters, aspect-ratio masonry, a floating workspace and random discovery), **Danbooru tools** (tag classifier),
 > and **output management** (gallery over `ComfyUI/output`, PNG metadata parsing).
 >
-> Publisher `toki` · Registry id `anima-toolkit` · License MIT · Primary docs are in Chinese,
+> Publisher `toki` · Registry id `anima-toolkit` · Combined distribution GPL-3.0 (original MIT grants retained) · Primary docs are in Chinese,
 > with an English summary at the top of the README.
 
 ## Current release
 
-Version 2.36.0. Workflow-node interfaces and dialogs follow the toolbox language setting; save the workflow and refresh the page after switching. Prompts, tags and saved identifiers stay unchanged. Adds a floating gallery workspace and nearby tag counts.
+Version 2.37.0. Prompt Agent provides frontend API connection management and DSH directory/profile/Relay setup. Connection tests read the model catalog only. Restart once after upgrading; later connection/model changes need no restart. Fixes blank modern widgets and persists resized text fields in saved workflows. Reduces repeated gallery image decoding memory without changing pixels; full workflow reruns remain unverified. Adds MOSS Layout Editor/Preview, direct compilation or selected-region Agent expansion, optional character-catalog updates and source-character lookup. See services/prompt_agent/README.md and docs/FEATURES.md.
+Workflow-node interfaces and dialogs follow the toolbox language setting; save the workflow and refresh the page after switching. Prompts, tags and saved identifiers stay unchanged. Includes a floating gallery workspace and nearby tag counts.
 Prompt Agent shows raw observations above its final prompt. Image instruction input
 has no 4000-character cap; output length is a configurable, non-truncating soft target.
 Includes TK Prompt Agent (Anima / Krea 2 creation, iterative edits,

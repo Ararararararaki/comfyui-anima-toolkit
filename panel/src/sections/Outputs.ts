@@ -907,6 +907,12 @@ export async function activateOutputs() {
 
 
 function renderOutputsView() {
+  const viewMode = useOutputStore.getState().viewMode
+  for (const mode of ['grid', 'list']) {
+    const button = document.querySelector(`.outputs-view-${mode}`)
+    button?.classList.toggle('active', viewMode === mode)
+    button?.setAttribute('aria-pressed', String(viewMode === mode))
+  }
   renderOutputSourcesView()
   const state = useOutputStore.getState()
   syncIndexProgress()
@@ -2862,7 +2868,10 @@ function syncMetadataButton() {
   btn.classList.toggle('active', st.enabled)
   btn.setAttribute('aria-pressed', String(st.enabled))
   const label = btn.querySelector('span')
-  if (label) label.textContent = st.enabled ? tr("workspace.removeGenerationMetadataOn") : tr("workspace.keepGenerationMetadataOriginal")
+  if (label) {
+    label.removeAttribute('data-i18n')
+    label.textContent = st.enabled ? tr("shell.exportStripState") : tr("shell.exportKeepState")
+  }
   const filled = st.entries.filter(e => e.key.trim() !== '' && e.value !== '').length
   btn.title = st.enabled
     ? tr("workspace.removeExportMetadataOn", { p0: filled > 0 ? tr("workspace.addCreditFields", { p0: filled }) : tr("workspace.noCreditsRemoveOnly") })

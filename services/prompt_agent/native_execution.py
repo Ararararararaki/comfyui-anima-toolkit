@@ -137,7 +137,7 @@ async def sdk_connector(endpoint: Endpoint):
 
 
 def _selection(capabilities: dict, connection: dict, settings: dict) -> dict:
-    if connection.get("id") not in _SOURCES:
+    if connection.get("id") not in _SOURCES and not str(connection.get("id", "")).startswith("dsh-provider-"):
         raise AgentError("DSH 原生执行需要选择 DSH 模型来源。")
     catalog = capabilities.get("models", {})
     route = catalog.get("default", {}) if connection["id"] == "dsh-active" and not connection.get("model_override") else connection
@@ -288,7 +288,7 @@ class NativeExecutor:
     async def execute(self, payload, session_id, settings, connection, *, operation_id="", on_progress=None):
         if session_id in self._active:
             raise AgentError("本节点的 DSH 操作仍在运行。")
-        if connection.get("id") not in _SOURCES:
+        if connection.get("id") not in _SOURCES and not str(connection.get("id", "")).startswith("dsh-provider-"):
             raise AgentError("DSH 原生执行需要选择 DSH 模型来源。")
         operation_id = operation_id or uuid.uuid4().hex
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", operation_id):

@@ -104,6 +104,10 @@ from .anima_prompt_agent import (
     NODE_CLASS_MAPPINGS as PROMPT_AGENT_NODE_CLASS_MAPPINGS,
     NODE_DISPLAY_NAME_MAPPINGS as PROMPT_AGENT_NODE_DISPLAY_NAME_MAPPINGS,
 )
+from .anima_moss_layout import (
+    NODE_CLASS_MAPPINGS as MOSS_LAYOUT_NODE_CLASS_MAPPINGS,
+    NODE_DISPLAY_NAME_MAPPINGS as MOSS_LAYOUT_NODE_DISPLAY_NAME_MAPPINGS,
+)
 from .services.prompt_agent.routes import register_routes as _register_prompt_agent_routes
 
 _register_prompt_agent_routes(PromptServer.instance.routes)
@@ -187,6 +191,7 @@ NODE_CLASS_MAPPINGS = {
     **ANIMA_FORMATTER_NODE_CLASS_MAPPINGS,
     **PROMPT_EXPANDER_NODE_CLASS_MAPPINGS,
     **PROMPT_AGENT_NODE_CLASS_MAPPINGS,
+    **MOSS_LAYOUT_NODE_CLASS_MAPPINGS,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -207,11 +212,12 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **ANIMA_FORMATTER_NODE_DISPLAY_NAME_MAPPINGS,
     **PROMPT_EXPANDER_NODE_DISPLAY_NAME_MAPPINGS,
     **PROMPT_AGENT_NODE_DISPLAY_NAME_MAPPINGS,
+    **MOSS_LAYOUT_NODE_DISPLAY_NAME_MAPPINGS,
 }
 
 WEB_DIRECTORY = "./web"
 
-_FALLBACK_VERSION = "2.36.0"
+_FALLBACK_VERSION = "2.37.0"
 
 try:
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"), encoding="utf-8") as _vf:

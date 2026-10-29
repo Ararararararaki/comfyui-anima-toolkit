@@ -50,6 +50,24 @@ def register_routes(routes, runtime_getter=get_runtime) -> None:
         data = await body(request)
         return runtime_getter().activate_provider(data.get("id", ""))
 
+    async def connections(request):
+        manager = runtime_getter().connections
+        return manager.list() if request.method == "GET" else manager.save(await body(request))
+
+    async def delete_connection(request):
+        await body(request)
+        return runtime_getter().connections.delete(request.match_info["connection_id"])
+
+    async def test_connection(request):
+        return await runtime_getter().connections.test(await body(request))
+
+    async def dsh_connection(request):
+        manager = runtime_getter().connections
+        return manager.dsh_status() if request.method == "GET" else manager.save_dsh(await body(request))
+
+    async def test_dsh(request):
+        return await runtime_getter().connections.test_dsh(await body(request))
+
     async def native_meta(request):
         source = request.query.get("source")
         return await runtime_getter().native_meta(source) if source else await runtime_getter().native_meta()
@@ -103,7 +121,22 @@ def register_routes(routes, runtime_getter=get_runtime) -> None:
     async def vision_models(request):
         from .providers import OpenAICompatibleProvider
         data = await body(request)
-        config = runtime_getter().interrogation.vision_config(data.get("source", "current"))
+        runtime = runtime_getter()
+        source = data.get("source", "current")
+        if source == "current":
+            source = runtime.preferences()["provider_source"]
+        if isinstance(source, str) and source.startswith("dsh-"):
+            try:
+                info = runtime.native_source.describe(source)
+                return {"models": [{"id": model, "vision": None} for model in info.get("models", [])]}
+            except AgentError:
+                if source != "dsh-active":
+                    raise
+                catalog = (await runtime.native.catalog())["capabilities"].get("models", {})
+                provider = catalog.get("default", {}).get("provider")
+                return {"models": [{"id": model["id"], "vision": None} for group in catalog.get("groups", [])
+                                   if group.get("id") == provider for model in group.get("models", [])]}
+        config = runtime.interrogation.vision_config(data.get("source", "current"))
         return {"models": await OpenAICompatibleProvider(config).list_models()}
 
     async def interrogation_config(request):
@@ -134,12 +167,39 @@ def register_routes(routes, runtime_getter=get_runtime) -> None:
         data = await body(request)
         return runtime_getter().execution.cancel(request.match_info["task_id"], data.get("session_id", ""))
 
+    async def catalog_status(request):
+        from ..character_catalog import current
+        return current().status()
+
+    async def catalog_config(request):
+        from ..character_catalog import current
+        data = await body(request)
+        try:
+            return current().configure(data)
+        except ValueError as error:
+            raise AgentError(str(error)) from error
+
+    async def catalog_refresh(request):
+        await body(request)
+        from ..character_catalog import current
+        return current().request_refresh(force=True)
+
+    routes.get(PREFIX + "/catalog")(endpoint(catalog_status))
+    routes.post(PREFIX + "/catalog")(endpoint(catalog_config))
+    routes.post(PREFIX + "/catalog/refresh")(endpoint(catalog_refresh))
     routes.post(PREFIX + "/tasks")(endpoint(submit_task))
     routes.get(PREFIX + "/tasks/{task_id}")(endpoint(task_status))
     routes.post(PREFIX + "/tasks/{task_id}/cancel")(endpoint(cancel_task))
     routes.get(PREFIX + "/meta")(endpoint(meta))
     routes.post(PREFIX + "/config")(endpoint(config))
     routes.post(PREFIX + "/activate-provider")(endpoint(activate_provider))
+    routes.get(PREFIX + "/connections")(endpoint(connections))
+    routes.post(PREFIX + "/connections")(endpoint(connections))
+    routes.delete(PREFIX + "/connections/{connection_id}")(endpoint(delete_connection))
+    routes.post(PREFIX + "/connections/test")(endpoint(test_connection))
+    routes.get(PREFIX + "/dsh-connection")(endpoint(dsh_connection))
+    routes.post(PREFIX + "/dsh-connection")(endpoint(dsh_connection))
+    routes.post(PREFIX + "/dsh-connection/test")(endpoint(test_dsh))
     routes.get(PREFIX + "/native/meta")(endpoint(native_meta))
     routes.post(PREFIX + "/native/config")(endpoint(native_config))
     routes.get(PREFIX + "/native/session/{session_id}")(endpoint(native_status))
