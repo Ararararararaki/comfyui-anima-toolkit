@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "sha256": "fef314ff8e6365ab8575b38d6ee486c0aeb0030f6ee1df66fe3999680c824b8a",
+  "sha256": "61bdb2e8fdf94b3cbdcf2706d7c7500fcc352df9e0221307da5dc581e36dd76f",
   "files": [
     {
       "path": "CHANGELOG.md",
-      "sha256": "ed6a565c184c1ee7fc49cfcb73e55d7b168677aef1951f4378682f6930924e26"
+      "sha256": "d9615b97d86e5b10ab84da618e56f728bc570497f7f060d8821b304f8b644e9f"
     },
     {
       "path": "integrations/pixiv-drop-bridge/core.js",
@@ -48,7 +48,7 @@
     },
     {
       "path": "panel/index.html",
-      "sha256": "1124c23437c6bbb11383c2f3c7b6216632a85154d018aa389f0b02c91ff1b6de"
+      "sha256": "53368c370108d3282248a5165a4f878013f64ddf76292cfd39dcd1dc40e7fce5"
     },
     {
       "path": "panel/package-lock.json",
@@ -92,7 +92,7 @@
     },
     {
       "path": "panel/src/components/Lightbox.ts",
-      "sha256": "389951860d73a71bcffa0346c33299b5f6b1b419ab8402be665130089d6ccb05"
+      "sha256": "f0fcd02c5fc7f2a8ca7b547bb0bb5b78f2a1ed340599deda3e11484cc041849c"
     },
     {
       "path": "panel/src/components/masonry.ts",
@@ -152,7 +152,7 @@
     },
     {
       "path": "panel/src/i18n/shell.ts",
-      "sha256": "39431ac7034dc2da0e8eb6283b0911c84c3c1950c9ad1547e0132d4dc8154250"
+      "sha256": "e3f708b1b412c22fc0d7451d0652de9c51cfd7ed765d4ecd54c312ffb90bdb22"
     },
     {
       "path": "panel/src/i18n/workspace.ts",
@@ -208,7 +208,7 @@
     },
     {
       "path": "panel/src/sections/Outputs.ts",
-      "sha256": "f0f76928788d7caac63fe358f842528408598f5ba1d9069f102035b47fd41212"
+      "sha256": "033427e5b3458926df475fe8f37627c43456b7d174796aad1e45b4bf87ee0b06"
     },
     {
       "path": "panel/src/sections/PromptFreq.ts",
@@ -492,7 +492,7 @@
     },
     {
       "path": "panel/src/styles/global.css",
-      "sha256": "d405994f97caf243fb6c5f75031593f31e1b0ed7f0a154bccf8b1b1b292dfafa"
+      "sha256": "96c2f2257e4227908244d1a032f864b3b21459abd19347d72af42216635d7535"
     },
     {
       "path": "panel/src/styles/local-manager-polish.css",
@@ -500,7 +500,7 @@
     },
     {
       "path": "panel/src/styles/outputs-workspace.css",
-      "sha256": "ccb9ac56b9648acc783264c92fdf06009c05da071cfa31fc2a2e2685bbc12cfe"
+      "sha256": "bfe6de8f0690446a44f224eb70c467844950d3437bf6479448c071fc8e59b964"
     },
     {
       "path": "panel/src/styles/outputs.css",
@@ -564,7 +564,7 @@
     },
     {
       "path": "VERSION",
-      "sha256": "dc1403849dfa520ddabefc496f18b6fba3167875528dc5003acd74a999c391e0"
+      "sha256": "462fd9d3cfe0c592fae358d924cf44fe06a969c196e4f9fe079a21ebb6288c78"
     },
     {
       "path": "web/js/shared/image_node_cache.d.ts",

@@ -19,9 +19,9 @@ try {
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script type="module" crossorigin src="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-Cbdytr3q.js"></script>
+  <script type="module" crossorigin src="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-DlC0QBlt.js"></script>
   <link rel="modulepreload" crossorigin href="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/vendor-D6eCwX_v.js">
-  <link rel="stylesheet" crossorigin href="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-rcbT6zlq.css">
+  <link rel="stylesheet" crossorigin href="/extensions/ComfyUI-Anima-Batch-LoRA/app/assets/index-Cl0tiBa_.css">
 </head>
 <body data-ui-version="drinkit-2026-09-08">
 
@@ -489,8 +489,8 @@ try {
         <button type="button" class="outputs-toolbar-btn outputs-select-btn" data-icon="plus" title="添加图片目录" aria-label="添加图片目录" data-i18n-title="shell.addImageDirectory" data-i18n-aria-label="shell.addImageDirectory"><span data-i18n="shell.addDirectory">添加目录</span></button>
         <button type="button" class="outputs-toolbar-btn outputs-refresh-btn" data-icon="refreshCw" title="核对磁盘并刷新目录" aria-label="刷新图片目录" data-i18n-title="shell.refreshDiskDirectories" data-i18n-aria-label="shell.refreshImageDirectories"></button>
         <div class="outputs-toolbar-group outputs-view-switch" role="group" aria-label="图片视图" data-i18n-aria-label="shell.imageView">
-          <button type="button" class="outputs-toolbar-btn outputs-view-grid active" data-icon="grid" title="网格视图" aria-label="网格视图" data-i18n-title="shell.gridView" data-i18n-aria-label="shell.gridView"></button>
-          <button type="button" class="outputs-toolbar-btn outputs-view-list" data-icon="list" title="列表视图" aria-label="列表视图" data-i18n-title="shell.listView" data-i18n-aria-label="shell.listView"></button>
+          <button type="button" class="outputs-toolbar-btn outputs-view-grid active" data-icon="grid" aria-pressed="true" title="网格视图" aria-label="网格视图" data-i18n-title="shell.gridView" data-i18n-aria-label="shell.gridView"><span data-i18n="shell.gridView">网格视图</span></button>
+          <button type="button" class="outputs-toolbar-btn outputs-view-list" data-icon="list" aria-pressed="false" title="列表视图" aria-label="列表视图" data-i18n-title="shell.listView" data-i18n-aria-label="shell.listView"><span data-i18n="shell.listView">列表视图</span></button>
         </div>
         <details class="outputs-more">
           <summary class="outputs-toolbar-btn" data-icon="slidersHorizontal"><span data-i18n="shell.browseAndFilter">浏览与筛选</span></summary>
@@ -624,8 +624,6 @@ try {
 
 <div class="lightbox" id="lightbox" role="dialog" aria-label="图片预览" aria-modal="true" data-i18n-aria-label="shell.imagePreview">
   <button class="close" aria-label="关闭" data-i18n-aria-label="shell.close">✕</button>
-  <button class="lb-nav prev" aria-label="上一张" data-i18n-aria-label="shell.previousImage">‹</button>
-  <button class="lb-nav next" aria-label="下一张" data-i18n-aria-label="shell.nextImage">›</button>
   <div class="lb-toolbars" aria-label="图片编辑工具" data-i18n-aria-label="shell.imageEditingTools">
   <div class="lb-editbar" id="lbEditBar">
     <button data-act="rotl" title="向左旋转 90°" data-icon="rotateCcw" data-i18n-title="shell.rotateLeftTitle"><span data-i18n="shell.rotateLeft">左转</span></button>
@@ -650,9 +648,12 @@ try {
     <label data-paint-controls="mosaic" hidden title="马赛克与原图混合的强度" data-i18n-title="shell.mosaicStrengthTitle"><span data-i18n="shell.strength">强度</span> <input id="lbMosaicStrength" type="range" min="1" max="100" value="100" aria-label="马赛克强度" data-i18n-aria-label="shell.mosaicStrength"><output id="lbMosaicStrengthValue" for="lbMosaicStrength">100%</output></label>
     <button id="lbPaintUndo"><span data-i18n="shell.undo">撤销</span></button>
     <button id="lbPreviewDrag" draggable="true" data-output-preview-drag data-output-drag="" title="拖动到 Pixiv 等接收位置；无需另存" data-i18n-title="shell.dragPreviewTitle"><span data-i18n="shell.dragPreview">拖出当前图</span></button>
-    <span id="lbEditHint" role="status" data-i18n="shell.paintHint">涂鸦可直接画；打码请拖出矩形</span>
+    <span id="lbEditHint" role="status" data-i18n="shell.browseHint">滚轮缩放，放大后拖动查看</span>
   </div>
   </div>
+  <div class="lb-stage">
+  <button class="lb-nav prev" aria-label="上一张" data-i18n-aria-label="shell.previousImage">‹</button>
+  <button class="lb-nav next" aria-label="下一张" data-i18n-aria-label="shell.nextImage">›</button>
   <div class="lb-edit-wrap" id="lbEditWrap" style="display:none">
     <canvas id="lbEditCanvas"></canvas>
     <div class="lb-crop-layer" id="lbCropLayer">
@@ -665,6 +666,7 @@ try {
   </div>
   <img id="lbImg" src="" alt="">
   <span class="lb-counter" id="lbCounter"></span>
+  </div>
 </div>
 <div class="toast" id="toast" role="alert" aria-live="assertive"></div>
 <div id="batchBar" class="batch-bar batch-bar-hidden">
